@@ -1,0 +1,33 @@
+# Multi-stage image for the MCP server. Real command + entrypoint wired in WP-8.
+
+FROM python:3.11-slim AS builder
+
+ENV UV_LINK_MODE=copy \
+    UV_SYSTEM_PYTHON=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /src
+COPY pyproject.toml ./
+# uv.lock copied when present so the build is reproducible; fall back to
+# resolver on first build if the lock has not been generated yet.
+COPY uv.lock* ./
+COPY osm ./osm
+
+RUN uv sync --frozen --no-dev || uv sync --no-dev
+
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/src/.venv/bin:$PATH"
+
+WORKDIR /src
+
+COPY --from=builder /src /src
+
+# Placeholder entrypoint. WP-8 will replace this with the real FastMCP
+# server invocation.
+CMD ["python", "-c", "print('osm server: placeholder, implemented in WP-8')"]

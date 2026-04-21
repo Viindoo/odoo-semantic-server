@@ -1,0 +1,39 @@
+# CI template for osm. Repo host still TBD (see `decisions/0003-brand-name.md`
+# for wider naming decisions). When the repo lands on GitHub, this workflow
+# should run as-is; if we end up self-hosting Gitea or similar, adapt the
+# runner + action references.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync deps
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          uv sync --extra dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Typecheck
+        run: uv run mypy osm
+
+      - name: Test
+        run: uv run pytest -q

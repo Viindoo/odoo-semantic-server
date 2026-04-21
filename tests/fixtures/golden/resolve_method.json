@@ -1,0 +1,189 @@
+[
+  {
+    "chain": [
+      {
+        "calls_super": false,
+        "decorators": [],
+        "file": "tests/fixtures/odoo_ce_subset/sale/models/sale_order.py",
+        "is_override": false,
+        "module": "sale",
+        "signature": "(self)"
+      },
+      {
+        "calls_super": true,
+        "decorators": [],
+        "file": "tests/fixtures/odoo_ce_subset/sale_management/models/sale_order.py",
+        "is_override": true,
+        "module": "sale_management",
+        "signature": "(self)"
+      },
+      {
+        "calls_super": false,
+        "decorators": [],
+        "file": "tests/fixtures/custom_addons/viin_fixture_method_override_break_super/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_method_override_break_super",
+        "signature": "(self)"
+      },
+      {
+        "calls_super": true,
+        "decorators": [],
+        "file": "tests/fixtures/custom_addons/viin_fixture_method_override_super/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_method_override_super",
+        "signature": "(self)"
+      }
+    ],
+    "chain_is_broken": true,
+    "method_name": "action_confirm",
+    "model_name": "sale.order",
+    "warnings": [
+      "chain_is_broken: viin_fixture_method_override_break_super does not call super()"
+    ]
+  },
+  {
+    "chain": [
+      {
+        "calls_super": false,
+        "decorators": [],
+        "file": "tests/fixtures/custom_addons/viin_fixture_method_override_super/models/sale_order.py",
+        "is_override": false,
+        "module": "viin_fixture_method_override_super",
+        "signature": "(self)"
+      }
+    ],
+    "chain_is_broken": false,
+    "method_name": "_viin_pre_confirm_hook",
+    "model_name": "sale.order",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "calls_super": true,
+        "decorators": [
+          "@api.depends('order_line.price_total', 'viin_discount_extra')"
+        ],
+        "file": "tests/fixtures/custom_addons/viin_fixture_depends_added/models/sale_order.py",
+        "is_override": false,
+        "module": "viin_fixture_depends_added",
+        "signature": "(self)"
+      }
+    ],
+    "chain_is_broken": false,
+    "method_name": "_amount_all",
+    "model_name": "sale.order",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "calls_super": false,
+        "decorators": [
+          "@api.depends('order_line.price_total', 'order_line.discount')"
+        ],
+        "file": "tests/fixtures/custom_addons/viin_fixture_field_override_compute/models/sale_order.py",
+        "is_override": false,
+        "module": "viin_fixture_field_override_compute",
+        "signature": "(self)"
+      }
+    ],
+    "chain_is_broken": false,
+    "method_name": "_viin_amount_all",
+    "model_name": "sale.order",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "calls_super": true,
+        "decorators": [
+          "@api.model"
+        ],
+        "file": "tests/fixtures/odoo_ce_subset/contacts/models/res_users.py",
+        "is_override": false,
+        "module": "contacts",
+        "signature": "(self)"
+      }
+    ],
+    "chain_is_broken": false,
+    "method_name": "systray_get_activities",
+    "model_name": "res.users",
+    "warnings": []
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "write",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "action_cancel",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "_compute_amounts",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "button_confirm",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "_check_balanced",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "action_done",
+    "model_name": "stock.picking"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "_do_unreserve",
+    "model_name": "stock.picking"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "name_get",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "_get_combination_info",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "name_get",
+    "model_name": "product.product"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "write",
+    "model_name": "res.partner"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "name_get",
+    "model_name": "res.partner"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "create",
+    "model_name": "res.users"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "write",
+    "model_name": "res.users"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "method_name": "message_post",
+    "model_name": "mail.thread"
+  }
+]

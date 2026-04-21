@@ -1,0 +1,17 @@
+[
+  {
+    "name": "base",
+    "depth": 0,
+    "load_order": 0
+  },
+  {
+    "name": "web",
+    "depth": 1,
+    "load_order": 1
+  },
+  {
+    "name": "bus",
+    "depth": 2,
+    "load_order": 2
+  }
+]

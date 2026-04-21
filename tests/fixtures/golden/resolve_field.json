@@ -1,0 +1,458 @@
+[
+  {
+    "chain": [
+      {
+        "compute": "_compute_amounts",
+        "field_type": "Monetary",
+        "file": "tests/fixtures/odoo_ce_subset/sale/models/sale_order.py",
+        "is_override": false,
+        "module": "sale",
+        "store": true
+      },
+      {
+        "compute": "_amount_all",
+        "field_type": "Monetary",
+        "file": "tests/fixtures/custom_addons/viin_fixture_depends_added/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_depends_added",
+        "store": true
+      },
+      {
+        "compute": "_viin_amount_all",
+        "field_type": "Monetary",
+        "file": "tests/fixtures/custom_addons/viin_fixture_field_override_compute/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_field_override_compute",
+        "store": true
+      }
+    ],
+    "effective": {
+      "compute": "_viin_amount_all",
+      "depends": [
+        "order_line.price_subtotal",
+        "order_line.price_tax",
+        "order_line.price_total",
+        "viin_discount_extra",
+        "order_line.discount"
+      ],
+      "field_type": "Monetary",
+      "store": true
+    },
+    "field_name": "amount_total",
+    "model_name": "sale.order",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Many2one",
+        "file": "tests/fixtures/odoo_ce_subset/sale/models/sale_order.py",
+        "is_override": false,
+        "module": "sale"
+      },
+      {
+        "compute": null,
+        "field_type": "Many2one",
+        "file": "tests/fixtures/custom_addons/viin_fixture_field_override_no_compute/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_field_override_no_compute",
+        "readonly": true
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "field_type": "Many2one",
+      "readonly": true,
+      "related_model": "res.partner",
+      "required": true
+    },
+    "field_name": "partner_id",
+    "model_name": "sale.order",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Float",
+        "file": "tests/fixtures/odoo_ce_subset/product/models/product_template.py",
+        "is_override": false,
+        "module": "product"
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "default": "1.0",
+      "field_type": "Float",
+      "related_model": "Sales Price"
+    },
+    "field_name": "list_price",
+    "model_name": "product.template",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "field_type": "Float",
+        "file": "tests/fixtures/odoo_ce_subset/product/models/product_template.py",
+        "is_override": false,
+        "kind": "inherited_via_delegation",
+        "module": "product",
+        "related": "product_tmpl_id.list_price"
+      }
+    ],
+    "effective": {
+      "field_type": "Float",
+      "kind": "inherited_via_delegation",
+      "related": "product_tmpl_id.list_price"
+    },
+    "field_name": "list_price",
+    "model_name": "product.product",
+    "skip_handler": "inherits_delegation resolution is P2+ (handler does not yet recurse through _inherits)",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Many2one",
+        "file": "tests/fixtures/custom_addons/viin_fixture_inherits_delegation/models/custom_product.py",
+        "is_override": false,
+        "module": "viin_fixture_inherits_delegation"
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "field_type": "Many2one",
+      "related_model": "product.template",
+      "required": true
+    },
+    "field_name": "tmpl_id",
+    "model_name": "y.custom",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "compute": "_compute_amounts",
+        "field_type": "Monetary",
+        "file": "tests/fixtures/odoo_ce_subset/sale/models/sale_order.py",
+        "is_override": false,
+        "module": "sale",
+        "store": true
+      },
+      {
+        "compute": "_amount_all",
+        "field_type": "Monetary",
+        "file": "tests/fixtures/custom_addons/viin_fixture_depends_added/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_depends_added",
+        "store": true
+      },
+      {
+        "compute": "_viin_amount_all",
+        "field_type": "Monetary",
+        "file": "tests/fixtures/custom_addons/viin_fixture_field_override_compute/models/sale_order.py",
+        "is_override": true,
+        "module": "viin_fixture_field_override_compute",
+        "store": true
+      }
+    ],
+    "effective": {
+      "compute": "_viin_amount_all",
+      "depends": [
+        "order_line.price_subtotal",
+        "order_line.price_tax",
+        "order_line.price_total",
+        "viin_discount_extra",
+        "order_line.discount"
+      ],
+      "field_type": "Monetary",
+      "store": true
+    },
+    "field_name": "amount_total",
+    "model_name": "sale.order",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Many2one",
+        "file": "tests/fixtures/odoo_ce_subset/product/models/product_product.py",
+        "is_override": false,
+        "module": "product"
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "field_type": "Many2one",
+      "related_model": "product.template",
+      "required": true
+    },
+    "field_name": "product_tmpl_id",
+    "model_name": "product.product",
+    "warnings": []
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Char",
+        "file": "tests/fixtures/custom_addons/viin_fixture_conditional_optional_dep/models/optional_model.py",
+        "is_override": false,
+        "module": "viin_fixture_conditional_optional_dep"
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "field_type": "Char",
+      "related_model": "Optional Field"
+    },
+    "field_name": "viin_optional_field",
+    "model_name": "sale.order",
+    "warnings": [
+      "viin_fixture_conditional_optional_dep: conditional_import on sale.order.viin_optional_field; chain valid only when the optional dep is installed"
+    ]
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Char",
+        "file": "tests/fixtures/custom_addons/viin_fixture_register_false/models/abstract_base.py",
+        "is_override": false,
+        "module": "viin_fixture_register_false"
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "field_type": "Char",
+      "related_model": "Marker"
+    },
+    "field_name": "viin_marker",
+    "model_name": "viin.abstract.base",
+    "warnings": [
+      "viin_fixture_register_false: _register=False in ancestry on viin.abstract.base.viin_marker"
+    ]
+  },
+  {
+    "chain": [
+      {
+        "compute": null,
+        "field_type": "Char",
+        "file": "tests/fixtures/odoo_ce_subset/base/models/res_partner.py",
+        "is_override": false,
+        "module": "base"
+      }
+    ],
+    "effective": {
+      "compute": null,
+      "field_type": "Char"
+    },
+    "field_name": "name",
+    "model_name": "res.partner",
+    "warnings": []
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "state",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "date_order",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "order_line",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "company_id",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "currency_id",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "amount_untaxed",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "amount_tax",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "user_id",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "pricelist_id",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "payment_term_id",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "name",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "picking_policy",
+    "model_name": "sale.order.line"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "price_unit",
+    "model_name": "sale.order.line"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "product_id",
+    "model_name": "sale.order.line"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "price_total",
+    "model_name": "sale.order.line"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "name",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "type",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "categ_id",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "uom_id",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "active",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "standard_price",
+    "model_name": "product.template"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "name",
+    "model_name": "product.product"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "barcode",
+    "model_name": "product.product"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "default_code",
+    "model_name": "product.product"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "active",
+    "model_name": "res.partner"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "email",
+    "model_name": "res.partner"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "phone",
+    "model_name": "res.partner"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "is_company",
+    "model_name": "res.partner"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "move_type",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "partner_id",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "amount_total",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "state",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "journal_id",
+    "model_name": "account.move"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "picking_type_id",
+    "model_name": "stock.picking"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "partner_id",
+    "model_name": "stock.picking"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "state",
+    "model_name": "stock.picking"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "viin_note",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "custom_code",
+    "model_name": "y.custom"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "viin_base_field",
+    "model_name": "sale.order"
+  },
+  {
+    "TODO": "label after WP-5 output",
+    "field_name": "viin_discount_extra",
+    "model_name": "sale.order"
+  }
+]

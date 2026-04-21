@@ -1,0 +1,184 @@
+[
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/account/models/account_move.py",
+        "module": "account"
+      }
+    ],
+    "inherits": {},
+    "model_name": "account.move",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/account/models/account_move_line.py",
+        "module": "account"
+      }
+    ],
+    "inherits": {},
+    "model_name": "account.move.line",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/base/models/res_partner.py",
+        "module": "base"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_order_override/models/res_partner.py",
+        "module": "viin_fixture_order_override"
+      }
+    ],
+    "inherits": {},
+    "model_name": "res.partner",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/base/models/res_users.py",
+        "module": "base"
+      },
+      {
+        "file": "tests/fixtures/odoo_ce_subset/contacts/models/res_users.py",
+        "module": "contacts"
+      }
+    ],
+    "inherits": {},
+    "model_name": "res.users",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": true,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/mail/models/mail_thread.py",
+        "module": "mail"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_multi_inherit/models/sale_order.py",
+        "module": "viin_fixture_multi_inherit"
+      }
+    ],
+    "inherits": {},
+    "model_name": "mail.thread",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": true,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/mail/models/mail_activity_mixin.py",
+        "module": "mail"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_multi_inherit/models/sale_order.py",
+        "module": "viin_fixture_multi_inherit"
+      }
+    ],
+    "inherits": {},
+    "model_name": "mail.activity.mixin",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/product/models/product_template.py",
+        "module": "product"
+      }
+    ],
+    "inherits": {},
+    "model_name": "product.template",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/product/models/product_product.py",
+        "module": "product"
+      }
+    ],
+    "inherits": {
+      "product.template": "product_tmpl_id"
+    },
+    "model_name": "product.product",
+    "transient": false,
+    "warnings": []
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/sale/models/sale_order.py",
+        "module": "sale"
+      },
+      {
+        "file": "tests/fixtures/odoo_ce_subset/sale_management/models/sale_order.py",
+        "module": "sale_management"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_conditional_optional_dep/models/optional_model.py",
+        "module": "viin_fixture_conditional_optional_dep"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_depends_added/models/sale_order.py",
+        "module": "viin_fixture_depends_added"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_field_override_compute/models/sale_order.py",
+        "module": "viin_fixture_field_override_compute"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_field_override_no_compute/models/sale_order.py",
+        "module": "viin_fixture_field_override_no_compute"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_method_override_break_super/models/sale_order.py",
+        "module": "viin_fixture_method_override_break_super"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_method_override_super/models/sale_order.py",
+        "module": "viin_fixture_method_override_super"
+      },
+      {
+        "file": "tests/fixtures/custom_addons/viin_fixture_multi_inherit/models/sale_order.py",
+        "module": "viin_fixture_multi_inherit"
+      }
+    ],
+    "inherits": {},
+    "model_name": "sale.order",
+    "transient": false,
+    "warnings": [
+      "viin_fixture_conditional_optional_dep: conditional_import on sale.order; chain valid only when the optional dep is installed"
+    ]
+  },
+  {
+    "abstract": false,
+    "chain": [
+      {
+        "file": "tests/fixtures/odoo_ce_subset/stock/models/stock_picking.py",
+        "module": "stock"
+      }
+    ],
+    "inherits": {},
+    "model_name": "stock.picking",
+    "transient": false,
+    "warnings": []
+  }
+]
