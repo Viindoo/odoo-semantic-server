@@ -48,6 +48,21 @@ Daily working checklist. Tick items as they complete. Move stale items to an `_a
 
 Gate 1 (Design confirmed) **passed 2026-04-22**. Ready to implement.
 
+### WP-13 Embedding self-host spike — in progress 2026-04-22
+
+Bounded 1-2 day spike validate Option B (self-host) trong ADR-0002 có
+recall + latency đủ cho P3 trên RTX 3060 12GB (`osm-dev`).
+
+- [x] `scripts/bench_corpus.py` — AST extract docstring/body pairs (stdlib only)
+- [x] `scripts/bench_embed.py` — sentence-transformers harness (dry-run mode for non-GPU)
+- [x] Corpus extract local: 258 pairs từ `tests/fixtures/odoo_ce_subset`
+  (body p50=1238 chars, p95=6539; 30% > 512 tokens → jina-v2 sẽ truncate)
+- [x] Runbook: `tasks/_scratch_embed_spike.md` (xoá khi spike close)
+- [ ] Run 3 models trên osm-dev: `bge-code-v1`, `bge-m3`, `jina-v2-base-code`
+- [ ] Write `research/embedding-self-host-spike.md` từ kết quả
+- [ ] Append Revision section vào `decisions/0002-embedding-provider.md`
+- [ ] (optional) Wrap systemd user service trước spike để reboot không chết server
+
 ### WP-12 ADR-0005 Tailscale tenant — accepted 2026-04-22
 
 Accepted option A (personal tailnet) scoped to P1–P4. `decisions/0005-tailscale-tenant.md` records drivers, considered options (personal vs Viindoo corporate vs no-Tailscale), decision + rationale, kill criteria (compliance trigger, 2nd operator, pricing change), and hard re-review deadline at P4 end. Sidecar block stays commented in `docker-compose.yml`; operator flips via `TS_AUTHKEY` in `.env` when first Hosted customer lands. No code changes required.
