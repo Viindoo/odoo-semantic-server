@@ -176,12 +176,43 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help=(
+            "Extra Host header value permitted by DNS-rebinding protection. "
+            "Repeatable. Port wildcards are added automatically (HOST:*). "
+            "Also accepts OSM_ALLOWED_HOSTS env as comma-separated list."
+        ),
+    )
     args = parser.parse_args(argv)
 
     app = build_app()
     if args.http:
         app.settings.host = args.host
         app.settings.port = args.port
+
+        extras = list(args.allowed_host)
+        env_extras = os.environ.get("OSM_ALLOWED_HOSTS", "").strip()
+        if env_extras:
+            extras += [h.strip() for h in env_extras.split(",") if h.strip()]
+
+        if args.host not in ("127.0.0.1", "localhost", "::1") or extras:
+            from mcp.server.transport_security import TransportSecuritySettings
+
+            bind_hosts = [args.host] if args.host not in ("0.0.0.0", "::") else []
+            host_list = ["127.0.0.1", "localhost", "[::1]", *bind_hosts, *extras]
+            seen: set[str] = set()
+            dedup = [h for h in host_list if not (h in seen or seen.add(h))]
+            app.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[f"{h}:*" for h in dedup],
+                allowed_origins=[f"http://{h}:*" for h in dedup]
+                + [f"https://{h}:*" for h in dedup],
+            )
+
         app.run(transport="streamable-http")
     else:
         app.run(transport="stdio")
