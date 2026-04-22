@@ -33,7 +33,56 @@ Each module contains:
 
 ---
 
-## `custom_addons/`
+## Views (added WP-14)
+
+The 10 CE modules now include a frozen `views/*.xml` tree in addition to
+`models/`. Files are 1:1 copies from Odoo CE 17.0. Per-module file counts:
+
+| Module | views/*.xml count | Notes |
+|---|---|---|
+| `base` | 29 | skipped: `base_menus.xml`, `ir_qweb_widget_templates.xml`, `report_paperformat_views.xml` (menus-only / QWeb templates) |
+| `web` | 2 | skipped: `report_templates.xml`, `speedscope_template.xml`, `webclient_templates.xml`, `neutralize_views.xml` (menus-only / QWeb templates) |
+| `mail` | 31 | skipped: `mail_menus.xml`, `discuss_public_templates.xml`, `mail_templates_public.xml` |
+| `product` | 14 | — |
+| `sale` | 12 | skipped: `sale_menus.xml`, `sale_portal_templates.xml` |
+| `account` | 30 | skipped: `account_menuitem.xml`, `account_portal_templates.xml`, `bill_preview_template.xml`, `report_invoice.xml`, `report_payment_receipt_templates.xml`, `report_statement.xml`, `terms_template.xml` |
+| `stock` | 19 | skipped: `stock_menu_views.xml`, `report_stock_traceability.xml`, `stock_template.xml` |
+| `sale_management` | 4 | skipped: `sale_management_menus.xml`, `sale_portal_templates.xml` |
+| `contacts` | 1 | — |
+| `bus` | 0 | CE bus module has no `views/` directory |
+
+Exclusion rules applied:
+- QWeb report templates, portal templates, client-side web templates, menus-only
+  files (parser is view-record-oriented; templates will live in the P4 tool).
+- Files >200 KB or >3000 lines (sanity cap — we need breadth, not every byte).
+  No single retained file exceeds either threshold.
+
+Each module's `__manifest__.py` `data` key is updated to reference exactly the
+files present in the frozen copy — data/security/wizard/demo entries are
+dropped because they are not mirrored into the fixture.
+
+---
+
+## View-focused custom addons (added WP-14)
+
+Eight modules exercise `xml_parser` and (in WP-15) `view_resolver` edge cases.
+Each is ≤50 lines of XML, minimal manifest (`depends` lists the CE subset
+parent when needed).
+
+| Module | Purpose |
+|---|---|
+| `cv_basic_form` | Primary form view on `res.partner`, zero extensions — sanity baseline |
+| `cv_simple_ext` | One extension, `position="after"` adding a field |
+| `cv_replace_and_sibling` | Extension A replaces node N; extension B targets a sibling of N (sibling survives) |
+| `cv_replace_orphan` | Extension A replaces node N; extension B targets a descendant of original N (WP-15 flags `replaced_ancestor`) |
+| `cv_multi_ext_same_target` | Three extensions on the same primary, ordered by priority |
+| `cv_xpath_no_match` | Extension with an XPath matching nothing (WP-15 flags `xpath_no_match`) |
+| `cv_priority_tie` | Two extensions with identical priority — load_order tiebreak |
+| `cv_attributes_op` | Extension using `position="attributes"` |
+
+---
+
+## `custom_addons/` (WP-5/WP-6 Python fixtures)
 
 10 hand-written Viindoo-flavored modules (each ≤50 LOC). One module per edge case.
 

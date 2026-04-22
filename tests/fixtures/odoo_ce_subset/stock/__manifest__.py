@@ -1,9 +1,31 @@
 # WP-7 fixture: trimmed deps to subset only.
+# WP-14: added views/*.xml (frozen copies from Odoo CE 17.0).
 {
     'name': 'Inventory',
     'version': '1.0',
     'category': 'Inventory/Inventory',
     'depends': ['base', 'mail', 'product'],
+    'data': [
+        'views/product_strategy_views.xml',
+        'views/product_views.xml',
+        'views/res_config_settings_views.xml',
+        'views/res_partner_views.xml',
+        'views/stock_forecasted.xml',
+        'views/stock_location_views.xml',
+        'views/stock_lot_views.xml',
+        'views/stock_move_line_views.xml',
+        'views/stock_move_views.xml',
+        'views/stock_orderpoint_views.xml',
+        'views/stock_package_level_views.xml',
+        'views/stock_package_type_view.xml',
+        'views/stock_picking_type_views.xml',
+        'views/stock_picking_views.xml',
+        'views/stock_quant_views.xml',
+        'views/stock_rule_views.xml',
+        'views/stock_scrap_views.xml',
+        'views/stock_storage_category_views.xml',
+        'views/stock_warehouse_views.xml',
+    ],
     'installable': True,
     'license': 'LGPL-3',
 }

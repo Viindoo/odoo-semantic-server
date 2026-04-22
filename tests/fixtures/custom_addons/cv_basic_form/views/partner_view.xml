@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="cv_basic_partner_form" model="ir.ui.view">
+        <field name="name">cv.basic.partner.form</field>
+        <field name="model">res.partner</field>
+        <field name="arch" type="xml">
+            <form string="Partner">
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="email"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+</odoo>

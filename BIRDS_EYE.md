@@ -70,13 +70,14 @@ Nhận lại (~800 token):
 │ Claude Code │         │                                      │
 │  Cursor…    │ ◀──JSON─│  ┌──────────┐    ┌─────────────────┐ │
 └─────────────┘         │  │ Indexer  │───▶│  PostgreSQL 16  │ │
-                        │  │ (libcst) │    │  + pgvector     │ │
-                        │  └──────────┘    │                 │ │
-                        │       ▲          │ modules         │ │
-                        │       │          │ models          │ │
+                        │  │ libcst + │    │  + pgvector     │ │
+                        │  │   lxml   │    │                 │ │
+                        │  └──────────┘    │ modules         │ │
+                        │       ▲          │ models          │ │
                         │       │          │ fields          │ │
                         │       │          │ methods         │ │
                         │       │          │ views           │ │
+                        │       │          │ view_patches    │ │
                         │       │          │ cache_metadata  │ │
                         │       │          └────────┬────────┘ │
                         │       │                   │          │
@@ -85,10 +86,12 @@ Nhận lại (~800 token):
                         │  │  .py/.xml│             ▼          │
                         │  └──────────┘    ┌────────────────┐  │
                         │                  │ FastMCP server │◀─┼── MCP
-                        │                  │  3 tools P1:   │  │    stdio/http
+                        │                  │ 3 tools P1:    │  │    stdio/http
                         │                  │ resolve_model  │  │
                         │                  │ resolve_field  │  │
                         │                  │ resolve_method │  │
+                        │                  │ P2 ⏳ in prog: │  │
+                        │                  │ resolve_view   │  │
                         │                  └────────────────┘  │
                         └──────────────────────────────────────┘
 ```
@@ -115,39 +118,49 @@ Break-even Hosted tier: ~3 customer/server → dễ dàng lãi nếu có 10+ cus
 ## 5. Đang ở đâu (hôm nay: 2026-04-22)
 
 ```
-Gate 1 (Design confirmed) ✅ passed 2026-04-22
+Gate 1 P1 (Design confirmed) ✅ passed 2026-04-22
+Gate 1 P2 (Design confirmed) ✅ passed 2026-04-22
 
-Phase 1 — Python model graph (3 weeks target)
-  WP-1  Repo bootstrap + tooling ........... ✅ DONE
-  WP-2  Postgres schema + migrations ....... ✅ DONE
-  WP-3  Manifest scanner + load-order ...... ✅ DONE
-  WP-4  libcst Python parser ............... ✅ DONE
-  WP-5  Override-chain resolver ............ ✅ DONE
-  WP-6  Indexer driver + cache delta ....... ✅ DONE
-  WP-7  Test fixture corpus ................ ✅ DONE
-  WP-8  FastMCP server + 3 handlers ........ ✅ DONE
-  WP-9  Accept test (10 questions) ......... ✅ DONE
+Phase 1 — Python model graph (3 weeks target) ✅ COMPLETE (11/12 WP)
+  WP-1..WP-9, WP-11, WP-12 ................ ✅ DONE
   WP-10 Docker Compose dev topology ........ ⏳ BLOCKED (no Docker on host)
-  WP-11 Benchmark + exit-criteria report ... ✅ DONE
-  WP-12 Tailscale tenant ADR ............... ✅ DONE (ADR-0005 accepted)
+  WP-13 Embedding self-host spike .......... ✅ DONE 2026-04-22
+         bge-code-v1 / bge-m3 / jina-v2-code trên RTX 3060 12GB:
+         tất cả fit VRAM; R@5 saturate 100% trên fixture CE
+         (quá dễ → chưa discriminate; cần VN corpus ở P3 benchmark thật).
+         ADR-0002 Revision 2026-04-22 — decision stands.
 
-Gate 2 (Ship ready)       — chờ WP-10 + review agents chạy pre-commit
-Phase 2 (XML view resolver) — chưa bắt đầu
+Phase 2 — XML view resolver (3 weeks target) — IN PROGRESS
+  WP-14 XML view parser + fixture extension  ✅ DONE 2026-04-22
+         osm/indexer/xml_parser.py 418 LOC, 32 tests.
+         Mirror odoo/tools/template_inheritance.py::locate_node.
+         142 CE views/*.xml copied verbatim (9 modules, bus skip).
+         8 cv_* fixture modules cho WP-15 edge cases.
+         Code review: 1 Blocker + 3 High fixed.
+  WP-15 Inheritance resolver (DOM apply_inheritance_specs) ⏳ NEXT
+  WP-16 resolve_view MCP handler ............ ⏳ PLANNED
+  WP-17 Top-50 accept test + benchmark ...... ⏳ PLANNED
 
-Accept-test headline numbers (targets vs actual):
+Gate 2 P1 (Ship ready) — chờ WP-10 + bundle commit
+Gate 2 P2 — target end of Phase 2 (sau WP-17)
+
+Accept-test P1 headline numbers (targets vs actual):
   resolve_model   ≥90% → 99.1% mean (97.8% min)
   resolve_field   ≥90% → 98.6% mean (98.3% min)
   resolve_method  ≥70% → 98.8% mean (98.3% min)
   P50 median      0.07 ms (targets 20–50 ms)
   P99 max         0.81 ms (target 500 ms)
 
-Tests: 227 passed · ruff clean · mypy clean (21 source files)
-Code: 21 Python file trong osm/ + scripts/ + migrations/ + accept harness
-Pre-commit review: 2026-04-22 — code-reviewer, security-reviewer, doc-reviewer
-  all ran; 0 Critical; 3 Blocking doc + 6 High code/security fixed
-  (ADR status inconsistency, empty lessons.md, backlog drift;
-   fail-fast tenant validation in 2 spots, misleading merge warning,
-   P1-only comparator comment, param-count invariant doc)
+Phase 2 exit criteria (chưa đo):
+  Final XML diff <5% vs live Odoo `_get_combined_arch()` (top-50 views)
+  Token reduction ≥70% vs raw-source baseline
+  P50 <100 ms cho deep-chain views (res.partner, sale.order)
+
+Tests: 247 passed, 12 DB-gated skipped · ruff clean · mypy clean (22 src files)
+Code: 22 Python file trong osm/ + scripts/ + migrations/ + accept harness
+  +1 osm/indexer/xml_parser.py từ WP-14
+Pre-commit review P1: 2026-04-22 — code/security/doc reviewer all PASS
+WP-14 review: code-reviewer 2026-04-22 — 1 Blocker + 3 High fixed; 3 Medium deferred
 Git: CHƯA COMMIT — bundle sẵn khi yêu cầu
 ```
 
@@ -182,6 +195,7 @@ Theo mục tiêu của anh ngay lúc này:
 | Tại sao chọn Postgres / Voyage / schema-per-tenant | [decisions/](decisions/) (ADR-0001 → 0004) |
 | Tại sao parser đúng (bằng chứng code Odoo) | [research/odoo-internals.md](research/odoo-internals.md) |
 | **Kế hoạch Phase 1 chi tiết + status từng WP** | [tasks/phase-01-plan.md](tasks/phase-01-plan.md) |
+| **Kế hoạch Phase 2 chi tiết (4 WPs) + status** | [tasks/phase-02-plan.md](tasks/phase-02-plan.md) |
 | Checklist done/pending ngắn | [tasks/todo.md](tasks/todo.md) |
 | Bài học trong lúc làm | [tasks/lessons.md](tasks/lessons.md) |
 | Định nghĩa thuật ngữ | [glossary.md](glossary.md) |
@@ -189,11 +203,11 @@ Theo mục tiêu của anh ngay lúc này:
 
 **Code nằm đâu**:
 
-- `osm/indexer/` — scanner + parser + resolver + driver (WP-3..6)
-- `osm/server/` — FastMCP app + 3 handler (WP-8)
+- `osm/indexer/` — scanner + Python parser + XML parser + resolver + driver (WP-3..6, WP-14)
+- `osm/server/` — FastMCP app + 3 handler P1 (WP-8); `resolve_view` handler → WP-16
 - `scripts/` — CLI entry (index, migrate, create_tenant, regenerate_golden)
-- `migrations/` — SQL migration per-schema
-- `tests/` — 227 test hiện tại
+- `migrations/` — SQL migration per-schema (views + view_patches tables đã provisioned từ WP-2)
+- `tests/` — 247 test hiện tại (P1 + 32 xml_parser tests từ WP-14)
 
 ---
 

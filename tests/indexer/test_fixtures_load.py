@@ -40,7 +40,8 @@ _CE_EXPECTED = {
     "web",
 }
 
-_CUSTOM_EXPECTED = {
+# WP-5/WP-6 Python-parser fixtures (10 modules).
+_CUSTOM_EXPECTED_PYTHON = {
     "viin_fixture_conditional_optional_dep",
     "viin_fixture_depends_added",
     "viin_fixture_field_override_compute",
@@ -52,6 +53,20 @@ _CUSTOM_EXPECTED = {
     "viin_fixture_order_override",
     "viin_fixture_register_false",
 }
+
+# WP-14 view-parser fixtures (8 modules).
+_CUSTOM_EXPECTED_VIEWS = {
+    "cv_attributes_op",
+    "cv_basic_form",
+    "cv_multi_ext_same_target",
+    "cv_priority_tie",
+    "cv_replace_and_sibling",
+    "cv_replace_orphan",
+    "cv_simple_ext",
+    "cv_xpath_no_match",
+}
+
+_CUSTOM_EXPECTED = _CUSTOM_EXPECTED_PYTHON | _CUSTOM_EXPECTED_VIEWS
 
 # ---------------------------------------------------------------------------
 # Scanner tests
@@ -66,16 +81,16 @@ def test_ce_subset_scan_count() -> None:
 
 
 def test_custom_addons_scan_count() -> None:
-    """Custom addons scanner finds exactly 10 modules."""
+    """Custom addons scanner finds 10 Python fixtures + 8 view fixtures = 18."""
     records = scan_addon_root(CUSTOM_ADDONS)
     names = {r.name for r in records}
     assert names == _CUSTOM_EXPECTED, f"Mismatch: {names ^ _CUSTOM_EXPECTED}"
 
 
 def test_combined_scan_count() -> None:
-    """scan_addon_roots on both roots yields 20 modules total."""
+    """scan_addon_roots on both roots yields 10 CE + 18 custom = 28 modules."""
     records = scan_addon_roots([CE_SUBSET, CUSTOM_ADDONS])
-    assert len(records) == 20
+    assert len(records) == 28
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +102,11 @@ def test_compute_load_order_no_cycle() -> None:
     """Load-order simulation does not raise CyclicDependencyError."""
     manifests = scan_addon_roots([CE_SUBSET, CUSTOM_ADDONS])
     result = compute_load_order(manifests)
-    assert len(result) == 20
+    assert len(result) == 28
 
 
 def test_all_20_modules_in_load_order() -> None:
-    """Every scanned module appears in the load-order result."""
+    """Every scanned module appears in the load-order result (28 after WP-14)."""
     manifests = scan_addon_roots([CE_SUBSET, CUSTOM_ADDONS])
     result = compute_load_order(manifests)
     names = {r.name for r in result}

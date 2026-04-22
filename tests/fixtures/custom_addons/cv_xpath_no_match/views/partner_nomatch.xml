@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="cv_nomatch_ext" model="ir.ui.view">
+        <field name="name">cv.nomatch.ext</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='this_field_does_not_exist']" position="after">
+                <field name="phantom"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

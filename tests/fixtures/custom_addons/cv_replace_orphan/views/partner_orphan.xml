@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="cv_orphan_replace_group" model="ir.ui.view">
+        <field name="name">cv.orphan.replace.group</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="priority">10</field>
+        <field name="arch" type="xml">
+            <xpath expr="//group" position="replace">
+                <group>
+                    <field name="vat"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+    <record id="cv_orphan_descendant" model="ir.ui.view">
+        <field name="name">cv.orphan.descendant</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="priority">20</field>
+        <field name="arch" type="xml">
+            <field name="email" position="after">
+                <field name="mobile"/>
+            </field>
+        </field>
+    </record>
+</odoo>

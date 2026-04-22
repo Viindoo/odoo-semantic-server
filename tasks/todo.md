@@ -46,7 +46,30 @@ Daily working checklist. Tick items as they complete. Move stale items to an `_a
 
 ## Current work
 
-Gate 1 (Design confirmed) **passed 2026-04-22**. Ready to implement.
+Gate 1 (Design confirmed) **passed 2026-04-22** for P1 AND P2. Ready to implement P2.
+
+### P2 kickoff — 2026-04-22
+
+- [x] `specs/resolve_view.md` flipped to `status: confirmed` + `confirmed_date: 2026-04-22`
+- [x] Spec §8 open question 1 (`position="replace"` semantics) closed in-spec as §8a
+- [x] Spec §8 open question 2 (final-XML cache) deferred to post-WP-17 profiling — §9
+- [x] `tasks/phase-02-plan.md` drafted (4 WPs: WP-14 XML parser / WP-15 inheritance resolver / WP-16 handler / WP-17 top-50 accept test)
+- [x] Plan review + user sign-off — approved 2026-04-22
+
+### WP-14 XML view parser + fixture extension — done 2026-04-22
+
+Delivered:
+
+1. `osm/indexer/xml_parser.py` (418 LOC) — `parse_view_file(path)` lxml-based; `ParsedView` + `ParsedPatch` frozen dataclasses (`slots=True`). Mirrors `odoo/tools/template_inheritance.py::locate_node`: `<xpath expr>` → raw expr, `<field name=X>` → `//field[@name='X']`, other tag → `//<tag>[@a=v]...` (all attrs except `position`), no-attr → `//<tag>` (first-of-tag wins, matches Odoo). `<data>` wrapper inside arch flattens to patches. `arch_hash`: blake2b-16 on primary arch bytes; on patch content concat for extensions. Module name resolved by walking up to `__manifest__.py` / `__openerp__.py`. Non-`ir.ui.view` records silently skipped; malformed records warn-and-continue.
+2. Fixture extension — 142 CE `views/*.xml` copied verbatim across 9 modules (bus has no `views/` in CE 17, documented). Each module's `__manifest__.py` `data` key updated to match. QWeb/portal templates + files >200KB/>3000 lines excluded.
+3. 8 `cv_*` view-focused custom fixtures (`cv_basic_form`, `cv_simple_ext`, `cv_replace_and_sibling`, `cv_replace_orphan`, `cv_multi_ext_same_target`, `cv_xpath_no_match`, `cv_priority_tie`, `cv_attributes_op`) — each ≤50 lines exercising one edge case for WP-15 resolver tests.
+4. `tests/indexer/test_xml_parser.py` (365 LOC, 32 tests) — 8 cv_* classes + invariant tests (multi-record, missing-model, missing-arch, non-view skip, frozen dataclass) + 4-case CE smoke parametrize. Added `sale/product_document_views.xml` regression test after code-reviewer caught `_synth_expr` returning `None` for no-attr spec elements (would break WP-17 diff).
+5. `pyproject.toml` — added `lxml>=5.0` runtime + `lxml-stubs>=0.5.1` dev.
+6. `tests/fixtures/README.md` + `tests/indexer/test_fixtures_load.py` updated.
+
+Code review pass: 1 Blocker (no-attr spec element → `None`) + 3 High (version attr over-exclusion aligned to Odoo; `pytest.raises(Exception)` → `FrozenInstanceError`; smoke coverage gap filled). 3 Medium items deferred: `<data>` wrapper in primary arch not unwrapped (no live case in CE 17), `parse_view_file` not re-exported from `osm.indexer` (consistent with `python_parser`), `_record_end_line` O(n) descendant walk (acceptable at P1 scale).
+
+Acceptance: `ruff check` PASS; `mypy osm/indexer/xml_parser.py` PASS; `pytest tests/indexer/test_xml_parser.py -q` → 32 passed. Regression `pytest -q --ignore=tests/accept` → 247 passed, 12 DB-gated skipped.
 
 ### WP-13 Embedding self-host spike — done 2026-04-22
 

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="cv_replace_email" model="ir.ui.view">
+        <field name="name">cv.replace.email</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="priority">10</field>
+        <field name="arch" type="xml">
+            <field name="email" position="replace">
+                <field name="email_normalized"/>
+            </field>
+        </field>
+    </record>
+    <record id="cv_sibling_name" model="ir.ui.view">
+        <field name="name">cv.sibling.name</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="priority">20</field>
+        <field name="arch" type="xml">
+            <field name="name" position="after">
+                <field name="display_name"/>
+            </field>
+        </field>
+    </record>
+</odoo>

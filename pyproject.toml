@@ -18,6 +18,7 @@ dependencies = [
     # box, and the FastMCP surface we need ships as `mcp.server.fastmcp`.
     # Revisit if ergonomics of the third-party `fastmcp` clearly pull ahead.
     "mcp>=1.0",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -76,5 +77,6 @@ addopts = "-ra"
 
 [dependency-groups]
 dev = [
+    "lxml-stubs>=0.5.1",
     "tiktoken>=0.12.0",
 ]

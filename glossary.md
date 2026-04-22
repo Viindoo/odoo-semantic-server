@@ -18,7 +18,10 @@ Canonical terms used across this project. Link here instead of redefining.
 | **Override chain** | Ordered list of modules that modified a field/method, ending at the final definition. Order derives from manifest `depends` + load order |
 | **View** | XML UI declaration (form, tree, kanban, search, ...) identified by `id` / `view_id` |
 | **View inheritance** | A view declares `inherit_id` and patches its parent with XPath expressions |
-| **XPath patch** | One `<xpath>` element that targets a parent-view element and modifies it |
+| **XPath patch** | One patch spec element (`<xpath>`, `<field>`, `<button>`, ...) inside an extension view's `<arch>` that targets a parent-view node and modifies it |
+| **`position`** | Attribute on a patch spec: `after`, `before`, `inside`, `replace`, `attributes`. Controls where patch content is inserted relative to the matched node |
+| **`arch`** | The XML body of a view, held inside `<field name="arch" type="xml">`. Primary views carry a full view tree here; extension views carry a list of XPath patch specs |
+| **`locate_node`** | Odoo's implicit XPath synthesis (`odoo/tools/template_inheritance.py`). `<field name="X">` → `//field[@name='X']`; other tag → `//<tag>[@a='v']...` |
 | **Manifest** | `__manifest__.py` declaring module metadata, dependencies, data files |
 | **Addon / module** | Folder containing `__manifest__.py`, Python models, XML data |
 | **QWeb** | Odoo's XML templating engine for reports + some frontend widgets |

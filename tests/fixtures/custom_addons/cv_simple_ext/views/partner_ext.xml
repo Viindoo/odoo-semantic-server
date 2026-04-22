@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="cv_simple_partner_ext" model="ir.ui.view">
+        <field name="name">cv.simple.partner.ext</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="arch" type="xml">
+            <field name="email" position="after">
+                <field name="phone"/>
+            </field>
+        </field>
+    </record>
+</odoo>

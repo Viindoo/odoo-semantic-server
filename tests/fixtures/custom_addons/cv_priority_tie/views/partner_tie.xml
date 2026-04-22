@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="cv_tie_alpha" model="ir.ui.view">
+        <field name="name">cv.tie.alpha</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="priority">16</field>
+        <field name="arch" type="xml">
+            <field name="email" position="after">
+                <field name="alpha_marker"/>
+            </field>
+        </field>
+    </record>
+    <record id="cv_tie_beta" model="ir.ui.view">
+        <field name="name">cv.tie.beta</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="cv_basic_form.cv_basic_partner_form"/>
+        <field name="priority">16</field>
+        <field name="arch" type="xml">
+            <field name="email" position="after">
+                <field name="beta_marker"/>
+            </field>
+        </field>
+    </record>
+</odoo>

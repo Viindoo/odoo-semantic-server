@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_date: 2026-04-22
 scope: specs/resolve_view
 phase: P2
 reads-with:
@@ -94,11 +95,23 @@ Given a view xmlid, return the full inheritance chain and the final merged XML. 
 
 - [ ] P50 <100ms for deep-chain views (`res.partner`, `sale.order`)
 
-## 8. Open questions
+## 8. Resolved semantics
 
-- `position="replace"` on a parent that has further extensions — document exact semantics (we follow Odoo's: siblings after replace are re-applied, but nested inside the replacement can fail)
-- Cached final XML vs recompute on every call — leaning: materialized view keyed on chain SHA
+### 8a. `position="replace"` with further extensions (closed 2026-04-22)
 
-## 9. References
+We follow Odoo core exactly (`odoo/addons/base/models/ir_ui_view.py::apply_inheritance_specs`):
+
+- When an extension targets a node N with `position="replace"`, N is removed from the parent DOM and replaced with the patch content.
+- Subsequent extensions whose XPath targets a **sibling** of N (resolved against the updated DOM) still apply — siblings after replace are re-applied.
+- Subsequent extensions whose XPath targets a **descendant of the original N** fail to match. Record in `patch_log` with `applied: false` + warning `replaced_ancestor` (non-fatal).
+- No reordering: extensions are applied in `(priority ASC, load_order ASC)` even when an earlier one nukes the target.
+
+Resolver emits one `patch_log` row per attempted xpath op; `applied: false` entries carry a `reason` (`replaced_ancestor`, `xpath_no_match`, `malformed_expr`).
+
+## 9. Deferred questions
+
+- **Cached final XML vs recompute** — deferred. P2 ships with plain recompute on every call; profile against `resolve_view` P50 <100ms target in WP-17 accept bench. If breached, file ADR for materialized view keyed on chain SHA in P3 window.
+
+## 10. References
 
 - Data: `../data-model/views.md`
