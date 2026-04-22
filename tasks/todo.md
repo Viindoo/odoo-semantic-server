@@ -48,20 +48,26 @@ Daily working checklist. Tick items as they complete. Move stale items to an `_a
 
 Gate 1 (Design confirmed) **passed 2026-04-22**. Ready to implement.
 
-### WP-13 Embedding self-host spike — in progress 2026-04-22
+### WP-13 Embedding self-host spike — done 2026-04-22
 
 Bounded 1-2 day spike validate Option B (self-host) trong ADR-0002 có
 recall + latency đủ cho P3 trên RTX 3060 12GB (`osm-dev`).
 
 - [x] `scripts/bench_corpus.py` — AST extract docstring/body pairs (stdlib only)
-- [x] `scripts/bench_embed.py` — sentence-transformers harness (dry-run mode for non-GPU)
-- [x] Corpus extract local: 258 pairs từ `tests/fixtures/odoo_ce_subset`
-  (body p50=1238 chars, p95=6539; 30% > 512 tokens → jina-v2 sẽ truncate)
-- [x] Runbook: `tasks/_scratch_embed_spike.md` (xoá khi spike close)
-- [ ] Run 3 models trên osm-dev: `bge-code-v1`, `bge-m3`, `jina-v2-base-code`
-- [ ] Write `research/embedding-self-host-spike.md` từ kết quả
-- [ ] Append Revision section vào `decisions/0002-embedding-provider.md`
-- [ ] (optional) Wrap systemd user service trước spike để reboot không chết server
+- [x] `scripts/bench_embed.py` — sentence-transformers harness (dry-run + `--max-seq-length` cap)
+- [x] Corpus extract: 258 pairs từ `tests/fixtures/odoo_ce_subset`
+- [x] Runbook: `tasks/_scratch_embed_spike.md` (xoá khi spike close — có thể xoá ngay)
+- [x] Run 3 models trên osm-dev: `bge-code-v1`, `bge-m3`, `jina-v2-base-code` — results ở `reports/embed-spike/`
+- [x] `research/embedding-self-host-spike.md` — done
+- [x] ADR-0002 Revision section appended — decision stands (bge-m3 added to P3 candidate list)
+- [ ] (optional) Wrap systemd user service theo `tasks/_scratch_server_setup.md` § Wrap systemd user service
+
+Headline findings:
+
+- Tất cả 3 models fit 12GB VRAM @ batch=8 seq=2048, Recall@5 saturate 100% (corpus quá dễ → không discriminate quality).
+- Latency: jina 8.7ms → bge-m3 18.8ms → bge-code-v1 60.8ms (cả 3 < 200ms target của find_examples).
+- Secondary: bge-m3 multilingual → candidate cho Vietnamese corpus ở P3 benchmark thật.
+- ADR-0002 decision không đổi; kill criteria giữ nguyên vì spike không so Voyage.
 
 ### WP-12 ADR-0005 Tailscale tenant — accepted 2026-04-22
 

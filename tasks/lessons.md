@@ -20,6 +20,30 @@ Record mistakes and non-obvious discoveries so we do not repeat them. Newest on 
 
 ---
 
+## 2026-04-22 — Self-retrieval (docstring→body) saturates recall@5 on Odoo CE and cannot discriminate embedders
+
+**What happened**: WP-13 spike ran 3 embedding models (bge-code-v1, bge-m3, jina-v2-base-code) against 258 docstring/body pairs from `tests/fixtures/odoo_ce_subset`. All three got Recall@5 = 100%. Recall@1 and MRR differed by < 2% — inside noise for a 258-item set.
+
+**Root cause**: Odoo method docstrings paraphrase method names very closely ("Compute the display name…" → `_compute_display_name`). Any code-aware encoder hits this with trivial semantic match. Self-retrieval is a *paraphrase* task, not a real *intent→code* retrieval task.
+
+**Lesson**: Self-retrieval is fine as a smoke signal ("does the embedder crash? does it fit VRAM?") but useless as a quality comparator. Real quality benchmarks need (a) NL-intent queries that do NOT paraphrase the method name, (b) negative distractors, (c) Vietnamese or domain-specific vocabulary. P3 `embedding-benchmarks.md` must NOT copy WP-13's harness — it needs hand-labelled queries.
+
+**Where it applies**: P3 `find_examples` benchmark design. Any future "let me just use self-retrieval to pick a model" shortcut.
+
+---
+
+## 2026-04-22 — Attention tensors scale with `batch × seq²`, not param count — native max_seq of 8192 OOMs a 137M-param model on 12GB
+
+**What happened**: First run of bench_embed against `jinaai/jina-embeddings-v2-base-code` (137M params, native max_seq=8192) with batch=32 failed with CUDA OOM — allocation of 21.23 GiB on a 12 GB GPU.
+
+**Root cause**: `max_seq_length` defaults to the model's native — 8192 for jina-v2 (ALiBi). Attention intermediate tensors are `batch × heads × seq × seq × 4 bytes`. At batch=32, seq=8192: `32 × 12 × 8192² × 4 ≈ 100 GiB`. Param count (137M → weights 300MB) is negligible compared to the attention buffer.
+
+**Lesson**: When benchmarking transformer embedders, always cap `max_seq_length` explicitly and lower batch_size below transformer defaults. Fair cross-model comparison requires the same cap. For Odoo method bodies the 95th percentile is ~6500 chars (~1600 tokens), so capping at 2048 loses < 5% of content while bringing VRAM within 12 GB even for 1.5B-param bge-code-v1 at batch=8.
+
+**Where it applies**: `scripts/bench_embed.py` (now has `--max-seq-length` default 2048, `--batch-size` default 8). Any future embedding benchmark — P3 `embedding-benchmarks.md` on the larger tvtmaaddons corpus will need the same knobs.
+
+---
+
 ## 2026-04-22 — Multiple classes in one module extending the same model collapse under UNIQUE(model_id, name)
 
 **What happened**: WP-6 driver's first implementation of override_of write-back produced self-looping rows (e.g. `res.groups.write.override_of = <res.groups.write's own id>`) and flip-flopped values across successive runs. Second-run idempotence broke — 9 rows got wiped to NULL every other run.
