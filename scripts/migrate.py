@@ -20,11 +20,27 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import re
 import sys
 
 import psycopg
 
 MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parent.parent / "migrations"
+
+# Every DDL/identifier interpolation below trusts `schema` to match this
+# pattern. Keep aligned with `osm.server.tenancy._TENANT_PATTERN` and
+# `scripts.create_tenant._NAME_PATTERN` — any drift opens a schema-name
+# injection hole in one of the three tools that speaks to `public` + tenant
+# schemas.
+_SCHEMA_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,62}$|^public$")
+
+
+def _validate_schema(schema: str) -> None:
+    if not _SCHEMA_PATTERN.match(schema):
+        raise SystemExit(
+            f"error: invalid --schema {schema!r}; "
+            "must match ^[a-z][a-z0-9_]{1,62}$ or be 'public'"
+        )
 
 
 def _list_migrations() -> list[pathlib.Path]:
@@ -81,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Postgres connection string (defaults to $DATABASE_URL).",
     )
     args = parser.parse_args(argv)
+    _validate_schema(args.schema)
 
     if not args.database_url:
         print("error: DATABASE_URL not set and --database-url not given", file=sys.stderr)

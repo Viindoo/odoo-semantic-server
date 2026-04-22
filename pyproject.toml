@@ -73,3 +73,8 @@ no_implicit_optional = true
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra"
+
+[dependency-groups]
+dev = [
+    "tiktoken>=0.12.0",
+]

@@ -21,7 +21,7 @@ P5                            ████████████████�
 
 ## Phase gating
 
-Each phase has an **exit criterion** and an **accept test**. Do not advance to the next phase until both pass. Criteria live in the individual spec files — see the `specs/` folder.
+Each phase has an **exit criterion** and an **accept test**. Do not advance to the next phase until both pass. Per-tool schemas and acceptance-criteria prose live in the `specs/` folder; the **measurable thresholds + evidence per line** live in the phase plan file (`tasks/phase-XX-plan.md` §7) and get cross-referenced in the published report (`reports/phase-XX-exit-criteria.md`) once the phase closes. Check both when assessing whether a gate has passed.
 
 Every tool-shipping phase must pass **both** a correctness floor **and** a token-reduction target. Correctness alone is not enough — this product is sold on context savings.
 

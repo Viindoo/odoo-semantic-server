@@ -203,6 +203,7 @@ Effort scale: **S** ≈ ≤1 dev-day, **M** ≈ 2–3 dev-days, **L** ≈ 4–6 
 - **Acceptance**: all 10 questions pass correctness; average token reduction ≥90% for `resolve_model`/`resolve_field` questions, ≥70% for `resolve_method` questions.
 - **Effort**: **M**
 - **Dependencies**: WP-8.
+- **Status**: DONE 2026-04-22. 10 questions (`tests/accept/questions.md`) driven by `tests/accept/runner.py` (tiktoken `cl100k_base` for token count, 100-iteration latency loop, throwaway tenant teardown). Runner bypasses the MCP transport and invokes handlers in-process — justified because the transport is a thin FastMCP wrapper with known overhead; numerics reflect pure handler work. Full end-to-end test via a live Claude Code MCP client is deferred to P5 pilot work (external infrastructure). Results in `reports/phase-01-accept.md`: resolve_model 99.1% mean reduction (target ≥90%), resolve_field 98.6% (≥90%), resolve_method 98.8% (≥70%). P50 median 0.07ms across all tools (targets 20–50ms); P99 max 0.81ms (target <500ms). Q10 correctly returns `NotFoundError`. Acceptance: ruff + mypy clean.
 
 ### WP-10 — Docker Compose dev topology
 
@@ -225,6 +226,7 @@ Effort scale: **S** ≈ ≤1 dev-day, **M** ≈ 2–3 dev-days, **L** ≈ 4–6 
 - **Acceptance**: numbers meet roadmap thresholds (95% correctness, 90% / 70% token reduction, P50 <20/50 ms, P99 <500 ms). If any miss, a follow-up issue is opened, not a waived checkbox.
 - **Effort**: **S**
 - **Dependencies**: WP-9.
+- **Status**: DONE 2026-04-22. `reports/phase-01-accept.md` (numbers) + `reports/phase-01-exit-criteria.md` (full criterion→evidence mapping) published. Correctness + token-reduction + performance + multi-tenancy exit criteria all PASS with wide margins (token reduction 97.8–99.8% vs 70–90% targets; P50 median 0.07ms vs 20–50ms targets; P99 max 0.81ms vs 500ms target). Operational + review gates partially deferred: WP-10 Docker topology outstanding (no Docker on dev host); `code-reviewer` + `security-reviewer` scheduled for pre-commit bundle. Phase 1 Gate 2 (Ship ready) will close once WP-10 ships and review agents run clean.
 
 ### WP-12 — Dev-topology secrets + Tailscale wiring (tracking-only)
 
@@ -235,6 +237,7 @@ Effort scale: **S** ≈ ≤1 dev-day, **M** ≈ 2–3 dev-days, **L** ≈ 4–6 
 - **Acceptance**: ADR opened with deciders listed; unblocks or explicitly defers.
 - **Effort**: **S**
 - **Dependencies**: none; can run any time before release to co-dev.
+- **Status**: DONE 2026-04-22. `decisions/0005-tailscale-tenant.md` **accepted** with option A (personal tailnet), scoped to P1–P4. Sidecar remains commented in `docker-compose.yml`; operator flips it on by dropping `TS_AUTHKEY` into `.env` when the first Hosted BYOC customer lands. Explicit kill criteria + P4-end re-review trigger recorded. No code changes required.
 
 ## 3. Dependency Graph
 

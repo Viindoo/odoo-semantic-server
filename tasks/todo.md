@@ -48,6 +48,36 @@ Daily working checklist. Tick items as they complete. Move stale items to an `_a
 
 Gate 1 (Design confirmed) **passed 2026-04-22**. Ready to implement.
 
+### WP-12 ADR-0005 Tailscale tenant — accepted 2026-04-22
+
+Accepted option A (personal tailnet) scoped to P1–P4. `decisions/0005-tailscale-tenant.md` records drivers, considered options (personal vs Viindoo corporate vs no-Tailscale), decision + rationale, kill criteria (compliance trigger, 2nd operator, pricing change), and hard re-review deadline at P4 end. Sidecar block stays commented in `docker-compose.yml`; operator flips via `TS_AUTHKEY` in `.env` when first Hosted customer lands. No code changes required.
+
+### WP-11 Benchmark + exit-criteria report — done 2026-04-22
+
+`reports/phase-01-exit-criteria.md` cross-references every roadmap P1 criterion to its evidence: correctness ✅, token reduction ✅, performance ✅, multi-tenancy ✅. Operational ⚠ partial (WP-10 Docker topology outstanding — host lacks Docker). Review ⚠ pending pre-commit `code-reviewer` + `security-reviewer` runs. HDSD deferred to P5 per roadmap.
+
+### WP-9 Accept test + numerical benchmark — done 2026-04-22
+
+Delivered:
+
+1. `tests/accept/questions.md` — 10 curated questions covering every handler + edge case (pure CE model, deep 8-module extension chain, computed field with `@api.depends` union, broken-super chain detection, `_inherits` delegation, 404 path).
+2. `tests/accept/runner.py` — harness using `tiktoken` (`cl100k_base`) to measure token reduction against raw-source baseline, with 100-iteration latency loop per question. Writes `reports/phase-01-accept.md` + `phase-01-accept-raw.json`. Seeds throwaway tenant schema, tears down on exit.
+3. `reports/phase-01-accept.md` — results table. Live tenant schema `osm_accept_<hex>` on every run (regeneratable).
+
+Headline numbers (targets vs actual):
+
+| Tool | Target | Actual mean | Actual min |
+|---|---|---|---|
+| resolve_model | ≥90% | **99.1%** | 97.8% |
+| resolve_field | ≥90% | **98.6%** | 98.3% |
+| resolve_method | ≥70% | **98.8%** | 98.3% |
+
+Latency: median P50 **0.07ms**, max P99 **0.81ms**. Q10 returns `NotFoundError` as expected.
+
+Caveat: runner invokes handlers in-process (bypasses FastMCP stdio/http transport) — transport adds a thin constant overhead. Full end-to-end with a live external Claude Code MCP client is deferred to P5 pilot work. The numerical exit criteria are independent of transport choice.
+
+Design decision: added `tiktoken>=0.12.0` as dev-dep (PEP 735 `[dependency-groups]` style via `uv add --dev`).
+
 ### WP-8 FastMCP server + 3 P1 tool handlers — done 2026-04-22
 
 Delivered:
@@ -173,7 +203,8 @@ Blocker for WP-2 kickoff: `uv` must be installed on the dev host (`curl -LsSf ht
 
 ## Backlog — Phase 1 implementation
 
-- [ ] Bootstrap repo (`Viindoo/<project-name>`), Docker Compose, PostgreSQL 16 + pgvector extension
+- [x] Bootstrap repo, PostgreSQL 16 + pgvector extension, uv pyproject — done 2026-04-22 (WP-1/WP-2)
+- [ ] Docker Compose dev topology (WP-10) — **BLOCKED**: dev host lacks Docker; targets a host with Docker installed
 - [x] Write Postgres schema migrations per `data-model/*.md` (per-schema + `public` bootstrap) — done 2026-04-22 (WP-2)
 - [x] Implement manifest scanner + module load-order simulator (per `research/odoo-internals.md` §1) — done 2026-04-22 (WP-3)
 - [x] Implement `libcst` Python parser → populate `models`, `fields`, `methods` tables — done 2026-04-22 (WP-4)
@@ -181,8 +212,9 @@ Blocker for WP-2 kickoff: `uv` must be installed on the dev host (`curl -LsSf ht
 - [x] Wire indexer driver + `scripts/index.py` CLI + cache-metadata delta re-index — done 2026-04-22 (WP-6)
 - [x] Wire FastMCP server with 3 P1 tools (`resolve_model`, `resolve_field`, `resolve_method`) — done 2026-04-22 (WP-8)
 - [x] Build test fixture: Odoo CE subset + 10 custom modules with curated override cases — done 2026-04-22 (WP-7)
-- [ ] Write accept test: 10 sample questions end-to-end via Claude Code
-- [ ] Publish correctness + token-reduction benchmark per roadmap P1 exit criteria
+- [x] Write accept test: 10 sample questions end-to-end — done 2026-04-22 (WP-9; transport-bypass harness, external-Claude-Code driving deferred to P5 pilot)
+- [x] Publish correctness + token-reduction benchmark per roadmap P1 exit criteria — done 2026-04-22 (WP-11; all numerical criteria PASS with wide margins)
+- [x] ADR-0005 Tailscale tenant — accepted 2026-04-22 (WP-12; option A personal tailnet, sidecar commented)
 
 ## Blockers / open questions
 

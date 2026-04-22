@@ -116,10 +116,12 @@ def _auto_install_to_bool(value: bool | tuple[str, ...]) -> bool:
 def _set_search_path(cur: Any, tenant: str) -> None:
     """Pin search_path for the current transaction to <tenant>, public.
 
-    tenant is quoted. Callers validate it upstream (reject non-identifier
-    characters) but we still double-quote here to defend against shell
-    escaping oversights.
+    Re-validates the tenant name locally as a fail-fast guard — defence in
+    depth, so a future caller that forgets the boundary check still cannot
+    inject DDL. Identifier is then double-quoted for Postgres.
     """
+    from osm.server.tenancy import validate_tenant
+    validate_tenant(tenant)
     cur.execute(f'SET LOCAL search_path TO "{tenant}", public')
 
 
@@ -907,10 +909,17 @@ def _upsert_file_rows(
         for mname in names:
             key = (plan.module_id, mname)
             if key in model_row_for:
+                # First-file wins for the `models` row's own metadata
+                # (file_path, start_line, inherits_from, indexer_notes).
+                # Fields/methods from THIS file still attach to that same
+                # model_id via their own UNIQUE(model_id, name) — the
+                # upsert path handles name collisions per-field/method
+                # with last-wins DB semantics. This is not data loss.
                 stats.warnings.append(
-                    f"duplicate model declaration for {mname!r} in module "
-                    f"{plan.module_name!r}; keeping first: "
-                    f"{model_row_for[key][1].file_path}:{model_row_for[key][1].start_line}"
+                    f"module {plan.module_name!r} has multiple ParsedModel "
+                    f"for {mname!r}; model row pinned to "
+                    f"{model_row_for[key][1].file_path}:L{model_row_for[key][1].start_line}; "
+                    "fields/methods from additional files merge into that row."
                 )
                 continue
             is_primary = bool(parsed_model.name)  # _name set -> primary declaration
@@ -1028,6 +1037,10 @@ def _upsert_field_row_via_driver(
             cur_default, cur_related_path, cur_depends, cur_file,
             cur_start, cur_end,
         ) = row
+        # P1 always inserts related_field=None — the parser does not yet split
+        # `related="a.b.c"` into (related_model="a", related_field="b.c"). When
+        # P2 populates it, replace `cur_rfield is None` with a proper compare
+        # OR the UPDATE will never fire on drift.
         same = (
             cur_hash == parsed.content_hash
             and cur_type == parsed.field_type
@@ -1059,7 +1072,7 @@ def _upsert_field_row_via_driver(
              WHERE id=%s
             """,
             (
-                parsed.field_type, parsed.comodel_name, None,
+                parsed.field_type, parsed.comodel_name, None,  # related_field: P1 always None
                 parsed.compute, parsed.inverse, parsed.search,
                 parsed.store, parsed.required, parsed.readonly,
                 parsed.default_source, parsed.related, depends_list,

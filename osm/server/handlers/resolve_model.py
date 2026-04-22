@@ -58,6 +58,10 @@ def resolve_model(
         ctx,
     ) + "\nORDER BY osm_u.load_order ASC, osm_u.module_name ASC"
 
+    # INVARIANT: params length must equal (placeholders per SELECT block) *
+    # len(ctx.schemas). The inner SELECT has 1 `%s` (model_name); adding
+    # another `%s` without bumping the multiplier here will silently bind
+    # shifted values. Same pattern in resolve_field.py and resolve_method.py.
     params = tuple([model_name] * len(ctx.schemas))
     cur.execute(sql, params)
     rows = list(cur.fetchall())

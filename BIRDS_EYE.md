@@ -58,7 +58,7 @@ Nhận lại (~800 token):
 }
 ```
 
-**Kết quả**: tiết kiệm ~34k token (~97%), và AI thấy ngay `viin_freight_sale` quên gọi `super()` → bug tiềm tàng được flag luôn. Đây là giá trị bán của sản phẩm.
+**Kết quả**: tiết kiệm ~34k token (~97%, con số minh họa — số đo thực tế đạt 97.8–99.8% reduction, xem [reports/phase-01-accept.md](reports/phase-01-accept.md)). AI thấy ngay `viin_freight_sale` quên gọi `super()` → bug tiềm tàng được flag luôn. Đây là giá trị bán của sản phẩm.
 
 ---
 
@@ -126,16 +126,28 @@ Phase 1 — Python model graph (3 weeks target)
   WP-6  Indexer driver + cache delta ....... ✅ DONE
   WP-7  Test fixture corpus ................ ✅ DONE
   WP-8  FastMCP server + 3 handlers ........ ✅ DONE
-  WP-9  Accept test (10 questions) ......... ⏳ NEXT
-  WP-10 Docker Compose dev topology ........ ⏳
-  WP-11 Benchmark + exit-criteria report ... ⏳
-  WP-12 Tailscale tenant ADR ............... ⏳ (tracking-only)
+  WP-9  Accept test (10 questions) ......... ✅ DONE
+  WP-10 Docker Compose dev topology ........ ⏳ BLOCKED (no Docker on host)
+  WP-11 Benchmark + exit-criteria report ... ✅ DONE
+  WP-12 Tailscale tenant ADR ............... ✅ DONE (ADR-0005 accepted)
 
-Gate 2 (Ship ready)       — chờ WP-9..11
+Gate 2 (Ship ready)       — chờ WP-10 + review agents chạy pre-commit
 Phase 2 (XML view resolver) — chưa bắt đầu
 
+Accept-test headline numbers (targets vs actual):
+  resolve_model   ≥90% → 99.1% mean (97.8% min)
+  resolve_field   ≥90% → 98.6% mean (98.3% min)
+  resolve_method  ≥70% → 98.8% mean (98.3% min)
+  P50 median      0.07 ms (targets 20–50 ms)
+  P99 max         0.81 ms (target 500 ms)
+
 Tests: 227 passed · ruff clean · mypy clean (21 source files)
-Code: 21 Python file trong osm/ + scripts/ + migrations/ (~4000 LOC)
+Code: 21 Python file trong osm/ + scripts/ + migrations/ + accept harness
+Pre-commit review: 2026-04-22 — code-reviewer, security-reviewer, doc-reviewer
+  all ran; 0 Critical; 3 Blocking doc + 6 High code/security fixed
+  (ADR status inconsistency, empty lessons.md, backlog drift;
+   fail-fast tenant validation in 2 spots, misleading merge warning,
+   P1-only comparator comment, param-count invariant doc)
 Git: CHƯA COMMIT — bundle sẵn khi yêu cầu
 ```
 

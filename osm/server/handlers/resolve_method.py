@@ -63,6 +63,9 @@ def resolve_method(
         ctx,
     ) + "\nORDER BY osm_u.load_order ASC, osm_u.module_name ASC, osm_u.id ASC"
 
+    # INVARIANT: 2 placeholders per SELECT block (model_name, method_name);
+    # must match len(ctx.schemas) multiplication below. Adding a 3rd `%s`
+    # requires updating this list too.
     params = tuple([model_name, method_name] * len(ctx.schemas))
     cur.execute(sql, params)
     rows = list(cur.fetchall())
