@@ -121,8 +121,13 @@ def _diff_pct(golden_canonical: str, handler_canonical: str) -> float:
             lineterm="", n=0,
         )
     )
-    # Strip the ``---`` / ``+++`` / ``@@`` metadata lines to avoid noise.
-    diff_body = [ln for ln in diff if ln[:2] not in ("--", "++", "@@")]
+    # Strip unified-diff header lines (``--- ``, ``+++ ``, ``@@``); note the
+    # trailing space after ``---``/``+++`` distinguishes them from diff content
+    # lines that happen to start with ``--`` or ``++``.
+    diff_body = [
+        ln for ln in diff
+        if not ln.startswith(("--- ", "+++ ", "@@"))
+    ]
     denom = max(len(golden_lines), len(handler_lines), 1)
     return len(diff_body) / denom * 100
 
@@ -219,6 +224,13 @@ def _run_one(
     )
 
     # Latency loop — re-invoke the handler; swallow 404s defensively.
+    # warmup: prime postgres plan cache; latency from these calls is discarded.
+    for _ in range(5):
+        try:
+            resolve_view(cur, ctx, xmlid)
+        except NotFoundError:
+            pass
+
     latencies_ms: list[float] = []
     for _ in range(iterations):
         t0 = time.perf_counter()

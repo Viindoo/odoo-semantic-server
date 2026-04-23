@@ -34,6 +34,8 @@ from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any
 
+from psycopg import sql
+
 from osm.indexer.load_order import compute_load_order
 from osm.indexer.manifest import ManifestRecord, scan_addon_roots
 from osm.indexer.python_parser import (
@@ -1396,12 +1398,14 @@ def _resolve_inherit_fks(
             )
         else:
             cur.execute(
-                f'''
-                SELECT id FROM "{tenant}".views WHERE xmlid = %s
-                UNION ALL
-                SELECT id FROM "public".views WHERE xmlid = %s
-                LIMIT 1
-                ''',
+                sql.SQL(
+                    """
+                    SELECT id FROM {schema}.views WHERE xmlid = %s
+                    UNION ALL
+                    SELECT id FROM "public".views WHERE xmlid = %s
+                    LIMIT 1
+                    """
+                ).format(schema=sql.Identifier(tenant)),
                 (target_xmlid, target_xmlid),
             )
         row = cur.fetchone()

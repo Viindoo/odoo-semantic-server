@@ -6,8 +6,13 @@ count descending, and rewrites ``tests/accept/top50_views.json`` with the
 result + a timestamp.
 
 Idempotent: re-running on an unchanged DB produces bit-identical output.
-Preserves seed-only entries (``seed: true``) only when the query returns
-no rows at all — otherwise the live results fully replace the view list.
+Preserves seed-only entries (``seed: true``) in two cases:
+
+- Query returns no rows at all (empty schema): exits with code 1, file
+  unchanged.
+- Query returns fewer than 50 rows: seed entries missing from the DB
+  result are merged in (DB rows take precedence for any xmlid that
+  appears in both sets).
 
 Run from repo root against a Postgres with a full CE index populated:
 
@@ -86,6 +91,15 @@ def main() -> int:
         for xmlid, count in rows
     ]
 
+    if len(entries) < 50:
+        # Fewer than 50 DB rows — merge must-include seeds so the top-50
+        # fixture stays populated even against a fresh / partial CE index.
+        # DB rows win on any xmlid collision (they carry real usage stats).
+        db_xmlids = {e["xmlid"] for e in entries}
+        for seed in _load_seeds():
+            if seed.get("xmlid") not in db_xmlids:
+                entries.append(seed)
+
     blob = {
         "_regenerated_at": _dt.datetime.now(tz=_dt.UTC).isoformat(
             timespec="seconds"
@@ -105,7 +119,6 @@ def main() -> int:
         encoding="utf-8",
     )
     print(f"wrote {TARGET} ({len(entries)} entries)")
-    _ = _load_seeds  # keep symbol referenced for future no-op path
     return 0
 
 
