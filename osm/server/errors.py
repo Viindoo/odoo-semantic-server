@@ -1,5 +1,5 @@
 """Handler-level error types that map to the MCP error codes listed in
-`architecture/mcp-server.md`:
+`docs/architecture/mcp-server.md`:
 
     400 invalid input (schema validation)
     404 entity not in index

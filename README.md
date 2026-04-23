@@ -50,7 +50,14 @@ Customer code never re-indexes Odoo Community Edition from scratch. CE lives in 
 
 ## Roadmap
 
-Twelve-to-sixteen-week MVP across four capability phases (model graph, view resolver, hybrid retrieval, full stack) plus a parallel distribution track. See [`roadmap.md`](roadmap.md) for sequencing and exit criteria per phase.
+Twelve-to-sixteen-week MVP across four capability phases:
+
+1. **Phase 1 — Model graph** (`resolve_model`, `resolve_field`, `resolve_method`) — ✅ shipped
+2. **Phase 2 — View resolver** (`resolve_view` with inherited XPath patches) — in implementation
+3. **Phase 3 — Hybrid retrieval** (`find_examples` semantic + keyword)
+4. **Phase 4 — Full stack** (`impact_analysis`, hosted BYOC onboarding)
+
+Detailed sequencing, exit criteria, and live work-package status are tracked internally at `project-docs/odoo-semantic-mcp/roadmap.md`.
 
 ## Project status
 

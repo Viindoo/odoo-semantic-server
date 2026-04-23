@@ -5,8 +5,7 @@ audience: anyone new to this repo
 reads-with:
   - README.md
   - product_brief.md
-  - architecture/overview.md
-  - roadmap.md
+  - docs/architecture/overview.md
 ---
 
 # Bức tranh toàn cảnh — odoo-semantic-mcp
@@ -176,7 +175,7 @@ Git: CHƯA COMMIT — bundle sẵn khi yêu cầu
 | **P4** | 9–12 | `impact_analysis` | AI review refactor xong còn quét cross-module |
 | **P5** | 7–16 song song | Docker / CLI / doc site | Public OSS launch |
 
-Mỗi phase có **correctness floor + token-reduction target** — phải pass cả hai mới qua gate. Xem `roadmap.md` cho bảng chi tiết.
+Mỗi phase có **correctness floor + token-reduction target** — phải pass cả hai mới qua gate. Xem `project-docs/odoo-semantic-mcp/roadmap.md` (nội bộ) cho bảng chi tiết.
 
 ---
 
@@ -188,16 +187,16 @@ Theo mục tiêu của anh ngay lúc này:
 |---|---|
 | Pitch 2 phút cho người ngoài | [README.md](README.md) |
 | Hiểu ý tưởng gốc + business model | [product_brief.md](product_brief.md) |
-| Hiểu kỹ thuật level cao (C4 diagram) | [architecture/overview.md](architecture/overview.md) |
-| Biết khi nào ship cái gì | [roadmap.md](roadmap.md) |
-| Biết 1 tool cụ thể làm gì, schema in/out | [specs/resolve_model.md](specs/resolve_model.md) / `resolve_field.md` / `resolve_method.md` |
-| Schema DB từng bảng | [data-model/](data-model/) |
-| Tại sao chọn Postgres / Voyage / schema-per-tenant | [decisions/](decisions/) (ADR-0001 → 0004) |
-| Tại sao parser đúng (bằng chứng code Odoo) | [research/odoo-internals.md](research/odoo-internals.md) |
-| **Kế hoạch Phase 1 chi tiết + status từng WP** | [tasks/phase-01-plan.md](tasks/phase-01-plan.md) |
-| **Kế hoạch Phase 2 chi tiết (4 WPs) + status** | [tasks/phase-02-plan.md](tasks/phase-02-plan.md) |
-| Checklist done/pending ngắn | [tasks/todo.md](tasks/todo.md) |
-| Bài học trong lúc làm | [tasks/lessons.md](tasks/lessons.md) |
+| Hiểu kỹ thuật level cao (C4 diagram) | [docs/architecture/overview.md](docs/architecture/overview.md) |
+| Biết khi nào ship cái gì | `project-docs/odoo-semantic-mcp/roadmap.md` (nội bộ Viindoo) |
+| Biết 1 tool cụ thể làm gì, schema in/out | [docs/specs/resolve_model.md](docs/specs/resolve_model.md) / `resolve_field.md` / `resolve_method.md` |
+| Schema DB từng bảng | [docs/data-model/](docs/data-model/) |
+| Tại sao chọn Postgres / Voyage / schema-per-tenant | [docs/decisions/](docs/decisions/) (ADR-0001 → 0004) |
+| Tại sao parser đúng (bằng chứng code Odoo) | [docs/research/odoo-internals.md](docs/research/odoo-internals.md) |
+| **Kế hoạch Phase 1 chi tiết + status từng WP** | `project-docs/odoo-semantic-mcp/tasks/phase-01-plan.md` |
+| **Kế hoạch Phase 2 chi tiết (4 WPs) + status** | `project-docs/odoo-semantic-mcp/tasks/phase-02-plan.md` |
+| Checklist done/pending ngắn | `project-docs/odoo-semantic-mcp/tasks/todo.md` |
+| Bài học trong lúc làm | `project-docs/odoo-semantic-mcp/tasks/lessons.md` |
 | Định nghĩa thuật ngữ | [glossary.md](glossary.md) |
 | Quy tắc đóng góp | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
@@ -235,7 +234,7 @@ Theo mục tiêu của anh ngay lúc này:
 - **Khi thấy bản thân lạc trôi trong spec / ADR** — quay về đây ré-anchor.
 - **Cuối mỗi phase** — update section "Đang ở đâu" + bảng roadmap status.
 
-**Không** đọc lại khi: đang debug 1 bug cụ thể (đọc lessons.md + code), đang viết 1 spec mới (đọc specs/_template.md).
+**Không** đọc lại khi: đang debug 1 bug cụ thể (đọc `project-docs/odoo-semantic-mcp/tasks/lessons.md` + code), đang viết 1 spec mới (đọc `docs/specs/_template.md`).
 
 ---
 

@@ -11,7 +11,7 @@ Matches the golden shape in `tests/fixtures/golden/resolve_method.json`:
       "warnings": [...]
     }
 
-Chain order is load-order (earliest first) per `specs/resolve_method.md` §5b
+Chain order is load-order (earliest first) per `docs/specs/resolve_method.md` §5b
 Step 4. Note: the spec stores the chain linearly and derives C3 MRO at query
 time; the WP-6 write-back collapses within-module duplicates to a single DB
 row so what we return here is already the cross-module sequence.

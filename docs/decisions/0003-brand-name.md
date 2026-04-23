@@ -67,5 +67,5 @@ N/A — this is a one-shot decision. Revisit only if legal forces a change.
 
 ## References
 
-- Brief: `../product_brief.md` (product vision)
-- Roadmap: `../roadmap.md` (P5 distribution)
+- Brief: `../../product_brief.md` (product vision)
+- Roadmap: `project-docs/odoo-semantic-mcp/roadmap.md` (P5 distribution — internal)

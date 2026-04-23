@@ -291,7 +291,6 @@ def _render_markdown(results: list[QuestionResult], tenant: str, iterations: int
         "date: 2026-04-22",
         "reads-with:",
         "  - ../tests/accept/questions.md",
-        "  - ../tasks/phase-01-plan.md",
         "---",
         "",
         "# Phase 1 accept-test results",

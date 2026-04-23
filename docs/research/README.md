@@ -2,8 +2,7 @@
 status: draft
 scope: research
 reads-with:
-  - ../product_brief.md
-  - ../contexts/research.md
+  - ../../product_brief.md
 ---
 
 # Research
@@ -31,4 +30,4 @@ Evidence that feeds specs and ADRs. One topic per file. Every file has a date �
 - Implementation details → `specs/`
 - Decisions → `decisions/`
 - Terminology → `glossary.md`
-- Daily status → `tasks/todo.md`
+- Daily status → internal `project-docs/odoo-semantic-mcp/tasks/todo.md`

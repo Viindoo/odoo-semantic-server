@@ -1,6 +1,6 @@
 """Handler for the `resolve_model` MCP tool.
 
-Matches `specs/resolve_model.md` §3 output schema at the minimum-viable
+Matches `docs/specs/resolve_model.md` §3 output schema at the minimum-viable
 level agreed with the golden fixture (`tests/fixtures/golden/resolve_model.json`):
 
     {

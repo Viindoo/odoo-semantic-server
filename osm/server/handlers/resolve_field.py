@@ -11,7 +11,7 @@ Matches the golden shape in `tests/fixtures/golden/resolve_field.json`:
       "warnings": [...]
     }
 
-Chain ordering follows the _base_fields stack rule from `specs/resolve_field.md`
+Chain ordering follows the _base_fields stack rule from `docs/specs/resolve_field.md`
 §5b: earliest module first, last-loaded overrides. The handler walks the
 override_of link persisted in the fields table (written by the WP-6 driver).
 """

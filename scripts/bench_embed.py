@@ -28,7 +28,7 @@ without a GPU)::
 
 Deps when NOT dry-run: ``sentence-transformers``, ``torch``. Installed in
 ``~/embed-spike-venv`` on osm-dev; not added to ``pyproject.toml`` because
-this is a one-off spike (see ``research/embedding-self-host-spike.md``).
+this is a one-off spike (see ``docs/research/embedding-self-host-spike.md``).
 """
 
 from __future__ import annotations

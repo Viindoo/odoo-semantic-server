@@ -144,7 +144,7 @@ Do not emit `resolution: unknown` for any other reason. In particular, do not tr
 
 ## 9. References
 
-- Phase: `../roadmap.md`
+- Phase: `project-docs/odoo-semantic-mcp/roadmap.md` (internal)
 - Data: `../data-model/models.md`
 - Architecture: `../architecture/graph-store.md`
 - Research (authoritative evidence): `../research/odoo-internals.md` §2 (inherit algorithm), §5 (dynamic inherit)
