@@ -46,7 +46,18 @@ Customer code never re-indexes Odoo Community Edition from scratch. CE lives in 
 
 ## Quickstart
 
-*Available once Phase 1 ships.* The target experience: `docker compose up -d`, point the indexer at your addons, connect your AI client over MCP (stdio or HTTP on `:8765`).
+Dev setup in six commands — prerequisites, full walkthrough, and troubleshooting in [`SETUP.md`](SETUP.md):
+
+```bash
+bash scripts/bootstrap.sh
+cp .env.example .env                   # fill POSTGRES_PASSWORD
+docker compose up -d db
+make migrate
+make test
+uv run python -m osm.server            # FastMCP on stdio
+```
+
+Target production experience (self-host): `docker compose up -d`, point the indexer at your addons, connect your AI client over MCP (stdio or HTTP on `:8765`). See [`docs/architecture/deployment.md`](docs/architecture/deployment.md) for customer and hosted topologies.
 
 ## Roadmap
 
