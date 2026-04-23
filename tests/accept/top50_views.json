@@ -1,0 +1,12 @@
+{
+  "_regenerated_at": null,
+  "_regenerated_by": "scripts/regenerate_top50_views.py (run on osm-dev, needs full CE index)",
+  "_notes": "Query: SELECT v.xmlid AS root_xmlid, COUNT(ext.id) AS ext_count FROM views v LEFT JOIN views ext ON ext.inherit_id = v.id WHERE v.mode = 'primary' GROUP BY v.xmlid ORDER BY ext_count DESC LIMIT 50. Until regen runs, this file carries 5 seed entries from phase-02-plan §WP-17; dump + runner still function with reduced coverage.",
+  "views": [
+    {"xmlid": "base.view_res_partner_form", "ext_count": null, "seed": true},
+    {"xmlid": "sale.view_order_form", "ext_count": null, "seed": true},
+    {"xmlid": "account.view_move_form", "ext_count": null, "seed": true},
+    {"xmlid": "product.product_template_form_view", "ext_count": null, "seed": true},
+    {"xmlid": "stock.view_picking_form", "ext_count": null, "seed": true}
+  ]
+}

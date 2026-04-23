@@ -118,6 +118,49 @@ explicitly below so the computation is reproducible.
 
 ---
 
+## Q11 — Deep tenant-overlay view chain
+
+**Question:** "What does the final `res.partner` form view look like in our tenant after all installed modules?"
+
+- **Tool**: `resolve_view("base.view_res_partner_form")`
+- **Baseline**: concatenation of every XML file contributing to the `res.partner` form chain (base, mail, contacts, sale, account, + tenant extensions).
+- **Notes**: deepest chain in a typical Odoo install. Exercises tenant-overlay interleaving with the public (CE) primary.
+
+## Q12 — Patch attribution via patch_log
+
+**Question:** "What fields has `sale_margin` added to `sale.view_order_form`?"
+
+- **Tool**: `resolve_view("sale.view_order_form", include_patch_log=True)`
+- **Baseline**: `sale_margin/views/sale_margin_views.xml` + the chain up to it.
+- **Notes**: answer is derived from `patch_log[*]` entries whose `from_xmlid` starts with `sale_margin.` and whose `position` inserts fields. Tests that the patch log is attributable, not just diff-able.
+
+## Q13 — Chain metadata without XML payload
+
+**Question:** "Show the final form view for `sale.order`, omitting raw XML — just the chain metadata."
+
+- **Tool**: `resolve_view("sale.view_order_form", include_final_xml=False)`
+- **Baseline**: not applicable — measuring envelope-shape correctness rather than token reduction.
+- **Notes**: verifies the `include_final_xml=False` path returns `chain` + `patch_log` without `final_xml`. Keeps context cost low when the caller only needs attribution.
+
+## Q14 — 404 — nonexistent view
+
+**Question:** "Resolve view `nonexistent.view_foo`."
+
+- **Tool**: `resolve_view("nonexistent.view_foo")`
+- **Expected**: `NotFoundError` (HTTP 404 equivalent).
+- **Baseline**: none.
+- **Notes**: mirrors Q10 for `resolve_view` error path.
+
+## Q15 — Tenant-scoped patch filter
+
+**Question:** "Show me the view for `account.view_move_form` but only patches from our tenant modules."
+
+- **Tool**: `resolve_view("account.view_move_form")` — no direct filter flag in the P2 API. Caller post-filters `patch_log[*].from_xmlid` by matching the tenant's module namespace.
+- **Baseline**: tenant-origin XML file(s) contributing to the chain.
+- **Notes**: documents a caller-side pattern. If a tenant-only filter flag is added in P3, move this to the formal flag.
+
+---
+
 ## Exit targets (ref: `roadmap.md` P1)
 
 - Q1–Q3, Q8, Q9 → `resolve_model`: ≥90% token reduction.
@@ -126,3 +169,10 @@ explicitly below so the computation is reproducible.
 - All questions → correctness 100% (each response matches the corresponding golden entry in `tests/fixtures/golden/*.json` where present, or the documented shape here).
 - Q10 → handler returns `NotFoundError`; no baseline comparison.
 - Latency: P50 <20ms for model/field, <50ms for method; P99 <500ms across all.
+
+## Exit targets (ref: `roadmap.md` P2 — `resolve_view`)
+
+- Q11–Q13, Q15 → `resolve_view`: overall token reduction ≥70%; mean diff% vs live-Odoo golden <5%.
+- Q14 → handler returns `NotFoundError`; no baseline comparison.
+- Latency: P50 <100ms, P99 <500ms on the top-50 benchmark in `runner_p2.py`.
+- Top-50 coverage: ≥40 of 50 views must have a golden file from `dump_live_odoo_views.py`.
