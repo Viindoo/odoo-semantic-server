@@ -49,6 +49,7 @@ from osm.indexer.resolver import (
     MethodOverrideLink,
     compute_resolver_result,
 )
+from osm.indexer.xml_parser import ParsedView, parse_view_file
 
 _logger = logging.getLogger(__name__)
 
@@ -74,6 +75,10 @@ class IndexStats:
     rows_deleted: int = 0
     override_links_written: int = 0
     cache_rows_touched: int = 0
+    views_inserted: int = 0
+    views_updated: int = 0
+    view_patches_written: int = 0
+    view_inherit_fks_resolved: int = 0
     warnings: list[str] = dc_field(default_factory=list)
 
     @property
@@ -84,6 +89,8 @@ class IndexStats:
             + self.fields_inserted + self.fields_updated
             + self.methods_inserted + self.methods_updated
             + self.override_links_written
+            + self.views_inserted + self.views_updated
+            + self.view_patches_written
         )
 
 
@@ -137,6 +144,19 @@ def _model_names_for(model: ParsedModel) -> list[str]:
 # ---------------------------------------------------------------------------
 # File enumeration
 # ---------------------------------------------------------------------------
+
+
+def _collect_xml_view_files(module: ManifestRecord) -> list[Path]:
+    """Return all .xml files under ``<module_dir>/views/`` (recursive).
+
+    Mirrors Odoo's convention — views live under ``views/``. Controllers
+    templates and report templates are out of scope for the WP-15 resolver.
+    """
+    module_dir = module.path.parent
+    views_dir = module_dir / "views"
+    if not views_dir.is_dir():
+        return []
+    return sorted(p for p in views_dir.rglob("*.xml") if p.is_file())
 
 
 def _collect_python_files(module: ManifestRecord) -> list[Path]:
@@ -872,6 +892,28 @@ def index(
         )
         stats.override_links_written = link_updates
 
+        # ---- XML view indexing (WP-15) ----
+        # Per-module view upsert. Inherit-id FK resolution is a second pass
+        # so a child can still link forward to a parent defined in a module
+        # that is scanned later in the same run.
+        inherit_backlog: dict[tuple[int, str], str] = {}
+        for mr in active_manifests:
+            _index_xml_files(
+                cur,
+                module_id=module_ids[mr.name],
+                module=mr,
+                git_sha=git_sha,
+                stats=stats,
+                inherit_backlog=inherit_backlog,
+            )
+
+        _resolve_inherit_fks(
+            cur,
+            tenant=tenant,
+            stats=stats,
+            xmlid_to_inherit=inherit_backlog,
+        )
+
     return stats
 
 
@@ -1142,6 +1184,264 @@ def _populate_id_maps_from_db(
     )
     for model_name, method_name, start_line, mid in cur.fetchall():
         method_id_map[(model_name, plan.module_name, method_name, start_line)] = mid
+
+
+# ---------------------------------------------------------------------------
+# XML view indexing
+# ---------------------------------------------------------------------------
+
+
+def _upsert_view_row(
+    cur: Any,
+    *,
+    module_id: int,
+    parsed: ParsedView,
+    git_sha: str,
+) -> tuple[int, str]:
+    """Upsert one ``views`` row keyed on ``(module_id, xmlid)``.
+
+    Returns ``(view_id, action)`` where action ∈ ``{'insert', 'update', 'same'}``.
+    ``arch_hash`` comparison drives the delta — when equal we still refresh
+    ``indexed_at_sha`` implicitly only on real column drift (not on hash
+    match), keeping re-indexing idempotent at the row level.
+
+    ``inherit_id`` is left NULL here; :func:`_resolve_inherit_fks` runs as a
+    second pass after all views for the run are in place.
+    """
+    cur.execute(
+        """
+        SELECT id, model, view_type, priority, mode, arch_hash,
+               file_path, start_line, end_line
+          FROM views
+         WHERE module_id = %s AND xmlid = %s
+        """,
+        (module_id, parsed.xmlid),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        (
+            view_id, cur_model, cur_view_type, cur_priority, cur_mode,
+            cur_arch_hash, cur_file, cur_start, cur_end,
+        ) = row
+        same = (
+            cur_model == parsed.model
+            and cur_view_type == parsed.view_type
+            and cur_priority == parsed.priority
+            and cur_mode == parsed.mode
+            and cur_arch_hash == parsed.arch_hash
+            and cur_file == parsed.file_path
+            and cur_start == parsed.start_line
+            and cur_end == parsed.end_line
+        )
+        if same:
+            return int(view_id), "same"
+        cur.execute(
+            """
+            UPDATE views
+               SET model=%s, view_type=%s, priority=%s, mode=%s,
+                   arch_hash=%s, arch_xml=%s, file_path=%s, start_line=%s,
+                   end_line=%s, indexed_at_sha=%s
+             WHERE id=%s
+            """,
+            (
+                parsed.model, parsed.view_type, parsed.priority, parsed.mode,
+                parsed.arch_hash, parsed.arch_xml, parsed.file_path,
+                parsed.start_line, parsed.end_line, git_sha, view_id,
+            ),
+        )
+        return int(view_id), "update"
+
+    cur.execute(
+        """
+        INSERT INTO views
+          (xmlid, module_id, model, view_type, priority, mode, arch_hash,
+           arch_xml, file_path, start_line, end_line, indexed_at_sha)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+        """,
+        (
+            parsed.xmlid, module_id, parsed.model, parsed.view_type,
+            parsed.priority, parsed.mode, parsed.arch_hash, parsed.arch_xml,
+            parsed.file_path, parsed.start_line, parsed.end_line, git_sha,
+        ),
+    )
+    fetched = cur.fetchone()
+    assert fetched is not None
+    return int(fetched[0]), "insert"
+
+
+def _replace_view_patches(
+    cur: Any,
+    *,
+    view_id: int,
+    parsed: ParsedView,
+) -> int:
+    """Delete-and-reinsert all ``view_patches`` rows for ``view_id``.
+
+    Patch-level diffing is not worth the complexity at this phase — view arch
+    changes are rare and the row count per view is small (typically <10). When
+    a view's ``arch_hash`` shifts we wipe and re-emit its patch rows.
+
+    Returns the count of inserted patch rows.
+    """
+    cur.execute("DELETE FROM view_patches WHERE view_id = %s", (view_id,))
+    for patch in parsed.patches:
+        cur.execute(
+            """
+            INSERT INTO view_patches (view_id, ordinal, expr, position, content)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (view_id, patch.ordinal, patch.expr, patch.position, patch.content),
+        )
+    return len(parsed.patches)
+
+
+def _resolve_inherit_fks(
+    cur: Any,
+    *,
+    tenant: str,
+    stats: IndexStats,
+    xmlid_to_inherit: dict[tuple[int, str], str],
+) -> None:
+    """Second pass: resolve ``inherit_xmlid`` strings to ``views.id``.
+
+    Strategy mirrors ``osm.indexer.resolver``'s ``override_of`` approach — for
+    each view that declared ``inherit_id='<mod>.<xmlid>'`` we look up the
+    target across ``(tenant, public)`` via UNION ALL so tenant-private views
+    can inherit from CE and vice versa. Unresolved refs are left NULL with a
+    warning — matches the stale-cross-module semantics already in use for
+    Python override_of.
+
+    ``xmlid_to_inherit`` keys are ``(view_id, target_xmlid_string)``.
+    """
+    if not xmlid_to_inherit:
+        return
+
+    for (child_view_id, _target_in_key), target_xmlid in xmlid_to_inherit.items():
+        # target_xmlid is 'module.record_id' per ParsedView invariant.
+        # Look up by (xmlid) across both schemas — views have no module.name
+        # in scope here, but the xmlid already encodes the module prefix.
+        if tenant == "public":
+            cur.execute(
+                'SELECT id FROM "public".views WHERE xmlid = %s LIMIT 1',
+                (target_xmlid,),
+            )
+        else:
+            cur.execute(
+                f'''
+                SELECT id FROM "{tenant}".views WHERE xmlid = %s
+                UNION ALL
+                SELECT id FROM "public".views WHERE xmlid = %s
+                LIMIT 1
+                ''',
+                (target_xmlid, target_xmlid),
+            )
+        row = cur.fetchone()
+        if row is None:
+            stats.warnings.append(
+                f"view_inherit_unresolved:{target_xmlid} (child view_id={child_view_id})"
+            )
+            continue
+        parent_id = int(row[0])
+        cur.execute(
+            "UPDATE views SET inherit_id = %s WHERE id = %s AND "
+            "(inherit_id IS DISTINCT FROM %s)",
+            (parent_id, child_view_id, parent_id),
+        )
+        if cur.rowcount:
+            stats.view_inherit_fks_resolved += 1
+
+
+def _index_xml_files(
+    cur: Any,
+    *,
+    module_id: int,
+    module: ManifestRecord,
+    git_sha: str,
+    stats: IndexStats,
+    inherit_backlog: dict[tuple[int, str], str],
+) -> None:
+    """Parse + upsert views for a single module.
+
+    Delta detection mirrors the Python pipeline: blake2b-16 file hash vs
+    ``cache_metadata.content_hash``. Unchanged files touch ``indexed_at``
+    only. Changed files re-parse and re-upsert every view record in them.
+
+    Accumulates unresolved ``inherit_xmlid`` refs into ``inherit_backlog`` so
+    :func:`_resolve_inherit_fks` can batch the lookups after all modules are
+    processed.
+    """
+    for xml_path in _collect_xml_view_files(module):
+        key = str(xml_path)
+        file_hash = _hash_file(xml_path)
+        prev = _lookup_cache(cur, key)
+
+        if prev == file_hash:
+            _touch_cache(cur, key)
+            stats.cache_rows_touched += 1
+            # Still need to capture inherit refs for backlog — read from DB
+            # rather than re-parsing. The child views are already persisted,
+            # and their inherit_id link may need (re-)resolution if a newly
+            # indexed module introduced the target.
+            cur.execute(
+                """
+                SELECT v.id, v.xmlid
+                  FROM views v
+                 WHERE v.module_id = %s AND v.file_path = %s AND v.inherit_id IS NULL
+                   AND v.mode = 'extension'
+                """,
+                (module_id, key),
+            )
+            for child_id, _child_xmlid in cur.fetchall():
+                # Look up the raw ref — not stored in the schema; best-effort
+                # re-parse to recover it. A cached+unchanged file with a
+                # pending extension is rare enough that this one-off parse is
+                # acceptable.
+                result = parse_view_file(xml_path)
+                for parsed in result.views:
+                    if parsed.mode == "extension" and parsed.inherit_xmlid:
+                        # find the matching row by xmlid
+                        cur.execute(
+                            "SELECT id FROM views WHERE module_id=%s AND xmlid=%s",
+                            (module_id, parsed.xmlid),
+                        )
+                        r = cur.fetchone()
+                        if r is not None and int(r[0]) == int(child_id):
+                            inherit_backlog[(int(child_id), parsed.inherit_xmlid)] = (
+                                parsed.inherit_xmlid
+                            )
+                break  # one re-parse serves all pending children in this file
+            continue
+
+        result = parse_view_file(xml_path)
+        stats.warnings.extend(result.warnings)
+
+        for parsed in result.views:
+            view_id, action = _upsert_view_row(
+                cur, module_id=module_id, parsed=parsed, git_sha=git_sha,
+            )
+            if action == "insert":
+                stats.views_inserted += 1
+            elif action == "update":
+                stats.views_updated += 1
+
+            if action != "same":
+                written = _replace_view_patches(cur, view_id=view_id, parsed=parsed)
+                stats.view_patches_written += written
+
+            if parsed.mode == "extension" and parsed.inherit_xmlid:
+                inherit_backlog[(view_id, parsed.inherit_xmlid)] = parsed.inherit_xmlid
+
+        _write_cache(
+            cur,
+            file_path=key,
+            module_name=module.name,
+            content_hash=file_hash,
+            git_sha=git_sha,
+            file_kind="xml",
+            byte_size=xml_path.stat().st_size,
+        )
+        stats.cache_rows_touched += 1
 
 
 # ---------------------------------------------------------------------------

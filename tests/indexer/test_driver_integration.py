@@ -132,10 +132,15 @@ def test_full_index_of_20_module_fixture(
     roots = [fixture_mirror / "odoo_ce_subset", fixture_mirror / "custom_addons"]
     stats = _run_index(database_url, tenant_schema, roots, git_sha="sha-first")
 
-    # 20 modules land exactly
-    assert stats.modules_scanned == 20  # type: ignore[attr-defined]
-    assert stats.modules_upserted == 20  # type: ignore[attr-defined]
-    assert _count(database_url, tenant_schema, "modules") == 20
+    # Every fixture module directory lands as a modules row. The corpus
+    # grows over time (WP-14 added cv_* view fixtures); count the manifests
+    # on disk rather than pinning a stale magic number.
+    expected = sum(
+        1 for root in roots for manifest in root.glob("*/__manifest__.py")
+    )
+    assert stats.modules_scanned == expected  # type: ignore[attr-defined]
+    assert stats.modules_upserted == expected  # type: ignore[attr-defined]
+    assert _count(database_url, tenant_schema, "modules") == expected
 
     # models/fields/methods tables are non-empty
     assert _count(database_url, tenant_schema, "models") > 0
@@ -143,9 +148,9 @@ def test_full_index_of_20_module_fixture(
     assert _count(database_url, tenant_schema, "methods") > 0
 
     # cache_metadata covers every __manifest__.py + every python file under models/
-    # At minimum, 20 manifest rows.
+    # At minimum, `expected` manifest rows.
     cache_rows = _count(database_url, tenant_schema, "cache_metadata")
-    assert cache_rows >= 20
+    assert cache_rows >= expected
 
     # every data row got stamped with git_sha
     assert _max_indexed_at_sha(database_url, tenant_schema, "modules") == {"sha-first"}

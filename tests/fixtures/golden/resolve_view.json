@@ -1,0 +1,626 @@
+[
+  {
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "label": "primary_only",
+    "result": {
+      "chain": [
+        {
+          "mode": "primary",
+          "module": "cv_basic_form",
+          "priority": 16,
+          "xmlid": "cv_basic_form.cv_basic_partner_form"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 10,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_a"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_and_sibling",
+          "priority": 10,
+          "xmlid": "cv_replace_and_sibling.cv_replace_email"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_orphan",
+          "priority": 10,
+          "xmlid": "cv_replace_orphan.cv_orphan_replace_group"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_attributes_op",
+          "priority": 16,
+          "xmlid": "cv_attributes_op.cv_attr_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_priority_tie",
+          "priority": 16,
+          "xmlid": "cv_priority_tie.cv_tie_alpha"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_priority_tie",
+          "priority": 16,
+          "xmlid": "cv_priority_tie.cv_tie_beta"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_simple_ext",
+          "priority": 16,
+          "xmlid": "cv_simple_ext.cv_simple_partner_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_xpath_no_match",
+          "priority": 16,
+          "xmlid": "cv_xpath_no_match.cv_nomatch_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 20,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_b"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_and_sibling",
+          "priority": 20,
+          "xmlid": "cv_replace_and_sibling.cv_sibling_name"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_orphan",
+          "priority": 20,
+          "xmlid": "cv_replace_orphan.cv_orphan_descendant"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 30,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_c"
+        }
+      ],
+      "final_xml": "<form string=\"Partner\">\n                <sheet>\n                    <group>\n                    <field name=\"vat\"/>\n                </group>\n            </sheet>\n            </form>",
+      "model": "res.partner",
+      "patch_log": [
+        {
+          "applied": true,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_multi_ext_same_target.cv_multi_a",
+          "ordinal": 0,
+          "position": "after"
+        },
+        {
+          "applied": true,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_replace_and_sibling.cv_replace_email",
+          "ordinal": 0,
+          "position": "replace"
+        },
+        {
+          "applied": true,
+          "expr": "//group",
+          "from_xmlid": "cv_replace_orphan.cv_orphan_replace_group",
+          "ordinal": 0,
+          "position": "replace"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_attributes_op.cv_attr_ext",
+          "ordinal": 0,
+          "position": "attributes",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_priority_tie.cv_tie_alpha",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_priority_tie.cv_tie_beta",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_simple_ext.cv_simple_partner_ext",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='this_field_does_not_exist']",
+          "from_xmlid": "cv_xpath_no_match.cv_nomatch_ext",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "xpath_no_match"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_multi_ext_same_target.cv_multi_b",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='name']",
+          "from_xmlid": "cv_replace_and_sibling.cv_sibling_name",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_replace_orphan.cv_orphan_descendant",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_multi_ext_same_target.cv_multi_c",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        }
+      ],
+      "view_type": "form",
+      "xmlid": "cv_basic_form.cv_basic_partner_form"
+    },
+    "warnings": [
+      "replaced_ancestor:cv_attributes_op.cv_attr_ext:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_priority_tie.cv_tie_alpha:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_priority_tie.cv_tie_beta:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_simple_ext.cv_simple_partner_ext:ord=0://field[@name='email']",
+      "xpath_no_match:cv_xpath_no_match.cv_nomatch_ext:ord=0://field[@name='this_field_does_not_exist']",
+      "replaced_ancestor:cv_multi_ext_same_target.cv_multi_b:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_replace_and_sibling.cv_sibling_name:ord=0://field[@name='name']",
+      "replaced_ancestor:cv_replace_orphan.cv_orphan_descendant:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_multi_ext_same_target.cv_multi_c:ord=0://field[@name='email']"
+    ],
+    "xmlid": "cv_basic_form.cv_basic_partner_form"
+  },
+  {
+    "expect_404": true,
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "label": "extension_xmlid_not_primary",
+    "xmlid": "cv_simple_ext.cv_simple_partner_ext"
+  },
+  {
+    "include_final_xml": false,
+    "include_patch_log": true,
+    "label": "chain_only_no_final_xml",
+    "result": {
+      "chain": [
+        {
+          "mode": "primary",
+          "module": "cv_basic_form",
+          "priority": 16,
+          "xmlid": "cv_basic_form.cv_basic_partner_form"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 10,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_a"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_and_sibling",
+          "priority": 10,
+          "xmlid": "cv_replace_and_sibling.cv_replace_email"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_orphan",
+          "priority": 10,
+          "xmlid": "cv_replace_orphan.cv_orphan_replace_group"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_attributes_op",
+          "priority": 16,
+          "xmlid": "cv_attributes_op.cv_attr_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_priority_tie",
+          "priority": 16,
+          "xmlid": "cv_priority_tie.cv_tie_alpha"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_priority_tie",
+          "priority": 16,
+          "xmlid": "cv_priority_tie.cv_tie_beta"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_simple_ext",
+          "priority": 16,
+          "xmlid": "cv_simple_ext.cv_simple_partner_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_xpath_no_match",
+          "priority": 16,
+          "xmlid": "cv_xpath_no_match.cv_nomatch_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 20,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_b"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_and_sibling",
+          "priority": 20,
+          "xmlid": "cv_replace_and_sibling.cv_sibling_name"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_orphan",
+          "priority": 20,
+          "xmlid": "cv_replace_orphan.cv_orphan_descendant"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 30,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_c"
+        }
+      ],
+      "model": "res.partner",
+      "patch_log": [
+        {
+          "applied": true,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_multi_ext_same_target.cv_multi_a",
+          "ordinal": 0,
+          "position": "after"
+        },
+        {
+          "applied": true,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_replace_and_sibling.cv_replace_email",
+          "ordinal": 0,
+          "position": "replace"
+        },
+        {
+          "applied": true,
+          "expr": "//group",
+          "from_xmlid": "cv_replace_orphan.cv_orphan_replace_group",
+          "ordinal": 0,
+          "position": "replace"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_attributes_op.cv_attr_ext",
+          "ordinal": 0,
+          "position": "attributes",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_priority_tie.cv_tie_alpha",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_priority_tie.cv_tie_beta",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_simple_ext.cv_simple_partner_ext",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='this_field_does_not_exist']",
+          "from_xmlid": "cv_xpath_no_match.cv_nomatch_ext",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "xpath_no_match"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_multi_ext_same_target.cv_multi_b",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='name']",
+          "from_xmlid": "cv_replace_and_sibling.cv_sibling_name",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_replace_orphan.cv_orphan_descendant",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        },
+        {
+          "applied": false,
+          "expr": "//field[@name='email']",
+          "from_xmlid": "cv_multi_ext_same_target.cv_multi_c",
+          "ordinal": 0,
+          "position": "after",
+          "reason": "replaced_ancestor"
+        }
+      ],
+      "view_type": "form",
+      "xmlid": "cv_basic_form.cv_basic_partner_form"
+    },
+    "warnings": [
+      "replaced_ancestor:cv_attributes_op.cv_attr_ext:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_priority_tie.cv_tie_alpha:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_priority_tie.cv_tie_beta:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_simple_ext.cv_simple_partner_ext:ord=0://field[@name='email']",
+      "xpath_no_match:cv_xpath_no_match.cv_nomatch_ext:ord=0://field[@name='this_field_does_not_exist']",
+      "replaced_ancestor:cv_multi_ext_same_target.cv_multi_b:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_replace_and_sibling.cv_sibling_name:ord=0://field[@name='name']",
+      "replaced_ancestor:cv_replace_orphan.cv_orphan_descendant:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_multi_ext_same_target.cv_multi_c:ord=0://field[@name='email']"
+    ],
+    "xmlid": "cv_basic_form.cv_basic_partner_form"
+  },
+  {
+    "include_final_xml": true,
+    "include_patch_log": false,
+    "label": "final_xml_no_patch_log",
+    "result": {
+      "chain": [
+        {
+          "mode": "primary",
+          "module": "cv_basic_form",
+          "priority": 16,
+          "xmlid": "cv_basic_form.cv_basic_partner_form"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 10,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_a"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_and_sibling",
+          "priority": 10,
+          "xmlid": "cv_replace_and_sibling.cv_replace_email"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_orphan",
+          "priority": 10,
+          "xmlid": "cv_replace_orphan.cv_orphan_replace_group"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_attributes_op",
+          "priority": 16,
+          "xmlid": "cv_attributes_op.cv_attr_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_priority_tie",
+          "priority": 16,
+          "xmlid": "cv_priority_tie.cv_tie_alpha"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_priority_tie",
+          "priority": 16,
+          "xmlid": "cv_priority_tie.cv_tie_beta"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_simple_ext",
+          "priority": 16,
+          "xmlid": "cv_simple_ext.cv_simple_partner_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_xpath_no_match",
+          "priority": 16,
+          "xmlid": "cv_xpath_no_match.cv_nomatch_ext"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 20,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_b"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_and_sibling",
+          "priority": 20,
+          "xmlid": "cv_replace_and_sibling.cv_sibling_name"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_replace_orphan",
+          "priority": 20,
+          "xmlid": "cv_replace_orphan.cv_orphan_descendant"
+        },
+        {
+          "mode": "extension",
+          "module": "cv_multi_ext_same_target",
+          "priority": 30,
+          "xmlid": "cv_multi_ext_same_target.cv_multi_c"
+        }
+      ],
+      "final_xml": "<form string=\"Partner\">\n                <sheet>\n                    <group>\n                    <field name=\"vat\"/>\n                </group>\n            </sheet>\n            </form>",
+      "model": "res.partner",
+      "view_type": "form",
+      "xmlid": "cv_basic_form.cv_basic_partner_form"
+    },
+    "warnings": [
+      "replaced_ancestor:cv_attributes_op.cv_attr_ext:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_priority_tie.cv_tie_alpha:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_priority_tie.cv_tie_beta:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_simple_ext.cv_simple_partner_ext:ord=0://field[@name='email']",
+      "xpath_no_match:cv_xpath_no_match.cv_nomatch_ext:ord=0://field[@name='this_field_does_not_exist']",
+      "replaced_ancestor:cv_multi_ext_same_target.cv_multi_b:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_replace_and_sibling.cv_sibling_name:ord=0://field[@name='name']",
+      "replaced_ancestor:cv_replace_orphan.cv_orphan_descendant:ord=0://field[@name='email']",
+      "replaced_ancestor:cv_multi_ext_same_target.cv_multi_c:ord=0://field[@name='email']"
+    ],
+    "xmlid": "cv_basic_form.cv_basic_partner_form"
+  },
+  {
+    "expect_404": true,
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "label": "unknown_local_xmlid",
+    "xmlid": "cv_basic_form.does_not_exist"
+  },
+  {
+    "expect_404": true,
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "label": "unknown_module_prefix",
+    "xmlid": "no_such_module.no_such_view"
+  },
+  {
+    "TODO": "tenant-private view \u2014 covered by test_tenant_private_view integration test, not regenerator",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "requires custom tenant fixture",
+    "xmlid": "tenant_private_view_form.tenant_private_partner_form"
+  },
+  {
+    "TODO": "CE-like res_partner_view_form primary-only \u2014 labelling pending (depends on CE fixture arch stability)",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "mail.mail_resource_ressource_view_form"
+  },
+  {
+    "TODO": "base.view_partner_form (deep CE chain) \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "base.view_partner_form"
+  },
+  {
+    "TODO": "base.view_partner_tree \u2014 labelling pending",
+    "include_final_xml": false,
+    "include_patch_log": false,
+    "skip_handler": "labelling pending",
+    "xmlid": "base.view_partner_tree"
+  },
+  {
+    "TODO": "base.view_partner_search \u2014 labelling pending",
+    "include_final_xml": false,
+    "include_patch_log": false,
+    "skip_handler": "labelling pending",
+    "xmlid": "base.view_partner_search"
+  },
+  {
+    "TODO": "base.view_partner_kanban \u2014 labelling pending",
+    "include_final_xml": false,
+    "include_patch_log": false,
+    "skip_handler": "labelling pending",
+    "xmlid": "base.view_partner_kanban"
+  },
+  {
+    "TODO": "account.view_move_form \u2014 labelling pending",
+    "include_final_xml": false,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "account.view_move_form"
+  },
+  {
+    "TODO": "mail.mail_activity_view_form (deep chain) \u2014 labelling pending",
+    "include_final_xml": false,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "mail.mail_activity_view_form"
+  },
+  {
+    "TODO": "view with cv_simple_ext extension \u2014 covered by cv_basic_form.cv_basic_partner_form with active fixtures; labelling pending once custom_addons fixture ships extensions",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_simple_ext"
+  },
+  {
+    "TODO": "multi-ext ordering scenario \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_multi_ext"
+  },
+  {
+    "TODO": "priority-tie scenario \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_priority_tie"
+  },
+  {
+    "TODO": "replace+sibling scenario \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_replace_sibling"
+  },
+  {
+    "TODO": "replace-orphan scenario \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_replace_orphan"
+  },
+  {
+    "TODO": "xpath-no-match scenario \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_nomatch"
+  },
+  {
+    "TODO": "attributes-op scenario \u2014 labelling pending",
+    "include_final_xml": true,
+    "include_patch_log": true,
+    "skip_handler": "labelling pending",
+    "xmlid": "cv_basic_form.cv_basic_partner_form#with_attributes"
+  }
+]

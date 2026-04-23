@@ -32,6 +32,7 @@ from osm.server.errors import HandlerError
 from osm.server.handlers.resolve_field import resolve_field as _resolve_field
 from osm.server.handlers.resolve_method import resolve_method as _resolve_method
 from osm.server.handlers.resolve_model import resolve_model as _resolve_model
+from osm.server.handlers.resolve_view import resolve_view as _resolve_view
 from osm.server.tenancy import TenantContext, context_from_env
 
 _logger = logging.getLogger(__name__)
@@ -125,6 +126,27 @@ def build_app() -> FastMCP[AppState]:
                     model_name,
                     method_name,
                     include_source_snippets=include_source_snippets,
+                )
+            except HandlerError as exc:
+                return _err_envelope(exc)
+
+    @app.tool(description="Resolve a view xmlid to its full inheritance chain "
+              "and the final merged XML arch.")
+    def resolve_view(
+        ctx: Context[Any, AppState, Any],
+        xmlid: str,
+        include_final_xml: bool = True,
+        include_patch_log: bool = True,
+    ) -> dict[str, Any]:
+        state = ctx.request_context.lifespan_context
+        with _open_cursor(state) as cur:
+            try:
+                return _resolve_view(
+                    cur,
+                    state.tenant_ctx,
+                    xmlid,
+                    include_final_xml=include_final_xml,
+                    include_patch_log=include_patch_log,
                 )
             except HandlerError as exc:
                 return _err_envelope(exc)

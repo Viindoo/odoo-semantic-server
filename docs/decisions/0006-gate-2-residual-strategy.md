@@ -1,8 +1,9 @@
 ---
-status: draft
+status: confirmed
 scope: decisions/0006
 date: 2026-04-23
-deciders: []
+confirmed_date: 2026-04-23
+deciders: [SonCrits]
 reads-with:
   - ../../../project-docs/odoo-semantic-mcp/tasks/phase-01-plan.md
   - ../../../project-docs/odoo-semantic-mcp/tasks/phase-02-plan.md
@@ -61,7 +62,16 @@ Provision host có Docker (osm-dev install Docker, hoặc provision cloud VM, ho
 
 ## Decision
 
-**TBD — pending stakeholder input.** ADR này ship dưới `status: draft` để user (owner) đọc và chọn Option A hoặc B. Sau khi quyết, ADR update `status: confirmed` + điền decision + rationale reference driver.
+**Chọn Option A — defer Gate 2 formal closure đến sau WP-17.**
+
+Rationale (reference drivers):
+
+1. **Evidence leverage driver thắng** — WP-10 Docker serve customer self-host (P5), không phải dependency của P2 tools (`resolve_view` chạy trên local Postgres bình thường, Docker chỉ đóng gói deployment). Ship WP-10 bây giờ = over-engineering không có consumer thực.
+2. **Momentum P2 driver** — WP-15 spec `status: confirmed` (2026-04-22), phase-02-plan fresh. Pause 3-5 dev-day để provision Docker + debug WSL Docker Desktop → cold start khi resume tốn context reload hơn giá trị process clean gain.
+3. **Reviewer agent driver** — `code-reviewer` + `security-reviewer` không dependency WP-10. Run 1 pass trên P1+P2 superset tiết kiệm cycle hơn 2 passes; findings cross-phase vẫn attribute được qua diff scope.
+4. **Process integrity mitigation** — defer không phải skip. Dashboard link ADR này, kill criteria explicit (2026-05-07 hoặc post-WP-17 revisit, 2026-06-01 escalate). Transparency thay auto-close.
+
+Trade-off chấp nhận: gate debt visible 2-3 tuần, requires dashboard reader check ADR để context. Trade-off này < cost của Option B (3-5+ dev-day delay + WSL Docker risk).
 
 ## Consequences
 

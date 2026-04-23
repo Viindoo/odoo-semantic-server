@@ -120,6 +120,9 @@ CREATE TABLE IF NOT EXISTS views (
     indexed_at_sha text NOT NULL,
     UNIQUE (module_id, xmlid),
     CHECK (mode IN ('primary', 'extension')),
+    -- Strict biconditional kept for historical parity with the WP-2 shape;
+    -- migration 003 relaxes this to accommodate the second-pass xmlid→id
+    -- resolution in the WP-15 view driver (see migrations/003 for rationale).
     CHECK ((mode = 'extension') = (inherit_id IS NOT NULL))
 );
 
