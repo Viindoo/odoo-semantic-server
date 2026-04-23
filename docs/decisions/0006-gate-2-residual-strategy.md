@@ -100,3 +100,13 @@ Trade-off chấp nhận: gate debt visible 2-3 tuần, requires dashboard reader
 - Phase 2 plan: `project-docs/odoo-semantic-mcp/tasks/phase-02-plan.md` §WP-15
 - Accept evidence: `reports/phase-01-accept.md`, `reports/phase-01-exit-criteria.md`
 - Global lifecycle gates: `~/.claude/CLAUDE.md` §Project Lifecycle Gates
+
+## Addendum 2026-04-23 — MEDIUM-severity findings carried into Gate 2 closure
+
+Sau 2 review pass cho WP-15+16+17 (commits d93317d, ead60ce), 3 MEDIUM/LOW findings vẫn open và được accept để đi Gate 2 cùng:
+
+1. **`_set_search_path` f-string SQL** (`osm/indexer/driver.py:132`) — dùng `f'SET LOCAL search_path TO "{tenant}", public'`. Mọi caller hiện tại (`index()` entry) chạy `validate_tenant(tenant)` ngay trước, regex whitelist `^[a-z][a-z0-9_]{1,62}$` chặn injection. Risk = future caller skip validate. Mitigation = `validate_tenant` call site audit ở mỗi PR mở rộng indexer entry.
+2. **`IndexStats.warnings` echo absolute file_path** (`osm/indexer/driver.py:1019-1023`) — leak server filesystem topology nếu MCP client untrusted. Hiện tại MCP server chỉ expose qua Tailscale → trusted boundary. Risk activates khi P5 mở public deployment. Filter trước khi cross trust boundary.
+3. **TOCTOU symlink check vs open** (`osm/indexer/driver.py:164-178` + `_collect_python_files`) — `p.resolve()` dùng cho escape check nhưng `path.open(p)` dùng original path. Race window khả thi nhưng (a) indexer chạy offline, (b) cùng trust boundary với codebase indexed. Accept.
+
+Tất cả 3 finding tracked trong `project-docs/odoo-semantic-mcp/tasks/lessons.md` entry 2026-04-23 §"WP-15+17 review v2 + osm-dev infra notes". Gate 2 closure (sau WP-17 accept pass) acknowledge các finding này như known residual; không phát sinh new ADR riêng.
