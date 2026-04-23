@@ -42,7 +42,7 @@ from osm.server.errors import NotFoundError
 from osm.server.handlers.resolve_field import resolve_field
 from osm.server.handlers.resolve_method import resolve_method
 from osm.server.handlers.resolve_model import resolve_model
-from osm.server.tenancy import context_from_tenant
+from osm.server.tenancy import TenantContext, validate_tenant
 from scripts.create_tenant import main as create_tenant_main
 from scripts.migrate import main as migrate_main
 
@@ -374,7 +374,17 @@ def main(iterations: int = 100) -> int:
             )
             conn.commit()
 
-        ctx = context_from_tenant(tenant)
+        # Tenant-only context (no public-schema fallback). The normal
+        # context_from_tenant() factory unions public + tenant so customer
+        # overlays can extend a shared CE catalog; that does not fit this
+        # harness. When the shared public schema is populated with a real
+        # CE index its indexed_at_sha does not match the fixture's
+        # "accept-fixture" sha, so effective_indexed_at_sha() collapses to
+        # None across the cross-schema UNION and every handler raises
+        # StaleIndexError. The accept suite is self-contained against the
+        # fixture corpus indexed into the throwaway tenant, so the public
+        # schema must be excluded from the query scope.
+        ctx = TenantContext(tenant=validate_tenant(tenant), schemas=(tenant,))
         results: list[QuestionResult] = []
         with psycopg.connect(db_url) as conn, conn.cursor() as cur:
             for q in QUESTIONS:
