@@ -4,7 +4,6 @@ confirmed_date: 2026-04-22
 scope: specs/resolve_view
 phase: P2
 reads-with:
-  - ../product_brief.md
   - ../data-model/views.md
 ---
 

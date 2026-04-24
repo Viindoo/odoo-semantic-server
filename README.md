@@ -72,10 +72,8 @@ Detailed sequencing, exit criteria, and live work-package status are tracked int
 
 ## Project status
 
-Design confirmed 2026-04-22 for Phase 1 and Phase 2. Phase 1 is effectively complete — three P1 resolver tools (`resolve_model`, `resolve_field`, `resolve_method`) pass every exit criterion with wide margins (see [`reports/phase-01-accept.md`](reports/phase-01-accept.md)); only the Docker Compose topology work is outstanding, blocked on host tooling. Phase 2 (XML view resolver) is in implementation — parser and fixture corpus shipped, DOM resolver next. Brand name and hosted-tier go-live date are not yet finalized.
+Design confirmed 2026-04-22 for Phase 1 and Phase 2. Phase 1 is effectively complete — three P1 resolver tools (`resolve_model`, `resolve_field`, `resolve_method`) pass every exit criterion with wide margins; only the Docker Compose topology work is outstanding, blocked on host tooling. Phase 2 (XML view resolver) is in implementation — parser and fixture corpus shipped, DOM resolver next. Brand name and hosted-tier go-live date are not yet finalized.
 
 ---
-
-**Mới đến dự án?** Đọc [`BIRDS_EYE.md`](BIRDS_EYE.md) trước — tóm tắt 1-page bằng tiếng Việt, kèm ví dụ cụ thể + chỉ đường đọc file nào khi cần gì.
 
 **Contributing or editing docs?** Start with [`CONTRIBUTING.md`](CONTRIBUTING.md).

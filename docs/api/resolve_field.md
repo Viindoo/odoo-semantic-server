@@ -5,10 +5,8 @@ phase: P1
 date: 2026-04-21
 confirmed_date: 2026-04-22
 reads-with:
-  - ../product_brief.md
-  - ../architecture/mcp-server.md
   - ../data-model/fields.md
-  - ../research/odoo-internals.md
+  - resolve_model.md
 ---
 
 # Spec: `resolve_field`
@@ -105,7 +103,7 @@ Walk the chain in load order (earliest module first). For each non-null attribut
 
 **Multi-inherit `_inherit = ['a', 'b']`:** fields from both `a` and `b` enter the same `_base_fields` merge. Extensions loaded after both parents still override via the same stack — module load order remains the tiebreaker, not the position in the `_inherit` list. (Method resolution is the opposite — see `resolve_method` §5b.)
 
-Source: `../research/odoo-internals.md` §2, specifically `odoo/models.py:3326-3409`.
+Source: `project-docs/odoo-semantic-mcp/research/odoo-internals.md` §2, specifically `odoo/models.py:3326-3409`.
 
 ## 5c. Edge cases — when to return `resolution: unknown`
 
@@ -149,4 +147,4 @@ All other cases (multi-`_inherit`, extension modules from third parties in the a
 
 - Data: `../data-model/fields.md`
 - Companion: `../specs/resolve_model.md` (overview of method vs field resolution split)
-- Research (authoritative evidence): `../research/odoo-internals.md` §2 (inherit algorithm), §3 (_inherits delegation), §5 (dynamic inherit)
+- Research (authoritative evidence): `project-docs/odoo-semantic-mcp/research/odoo-internals.md` §2 (inherit algorithm), §3 (_inherits delegation), §5 (dynamic inherit)

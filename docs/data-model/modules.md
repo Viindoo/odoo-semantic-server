@@ -3,8 +3,8 @@ status: confirmed
 confirmed_date: 2026-04-22
 scope: data-model/modules
 reads-with:
-  - ../architecture/indexer.md
-  - ../architecture/tenancy.md
+
+
   - ../decisions/0004-multi-tenant-model.md
   - models.md
 ---
@@ -13,7 +13,7 @@ reads-with:
 
 One row per Odoo addon present in any of the configured addon paths.
 
-This table (and every other data-model table) exists **per schema** — once in `public` for shared Odoo CE, once in each tenant schema for that tenant's private addons. See [`../architecture/tenancy.md`](../architecture/tenancy.md).
+This table (and every other data-model table) exists **per schema** — once in `public` for shared Odoo CE, once in each tenant schema for that tenant's private addons. See [`../decisions/0004-multi-tenant-model.md`](../decisions/0004-multi-tenant-model.md).
 
 ## Purpose
 

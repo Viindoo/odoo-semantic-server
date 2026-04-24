@@ -2,27 +2,25 @@
 status: draft
 scope: architecture
 reads-with:
-  - ../product_brief.md
+  - overview.md
+  - deployment.md
 ---
 
 # Architecture
 
-Living technical picture of the system. When real code diverges from what is written here, update the docs — do not leave them stale.
+Public architecture documentation — system context and deployment topology. When real code diverges from what is written here, update the docs — do not leave them stale.
 
 ## How to read
 
-Start with [`overview.md`](overview.md) (C4 L1+L2). Then drill into the component you are changing. For database schema, see [`../data-model/`](../data-model/).
+Start with [`overview.md`](overview.md) (C4 L1+L2). For deployment topology, see [`deployment.md`](deployment.md). For database schema, see [`../data-model/`](../data-model/).
+
+Component-level design documents (indexer, graph-store, vector-store, mcp-server, tenancy) are internal design artefacts kept in `project-docs/odoo-semantic-mcp/architecture/`.
 
 ## Index
 
 | File | Component | Status |
 | ---- | --------- | ------ |
 | [`overview.md`](overview.md) | C4 Context + Container views, request flow | draft |
-| [`indexer.md`](indexer.md) | Parsing pipeline (Python, XML, QWeb, JS) + manifest resolver | draft |
-| [`graph-store.md`](graph-store.md) | PostgreSQL schema for models/fields/methods/views + inheritance edges | draft |
-| [`vector-store.md`](vector-store.md) | Embedding pipeline + pgvector / Qdrant choice | draft |
-| [`mcp-server.md`](mcp-server.md) | FastMCP process exposing 6 tools | draft |
-| [`tenancy.md`](tenancy.md) | Multi-tenant overlay: shared `public` CE schema + per-tenant private schema | draft |
 | [`deployment.md`](deployment.md) | Dev (Tailscale) / self-hosted (Docker Compose) / Hosted (Hetzner) topologies | draft |
 | [`diagrams/`](diagrams/) | `.mmd` / `.puml` source files for diagrams referenced above | — |
 
@@ -36,7 +34,7 @@ Start with [`overview.md`](overview.md) (C4 L1+L2). Then drill into the componen
 
 ## Relationship with ADRs
 
-- **This folder:** what exists *now*.
+- **This folder:** what exists *now* (public-facing topology and overview).
 - **[`../decisions/`](../decisions/):** why it exists this way.
 
 When an ADR is accepted, update the relevant file here the same day. Do not leave docs describing the pre-ADR state.

@@ -5,9 +5,8 @@ phase: P1
 date: 2026-04-21
 confirmed_date: 2026-04-22
 reads-with:
-  - ../product_brief.md
   - ../data-model/methods.md
-  - ../research/odoo-internals.md
+  - resolve_model.md
 ---
 
 # Spec: `resolve_method`
@@ -91,7 +90,7 @@ Given `(model_name, method_name)`, return the full override chain including `sup
 
 **For the algorithm (Step 4 — walk chain in load order):** build the chain in module load order (earliest first), then flag `is_override = true` for all but the first occurrence. The effective dispatch target is the class earliest in the final MRO, which corresponds to the latest-loaded module in a pure extension chain.
 
-Source: `../research/odoo-internals.md` §2, specifically `odoo/models.py:694-770` (`_build_model`, `LastOrderedSet`, `__base_classes`).
+Source: `project-docs/odoo-semantic-mcp/research/odoo-internals.md` §2, specifically `odoo/models.py:694-770` (`_build_model`, `LastOrderedSet`, `__base_classes`).
 
 ## 5c. Edge cases — when to return `resolution: unknown`
 
@@ -101,7 +100,7 @@ Three specific situations; no others warrant `resolution: unknown`:
 2. **`_register = False` ancestor.** The class or a base it inherits from has `_register = False` (e.g. `odoo/addons/base/models/ir_qweb.py:2702`). Cannot confirm MRO without resolving the full subclass tree statically.
 3. **DB-origin model.** The model itself is `state='manual'` (Studio-generated). Its class hierarchy is assembled at runtime from `ir.model` rows (`odoo/models.py:3374`). No static AST to walk. Emit `resolution: unknown` in warnings.
 
-All other method resolution — including multi-`_inherit` lists, third-party addons on the path, or modules with complex dependency graphs — is fully deterministic from static AST plus module load order (Section 1 of `../research/odoo-internals.md`).
+All other method resolution — including multi-`_inherit` lists, third-party addons on the path, or modules with complex dependency graphs — is fully deterministic from static AST plus module load order (Section 1 of `project-docs/odoo-semantic-mcp/research/odoo-internals.md`).
 
 ## 6. Out of scope
 
@@ -135,4 +134,4 @@ All other method resolution — including multi-`_inherit` lists, third-party ad
 
 - Data: `../data-model/methods.md`
 - Companion: `../specs/resolve_model.md` (overview of method vs field resolution split)
-- Research (authoritative evidence): `../research/odoo-internals.md` §2 (inherit algorithm + `LastOrderedSet`), §5 (dynamic inherit)
+- Research (authoritative evidence): `project-docs/odoo-semantic-mcp/research/odoo-internals.md` §2 (inherit algorithm + `LastOrderedSet`), §5 (dynamic inherit)

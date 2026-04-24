@@ -3,7 +3,7 @@ status: confirmed
 confirmed_date: 2026-04-22
 scope: data-model/methods
 reads-with:
-  - ../architecture/indexer.md
+
   - models.md
 ---
 
@@ -66,4 +66,4 @@ override_of=4011
 
 - We do NOT capture method bodies in this table — `content_hash` covers change detection. The vector store holds the actual body text for semantic search
 - Method resolution order at runtime depends on MRO; here we provide the **linear override chain per module load order**, which is the useful answer for static tooling
-- Decorator flags derivable from `decorators[]` — use GIN index on `decorators` (defined in `architecture/graph-store.md`) for filter queries.
+- Decorator flags derivable from `decorators[]` — use GIN index on `decorators` (index definition in internal `project-docs/odoo-semantic-mcp/architecture/graph-store.md`) for filter queries.

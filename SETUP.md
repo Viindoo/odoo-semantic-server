@@ -125,7 +125,7 @@ Once indexing is done, run the P1 accept suite:
 
 ```bash
 uv run python -m tests.accept.runner --tenant public --iterations 10
-# writes reports/phase-01-accept.md + reports/phase-01-accept-raw.json
+# writes to reports/ (output files not committed to repo)
 ```
 
 ## Troubleshooting
@@ -146,4 +146,4 @@ uv run python -m tests.accept.runner --tenant public --iterations 10
 - Live status + next WP → internal `project-docs/odoo-semantic-mcp/README.md`
 - Architecture deep-dive → [`docs/architecture/overview.md`](docs/architecture/overview.md)
 - Customer self-host topology → [`docs/architecture/deployment.md`](docs/architecture/deployment.md) §2
-- Adding a new MCP tool → [`docs/specs/_template.md`](docs/specs/_template.md) then [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Adding a new MCP tool → `project-docs/odoo-semantic-mcp/specs/_template.md` then [`CONTRIBUTING.md`](CONTRIBUTING.md)

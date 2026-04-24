@@ -2,7 +2,7 @@
 status: draft
 scope: project
 reads-with:
-  - product_brief.md
+  - docs/architecture/overview.md
 ---
 
 # Glossary

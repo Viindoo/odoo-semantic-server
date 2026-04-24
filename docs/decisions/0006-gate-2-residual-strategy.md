@@ -14,7 +14,7 @@ reads-with:
 
 ## Context
 
-Phase 1 exit criteria pass với biên rộng — correctness, token-reduction, performance, multi-tenancy đều vượt target (numbers in `reports/phase-01-accept.md`, evidence map in `reports/phase-01-exit-criteria.md`). Hai hạng mục còn pending trong Gate 2 (Ship ready) theo global lifecycle:
+Phase 1 exit criteria pass với biên rộng — correctness, token-reduction, performance, multi-tenancy đều vượt target (numbers in `project-docs/odoo-semantic-mcp/tasks/phase-01-accept.md`, evidence map in `project-docs/odoo-semantic-mcp/tasks/phase-01-exit-criteria.md`). Hai hạng mục còn pending trong Gate 2 (Ship ready) theo global lifecycle:
 
 1. **WP-10 Docker Compose dev topology** — deliverable gồm `docker-compose.yml` multi-service (db + app + indexer + optional Tailscale sidecar), `Dockerfile.server`, `Dockerfile.indexer`. Placeholder files đã ở repo và YAML validates, nhưng chưa smoke `docker compose up -d` trên clean host vì dev host không có Docker.
 2. **Code/security review bundle** — `code-reviewer` + `security-reviewer` agents chạy clean trên diff P1 cuối.
@@ -98,7 +98,7 @@ Trade-off chấp nhận: gate debt visible 2-3 tuần, requires dashboard reader
 - ADR-0005: Tailscale sidecar tenancy model (driver cho Docker sidecar design)
 - Phase 1 plan: `project-docs/odoo-semantic-mcp/tasks/phase-01-plan.md` §WP-10, §Exit criteria
 - Phase 2 plan: `project-docs/odoo-semantic-mcp/tasks/phase-02-plan.md` §WP-15
-- Accept evidence: `reports/phase-01-accept.md`, `reports/phase-01-exit-criteria.md`
+- Accept evidence: `project-docs/odoo-semantic-mcp/tasks/phase-01-accept.md`, `project-docs/odoo-semantic-mcp/tasks/phase-01-exit-criteria.md`
 - Global lifecycle gates: `~/.claude/CLAUDE.md` §Project Lifecycle Gates
 
 ## Addendum 2026-04-23 — MEDIUM-severity findings carried into Gate 2 closure

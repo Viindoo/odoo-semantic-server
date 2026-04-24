@@ -2,8 +2,8 @@
 status: draft
 scope: data-model/cache_metadata
 reads-with:
-  - ../architecture/indexer.md
-  - ../architecture/graph-store.md
+
+
 ---
 
 # Table: `cache_metadata`

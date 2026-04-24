@@ -5,12 +5,11 @@ phase: P1
 date: 2026-04-21
 confirmed_date: 2026-04-22
 reads-with:
-  - ../product_brief.md
-  - ../architecture/mcp-server.md
   - ../data-model/models.md
   - ../data-model/fields.md
   - ../data-model/methods.md
-  - ../research/odoo-internals.md
+  - resolve_field.md
+  - resolve_method.md
 ---
 
 # Spec: `resolve_model`
@@ -98,13 +97,13 @@ See `resolve_method` for per-method detail.
 
 - When building `fields_contributed`, walk in load order and flag is_override; the last entry is authoritative.
 - When building `methods_contributed`, use MRO order; the first class in the MRO chain that defines the method is the dispatch target.
-- Both orderings derive from the same module load order (Section 1 of `../research/odoo-internals.md`).
+- Both orderings derive from the same module load order (Section 1 of `project-docs/odoo-semantic-mcp/research/odoo-internals.md`).
 
 Detailed rules: [`resolve_field.md`](resolve_field.md) §5b · [`resolve_method.md`](resolve_method.md) §5b.
 
 ## 5c. Edge cases — when to return `resolution: unknown`
 
-The research grep across CE 17.0 found **zero** runtime mutations of `_inherit` after class creation (`../research/odoo-internals.md` §5). Treat AST `_inherit` as authoritative. `resolution: unknown` applies only to these three specific cases:
+The research grep across CE 17.0 found **zero** runtime mutations of `_inherit` after class creation (`project-docs/odoo-semantic-mcp/research/odoo-internals.md` §5). Treat AST `_inherit` as authoritative. `resolution: unknown` applies only to these three specific cases:
 
 1. **Conditional import guard.** The class lives inside a `try/except ImportError` block in `models/__init__.py` (optional dependency not guaranteed to be installed). Emit `resolution: conditional`.
 2. **`_register = False` chain.** The class or a statically-unresolvable ancestor has `_register = False` (e.g. `odoo/addons/base/models/ir_qweb.py:2702`). Cannot determine if the model is actually registered without following the full subclass tree.
@@ -146,5 +145,5 @@ Do not emit `resolution: unknown` for any other reason. In particular, do not tr
 
 - Phase: `project-docs/odoo-semantic-mcp/roadmap.md` (internal)
 - Data: `../data-model/models.md`
-- Architecture: `../architecture/graph-store.md`
-- Research (authoritative evidence): `../research/odoo-internals.md` §2 (inherit algorithm), §5 (dynamic inherit)
+- Architecture: `project-docs/odoo-semantic-mcp/architecture/graph-store.md` (internal)
+- Research (authoritative evidence): `project-docs/odoo-semantic-mcp/research/odoo-internals.md` §2 (inherit algorithm), §5 (dynamic inherit)

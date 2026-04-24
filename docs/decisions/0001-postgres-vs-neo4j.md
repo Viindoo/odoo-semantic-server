@@ -61,5 +61,5 @@ Revisit this ADR if any of:
 
 ## References
 
-- Brief: `../product_brief.md` ("Qdrant OR pgvector")
-- Architecture: `../architecture/graph-store.md`, `../architecture/vector-store.md`
+- Brief: `project-docs/odoo-semantic-mcp/product_brief.md` ("Qdrant OR pgvector")
+- Architecture (internal): `project-docs/odoo-semantic-mcp/architecture/graph-store.md`, `project-docs/odoo-semantic-mcp/architecture/vector-store.md`

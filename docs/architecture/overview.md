@@ -2,11 +2,9 @@
 status: draft
 scope: architecture/overview
 reads-with:
-  - ../product_brief.md
-  - indexer.md
-  - graph-store.md
-  - vector-store.md
-  - mcp-server.md
+  - deployment.md
+  - ../decisions/0001-postgres-vs-neo4j.md
+  - ../decisions/0002-embedding-provider.md
 ---
 
 # Overview (C4 L1 + L2)
@@ -85,5 +83,5 @@ Everything is synchronous. No background jobs on the read path.
 ## What this file is NOT
 
 - A detailed DB schema — see [`../data-model/`](../data-model/)
-- A component-level design — see the per-component files in this folder
+- A component-level design — internal component docs (indexer, graph-store, vector-store, mcp-server, tenancy) are in `project-docs/odoo-semantic-mcp/architecture/`
 - A decision record — see [`../decisions/`](../decisions/)

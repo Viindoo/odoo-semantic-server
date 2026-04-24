@@ -26,7 +26,7 @@ The product must:
 
 - **Cost** — CE is ~20M LOC after Enterprise is added. Re-embedding it per customer is prohibitive
 - **Correctness** — override chain between CE and customer modules must match runtime
-- **Isolation** — no cross-customer leakage; threat model is explicit (see `security/threat-model.md`)
+- **Isolation** — no cross-customer leakage; threat model is explicit (see `project-docs/odoo-semantic-mcp/security/threat-model.md`)
 - **Simplicity** — one query shape at the handler level, regardless of tenant
 
 ## Considered options
@@ -89,7 +89,7 @@ Revisit this ADR if:
 
 ## References
 
-- Brief: `../product_brief.md`
-- Architecture: `../architecture/tenancy.md`, `../architecture/graph-store.md`
-- Security: `../security/access-control.md`, `../security/threat-model.md`
+- Brief: `project-docs/odoo-semantic-mcp/product_brief.md`
+- Architecture (internal): `project-docs/odoo-semantic-mcp/architecture/tenancy.md`, `project-docs/odoo-semantic-mcp/architecture/graph-store.md`
+- Security: `../security/access-control.md` — threat model at `project-docs/odoo-semantic-mcp/security/threat-model.md`
 - Every spec: tenant is now a first-class input

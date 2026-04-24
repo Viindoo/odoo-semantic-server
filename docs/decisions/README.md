@@ -2,7 +2,7 @@
 status: draft
 scope: decisions
 reads-with:
-  - ../product_brief.md
+  - ../architecture/overview.md
 ---
 
 # Architecture Decision Records

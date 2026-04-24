@@ -50,7 +50,7 @@ Rationale: for the Hosted tier (our paid path), simplicity and predictable cost 
 - **Negative**: two codepaths to test; embedding-quality benchmarks must cover both
 - **Follow-ups**:
   - Before P3 ships, publish a benchmark comparing the two on a Vietnamese-heavy Viindoo codebase
-  - Document how to swap providers in `architecture/vector-store.md`
+  - Document how to swap providers in `project-docs/odoo-semantic-mcp/architecture/vector-store.md`
 
 ## Kill criteria
 
@@ -92,7 +92,7 @@ both on the Vietnamese corpus in P3. Add to P3 benchmark candidate list
 
 ## References
 
-- Architecture: `../architecture/vector-store.md`
-- Spec: `../specs/find_examples.md`
-- Research needed: `../research/embedding-benchmarks.md`
+- Architecture (internal): `project-docs/odoo-semantic-mcp/architecture/vector-store.md`
+- Spec (internal, P3): `project-docs/odoo-semantic-mcp/specs/find_examples.md`
+- Research (internal): `project-docs/odoo-semantic-mcp/research/embedding-benchmarks.md`
 - Spike report: `../research/embedding-self-host-spike.md`

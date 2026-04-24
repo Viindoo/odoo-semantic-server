@@ -2,7 +2,6 @@
 status: draft
 scope: security
 reads-with:
-  - ../product_brief.md
   - ../architecture/deployment.md
 ---
 
@@ -23,10 +22,11 @@ Everything a security reviewer, auditor, or enterprise-sales counterpart needs t
 
 | File | Purpose | Status |
 | ---- | ------- | ------ |
-| [`threat-model.md`](threat-model.md) | STRIDE analysis: spoofing, tampering, repudiation, info disclosure, DoS, elevation | placeholder |
 | [`access-control.md`](access-control.md) | RBAC + per-customer schema isolation + admin access procedures | placeholder |
 | [`encryption.md`](encryption.md) | At-rest + in-transit posture; key management | placeholder |
 | [`dpa-template.md`](dpa-template.md) | Data Processing Agreement template for Hosted-tier customers | placeholder |
+
+The STRIDE threat model is an internal design artefact kept in `project-docs/odoo-semantic-mcp/security/threat-model.md`.
 
 ## Explicitly out of scope (for now)
 
@@ -38,7 +38,7 @@ Everything a security reviewer, auditor, or enterprise-sales counterpart needs t
 
 Any PR that changes data flow, adds a customer boundary crossing, or modifies auth must go through:
 
-1. Author self-check against `threat-model.md`
+1. Author self-check against the threat model (see `project-docs/odoo-semantic-mcp/security/threat-model.md`)
 2. Review with the `review.md` context
 3. Security-reviewer sub-agent pass before merge
 

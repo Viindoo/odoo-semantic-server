@@ -3,7 +3,7 @@ status: confirmed
 confirmed_date: 2026-04-22
 scope: data-model/fields
 reads-with:
-  - ../architecture/indexer.md
+
   - models.md
 ---
 
