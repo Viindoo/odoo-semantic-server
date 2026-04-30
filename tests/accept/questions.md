@@ -3,11 +3,6 @@ status: draft
 scope: tests/accept/questions
 phase: P1
 date: 2026-04-22
-reads-with:
-  - ../../specs/resolve_model.md
-  - ../../specs/resolve_field.md
-  - ../../specs/resolve_method.md
-  - ../../roadmap.md
 ---
 
 # Accept test — 10 sample questions

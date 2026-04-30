@@ -1,10 +1,4 @@
-"""Handler-level error types that map to the MCP error codes listed in
-`docs/architecture/mcp-server.md`:
-
-    400 invalid input (schema validation)
-    404 entity not in index
-    409 index stale for this path
-    500 handler bug
+"""Handler-level error types mapping to MCP status codes (400/404/409/500).
 
 Handlers raise these; the FastMCP wrapper translates them at the server
 boundary so callers see clean status-code semantics.

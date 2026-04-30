@@ -1,6 +1,6 @@
 # Setup — dev environment
 
-One-page cheatsheet to get a working dev box. For customer / self-host topology, jump to [`docs/architecture/deployment.md`](docs/architecture/deployment.md).
+One-page cheatsheet to get a working dev box.
 
 ## TL;DR
 
@@ -143,7 +143,4 @@ uv run python -m tests.accept.runner --tenant public --iterations 10
 
 ## What next
 
-- Live status + next WP → internal `project-docs/odoo-semantic-mcp/README.md`
-- Architecture deep-dive → [`docs/architecture/overview.md`](docs/architecture/overview.md)
-- Customer self-host topology → [`docs/architecture/deployment.md`](docs/architecture/deployment.md) §2
-- Adding a new MCP tool → `project-docs/odoo-semantic-mcp/specs/_template.md` then [`CONTRIBUTING.md`](CONTRIBUTING.md)
+Run the server, point your MCP client at it, start indexing. Open issues on the repo for bugs or feature requests.

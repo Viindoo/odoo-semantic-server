@@ -1,5 +1,4 @@
-# CI template for osm. Repo host still TBD (see `docs/decisions/0003-brand-name.md`
-# for wider naming decisions). When the repo lands on GitHub, this workflow
+# CI template for osm. When the repo lands on GitHub, this workflow
 # should run as-is; if we end up self-hosting Gitea or similar, adapt the
 # runner + action references.
 
