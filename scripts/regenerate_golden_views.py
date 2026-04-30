@@ -1,14 +1,14 @@
 """One-shot: re-label the curated resolve_view golden entries from live handler output.
 
-Runs the WP-6/WP-14 indexer over the test fixture corpus into a throwaway
-tenant schema, invokes ``resolve_view`` for every non-TODO entry in
+Runs the indexer over the test fixture corpus into a throwaway tenant
+schema, invokes ``resolve_view`` for every non-TODO entry in
 ``tests/fixtures/golden/resolve_view.json``, and writes the normalised response
 back as the new golden. TODO skeletons and entries marked ``skip_handler`` are
-preserved untouched. Mirrors ``scripts/regenerate_golden.py`` (WP-8).
+preserved untouched. Mirrors ``scripts/regenerate_golden.py``.
 
 Run from the repo root with a live Postgres:
 
-    DATABASE_URL=postgresql:///osm_wp6_test?user=soncrits \\
+    DATABASE_URL=postgresql:///osm_dev?user=osm \\
         uv run python scripts/regenerate_golden_views.py
 """
 

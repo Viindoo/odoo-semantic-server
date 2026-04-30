@@ -1,10 +1,10 @@
-"""WP-7: Fixture health tests.
+"""Fixture health tests.
 
 Verify that the odoo_ce_subset + custom_addons fixture corpus loads correctly
 through the manifest scanner, load-order simulator, and Python parser without
-any errors.  These tests do NOT assert semantic correctness (that is WP-8's
-job against the golden files) — they assert *structural* health: right number
-of modules, no cycles, no parse crashes.
+any errors. These tests do NOT assert semantic correctness (the golden-file
+tests cover that) — they assert *structural* health: right number of modules,
+no cycles, no parse crashes.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ _CE_EXPECTED = {
     "web",
 }
 
-# WP-5/WP-6 Python-parser fixtures (10 modules).
+# Python-parser fixtures (10 modules).
 _CUSTOM_EXPECTED_PYTHON = {
     "viin_fixture_conditional_optional_dep",
     "viin_fixture_depends_added",
@@ -54,7 +54,7 @@ _CUSTOM_EXPECTED_PYTHON = {
     "viin_fixture_register_false",
 }
 
-# WP-14 view-parser fixtures (8 modules).
+# View-parser fixtures (8 modules).
 _CUSTOM_EXPECTED_VIEWS = {
     "cv_attributes_op",
     "cv_basic_form",
@@ -106,7 +106,7 @@ def test_compute_load_order_no_cycle() -> None:
 
 
 def test_all_20_modules_in_load_order() -> None:
-    """Every scanned module appears in the load-order result (28 after WP-14)."""
+    """Every scanned module appears in the load-order result."""
     manifests = scan_addon_roots([CE_SUBSET, CUSTOM_ADDONS])
     result = compute_load_order(manifests)
     names = {r.name for r in result}
@@ -211,7 +211,7 @@ def test_golden_resolve_model_all_have_required_keys() -> None:
     data = json.loads((GOLDEN_DIR / "resolve_model.json").read_text())
     for entry in data:
         if "TODO" in entry:
-            pytest.skip("TODO entry — pending Wave 4 labelling")
+            pytest.skip("TODO entry — labelling pending")
         assert "model_name" in entry, f"Missing model_name in {entry}"
         assert "chain" in entry, f"Missing chain in {entry}"
         assert "warnings" in entry, f"Missing warnings in {entry}"

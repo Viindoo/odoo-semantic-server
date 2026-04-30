@@ -1,9 +1,9 @@
-"""Golden-file tests for the 3 P1 handlers.
+"""Golden-file tests for the model-graph handlers.
 
-Boots a throwaway tenant schema, runs the WP-6 indexer over the shared
-fixture corpus, then compares each handler's response to the labeled
-entries in `tests/fixtures/golden/*.json`. TODO-only entries are skipped
-so golden labelling can catch up without blocking this test.
+Boots a throwaway tenant schema, runs the indexer over the shared fixture
+corpus, then compares each handler's response to the labeled entries in
+`tests/fixtures/golden/*.json`. TODO-only entries are skipped so golden
+labelling can catch up without blocking this test.
 
 Skipped when `DATABASE_URL` is unset.
 """
@@ -98,7 +98,7 @@ def _labeled(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Golden entries whose chain the handler is expected to reproduce.
 
     Drops TODO skeletons (labelling pending) and any entry that carries a
-    `skip_handler` marker documenting a known P2+ feature gap.
+    `skip_handler` marker documenting a known feature gap.
     """
     return [e for e in entries if "TODO" not in e and "skip_handler" not in e]
 

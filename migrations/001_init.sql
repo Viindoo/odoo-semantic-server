@@ -1,4 +1,4 @@
--- WP-2 initial schema. Idempotent: safe to re-run.
+-- Initial schema. Idempotent: safe to re-run.
 -- Runs under `SET LOCAL search_path TO "<schema>", public` from scripts/migrate.py,
 -- so all DDL is schema-neutral. Every table carries a `tenant` column defaulted
 -- to current_schema(), enabling cross-schema UNION queries to tag row origin
@@ -49,10 +49,8 @@ CREATE INDEX IF NOT EXISTS models_name_idx ON models (name);
 
 -- fields.override_of: soft ref. Within a single schema it points at a local
 -- fields.id; across schemas (tenant field overriding a public field) it points
--- at a public.fields.id. REFERENCES omitted to keep the edge soft (see
--- architecture/graph-store.md). override_of column is authoritative even though
--- data-model/fields.md omits the tenancy caveat -- plan §2 WP-2 explicitly
--- requires it and an index on it.
+-- at a public.fields.id. REFERENCES omitted to keep the edge soft. Column is
+-- authoritative for cross-schema override resolution; an index is required.
 CREATE TABLE IF NOT EXISTS fields (
     id bigserial PRIMARY KEY,
     tenant text NOT NULL DEFAULT current_schema(),
@@ -120,9 +118,9 @@ CREATE TABLE IF NOT EXISTS views (
     indexed_at_sha text NOT NULL,
     UNIQUE (module_id, xmlid),
     CHECK (mode IN ('primary', 'extension')),
-    -- Strict biconditional kept for historical parity with the WP-2 shape;
-    -- migration 003 relaxes this to accommodate the second-pass xmlid→id
-    -- resolution in the WP-15 view driver (see migrations/003 for rationale).
+    -- Strict biconditional kept here for historical parity; migration 003
+    -- relaxes it to accommodate the second-pass xmlid→id resolution in the
+    -- view driver (see migrations/003 for rationale).
     CHECK ((mode = 'extension') = (inherit_id IS NOT NULL))
 );
 
@@ -160,10 +158,11 @@ CREATE TABLE IF NOT EXISTS cache_metadata (
 CREATE INDEX IF NOT EXISTS cache_metadata_tenant_module_name_idx ON cache_metadata (tenant, module_name);
 CREATE INDEX IF NOT EXISTS cache_metadata_content_hash_idx ON cache_metadata (content_hash);
 
--- Vector stub. `embedding vector(?)` column deliberately omitted per plan §6.9:
--- dimension is provider-specific (voyage-code-3=1024, bge-code-v1=1536) and is
--- locked per tenant in P3's first migration. Keeping the table column-less for
--- embeddings avoids a later ALTER to widen/narrow the vector dimension.
+-- Vector stub. `embedding vector(?)` column deliberately omitted: dimension
+-- is provider-specific (voyage-code-3=1024, bge-code-v1=1536) and gets
+-- locked per tenant once a provider is chosen. Keeping the table without
+-- the embedding column avoids a later ALTER to widen/narrow the vector
+-- dimension.
 CREATE TABLE IF NOT EXISTS code_chunks (
     id bigserial PRIMARY KEY,
     tenant text NOT NULL DEFAULT current_schema(),

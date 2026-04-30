@@ -1,8 +1,8 @@
 """Unit tests for ``osm.indexer.view_resolver``.
 
 Feeds primary arch bytes + ``(ViewRow, [PatchRow])`` lists directly into
-:func:`resolve_chain`. Upstream (WP-16) will load real rows from Postgres;
-these tests stay in memory and reuse the WP-14 XML parser to turn the
+:func:`resolve_chain`. The MCP handler loads real rows from Postgres at
+runtime; these tests stay in memory and reuse the XML parser to turn the
 committed ``tests/fixtures/custom_addons/cv_*`` corpus into resolver inputs.
 """
 
@@ -67,7 +67,7 @@ def _count_in_final(xml: bytes, xpath: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Tests — one scenario per WP-15 plan line item
+# Tests — one scenario per resolver semantic
 # ---------------------------------------------------------------------------
 
 
@@ -322,7 +322,7 @@ def test_priority_tie_load_order() -> None:
 
 
 # ---------------------------------------------------------------------------
-# WP-17 hardening coverage — attribute-delete semantics + root replacement
+# Hardening coverage — attribute-delete semantics + root replacement
 # ---------------------------------------------------------------------------
 
 

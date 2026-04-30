@@ -1,9 +1,8 @@
 """Tenant resolution + validation for the MCP server.
 
-P1 dev topology: tenant comes from `OSM_TENANT` env var (or explicit param).
-Hosted auth layer (P5) replaces this with a token-derived tenant, but
-handlers keep reading from a pluggable context object so the change stays
-isolated to this module.
+Tenant comes from `OSM_TENANT` env var (or explicit param). A future hosted
+auth layer can replace this with a token-derived tenant; handlers read from
+a pluggable context object so the change stays isolated to this module.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ class TenantContext:
 
     `schemas` lists the schemas a query should UNION ALL across, in load-order
     precedence: `public` first (shared Odoo CE index), tenant last (customer
-    overlay). For P1 a tenant of `public` collapses to a single-schema query.
+    overlay). A tenant of `public` collapses to a single-schema query.
     """
 
     tenant: str

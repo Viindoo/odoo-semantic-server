@@ -13,8 +13,8 @@ Given a JSONL corpus produced by ``scripts/bench_corpus.py`` (records with
 
 Usage::
 
-    # On osm-dev (RTX 3060 12GB, ~/embed-spike-venv has torch + sentence-transformers)
-    source ~/embed-spike-venv/bin/activate
+    # On a host with CUDA + torch + sentence-transformers in a venv:
+    source /path/to/embed-venv/bin/activate
     python scripts/bench_embed.py \\
         --corpus /tmp/embed-spike/corpus.jsonl \\
         --model BAAI/bge-code-v1 \\
@@ -26,9 +26,9 @@ without a GPU)::
     python scripts/bench_embed.py --corpus /tmp/embed-spike/corpus.jsonl \\
         --dry-run
 
-Deps when NOT dry-run: ``sentence-transformers``, ``torch``. Installed in
-``~/embed-spike-venv`` on osm-dev; not added to ``pyproject.toml`` because
-this is a one-off spike (see ``docs/research/embedding-self-host-spike.md``).
+Deps when NOT dry-run: ``sentence-transformers``, ``torch``. Install in a
+separate venv; not added to ``pyproject.toml`` because this is a one-off
+spike, not a runtime dependency.
 """
 
 from __future__ import annotations

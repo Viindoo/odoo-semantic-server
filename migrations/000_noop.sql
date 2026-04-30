@@ -1,2 +1,2 @@
--- migration framework sanity check; real schema in WP-2
+-- migration framework sanity check
 SELECT 1;

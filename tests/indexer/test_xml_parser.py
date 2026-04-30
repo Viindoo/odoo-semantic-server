@@ -148,7 +148,7 @@ class TestCvReplaceOrphan:
     def test_descendant_patch_target(self) -> None:
         r = _parse_cv("cv_replace_orphan")
         desc = next(v for v in r.views if v.xmlid.endswith(".cv_orphan_descendant"))
-        # WP-14 just records the target — WP-15 decides applied=false.
+        # The parser just records the target — the resolver decides applied=false.
         assert desc.patches[0].expr == "//field[@name='email']"
         assert desc.patches[0].position == "after"
 
@@ -182,7 +182,7 @@ class TestCvMultiExtSameTarget:
 
 class TestCvXpathNoMatch:
     def test_parser_does_not_warn(self) -> None:
-        # WP-14 parser does not evaluate XPath — the warning belongs to WP-15.
+        # Parser does not evaluate XPath — the warning belongs to the resolver.
         r = _parse_cv("cv_xpath_no_match")
         assert r.warnings == ()
 

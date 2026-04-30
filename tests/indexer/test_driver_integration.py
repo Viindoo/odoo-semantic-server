@@ -1,12 +1,12 @@
-"""Integration tests for the WP-6 indexer driver.
+"""Integration tests for the indexer driver.
 
 Skipped when DATABASE_URL is unset. Each test provisions a throwaway tenant
 schema (``osm_test_<hex>``) so it never trashes ``public``. Cleanup drops the
 schema on teardown.
 
-Acceptance anchors (phase-01-plan.md §2 WP-6):
+Anchors:
 
-- Full index of 20-module fixture runs clean.
+- Full index of the fixture corpus runs clean.
 - Re-running on unchanged tree: no row writes outside cache_metadata.indexed_at.
 - Touching a single method body re-indexes exactly that method's row + its
   cache row.
@@ -133,8 +133,8 @@ def test_full_index_of_20_module_fixture(
     stats = _run_index(database_url, tenant_schema, roots, git_sha="sha-first")
 
     # Every fixture module directory lands as a modules row. The corpus
-    # grows over time (WP-14 added cv_* view fixtures); count the manifests
-    # on disk rather than pinning a stale magic number.
+    # grows over time; count the manifests on disk rather than pinning a
+    # stale magic number.
     expected = sum(
         1 for root in roots for manifest in root.glob("*/__manifest__.py")
     )

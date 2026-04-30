@@ -14,10 +14,9 @@ Output filenames escape dots → underscores, e.g.
 Idempotent: re-running overwrites existing files byte-for-byte when the
 DB state is unchanged.
 
-Expected to run on ``osm-dev`` under the project's Odoo 17 venv:
+Run under an Odoo 17 venv with the addons path covering all CE modules:
 
-    cd /home/odoo/odoo-semantic-mcp
-    /home/odoo/venvs/odoo17/bin/python tests/accept/dump_live_odoo_views.py \\
+    /path/to/odoo17/venv/bin/python tests/accept/dump_live_odoo_views.py \\
         --config /etc/odoo/odoo.conf \\
         --database odoo17_full \\
         --views-json tests/accept/top50_views.json \\

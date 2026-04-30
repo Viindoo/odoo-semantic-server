@@ -1,9 +1,9 @@
 # Test Fixtures
 
-Ground-truth corpus for `resolve_model`, `resolve_field`, and `resolve_method` tools (Phase 1).
+Ground-truth corpus for the `resolve_model`, `resolve_field`, and `resolve_method` tools.
 
-All golden files use the pragma: 10 fully-labelled entries + skeleton TODOs for the rest.
-TODO entries will be completed after WP-5 ships resolver output (plan §4 Wave 4).
+All golden files use the same pragma: a small number of fully-labelled entries
+plus skeleton TODOs that get filled in as resolver coverage grows.
 
 ---
 
@@ -33,7 +33,7 @@ Each module contains:
 
 ---
 
-## Views (added WP-14)
+## Views
 
 The 10 CE modules now include a frozen `views/*.xml` tree in addition to
 `models/`. Files are 1:1 copies from Odoo CE 17.0. Per-module file counts:
@@ -53,7 +53,7 @@ The 10 CE modules now include a frozen `views/*.xml` tree in addition to
 
 Exclusion rules applied:
 - QWeb report templates, portal templates, client-side web templates, menus-only
-  files (parser is view-record-oriented; templates will live in the P4 tool).
+  files (parser is view-record-oriented; templates are out of scope for now).
 - Files >200 KB or >3000 lines (sanity cap — we need breadth, not every byte).
   No single retained file exceeds either threshold.
 
@@ -63,10 +63,10 @@ dropped because they are not mirrored into the fixture.
 
 ---
 
-## View-focused custom addons (added WP-14)
+## View-focused custom addons
 
-Eight modules exercise `xml_parser` and (in WP-15) `view_resolver` edge cases.
-Each is ≤50 lines of XML, minimal manifest (`depends` lists the CE subset
+Eight modules exercise `xml_parser` and `view_resolver` edge cases. Each is
+≤50 lines of XML with a minimal manifest (`depends` lists the CE subset
 parent when needed).
 
 | Module | Purpose |
@@ -74,84 +74,74 @@ parent when needed).
 | `cv_basic_form` | Primary form view on `res.partner`, zero extensions — sanity baseline |
 | `cv_simple_ext` | One extension, `position="after"` adding a field |
 | `cv_replace_and_sibling` | Extension A replaces node N; extension B targets a sibling of N (sibling survives) |
-| `cv_replace_orphan` | Extension A replaces node N; extension B targets a descendant of original N (WP-15 flags `replaced_ancestor`) |
+| `cv_replace_orphan` | Extension A replaces node N; extension B targets a descendant of original N (resolver flags `replaced_ancestor`) |
 | `cv_multi_ext_same_target` | Three extensions on the same primary, ordered by priority |
-| `cv_xpath_no_match` | Extension with an XPath matching nothing (WP-15 flags `xpath_no_match`) |
+| `cv_xpath_no_match` | Extension with an XPath matching nothing (resolver flags `xpath_no_match`) |
 | `cv_priority_tie` | Two extensions with identical priority — load_order tiebreak |
 | `cv_attributes_op` | Extension using `position="attributes"` |
 
 ---
 
-## `custom_addons/` (WP-5/WP-6 Python fixtures)
+## `custom_addons/` (Python fixtures)
 
-10 hand-written Viindoo-flavored modules (each ≤50 LOC). One module per edge case.
+10 hand-written modules (each ≤50 LOC). One module per edge case.
 
 ### `viin_fixture_multi_inherit/`
-- Covers: multi-inherit field stack (plan §2 WP-5 test case 2)
-- Spec: `resolve_model.md` §5b multi-inherit; `resolve_field.md` §5b
+- Covers: multi-inherit field stack
 - Deps: `sale`, `mail`
 - Model: `sale.order` with `_inherit = ['sale.order', 'mail.thread', 'mail.activity.mixin']`
-- Expected in golden: `resolve_model(sale.order)` chain includes this module at load_order 19
+- Expected in golden: `resolve_model(sale.order)` chain includes this module
 
 ### `viin_fixture_inherits_delegation/`
-- Covers: `_inherits` delegation (plan §2 WP-5 test case _inherits)
-- Spec: `resolve_field.md` §5b `_inherits delegation` paragraph; R1 risk
+- Covers: `_inherits` delegation
 - Deps: `product`
 - Model: `y.custom` with `_inherits = {'product.template': 'tmpl_id'}`
 - Expected in golden: `list_price` on `y.custom` resolves as `inherited_via_delegation`
 
 ### `viin_fixture_field_override_compute/`
 - Covers: field override with new compute method
-- Spec: `resolve_field.md` §5b last-loaded-wins rule
 - Deps: `sale`
 - Model: `sale.order` — `amount_total` overridden with `_viin_amount_all` compute
 - Expected in golden: `resolve_field(sale.order, amount_total)` chain ends here
 
 ### `viin_fixture_field_override_no_compute/`
 - Covers: field override changing only `readonly=True`, no compute change
-- Spec: `resolve_field.md` §5b effective merge
 - Deps: `sale`
 - Model: `sale.order` — `partner_id` overridden with `readonly=True` only
 - Expected in golden: effective `readonly=True`, `compute=None` preserved from root
 
 ### `viin_fixture_method_override_super/`
 - Covers: method override that calls `super()` — chain not broken
-- Spec: `resolve_method.md` §5b; `chain_is_broken=false`
 - Deps: `sale`
 - Model: `sale.order` — `action_confirm` calls `super().action_confirm()`
 - Expected in golden: `calls_super=True`; `chain_is_broken=False`
 
 ### `viin_fixture_method_override_break_super/`
-- Covers: method override breaking super chain (spec warns: super-break flag)
-- Spec: `resolve_method.md` §3 `chain_is_broken`
+- Covers: method override breaking the super chain
 - Deps: `sale`
-- Model: `sale.order` — `action_confirm` does NOT call super, returns custom value
+- Model: `sale.order` — `action_confirm` does NOT call super, returns a custom value
 - Expected in golden: `calls_super=False`; `chain_is_broken=True`
 
 ### `viin_fixture_conditional_optional_dep/`
-- Covers: `try/except ImportError` guard in `models/__init__.py` — spec §5c case 1
-- Spec: `resolve_model.md` §5c case 1; `resolve_field.md` §5c case 1
+- Covers: `try/except ImportError` guard in `models/__init__.py`
 - Deps: `sale`
 - `models/__init__.py` has `try: from . import optional_model\nexcept ImportError: pass`
 - Expected in golden: `optional_model.py` classes flagged `conditional_import=True`; warning `resolution: conditional`
 
 ### `viin_fixture_register_false/`
-- Covers: `_register = False` model — spec §5c case 2
-- Spec: `resolve_model.md` §5c case 2; `resolve_field.md` §5c case 2
+- Covers: `_register = False` model
 - Deps: `base`
 - Model: `viin.abstract.base` with `_register = False`
 - Expected in golden: `indexer_notes.register_false_chain=True`; warning emitted
 
 ### `viin_fixture_depends_added/`
 - Covers: `@api.depends` added to existing field compute in an override
-- Spec: `resolve_field.md` §5b depends union
 - Deps: `sale`
-- Model: `sale.order` — `amount_total` re-declared with additional `viin_discount_extra` in `@api.depends`
+- Model: `sale.order` — `amount_total` re-declared with an additional dependency in `@api.depends`
 - Expected in golden: effective `depends` is union of root + override depends sets
 
 ### `viin_fixture_order_override/`
 - Covers: `_order` override on an existing model
-- Spec: `data-model/models.md` `order` column
 - Deps: `base`
 - Model: `res.partner` with `_order = 'name desc'`
 - Expected in golden: `resolve_model(res.partner)` chain shows this module with `order='name desc'`
@@ -160,27 +150,25 @@ parent when needed).
 
 ## `golden/`
 
-Hand-labelled expected outputs. Used by WP-8 handler golden tests.
+Hand-labelled expected outputs. Used by the handler golden tests.
 
 | File | Fully labelled | TODO skeletons | Total |
 |---|---|---|---|
 | `resolve_model.json` | 10 | 0 | 10 |
 | `resolve_field.json` | 10 | 40 | 50 |
 | `resolve_method.json` | 5 | 15 | 20 |
-| `load_order_ce_subset.json` | 3 (WP-3) | — | 3 |
+| `load_order_ce_subset.json` | 3 | — | 3 |
 
-**TODO skeletons** will be completed in Wave 4 after WP-5 outputs stabilise.
-Tests in `test_fixtures_load.py` skip entries with a `"TODO"` key using
-`pytest.mark.skip(reason="golden pending")` logic.
+TODO skeletons get filled in as resolver coverage grows. Tests in
+`test_fixtures_load.py` skip entries with a `"TODO"` key.
 
 ---
 
-## `addons/` (WP-3 fixtures)
+## `addons/`
 
 Simple synthetic addons for manifest scanner and load-order simulator unit tests.
-Do not modify unless updating WP-3 tests.
 
-## `odoo_ce_subset_manifests/` (WP-3 fixtures)
+## `odoo_ce_subset_manifests/`
 
 Frozen `__manifest__.py` copies used by the load-order golden test.
-The actual full-models subset is in `odoo_ce_subset/` (this WP).
+The actual full-models subset is in `odoo_ce_subset/`.

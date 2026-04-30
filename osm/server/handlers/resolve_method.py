@@ -11,10 +11,10 @@ Matches the golden shape in `tests/fixtures/golden/resolve_method.json`:
       "warnings": [...]
     }
 
-Chain order is load-order (earliest first) per `docs/specs/resolve_method.md` §5b
-Step 4. Note: the spec stores the chain linearly and derives C3 MRO at query
-time; the WP-6 write-back collapses within-module duplicates to a single DB
-row so what we return here is already the cross-module sequence.
+Chain order is module load-order (earliest first). The chain is stored
+linearly; C3 MRO is derived at query time. The indexer's write-back
+collapses within-module duplicates to a single DB row, so what we return
+here is already the cross-module sequence.
 
 `chain_is_broken` is true when any non-root override has calls_super=False.
 """
@@ -48,7 +48,7 @@ def resolve_method(
         raise InvalidInputError("model_name must be non-empty")
     if not method_name:
         raise InvalidInputError("method_name must be non-empty")
-    _ = include_source_snippets  # snippet attach deferred to P2 for cleaner handler
+    _ = include_source_snippets  # snippet attach not yet implemented
 
     sql = union_all(
         """

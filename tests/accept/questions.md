@@ -1,11 +1,4 @@
----
-status: draft
-scope: tests/accept/questions
-phase: P1
-date: 2026-04-22
----
-
-# Accept test — 10 sample questions
+# Benchmark questions
 
 Each question a developer might ask an AI assistant, mapped to the exact
 MCP tool call the assistant should make and the golden answer-shape to
@@ -150,13 +143,13 @@ explicitly below so the computation is reproducible.
 
 **Question:** "Show me the view for `account.view_move_form` but only patches from our tenant modules."
 
-- **Tool**: `resolve_view("account.view_move_form")` — no direct filter flag in the P2 API. Caller post-filters `patch_log[*].from_xmlid` by matching the tenant's module namespace.
+- **Tool**: `resolve_view("account.view_move_form")` — no direct filter flag in the API. Caller post-filters `patch_log[*].from_xmlid` by matching the tenant's module namespace.
 - **Baseline**: tenant-origin XML file(s) contributing to the chain.
-- **Notes**: documents a caller-side pattern. If a tenant-only filter flag is added in P3, move this to the formal flag.
+- **Notes**: documents a caller-side pattern. A formal tenant-only filter flag may be added later.
 
 ---
 
-## Exit targets (ref: `roadmap.md` P1)
+## Targets — model-graph tools (Q1–Q10)
 
 - Q1–Q3, Q8, Q9 → `resolve_model`: ≥90% token reduction.
 - Q4, Q5 → `resolve_field`: ≥90% token reduction.
@@ -165,7 +158,7 @@ explicitly below so the computation is reproducible.
 - Q10 → handler returns `NotFoundError`; no baseline comparison.
 - Latency: P50 <20ms for model/field, <50ms for method; P99 <500ms across all.
 
-## Exit targets (ref: `roadmap.md` P2 — `resolve_view`)
+## Targets — view resolver (Q11–Q15)
 
 - Q11–Q13, Q15 → `resolve_view`: overall token reduction ≥70%; mean diff% vs live-Odoo golden <5%.
 - Q14 → handler returns `NotFoundError`; no baseline comparison.

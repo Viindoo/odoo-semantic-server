@@ -1,6 +1,6 @@
--- WP-16: relax the mode<->inherit_id biconditional CHECK on `views`.
+-- Relax the mode<->inherit_id biconditional CHECK on `views`.
 --
--- The WP-15 driver resolves `inherit_id` in a second pass after every view
+-- The view driver resolves `inherit_id` in a second pass after every view
 -- row for a run is inserted (xmlid → id lookup is cross-schema). During the
 -- first pass, extension rows carry `mode='extension'` with
 -- `inherit_id=NULL` — the original strict biconditional

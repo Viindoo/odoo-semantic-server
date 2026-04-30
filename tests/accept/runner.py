@@ -1,4 +1,4 @@
-"""Accept-test harness for Phase 1.
+"""Model-graph benchmark harness.
 
 Drives the 10 questions in `questions.md` against live handlers, measures:
 
@@ -7,9 +7,7 @@ Drives the 10 questions in `questions.md` against live handlers, measures:
   the handler JSON and the concatenated baseline files.
 - Latency: per-question P50 + P99 across N iterations (default 100).
 
-Writes `reports/phase-01-accept.md` (per-question table) and
-`reports/phase-01-accept-raw.json` (numeric data for CI + downstream
-processing).
+Writes a Markdown table + raw JSON under `reports/`.
 
 Designed to run against a throwaway tenant schema seeded with the
 committed fixture corpus. Requires `DATABASE_URL`.
@@ -284,16 +282,7 @@ def _run_question(
 
 def _render_markdown(results: list[QuestionResult], tenant: str, iterations: int) -> str:
     lines: list[str] = [
-        "---",
-        "status: draft",
-        "scope: reports/phase-01-accept",
-        "phase: P1",
-        "date: 2026-04-22",
-        "reads-with:",
-        "  - ../tests/accept/questions.md",
-        "---",
-        "",
-        "# Phase 1 accept-test results",
+        "# Model-graph benchmark results",
         "",
         f"Runner iterations per question: **{iterations}** (latency loop).",
         f"Live tenant schema: `{tenant}` (throwaway, dropped on teardown).",

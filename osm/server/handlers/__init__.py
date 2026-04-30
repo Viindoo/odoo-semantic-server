@@ -1,3 +1,3 @@
-"""P1 tool handlers: resolve_model, resolve_field, resolve_method."""
+"""MCP tool handlers."""
 
 from __future__ import annotations

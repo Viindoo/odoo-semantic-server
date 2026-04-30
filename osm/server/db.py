@@ -1,9 +1,8 @@
 """Lightweight DB helpers shared by all handlers.
 
-For P1 we use raw parameterised SQL against psycopg3. Schemas are inlined via
-format-string interpolation (tenant names are validated in `tenancy.py` so
-this is injection-safe) because identifiers cannot be passed as bound
-parameters.
+Raw parameterised SQL against psycopg3. Schemas are inlined via format-string
+interpolation (tenant names are validated in `tenancy.py` so this is
+injection-safe) because identifiers cannot be passed as bound parameters.
 """
 
 from __future__ import annotations

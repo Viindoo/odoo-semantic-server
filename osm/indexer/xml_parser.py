@@ -6,9 +6,9 @@ Mirrors the shape of ``python_parser.py``:
 - Warnings returned as a tuple of strings on the result (never raised for
   recoverable parse errors)
 
-Scope (WP-14): produce rows for the ``views`` and ``view_patches`` tables.
-Patch *application* (``apply_inheritance_specs``) is WP-15 and lives in a
-separate module.  This parser captures the raw patch shape only:
+Scope: produce rows for the ``views`` and ``view_patches`` tables. Patch
+*application* (``apply_inheritance_specs``) lives in ``view_resolver.py``.
+This parser captures the raw patch shape only:
 ``(ordinal, expr, position, content)``.
 """
 
@@ -62,7 +62,7 @@ class ParsedView:
     """One ``<record model="ir.ui.view">`` entry.
 
     ``inherit_xmlid`` is the raw ``ref="module.xmlid"`` string; FK resolution
-    to a ``views.id`` bigint is deferred to WP-15's second pass (mirrors
+    to a ``views.id`` bigint happens in the driver's second pass (mirrors
     ``resolver.py``'s ``override_of`` approach).
 
     For primary views, ``arch_xml`` holds the serialized root child of

@@ -1,4 +1,4 @@
-# Multi-stage image for the MCP server. Real command + entrypoint wired in WP-8.
+# Multi-stage image for the MCP server.
 
 FROM python:3.11-slim AS builder
 
@@ -28,6 +28,5 @@ WORKDIR /src
 
 COPY --from=builder /src /src
 
-# Placeholder entrypoint. WP-8 will replace this with the real FastMCP
-# server invocation.
-CMD ["python", "-c", "print('osm server: placeholder, implemented in WP-8')"]
+# Placeholder CMD until the real FastMCP entrypoint is wired in.
+CMD ["python", "-c", "print('osm server placeholder')"]

@@ -1,4 +1,4 @@
-# Dev topology for osm. Real production deployment covered in WP-10 / P3.
+# Dev topology for osm.
 #
 # Tailscale sidecar block below is commented out. Enable when you have a
 # reusable Tailscale auth key in .env (TS_AUTHKEY) and want db + mcp
@@ -27,7 +27,6 @@ services:
     #   - tailscale
 
   mcp:
-    # Placeholder: real server image + command wired up in WP-8.
     build:
       context: .
       dockerfile: docker/Dockerfile.server
@@ -54,7 +53,7 @@ services:
   #
   # tailscale:
   #   image: tailscale/tailscale:latest
-  #   hostname: osm-dev
+  #   hostname: osm-host
   #   environment:
   #     TS_AUTHKEY: ${TS_AUTHKEY}
   #     TS_EXTRA_ARGS: "--ssh"

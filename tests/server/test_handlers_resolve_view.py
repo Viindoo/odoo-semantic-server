@@ -1,7 +1,7 @@
 """Integration tests for ``osm.server.handlers.resolve_view``.
 
-Boots a throwaway tenant schema, runs the WP-6/WP-14 indexer over the shared
-fixture corpus, then asserts handler behaviour against the golden file
+Boots a throwaway tenant schema, runs the indexer over the shared fixture
+corpus, then asserts handler behaviour against the golden file
 ``tests/fixtures/golden/resolve_view.json``. DB-gated via ``DATABASE_URL``.
 """
 

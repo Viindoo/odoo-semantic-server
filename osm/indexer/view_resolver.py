@@ -3,12 +3,10 @@
 Pure-function module: given a primary view ``arch`` (bytes) and an ordered list
 of extension views plus their XPath patches, produce the final merged XML.
 Semantics mirror Odoo core's
-``odoo/tools/template_inheritance.py::apply_inheritance_specs`` — see
-``docs/specs/resolve_view.md`` §8 for the resolved behaviour around
-``position="replace"`` with further extensions.
+``odoo/tools/template_inheritance.py::apply_inheritance_specs``.
 
-No database access. Caller (WP-16 handler) is responsible for fetching
-``views`` + ``view_patches`` rows and sorting extensions by
+No database access. The caller is responsible for fetching ``views`` +
+``view_patches`` rows and sorting extensions by
 ``(priority ASC, load_order ASC)`` before invoking :func:`resolve_chain`.
 """
 
@@ -182,8 +180,8 @@ def _apply_attributes(node: etree._Element, spec: etree._Element) -> None:
 
     Matches Odoo core's basic semantics: empty value removes the attribute,
     non-empty sets it. The full ``add``/``remove``/``separator`` flavour is
-    intentionally out of scope for P2 — it's a corner-case used almost
-    exclusively in studio flows and can be added when real traffic demands it.
+    intentionally out of scope — it's a corner-case used almost exclusively
+    in studio flows and can be added when real traffic demands it.
     """
     for child in spec.iter("attribute"):
         attribute = child.get("name")

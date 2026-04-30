@@ -1,10 +1,10 @@
-"""Accept-test harness for Phase 2 — ``resolve_view`` top-50 benchmark.
+"""View-resolver benchmark — top-50 ``resolve_view`` correctness + latency.
 
-Same transport-bypass pattern as ``runner.py`` (WP-9): invokes the
-handler in-process via a psycopg cursor, measures correctness vs the
-live-Odoo golden dump committed under
-``tests/fixtures/golden/resolve_view_live/``, records token reduction +
-per-view latency, and writes a Markdown + JSON report.
+Same transport-bypass pattern as ``runner.py``: invokes the handler
+in-process via a psycopg cursor, measures correctness vs the live-Odoo
+golden dump committed under ``tests/fixtures/golden/resolve_view_live/``,
+records token reduction + per-view latency, and writes a Markdown + JSON
+report.
 
 Per-view pipeline:
 
@@ -20,7 +20,7 @@ Per-view pipeline:
 5. ``reduction% = (1 - handler_tokens / raw_tokens) * 100``.
 6. Latency: 100 iterations, record times, compute ``P50`` + ``P99``.
 
-Exit criteria (from ``roadmap.md`` P2 + ``tasks/phase-02-plan.md`` §WP-17):
+Targets:
 
 - Mean diff% across views with golden: ``< 5%``
 - Overall token reduction: ``≥ 70%``
@@ -29,8 +29,8 @@ Exit criteria (from ``roadmap.md`` P2 + ``tasks/phase-02-plan.md`` §WP-17):
   views must have a golden file available; otherwise the run fails with
   exit code 1 regardless of per-view results.
 
-Invocation (on osm-dev after dump_live_odoo_views.py has populated the
-fixture directory):
+Invocation (after `dump_live_odoo_views.py` has populated the fixture
+directory on a host with a live Odoo CE):
 
     DATABASE_URL=postgresql:///osm_live?user=osm \\
         OSM_TENANT=public \\
@@ -285,16 +285,7 @@ def _render_markdown(
     overall_p99 = max((r.p99_ms for r in ok_results), default=0.0)
 
     lines: list[str] = [
-        "---",
-        "status: draft",
-        "scope: reports/phase-02-accept",
-        "phase: P2",
-        "reads-with:",
-        "  - ../tests/accept/questions.md",
-        "  - ../tests/accept/top50_views.json",
-        "---",
-        "",
-        "# Phase 2 accept-test results — top-50 views",
+        "# View-resolver benchmark results — top-50 views",
         "",
         f"Iterations per view (latency loop): **{iterations}**",
         f"Tenant schema: `{tenant}`",

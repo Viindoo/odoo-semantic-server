@@ -20,8 +20,8 @@ Run from repo root against a Postgres with a full CE index populated:
         OSM_TENANT=public \\
         uv run python scripts/regenerate_top50_views.py
 
-Must run on ``osm-dev`` (where the full CE corpus is indexed). Not expected
-to succeed on a laptop with only the fixture subset.
+Requires a Postgres with the full CE corpus indexed; not expected to
+succeed on a host with only the fixture subset.
 """
 
 from __future__ import annotations

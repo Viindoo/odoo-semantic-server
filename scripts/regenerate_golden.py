@@ -1,13 +1,13 @@
 """One-shot: re-label the curated golden entries from live handler output.
 
-Runs the WP-6 indexer over the test fixture corpus into a throwaway tenant
+Runs the indexer over the test fixture corpus into a throwaway tenant
 schema, invokes each handler for every non-TODO entry in
 `tests/fixtures/golden/*.json`, and writes the normalised response back as
 the new golden. TODO skeletons are preserved untouched.
 
 Run from the repo root with a live Postgres:
 
-    DATABASE_URL=postgresql:///osm_wp6_test?user=soncrits \\
+    DATABASE_URL=postgresql:///osm_dev?user=osm \\
         uv run python scripts/regenerate_golden.py
 """
 

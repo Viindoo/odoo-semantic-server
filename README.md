@@ -58,16 +58,3 @@ uv run python -m osm.server            # FastMCP on stdio
 ```
 
 Target production experience (self-host): `docker compose up -d`, point the indexer at your addons, connect your AI client over MCP (stdio or HTTP on `:8765`).
-
-## Roadmap
-
-Twelve-to-sixteen-week MVP across four capability phases:
-
-1. **Phase 1 — Model graph** (`resolve_model`, `resolve_field`, `resolve_method`) — ✅ shipped
-2. **Phase 2 — View resolver** (`resolve_view` with inherited XPath patches) — in implementation
-3. **Phase 3 — Hybrid retrieval** (`find_examples` semantic + keyword)
-4. **Phase 4 — Full stack** (`impact_analysis`, hosted BYOC onboarding)
-
-## Project status
-
-Design confirmed 2026-04-22 for Phase 1 and Phase 2. Phase 1 is effectively complete — three P1 resolver tools (`resolve_model`, `resolve_field`, `resolve_method`) pass every exit criterion with wide margins; only the Docker Compose topology work is outstanding, blocked on host tooling. Phase 2 (XML view resolver) is in implementation — parser and fixture corpus shipped, DOM resolver next.

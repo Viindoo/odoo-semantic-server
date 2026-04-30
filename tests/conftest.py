@@ -1,11 +1,11 @@
 """Shared pytest fixtures.
 
-A real Postgres connection is optional for P1 smoke tests. If
-``DATABASE_URL`` is set in the environment we yield a live psycopg
-connection; otherwise tests that require it are skipped.
+A real Postgres connection is optional. If ``DATABASE_URL`` is set in the
+environment we yield a live psycopg connection; otherwise tests that
+require it are skipped.
 
 ``ODOO_SOURCE_PATH`` is an optional path to a local Odoo checkout used by
-acceptance tests that parse real Odoo source. When unset, those tests skip.
+benchmark tests that parse real Odoo source. When unset, those tests skip.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# Multi-stage image for the indexer one-shot. Real CLI wired up in WP-6.
+# Multi-stage image for the indexer one-shot.
 
 FROM python:3.11-slim AS builder
 
@@ -26,5 +26,5 @@ WORKDIR /src
 
 COPY --from=builder /src /src
 
-# Placeholder. WP-6 lands scripts/index.py + a real CMD.
-CMD ["python", "-c", "print('osm indexer: placeholder, implemented in WP-6')"]
+# Placeholder CMD until the real indexer entrypoint is wired in.
+CMD ["python", "-c", "print('osm indexer placeholder')"]

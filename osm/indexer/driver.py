@@ -151,8 +151,8 @@ def _model_names_for(model: ParsedModel) -> list[str]:
 def _collect_xml_view_files(module: ManifestRecord) -> list[Path]:
     """Return all .xml files under ``<module_dir>/views/`` (recursive).
 
-    Mirrors Odoo's convention — views live under ``views/``. Controllers
-    templates and report templates are out of scope for the WP-15 resolver.
+    Mirrors Odoo's convention — views live under ``views/``. Controller
+    templates and report templates are out of scope for the resolver.
 
     Symlink escape guard: a compromised/malicious addon checkout could drop a
     symlink under ``views/`` pointing outside the module tree (e.g. at
@@ -184,8 +184,7 @@ def _collect_python_files(module: ManifestRecord) -> list[Path]:
     """Return all .py files under <module_dir>/models/ (recursive).
 
     Includes __init__.py so the conditional-import scanner can be fed later.
-    Only models/ is walked in P1; controllers/, wizards/ are out of scope for
-    Phase 1 indexer.
+    Only models/ is walked; controllers/, wizards/ are out of scope.
 
     Symlink escape guard: matches ``_collect_xml_view_files`` — a malicious
     addon tree could symlink ``models/evil.py`` at external code. Skip any
@@ -795,7 +794,7 @@ def index(
 
     `tenant` is pinned into search_path so unqualified DDL/DML lands in the
     tenant schema. The public schema is second in the path so shared tables
-    (if any) remain visible for reads, matching ADR-0004.
+    (if any) remain visible for reads.
     """
     stats = IndexStats()
     manifests = scan_addon_roots(list(addon_roots))
@@ -877,7 +876,7 @@ def index(
                 )
 
         # Parse EVERY file (reparse or not) so the resolver sees a complete
-        # universe. libcst is fast enough at P1 scale.
+        # universe. libcst is fast enough at current corpus scale.
         for plan in plans:
             parsed_results[plan.file_path_key] = parse_file(
                 plan.path,
@@ -952,7 +951,7 @@ def index(
         )
         stats.override_links_written = link_updates
 
-        # ---- XML view indexing (WP-15) ----
+        # ---- XML view indexing ----
         # Per-module view upsert. Inherit-id FK resolution is a second pass
         # so a child can still link forward to a parent defined in a module
         # that is scanned later in the same run.
@@ -1139,10 +1138,10 @@ def _upsert_field_row_via_driver(
             cur_default, cur_related_path, cur_depends, cur_file,
             cur_start, cur_end,
         ) = row
-        # P1 always inserts related_field=None — the parser does not yet split
+        # related_field is always None today — the parser does not yet split
         # `related="a.b.c"` into (related_model="a", related_field="b.c"). When
-        # P2 populates it, replace `cur_rfield is None` with a proper compare
-        # OR the UPDATE will never fire on drift.
+        # that lands, replace `cur_rfield is None` with a proper compare or
+        # the UPDATE will never fire on drift.
         same = (
             cur_hash == parsed.content_hash
             and cur_type == parsed.field_type
@@ -1174,7 +1173,7 @@ def _upsert_field_row_via_driver(
              WHERE id=%s
             """,
             (
-                parsed.field_type, parsed.comodel_name, None,  # related_field: P1 always None
+                parsed.field_type, parsed.comodel_name, None,  # related_field: not yet populated
                 parsed.compute, parsed.inverse, parsed.search,
                 parsed.store, parsed.required, parsed.readonly,
                 parsed.default_source, parsed.related, depends_list,

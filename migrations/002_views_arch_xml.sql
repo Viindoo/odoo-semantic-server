@@ -1,4 +1,4 @@
--- WP-16: store serialized primary arch bytes alongside the `views` row so
+-- Store serialized primary arch bytes alongside the `views` row so
 -- `resolve_view` can run the DOM resolver without reading source files from
 -- disk (MCP servers run detached from the indexed addon tree).
 --

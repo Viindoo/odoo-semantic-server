@@ -11,9 +11,9 @@ Matches the golden shape in `tests/fixtures/golden/resolve_field.json`:
       "warnings": [...]
     }
 
-Chain ordering follows the _base_fields stack rule from `docs/specs/resolve_field.md`
-§5b: earliest module first, last-loaded overrides. The handler walks the
-override_of link persisted in the fields table (written by the WP-6 driver).
+Chain ordering follows Odoo's `_base_fields` stack rule: earliest module
+first, last-loaded overrides. The handler walks the `override_of` link
+persisted in the fields table by the indexer.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def resolve_field(
         raise InvalidInputError("model_name must be non-empty")
     if not field_name:
         raise InvalidInputError("field_name must be non-empty")
-    _ = include_source_snippets  # snippet attach is P2+; accepted for forward compat
+    _ = include_source_snippets  # snippet attach not yet implemented; accepted for forward compat
 
     sql = union_all(
         """

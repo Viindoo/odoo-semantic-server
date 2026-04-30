@@ -1,4 +1,4 @@
-"""Unit tests for WP-6 driver helpers that don't require a live Postgres."""
+"""Unit tests for indexer driver helpers that don't require a live Postgres."""
 
 from __future__ import annotations
 

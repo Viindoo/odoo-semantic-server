@@ -10,7 +10,7 @@ bash scripts/bootstrap.sh                       # install deps into .venv via uv
 cp .env.example .env                            # fill POSTGRES_PASSWORD
 docker compose up -d db                         # start Postgres
 make migrate                                    # create public schema
-make test                                       # 237 pass / 22 skip expected
+make test                                       # full pytest suite
 make index ADDONS=./tests/fixtures/odoo_ce_subset TENANT=public GIT_SHA=fixture0
 uv run python -m osm.server                     # FastMCP on stdio
 ```
@@ -49,7 +49,7 @@ Keys that matter on a dev box:
 
 - `DATABASE_URL` — the indexer + server read this
 - `OSM_TENANT` — `public` for shared Odoo CE, any other schema for a customer tenant
-- `TS_AUTHKEY` — Tailscale sidecar auth key (leave empty until you enable the sidecar in `docker-compose.yml`; see ADR-0005)
+- `TS_AUTHKEY` — Tailscale sidecar auth key (leave empty until you enable the sidecar in `docker-compose.yml`)
 
 ### 3. Start Postgres
 
@@ -68,10 +68,10 @@ make migrate SCHEMA=acme             # create a tenant schema later
 ### 5. Run the test suite
 
 ```bash
-make test                            # expect 237 pass / 22 skip on a fresh box
+make test
 ```
 
-The 22 skipped tests need `ODOO_SOURCE_PATH` set to a local Odoo 17.0 checkout. To run them:
+A subset of tests is skipped unless `ODOO_SOURCE_PATH` points to a local Odoo 17.0 checkout. To run them:
 
 ```bash
 export ODOO_SOURCE_PATH=/path/to/odoo-17.0
@@ -87,7 +87,7 @@ make index \
     GIT_SHA=fixture0
 ```
 
-This populates the `public` schema with the 10-module Odoo CE subset used by the accept tests.
+This populates the `public` schema with the Odoo CE subset used by the benchmark suite.
 
 ### 7. Start the MCP server
 
@@ -104,7 +104,7 @@ uv run python -m osm.server --http --host 127.0.0.1 --port 8765
 From another shell, smoke-test:
 
 ```bash
-curl -s http://127.0.0.1:8765/ | jq .   # should list the 3 P1 tools
+curl -s http://127.0.0.1:8765/ | jq .   # lists registered MCP tools
 ```
 
 ## Common commands (`make`)
@@ -119,9 +119,9 @@ curl -s http://127.0.0.1:8765/ | jq .   # should list the 3 P1 tools
 | `make migrate [SCHEMA=<name>]` | apply SQL migrations to a schema |
 | `make index ADDONS=<paths> TENANT=<name> GIT_SHA=<sha>` | run the indexer |
 
-## Acceptance test (Phase 1 benchmark)
+## Benchmark suite
 
-Once indexing is done, run the P1 accept suite:
+Once indexing is done, run the model-graph benchmark:
 
 ```bash
 uv run python -m tests.accept.runner --tenant public --iterations 10
@@ -134,7 +134,7 @@ uv run python -m tests.accept.runner --tenant public --iterations 10
 | --- | --- |
 | `FATAL: password authentication failed` | `.env` password ≠ what Postgres was initialised with. Blow away the volume: `docker compose down -v && docker compose up -d db && make migrate` |
 | `lxml` wheel fails to build | `apt install libxml2-dev libxslt1-dev` then `uv sync --extra dev --reinstall` |
-| 22 extra tests skipped | set `ODOO_SOURCE_PATH=<path to odoo-17.0 source>` and re-run |
+| Several tests skipped | set `ODOO_SOURCE_PATH=<path to odoo-17.0 source>` and re-run |
 | `relation "modules" does not exist` | forgot `make migrate` after fresh `docker compose up -d db` |
 | MCP client gets 0 tools | indexer not yet run against the tenant — run `make index` first |
 | pgvector error | using wrong Postgres image; compose pins `pgvector/pgvector:pg16` |

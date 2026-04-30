@@ -1,7 +1,7 @@
 """Handler for the `resolve_model` MCP tool.
 
-Matches `docs/specs/resolve_model.md` §3 output schema at the minimum-viable
-level agreed with the golden fixture (`tests/fixtures/golden/resolve_model.json`):
+Output shape matches the golden fixture
+(`tests/fixtures/golden/resolve_model.json`):
 
     {
       "model_name": "...",
@@ -12,9 +12,8 @@ level agreed with the golden fixture (`tests/fixtures/golden/resolve_model.json`
       "warnings": [...]
     }
 
-`fields_contributed` / `methods_contributed` summaries from spec §3 are
-deferred — callers can fetch them through `resolve_field` / `resolve_method`
-when needed.
+Per-module field/method summaries are not returned here — callers fetch them
+via `resolve_field` / `resolve_method` when needed.
 """
 
 from __future__ import annotations
@@ -107,9 +106,8 @@ def resolve_model(
     if sha is None:
         raise StaleIndexError("stale_cross_schema_ref on models rows")
 
-    # include_* flags are accepted for forward compatibility; field/method
-    # summaries live in dedicated tools for P1 so we do not re-derive them
-    # here.
+    # include_* flags accepted for forward compatibility; field/method
+    # summaries live in dedicated tools so we do not re-derive them here.
     _ = include_field_summary, include_method_summary
 
     return {

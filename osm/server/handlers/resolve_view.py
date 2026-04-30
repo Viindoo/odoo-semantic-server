@@ -20,7 +20,7 @@ Lookup strategy:
        inheritance is not supported, see data-model/views.md invariants).
     3. Interleave tenant + public chains and sort by
        ``(priority ASC, load_order ASC, xmlid ASC)`` — mirrors the
-       multi-tenancy model in ADR-0004.
+       multi-tenancy overlay (tenant rows win on tie).
     4. Fetch `view_patches` per extension row, ordered by `ordinal`.
     5. Run :func:`osm.indexer.view_resolver.resolve_chain` over the sorted
        extension list against the primary `arch_xml`.
@@ -239,7 +239,7 @@ def resolve_view(
         raise NotFoundError(f"view {xmlid!r} not in index")
 
     # Pick the primary row — tenant takes precedence over public when the same
-    # xmlid exists in both, matching the ADR-0004 overlay model.
+    # xmlid exists in both (multi-tenant overlay).
     primary: _ChainRow | None = None
     for schema in reversed(ctx.schemas):  # tenant last in schemas → check last first
         for row in per_schema_rows.get(schema, []):
