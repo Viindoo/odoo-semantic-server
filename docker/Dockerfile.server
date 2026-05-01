@@ -28,5 +28,4 @@ WORKDIR /src
 
 COPY --from=builder /src /src
 
-# Placeholder CMD until the real FastMCP entrypoint is wired in.
-CMD ["python", "-c", "print('osm server placeholder')"]
+CMD ["python", "-m", "osm.server"]

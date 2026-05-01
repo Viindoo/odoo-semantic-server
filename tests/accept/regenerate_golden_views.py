@@ -4,12 +4,12 @@ Runs the indexer over the test fixture corpus into a throwaway tenant
 schema, invokes ``resolve_view`` for every non-TODO entry in
 ``tests/fixtures/golden/resolve_view.json``, and writes the normalised response
 back as the new golden. TODO skeletons and entries marked ``skip_handler`` are
-preserved untouched. Mirrors ``scripts/regenerate_golden.py``.
+preserved untouched. Mirrors ``regenerate_golden.py``.
 
 Run from the repo root with a live Postgres:
 
     DATABASE_URL=postgresql:///osm_dev?user=osm \\
-        uv run python scripts/regenerate_golden_views.py
+        uv run python tests/accept/regenerate_golden_views.py
 """
 
 from __future__ import annotations

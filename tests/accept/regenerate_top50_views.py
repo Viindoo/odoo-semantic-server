@@ -18,7 +18,7 @@ Run from repo root against a Postgres with a full CE index populated:
 
     DATABASE_URL=postgresql:///osm_live?user=soncrits \\
         OSM_TENANT=public \\
-        uv run python scripts/regenerate_top50_views.py
+        uv run python tests/accept/regenerate_top50_views.py
 
 Requires a Postgres with the full CE corpus indexed; not expected to
 succeed on a host with only the fixture subset.
@@ -105,7 +105,7 @@ def main() -> int:
             timespec="seconds"
         ),
         "_regenerated_by": (
-            "scripts/regenerate_top50_views.py "
+            "tests/accept/regenerate_top50_views.py "
             f"(schema={schema}, rows={len(entries)})"
         ),
         "_notes": (

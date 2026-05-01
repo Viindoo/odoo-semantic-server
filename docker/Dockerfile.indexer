@@ -12,6 +12,8 @@ WORKDIR /src
 COPY pyproject.toml ./
 COPY uv.lock* ./
 COPY osm ./osm
+COPY scripts ./scripts
+COPY migrations ./migrations
 
 RUN uv sync --frozen --no-dev || uv sync --no-dev
 
@@ -26,5 +28,4 @@ WORKDIR /src
 
 COPY --from=builder /src /src
 
-# Placeholder CMD until the real indexer entrypoint is wired in.
-CMD ["python", "-c", "print('osm indexer placeholder')"]
+ENTRYPOINT ["python", "scripts/index.py"]

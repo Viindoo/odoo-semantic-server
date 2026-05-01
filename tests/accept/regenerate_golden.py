@@ -8,7 +8,7 @@ the new golden. TODO skeletons are preserved untouched.
 Run from the repo root with a live Postgres:
 
     DATABASE_URL=postgresql:///osm_dev?user=osm \\
-        uv run python scripts/regenerate_golden.py
+        uv run python tests/accept/regenerate_golden.py
 """
 
 from __future__ import annotations

@@ -34,19 +34,35 @@ Every response returns the git SHA the answer was computed against, so callers c
 
 Correctness is the floor. Token reduction is what customers pay for.
 
-## The overlay model
+## How it works
 
-Customer code never re-indexes Odoo Community Edition from scratch. CE lives in a shared index, refreshed centrally. Each customer has a private index for their own addons. Queries union the two at runtime and resolve overrides with customer modules winning — the same ordering Odoo itself applies on boot.
+Two distinct lifecycles, sharing one Postgres instance.
 
-## Tiers
+```text
+                   ┌──────────────────────────┐
+   Odoo source ──► │      Indexer (offline)   │ ──► Postgres
+   (git repos)     │  manifest → load order   │     (graph + cache + vectors)
+                   │  → libcst (Python)       │
+                   │  → lxml (XML views)      │
+                   │  → resolver (override)   │
+                   └──────────────────────────┘
+                                                          ▲
+                                                          │ recursive CTE
+                                                          │ across (public + tenant)
+   AI client ──────► MCP server (stdio/http) ─────────────┘
+   (Claude Code,        │
+    Cursor, …)          └─► returns {result, indexed_at_sha, warnings}
+```
 
-- **Viindoo internal** — free, indefinitely. First users, workflow validation, bug feedback.
-- **Hosted BYOC** — **$10 per project per month**. Point the service at a private addon repository; we index it alongside the shared Odoo CE index. No code leaves your Git origin.
-- **Self-host** — OSS core, Docker Compose, one command. For on-prem or compliance-bound deployments.
+**Indexer.** Walks one or more addon paths, parses Python with libcst (preserves whitespace for byte-accurate snippets) and XML with lxml, computes content hashes, and upserts rows into `modules`, `models`, `fields`, `methods`, `views`, `view_patches`. Idempotent: re-running on an unchanged tree writes nothing outside `cache_metadata`. Run as a one-shot when commits land.
+
+**Server.** Stateless FastMCP process. Each tool call validates input, runs a recursive CTE across `public.<table>` UNION ALL `<tenant>.<table>`, applies override semantics (last-loaded wins for fields, first-MRO for methods, XPath patches in `(priority, load_order)` order for views), and returns a structured envelope. No disk reads at query time.
+
+**The overlay model.** Customer code never re-indexes Odoo Community Edition from scratch. CE lives in the shared `public` schema, refreshed centrally. Each customer has a private schema for their own addons. Queries union the two at runtime and resolve overrides with customer modules winning — the same ordering Odoo itself applies on boot.
 
 ## Quickstart
 
-Dev setup in six commands — prerequisites, full walkthrough, and troubleshooting in [`SETUP.md`](SETUP.md):
+Six commands — prerequisites, full walkthrough, and troubleshooting in [`SETUP.md`](SETUP.md):
 
 ```bash
 bash scripts/bootstrap.sh
@@ -58,3 +74,86 @@ uv run python -m osm.server            # FastMCP on stdio
 ```
 
 Target production experience (self-host): `docker compose up -d`, point the indexer at your addons, connect your AI client over MCP (stdio or HTTP on `:8765`).
+
+## Repository layout
+
+```text
+.
+├── osm/                       # Application code
+│   ├── indexer/               #   Source → Postgres pipeline
+│   │   ├── manifest.py        #     read __manifest__.py
+│   │   ├── load_order.py      #     simulate Odoo's module load order
+│   │   ├── python_parser.py   #     libcst: models, fields, methods
+│   │   ├── xml_parser.py      #     lxml: views + view_patches
+│   │   ├── view_resolver.py   #     apply XPath patches → final XML
+│   │   ├── resolver.py        #     compute override chains
+│   │   └── driver.py          #     orchestrator (idempotent upsert)
+│   └── server/                #   FastMCP server
+│       ├── app.py             #     register tools, lifespan, transports
+│       ├── tenancy.py         #     resolve tenant from env
+│       ├── db.py              #     UNION ALL tenant + public, stale-SHA check
+│       ├── errors.py          #     400 / 404 / 409 mapping
+│       └── handlers/          #     one file per tool
+├── migrations/                # SQL migrations (idempotent, schema-neutral)
+├── scripts/                   # Operator CLIs: bootstrap, migrate, create_tenant, index
+├── tests/
+│   ├── indexer/               #   Unit + integration for the indexer pipeline
+│   ├── server/                #   Handler unit + golden tests
+│   ├── migrations/            #   Schema-diff test (public vs tenant)
+│   ├── accept/                #   End-to-end benchmark suite + live-Odoo dump
+│   └── fixtures/              #   Frozen Odoo CE subset + hand-crafted edge cases
+├── docker/                    # Dockerfile.server + Dockerfile.indexer
+├── docker-compose.yml         # Dev topology (Postgres + MCP + optional Tailscale)
+└── .github/workflows/         # CI
+```
+
+Single Python package (`osm/`), two subpackages (`indexer/`, `server/`). Schema lives in `migrations/`, not in code. Operator commands live in `scripts/`. Test maintenance scripts live alongside their tests in `tests/accept/`.
+
+## Daily commands
+
+All routine operations go through `make`. The Makefile is the source of truth — read it for the full set.
+
+| Command | Does |
+| --- | --- |
+| `make dev` | `uv sync --extra dev` — install runtime + dev deps |
+| `make lint` | `ruff check .` |
+| `make typecheck` | `mypy osm` |
+| `make test` | `pytest -q` — unit + integration (DB-gated tests skip without `DATABASE_URL`) |
+| `make migrate [SCHEMA=<name>]` | Apply SQL migrations to a schema (default `public`) |
+| `make index ADDONS="<paths>" TENANT=<name> GIT_SHA=<sha>` | Run the indexer pipeline |
+| `make up` / `make down` | Start / stop the full Docker Compose stack |
+
+Common workflows:
+
+```bash
+# First time setup
+make dev && cp .env.example .env && docker compose up -d db && make migrate
+
+# Index a fixture corpus to play with
+make index ADDONS=./tests/fixtures/odoo_ce_subset TENANT=public GIT_SHA=fixture0
+
+# Provision a customer tenant
+uv run python scripts/create_tenant.py acme
+make migrate SCHEMA=acme
+make index ADDONS=/path/to/acme-addons TENANT=acme GIT_SHA=$(cd /path/to/acme-addons && git rev-parse HEAD)
+
+# Run the server
+uv run python -m osm.server                            # stdio (default for AI clients)
+uv run python -m osm.server --http --port 8765        # HTTP (debugging)
+
+# Run the benchmark suite (requires a live index + DATABASE_URL)
+uv run python -m tests.accept.runner --tenant public --iterations 10
+```
+
+Re-labelling golden test fixtures (when handler output shape changes):
+
+```bash
+DATABASE_URL=postgresql:///osm_dev?user=osm \
+    uv run python tests/accept/regenerate_golden.py
+```
+
+## Tiers
+
+- **Viindoo internal** — free, indefinitely. First users, workflow validation, bug feedback.
+- **Hosted BYOC** — **$10 per project per month**. Point the service at a private addon repository; we index it alongside the shared Odoo CE index. No code leaves your Git origin.
+- **Self-host** — OSS core, Docker Compose, one command. For on-prem or compliance-bound deployments.

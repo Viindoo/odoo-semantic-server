@@ -7,7 +7,9 @@ latency.
 - `runner.py` — model-graph runner (10 questions, model/field/method tools).
 - `runner_p2.py` — view-resolver runner (top-50 views via `resolve_view`).
 - `top50_views.json` — list of 50 primary views with the most
-  extensions. Regenerate with `scripts/regenerate_top50_views.py`.
+  extensions. Regenerate with `regenerate_top50_views.py`.
+- `regenerate_golden.py` / `regenerate_golden_views.py` —
+  re-label golden fixtures from live handler output (one-shot).
 - `dump_live_odoo_views.py` — one-shot dump of canonical view arch
   from a live Odoo CE 17.0 install into
   `tests/fixtures/golden/resolve_view_live/`.
@@ -25,7 +27,7 @@ laptop fixture subsets cannot reproduce this.
 # repo root, against a live osm DB:
 DATABASE_URL=postgresql:///osm_live?user=osm \
   OSM_TENANT=public \
-  uv run python scripts/regenerate_top50_views.py
+  uv run python tests/accept/regenerate_top50_views.py
 ```
 
 Writes `tests/accept/top50_views.json` with `_regenerated_at` filled in.
