@@ -13,7 +13,11 @@ Per-view pipeline:
    the dump script, but re-canonicalizing is cheap and defends against
    whitespace drift introduced by file-system round-trips).
 3. Compute ``diff%`` via ``difflib.unified_diff`` line count divided
-   by ``max(golden_lines, handler_lines) * 100``.
+   by ``max(golden_lines, handler_lines) * 100``. Both sides are
+   pretty-printed (one element per line) before diffing — canonical XML
+   collapses to a single line for most views, which would make any
+   difference register as 200%. Token counts still use the compact
+   canonical form.
 4. Tiktoken ``cl100k_base`` counts for (a) handler's final XML and
    (b) raw-source baseline = concatenation of every file_path in the
    handler's chain (file bytes, UTF-8).
@@ -112,9 +116,20 @@ def _count_tokens(text: str) -> int:
     return len(_ENCODER.encode(text))
 
 
+def _pretty_lines(canonical_xml: str) -> list[str]:
+    # canonical XML collapses to a single line for most views; pretty-print
+    # so unified-diff line counts have meaningful denominators.
+    if not canonical_xml.strip():
+        return []
+    parser = etree.XMLParser(remove_blank_text=True, resolve_entities=False, no_network=True)
+    root = etree.fromstring(canonical_xml.encode("utf-8"), parser=parser)
+    pretty: str = etree.tostring(root, pretty_print=True, encoding="unicode")
+    return pretty.splitlines()
+
+
 def _diff_pct(golden_canonical: str, handler_canonical: str) -> float:
-    golden_lines = golden_canonical.splitlines()
-    handler_lines = handler_canonical.splitlines()
+    golden_lines = _pretty_lines(golden_canonical)
+    handler_lines = _pretty_lines(handler_canonical)
     diff = list(
         difflib.unified_diff(
             golden_lines, handler_lines,
@@ -292,9 +307,11 @@ def _render_markdown(
         f"Coverage (views with live-Odoo golden): **{coverage}/{len(results)}** "
         f"(threshold: {coverage_threshold})",
         "",
-        "Diff formula: ``len(unified_diff_lines) / max(len(golden_lines), "
+        "Diff formula: pretty-print both canonical XMLs (one element per "
+        "line), then ``len(unified_diff_lines) / max(len(golden_lines), "
         "len(handler_lines)) * 100`` — ``--`` / ``++`` / ``@@`` header "
-        "lines excluded.",
+        "lines excluded. Pretty-print step prevents single-line canonical "
+        "XML from collapsing every diff to 200%.",
         "",
         "## Per-view results",
         "",
