@@ -175,8 +175,8 @@ python -m src.mcp.server                  # lắng nghe tại :8002
 
 > Xem [`TASKS.md`](TASKS.md) để biết task nào đang làm và task nào tiếp theo.
 
-**Milestone 1 — "First Wow":** `[x]` Auto tests 16/16 PASSED — còn manual E2E với Claude Code thật  
-**Milestone 2 — "View Wow":** `[ ]` Chưa bắt đầu  
+**Milestone 1 — "First Wow":** `[x]` Auto tests 56/56 PASSED — còn manual E2E với Claude Code thật  
+**Milestone 2 — "View Wow":** `[x]` Code complete — 100 tests PASS, còn manual E2E `resolve_view`  
 **Milestone 3 — "Semantic Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu  

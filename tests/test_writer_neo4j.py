@@ -391,6 +391,31 @@ def test_write_extends_tmpl_edge(writer, neo4j_driver):
     assert rec["cnt"] == 1
 
 
+def test_write_extends_tmpl_unresolved(writer, neo4j_driver, caplog):
+    """EXTENDS_TMPL tới base chưa index → placeholder + edge unresolved=true."""
+    import logging
+
+    ext_q = QWebInfo(
+        xmlid="viin_sale.portal_tmpl_orphan", module="viin_sale",
+        odoo_version=TEST_VERSION, inherit_xmlid="missing.portal_tmpl",
+    )
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([make_view_parse_result("viin_sale", qweb=[ext_q])])
+
+    assert "unresolved EXTENDS_TMPL" in caplog.text
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (ext:QWebTmpl {xmlid: $ext, odoo_version: $v})
+                  -[r:EXTENDS_TMPL {unresolved: true}]->
+                  (ph:QWebTmpl {xmlid: $base, module: '__unresolved__', odoo_version: $v})
+            RETURN ph.unresolved AS flag
+        """, ext="viin_sale.portal_tmpl_orphan",
+             base="missing.portal_tmpl", v=TEST_VERSION).single()
+    assert rec is not None, "Placeholder node + unresolved edge must be created"
+    assert rec["flag"] is True
+
+
 def test_view_xpaths_arrays_length_invariant(writer, neo4j_driver):
     """xpaths_exprs và xpaths_positions phải luôn cùng độ dài (parallel array invariant)."""
     view = ViewInfo(

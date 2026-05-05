@@ -174,6 +174,7 @@ def _write_view_parse_result(tx, result: ViewParseResult) -> None:
             rec = tx.run("""
                 MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
                 MATCH (base:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
+                WHERE NOT coalesce(base.unresolved, false)
                 MERGE (ext)-[:EXTENDS_TMPL]->(base)
                 RETURN 1 AS ok
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
@@ -183,6 +184,14 @@ def _write_view_parse_result(tx, result: ViewParseResult) -> None:
                     "unresolved EXTENDS_TMPL: %s → %s (version %s) — base template not indexed",
                     qweb.xmlid, qweb.inherit_xmlid, qweb.odoo_version,
                 )
+                tx.run("""
+                    MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+                    MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid,
+                                                 module: '__unresolved__', odoo_version: $ver})
+                    ON CREATE SET placeholder.unresolved = true
+                    MERGE (ext)-[:EXTENDS_TMPL {unresolved: true}]->(placeholder)
+                """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
+                     inherit_xmlid=qweb.inherit_xmlid)
 
 
 class Neo4jWriter:
