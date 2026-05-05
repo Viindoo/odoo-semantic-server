@@ -223,6 +223,28 @@ CI sẽ fail nếu lint không pass.
 
 ---
 
+## Known Upstream Warnings
+
+Running `make test-integration` emits warnings from upstream libraries that cannot be fixed in this project:
+
+**1. fastmcp / authlib:**
+```
+AuthlibDeprecationWarning: authlib.jose module is deprecated, please use joserfc instead.
+```
+Source: `fastmcp/server/auth/providers/jwt.py` — fastmcp eagerly imports `authlib.jose` even when auth is not used.
+Status: Upstream issue in fastmcp. Will be resolved when fastmcp migrates to joserfc or lazy-loads auth.
+
+**2. testcontainers import-time warnings (2 warnings):**
+```
+DeprecationWarning: The @wait_container_is_ready decorator is deprecated...
+```
+Source: `testcontainers/core/waiting_utils.py:215` and `testcontainers/neo4j/__init__.py:63` — the `@wait_container_is_ready()` decorator fires when testcontainers modules are imported. Our `_Neo4jContainer` subclass prevents the runtime call, but import-time application cannot be avoided.
+Status: Upstream issue in testcontainers. Will be resolved when testcontainers removes the deprecated decorator.
+
+**Action for both:** Do NOT suppress with `filterwarnings`. Monitor releases and upgrade when fixed.
+
+---
+
 ## Cấu Trúc Source
 
 ```
