@@ -123,15 +123,26 @@ def test_write_inherits_edge(writer, neo4j_driver):
 
 
 def test_write_delegates_to_edge(writer, neo4j_driver):
-    module = ModuleInfo(
-        name="hr", odoo_version=TEST_VERSION,
-        repo="hr_repo", path="/tmp", depends=[], version_raw="",
+    # Seed res.users first — topo-sort guarantees base is indexed before hr
+    base_module = ModuleInfo(
+        name="base", odoo_version=TEST_VERSION,
+        repo="base_repo", path="/tmp", depends=[], version_raw="",
     )
-    model = ModelInfo(
+    base_model = ModelInfo(
+        name="res.users", module="base", odoo_version=TEST_VERSION,
+    )
+    hr_module = ModuleInfo(
+        name="hr", odoo_version=TEST_VERSION,
+        repo="hr_repo", path="/tmp", depends=["base"], version_raw="",
+    )
+    hr_model = ModelInfo(
         name="hr.employee", module="hr", odoo_version=TEST_VERSION,
         inherits={"res.users": "user_id"},
     )
-    writer.write_results([ParseResult(module=module, models=[model])])
+    writer.write_results([
+        ParseResult(module=base_module, models=[base_model]),
+        ParseResult(module=hr_module, models=[hr_model]),
+    ])
 
     with neo4j_driver.session() as session:
         rec = session.run("""
