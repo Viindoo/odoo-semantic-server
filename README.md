@@ -51,23 +51,6 @@ Odoo repos (~/git/*_17.0/)
 
 ---
 
-## Nguyên Tắc Phát Triển
-
-### Boil the Lake
-
-> "Làm đúng từ đầu rẻ hơn làm lại."
-
-Không hardcode version, không giả định single-repo, không bỏ qua edge case.  
-Schema version-aware và cross-repo từ đầu — migration sau khi có dữ liệu tốn gấp 10 lần.
-
-### Ship Wow Product
-
-> "Người dùng phải có cảm xúc 'Wow' khi lần đầu dùng sản phẩm."
-
-Output của MCP tools phải dễ đọc, có cấu trúc cây rõ ràng — AI client đọc được ngay, không cần parse thêm.
-
----
-
 ## Onboard End User (Zero Install)
 
 Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
