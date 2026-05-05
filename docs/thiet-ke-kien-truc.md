@@ -28,7 +28,7 @@ Cảm xúc "Wow" đến khi:
 
 1. Developer hỏi *"Explain `account.move` inheritance chain in 17.0"* → AI trả lời đúng cross-repo, không hallucinate tên field hay method.
 2. Engineering lead chạy `impact_analysis("field", "sale.order.amount_total")` → nhận được danh sách chính xác 47 views và 12 modules bị ảnh hưởng.
-3. Developer mới onboard chạy `docker compose up -d` → 5 phút sau có full Odoo semantic engine chạy trên máy local.
+3. Developer mới onboard thêm **1 dòng URL** vào config Claude Code → lập tức dùng được, không cài thêm gì.
 
 Khi AI agent thiết kế response format hay UX: **ưu tiên output dễ đọc, có cấu trúc, không thừa thãi.**
 
@@ -42,60 +42,82 @@ Khi AI agent thiết kế response format hay UX: **ưu tiên output dễ đọc
 - AI coding tool giảm hallucination về Odoo API xuống dưới 5%
 - Developer tiết kiệm 30–50% thời gian tìm hiểu codebase khi onboard hoặc debug
 - Impact analysis chính xác trước khi thay đổi bất kỳ field/method nào
-- Bất kỳ team nào cũng deploy được trong dưới 10 phút
+- Server admin deploy được trong dưới 10 phút; end user không cần cài gì — chỉ cần URL + API key
 
 ---
 
-## Kiến Trúc Tổng Thể
+## Mô Hình Triển Khai
+
+Hệ thống chạy hoàn toàn trên **cloud server**. End user không cài bất kỳ thứ gì lên máy — chỉ cần thêm URL vào config của AI coding tool.
 
 ```
-~/git/*_{version}/                     (419+ thư mục, 174 repo, 12 versions)
-        │
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│  INDEXER PIPELINE                                        │
-│                                                          │
-│  1. Scanner          quét repo, đọc git branch          │
-│  2. Registry Builder manifest → {module→repo} theo ver  │
-│  3. Dep Resolver     topological sort cross-repo        │
-│  4. Parsers                                              │
-│     ├─ Python AST    models / fields / methods          │
-│     ├─ lxml          XML views / QWeb templates         │
-│     └─ tree-sitter   JS patch() / OWL components        │
-│  5. Embedder         code chunks → vectors              │
-└──────────────┬──────────────────┬───────────────────────┘
-               │                  │
-               ▼                  ▼
-       ┌──────────────┐   ┌──────────────────┐
-       │    Neo4j     │   │    PostgreSQL     │
-       │  (Graph DB)  │   │  + pgvector      │
-       │              │   │                  │
-       │ modules      │   │ embeddings       │
-       │ models       │   │ (theo version)   │
-       │ fields       │   │                  │
-       │ methods      │   │ api_keys         │
-       │ views (XML)  │   │ usage_log        │
-       │ js_patches   │   └──────────────────┘
-       │ owl_comps    │
-       │ (version-    │
-       │  scoped)     │
-       └──────┬───────┘
-              │
-              ▼
-┌──────────────────────────────────────────────────────────┐
-│  MCP SERVER  (FastMCP / HTTP, cổng 8002)                 │
-│  + Web UI    (dashboard + API key management, cổng 8003) │
-│                                                          │
-│  resolve_model     resolve_field    resolve_method        │
-│  resolve_view      find_examples    impact_analysis       │
-└──────────────────────────────────────────────────────────┘
-              │
-     ┌────────┼──────────────┬──────────────┐
-     ▼        ▼              ▼              ▼
-  Claude   Codex /        Gemini        VS Code
-  Code     OpenAI         CLI           (ưu tiên)
-           Codex
+┌─────────────────────────────────────────────────────────────────┐
+│  MÁY TÍNH CỦA NGƯỜI DÙNG                                        │
+│                                                                  │
+│   Claude Code  /  Codex  /  Gemini  /  VS Code                  │
+│         │              │                                         │
+│         └──────────────┘                                         │
+│   Config: mcpServers.url = "https://semantic.viindoo.com/mcp"   │
+│           X-API-Key: <key do admin cấp>                          │
+└────────────────────────────┬────────────────────────────────────┘
+                             │  HTTPS / MCP protocol
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  CLOUD SERVER  (ollama.viindoo.com hoặc server riêng)            │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  Odoo Repositories (cloned)                              │    │
+│  │  ~/git/*_{version}/   (419+ thư mục, 12 versions)       │    │
+│  └──────────────────────────┬──────────────────────────────┘    │
+│                             │                                    │
+│                             ▼                                    │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  INDEXER PIPELINE                                        │    │
+│  │  1. Scanner          quét repo, đọc git branch          │    │
+│  │  2. Registry Builder manifest → {module→repo} per ver   │    │
+│  │  3. Dep Resolver     topological sort cross-repo        │    │
+│  │  4. Parsers                                              │    │
+│  │     ├─ Python AST    models / fields / methods          │    │
+│  │     ├─ lxml          XML views / QWeb templates         │    │
+│  │     └─ tree-sitter   JS patch() / OWL components        │    │
+│  │  5. Embedder         code chunks → vectors              │    │
+│  └───────────────┬──────────────────┬───────────────────────┘   │
+│                  │                  │                            │
+│                  ▼                  ▼                            │
+│        ┌──────────────┐   ┌──────────────────┐                  │
+│        │    Neo4j     │   │    PostgreSQL     │                  │
+│        │  (Graph DB)  │   │  + pgvector      │                  │
+│        │  modules     │   │  embeddings      │                  │
+│        │  models      │   │  api_keys        │                  │
+│        │  fields      │   │  usage_log       │                  │
+│        │  methods     │   └──────────────────┘                  │
+│        │  views       │                                          │
+│        │  js_patches  │                                          │
+│        └──────┬───────┘                                          │
+│               │                                                  │
+│               ▼                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  Nginx                                                   │    │
+│  │  /mcp  → MCP Server  :8002  (FastMCP, 6 tools)          │    │
+│  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)  │    │
+│  └─────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**Luồng onboard end user — zero install:**
+
+```
+1. Admin tạo API key trên Web UI  →  gửi key cho user
+2. User thêm vào config:
+   Claude Code:  ~/.claude/settings.json
+   VS Code:      settings.json (MCP extension)
+   Codex/Gemini: config tương ứng
+3. Xong. Dùng được ngay.
+```
+
+---
+
+## Kiến Trúc Tổng Thể (Chi Tiết)
 
 **Ba nguyên tắc lưu trữ:**
 
@@ -444,9 +466,11 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
 
 ### Milestone 5 — "Product Wow" (Ngày 5–6)
 
-**Intent:** Đóng gói thành sản phẩm bất kỳ ai cũng deploy được.
+**Intent:** Đóng gói thành sản phẩm server admin deploy được trong dưới 10 phút; end user không cài gì.
 
-**Outcome:** Từ zero đến full semantic engine trong dưới 10 phút. Không cần đọc docs dài.
+**Outcome (server admin):** `docker compose up -d && odoo-semantic index --version 17.0` → sẵn sàng phục vụ users.
+
+**Outcome (end user):** Nhận URL + API key từ admin → thêm 3 dòng config → dùng được ngay, không cài thêm gì.
 
 ```
 [Ngày 5 chiều]
@@ -457,7 +481,9 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
   - cli.py: index / backup / restore
   - docker-compose.yml: hoàn thiện + .env.example
   - install.sh: non-Docker path
-  - README.md: setup + connect VS Code / Claude / Codex / Gemini
+  - README.md:
+      + Hướng dẫn server admin: deploy, index, quản lý key
+      + Hướng dẫn end user: thêm config vào Claude Code / VS Code / Codex / Gemini
 ```
 
 ---
