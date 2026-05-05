@@ -42,3 +42,29 @@ def tmp_git_repo(tmp_path):
         check=True, capture_output=True,
     )
     return tmp_path
+
+
+def make_git_repo(path: Path, branch: str) -> Path:
+    """Tạo git repo tại path với branch đã cho. Dùng trong tests."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "checkout", "-b", branch],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def make_manifest(
+    module_dir: Path,
+    name: str,
+    version: str,
+    depends: list,
+    installable: bool = True,
+) -> None:
+    """Tạo __manifest__.py trong module_dir. Dùng trong tests."""
+    module_dir.mkdir(parents=True, exist_ok=True)
+    (module_dir / "__manifest__.py").write_text(
+        f"{{'name': {name!r}, 'version': {version!r}, "
+        f"'depends': {depends!r}, 'installable': {installable!r}}}\n"
+    )
