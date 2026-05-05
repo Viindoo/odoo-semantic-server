@@ -1,5 +1,13 @@
 # CLAUDE.md — Odoo Semantic MCP
 
+## Mandatory context
+
+@README.md
+
+The above file is REQUIRED reading.
+
+Tổng quan dự án, onboard user, system requirements, trạng thái milestone
+
 ## Dev Commands
 
 ```bash
