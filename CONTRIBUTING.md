@@ -58,7 +58,7 @@ make test-integration
 .venv/bin/pytest tests/ -m "neo4j" -v
 ```
 
-Khi chạy lần đầu, testcontainers sẽ pull image `neo4j:5` (~500MB). Từ lần sau Docker cache lại, chạy nhanh hơn. Neo4j container tự start trước khi test và tự destroy sau khi xong — không cần `docker compose up` thủ công.
+Khi chạy lần đầu, testcontainers sẽ pull image `neo4j:5.26.25` (~500MB). Từ lần sau Docker cache lại, chạy nhanh hơn. Neo4j container tự start trước khi test và tự destroy sau khi xong — không cần `docker compose up` thủ công.
 
 ### Toàn bộ test suite
 
@@ -157,7 +157,7 @@ Cả hai lệnh phải chạy được **không có sudo**. Nếu `docker info` 
 make test-integration
 ```
 
-Lần chạy đầu tiên sẽ pull image `neo4j:5` (~500 MB) — có thể mất 2–5 phút. Các lần sau Docker cache lại, chạy trong vài giây. Nếu thành công sẽ thấy 14 tests PASSED thay vì SKIPPED.
+Lần chạy đầu tiên sẽ pull image `neo4j:5.26.25` (~500 MB) — có thể mất 2–5 phút. Các lần sau Docker cache lại, chạy trong vài giây. Nếu thành công sẽ thấy 16 tests PASSED thay vì SKIPPED.
 
 ---
 
@@ -170,7 +170,7 @@ Chạy `make test-integration` — cuối output có phần `short test summary`
 | `FileNotFoundError: No such file or directory` | Docker chưa cài hoặc daemon chưa start | `sudo systemctl start docker` |
 | `Permission denied: /var/run/docker.sock` | User chưa trong group `docker` | `sudo usermod -aG docker $USER` rồi logout/login |
 | `Couldn't connect to localhost:7687` | testcontainers fail, bolt cũng fail | Xem lỗi testcontainers phía trên |
-| Pull image bị timeout | Mạng chậm | Thử lại, hoặc `docker pull neo4j:5` trước |
+| Pull image bị timeout | Mạng chậm | Thử lại, hoặc `docker pull neo4j:5.26.25` trước |
 
 Unit tests (`make test`) không bị ảnh hưởng bởi Docker và luôn chạy được.
 
