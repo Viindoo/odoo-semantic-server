@@ -27,9 +27,6 @@ asyncio_mode = "auto"
 markers = [
     "neo4j: integration tests yêu cầu Neo4j đang chạy (skip bằng -m 'not neo4j')",
 ]
-filterwarnings = [
-    "ignore::DeprecationWarning:neo4j",
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
