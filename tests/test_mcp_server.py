@@ -1,9 +1,11 @@
 # tests/test_mcp_server.py
 import os
+
 import pytest
-from tests.conftest import TEST_VERSION
-from src.indexer.models import ModuleInfo, ModelInfo, FieldInfo, MethodInfo, ParseResult
+
+from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from src.indexer.writer_neo4j import Neo4jWriter
+from tests.conftest import TEST_VERSION
 
 pytestmark = pytest.mark.neo4j
 
@@ -56,7 +58,7 @@ def mcp_tools(seeded_neo4j):
     os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
     import sys
     sys.modules.pop("src.mcp.server", None)
-    from src.mcp.server import _resolve_model, _resolve_field, _resolve_method
+    from src.mcp.server import _resolve_field, _resolve_method, _resolve_model
     return _resolve_model, _resolve_field, _resolve_method
 
 
