@@ -69,7 +69,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │                                 │  đọc trực tiếp từ host filesystem │
 │                                 ▼                                   │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  PYTHON RUNTIME  (.venv — Python 3.12+)                       │  │
+│  │  PYTHON RUNTIME  (Python 3.12+, venv tại ~/.venv/odoo-semantic-mcp)  │  │
 │  │                                                               │  │
 │  │  [CLI — one-shot]          [Server — long-running]            │  │
 │  │  python -m src.cli         python -m src.mcp.server           │  │

@@ -1,7 +1,8 @@
 # Makefile — odoo-semantic-mcp dev shortcuts
-# Yêu cầu: Docker (cho integration tests), Python venv tại .venv/
-
-PYTEST  := .venv/bin/pytest
+# Yêu cầu: Docker (cho integration tests), uv >= 0.4
+# Venv nằm ngoài repo để tránh ô nhiễm source tree:
+VENV    := $(HOME)/.venv/odoo-semantic-mcp
+PYTEST  := $(VENV)/bin/pytest
 COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
@@ -10,7 +11,7 @@ UV      := $(shell which uv 2>/dev/null || echo "uv")
 
 help:
 	@echo "Targets:"
-	@echo "  install           Cài dependencies vào .venv"
+	@echo "  install           Cài dependencies vào ~/.venv/odoo-semantic-mcp"
 	@echo "  test              Chạy unit tests (không cần Docker)"
 	@echo "  test-integration  Chạy integration tests (cần Docker)"
 	@echo "  test-all          Chạy toàn bộ tests"
@@ -20,7 +21,8 @@ help:
 	@echo "  lint              Chạy ruff"
 
 install:
-	$(UV) pip install -e ".[dev]"
+	$(UV) venv $(VENV)
+	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
 
 # --- Tests ---
 
@@ -57,4 +59,4 @@ neo4j-logs:
 # --- Lint ---
 
 lint:
-	.venv/bin/ruff check src/ tests/
+	$(VENV)/bin/ruff check src/ tests/

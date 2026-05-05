@@ -49,14 +49,10 @@ Indexer cần đọc `~/git/*` trực tiếp từ host filesystem. Container ho�
 ### Setup
 
 ```bash
-# Yêu cầu Python 3.12+ trên host
-python3.12 -m venv .venv
-source .venv/bin/activate          # Linux/Mac
-# .venv\Scripts\activate           # Windows
-
-# Cài dependencies từ pyproject.toml
-pip install -e .                   # production deps
-pip install -e ".[dev]"            # + pytest, ruff (cho development)
+make install   # Tạo venv tại ~/.venv/odoo-semantic-mcp/ + cài dependencies
+# Hoặc thủ công:
+# uv venv ~/.venv/odoo-semantic-mcp
+# uv pip install --python ~/.venv/odoo-semantic-mcp/bin/python -e ".[dev]"
 ```
 
 `pip install -e .` cài dạng "editable install" — thay đổi code trong `src/` có hiệu lực ngay, không cần cài lại.
@@ -80,7 +76,7 @@ After=network.target docker.service
 User=tran-ngoc-tuan
 WorkingDirectory=/home/tran-ngoc-tuan/odoo-semantic-mcp
 EnvironmentFile=/home/tran-ngoc-tuan/odoo-semantic-mcp/.env
-ExecStart=/home/tran-ngoc-tuan/odoo-semantic-mcp/.venv/bin/python -m src.mcp.server
+ExecStart=/home/USER/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 Restart=on-failure
 RestartSec=5s
 

@@ -24,15 +24,17 @@ Tài liệu này dành cho developer muốn contribute hoặc phát triển thê
 git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
 
-# 1. Tạo virtualenv — uv đọc .python-version (3.12) và tự download nếu chưa có
-uv venv
-uv pip install -e ".[dev]"
+# 1. Tạo virtualenv bên ngoài repo (tại ~/.venv/odoo-semantic-mcp/)
+make install
+# Hoặc thủ công tương đương:
+# uv venv ~/.venv/odoo-semantic-mcp
+# uv pip install --python ~/.venv/odoo-semantic-mcp/bin/python -e ".[dev]"
 
 # 2. Copy file cấu hình (chỉ cần cho chạy MCP server thật — không cần cho test)
 cp .env.example .env
 ```
 
-`uv venv` tự chọn Python 3.12 nhờ file `.python-version` trong repo — không cần truyền flag gì thêm. Nếu máy chưa có 3.12, uv tự download.
+`make install` tự chọn Python 3.12 nhờ file `.python-version` và tạo venv tại `~/.venv/odoo-semantic-mcp/` — nằm ngoài repo, tránh ô nhiễm source tree. Nếu máy chưa có 3.12, uv tự download.
 
 Xong. Không cần start database thủ công — testcontainers lo hết.
 
@@ -45,7 +47,7 @@ Xong. Không cần start database thủ công — testcontainers lo hết.
 ```bash
 make test
 # hoặc:
-.venv/bin/pytest tests/ -m "not neo4j" -v
+~/.venv/odoo-semantic-mcp/bin/pytest tests/ -m "not neo4j" -v
 ```
 
 Chạy ngay, không cần Neo4j. Bao gồm: scanner, registry, resolver, parser.
@@ -55,7 +57,7 @@ Chạy ngay, không cần Neo4j. Bao gồm: scanner, registry, resolver, parser.
 ```bash
 make test-integration
 # hoặc:
-.venv/bin/pytest tests/ -m "neo4j" -v
+~/.venv/odoo-semantic-mcp/bin/pytest tests/ -m "neo4j" -v
 ```
 
 Khi chạy lần đầu, testcontainers sẽ pull image `neo4j:5.26.25` (~500MB). Từ lần sau Docker cache lại, chạy nhanh hơn. Neo4j container tự start trước khi test và tự destroy sau khi xong — không cần `docker compose up` thủ công.
@@ -69,8 +71,8 @@ make test-all
 ### Chạy một test cụ thể
 
 ```bash
-.venv/bin/pytest tests/test_registry.py::test_parse_manifest_basic -v
-.venv/bin/pytest tests/test_writer_neo4j.py -v   # integration, cần Docker
+~/.venv/odoo-semantic-mcp/bin/pytest tests/test_registry.py::test_parse_manifest_basic -v
+~/.venv/odoo-semantic-mcp/bin/pytest tests/test_writer_neo4j.py -v   # integration, cần Docker
 ```
 
 ---
@@ -216,7 +218,7 @@ docs: cập nhật schema diagram
 ```bash
 make lint
 # hoặc:
-.venv/bin/ruff check src/ tests/
+~/.venv/odoo-semantic-mcp/bin/ruff check src/ tests/
 ```
 
 CI sẽ fail nếu lint không pass.
