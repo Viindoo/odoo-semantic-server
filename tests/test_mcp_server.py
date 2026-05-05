@@ -50,12 +50,14 @@ def seeded_neo4j(neo4j_driver):
 
 @pytest.fixture
 def mcp_tools(seeded_neo4j):
-    """Import MCP tool functions sau khi đã seed data."""
+    """Import MCP business logic functions sau khi đã seed data."""
     os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
     os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
     os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
-    from src.mcp.server import resolve_model, resolve_field, resolve_method
-    return resolve_model, resolve_field, resolve_method
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _resolve_model, _resolve_field, _resolve_method
+    return _resolve_model, _resolve_field, _resolve_method
 
 
 def test_resolve_model_found(mcp_tools):

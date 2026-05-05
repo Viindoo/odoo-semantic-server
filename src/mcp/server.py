@@ -23,23 +23,14 @@ def _get_driver():
 
 def _latest_version(session) -> str:
     rec = session.run("""
-        MATCH (m:Model)
+        MATCH (m:Module)
         WITH DISTINCT m.odoo_version AS v
         RETURN v ORDER BY toFloat(v) DESC LIMIT 1
     """).single()
     return rec["v"] if rec else "17.0"
 
 
-@mcp.tool()
-def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
-    """
-    Trả về thông tin đầy đủ về Odoo model: inheritance chain,
-    delegated models, field summary, method summary.
-
-    Args:
-        model_name:   Tên model, ví dụ 'sale.order', 'account.move'.
-        odoo_version: Phiên bản Odoo, ví dụ '17.0'. Mặc định: version mới nhất.
-    """
+def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
         if odoo_version == "auto":
             odoo_version = _latest_version(session)
@@ -47,7 +38,7 @@ def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         layers = session.run("""
             MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
             RETURN m.module AS module_name, mod.repo AS repo
-            ORDER BY size(()-[:INHERITS]->(m)) ASC
+            ORDER BY COUNT { ()-[:INHERITS]->(m) } ASC
         """, name=model_name, v=odoo_version).data()
 
         if not layers:
@@ -90,16 +81,7 @@ def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
-def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
-    """
-    Trả về chi tiết một field: type, computed/related metadata, module nguồn.
-
-    Args:
-        model_name:   Tên model chứa field.
-        field_name:   Tên field, ví dụ 'amount_total', 'partner_id'.
-        odoo_version: Phiên bản Odoo. Mặc định: version mới nhất.
-    """
+def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
         if odoo_version == "auto":
             odoo_version = _latest_version(session)
@@ -109,7 +91,7 @@ def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") 
             OPTIONAL MATCH (mod:Module {name: f.module, odoo_version: $v})
             OPTIONAL MATCH (m_node:Model {name: $mn, module: f.module, odoo_version: $v})
             RETURN f, f.module AS module_name, mod.repo AS repo,
-                   size(()-[:INHERITS]->(m_node)) AS depth
+                   COUNT { ()-[:INHERITS]->(m_node) } AS depth
             ORDER BY depth ASC
         """, fn=field_name, mn=model_name, v=odoo_version).data()
 
@@ -133,16 +115,7 @@ def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") 
     return "\n".join(lines)
 
 
-@mcp.tool()
-def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
-    """
-    Trả về override chain của một method theo thứ tự base→top.
-
-    Args:
-        model_name:   Tên model chứa method.
-        method_name:  Tên method, ví dụ 'action_confirm', '_compute_amount'.
-        odoo_version: Phiên bản Odoo. Mặc định: version mới nhất.
-    """
+def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
         if odoo_version == "auto":
             odoo_version = _latest_version(session)
@@ -152,7 +125,7 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
             OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
             OPTIONAL MATCH (m_node:Model {name: $model, module: mth.module, odoo_version: $v})
             RETURN mth, mth.module AS module_name, mod.repo AS repo,
-                   size(()-[:INHERITS]->(m_node)) AS depth
+                   COUNT { ()-[:INHERITS]->(m_node) } AS depth
             ORDER BY depth ASC
         """, mn=method_name, model=model_name, v=odoo_version).data()
 
@@ -166,6 +139,24 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
         decs = ", ".join(mth.get("decorators") or []) or "—"
         lines.append(f"  [{r['repo']}] {r['module_name']} — {super_info} — decorators: {decs}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
+    """Trả về thông tin đầy đủ về Odoo model: inheritance chain, field summary, method summary."""
+    return _resolve_model(model_name, odoo_version)
+
+
+@mcp.tool()
+def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
+    """Trả về chi tiết một field: type, computed/related metadata, module nguồn."""
+    return _resolve_field(model_name, field_name, odoo_version)
+
+
+@mcp.tool()
+def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
+    """Trả về override chain của một method theo thứ tự base→top."""
+    return _resolve_method(model_name, method_name, odoo_version)
 
 
 if __name__ == "__main__":
