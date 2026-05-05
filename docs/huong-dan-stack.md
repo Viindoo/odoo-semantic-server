@@ -248,7 +248,7 @@ with driver.session() as session:
 
 ### Healthcheck trong Docker Compose
 
-Image `neo4j:5` **không có** `wget` hay `curl`. Dùng `cypher-shell`:
+Image `neo4j:5.26.25` **không có** `wget` hay `curl`. Dùng `cypher-shell`:
 
 ```yaml
 healthcheck:
@@ -585,7 +585,7 @@ cur.execute("""
 | `ORDER BY v DESC` cho version | "9.0" > "17.0" | Dùng `toFloat(v) DESC` |
 | Model key thiếu `module` | MERGE tạo self-loop trong INHERITS chain | Key = `(name, module, odoo_version)` |
 | `.single()` cho Field/Method query | Exception khi field định nghĩa ở nhiều module | Dùng `.data()` |
-| `wget` trong Neo4j healthcheck | Image neo4j:5 không có wget | Dùng `cypher-shell` |
+| `wget` trong Neo4j healthcheck | Image neo4j:5.26.25 không có wget | Dùng `cypher-shell` |
 | `$VAR` trong YAML CMD-SHELL | Docker expand trước khi truyền shell | Dùng `$$VAR` |
 | Pin fastmcp version | API thay đổi giữa 2.x và 3.x | `fastmcp>=2.3,<3.0` |
 | Tên folder cho Odoo version | Chỉ là quy ước viindoo-clone.sh | Dùng git branch `--show-current` |

@@ -98,7 +98,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │  DB TIER  (db server — có thể tách riêng hoặc gộp với app server)   │
 │                                                                     │
 │  ┌──────────────────────────┐  ┌─────────────────────────────────┐  │
-│  │  Neo4j 5                 │  │  PostgreSQL 16 + pgvector       │  │
+│  │  Neo4j 5.26.25           │  │  PostgreSQL 16 + pgvector 0.8.2 │  │
 │  │  bolt:// :7687           │  │  :5432                          │  │
 │  │  (browser: 127.0.0.1     │  │                                 │  │
 │  │   :7474 — local only)    │  │  embeddings, api_keys,          │  │
