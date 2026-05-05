@@ -356,14 +356,18 @@ account.move (Odoo 17.0)
 
 ### Test Tools Mà Không Cần MCP Client
 
+`@mcp.tool()` trong FastMCP 2.x wraps function thành `FunctionTool` object — **không callable trực tiếp**. Business logic nằm trong hàm `_resolve_*` prefix; test import hàm đó:
+
 ```python
-# Import trực tiếp — tools là Python function bình thường:
-from src.mcp.server import resolve_model, resolve_field, resolve_method
+# Đúng — import hàm business logic, không phải MCP wrapper:
+from src.mcp.server import _resolve_model, _resolve_field, _resolve_method
 
 def test_resolve_model(seeded_neo4j):
-    result = resolve_model("account.move", "17.0")
+    result = _resolve_model("account.move", "17.0")
     assert "account.move" in result
 ```
+
+`resolve_model` (không có `_`) là `FunctionTool` — chỉ dùng được qua MCP protocol, không callable trong Python.
 
 ### Khởi Động Server
 
