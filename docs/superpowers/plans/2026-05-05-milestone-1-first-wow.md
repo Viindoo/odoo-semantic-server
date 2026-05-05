@@ -63,7 +63,7 @@ odoo-semantic-mcp/
 # App tier kết nối qua NEO4J_URI và PG_DSN trong .env — không cần sửa code.
 services:
   neo4j:
-    image: neo4j:5
+    image: neo4j:5.26.25
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-password}
       # Khi Neo4j chạy trên server riêng, phải set advertised address
@@ -80,7 +80,7 @@ services:
       retries: 10
 
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.2-pg16
     environment:
       POSTGRES_DB: odoo_semantic
       POSTGRES_USER: odoo_semantic
@@ -1540,6 +1540,12 @@ def test_write_delegates_to_edge(writer, clean_neo4j):
     assert rec["via_field"] == "user_id"
 ```
 
+> **Post-M1 addition:** Two more tests were added in commit `f7f816c`:
+> - `test_write_delegates_to_unresolved_logs_warning` — verifies WARNING when DELEGATES_TO target not indexed
+> - `test_write_inherits_unresolved_logs_warning` — verifies WARNING when INHERITS parent not indexed
+> 
+> Also: `test_write_delegates_to_edge` was fixed to seed `res.users` first (topo-sort guarantee).
+
 - [ ] **Bước 2: Đảm bảo Neo4j đang chạy**
 
 ```bash
@@ -1765,57 +1771,59 @@ def mcp_tools(seeded_neo4j):
     os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
     os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
     os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
-    from src.mcp.server import resolve_model, resolve_field, resolve_method
-    return resolve_model, resolve_field, resolve_method
+    from src.mcp.server import _resolve_model, _resolve_field, _resolve_method
+    return _resolve_model, _resolve_field, _resolve_method
+
+> **Note (post-M1 fix):** FastMCP 2.x `@mcp.tool()` wraps functions into `FunctionTool` objects — not directly callable. Business logic lives in `_resolve_model/field/method` (underscore prefix). Tests import those.
 
 
 def test_resolve_model_found(mcp_tools):
-    resolve_model, _, _ = mcp_tools
-    result = resolve_model("account.move", TEST_VERSION)
+    _resolve_model, _, _ = mcp_tools
+    result = _resolve_model("account.move", TEST_VERSION)
     assert "account.move" in result
     assert TEST_VERSION in result
 
 
 def test_resolve_model_shows_module(mcp_tools):
-    resolve_model, _, _ = mcp_tools
-    result = resolve_model("account.move", TEST_VERSION)
+    _resolve_model, _, _ = mcp_tools
+    result = _resolve_model("account.move", TEST_VERSION)
     assert "account" in result
 
 
 def test_resolve_model_not_found(mcp_tools):
-    resolve_model, _, _ = mcp_tools
-    result = resolve_model("nonexistent.model", TEST_VERSION)
+    _resolve_model, _, _ = mcp_tools
+    result = _resolve_model("nonexistent.model", TEST_VERSION)
     assert "Không tìm thấy" in result
 
 
 def test_resolve_field_found(mcp_tools):
-    _, resolve_field, _ = mcp_tools
-    result = resolve_field("account.move", "amount_total", TEST_VERSION)
+    _, _resolve_field, _ = mcp_tools
+    result = _resolve_field("account.move", "amount_total", TEST_VERSION)
     assert "amount_total" in result
     assert "float" in result.lower()
 
 
 def test_resolve_field_shows_compute(mcp_tools):
-    _, resolve_field, _ = mcp_tools
-    result = resolve_field("account.move", "amount_total", TEST_VERSION)
+    _, _resolve_field, _ = mcp_tools
+    result = _resolve_field("account.move", "amount_total", TEST_VERSION)
     assert "_compute_amount" in result
 
 
 def test_resolve_field_not_found(mcp_tools):
-    _, resolve_field, _ = mcp_tools
-    result = resolve_field("account.move", "nonexistent_field", TEST_VERSION)
+    _, _resolve_field, _ = mcp_tools
+    result = _resolve_field("account.move", "nonexistent_field", TEST_VERSION)
     assert "Không tìm thấy" in result
 
 
 def test_resolve_method_found(mcp_tools):
-    _, _, resolve_method = mcp_tools
-    result = resolve_method("account.move", "action_post", TEST_VERSION)
+    _, _, _resolve_method = mcp_tools
+    result = _resolve_method("account.move", "action_post", TEST_VERSION)
     assert "action_post" in result
 
 
 def test_resolve_method_not_found(mcp_tools):
-    _, _, resolve_method = mcp_tools
-    result = resolve_method("account.move", "nonexistent_method", TEST_VERSION)
+    _, _, _resolve_method = mcp_tools
+    result = _resolve_method("account.move", "nonexistent_method", TEST_VERSION)
     assert "Không tìm thấy" in result
 ```
 
@@ -2200,7 +2208,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       neo4j:
-        image: neo4j:5
+        image: neo4j:5.26.25
         env:
           NEO4J_AUTH: neo4j/password
         ports:
