@@ -1,7 +1,11 @@
 # src/indexer/writer_neo4j.py
+import logging
+
 from neo4j import GraphDatabase
 
 from .models import ParseResult
+
+_logger = logging.getLogger(__name__)
 
 
 def _write_parse_result(tx, result: ParseResult) -> None:
@@ -42,20 +46,32 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                     MERGE (ext)-[:INHERITS]->(tip)
                 """, name=model.name, mod=model.module, v=model.odoo_version)
             else:
-                tx.run("""
+                rec = tx.run("""
                     MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
                     MATCH (parent:Model {name: $parent_name, odoo_version: $v})
                     MERGE (m)-[:INHERITS]->(parent)
+                    RETURN 1 AS ok
                 """, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, parent_name=parent_name)
+                     v=model.odoo_version, parent_name=parent_name).single()
+                if rec is None:
+                    _logger.warning(
+                        "unresolved INHERITS: %s → %s (version %s) — parent model not indexed",
+                        model.name, parent_name, model.odoo_version,
+                    )
 
         for delegated_model, via_field in model.inherits.items():
-            tx.run("""
+            rec = tx.run("""
                 MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                 MATCH (d:Model {name: $delegated, odoo_version: $v})
                 MERGE (m)-[:DELEGATES_TO {via_field: $via_field}]->(d)
+                RETURN 1 AS ok
             """, name=model.name, mod=model.module, v=model.odoo_version,
-                 delegated=delegated_model, via_field=via_field)
+                 delegated=delegated_model, via_field=via_field).single()
+            if rec is None:
+                _logger.warning(
+                    "unresolved DELEGATES_TO: %s → %s (version %s) — target model not indexed",
+                    model.name, delegated_model, model.odoo_version,
+                )
 
         for fld in model.fields:
             tx.run("""

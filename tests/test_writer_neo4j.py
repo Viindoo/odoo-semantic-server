@@ -152,3 +152,57 @@ def test_write_delegates_to_edge(writer, neo4j_driver):
         """, v=TEST_VERSION).single()
     assert rec is not None
     assert rec["via_field"] == "user_id"
+
+
+def test_write_delegates_to_unresolved_logs_warning(writer, neo4j_driver, caplog):
+    import logging
+    hr_module = ModuleInfo(
+        name="hr", odoo_version=TEST_VERSION,
+        repo="hr_repo", path="/tmp", depends=[], version_raw="",
+    )
+    hr_model = ModelInfo(
+        name="hr.employee", module="hr", odoo_version=TEST_VERSION,
+        inherits={"res.users": "user_id"},  # res.users intentionally NOT seeded
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_results([ParseResult(module=hr_module, models=[hr_model])])
+
+    assert "unresolved DELEGATES_TO" in caplog.text
+    assert "hr.employee" in caplog.text
+    assert "res.users" in caplog.text
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (:Model {name: 'hr.employee', odoo_version: $v})
+                  -[:DELEGATES_TO]->(:Model {name: 'res.users', odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert rec["cnt"] == 0
+
+
+def test_write_inherits_unresolved_logs_warning(writer, neo4j_driver, caplog):
+    import logging
+    ext_module = ModuleInfo(
+        name="viin_mail", odoo_version=TEST_VERSION,
+        repo="viin_repo", path="/tmp", depends=[], version_raw="",
+    )
+    ext_model = ModelInfo(
+        name="sale.order", module="viin_mail", odoo_version=TEST_VERSION,
+        inherit=["mail.thread"],  # mail.thread intentionally NOT seeded
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_results([ParseResult(module=ext_module, models=[ext_model])])
+
+    assert "unresolved INHERITS" in caplog.text
+    assert "sale.order" in caplog.text
+    assert "mail.thread" in caplog.text
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (:Model {name: 'sale.order', odoo_version: $v})
+                  -[:INHERITS]->(:Model {name: 'mail.thread', odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert rec["cnt"] == 0
