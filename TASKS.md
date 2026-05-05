@@ -66,3 +66,13 @@
 - [ ] Multi-version: index song song nhiều versions
 - [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"
 - [ ] OpenUpgrade support: migration path awareness across versions
+
+---
+
+## Điều Hướng Tài Liệu
+
+| | File | Nội dung |
+|---|------|----------|
+| ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
+| ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
+| ↓ | [`docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 — bắt đầu ở đây |

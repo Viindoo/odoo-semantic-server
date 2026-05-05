@@ -2086,3 +2086,13 @@ git commit -m "feat: E2E integration — indexer script + Claude Code connect"
 **Không có placeholders, TBDs, hay bước thiếu code.**
 
 **Type consistency:** `ModuleInfo`, `ModelInfo`, `FieldInfo`, `MethodInfo`, `ParseResult` được định nghĩa trong Task 2 và dùng nhất quán trong Tasks 3–8.
+
+---
+
+## Điều Hướng Tài Liệu
+
+| | File | Nội dung |
+|---|------|----------|
+| ← | [`/README.md`](../../../README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
+| ← | [`/docs/thiet-ke-kien-truc.md`](../../thiet-ke-kien-truc.md) | Kiến trúc đầy đủ: lý do thiết kế, Graph schema, pipeline |
+| ← | [`/TASKS.md`](../../../TASKS.md) | Tiến độ tổng thể — đánh dấu task khi hoàn thành |
