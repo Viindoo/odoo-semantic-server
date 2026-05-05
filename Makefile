@@ -33,7 +33,7 @@ test-unit:
 # Nếu muốn dùng Neo4j đang chạy sẵn thay vì testcontainers:
 #   make neo4j-up && make _test-neo4j && make neo4j-down
 test-integration:
-	$(PYTEST) tests/ -v -m "neo4j" --tb=short
+	$(PYTEST) tests/ -v -m "neo4j" --tb=short -rs
 
 test-all: test-unit test-integration
 
