@@ -21,14 +21,31 @@ def neo4j_driver():
     """
     Kết nối Neo4j cho toàn bộ test session.
 
-    Ưu tiên 1: testcontainers — tự spin up Docker container, không cần setup thủ công.
-    Ưu tiên 2: kết nối trực tiếp tới NEO4J_TEST_URI (Neo4j đang chạy sẵn).
-    Fallback:  skip toàn bộ neo4j tests với lý do cụ thể từng tầng.
+    CI (CI=true): kết nối trực tiếp tới NEO4J_TEST_URI — service container đã sẵn sàng,
+                  không import testcontainers để tránh @wait_container_is_ready warning.
+    Local dev:    Ưu tiên 1: testcontainers (tự spin up Docker container).
+                  Ưu tiên 2: kết nối trực tiếp tới NEO4J_TEST_URI.
+                  Fallback:  skip với lý do cụ thể.
     """
-    # Lazy import: testcontainers triggers import-time DeprecationWarnings from the
-    # @wait_container_is_ready() decorator (upstream issue). Importing here instead of
-    # at module level ensures unit tests (-m "not neo4j") never load testcontainers
-    # and therefore see zero warnings.
+    # CI path — GitHub Actions sets CI=true; service container is already running.
+    # Skip testcontainers import entirely to avoid import-time DeprecationWarning
+    # from @wait_container_is_ready decorator (upstream issue in testcontainers 4.x).
+    if os.getenv("CI"):
+        driver = None
+        try:
+            driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            driver.verify_connectivity()
+        except Exception as e:
+            if driver is not None:
+                driver.close()
+            pytest.skip(f"Neo4j service container not available in CI: {e}")
+        yield driver
+        driver.close()
+        return
+
+    # Local dev path — try testcontainers first.
+    # Lazy import: keeps import-time DeprecationWarning out of unit-test runs
+    # (-m "not neo4j" never reaches this fixture at all).
     from testcontainers.core.wait_strategies import LogMessageWaitStrategy
     from testcontainers.neo4j import Neo4jContainer
 

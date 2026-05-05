@@ -227,25 +227,22 @@ CI sẽ fail nếu lint không pass.
 
 ## Known Upstream Warnings
 
-**`make test` (unit tests):** 0 warnings — testcontainers is lazy-imported inside the `neo4j_driver` fixture and never loaded during unit tests.
+**`make test` (unit tests):** 0 warnings.
 
-**`make test-integration`** emits 3 warnings from upstream libraries that cannot be fixed in this project:
+**`make test-integration` (CI):** 0 warnings — CI uses GitHub Actions service container; `neo4j_driver` fixture skips testcontainers import entirely when `CI=true`.
 
-**1. fastmcp / authlib:**
-```
-AuthlibDeprecationWarning: authlib.jose module is deprecated, please use joserfc instead.
-```
-Source: `fastmcp/server/auth/providers/jwt.py` — fastmcp eagerly imports `authlib.jose` even when auth is not used.
-Status: Upstream issue in fastmcp. Will be resolved when fastmcp migrates to joserfc or lazy-loads auth.
+**`make test-integration` (local dev with Docker):** 2 warnings from testcontainers:
 
-**2. testcontainers import-time warnings (2 warnings):**
 ```
 DeprecationWarning: The @wait_container_is_ready decorator is deprecated...
 ```
-Source: `testcontainers/core/waiting_utils.py:215` and `testcontainers/neo4j/__init__.py:63` — the `@wait_container_is_ready()` decorator fires when Python applies it at class-definition time (module import). Cannot be avoided without modifying upstream source.
-Status: Upstream issue in testcontainers. Will be resolved when testcontainers removes the deprecated decorator.
+Source: `testcontainers/core/waiting_utils.py` and `testcontainers/neo4j/__init__.py` — the `@wait_container_is_ready()` decorator fires at class-definition time (module import). Cannot be avoided without modifying upstream source or downgrading to testcontainers 3.x (which would require a full API rewrite of `conftest.py`).
+Status: Upstream issue in testcontainers 4.x. Will be resolved when upstream removes the deprecated decorator.
 
-**Action for both:** Do NOT suppress with `filterwarnings`. Monitor releases and upgrade when fixed.
+**Action:** Do NOT suppress with `filterwarnings`. Monitor testcontainers releases and upgrade when fixed.
+
+**Previously tracked — now fixed:**
+- `AuthlibDeprecationWarning` (authlib.jose → joserfc migration): fixed by pinning `authlib>=1.6.5,<1.7.0` — the warning was added in v1.7.0.
 
 ---
 
