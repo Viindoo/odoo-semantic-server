@@ -102,10 +102,21 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
-cp .env.example .env        # điền NEO4J_PASSWORD, PG_PASSWORD, ...
-docker compose up -d        # khởi động Neo4j + PostgreSQL
-python -m src.cli index --base-dir ~/git --version 17.0   # index lần đầu
-python -m src.mcp.server    # khởi động MCP server :8002
+cp .env.example .env                      # điền NEO4J_PASSWORD, PG_PASSWORD, ...
+
+# 1. Python runtime
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# 2. Databases (Docker)
+docker compose up -d                      # Neo4j + PostgreSQL
+
+# 3. Index lần đầu (CLI, one-shot)
+python -m src.cli index --base-dir ~/git --version 17.0
+
+# 4. Khởi động MCP server (long-running — dùng systemd hoặc tmux)
+python -m src.mcp.server                  # lắng nghe tại :8002
 ```
 
 **Backup / Restore khi chuyển server:**

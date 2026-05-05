@@ -40,7 +40,84 @@ parser_python.py → embedder.py → pgvector (PostgreSQL 16)
 
 ---
 
-## 1. Neo4j 5
+## 1. Python Runtime — venv + systemd
+
+### Tại sao venv (không phải Docker ngay từ đầu)?
+
+Indexer cần đọc `~/git/*` trực tiếp từ host filesystem. Container hoá indexer đòi volume mount phức tạp không cần thiết ở M1–M4. Milestone 5 mới thêm `Dockerfile` + app service vào `docker-compose.yml`.
+
+### Setup
+
+```bash
+# Yêu cầu Python 3.11+ trên host
+python3.11 -m venv .venv
+source .venv/bin/activate          # Linux/Mac
+# .venv\Scripts\activate           # Windows
+
+# Cài dependencies từ pyproject.toml
+pip install -e .                   # production deps
+pip install -e ".[dev]"            # + pytest, ruff (cho development)
+```
+
+`pip install -e .` cài dạng "editable install" — thay đổi code trong `src/` có hiệu lực ngay, không cần cài lại.
+
+### Hai loại process
+
+| Process | Cách chạy | Vòng đời |
+|---------|-----------|----------|
+| Indexer CLI | `python -m src.cli index ...` | One-shot, kết thúc khi xong |
+| MCP Server | `python -m src.mcp.server` | Long-running, cần giữ sống |
+
+### Giữ MCP Server sống với systemd
+
+```ini
+# /etc/systemd/system/odoo-semantic-mcp.service
+[Unit]
+Description=Odoo Semantic MCP Server
+After=network.target docker.service
+
+[Service]
+User=tran-ngoc-tuan
+WorkingDirectory=/home/tran-ngoc-tuan/odoo-semantic-mcp
+EnvironmentFile=/home/tran-ngoc-tuan/odoo-semantic-mcp/.env
+ExecStart=/home/tran-ngoc-tuan/odoo-semantic-mcp/.venv/bin/python -m src.mcp.server
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now odoo-semantic-mcp
+sudo systemctl status odoo-semantic-mcp    # kiểm tra
+journalctl -u odoo-semantic-mcp -f         # xem logs
+```
+
+### Lộ trình M5: Containerisation
+
+Milestone 5 sẽ thêm `Dockerfile` để app container hoá toàn bộ:
+
+```yaml
+# docker-compose.yml (M5 addition)
+services:
+  app:
+    build: .
+    volumes:
+      - ~/git:/git:ro       # mount repo host vào container, read-only
+    env_file: .env
+    ports:
+      - "8002:8002"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+```
+
+---
+
+## 2. Neo4j 5
 
 ### Tại sao Graph DB?
 
@@ -154,7 +231,7 @@ healthcheck:
 
 ---
 
-## 2. Python AST — Parse Odoo Model Files
+## 3. Python AST — Parse Odoo Model Files
 
 ### ast.walk vs tree.body
 
@@ -243,7 +320,7 @@ else:
 
 ---
 
-## 3. FastMCP
+## 4. FastMCP
 
 ### Tại sao FastMCP?
 
@@ -301,7 +378,7 @@ if __name__ == "__main__":
 
 ---
 
-## 4. Version Detection — Odoo Version từ Repo
+## 5. Version Detection — Odoo Version từ Repo
 
 Không dùng tên thư mục vì đó chỉ là quy ước `viindoo-clone.sh`, không đáng tin:
 
@@ -331,7 +408,7 @@ def resolve_odoo_version(version_raw: str, repo_path: str) -> str:
 
 ---
 
-## 5. pytest — Integration Tests với Neo4j
+## 6. pytest — Integration Tests với Neo4j
 
 ### Markers
 
@@ -381,7 +458,7 @@ def neo4j_driver():
 
 ---
 
-## 6. Docker Compose — Patterns
+## 7. Docker Compose — Patterns
 
 ### Env Vars với Default
 
@@ -413,7 +490,7 @@ services:
 
 ---
 
-## 7. pgvector (Milestone 3+)
+## 8. pgvector (Milestone 3+)
 
 Brief overview — xem `docs/thiet-ke-kien-truc.md` khi đến M3.
 
