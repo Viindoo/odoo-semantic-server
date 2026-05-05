@@ -48,67 +48,78 @@ Khi AI agent thiết kế response format hay UX: **ưu tiên output dễ đọc
 
 ## Mô Hình Triển Khai
 
-Hệ thống chạy hoàn toàn trên **cloud server**. End user không cài bất kỳ thứ gì lên máy — chỉ cần thêm URL vào config của AI coding tool.
+Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên server riêng hoặc gộp lại tùy nhu cầu. App tier kết nối DB tier hoàn toàn qua env vars (`NEO4J_URI`, `PG_DSN`).
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  MÁY TÍNH CỦA NGƯỜI DÙNG                                        │
-│                                                                  │
-│   Claude Code  /  Codex  /  Gemini  /  VS Code                  │
-│         │              │                                         │
-│         └──────────────┘                                         │
-│   Config: mcpServers.url = "https://semantic.viindoo.com/mcp"   │
-│           X-API-Key: <key do admin cấp>                          │
-└────────────────────────────┬────────────────────────────────────┘
-                             │  HTTPS / MCP protocol
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  CLOUD SERVER  (ollama.viindoo.com hoặc server riêng)            │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Odoo Repositories (cloned)                              │    │
-│  │  ~/git/*_{version}/   (419+ thư mục, 12 versions)       │    │
-│  └──────────────────────────┬──────────────────────────────┘    │
-│                             │  đọc trực tiếp từ host filesystem  │
-│                             ▼                                    │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  PYTHON RUNTIME  (.venv — Python 3.12+)                  │    │
-│  │                                                          │    │
-│  │  [CLI — one-shot]          [Server — long-running]       │    │
-│  │  python -m src.cli         python -m src.mcp.server      │    │
-│  │  └─ INDEXER PIPELINE       └─ FastMCP HTTP :8002         │    │
-│  │     1. Scanner                 systemd giữ process alive │    │
-│  │     2. Registry Builder                                  │    │
-│  │     3. Dep Resolver                                      │    │
-│  │     4. Parsers (AST/lxml/tree-sitter)                    │    │
-│  │     5. Embedder                                          │    │
-│  └───────────────┬──────────────────┬───────────────────────┘   │
-│                  │  [Docker Compose] │                           │
-│                  ▼                  ▼                            │
-│        ┌──────────────┐   ┌──────────────────┐                  │
-│        │    Neo4j     │   │    PostgreSQL     │                  │
-│        │  (Graph DB)  │   │  + pgvector      │                  │
-│        │  modules     │   │  embeddings      │                  │
-│        │  models      │   │  api_keys        │                  │
-│        │  fields      │   │  usage_log       │                  │
-│        │  methods     │   └──────────────────┘                  │
-│        │  views       │                                          │
-│        │  js_patches  │                                          │
-│        └──────┬───────┘                                          │
-│               │                                                  │
-│               ▼                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Nginx                                                   │    │
-│  │  /mcp  → MCP Server  :8002  (FastMCP, 6 tools)          │    │
-│  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-
-Milestone 5: Python Runtime sẽ được đóng gói vào Docker container
-(Dockerfile + app service trong docker-compose.yml) để deploy
-trên bất kỳ server nào không cần cài Python thủ công.
-
+┌────────────────────────────────────────────────────────────────────┐
+│  CLIENT TIER  (máy tính người dùng)                                 │
+│   Claude Code / Codex / Gemini / VS Code                           │
+│   Config: NEO4J_URI = "https://semantic.viindoo.com/mcp"           │
+│           X-API-Key: <key do admin cấp>                            │
+└───────────────────────────┬────────────────────────────────────────┘
+                            │  HTTPS / MCP protocol
+                            ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  APP TIER  (app server)                                             │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  Odoo Repositories (cloned)                                   │  │
+│  │  ~/git/*_{version}/   (419+ thư mục, 12 versions)            │  │
+│  └──────────────────────────────┬────────────────────────────────┘  │
+│                                 │  đọc trực tiếp từ host filesystem │
+│                                 ▼                                   │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  PYTHON RUNTIME  (.venv — Python 3.12+)                       │  │
+│  │                                                               │  │
+│  │  [CLI — one-shot]          [Server — long-running]            │  │
+│  │  python -m src.cli         python -m src.mcp.server           │  │
+│  │  └─ INDEXER PIPELINE       └─ FastMCP HTTP :8002              │  │
+│  │     1. Scanner                 systemd giữ process alive      │  │
+│  │     2. Registry Builder                                       │  │
+│  │     3. Dep Resolver                                           │  │
+│  │     4. Parsers (AST/lxml/tree-sitter)                         │  │
+│  │     5. Embedder                                               │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  Kết nối DB qua env vars — trỏ localhost hoặc remote server:       │
+│    NEO4J_URI=bolt://[db-server]:7687                                │
+│    PG_DSN=postgresql://user:pass@[db-server]:5432/odoo_semantic     │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  Nginx                                                        │  │
+│  │  /mcp  → MCP Server  :8002  (FastMCP, 6 tools)               │  │
+│  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)       │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────┬──────────────────────────────────────┘
+                              │  bolt://:7687   postgresql://:5432
+                              │  (private network / firewall)
+                              ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  DB TIER  (db server — có thể tách riêng hoặc gộp với app server)   │
+│                                                                     │
+│  ┌──────────────────────────┐  ┌─────────────────────────────────┐  │
+│  │  Neo4j 5                 │  │  PostgreSQL 16 + pgvector       │  │
+│  │  bolt:// :7687           │  │  :5432                          │  │
+│  │  (browser: 127.0.0.1     │  │                                 │  │
+│  │   :7474 — local only)    │  │  embeddings, api_keys,          │  │
+│  │                          │  │  usage_log                      │  │
+│  │  modules, models,        │  └─────────────────────────────────┘  │
+│  │  fields, methods,        │                                       │
+│  │  views, js_patches       │  docker-compose.yml chạy ở đây       │
+│  └──────────────────────────┘                                       │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+**Deployment options:**
+
+| Cấu hình | Mô tả | Khi nào dùng |
+|----------|-------|-------------|
+| All-in-one | App + DB trên cùng 1 server | Dev, staging, small team |
+| App / DB tách | App server riêng, DB server riêng | Production, muốn scale app độc lập |
+| App / Neo4j / PG tách | Mỗi thứ 1 server | Scale lớn, HA requirements |
+
+Thay đổi tier chỉ cần đổi env vars — không cần sửa code.
+
 
 **Luồng onboard end user — zero install:**
 
