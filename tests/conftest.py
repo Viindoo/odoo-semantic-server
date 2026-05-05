@@ -13,14 +13,58 @@ TEST_VERSION = "99.0"  # version đặc biệt chỉ dùng cho tests, tránh con
 
 @pytest.fixture(scope="session")
 def neo4j_driver():
-    """Kết nối Neo4j một lần cho toàn bộ test session. Skip nếu Neo4j không available."""
+    """
+    Kết nối Neo4j cho toàn bộ test session.
+
+    Ưu tiên 1: testcontainers — tự spin up Docker container, không cần setup thủ công.
+    Ưu tiên 2: kết nối trực tiếp tới NEO4J_TEST_URI (Neo4j đang chạy sẵn).
+    Fallback:  skip toàn bộ neo4j tests với hướng dẫn cụ thể.
+    """
+    container = None
+    driver = None
+
+    # --- Ưu tiên 1: testcontainers ---
     try:
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        from testcontainers.neo4j import Neo4jContainer
+
+        container = Neo4jContainer("neo4j:5")
+        container.start()
+        bolt_url = container.get_connection_url()
+        driver = GraphDatabase.driver(bolt_url, auth=("neo4j", "password"))
         driver.verify_connectivity()
-    except Exception as e:
-        pytest.skip(f"Neo4j không sẵn sàng ({e})")
+
+        # Expose cho các fixture tạo connection riêng (writer, mcp_tools)
+        os.environ["NEO4J_TEST_URI"] = bolt_url
+        os.environ["NEO4J_TEST_USER"] = "neo4j"
+        os.environ["NEO4J_TEST_PASSWORD"] = "password"
+
+    except Exception:
+        if container is not None:
+            try:
+                container.stop()
+            except Exception:
+                pass
+        container = None
+        driver = None
+
+    # --- Ưu tiên 2: Neo4j đang chạy sẵn (docker compose up -d neo4j) ---
+    if driver is None:
+        try:
+            driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            driver.verify_connectivity()
+        except Exception as e:
+            pytest.skip(
+                f"Neo4j không sẵn sàng ({e}).\n"
+                "Để chạy integration tests, chọn một trong hai:\n"
+                "  1. Cài Docker — testcontainers tự spin up Neo4j khi pytest chạy\n"
+                "  2. Chạy thủ công: make neo4j-up  (hoặc: docker compose up -d neo4j)"
+            )
+
     yield driver
+
     driver.close()
+    if container is not None:
+        container.stop()
 
 
 @pytest.fixture
@@ -28,7 +72,7 @@ def clean_neo4j(neo4j_driver):
     """Xóa tất cả nodes có odoo_version=TEST_VERSION trước và sau mỗi test."""
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION)
-    yield
+    yield neo4j_driver
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION)
 

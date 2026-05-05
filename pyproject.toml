@@ -18,6 +18,7 @@ dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
+    "testcontainers[neo4j]>=4.0",
 ]
 
 [tool.pytest.ini_options]
