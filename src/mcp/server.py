@@ -49,8 +49,9 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         extensions = layers[1:]
 
         parents = session.run("""
-            MATCH (:Model {name: $name, odoo_version: $v})-[:INHERITS]->(p:Model)
+            MATCH (:Model {name: $name, odoo_version: $v})-[r:INHERITS]->(p:Model)
             WHERE p.name <> $name
+              AND NOT coalesce(r.unresolved, false)
             OPTIONAL MATCH (p)-[:DEFINED_IN]->(mod:Module)
             RETURN DISTINCT p.name AS pname, mod.name AS module_name
         """, name=model_name, v=odoo_version).data()

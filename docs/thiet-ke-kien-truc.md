@@ -210,7 +210,9 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 
 **Edge case:**
 - **Circular dependency:** log error, cắt cạnh yếu nhất (alphabetical fallback), tiếp tục
-- **Missing dependency:** log warning, đánh dấu `unresolved: true` trên edge, tiếp tục index
+- **Missing dependency:** log warning; tạo placeholder `Model {module: '__unresolved__'}`
+  + edge với property `unresolved: true`. Re-index sau sẽ MERGE vào node thật.
+  Query layer filter `WHERE NOT coalesce(r.unresolved, false)`.
 
 ---
 

@@ -176,10 +176,13 @@ def test_write_delegates_to_unresolved_logs_warning(writer, neo4j_driver, caplog
     with neo4j_driver.session() as session:
         rec = session.run("""
             MATCH (:Model {name: 'hr.employee', odoo_version: $v})
-                  -[:DELEGATES_TO]->(:Model {name: 'res.users', odoo_version: $v})
-            RETURN count(*) AS cnt
+                  -[r:DELEGATES_TO]->(:Model {name: 'res.users',
+                                              module: '__unresolved__', odoo_version: $v})
+            RETURN r.unresolved AS unresolved, r.via_field AS via_field
         """, v=TEST_VERSION).single()
-    assert rec["cnt"] == 0
+    assert rec is not None
+    assert rec["unresolved"] is True
+    assert rec["via_field"] == "user_id"
 
 
 def test_write_inherits_unresolved_logs_warning(writer, neo4j_driver, caplog):
@@ -202,8 +205,10 @@ def test_write_inherits_unresolved_logs_warning(writer, neo4j_driver, caplog):
 
     with neo4j_driver.session() as session:
         rec = session.run("""
-            MATCH (:Model {name: 'sale.order', odoo_version: $v})
-                  -[:INHERITS]->(:Model {name: 'mail.thread', odoo_version: $v})
-            RETURN count(*) AS cnt
+            MATCH (:Model {name: 'sale.order', module: 'viin_mail', odoo_version: $v})
+                  -[r:INHERITS]->(:Model {name: 'mail.thread',
+                                          module: '__unresolved__', odoo_version: $v})
+            RETURN r.unresolved AS unresolved
         """, v=TEST_VERSION).single()
-    assert rec["cnt"] == 0
+    assert rec is not None
+    assert rec["unresolved"] is True
