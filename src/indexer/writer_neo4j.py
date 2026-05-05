@@ -3,7 +3,7 @@ import logging
 
 from neo4j import GraphDatabase
 
-from .models import ParseResult
+from .models import ParseResult, ViewParseResult
 
 _logger = logging.getLogger(__name__)
 
@@ -115,6 +115,85 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                  decorators=mth.decorators)
 
 
+def _write_view_parse_result(tx, result: ViewParseResult) -> None:
+    for view in result.views:
+        tx.run("""
+            MERGE (v:View {xmlid: $xmlid, odoo_version: $ver})
+            SET v.name = $name, v.model = $model, v.module = $module,
+                v.type = $view_type, v.mode = $mode,
+                v.xpaths_exprs = $xpaths_exprs,
+                v.xpaths_positions = $xpaths_positions
+        """, xmlid=view.xmlid, ver=view.odoo_version,
+             name=view.name, model=view.model, module=view.module,
+             view_type=view.view_type, mode=view.mode,
+             xpaths_exprs=[x.expr for x in view.xpaths],
+             xpaths_positions=[x.position for x in view.xpaths])
+
+        tx.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+            MERGE (mod:Module {name: $module, odoo_version: $ver})
+            MERGE (v)-[:DEFINED_IN]->(mod)
+        """, xmlid=view.xmlid, ver=view.odoo_version, module=view.module)
+
+        if view.inherit_xmlid:
+            rec = tx.run("""
+                MATCH (ext:View {xmlid: $xmlid, odoo_version: $ver})
+                MATCH (base:View {xmlid: $inherit_xmlid, odoo_version: $ver})
+                WHERE NOT coalesce(base.unresolved, false)
+                MERGE (ext)-[:INHERITS_VIEW]->(base)
+                RETURN 1 AS ok
+            """, xmlid=view.xmlid, ver=view.odoo_version,
+                 inherit_xmlid=view.inherit_xmlid).single()
+            if rec is None:
+                _logger.warning(
+                    "unresolved INHERITS_VIEW: %s → %s (version %s) — parent view not indexed",
+                    view.xmlid, view.inherit_xmlid, view.odoo_version,
+                )
+                tx.run("""
+                    MATCH (ext:View {xmlid: $xmlid, odoo_version: $ver})
+                    MERGE (placeholder:View {xmlid: $inherit_xmlid,
+                                             module: '__unresolved__', odoo_version: $ver})
+                    ON CREATE SET placeholder.unresolved = true
+                    MERGE (ext)-[:INHERITS_VIEW {unresolved: true}]->(placeholder)
+                """, xmlid=view.xmlid, ver=view.odoo_version,
+                     inherit_xmlid=view.inherit_xmlid)
+
+    for qweb in result.qweb:
+        tx.run("""
+            MERGE (t:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+            SET t.module = $module
+        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module)
+
+        tx.run("""
+            MATCH (t:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+            MERGE (mod:Module {name: $module, odoo_version: $ver})
+            MERGE (t)-[:DEFINED_IN]->(mod)
+        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module)
+
+        if qweb.inherit_xmlid:
+            rec = tx.run("""
+                MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+                MATCH (base:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
+                WHERE NOT coalesce(base.unresolved, false)
+                MERGE (ext)-[:EXTENDS_TMPL]->(base)
+                RETURN 1 AS ok
+            """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
+                 inherit_xmlid=qweb.inherit_xmlid).single()
+            if rec is None:
+                _logger.warning(
+                    "unresolved EXTENDS_TMPL: %s → %s (version %s) — base template not indexed",
+                    qweb.xmlid, qweb.inherit_xmlid, qweb.odoo_version,
+                )
+                tx.run("""
+                    MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+                    MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid,
+                                                 module: '__unresolved__', odoo_version: $ver})
+                    ON CREATE SET placeholder.unresolved = true
+                    MERGE (ext)-[:EXTENDS_TMPL {unresolved: true}]->(placeholder)
+                """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
+                     inherit_xmlid=qweb.inherit_xmlid)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -131,6 +210,8 @@ class Neo4jWriter:
                 " ON (n.name, n.model, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:Method)"
                 " ON (n.name, n.model, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -138,3 +219,8 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for result in results:
                 session.execute_write(_write_parse_result, result)
+
+    def write_view_results(self, results: list[ViewParseResult]) -> None:
+        with self.driver.session() as session:
+            for result in results:
+                session.execute_write(_write_view_parse_result, result)

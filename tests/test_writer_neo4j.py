@@ -1,7 +1,17 @@
 # tests/test_writer_neo4j.py
 import pytest
 
-from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+from src.indexer.models import (
+    FieldInfo,
+    MethodInfo,
+    ModelInfo,
+    ModuleInfo,
+    ParseResult,
+    QWebInfo,
+    ViewInfo,
+    ViewParseResult,
+    XPathInfo,
+)
 from src.indexer.writer_neo4j import Neo4jWriter
 from tests.conftest import TEST_VERSION
 
@@ -213,3 +223,234 @@ def test_write_inherits_unresolved_logs_warning(writer, neo4j_driver, caplog):
         """, v=TEST_VERSION).single()
     assert rec is not None
     assert rec["unresolved"] is True
+
+
+# --- View/QWeb writer tests ---
+
+
+def make_view_parse_result(
+    module_name: str,
+    views: list | None = None,
+    qweb: list | None = None,
+) -> ViewParseResult:
+    module = ModuleInfo(
+        name=module_name, odoo_version=TEST_VERSION,
+        repo=f"{module_name}_repo", path="/tmp",
+        depends=[], version_raw="",
+    )
+    return ViewParseResult(module=module, views=views or [], qweb=qweb or [])
+
+
+def test_write_view_node(writer, neo4j_driver):
+    view = ViewInfo(
+        xmlid="sale.view_sale_order_form",
+        name="sale.order.form",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    result = make_view_parse_result("sale", views=[view])
+    writer.write_view_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (v:View {xmlid: $x, odoo_version: $v}) RETURN v",
+            x="sale.view_sale_order_form", v=TEST_VERSION
+        ).single()
+    assert rec is not None
+    assert rec["v"]["type"] == "form"
+    assert rec["v"]["mode"] == "primary"
+    assert rec["v"]["model"] == "sale.order"
+
+
+def test_write_view_xpaths_stored(writer, neo4j_driver):
+    view = ViewInfo(
+        xmlid="viin_sale.view_sale_order_form_inherit",
+        name="viin inherit",
+        model="sale.order",
+        module="viin_sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="extension",
+        inherit_xmlid="sale.view_sale_order_form",
+        xpaths=[
+            XPathInfo(expr="//field[@name='partner_id']", position="after"),
+            XPathInfo(expr="//button[@name='action_confirm']", position="attributes"),
+        ],
+    )
+    result = make_view_parse_result("viin_sale", views=[view])
+    writer.write_view_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (v:View {xmlid: $x, odoo_version: $v}) RETURN v",
+            x="viin_sale.view_sale_order_form_inherit", v=TEST_VERSION
+        ).single()
+    assert rec is not None
+    assert list(rec["v"]["xpaths_exprs"]) == [
+        "//field[@name='partner_id']",
+        "//button[@name='action_confirm']",
+    ]
+    assert list(rec["v"]["xpaths_positions"]) == ["after", "attributes"]
+
+
+def test_write_inherits_view_edge(writer, neo4j_driver):
+    base_view = ViewInfo(
+        xmlid="sale.view_sale_order_form",
+        name="base", model="sale.order", module="sale",
+        odoo_version=TEST_VERSION, view_type="form",
+        mode="primary", inherit_xmlid=None,
+    )
+    ext_view = ViewInfo(
+        xmlid="viin_sale.view_sale_order_form_inherit",
+        name="ext", model="sale.order", module="viin_sale",
+        odoo_version=TEST_VERSION, view_type="form",
+        mode="extension", inherit_xmlid="sale.view_sale_order_form",
+    )
+    writer.write_view_results([
+        make_view_parse_result("sale", views=[base_view]),
+        make_view_parse_result("viin_sale", views=[ext_view]),
+    ])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (ext:View {xmlid: $ext_xmlid, odoo_version: $v})
+                  -[:INHERITS_VIEW]->
+                  (base:View {xmlid: $base_xmlid, odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, ext_xmlid="viin_sale.view_sale_order_form_inherit",
+             base_xmlid="sale.view_sale_order_form", v=TEST_VERSION).single()
+    assert rec["cnt"] == 1
+
+
+def test_write_inherits_view_unresolved(writer, neo4j_driver, caplog):
+    import logging
+    ext_view = ViewInfo(
+        xmlid="viin_sale.view_sale_order_form_inherit",
+        name="ext", model="sale.order", module="viin_sale",
+        odoo_version=TEST_VERSION, view_type="form",
+        mode="extension", inherit_xmlid="sale.view_sale_order_form",  # NOT seeded
+    )
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([make_view_parse_result("viin_sale", views=[ext_view])])
+
+    assert "unresolved INHERITS_VIEW" in caplog.text
+    assert "viin_sale.view_sale_order_form_inherit" in caplog.text
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (ext:View {xmlid: $ext_xmlid, odoo_version: $v})
+                  -[r:INHERITS_VIEW]->(:View {xmlid: $base_xmlid, module: '__unresolved__'})
+            RETURN r.unresolved AS unresolved
+        """, ext_xmlid="viin_sale.view_sale_order_form_inherit",
+             base_xmlid="sale.view_sale_order_form", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["unresolved"] is True
+
+
+def test_write_qweb_node(writer, neo4j_driver):
+    q = QWebInfo(
+        xmlid="sale.sale_order_portal",
+        module="sale",
+        odoo_version=TEST_VERSION,
+    )
+    result = make_view_parse_result("sale", qweb=[q])
+    writer.write_view_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (t:QWebTmpl {xmlid: $x, odoo_version: $v}) RETURN t",
+            x="sale.sale_order_portal", v=TEST_VERSION
+        ).single()
+    assert rec is not None
+    assert rec["t"]["module"] == "sale"
+
+
+def test_write_extends_tmpl_edge(writer, neo4j_driver):
+    base_q = QWebInfo(xmlid="sale.portal_tmpl", module="sale", odoo_version=TEST_VERSION)
+    ext_q = QWebInfo(
+        xmlid="viin_sale.portal_tmpl_inherit", module="viin_sale",
+        odoo_version=TEST_VERSION, inherit_xmlid="sale.portal_tmpl",
+    )
+    writer.write_view_results([
+        make_view_parse_result("sale", qweb=[base_q]),
+        make_view_parse_result("viin_sale", qweb=[ext_q]),
+    ])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (ext:QWebTmpl {xmlid: $ext, odoo_version: $v})
+                  -[:EXTENDS_TMPL]->
+                  (base:QWebTmpl {xmlid: $base, odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, ext="viin_sale.portal_tmpl_inherit",
+             base="sale.portal_tmpl", v=TEST_VERSION).single()
+    assert rec["cnt"] == 1
+
+
+def test_write_extends_tmpl_unresolved(writer, neo4j_driver, caplog):
+    """EXTENDS_TMPL tới base chưa index → placeholder + edge unresolved=true."""
+    import logging
+
+    ext_q = QWebInfo(
+        xmlid="viin_sale.portal_tmpl_orphan", module="viin_sale",
+        odoo_version=TEST_VERSION, inherit_xmlid="missing.portal_tmpl",
+    )
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([make_view_parse_result("viin_sale", qweb=[ext_q])])
+
+    assert "unresolved EXTENDS_TMPL" in caplog.text
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (ext:QWebTmpl {xmlid: $ext, odoo_version: $v})
+                  -[r:EXTENDS_TMPL {unresolved: true}]->
+                  (ph:QWebTmpl {xmlid: $base, module: '__unresolved__', odoo_version: $v})
+            RETURN ph.unresolved AS flag
+        """, ext="viin_sale.portal_tmpl_orphan",
+             base="missing.portal_tmpl", v=TEST_VERSION).single()
+    assert rec is not None, "Placeholder node + unresolved edge must be created"
+    assert rec["flag"] is True
+
+
+def test_view_xpaths_arrays_length_invariant(writer, neo4j_driver):
+    """xpaths_exprs và xpaths_positions phải luôn cùng độ dài (parallel array invariant)."""
+    view = ViewInfo(
+        xmlid="sale.view_xpaths_invariant_test",
+        name="invariant test", model="sale.order", module="sale",
+        odoo_version=TEST_VERSION, view_type="form", mode="extension",
+        inherit_xmlid="sale.base_view",
+        xpaths=[
+            XPathInfo(expr="//field[@name='a']", position="after"),
+            XPathInfo(expr="//field[@name='b']", position="inside"),
+            XPathInfo(expr="//button[@name='c']", position="attributes"),
+        ],
+    )
+    writer.write_view_results([make_view_parse_result("sale", views=[view])])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (v:View {xmlid: $x, odoo_version: $ver})
+            RETURN size(v.xpaths_exprs) AS exprs_count,
+                   size(v.xpaths_positions) AS pos_count
+        """, x="sale.view_xpaths_invariant_test", ver=TEST_VERSION).single()
+    assert rec["exprs_count"] == rec["pos_count"] == 3
+
+
+def test_write_view_indexes_created(writer, neo4j_driver):
+    """Verify indexes for View and QWebTmpl exist after setup_indexes()."""
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES YIELD labelsOrTypes, properties").data()
+    view_index = any(
+        "View" in (r.get("labelsOrTypes") or [])
+        for r in indexes
+    )
+    qweb_index = any(
+        "QWebTmpl" in (r.get("labelsOrTypes") or [])
+        for r in indexes
+    )
+    assert view_index, "Missing index on :View"
+    assert qweb_index, "Missing index on :QWebTmpl"

@@ -111,7 +111,9 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 
 ## Image Versions — Nguồn Sự Thật
 
-`NEO4J_IMAGE` trong `.env.example` là nguồn duy nhất. CI load `.env.example` trước khi chạy tests. Khi bump version: chỉ sửa `.env.example`.
+`NEO4J_IMAGE` trong `.env.example` là nguồn sự thật cho local dev (testcontainers đọc biến này). Khi bump version: sửa `.env.example`.
+
+**CI exception:** GitHub Actions service containers được khởi động *trước* bất kỳ step nào — không thể đọc `.env.example` tại parse time. Do đó `ci.yml` phải hardcode image version. Khi bump Neo4j: cập nhật **cả hai** `.env.example` VÀ `ci.yml:services.neo4j.image`.
 
 ## Tài Liệu Liên Quan
 

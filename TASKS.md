@@ -25,12 +25,17 @@
 - [x] `.github/workflows/ci.yml`: lint + unit tests + integration tests (Neo4j service container)
 
 ## Milestone 2 — "View Wow"
-**Intent:** Mở rộng semantic awareness sang UI layer.  
-**Outcome:** `resolve_view("sale.order.form", "17.0")` trả về đúng XPath overrides + XML skeleton.
+**Intent:** Mở rộng semantic awareness sang UI layer + thiết lập anti-drift guard.  
+**Outcome:** `resolve_view("sale.view_sale_order_form", "17.0")` trả về đúng XPath overrides + view chain.
 
-- [ ] `src/indexer/parser_xml.py`: views, inherit_id, xpath targets
-- [ ] `src/indexer/parser_qweb.py`: template inheritance chain
-- [ ] `src/mcp/server.py`: `resolve_view` + merged_structure reconstruction
+- [x] `src/indexer/models.py`: thêm XPathInfo, ViewInfo, QWebInfo, ViewParseResult
+- [x] `src/indexer/parser_xml.py`: views, inherit_id, xpath targets
+- [x] `src/indexer/parser_qweb.py`: template inheritance chain
+- [x] `src/indexer/writer_neo4j.py`: View/QWebTmpl nodes + INHERITS_VIEW/EXTENDS_TMPL edges + indexes
+- [x] `src/mcp/server.py`: `resolve_view` + view chain reconstruction
+- [x] `tests/test_doc_sync.py`: TASKS.md file guard + stale `[~]` marker guard (anti-drift)
+- [x] `tests/test_output_snapshots.py`: MCP output schema contract tests (anti-drift)
+- [ ] E2E test: kết nối VS Code + Claude Code, verify `resolve_view` kết quả
 
 ## Milestone 3 — "Semantic Wow"
 **Intent:** Tìm kiếm code theo ngữ nghĩa.  
@@ -44,6 +49,7 @@
 **Intent:** Full-stack impact analysis từ Python model đến JS component.  
 **Outcome:** `impact_analysis("field", "sale.order.amount_total", "17.0")` liệt kê chính xác tất cả thứ bị ảnh hưởng.
 
+- [ ] `src/indexer/writer_neo4j.py`: TARGETS_MODEL edge (View → Model) — hoãn từ M2, prerequisite để query view ảnh hưởng khi đổi model/field
 - [ ] `src/indexer/parser_js.py`: era-aware (era1: extend, era2: define+include, era3: patch)
 - [ ] `src/indexer/writer_neo4j.py`: JSPatch + OWLComponent nodes + PATCHES edges
 - [ ] `src/mcp/server.py`: `impact_analysis` + risk_level scoring
