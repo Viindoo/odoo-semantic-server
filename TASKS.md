@@ -14,15 +14,15 @@
 **Intent:** Chứng minh giá trị cốt lõi — AI hiểu inheritance chain cross-repo.  
 **Outcome:** `resolve_model("account.move", "17.0")` trả về đúng full chain không hallucinate.
 
-- [ ] `docker-compose.yml`: Neo4j + PostgreSQL/pgvector
-- [ ] `src/indexer/scanner.py`: git branch detection + manifest discovery
-- [ ] `src/indexer/registry.py`: module registry per version
-- [ ] `src/indexer/resolver.py`: topological sort + circular dep handling
-- [ ] `src/indexer/parser_python.py`: `_name`/`_inherit`/`_inherits`/fields/methods
-- [ ] `src/indexer/writer_neo4j.py`: Module/Model/Field/Method nodes + edges
-- [ ] `src/mcp/server.py`: `resolve_model` + `resolve_field` + `resolve_method`
+- [x] `docker-compose.yml`: Neo4j + PostgreSQL/pgvector
+- [x] `src/indexer/scanner.py`: git branch detection + manifest discovery
+- [x] `src/indexer/registry.py`: module registry per version
+- [x] `src/indexer/resolver.py`: topological sort + circular dep handling
+- [x] `src/indexer/parser_python.py`: `_name`/`_inherit`/`_inherits`/fields/methods
+- [x] `src/indexer/writer_neo4j.py`: Module/Model/Field/Method nodes + edges
+- [x] `src/mcp/server.py`: `resolve_model` + `resolve_field` + `resolve_method`
 - [ ] E2E test: kết nối VS Code + Claude Code, verify kết quả
-- [ ] `.github/workflows/ci.yml`: lint + unit tests + integration tests (Neo4j service container)
+- [x] `.github/workflows/ci.yml`: lint + unit tests + integration tests (Neo4j service container)
 
 ## Milestone 2 — "View Wow"
 **Intent:** Mở rộng semantic awareness sang UI layer.  
