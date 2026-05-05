@@ -85,7 +85,8 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                     MERGE (placeholder:Model {name: $delegated,
                                               module: '__unresolved__', odoo_version: $v})
                     ON CREATE SET placeholder.unresolved = true
-                    MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]->(placeholder)
+                    MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]
+                          ->(placeholder)
                 """, name=model.name, mod=model.module, v=model.odoo_version,
                      delegated=delegated_model, via_field=via_field)
 
@@ -126,8 +127,10 @@ class Neo4jWriter:
             for stmt in [
                 "CREATE INDEX IF NOT EXISTS FOR (n:Module) ON (n.name, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:Model)  ON (n.name, n.module, n.odoo_version)",
-                "CREATE INDEX IF NOT EXISTS FOR (n:Field)  ON (n.name, n.model, n.module, n.odoo_version)",
-                "CREATE INDEX IF NOT EXISTS FOR (n:Method) ON (n.name, n.model, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Field)"
+                " ON (n.name, n.model, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Method)"
+                " ON (n.name, n.model, n.module, n.odoo_version)",
             ]:
                 session.run(stmt)
 

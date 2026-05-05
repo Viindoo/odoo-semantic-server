@@ -1,9 +1,6 @@
 # tests/test_scanner.py
-import subprocess
-import pytest
-from pathlib import Path
-from tests.conftest import make_git_repo
 from src.indexer.scanner import get_git_branch, is_odoo_version_branch, scan_repos
+from tests.conftest import make_git_repo
 
 
 def test_get_git_branch_returns_version(tmp_path):

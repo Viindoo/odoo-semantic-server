@@ -1,5 +1,5 @@
 # tests/test_models.py
-from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+from src.indexer.models import ModelInfo, ModuleInfo, ParseResult
 
 
 def test_module_info_creation():

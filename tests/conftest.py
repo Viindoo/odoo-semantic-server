@@ -82,8 +82,13 @@ def neo4j_driver():
         except Exception as bolt_error:
             if bolt_driver is not None:
                 bolt_driver.close()
-            lines = ["[FIX] Cài Docker + start daemon → testcontainers tự spin up Neo4j khi test chạy"]
-            lines.append(f"  testcontainers lỗi: {tc_error}" if tc_error else "  testcontainers: không thử được")
+            lines = ["[FIX] Cài Docker + start daemon"
+                     " → testcontainers tự spin up Neo4j khi test chạy"]
+            tc_msg = (
+                f"  testcontainers lỗi: {tc_error}" if tc_error
+                else "  testcontainers: không thử được"
+            )
+            lines.append(tc_msg)
             lines.append(f"  bolt ({NEO4J_URI}) lỗi: {bolt_error}")
             lines.append("  Hoặc chạy thủ công: make neo4j-up")
             pytest.skip("\n".join(lines))

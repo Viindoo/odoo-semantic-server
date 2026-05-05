@@ -98,7 +98,10 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
         """, fn=field_name, mn=model_name, v=odoo_version).data()
 
     if not records:
-        return f"Không tìm thấy field '{field_name}' trên model '{model_name}' trong Odoo {odoo_version}."
+        return (
+            f"Không tìm thấy field '{field_name}' trên model"
+            f" '{model_name}' trong Odoo {odoo_version}."
+        )
 
     base_f = records[0]["f"]
     lines = [
@@ -132,7 +135,10 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
         """, mn=method_name, model=model_name, v=odoo_version).data()
 
     if not records:
-        return f"Không tìm thấy method '{method_name}' trên model '{model_name}' trong Odoo {odoo_version}."
+        return (
+            f"Không tìm thấy method '{method_name}' trên model"
+            f" '{model_name}' trong Odoo {odoo_version}."
+        )
 
     lines = [f"{model_name}.{method_name}() (Odoo {odoo_version})", "Override chain:"]
     for r in records:
