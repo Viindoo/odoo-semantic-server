@@ -109,6 +109,7 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 
 | File | Đọc khi nào |
 |------|-------------|
+| `README.md` | Tổng quan dự án, onboard user, system requirements, trạng thái milestone |
 | `TASKS.md` | Trước khi bắt đầu task mới — xem milestone nào đang active |
 | `docs/thiet-ke-kien-truc.md` | Cần hiểu schema Neo4j, pipeline, MCP tool spec |
 | `docs/huong-dan-stack.md` | Cần hiểu sâu stack: Neo4j patterns, AST gotchas, FastMCP tips |
