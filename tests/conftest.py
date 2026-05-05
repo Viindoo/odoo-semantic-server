@@ -13,17 +13,9 @@ NEO4J_USER = os.getenv("NEO4J_TEST_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_TEST_PASSWORD", "password")
 TEST_VERSION = "99.0"  # version đặc biệt chỉ dùng cho tests, tránh conflict với data thật
 
-
-class _Neo4jContainer(Neo4jContainer):
-    """Neo4jContainer dùng modern wait strategy, tránh DeprecationWarning từ testcontainers 4.x."""
-
-    def __init__(self, image: str = "neo4j:latest", **kwargs):
-        super().__init__(image, **kwargs)
-        self.waiting_for(LogMessageWaitStrategy("Remote interface available at"))
-
-    def _connect(self) -> None:
-        with self.get_driver() as driver:
-            driver.verify_connectivity()
+# Canonical version defined in .env.example (NEO4J_IMAGE=...).
+# CI loads .env.example before running tests; local dev copies .env.example → .env.
+_NEO4J_IMAGE = os.getenv("NEO4J_IMAGE", "neo4j:5.26.25")
 
 
 @pytest.fixture(scope="session")
@@ -41,7 +33,9 @@ def neo4j_driver():
 
     # --- Ưu tiên 1: testcontainers (yêu cầu Docker daemon đang chạy) ---
     try:
-        container = _Neo4jContainer("neo4j:5.26.25")
+        container = Neo4jContainer(_NEO4J_IMAGE).waiting_for(
+            LogMessageWaitStrategy("Remote interface available at")
+        )
         container.start()
         bolt_url = container.get_connection_url()
         driver = GraphDatabase.driver(bolt_url, auth=("neo4j", "password"))
