@@ -110,3 +110,42 @@ def test_resolve_method_not_found(mcp_tools):
     _, _, resolve_method = mcp_tools
     result = resolve_method("account.move", "nonexistent_method", TEST_VERSION)
     assert "Không tìm thấy" in result
+
+
+def test_resolve_model_excludes_unresolved_parents(neo4j_driver):
+    """Unresolved parent (placeholder) phải bị filter khỏi 'Kế thừa từ' output."""
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    # Dọn data cũ
+    UNRESOLVED_VERSION = "98.0"
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION)
+
+    # Seed: sale.order inherit từ ghost.mixin (chưa index) → tạo unresolved edge
+    mod = ModuleInfo("sale", UNRESOLVED_VERSION, "odoo_test", "/tmp", [], "")
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=UNRESOLVED_VERSION,
+        inherit=["ghost.mixin"],  # intentionally NOT seeded
+    )
+    writer.write_results([ParseResult(module=mod, models=[model])])
+    writer.close()
+
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _resolve_model
+
+    result = _resolve_model("sale.order", UNRESOLVED_VERSION)
+
+    assert "sale.order" in result
+    assert "ghost.mixin" not in result  # unresolved parent bị filter
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION)

@@ -58,6 +58,14 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                         "unresolved INHERITS: %s → %s (version %s) — parent model not indexed",
                         model.name, parent_name, model.odoo_version,
                     )
+                    tx.run("""
+                        MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
+                        MERGE (placeholder:Model {name: $parent_name,
+                                                  module: '__unresolved__', odoo_version: $v})
+                        ON CREATE SET placeholder.unresolved = true
+                        MERGE (m)-[:INHERITS {unresolved: true}]->(placeholder)
+                    """, model_name=model.name, mod=model.module,
+                         v=model.odoo_version, parent_name=parent_name)
 
         for delegated_model, via_field in model.inherits.items():
             rec = tx.run("""
@@ -72,6 +80,14 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                     "unresolved DELEGATES_TO: %s → %s (version %s) — target model not indexed",
                     model.name, delegated_model, model.odoo_version,
                 )
+                tx.run("""
+                    MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
+                    MERGE (placeholder:Model {name: $delegated,
+                                              module: '__unresolved__', odoo_version: $v})
+                    ON CREATE SET placeholder.unresolved = true
+                    MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]->(placeholder)
+                """, name=model.name, mod=model.module, v=model.odoo_version,
+                     delegated=delegated_model, via_field=via_field)
 
         for fld in model.fields:
             tx.run("""
