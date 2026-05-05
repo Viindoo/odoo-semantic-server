@@ -83,6 +83,53 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 
 ---
 
+## System Requirements (Server)
+
+### Minimum — ~30 người dùng, M1–M2
+
+```
+2 vCPU / 8 GB RAM / 50 GB SSD
+```
+
+| Thành phần | RAM |
+|------------|-----|
+| Neo4j 5 (JVM heap) | 4 GB |
+| MCP Server (Python) | 300 MB |
+| OS + buffer | ~3.7 GB |
+
+**Đáp ứng được:**
+- 30 người dùng đồng thời (20% dev, 80% business)
+- ~2.000 MCP queries/ngày, peak ~10 req/phút
+- Odoo ecosystem ~400 modules: ~50.000 nodes, ~100.000 edges trong Neo4j
+- Tất cả queries có composite index → latency 2–10ms/request
+
+**Chưa đáp ứng:** M3 Semantic Wow (pgvector embeddings cần thêm RAM cho PostgreSQL).
+
+---
+
+### Recommended — ~30 người dùng, M1–M5 đầy đủ
+
+```
+4 vCPU / 16 GB RAM / 150 GB SSD
+```
+
+| Thành phần | RAM |
+|------------|-----|
+| Neo4j 5 (JVM heap) | 4 GB |
+| PostgreSQL 16 + pgvector | 4 GB |
+| MCP Server + Web UI (Python) | 1 GB |
+| OS + buffer + peak headroom | ~7 GB |
+
+**Đáp ứng được:**
+- Toàn bộ M1–M5: graph queries + semantic search (pgvector) + Web UI admin + CLI indexer
+- Mở rộng lên ~80 người dùng mà không cần thay đổi cấu hình
+- Re-index ~400 modules trong <60 giây (incremental M6)
+- Storage: Neo4j data (~5 GB) + PostgreSQL embeddings (~20 GB) + Odoo repos (~10 GB) + headroom
+
+**Tách tier khi nào:** Khi đội >100 người hoặc cần HA — tách Neo4j + PostgreSQL ra VM riêng, giữ App tier nhẹ (2 vCPU / 4 GB).
+
+---
+
 ## Deploy Server (Admin)
 
 ```bash
