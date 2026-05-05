@@ -488,6 +488,36 @@ services:
         condition: service_healthy  # Chờ healthcheck PASS, không chỉ container started
 ```
 
+### Tách DB Tier sang Server Riêng
+
+`docker-compose.yml` chỉ chứa DB services — không có app service. App kết nối DB qua env vars.
+
+**Bước 1 — Chạy docker-compose trên DB server:**
+
+```bash
+# Trên db-server (192.168.1.10):
+NEO4J_PASSWORD=secret NEO4J_ADVERTISED_HOST=192.168.1.10 docker compose up -d
+```
+
+**Bước 2 — Trỏ app server sang DB server:**
+
+```bash
+# Trong .env trên app-server:
+NEO4J_URI=bolt://192.168.1.10:7687
+PG_DSN=postgresql://odoo_semantic:secret@192.168.1.10:5432/odoo_semantic
+```
+
+**Firewall trên DB server** — chỉ cho phép app server IP:
+
+```bash
+ufw allow from 192.168.1.20 to any port 7687   # Neo4j bolt (app server)
+ufw allow from 192.168.1.20 to any port 5432   # PostgreSQL (app server)
+# Port 7474 (Neo4j browser) không cần mở — đã bind localhost-only trong docker-compose
+```
+
+**Tại sao `NEO4J_ADVERTISED_HOST` quan trọng:**  
+Khi Neo4j chạy trong Docker, nó broadcast container hostname (ví dụ `neo4j-container-1`) trong bolt handshake. App server nhận hostname đó, không resolve được → connection fail. Set `NEO4J_server_bolt_advertised__address` = IP thật của DB server trong docker-compose để fix.
+
 ---
 
 ## 8. pgvector (Milestone 3+)

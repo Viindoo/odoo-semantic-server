@@ -58,15 +58,20 @@ odoo-semantic-mcp/
 - [ ] **Bước 1: Tạo docker-compose.yml**
 
 ```yaml
-# docker-compose.yml
+# docker-compose.yml — DB TIER ONLY
+# Chạy file này trên DB server (hoặc cùng server với app khi dev).
+# App tier kết nối qua NEO4J_URI và PG_DSN trong .env — không cần sửa code.
 services:
   neo4j:
     image: neo4j:5
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-password}
+      # Khi Neo4j chạy trên server riêng, phải set advertised address
+      # để bolt client redirect đúng host (không bị redirect về container hostname):
+      NEO4J_server_bolt_advertised__address: ${NEO4J_ADVERTISED_HOST:-localhost}:7687
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "127.0.0.1:7474:7474"  # Browser UI — localhost only, không expose ra ngoài
+      - "7687:7687"             # Bolt — cần accessible từ app server
     volumes:
       - neo4j_data:/data
     healthcheck:
@@ -81,7 +86,7 @@ services:
       POSTGRES_USER: odoo_semantic
       POSTGRES_PASSWORD: ${PG_PASSWORD:-password}
     ports:
-      - "5432:5432"
+      - "5432:5432"             # Cần accessible từ app server
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -98,18 +103,33 @@ volumes:
 
 ```bash
 # .env.example
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
-NEO4J_TEST_URI=bolt://localhost:7687
-NEO4J_TEST_USER=neo4j
-NEO4J_TEST_PASSWORD=password
+# Thay [db-server] bằng IP/hostname của DB server khi tách tier.
+# Khi chạy all-in-one, giữ nguyên localhost.
 
+# ── DB TIER — Neo4j ──────────────────────────────────────────────────
+NEO4J_URI=bolt://localhost:7687
+# Tách DB tier:  NEO4J_URI=bolt://192.168.1.10:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=                          # bắt buộc điền
+
+# Chỉ cần set khi Neo4j chạy trên server riêng (xem docker-compose.yml):
+# NEO4J_ADVERTISED_HOST=192.168.1.10
+
+# ── DB TIER — PostgreSQL ─────────────────────────────────────────────
 PG_DSN=postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+# Tách DB tier:  PG_DSN=postgresql://odoo_semantic:password@192.168.1.10:5432/odoo_semantic
+PG_PASSWORD=                             # bắt buộc điền
+
+# ── APP TIER ─────────────────────────────────────────────────────────
 ODOO_REPOS_BASE_DIR=/home/user/git
 
 MCP_HOST=0.0.0.0
 MCP_PORT=8002
+
+# ── TEST (pytest integration tests) ─────────────────────────────────���
+NEO4J_TEST_URI=bolt://localhost:7687
+NEO4J_TEST_USER=neo4j
+NEO4J_TEST_PASSWORD=password
 ```
 
 - [ ] **Bước 3: Tạo pyproject.toml**
