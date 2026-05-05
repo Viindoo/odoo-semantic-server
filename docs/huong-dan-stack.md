@@ -421,10 +421,11 @@ def resolve_odoo_version(version_raw: str, repo_path: str) -> str:
     if m:
         return m.group(1)
 
-    # Ưu tiên 2: git branch --show-current
+    # Ưu tiên 2: git symbolic-ref --short HEAD
+    # (dùng symbolic-ref thay branch --show-current để handle unborn branches)
     try:
         branch = subprocess.run(
-            ["git", "-C", repo_path, "branch", "--show-current"],
+            ["git", "-C", repo_path, "symbolic-ref", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5
         ).stdout.strip()
         if re.match(r'^\d+\.\d+$', branch):
@@ -476,6 +477,32 @@ def neo4j_driver():
 ```
 
 `pytest.skip()` từ fixture sẽ skip **tất cả tests** phụ thuộc vào fixture đó.
+
+### CI Guard — Skip Testcontainers Import Khi Có Service Container
+
+Khi CI cung cấp Neo4j sẵn (GitHub Actions service container), không cần import testcontainers — tránh import-time `DeprecationWarning` từ `@wait_container_is_ready` decorator. GitHub Actions tự set `CI=true`:
+
+```python
+@pytest.fixture(scope="session")
+def neo4j_driver():
+    if os.getenv("CI"):
+        # CI path: service container đã sẵn sàng, skip testcontainers hoàn toàn
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        try:
+            driver.verify_connectivity()
+        except Exception as e:
+            driver.close()
+            pytest.skip(f"Neo4j service container not available in CI: {e}")
+        yield driver
+        driver.close()
+        return
+
+    # Local dev path: import testcontainers để tự spin up container
+    from testcontainers.neo4j import Neo4jContainer
+    # ...
+```
+
+Pattern này giữ local dev không thay đổi (testcontainers vẫn chạy), trong khi CI không bao giờ import testcontainers.
 
 ### Fixture Scopes
 
@@ -584,7 +611,8 @@ cur.execute("""
 | `wget` trong Neo4j healthcheck | Image neo4j:5.26.25 không có wget | Dùng `cypher-shell` |
 | `$VAR` trong YAML CMD-SHELL | Docker expand trước khi truyền shell | Dùng `$$VAR` |
 | Pin fastmcp version | API thay đổi giữa 2.x và 3.x | `fastmcp>=2.3,<3.0` |
-| Tên folder cho Odoo version | Chỉ là quy ước viindoo-clone.sh | Dùng git branch `--show-current` |
+| Tên folder cho Odoo version | Chỉ là quy ước viindoo-clone.sh | Dùng `git symbolic-ref --short HEAD` |
+| Upgrade authlib lên 1.7.0+ | 1.7.0 thêm `AuthlibDeprecationWarning` ở import time | Pin `authlib>=1.6.5,<1.7.0` |
 
 ---
 

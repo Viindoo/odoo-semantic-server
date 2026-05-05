@@ -171,7 +171,7 @@ Trước khi parse bất kỳ thứ gì, indexer phải biết module nào nằm
 ```
 Scan ~/git/*/ (hoặc thư mục user cấu hình)
         │
-        ├─ git -C <dir> branch --show-current → odoo_version
+        ├─ git -C <dir> symbolic-ref --short HEAD → odoo_version
         └─ find <dir> -name "__manifest__.py"
                 │
                 ├─ đọc name, depends, version

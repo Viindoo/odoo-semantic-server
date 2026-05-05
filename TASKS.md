@@ -21,7 +21,7 @@
 - [x] `src/indexer/parser_python.py`: `_name`/`_inherit`/`_inherits`/fields/methods
 - [x] `src/indexer/writer_neo4j.py`: Module/Model/Field/Method nodes + edges
 - [x] `src/mcp/server.py`: `resolve_model` + `resolve_field` + `resolve_method`
-- [ ] E2E test: kết nối VS Code + Claude Code, verify kết quả *(auto tests: 16/16 PASSED — chỉ còn manual verify với Claude Code thật)*
+- [ ] E2E test: kết nối VS Code + Claude Code, verify kết quả *(auto tests: 56/56 PASSED — 39 unit + 17 integration — chỉ còn manual verify với Claude Code thật)*
 - [x] `.github/workflows/ci.yml`: lint + unit tests + integration tests (Neo4j service container)
 
 ## Milestone 2 — "View Wow"
