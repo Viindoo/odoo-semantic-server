@@ -37,6 +37,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Load image versions from .env.example
+        # Đọc NEO4J_IMAGE (và các biến khác) vào GitHub env — single source of truth
+        run: grep -v '^#' .env.example | grep -v '^$' >> $GITHUB_ENV
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v -m "neo4j" --tb=short
         env:

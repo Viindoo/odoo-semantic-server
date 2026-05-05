@@ -3,7 +3,7 @@
 # App tier kết nối qua NEO4J_URI và PG_DSN trong .env — không cần sửa code.
 services:
   neo4j:
-    image: neo4j:5.26.25
+    image: ${NEO4J_IMAGE:-neo4j:5.26.25}  # canonical version in .env.example
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-password}
       # Khi Neo4j chạy trên server riêng, phải set advertised address
