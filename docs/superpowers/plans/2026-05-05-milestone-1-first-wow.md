@@ -10,7 +10,7 @@
 
 **Architecture:** Scanner quét `~/git` → Registry Builder build module map per version → Dep Resolver topo-sort → Python AST Parser → Neo4j Writer → MCP Server expose 3 tools qua HTTP FastMCP.
 
-**Tech Stack:** Python 3.11+, fastmcp, neo4j (Python driver), psycopg2-binary, python-dotenv, pytest.
+**Tech Stack:** Python 3.12+, fastmcp, neo4j (Python driver), psycopg2-binary, python-dotenv, pytest.
 
 ---
 
@@ -122,7 +122,7 @@ build-backend = "hatchling.build"
 [project]
 name = "odoo-semantic-mcp"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=2.3,<3.0",
     "neo4j>=5.0,<6.0",
@@ -146,7 +146,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
@@ -2162,7 +2162,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - run: pip install ruff
       - run: ruff check src/ tests/
 
@@ -2172,7 +2172,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v -m "not neo4j" --tb=short
 
@@ -2194,7 +2194,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v -m "neo4j" --tb=short
         env:

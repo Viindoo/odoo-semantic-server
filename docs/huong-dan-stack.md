@@ -49,8 +49,8 @@ Indexer cần đọc `~/git/*` trực tiếp từ host filesystem. Container ho�
 ### Setup
 
 ```bash
-# Yêu cầu Python 3.11+ trên host
-python3.11 -m venv .venv
+# Yêu cầu Python 3.12+ trên host
+python3.12 -m venv .venv
 source .venv/bin/activate          # Linux/Mac
 # .venv\Scripts\activate           # Windows
 

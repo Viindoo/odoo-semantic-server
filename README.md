@@ -105,7 +105,7 @@ cd odoo-semantic-mcp
 cp .env.example .env                      # điền NEO4J_PASSWORD, PG_PASSWORD, ...
 
 # 1. Python runtime
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
