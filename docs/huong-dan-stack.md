@@ -185,6 +185,20 @@ RETURN v ORDER BY v DESC LIMIT 1
 RETURN v ORDER BY toFloat(v) DESC LIMIT 1
 ```
 
+### Đếm Pattern Expressions — Neo4j 5.x
+
+**Bẫy:** `size()` không nhận pattern expression trong Neo4j 5.x → `CypherSyntaxError`.
+
+```cypher
+-- Sai (Neo4j 4.x, không chạy được trên Neo4j 5):
+ORDER BY size(()-[:INHERITS]->(m)) ASC
+
+-- Đúng (Neo4j 5.x):
+ORDER BY COUNT { ()-[:INHERITS]->(m) } ASC
+```
+
+Dùng `COUNT { pattern }` bất cứ khi nào cần đếm nodes/edges theo pattern — không dùng `size()`.
+
 ### .single() vs .data()
 
 ```python
@@ -195,6 +209,21 @@ count = session.run("MATCH (m:Model) RETURN count(m) AS c").single()["c"]
 records = session.run("MATCH (f:Field {name: $fn, model: $mn, ...}) RETURN f").data()
 # records là list[dict] — an toàn kể cả khi trống
 ```
+
+Phát hiện MATCH thất bại — khi query dùng `MATCH` + `RETURN 1 AS ok`, `single()` trả về `None` nếu không có row nào:
+
+```python
+rec = tx.run("""
+    MATCH (m:Model {name: $name, odoo_version: $v})
+    MATCH (parent:Model {name: $parent_name, odoo_version: $v})
+    MERGE (m)-[:INHERITS]->(parent)
+    RETURN 1 AS ok
+""", ...).single()
+if rec is None:
+    logger.warning("unresolved INHERITS: %s → %s", name, parent_name)
+```
+
+Pattern này dùng trong `writer_neo4j.py` để phát hiện edge không tạo được (target không tồn tại).
 
 ### Python Driver Pattern
 
