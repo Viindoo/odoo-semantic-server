@@ -117,7 +117,8 @@ def test_write_inherits_edge(writer, neo4j_driver):
     with neo4j_driver.session() as session:
         rec = session.run("""
             MATCH (ext:Model {name: 'sale.order', module: 'ext_mod', odoo_version: $v})
-                  -[:INHERITS]->(base:Model {name: 'sale.order', module: 'base_mod', odoo_version: $v})
+                  -[:INHERITS]->
+                  (base:Model {name: 'sale.order', module: 'base_mod', odoo_version: $v})
             RETURN count(*) AS cnt
         """, v=TEST_VERSION).single()
     assert rec["cnt"] == 1

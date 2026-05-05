@@ -1,7 +1,9 @@
 # tests/test_parser_python.py
 import textwrap
 from pathlib import Path
+
 import pytest
+
 from src.indexer.models import ModuleInfo
 from src.indexer.parser_python import parse_file, parse_module
 

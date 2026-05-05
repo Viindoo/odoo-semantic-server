@@ -1,10 +1,10 @@
 # tests/test_registry.py
-import subprocess
-import pytest
 from pathlib import Path
-from tests.conftest import make_git_repo, make_manifest
-from src.indexer.registry import build_registry, parse_manifest, resolve_odoo_version
 
+import pytest
+
+from src.indexer.registry import build_registry, parse_manifest, resolve_odoo_version
+from tests.conftest import make_git_repo, make_manifest
 
 # --- Unit tests: parse_manifest ---
 
@@ -70,7 +70,6 @@ def test_build_registry_parses_depends(odoo_repo):
 
 
 def test_build_registry_sets_repo_name(odoo_repo):
-    from pathlib import Path
     registry = build_registry([(odoo_repo, "17.0")])
     assert registry["17.0"]["base"].repo == Path(odoo_repo).name
 
