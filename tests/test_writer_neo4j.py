@@ -1,8 +1,9 @@
 # tests/test_writer_neo4j.py
 import pytest
-from tests.conftest import TEST_VERSION
-from src.indexer.models import ModuleInfo, ModelInfo, FieldInfo, MethodInfo, ParseResult
+
+from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from src.indexer.writer_neo4j import Neo4jWriter
+from tests.conftest import TEST_VERSION
 
 pytestmark = pytest.mark.neo4j
 

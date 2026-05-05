@@ -1,5 +1,6 @@
 # src/mcp/server.py
 import os
+
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
@@ -107,7 +108,7 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
         f"├─ Stored:   {'Có' if base_f.get('stored', True) else 'Không'}",
         f"├─ Required: {'Có' if base_f.get('required', False) else 'Không'}",
         f"├─ Related:  {base_f.get('related') or '—'}",
-        f"└─ Khai báo trong:",
+        "└─ Khai báo trong:",
     ]
     for r in records:
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
@@ -137,7 +138,8 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
         mth = r["mth"]
         super_info = "✓ gọi super()" if mth.get("has_super_call") else "✗ không gọi super()"
         decs = ", ".join(mth.get("decorators") or []) or "—"
-        lines.append(f"  [{r['repo']}] {r['module_name']} — {super_info} — decorators: {decs}")
+        repo_str = f"[{r['repo']}] " if r.get("repo") else ""
+        lines.append(f"  {repo_str}{r['module_name']} — {super_info} — decorators: {decs}")
     return "\n".join(lines)
 
 
