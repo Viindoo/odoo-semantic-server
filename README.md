@@ -143,7 +143,7 @@ python -m src.cli restore --from backup-20260505.tar.gz
 
 > Xem [`TASKS.md`](TASKS.md) để biết task nào đang làm và task nào tiếp theo.
 
-**Milestone 1 — "First Wow":** `[ ]` Chưa bắt đầu  
+**Milestone 1 — "First Wow":** `[~]` Đang thực hiện — cần E2E test thật với Neo4j  
 **Milestone 2 — "View Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 3 — "Semantic Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
