@@ -150,6 +150,74 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
     return "\n".join(lines)
 
 
+def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
+    with _get_driver().session() as session:
+        if odoo_version == "auto":
+            odoo_version = _latest_version(session)
+
+        view_rec = session.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+            OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
+            RETURN v, mod.name AS module_name, mod.repo AS repo
+        """, xmlid=xmlid, ver=odoo_version).single()
+
+        if not view_rec:
+            return f"Không tìm thấy view '{xmlid}' trong Odoo {odoo_version}."
+
+        parent_rec = session.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+                  -[r:INHERITS_VIEW]->(parent:View {odoo_version: $ver})
+            WHERE NOT coalesce(r.unresolved, false)
+            RETURN parent.xmlid AS parent_xmlid
+        """, xmlid=xmlid, ver=odoo_version).single()
+
+        extensions = session.run("""
+            MATCH (ext:View {odoo_version: $ver})-[:INHERITS_VIEW]->
+                  (v:View {xmlid: $xmlid, odoo_version: $ver})
+            WHERE NOT coalesce(ext.unresolved, false)
+            OPTIONAL MATCH (ext)-[:DEFINED_IN]->(mod:Module)
+            RETURN ext.xmlid AS ext_xmlid,
+                   ext.xpaths_exprs AS xpaths_exprs,
+                   ext.xpaths_positions AS xpaths_positions,
+                   mod.name AS module_name, mod.repo AS repo
+        """, xmlid=xmlid, ver=odoo_version).data()
+
+    v_props = view_rec["v"]
+    repo_str = f"[{view_rec['repo']}] " if view_rec.get("repo") else ""
+    mode_label = " (extension)" if v_props.get("mode") == "extension" else ""
+
+    lines = [f"{xmlid} (Odoo {odoo_version})"]
+    lines.append(f"├─ Type:   {v_props.get('type', '?')}")
+    lines.append(f"├─ Model:  {v_props.get('model', '?')}")
+    lines.append(f"├─ Module: {repo_str}{view_rec.get('module_name', '?')}{mode_label}")
+
+    if parent_rec:
+        lines.append(f"├─ Kế thừa từ: {parent_rec['parent_xmlid']}")
+        own_exprs = list(v_props.get("xpaths_exprs") or [])
+        own_positions = list(v_props.get("xpaths_positions") or [])
+        if own_exprs:
+            lines.append(f"├─ XPath modifications ({len(own_exprs)}):")
+            for expr, pos in zip(own_exprs, own_positions):
+                lines.append(f"│   ├─ {expr} [{pos}]")
+
+    if extensions:
+        lines.append(f"└─ Mở rộng bởi ({len(extensions)} modules):")
+        for i, ext in enumerate(extensions):
+            ext_repo = f"[{ext['repo']}] " if ext.get("repo") else ""
+            connector = "    └─" if i == len(extensions) - 1 else "    ├─"
+            lines.append(
+                f"{connector} {ext['ext_xmlid']}  →  {ext_repo}{ext.get('module_name', '?')}"
+            )
+            exprs = list(ext.get("xpaths_exprs") or [])
+            positions = list(ext.get("xpaths_positions") or [])
+            for expr, pos in zip(exprs, positions):
+                lines.append(f"    │   └─ xpath: {expr} [{pos}]")
+    else:
+        lines.append("└─ Không có extension")
+
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     """Trả về thông tin đầy đủ về Odoo model: inheritance chain, field summary, method summary."""
@@ -166,6 +234,12 @@ def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") 
 def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
     """Trả về override chain của một method theo thứ tự base→top."""
     return _resolve_method(model_name, method_name, odoo_version)
+
+
+@mcp.tool()
+def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
+    """Trả về view inheritance chain, XPath modifications từ mọi extension module."""
+    return _resolve_view(xmlid, odoo_version)
 
 
 if __name__ == "__main__":

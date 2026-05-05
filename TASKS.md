@@ -28,13 +28,13 @@
 **Intent:** Mở rộng semantic awareness sang UI layer + thiết lập anti-drift guard.  
 **Outcome:** `resolve_view("sale.view_sale_order_form", "17.0")` trả về đúng XPath overrides + view chain.
 
-- [ ] `src/indexer/models.py`: thêm XPathInfo, ViewInfo, QWebInfo, ViewParseResult
-- [ ] `src/indexer/parser_xml.py`: views, inherit_id, xpath targets
-- [ ] `src/indexer/parser_qweb.py`: template inheritance chain
-- [ ] `src/indexer/writer_neo4j.py`: View/QWebTmpl nodes + INHERITS_VIEW/EXTENDS_TMPL edges + indexes
-- [ ] `src/mcp/server.py`: `resolve_view` + view chain reconstruction
-- [ ] `tests/test_doc_sync.py`: TASKS.md file guard + stale `[~]` marker guard (anti-drift)
-- [ ] `tests/test_output_snapshots.py`: MCP output schema contract tests (anti-drift)
+- [x] `src/indexer/models.py`: thêm XPathInfo, ViewInfo, QWebInfo, ViewParseResult
+- [x] `src/indexer/parser_xml.py`: views, inherit_id, xpath targets
+- [x] `src/indexer/parser_qweb.py`: template inheritance chain
+- [x] `src/indexer/writer_neo4j.py`: View/QWebTmpl nodes + INHERITS_VIEW/EXTENDS_TMPL edges + indexes
+- [x] `src/mcp/server.py`: `resolve_view` + view chain reconstruction
+- [x] `tests/test_doc_sync.py`: TASKS.md file guard + stale `[~]` marker guard (anti-drift)
+- [x] `tests/test_output_snapshots.py`: MCP output schema contract tests (anti-drift)
 - [ ] E2E test: kết nối VS Code + Claude Code, verify `resolve_view` kết quả
 
 ## Milestone 3 — "Semantic Wow"

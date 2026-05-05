@@ -30,3 +30,82 @@ def test_parse_result_creation():
     )
     result = ParseResult(module=module)
     assert result.models == []
+
+
+def test_xpath_info_creation():
+    from src.indexer.models import XPathInfo
+    x = XPathInfo(expr="//field[@name='partner_id']", position="after")
+    assert x.expr == "//field[@name='partner_id']"
+    assert x.position == "after"
+
+
+def test_view_info_primary_defaults():
+    from src.indexer.models import ViewInfo
+    v = ViewInfo(
+        xmlid="sale.view_sale_order_form",
+        name="sale.order.form",
+        model="sale.order",
+        module="sale",
+        odoo_version="17.0",
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    assert v.mode == "primary"
+    assert v.inherit_xmlid is None
+    assert v.xpaths == []
+
+
+def test_view_info_extension_with_xpaths():
+    from src.indexer.models import ViewInfo, XPathInfo
+    xpaths = [
+        XPathInfo(expr="//field[@name='partner_id']", position="after"),
+        XPathInfo(expr="//button[@name='action_confirm']", position="attributes"),
+    ]
+    v = ViewInfo(
+        xmlid="viin_sale.view_sale_order_form_inherit",
+        name="viin sale order form",
+        model="sale.order",
+        module="viin_sale",
+        odoo_version="17.0",
+        view_type="form",
+        mode="extension",
+        inherit_xmlid="sale.view_sale_order_form",
+        xpaths=xpaths,
+    )
+    assert v.mode == "extension"
+    assert v.inherit_xmlid == "sale.view_sale_order_form"
+    assert len(v.xpaths) == 2
+    assert v.xpaths[0].position == "after"
+
+
+def test_qweb_info_defaults():
+    from src.indexer.models import QWebInfo
+    q = QWebInfo(
+        xmlid="sale.sale_order_portal",
+        module="sale",
+        odoo_version="17.0",
+    )
+    assert q.inherit_xmlid is None
+
+
+def test_qweb_info_with_inherit():
+    from src.indexer.models import QWebInfo
+    q = QWebInfo(
+        xmlid="viin_sale.sale_order_portal_inherit",
+        module="viin_sale",
+        odoo_version="17.0",
+        inherit_xmlid="sale.sale_order_portal",
+    )
+    assert q.inherit_xmlid == "sale.sale_order_portal"
+
+
+def test_view_parse_result_defaults():
+    from src.indexer.models import ViewParseResult
+    module = ModuleInfo(
+        name="sale", odoo_version="17.0", repo="odoo_17.0",
+        path="/tmp", depends=[], version_raw="",
+    )
+    result = ViewParseResult(module=module)
+    assert result.views == []
+    assert result.qweb == []
