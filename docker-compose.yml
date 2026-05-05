@@ -1,0 +1,39 @@
+# docker-compose.yml — DB TIER ONLY
+# Chạy file này trên DB server (hoặc cùng server với app khi dev).
+# App tier kết nối qua NEO4J_URI và PG_DSN trong .env — không cần sửa code.
+services:
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-password}
+      # Khi Neo4j chạy trên server riêng, phải set advertised address
+      # để bolt client redirect đúng host (không bị redirect về container hostname):
+      NEO4J_server_bolt_advertised__address: ${NEO4J_ADVERTISED_HOST:-localhost}:7687
+    ports:
+      - "127.0.0.1:7474:7474"  # Browser UI — localhost only, không expose ra ngoài
+      - "7687:7687"             # Bolt — cần accessible từ app server
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-password} 'RETURN 1' || exit 1"]
+      interval: 10s
+      retries: 10
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: odoo_semantic
+      POSTGRES_USER: odoo_semantic
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-password}
+    ports:
+      - "5432:5432"             # Cần accessible từ app server
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo_semantic"]
+      interval: 10s
+      retries: 5
+
+volumes:
+  neo4j_data:
+  pg_data:

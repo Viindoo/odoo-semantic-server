@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Write",
+      "Edit"
+    ],
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": ["/home/tran-ngoc-tuan/odoo-semantic-mcp"]
+  }
+}
