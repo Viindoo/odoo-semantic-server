@@ -5,8 +5,6 @@ from pathlib import Path
 
 import pytest
 from neo4j import GraphDatabase
-from testcontainers.core.wait_strategies import LogMessageWaitStrategy
-from testcontainers.neo4j import Neo4jContainer
 
 NEO4J_URI = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_TEST_USER", "neo4j")
@@ -27,13 +25,31 @@ def neo4j_driver():
     Ưu tiên 2: kết nối trực tiếp tới NEO4J_TEST_URI (Neo4j đang chạy sẵn).
     Fallback:  skip toàn bộ neo4j tests với lý do cụ thể từng tầng.
     """
+    # Lazy import: testcontainers triggers import-time DeprecationWarnings from the
+    # @wait_container_is_ready() decorator (upstream issue). Importing here instead of
+    # at module level ensures unit tests (-m "not neo4j") never load testcontainers
+    # and therefore see zero warnings.
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+    from testcontainers.neo4j import Neo4jContainer
+
+    class _Neo4jContainer(Neo4jContainer):
+        """Override _connect() to prevent deprecated wait_for_logs runtime warning.
+
+        Neo4jContainer._connect() calls wait_for_logs() (deprecated in testcontainers 4.x).
+        LogMessageWaitStrategy set via .waiting_for() already handles readiness;
+        this override just does a connectivity verify without the deprecated call.
+        """
+        def _connect(self) -> None:
+            with self.get_driver() as driver:
+                driver.verify_connectivity()
+
     container = None
     driver = None
     tc_error = None
 
     # --- Ưu tiên 1: testcontainers (yêu cầu Docker daemon đang chạy) ---
     try:
-        container = Neo4jContainer(_NEO4J_IMAGE).waiting_for(
+        container = _Neo4jContainer(_NEO4J_IMAGE).waiting_for(
             LogMessageWaitStrategy("Remote interface available at")
         )
         container.start()

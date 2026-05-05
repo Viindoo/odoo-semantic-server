@@ -227,7 +227,9 @@ CI sẽ fail nếu lint không pass.
 
 ## Known Upstream Warnings
 
-Running `make test-integration` emits warnings from upstream libraries that cannot be fixed in this project:
+**`make test` (unit tests):** 0 warnings — testcontainers is lazy-imported inside the `neo4j_driver` fixture and never loaded during unit tests.
+
+**`make test-integration`** emits 3 warnings from upstream libraries that cannot be fixed in this project:
 
 **1. fastmcp / authlib:**
 ```
@@ -240,7 +242,7 @@ Status: Upstream issue in fastmcp. Will be resolved when fastmcp migrates to jos
 ```
 DeprecationWarning: The @wait_container_is_ready decorator is deprecated...
 ```
-Source: `testcontainers/core/waiting_utils.py:215` and `testcontainers/neo4j/__init__.py:63` — the `@wait_container_is_ready()` decorator fires when testcontainers modules are imported. Our `_Neo4jContainer` subclass prevents the runtime call, but import-time application cannot be avoided.
+Source: `testcontainers/core/waiting_utils.py:215` and `testcontainers/neo4j/__init__.py:63` — the `@wait_container_is_ready()` decorator fires when Python applies it at class-definition time (module import). Cannot be avoided without modifying upstream source.
 Status: Upstream issue in testcontainers. Will be resolved when testcontainers removes the deprecated decorator.
 
 **Action for both:** Do NOT suppress with `filterwarnings`. Monitor releases and upgrade when fixed.
