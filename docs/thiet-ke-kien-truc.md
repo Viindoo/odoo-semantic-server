@@ -569,5 +569,6 @@ Ngày 7+   │ M6: Scale Wow    → multi-version, incremental
 | | File | Nội dung |
 |---|------|----------|
 | ← | [`/README.md`](../README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
+| ↓ | [`/docs/huong-dan-stack.md`](huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ, cách dùng đúng, bẫy cần tránh |
 | ↓ | [`/TASKS.md`](../TASKS.md) | Tiến độ hiện tại — task nào đang làm, task nào tiếp theo |
 | ↓ | [`plans/2026-05-05-milestone-1-first-wow.md`](superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 (TDD, từng bước) |
