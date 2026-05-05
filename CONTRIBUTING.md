@@ -24,13 +24,15 @@ Tài liệu này dành cho developer muốn contribute hoặc phát triển thê
 git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
 
-# 1. Tạo virtualenv và cài dependencies
+# 1. Tạo virtualenv — uv đọc .python-version (3.12) và tự download nếu chưa có
 uv venv
 uv pip install -e ".[dev]"
 
 # 2. Copy file cấu hình (chỉ cần cho chạy MCP server thật — không cần cho test)
 cp .env.example .env
 ```
+
+`uv venv` tự chọn Python 3.12 nhờ file `.python-version` trong repo — không cần truyền flag gì thêm. Nếu máy chưa có 3.12, uv tự download.
 
 Xong. Không cần start database thủ công — testcontainers lo hết.
 
