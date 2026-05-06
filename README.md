@@ -135,45 +135,15 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
-
-# 1. Cài Python venv + tạo file config
-make install
-# → tạo .env (Docker passwords) + odoo-semantic.conf (app config)
-# → fill 2 file này trước khi tiếp tục:
-#   .env:                 NEO4J_PASSWORD, PG_PASSWORD
-#   odoo-semantic.conf:   [database].neo4j_password
-
-# 2. Start databases (Neo4j + PostgreSQL)
-docker compose up -d
-
-# 3. Bootstrap PostgreSQL schema
-~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
-
-# 4. Đăng ký repos cần index (admin clone repos thủ công vào /home/user/git/...)
+make install                                           # tạo venv + config templates
+docker compose up -d                                   # start Neo4j + PostgreSQL
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate # bootstrap schema
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile viindoo_17 --version 17.0
-~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
-    --profile viindoo_17 \
-    --url github.com/odoo/odoo --branch 17.0 \
-    --local-path /home/user/git/odoo_17.0
-~/.venv/odoo-semantic-mcp/bin/python -m src.manager list
-
-# 5. Index lần đầu
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
-# hoặc index toàn bộ profiles:
-# ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --all
-
-# 6. Khởi động MCP server (long-running — dùng systemd / tmux)
-~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
-# → bind 127.0.0.1:8002 mặc định (đọc từ odoo-semantic.conf [server])
+~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
 ```
 
-**Reverse proxy (bắt buộc cho external access):** MCP server bind `127.0.0.1` để bắt buộc đặt reverse proxy phía trước (caddy / nginx / traefik). Auth ở M2.5 = IP allowlist hoặc basic auth tại proxy. **API key validation chưa có cho đến M5** — `X-API-Key` header trong config ví dụ chỉ là placeholder, codebase chưa validate.
-
-**Backup / Restore khi chuyển server** *(Milestone 5 — chưa implement):*
-```bash
-# python -m src.cli backup --out backup-$(date +%Y%m%d).tar.gz
-# python -m src.cli restore --from backup-20260505.tar.gz
-```
+→ Xem [`docs/deploy.md`](docs/deploy.md) để biết cách cấu hình từng tier (DB, App, Proxy), systemd service, nginx/Caddy, TLS, backup, security checklist.
 
 ---
 
@@ -181,6 +151,7 @@ docker compose up -d
 
 | File | Nội dung |
 |------|----------|
+| [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | **Bắt đầu ở đây nếu bạn là developer** — setup, chạy tests, workflow |
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |

@@ -54,6 +54,7 @@
 - [x] `.gitignore`: thêm `odoo-semantic.conf` (user secret)
 - [x] `README.md`: deploy steps thật
 - [x] `CONTRIBUTING.md`: cập nhật source tree
+- [x] `docs/deploy.md`: production deploy guide — DB / App / Proxy tiers
 - [ ] E2E manual: clone Odoo 17 → register → index → Claude Code call 4 tools
 
 ## Milestone 3 — "Semantic Wow"

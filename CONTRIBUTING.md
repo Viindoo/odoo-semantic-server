@@ -290,4 +290,5 @@ Nguyên tắc: scanner → registry → resolver → parser → writer → serve
 |------|----------|
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Graph schema, pipeline, MCP tools — đọc trước khi code |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Neo4j patterns, AST gotchas, FastMCP, pytest tips |
+| [`docs/deploy.md`](docs/deploy.md) | Production deploy guide — cho admin, không phải dev |
 | [`TASKS.md`](TASKS.md) | Tiến độ milestones — đánh dấu khi xong |
