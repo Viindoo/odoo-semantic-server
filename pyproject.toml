@@ -27,6 +27,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "neo4j: integration tests yêu cầu Neo4j đang chạy (skip bằng -m 'not neo4j')",
+    "postgres: integration tests yêu cầu PostgreSQL đang chạy (skip bằng -m 'not postgres')",
 ]
 
 [tool.hatch.build.targets.wheel]
