@@ -23,6 +23,11 @@ help:
 install:
 	$(UV) venv $(VENV)
 	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
+	@[ -f .env ] || (cp .env.example .env && \
+		echo "✓ .env created — fill in NEO4J_PASSWORD, PG_PASSWORD")
+	@[ -f odoo-semantic.conf ] || (cp odoo-semantic.conf.example odoo-semantic.conf && \
+		echo "✓ odoo-semantic.conf created — fill in [database] passwords")
+	@echo "Next: docker compose up -d  →  $(VENV)/bin/python -m src.db.migrate"
 
 # --- Tests ---
 
