@@ -104,3 +104,34 @@ def test_pipeline_index_all_iterates_every_profile(
     summary = index_all(clean_pg)
     assert summary["profiles"] == 2
     assert summary["modules"] >= 2
+
+
+def test_index_repo_raises_for_missing_path(
+    clean_neo4j, clean_pg, neo4j_driver
+):
+    """_index_repo raises FileNotFoundError when local_path does not exist."""
+    import os
+
+    from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
+    from src.indexer.pipeline import _index_repo
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    run_migrations(clean_pg)
+    pid = add_profile(clean_pg, name="test_path_val", odoo_version=TEST_VERSION,
+                      description="")
+    add_repo(clean_pg, profile_id=pid, url="x", branch="b",
+             local_path="/nonexistent/__does_not_exist__/path")
+
+    repos = get_repos_for_profile(clean_pg, "test_path_val")
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    try:
+        with pytest.raises(FileNotFoundError, match="local_path does not exist"):
+            _index_repo(repos[0], writer)
+    finally:
+        writer.close()
