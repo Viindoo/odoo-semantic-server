@@ -5,15 +5,15 @@ Pipeline stages (per CLAUDE.md pipeline convention):
     scanner → registry → resolver → parser → writer
 
 Public API:
-    index_profile(pg_conn, neo4j_driver, profile_name) -> summary dict
-    index_all(pg_conn, neo4j_driver) -> aggregate summary dict
+    index_profile(pg_conn, *, profile_name) -> summary dict
+    index_all(pg_conn) -> aggregate summary dict
     open_production_neo4j() -> neo4j.Driver   (used by __main__.py)
     open_production_pg() -> psycopg2.connection (used by __main__.py)
 """
 import logging
 import os
 
-from neo4j import Driver, GraphDatabase
+from neo4j import GraphDatabase
 
 from src import config
 from src.db.repo_registry import get_repos_for_profile, list_profiles, update_repo_status
@@ -30,7 +30,7 @@ _logger = logging.getLogger(__name__)
 # Production connection helpers (consumed by __main__.py)
 # ---------------------------------------------------------------------------
 
-def open_production_neo4j() -> Driver:
+def open_production_neo4j():
     """Open a Neo4j driver using config / env vars."""
     uri = (
         os.getenv("NEO4J_URI")
@@ -122,13 +122,12 @@ def _index_repo(
     return {"modules": total_modules, "views": total_views, "qweb": total_qweb}
 
 
-def index_profile(pg_conn, neo4j_driver: Driver, *, profile_name: str) -> dict:
+def index_profile(pg_conn, *, profile_name: str) -> dict:
     """Index all repos belonging to *profile_name*.
 
     Args:
-        pg_conn:        psycopg2 connection (autocommit OK).
-        neo4j_driver:   neo4j.Driver instance.
-        profile_name:   Name of the profile to index.
+        pg_conn:      psycopg2 connection (autocommit OK).
+        profile_name: Name of the profile to index.
 
     Returns:
         Summary dict: {modules, views, qweb}.
@@ -167,16 +166,17 @@ def index_profile(pg_conn, neo4j_driver: Driver, *, profile_name: str) -> dict:
                     "Indexed repo id=%d: %d modules, %d views, %d qweb",
                     repo_id, counters["modules"], counters["views"], counters["qweb"],
                 )
-            except Exception:
+            except Exception as e:
                 _logger.exception("Failed to index repo id=%d", repo_id)
-                update_repo_status(pg_conn, repo_id, "error")
+                update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
+                raise  # re-raise so index_profile can propagate failure
     finally:
         writer.close()
 
     return {"modules": total_modules, "views": total_views, "qweb": total_qweb}
 
 
-def index_all(pg_conn, neo4j_driver: Driver) -> dict:
+def index_all(pg_conn) -> dict:
     """Index every profile registered in PostgreSQL.
 
     Returns aggregate summary: {profiles, modules, views, qweb}.
@@ -187,7 +187,7 @@ def index_all(pg_conn, neo4j_driver: Driver) -> dict:
     agg_qweb = 0
 
     for profile in profiles:
-        summary = index_profile(pg_conn, neo4j_driver, profile_name=profile["name"])
+        summary = index_profile(pg_conn, profile_name=profile["name"])
         agg_modules += summary["modules"]
         agg_views += summary["views"]
         agg_qweb += summary["qweb"]

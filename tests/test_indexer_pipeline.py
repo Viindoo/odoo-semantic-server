@@ -49,7 +49,7 @@ def test_pipeline_writes_models_views_qweb_to_neo4j(
     add_repo(clean_pg, profile_id=pid, url="local/test", branch=TEST_VERSION,
              local_path=str(repo))
 
-    summary = index_profile(clean_pg, neo4j_driver, profile_name="test_prof")
+    summary = index_profile(clean_pg, profile_name="test_prof")
     assert summary["modules"] >= 1
     assert summary["views"] >= 1
     assert summary["qweb"] >= 1
@@ -81,7 +81,7 @@ def test_pipeline_marks_repo_indexed_on_success(
     pid = add_profile(clean_pg, "test_prof", TEST_VERSION)
     add_repo(clean_pg, pid, "local/ok", TEST_VERSION, str(repo))
 
-    index_profile(clean_pg, neo4j_driver, profile_name="test_prof")
+    index_profile(clean_pg, profile_name="test_prof")
 
     with clean_pg.cursor() as cur:
         cur.execute("SELECT status, last_indexed_at FROM repos")
@@ -101,6 +101,6 @@ def test_pipeline_index_all_iterates_every_profile(
         pid = add_profile(clean_pg, prof, TEST_VERSION)
         add_repo(clean_pg, pid, f"local/{prof}", TEST_VERSION, str(repo))
 
-    summary = index_all(clean_pg, neo4j_driver)
+    summary = index_all(clean_pg)
     assert summary["profiles"] == 2
     assert summary["modules"] >= 2
