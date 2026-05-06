@@ -30,8 +30,6 @@ def test_server_falls_back_when_config_missing(tmp_path, monkeypatch):
 
 def test_get_driver_reads_neo4j_uri_from_config(tmp_path, monkeypatch):
     """_get_driver() reads neo4j_uri from [database] section, not env var."""
-    import importlib
-
     import neo4j
 
     import src.config as config_mod
@@ -54,7 +52,6 @@ def test_get_driver_reads_neo4j_uri_from_config(tmp_path, monkeypatch):
         lambda uri, *, auth: captured.update({"uri": uri, "auth": auth}) or object(),
     )
 
-    importlib.reload(server_mod)
     server_mod._driver = None
 
     server_mod._get_driver()
@@ -65,8 +62,6 @@ def test_get_driver_reads_neo4j_uri_from_config(tmp_path, monkeypatch):
 
 def test_get_driver_env_overrides_config(tmp_path, monkeypatch):
     """NEO4J_URI env var takes priority over config file in _get_driver()."""
-    import importlib
-
     import neo4j
 
     import src.config as config_mod
@@ -89,7 +84,6 @@ def test_get_driver_env_overrides_config(tmp_path, monkeypatch):
         lambda uri, *, auth: captured.update({"uri": uri, "auth": auth}) or object(),
     )
 
-    importlib.reload(server_mod)
     server_mod._driver = None
 
     server_mod._get_driver()
