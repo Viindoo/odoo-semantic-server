@@ -1,0 +1,63 @@
+"""Unit tests for src.config — INI reader, no DB needed."""
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from src import config as config_mod
+
+
+@pytest.fixture(autouse=True)
+def reset_config_cache():
+    """src.config caches the parser at module level — reset before/after each test."""
+    config_mod._conf = None
+    yield
+    config_mod._conf = None
+
+
+def test_reads_from_explicit_path(tmp_path: Path, monkeypatch):
+    cfg = tmp_path / "odoo-semantic.conf"
+    cfg.write_text(textwrap.dedent("""
+        [database]
+        neo4j_uri = bolt://1.2.3.4:7687
+        neo4j_user = neo
+        neo4j_password = secret
+
+        [server]
+        host = 127.0.0.1
+        port = 8002
+    """).strip())
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+
+    assert config_mod.get("database", "neo4j_uri") == "bolt://1.2.3.4:7687"
+    assert config_mod.get("server", "port") == "8002"
+
+
+def test_fallback_when_key_missing(tmp_path, monkeypatch):
+    cfg = tmp_path / "odoo-semantic.conf"
+    cfg.write_text("[server]\nhost = 127.0.0.1\n")
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    assert config_mod.get("server", "port", fallback="8002") == "8002"
+
+
+def test_fallback_when_section_missing(tmp_path, monkeypatch):
+    cfg = tmp_path / "odoo-semantic.conf"
+    cfg.write_text("[other]\nkey = val\n")
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    assert config_mod.get("server", "port", fallback="8002") == "8002"
+
+
+def test_missing_file_returns_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(tmp_path / "nope.conf"))
+    assert config_mod.get("server", "host", fallback="0.0.0.0") == "0.0.0.0"
+
+
+def test_searches_repo_local_when_no_env(tmp_path, monkeypatch):
+    """Without ODOO_SEMANTIC_CONF, falls back to ./odoo-semantic.conf in cwd."""
+    cfg = tmp_path / "odoo-semantic.conf"
+    cfg.write_text("[server]\nhost = repo-local\n")
+    monkeypatch.delenv("ODOO_SEMANTIC_CONF", raising=False)
+    monkeypatch.chdir(tmp_path)
+    # Override HOME so home-dir lookup misses
+    monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+    assert config_mod.get("server", "host", fallback="X") == "repo-local"
