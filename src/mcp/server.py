@@ -12,6 +12,7 @@ def _get_driver():
     global _driver
     if _driver is None:
         from src import config
+        # os.getenv returns None when var is unset; "" also falls through to config — intentional
         uri = (
             os.getenv("NEO4J_URI")
             or config.get("database", "neo4j_uri", fallback="bolt://localhost:7687")
