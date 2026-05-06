@@ -35,13 +35,36 @@ Người dùng (AI tool)
 
 | Thứ | Phiên bản | Dùng cho |
 |-----|-----------|---------|
-| Ubuntu 22.04 / Debian 12 | LTS | OS khuyến nghị |
+| Ubuntu 24.04 LTS | Noble | OS khuyến nghị |
 | Docker Engine | 24+ | DB tier |
 | Python | 3.12 | App tier |
 | uv | 0.4+ | Package manager |
 | Nginx **hoặc** Caddy | bất kỳ | Proxy tier |
 | DNS record | — | Trỏ domain về IP server |
 | TLS cert | — | Let's Encrypt hoặc wildcard |
+
+### 1.1 Linux User & Group
+
+Tạo system user/group **trước** khi setup DB và App tier — cần cho `chown` config file (§3.2) và systemd service (§3.4).
+
+```bash
+# Tạo group trước để kiểm soát GID
+sudo groupadd --system odoo-semantic
+
+# Tạo system user: no login shell, no home dir, gán vào group
+sudo useradd \
+    --system \
+    --no-create-home \
+    --shell /usr/sbin/nologin \
+    --gid odoo-semantic \
+    odoo-semantic
+```
+
+Xác nhận:
+```bash
+id odoo-semantic
+# uid=999(odoo-semantic) gid=999(odoo-semantic) groups=999(odoo-semantic)
+```
 
 ---
 
@@ -206,11 +229,7 @@ Output: `Done: {'profiles_ok': 1, 'profiles_failed': [], 'modules': 412, 'views'
 
 ### 3.4 MCP server dạng systemd service
 
-Tạo service user:
-
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin odoo-semantic
-```
+> User `odoo-semantic` đã tạo ở §1.1.
 
 Copy systemd unit:
 
