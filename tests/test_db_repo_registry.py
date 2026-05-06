@@ -3,7 +3,11 @@ import pytest
 
 from src.db.migrate import run_migrations
 from src.db.repo_registry import (
-    add_profile, add_repo, list_profiles, list_repos, get_repos_for_profile,
+    add_profile,
+    add_repo,
+    get_repos_for_profile,
+    list_profiles,
+    list_repos,
     update_repo_status,
 )
 
@@ -67,3 +71,8 @@ def test_update_repo_status_with_error(migrated_pg):
 
 def test_get_repos_for_unknown_profile_returns_empty(migrated_pg):
     assert get_repos_for_profile(migrated_pg, profile_name="nope") == []
+
+
+def test_update_repo_status_unknown_id_raises(migrated_pg):
+    with pytest.raises(ValueError, match="not found"):
+        update_repo_status(migrated_pg, repo_id=99999, status="indexed")

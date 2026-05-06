@@ -47,7 +47,11 @@ def main() -> int:
         "database", "pg_dsn",
         fallback="postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
     )
-    conn = psycopg2.connect(dsn)
+    try:
+        conn = psycopg2.connect(dsn)
+    except psycopg2.OperationalError as e:
+        print(f"✗ Cannot connect to PostgreSQL ({dsn}): {e}", file=sys.stderr)
+        return 1
     try:
         run_migrations(conn)
         print(f"✓ Migrations applied to {dsn}")

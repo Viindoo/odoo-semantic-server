@@ -61,3 +61,5 @@ def update_repo_status(
             "WHERE id = %s",
             (status, error_msg, status, repo_id),
         )
+        if cur.rowcount == 0:
+            raise ValueError(f"repo id={repo_id} not found")
