@@ -189,21 +189,33 @@ def index_profile(pg_conn, *, profile_name: str) -> dict:
 def index_all(pg_conn) -> dict:
     """Index every profile registered in PostgreSQL.
 
-    Returns aggregate summary: {profiles, modules, views, qweb}.
+    Continues after per-profile failures — failed profiles are listed in
+    the returned summary under 'profiles_failed'.
+
+    Returns aggregate summary: {profiles_ok, profiles_failed, modules, views, qweb}.
     """
     profiles = list_profiles(pg_conn)
     agg_modules = 0
     agg_views = 0
     agg_qweb = 0
+    profiles_ok = 0
+    profiles_failed: list[str] = []
 
     for profile in profiles:
-        summary = index_profile(pg_conn, profile_name=profile["name"])
-        agg_modules += summary["modules"]
-        agg_views += summary["views"]
-        agg_qweb += summary["qweb"]
+        name = profile["name"]
+        try:
+            summary = index_profile(pg_conn, profile_name=name)
+            agg_modules += summary["modules"]
+            agg_views += summary["views"]
+            agg_qweb += summary["qweb"]
+            profiles_ok += 1
+        except Exception:
+            _logger.exception("index_all: profile %r failed — skipping", name)
+            profiles_failed.append(name)
 
     return {
-        "profiles": len(profiles),
+        "profiles_ok": profiles_ok,
+        "profiles_failed": profiles_failed,
         "modules": agg_modules,
         "views": agg_views,
         "qweb": agg_qweb,
