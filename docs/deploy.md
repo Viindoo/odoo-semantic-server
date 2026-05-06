@@ -287,6 +287,13 @@ Reload:
 sudo systemctl reload nginx
 ```
 
+Cài đặt quan trọng trong `location /mcp` — bắt buộc cho SSE streaming:
+
+```nginx
+proxy_buffering    off;     # bắt buộc cho SSE — MCP dùng Server-Sent Events
+proxy_read_timeout 3600s;   # MCP sessions có thể dài
+```
+
 Xem `docs/deploy/nginx.conf.example` để biết config đầy đủ, bao gồm các option auth.
 
 ### 4.2 Caddy (auto-TLS, đơn giản hơn)
