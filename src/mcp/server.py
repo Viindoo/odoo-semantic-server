@@ -242,5 +242,16 @@ def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     return _resolve_view(xmlid, odoo_version)
 
 
+def _mcp_host() -> str:
+    from src import config
+    return config.get("server", "host", fallback="127.0.0.1")
+
+
+def _mcp_port() -> int:
+    from src import config
+    return int(config.get("server", "port", fallback="8002"))
+
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8002, path="/mcp")
+    mcp.run(transport="streamable-http", host=_mcp_host(),
+            port=_mcp_port(), path="/mcp")
