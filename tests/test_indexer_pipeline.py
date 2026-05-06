@@ -104,28 +104,28 @@ def test_pipeline_index_all_iterates_every_profile(
     summary = index_all(clean_pg)
     assert summary["profiles_ok"] == 2
     assert summary["modules"] >= 2
+    assert summary["profiles_failed"] == []
 
 
 def test_index_all_continues_after_profile_failure(pg_conn, clean_pg, neo4j_driver):
     """index_all continues with remaining profiles if one fails, reports failures."""
-    from src.db.migrate import run_migrations
-    from src.db.repo_registry import add_profile, add_repo
     from src.indexer.pipeline import index_all
 
-    run_migrations(pg_conn)
+    run_migrations(clean_pg)
 
     # Profile 1: bad path — triggers FileNotFoundError from _index_repo()
-    pid1 = add_profile(pg_conn, name="bad_prof", odoo_version=TEST_VERSION, description="")
-    add_repo(pg_conn, profile_id=pid1, url="x", branch="b",
+    pid1 = add_profile(clean_pg, name="bad_prof", odoo_version=TEST_VERSION, description="")
+    add_repo(clean_pg, profile_id=pid1, url="x", branch="b",
              local_path="/nonexistent/__bad__/path")
 
     # Profile 2: no repos — returns {modules:0} without error
-    add_profile(pg_conn, name="empty_prof", odoo_version=TEST_VERSION, description="")
+    add_profile(clean_pg, name="empty_prof", odoo_version=TEST_VERSION, description="")
 
-    summary = index_all(pg_conn)
+    summary = index_all(clean_pg)
 
     assert summary["profiles_ok"] == 1, f"Expected 1 ok profile, got {summary}"
     assert "bad_prof" in summary["profiles_failed"]
+    assert len(summary["profiles_failed"]) == 1
     assert summary["modules"] == 0
 
 
