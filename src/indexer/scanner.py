@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def get_git_branch(repo_path: str) -> str | None:
-    """Trả về tên branch hiện tại của git repo. Trả về None nếu không phải git repo."""
+    """Return the current git branch of a repo path. Returns None if not a git repo."""
     try:
         # Use symbolic-ref to handle unborn branches (newly created repos)
         result = subprocess.run(
@@ -21,7 +21,7 @@ def get_git_branch(repo_path: str) -> str | None:
 
 
 def is_odoo_version_branch(branch: str) -> bool:
-    """Kiểm tra xem branch có phải là Odoo version format (e.g. 17.0, 8.0, 16.0)."""
+    """Return True if branch matches Odoo version format (e.g. 17.0, 8.0, 16.0)."""
     if not branch:
         return False
     return bool(re.match(r'^\d+\.\d+$', branch))
@@ -29,8 +29,8 @@ def is_odoo_version_branch(branch: str) -> bool:
 
 def scan_repos(base_dirs: list[str]) -> list[tuple[str, str]]:
     """
-    Quét các base_dirs để tìm git repos có Odoo version branch.
-    Trả về danh sách (repo_path, odoo_version).
+    Scan base_dirs for git repos on an Odoo version branch.
+    Return list of (repo_path, odoo_version) tuples.
     """
     results = []
     for base_dir in base_dirs:

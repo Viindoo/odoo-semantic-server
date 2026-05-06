@@ -6,13 +6,13 @@ from .models import ModuleInfo
 
 def topological_sort(modules: dict[str, ModuleInfo]) -> list[str]:
     """
-    Kahn's algorithm — sắp xếp modules theo thứ tự dependency.
-    Base modules luôn đứng trước modules phụ thuộc vào chúng.
+    Kahn's algorithm — topological sort of modules by dependency.
+    Base modules always precede modules that depend on them.
 
-    Edge case:
-    - Missing dep: bỏ qua, tiếp tục.
-    - Circular dep: append phần còn lại theo alphabetical order.
-    - Deterministic: dùng sorted() ở mọi bước.
+    Edge cases:
+    - Missing dep: skip, continue.
+    - Circular dep: append remaining in alphabetical order.
+    - Deterministic: sorted() at every step.
     """
     if not modules:
         return []
