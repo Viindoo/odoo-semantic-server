@@ -2,8 +2,6 @@
 """Unit tests for pipeline._neo4j_creds() — no Neo4j required."""
 import importlib
 
-import pytest
-
 
 def test_neo4j_creds_reads_from_config_file(tmp_path, monkeypatch):
     """pipeline._neo4j_creds() reads [database]/neo4j_* from odoo-semantic.conf."""
@@ -11,7 +9,8 @@ def test_neo4j_creds_reads_from_config_file(tmp_path, monkeypatch):
 
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(
-        "[database]\nneo4j_uri = bolt://db.example.com:7687\nneo4j_user = admin\nneo4j_password = secret\n"
+        "[database]\nneo4j_uri = bolt://db.example.com:7687\n"
+        "neo4j_user = admin\nneo4j_password = secret\n"
     )
     monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
     # Clear NEO4J_TEST_* and NEO4J_* env vars so config file path is exercised
@@ -39,7 +38,8 @@ def test_neo4j_creds_env_overrides_config(tmp_path, monkeypatch):
 
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(
-        "[database]\nneo4j_uri = bolt://config.example.com:7687\nneo4j_user = cfguser\nneo4j_password = cfgpass\n"
+        "[database]\nneo4j_uri = bolt://config.example.com:7687\n"
+        "neo4j_user = cfguser\nneo4j_password = cfgpass\n"
     )
     monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
     monkeypatch.delenv("NEO4J_TEST_URI", raising=False)
