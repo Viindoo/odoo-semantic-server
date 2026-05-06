@@ -82,20 +82,29 @@ make test-all
 ```
 tests/
 ├── conftest.py               # fixtures dùng chung — đọc trước khi viết test
+├── test_config.py            # unit: src/config.py
 ├── test_models.py            # unit: data models
 ├── test_scanner.py           # unit: git repo discovery
 ├── test_registry.py          # unit: manifest parsing + module registry
 ├── test_resolver.py          # unit: topological sort
 ├── test_parser_python.py     # unit: AST parser
-├── test_writer_neo4j.py      # integration (marker: neo4j)
-└── test_mcp_server.py        # integration (marker: neo4j)
+├── test_mcp_server_config.py # unit: server reads host/port from config
+├── test_writer_neo4j.py      # integration (neo4j marker)
+├── test_mcp_server.py        # integration (neo4j marker)
+├── test_db_migrate.py        # integration (postgres marker)
+├── test_db_repo_registry.py  # integration (postgres marker)
+├── test_manager_cli.py       # integration (postgres marker)
+├── test_indexer_pipeline.py  # integration (neo4j + postgres markers)
+├── test_doc_sync.py          # unit: TASKS.md [x] files exist on disk (anti-drift)
+└── test_output_snapshots.py  # unit: MCP output schema contract (anti-drift)
 ```
 
 **Quy tắc marker:**
 - Test cần Neo4j → thêm `pytestmark = pytest.mark.neo4j` ở đầu file
-- Test không cần Neo4j → không thêm gì — chạy trong cả unit và integration mode
+- Test cần PostgreSQL → thêm `pytestmark = pytest.mark.postgres` ở đầu file
+- Test không cần DB → không thêm gì — chạy trong unit mode
 
-**`TEST_VERSION = "99.0"`** — tất cả dữ liệu test dùng version này để không conflict với dữ liệu thật. Fixture `clean_neo4j` tự dọn dẹp trước và sau mỗi test.
+**`TEST_VERSION = "99.0"`** — tất cả dữ liệu test dùng version này để không conflict với dữ liệu thật. Fixture `clean_neo4j` dọn Neo4j, fixture `clean_pg` dọn PostgreSQL — luôn dùng fixture tương ứng.
 
 ---
 
@@ -250,18 +259,28 @@ Status: Upstream issue in testcontainers 4.x. Will be resolved when upstream rem
 
 ```
 src/
+├── config.py              # INI config reader (configparser)
+├── db/
+│   ├── migrate.py         # PostgreSQL schema bootstrap (profiles + repos)
+│   └── repo_registry.py   # CRUD profiles + repos
+├── manager/
+│   └── __main__.py        # admin CLI: add-profile / add-repo / list
 ├── indexer/
-│   ├── models.py         # dataclasses: ModuleInfo, ModelInfo, FieldInfo, ...
-│   ├── scanner.py        # git repo discovery
-│   ├── registry.py       # __manifest__.py parsing + module map
-│   ├── resolver.py       # topological sort (Kahn's algorithm)
-│   ├── parser_python.py  # AST parser: _name/_inherit/_inherits/fields/methods
-│   └── writer_neo4j.py   # write nodes + edges vào Neo4j
+│   ├── models.py          # dataclasses: ModuleInfo, ModelInfo, ViewInfo, QWebInfo, ...
+│   ├── scanner.py         # git repo discovery
+│   ├── registry.py        # __manifest__.py parsing + module map
+│   ├── resolver.py        # topological sort (Kahn's algorithm)
+│   ├── parser_python.py   # AST parser: _name/_inherit/_inherits/fields/methods
+│   ├── parser_xml.py      # ir.ui.view + xpath modifications
+│   ├── parser_qweb.py     # QWeb <template> inheritance
+│   ├── pipeline.py        # end-to-end: scanner → registry → resolver → parsers → writer
+│   ├── __main__.py        # CLI: python -m src.indexer --profile / --all
+│   └── writer_neo4j.py    # write nodes + edges vào Neo4j
 └── mcp/
-    └── server.py         # FastMCP server: resolve_model, resolve_field, resolve_method
+    └── server.py          # FastMCP: resolve_model/field/method/view
 ```
 
-Nguyên tắc thiết kế: mỗi file một trách nhiệm, không cross-import ngang hàng, flow đi theo hướng `scanner → registry → resolver → parser → writer → server`.
+Nguyên tắc: scanner → registry → resolver → parser → writer → server. Pipeline glue trong `src/indexer/pipeline.py` chỉ orchestrate, không chứa logic parse.
 
 ---
 
@@ -271,4 +290,5 @@ Nguyên tắc thiết kế: mỗi file một trách nhiệm, không cross-import
 |------|----------|
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Graph schema, pipeline, MCP tools — đọc trước khi code |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Neo4j patterns, AST gotchas, FastMCP, pytest tips |
+| [`docs/deploy.md`](docs/deploy.md) | Production deploy guide — cho admin, không phải dev |
 | [`TASKS.md`](TASKS.md) | Tiến độ milestones — đánh dấu khi xong |

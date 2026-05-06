@@ -1,0 +1,61 @@
+# nginx.conf.example — reverse proxy cho MCP server
+# Copy vào /etc/nginx/sites-available/odoo-semantic-mcp
+# rồi: sudo ln -s ../sites-available/odoo-semantic-mcp sites-enabled/
+#       sudo nginx -t && sudo systemctl reload nginx
+#
+# Thay semantic.example.com bằng domain thật.
+# Cert Let's Encrypt: sudo certbot --nginx -d semantic.example.com
+
+server {
+    listen 443 ssl http2;
+    server_name semantic.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/semantic.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/semantic.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # MCP dùng streamable-http với SSE — bắt buộc tắt buffering + extend timeout
+    location /mcp {
+        proxy_pass         http://127.0.0.1:8002/mcp;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_buffering    off;       # bắt buộc cho SSE streaming
+        proxy_read_timeout 3600s;    # MCP sessions có thể dài
+        proxy_send_timeout 3600s;
+    }
+}
+
+server {
+    listen 80;
+    server_name semantic.example.com;
+    return 301 https://$host$request_uri;
+}
+
+# --- Auth options (chọn 1, bỏ comment) ---
+#
+# Option A — IP allowlist (đơn giản nhất cho internal team):
+# location /mcp {
+#     allow 10.0.0.0/8;
+#     deny all;
+#     # ... proxy_pass block ở trên ...
+# }
+#
+# Option B — HTTP Basic Auth:
+# location /mcp {
+#     auth_basic "Odoo Semantic MCP";
+#     auth_basic_user_file /etc/nginx/.htpasswd;
+#     # htpasswd: sudo apt install apache2-utils
+#     #           sudo htpasswd -c /etc/nginx/.htpasswd <username>
+#     # ... proxy_pass block ở trên ...
+# }
+#
+# Option C — API Key (M5, chưa implement trong codebase):
+# location /mcp {
+#     # Proxy header forward — validation sẽ được thêm ở M5
+#     proxy_set_header X-API-Key $http_x_api_key;
+#     # ... proxy_pass block ở trên ...
+# }

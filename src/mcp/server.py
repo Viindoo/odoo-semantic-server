@@ -1,15 +1,8 @@
 # src/mcp/server.py
 import os
 
-from dotenv import load_dotenv
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
-
-load_dotenv()
-
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 mcp = FastMCP("odoo-semantic")
 _driver = None
@@ -18,7 +11,21 @@ _driver = None
 def _get_driver():
     global _driver
     if _driver is None:
-        _driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        from src import config
+        # os.getenv returns None when var is unset; "" also falls through to config — intentional
+        uri = (
+            os.getenv("NEO4J_URI")
+            or config.get("database", "neo4j_uri", fallback="bolt://localhost:7687")
+        )
+        user = (
+            os.getenv("NEO4J_USER")
+            or config.get("database", "neo4j_user", fallback="neo4j")
+        )
+        password = (
+            os.getenv("NEO4J_PASSWORD")
+            or config.get("database", "neo4j_password", fallback="password")
+        )
+        _driver = GraphDatabase.driver(uri, auth=(user, password))
     return _driver
 
 
@@ -242,5 +249,16 @@ def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     return _resolve_view(xmlid, odoo_version)
 
 
+def _mcp_host() -> str:
+    from src import config
+    return config.get("server", "host", fallback="127.0.0.1")
+
+
+def _mcp_port() -> int:
+    from src import config
+    return int(config.get("server", "port", fallback="8002"))
+
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8002, path="/mcp")
+    mcp.run(transport="streamable-http", host=_mcp_host(),
+            port=_mcp_port(), path="/mcp")

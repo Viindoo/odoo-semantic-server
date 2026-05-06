@@ -1,0 +1,10 @@
+# Caddyfile.example — Caddy reverse proxy (auto-TLS)
+# Caddy tự lấy cert Let's Encrypt — không cần certbot.
+# Thay semantic.example.com bằng domain thật.
+# Docs: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+
+semantic.example.com {
+    reverse_proxy /mcp* 127.0.0.1:8002 {
+        flush_interval -1   # -1 = disable buffering, bắt buộc cho SSE streaming
+    }
+}

@@ -1,0 +1,28 @@
+# odoo-semantic-mcp.service — systemd unit cho MCP server
+# Đặt tại: /etc/systemd/system/odoo-semantic-mcp.service
+# Sau khi copy:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now odoo-semantic-mcp
+
+[Unit]
+Description=Odoo Semantic MCP Server
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=odoo-semantic
+WorkingDirectory=/opt/odoo-semantic-mcp
+# Config file nằm ngoài repo — không commit vào git
+Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
+ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
