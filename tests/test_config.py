@@ -48,7 +48,11 @@ def test_fallback_when_section_missing(tmp_path, monkeypatch):
 
 
 def test_missing_file_returns_fallback(tmp_path, monkeypatch):
+    """When ODOO_SEMANTIC_CONF points at non-existent file, return empty (don't fall through)."""
     monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(tmp_path / "nope.conf"))
+    # Even if cwd has a config, it must NOT be read — env override takes priority
+    (tmp_path / "odoo-semantic.conf").write_text("[server]\nhost = should-not-see\n")
+    monkeypatch.chdir(tmp_path)
     assert config_mod.get("server", "host", fallback="0.0.0.0") == "0.0.0.0"
 
 

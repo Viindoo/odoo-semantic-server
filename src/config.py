@@ -18,13 +18,16 @@ _conf: configparser.ConfigParser | None = None
 
 def _load() -> configparser.ConfigParser:
     parser = configparser.ConfigParser()
-    candidates: list[pathlib.Path] = []
     env_override = os.getenv("ODOO_SEMANTIC_CONF")
     if env_override:
-        candidates.append(pathlib.Path(env_override))
-    candidates.append(pathlib.Path.home() / ".odoo-semantic" / "odoo-semantic.conf")
-    candidates.append(pathlib.Path.cwd() / "odoo-semantic.conf")
-    for path in candidates:
+        path = pathlib.Path(env_override)
+        if path.is_file():
+            parser.read(path)
+        return parser  # honor the override; don't fall through to home/cwd
+    for path in [
+        pathlib.Path.home() / ".odoo-semantic" / "odoo-semantic.conf",
+        pathlib.Path.cwd() / "odoo-semantic.conf",
+    ]:
         if path.is_file():
             parser.read(path)
             break
