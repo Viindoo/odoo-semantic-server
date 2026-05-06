@@ -9,7 +9,7 @@ from neo4j import GraphDatabase
 NEO4J_URI = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_TEST_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_TEST_PASSWORD", "password")
-TEST_VERSION = "99.0"  # version đặc biệt chỉ dùng cho tests, tránh conflict với data thật
+TEST_VERSION = "99.0"  # dedicated test version — avoids conflict with real data
 
 # Canonical version defined in .env.example (NEO4J_IMAGE=...).
 # CI loads .env.example before running tests; local dev copies .env.example → .env.
@@ -19,13 +19,13 @@ _NEO4J_IMAGE = os.getenv("NEO4J_IMAGE", "neo4j:5.26.25")
 @pytest.fixture(scope="session")
 def neo4j_driver():
     """
-    Kết nối Neo4j cho toàn bộ test session.
+    Neo4j driver for the whole test session.
 
-    CI (CI=true): kết nối trực tiếp tới NEO4J_TEST_URI — service container đã sẵn sàng,
-                  không import testcontainers để tránh @wait_container_is_ready warning.
-    Local dev:    Ưu tiên 1: testcontainers (tự spin up Docker container).
-                  Ưu tiên 2: kết nối trực tiếp tới NEO4J_TEST_URI.
-                  Fallback:  skip với lý do cụ thể.
+    CI (CI=true): connect directly to NEO4J_TEST_URI — service container already running,
+                  skip testcontainers import to avoid @wait_container_is_ready warning.
+    Local dev:    Priority 1: testcontainers (spins up Docker container).
+                  Priority 2: connect directly to NEO4J_TEST_URI.
+                  Fallback:  skip with specific reason.
     """
     # CI path — GitHub Actions sets CI=true; service container is already running.
     # Skip testcontainers import entirely to avoid import-time DeprecationWarning
@@ -64,7 +64,7 @@ def neo4j_driver():
     driver = None
     tc_error = None
 
-    # --- Ưu tiên 1: testcontainers (yêu cầu Docker daemon đang chạy) ---
+    # --- Priority 1: testcontainers (requires Docker daemon running) ---
     try:
         container = _Neo4jContainer(_NEO4J_IMAGE).waiting_for(
             LogMessageWaitStrategy("Remote interface available at")
@@ -73,7 +73,7 @@ def neo4j_driver():
         bolt_url = container.get_connection_url()
         driver = GraphDatabase.driver(bolt_url, auth=("neo4j", "password"))
         driver.verify_connectivity()
-        # Expose cho các fixture tạo connection riêng (writer, mcp_tools)
+        # Expose for fixtures that create their own connections (writer, mcp_tools)
         os.environ["NEO4J_TEST_URI"] = bolt_url
         os.environ["NEO4J_TEST_USER"] = "neo4j"
         os.environ["NEO4J_TEST_PASSWORD"] = "password"
@@ -89,7 +89,7 @@ def neo4j_driver():
         container = None
         driver = None
 
-    # --- Ưu tiên 2: Neo4j đang chạy sẵn (docker compose up -d neo4j) ---
+    # --- Priority 2: Neo4j already running (docker compose up -d neo4j) ---
     if driver is None:
         bolt_driver = None
         try:
@@ -99,15 +99,15 @@ def neo4j_driver():
         except Exception as bolt_error:
             if bolt_driver is not None:
                 bolt_driver.close()
-            lines = ["[FIX] Cài Docker + start daemon"
-                     " → testcontainers tự spin up Neo4j khi test chạy"]
+            lines = ["[FIX] Install Docker + start daemon"
+                     " → testcontainers will spin up Neo4j automatically"]
             tc_msg = (
-                f"  testcontainers lỗi: {tc_error}" if tc_error
-                else "  testcontainers: không thử được"
+                f"  testcontainers error: {tc_error}" if tc_error
+                else "  testcontainers: not attempted"
             )
             lines.append(tc_msg)
-            lines.append(f"  bolt ({NEO4J_URI}) lỗi: {bolt_error}")
-            lines.append("  Hoặc chạy thủ công: make neo4j-up")
+            lines.append(f"  bolt ({NEO4J_URI}) error: {bolt_error}")
+            lines.append("  Or run manually: make neo4j-up")
             pytest.skip("\n".join(lines))
 
     yield driver
@@ -119,7 +119,7 @@ def neo4j_driver():
 
 @pytest.fixture
 def clean_neo4j(neo4j_driver):
-    """Xóa tất cả nodes có odoo_version=TEST_VERSION trước và sau mỗi test."""
+    """Delete all nodes with odoo_version=TEST_VERSION before and after each test."""
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION)
     yield neo4j_driver
@@ -129,7 +129,7 @@ def clean_neo4j(neo4j_driver):
 
 @pytest.fixture
 def tmp_git_repo(tmp_path):
-    """Tạo một git repo tạm thời với branch 17.0 để test scanner."""
+    """Create a temporary git repo with branch 17.0 for scanner tests."""
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     subprocess.run(
         ["git", "-C", str(tmp_path), "checkout", "-b", "17.0"],
@@ -139,7 +139,7 @@ def tmp_git_repo(tmp_path):
 
 
 def make_git_repo(path: Path, branch: str) -> Path:
-    """Tạo git repo tại path với branch đã cho. Dùng trong tests."""
+    """Create a git repo at the given path with the given branch. Used in tests."""
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
     subprocess.run(
@@ -156,7 +156,7 @@ def make_manifest(
     depends: list,
     installable: bool = True,
 ) -> None:
-    """Tạo __manifest__.py trong module_dir. Dùng trong tests."""
+    """Create __manifest__.py in module_dir. Used in tests."""
     module_dir.mkdir(parents=True, exist_ok=True)
     (module_dir / "__manifest__.py").write_text(
         f"{{'name': {name!r}, 'version': {version!r}, "
