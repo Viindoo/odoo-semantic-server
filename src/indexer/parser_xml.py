@@ -10,7 +10,7 @@ _VIEW_TYPES = {
 
 
 def _parse_record(record: ET.Element, module: ModuleInfo) -> ViewInfo | None:
-    """Parse một <record> element làm ir.ui.view."""
+    """Parse a <record> element as an ir.ui.view."""
     if record.get("model") != "ir.ui.view":
         return None
 
@@ -72,7 +72,7 @@ def _parse_record(record: ET.Element, module: ModuleInfo) -> ViewInfo | None:
 
 
 def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
-    """Parse một file XML, trả về list ViewInfo tìm được."""
+    """Parse an XML file, return list of ViewInfo found."""
     try:
         tree = ET.parse(filepath)
     except ET.ParseError:
@@ -87,7 +87,7 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
 
 
 def parse_module(module_info: ModuleInfo) -> ViewParseResult:
-    """Parse toàn bộ file XML trong một module directory."""
+    """Parse all XML files in a module directory."""
     result = ViewParseResult(module=module_info)
     module_path = Path(module_info.path)
     SKIP_DIRS = {".git", "static", "tests", "__pycache__"}

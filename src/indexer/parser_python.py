@@ -105,7 +105,7 @@ def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo) -> ModelInfo |
                 related = _extract_string(kwargs['related']) if 'related' in kwargs else None
                 compute = _extract_string(kwargs['compute']) if 'compute' in kwargs else None
                 required = bool(getattr(kwargs.get('required'), 'value', False))
-                # store kwarg: computed và related fields mặc định store=False
+                # store kwarg: computed and related fields default to store=False
                 if 'store' in kwargs:
                     stored = bool(getattr(kwargs['store'], 'value', True))
                 else:
@@ -133,11 +133,11 @@ def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo) -> ModelInfo |
                 decorators=decorators,
             ))
 
-    # _inherit mà không có _name → name = inherit[0] (Odoo convention)
+    # _inherit without _name → name = inherit[0] (Odoo convention)
     if not name and inherit:
         name = inherit[0]
 
-    # Không phải Odoo model nếu không có _name và không phải Model subclass
+    # Not an Odoo model if no _name and not a Model subclass
     if not name:
         return None
     if not is_model_class and not inherit and not inherits:
@@ -157,7 +157,7 @@ def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo) -> ModelInfo |
 
 
 def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
-    """Parse một file Python, trả về list các ModelInfo tìm được."""
+    """Parse a Python file, return list of ModelInfo found."""
     try:
         source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
         tree = ast.parse(source)
@@ -174,7 +174,7 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
 
 
 def parse_module(module_info: ModuleInfo) -> ParseResult:
-    """Parse toàn bộ file Python trong một module directory."""
+    """Parse all Python files in a module directory."""
     result = ParseResult(module=module_info)
     module_path = Path(module_info.path)
 
