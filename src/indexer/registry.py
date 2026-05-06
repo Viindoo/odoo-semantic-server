@@ -8,10 +8,10 @@ from .scanner import get_git_branch, is_odoo_version_branch
 
 
 def parse_manifest(manifest_path: str) -> dict:
-    """Đọc __manifest__.py và trả về dict. Trả về {} nếu có lỗi.
+    """Read __manifest__.py and return the manifest dict. Returns {} on error.
 
-    Chỉ duyệt tree.body (top-level statements) thay vì ast.walk toàn cây,
-    tránh bắt nhầm nested dict như 'external_dependencies', 'assets', v.v.
+    Only iterates tree.body (top-level statements) instead of ast.walk,
+    to avoid catching nested dicts like 'external_dependencies', 'assets', etc.
     """
     try:
         source = Path(manifest_path).read_text(encoding='utf-8', errors='ignore')
@@ -26,9 +26,9 @@ def parse_manifest(manifest_path: str) -> dict:
 
 def resolve_odoo_version(manifest_version: str, repo_path: str) -> str:
     """
-    Xác định Odoo version từ manifest version string.
-    Ưu tiên 1: long format "17.0.x.x.x" → lấy 2 phần đầu.
-    Ưu tiên 2: git branch của repo → phải là Odoo version format.
+    Resolve Odoo version from a manifest version string.
+    Priority 1: long format "17.0.x.x.x" → take first two parts.
+    Priority 2: git branch of the repo → must be Odoo version format.
     Fallback: "unknown".
     """
     # Long format: "17.0.1.0.0" — Odoo version is always X.0 prefix with at least 4 parts
@@ -57,11 +57,11 @@ def build_registry(
     repo_version_pairs: list[tuple[str, str]],
 ) -> dict[str, dict[str, ModuleInfo]]:
     """
-    Xây dựng module registry từ danh sách (repo_path, odoo_version).
-    Trả về {odoo_version: {module_name: ModuleInfo}}.
+    Build module registry from a list of (repo_path, odoo_version) pairs.
+    Returns {odoo_version: {module_name: ModuleInfo}}.
 
-    Xử lý conflict: nếu cùng tên module trong cùng version,
-    ưu tiên module có manifest version dạng long format.
+    Conflict resolution: when the same module name appears in the same version,
+    prefer the entry with a long-format manifest version.
     """
     registry: dict[str, dict[str, ModuleInfo]] = {}
 
@@ -79,7 +79,7 @@ def build_registry(
             version_raw = manifest.get('version', '')
             odoo_version = resolve_odoo_version(version_raw, repo_path)
             if odoo_version == "unknown":
-                odoo_version = repo_version  # fallback sang version từ scanner
+                odoo_version = repo_version  # fallback to version from scanner
             if odoo_version == "unknown":
                 continue
 
@@ -97,10 +97,10 @@ def build_registry(
 
             existing = registry[odoo_version].get(module_name)
             if existing:
-                # Giữ module có long-format version (chứa Odoo version prefix)
+                # Keep module with long-format version (contains Odoo version prefix)
                 if re.match(r'^\d+\.\d+\.\d+', version_raw):
                     registry[odoo_version][module_name] = info
-                # else: giữ existing
+                # else: keep existing
             else:
                 registry[odoo_version][module_name] = info
 
