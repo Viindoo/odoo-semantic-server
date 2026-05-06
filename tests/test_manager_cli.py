@@ -102,3 +102,18 @@ def test_unknown_subcommand_exits_nonzero(migrated_pg, tmp_path):
     )
     res = _run(["nope-cmd"], env_extra={"ODOO_SEMANTIC_CONF": str(cfg)})
     assert res.returncode != 0
+
+
+def test_add_repo_unknown_profile_exits_2(migrated_pg, tmp_path):
+    cfg = tmp_path / "odoo-semantic.conf"
+    cfg.write_text(
+        "[database]\npg_dsn = "
+        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
+    )
+    res = _run(
+        ["add-repo", "--profile", "does_not_exist",
+         "--url", "x", "--branch", "17.0", "--local-path", "/tmp/x"],
+        env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
+    )
+    assert res.returncode == 2
+    assert "not found" in res.stderr
