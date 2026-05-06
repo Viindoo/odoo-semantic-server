@@ -12,7 +12,7 @@ pytestmark = pytest.mark.neo4j
 
 @pytest.fixture(scope="module")
 def seeded_neo4j(neo4j_driver):
-    """Seed Neo4j với test data cho MCP server tests."""
+    """Seed Neo4j with test data for MCP server tests."""
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
@@ -52,7 +52,7 @@ def seeded_neo4j(neo4j_driver):
 
 @pytest.fixture
 def mcp_tools(seeded_neo4j):
-    """Import MCP business logic functions sau khi đã seed data."""
+    """Import MCP business logic functions after seeding data."""
     os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
     os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
     os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
@@ -78,7 +78,7 @@ def test_resolve_model_shows_module(mcp_tools):
 def test_resolve_model_not_found(mcp_tools):
     resolve_model, _, _ = mcp_tools
     result = resolve_model("nonexistent.model", TEST_VERSION)
-    assert "Không tìm thấy" in result
+    assert "not found" in result
 
 
 def test_resolve_field_found(mcp_tools):
@@ -97,7 +97,7 @@ def test_resolve_field_shows_compute(mcp_tools):
 def test_resolve_field_not_found(mcp_tools):
     _, resolve_field, _ = mcp_tools
     result = resolve_field("account.move", "nonexistent_field", TEST_VERSION)
-    assert "Không tìm thấy" in result
+    assert "not found" in result
 
 
 def test_resolve_method_found(mcp_tools):
@@ -109,11 +109,11 @@ def test_resolve_method_found(mcp_tools):
 def test_resolve_method_not_found(mcp_tools):
     _, _, resolve_method = mcp_tools
     result = resolve_method("account.move", "nonexistent_method", TEST_VERSION)
-    assert "Không tìm thấy" in result
+    assert "not found" in result
 
 
 def test_resolve_model_excludes_unresolved_parents(neo4j_driver):
-    """Unresolved parent (placeholder) phải bị filter khỏi 'Kế thừa từ' output."""
+    """Unresolved parent (placeholder) must be filtered from 'Inherits from' output."""
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
@@ -121,12 +121,12 @@ def test_resolve_model_excludes_unresolved_parents(neo4j_driver):
     )
     writer.setup_indexes()
 
-    # Dọn data cũ
+    # Clean up old data
     UNRESOLVED_VERSION = "98.0"
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION)
 
-    # Seed: sale.order inherit từ ghost.mixin (chưa index) → tạo unresolved edge
+    # Seed: sale.order inherits ghost.mixin (not indexed) → creates unresolved edge
     mod = ModuleInfo("sale", UNRESOLVED_VERSION, "odoo_test", "/tmp", [], "")
     model = ModelInfo(
         name="sale.order", module="sale", odoo_version=UNRESOLVED_VERSION,
@@ -145,7 +145,7 @@ def test_resolve_model_excludes_unresolved_parents(neo4j_driver):
     result = _resolve_model("sale.order", UNRESOLVED_VERSION)
 
     assert "sale.order" in result
-    assert "ghost.mixin" not in result  # unresolved parent bị filter
+    assert "ghost.mixin" not in result  # unresolved parent filtered out
 
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION)
@@ -159,7 +159,7 @@ from src.indexer.models import (  # noqa: E402,I001
 
 @pytest.fixture(scope="module")
 def seeded_views(neo4j_driver):
-    """Seed Neo4j với view data cho resolve_view tests."""
+    """Seed Neo4j with view data for resolve_view tests."""
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
@@ -167,7 +167,7 @@ def seeded_views(neo4j_driver):
     )
     writer.setup_indexes()
 
-    VIEW_VERSION = "97.0"  # version riêng để tránh conflict với seeded_neo4j (99.0, 98.0)
+    VIEW_VERSION = "97.0"  # dedicated version — avoids conflict with seeded_neo4j (99.0, 98.0)
 
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=VIEW_VERSION)
@@ -214,7 +214,7 @@ def seeded_views(neo4j_driver):
 
 @pytest.fixture
 def view_tools(seeded_views):
-    """Import _resolve_view sau khi đã seed data."""
+    """Import _resolve_view after seeding data."""
     view_version = seeded_views
     os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
     os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
@@ -256,7 +256,7 @@ def test_resolve_view_extension_shows_parent(view_tools):
     resolve_view, version = view_tools
     result = resolve_view("viin_sale.view_sale_order_form_inherit", version)
     assert "sale.view_sale_order_form" in result
-    assert "Kế thừa từ" in result
+    assert "Inherits from" in result
 
 
 def test_resolve_view_extension_shows_own_xpaths(view_tools):
@@ -269,4 +269,4 @@ def test_resolve_view_extension_shows_own_xpaths(view_tools):
 def test_resolve_view_not_found(view_tools):
     resolve_view, version = view_tools
     result = resolve_view("nonexistent.view", version)
-    assert "Không tìm thấy" in result
+    assert "not found" in result

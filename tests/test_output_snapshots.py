@@ -58,9 +58,9 @@ def test_resolve_model_output_contract(snapshot_db):
     """
     Contract per docs/thiet-ke-kien-truc.md §MCP Tools Interface:
         account.move (Odoo 96.0)
-        ├─ Định nghĩa tại:   [odoo_test] account
-        ├─ Tổng số field:  1
-        └─ Tổng số method: 1
+        ├─ Defined in:     [odoo_test] account
+        ├─ Fields:         1
+        └─ Methods:        1
 
     If output format changes: update this test + architecture doc §MCP Tools.
     """
@@ -72,11 +72,11 @@ def test_resolve_model_output_contract(snapshot_db):
     assert lines[0] == f"account.move (Odoo {_SNAP_VERSION})", (
         "Line 0 must be '<model> (Odoo <version>)' — see architecture doc §6"
     )
-    assert any("Định nghĩa tại" in ln for ln in lines), (
-        "Missing 'Định nghĩa tại' (definition source)"
+    assert any("Defined in" in ln for ln in lines), (
+        "Missing 'Defined in' line"
     )
-    assert any("Tổng số field" in ln for ln in lines), "Missing field count"
-    assert any("Tổng số method" in ln for ln in lines), "Missing method count"
+    assert any("Fields:" in ln for ln in lines), "Missing field count"
+    assert any("Methods:" in ln for ln in lines), "Missing method count"
     assert any(ln.startswith("├─") or ln.startswith("└─") for ln in lines), (
         "Missing tree connectors (Ship Wow Product requirement)"
     )
@@ -86,10 +86,10 @@ def test_resolve_field_output_contract(snapshot_db):
     """
     Contract per docs/thiet-ke-kien-truc.md §MCP Tools Interface:
         account.move.name (Odoo 96.0)
-        ├─ Loại:     char
-        ├─ Computed: Không
+        ├─ Type:     char
+        ├─ Computed: No
         ...
-        └─ Khai báo trong: ...
+        └─ Declared in: ...
 
     If output format changes: update this test + architecture doc §MCP Tools.
     """
@@ -99,9 +99,9 @@ def test_resolve_field_output_contract(snapshot_db):
     lines = result.splitlines()
 
     assert lines[0] == f"account.move.name (Odoo {_SNAP_VERSION})"
-    assert any("Loại" in ln for ln in lines), "Missing field type line"
+    assert any("Type:" in ln for ln in lines), "Missing field type line"
     assert any("Computed" in ln for ln in lines), "Missing computed indicator"
-    assert any("Khai báo trong" in ln for ln in lines), "Missing declaration source"
+    assert any("Declared in" in ln for ln in lines), "Missing declaration source"
     assert any(ln.startswith("├─") or ln.startswith("└─") for ln in lines)
 
 
@@ -110,7 +110,7 @@ def test_resolve_method_output_contract(snapshot_db):
     Contract per docs/thiet-ke-kien-truc.md §MCP Tools Interface:
         account.move.action_post() (Odoo 96.0)
         Override chain:
-          [odoo_test] account — ✓ gọi super() — decorators: —
+          [odoo_test] account — ✓ calls super() — decorators: —
 
     If output format changes: update this test + architecture doc §MCP Tools.
     """
@@ -135,8 +135,8 @@ def test_resolve_view_not_found_contract(snapshot_db):
     from src.mcp.server import _resolve_view
 
     result = _resolve_view("nonexistent.view.xmlid", _SNAP_VERSION)
-    assert "Không tìm thấy" in result, (
-        "NOT_FOUND response must contain 'Không tìm thấy'"
+    assert "not found" in result, (
+        "NOT_FOUND response must contain 'not found'"
     )
     assert "nonexistent.view.xmlid" in result, (
         "NOT_FOUND response must echo the queried xmlid"

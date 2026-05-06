@@ -50,7 +50,7 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         """, name=model_name, v=odoo_version).data()
 
         if not layers:
-            return f"Không tìm thấy model '{model_name}' trong Odoo {odoo_version}."
+            return f"Model '{model_name}' not found in Odoo {odoo_version}."
 
         base = layers[0]
         extensions = layers[1:]
@@ -74,19 +74,19 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         ).single()["c"]
 
     lines = [f"{model_name} (Odoo {odoo_version})"]
-    lines.append(f"├─ Định nghĩa tại: [{base['repo']}] {base['module_name']}")
+    lines.append(f"├─ Defined in:     [{base['repo']}] {base['module_name']}")
 
     if parents:
         parents_str = ", ".join(p["pname"] for p in parents)
-        lines.append(f"├─ Kế thừa từ:    {parents_str}")
+        lines.append(f"├─ Inherits from:  {parents_str}")
 
     if extensions:
-        lines.append("├─ Mở rộng bởi:")
+        lines.append("├─ Extended by:")
         for ext in extensions:
             lines.append(f"│   └─ [{ext['repo']}] {ext['module_name']}")
 
-    lines.append(f"├─ Tổng số field:  {fields_count}")
-    lines.append(f"└─ Tổng số method: {methods_count}")
+    lines.append(f"├─ Fields:         {fields_count}")
+    lines.append(f"└─ Methods:        {methods_count}")
     return "\n".join(lines)
 
 
@@ -106,20 +106,20 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
 
     if not records:
         return (
-            f"Không tìm thấy field '{field_name}' trên model"
-            f" '{model_name}' trong Odoo {odoo_version}."
+            f"Field '{field_name}' not found on model"
+            f" '{model_name}' in Odoo {odoo_version}."
         )
 
     base_f = records[0]["f"]
     lines = [
         f"{model_name}.{field_name} (Odoo {odoo_version})",
-        f"├─ Loại:     {base_f.get('ttype', '?')}",
-        f"├─ Computed: {'Có' if base_f.get('compute') else 'Không'}"
+        f"├─ Type:     {base_f.get('ttype', '?')}",
+        f"├─ Computed: {'Yes' if base_f.get('compute') else 'No'}"
         + (f" ({base_f['compute']})" if base_f.get('compute') else ""),
-        f"├─ Stored:   {'Có' if base_f.get('stored', True) else 'Không'}",
-        f"├─ Required: {'Có' if base_f.get('required', False) else 'Không'}",
+        f"├─ Stored:   {'Yes' if base_f.get('stored', True) else 'No'}",
+        f"├─ Required: {'Yes' if base_f.get('required', False) else 'No'}",
         f"├─ Related:  {base_f.get('related') or '—'}",
-        "└─ Khai báo trong:",
+        "└─ Declared in:",
     ]
     for r in records:
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
@@ -143,14 +143,14 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
 
     if not records:
         return (
-            f"Không tìm thấy method '{method_name}' trên model"
-            f" '{model_name}' trong Odoo {odoo_version}."
+            f"Method '{method_name}' not found on model"
+            f" '{model_name}' in Odoo {odoo_version}."
         )
 
     lines = [f"{model_name}.{method_name}() (Odoo {odoo_version})", "Override chain:"]
     for r in records:
         mth = r["mth"]
-        super_info = "✓ gọi super()" if mth.get("has_super_call") else "✗ không gọi super()"
+        super_info = "✓ calls super()" if mth.get("has_super_call") else "✗ no super()"
         decs = ", ".join(mth.get("decorators") or []) or "—"
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
         lines.append(f"  {repo_str}{r['module_name']} — {super_info} — decorators: {decs}")
@@ -169,7 +169,7 @@ def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
         """, xmlid=xmlid, ver=odoo_version).single()
 
         if not view_rec:
-            return f"Không tìm thấy view '{xmlid}' trong Odoo {odoo_version}."
+            return f"View '{xmlid}' not found in Odoo {odoo_version}."
 
         parent_rec = session.run("""
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
@@ -199,7 +199,7 @@ def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     lines.append(f"├─ Module: {repo_str}{view_rec.get('module_name', '?')}{mode_label}")
 
     if parent_rec:
-        lines.append(f"├─ Kế thừa từ: {parent_rec['parent_xmlid']}")
+        lines.append(f"├─ Inherits from: {parent_rec['parent_xmlid']}")
         own_exprs = list(v_props.get("xpaths_exprs") or [])
         own_positions = list(v_props.get("xpaths_positions") or [])
         if own_exprs:
@@ -208,7 +208,7 @@ def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
                 lines.append(f"│   ├─ {expr} [{pos}]")
 
     if extensions:
-        lines.append(f"└─ Mở rộng bởi ({len(extensions)} modules):")
+        lines.append(f"└─ Extended by ({len(extensions)} modules):")
         for i, ext in enumerate(extensions):
             ext_repo = f"[{ext['repo']}] " if ext.get("repo") else ""
             connector = "    └─" if i == len(extensions) - 1 else "    ├─"
@@ -220,32 +220,32 @@ def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
             for expr, pos in zip(exprs, positions):
                 lines.append(f"    │   └─ xpath: {expr} [{pos}]")
     else:
-        lines.append("└─ Không có extension")
+        lines.append("└─ No extensions")
 
     return "\n".join(lines)
 
 
 @mcp.tool()
 def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
-    """Trả về thông tin đầy đủ về Odoo model: inheritance chain, field summary, method summary."""
+    """Return full info for an Odoo model: inheritance chain, field summary, method summary."""
     return _resolve_model(model_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
-    """Trả về chi tiết một field: type, computed/related metadata, module nguồn."""
+    """Return field details: type, computed/related metadata, declaring module."""
     return _resolve_field(model_name, field_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
-    """Trả về override chain của một method theo thứ tự base→top."""
+    """Return override chain of a method, ordered base→top."""
     return _resolve_method(model_name, method_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
-    """Trả về view inheritance chain, XPath modifications từ mọi extension module."""
+    """Return view inheritance chain and XPath modifications from all extension modules."""
     return _resolve_view(xmlid, odoo_version)
 
 
