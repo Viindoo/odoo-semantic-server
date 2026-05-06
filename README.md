@@ -135,21 +135,39 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
-cp .env.example .env                      # điền NEO4J_PASSWORD, PG_PASSWORD, ...
 
-# 1. Python runtime (venv tạo tại ~/.venv/odoo-semantic-mcp/)
+# 1. Cài Python venv + tạo file config
 make install
-# Hoặc thủ công: uv venv ~/.venv/odoo-semantic-mcp && uv pip install --python ~/.venv/odoo-semantic-mcp/bin/python -e ".[dev]"
+# → tạo .env (Docker passwords) + odoo-semantic.conf (app config)
+# → fill 2 file này trước khi tiếp tục:
+#   .env:                 NEO4J_PASSWORD, PG_PASSWORD
+#   odoo-semantic.conf:   [database].neo4j_password
 
-# 2. Databases (Docker)
-docker compose up -d                      # Neo4j + PostgreSQL
+# 2. Start databases (Neo4j + PostgreSQL)
+docker compose up -d
 
-# 3. Index lần đầu — Milestone 5 (chưa implement)
-# python -m src.cli index --base-dir ~/git --version 17.0
+# 3. Bootstrap PostgreSQL schema
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
 
-# 4. Khởi động MCP server (long-running — dùng systemd hoặc tmux)
-python -m src.mcp.server                  # lắng nghe tại :8002
+# 4. Đăng ký repos cần index (admin clone repos thủ công vào /home/user/git/...)
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile viindoo_17 --version 17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
+    --profile viindoo_17 \
+    --url github.com/odoo/odoo --branch 17.0 \
+    --local-path /home/user/git/odoo_17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager list
+
+# 5. Index lần đầu
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
+# hoặc index toàn bộ profiles:
+# ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --all
+
+# 6. Khởi động MCP server (long-running — dùng systemd / tmux)
+~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+# → bind 127.0.0.1:8002 mặc định (đọc từ odoo-semantic.conf [server])
 ```
+
+**Reverse proxy (bắt buộc cho external access):** MCP server bind `127.0.0.1` để bắt buộc đặt reverse proxy phía trước (caddy / nginx / traefik). Auth ở M2.5 = IP allowlist hoặc basic auth tại proxy. **API key validation chưa có cho đến M5** — `X-API-Key` header trong config ví dụ chỉ là placeholder, codebase chưa validate.
 
 **Backup / Restore khi chuyển server** *(Milestone 5 — chưa implement):*
 ```bash
@@ -177,6 +195,7 @@ python -m src.mcp.server                  # lắng nghe tại :8002
 
 **Milestone 1 — "First Wow":** `[x]` Auto tests 56/56 PASSED — còn manual E2E với Claude Code thật  
 **Milestone 2 — "View Wow":** `[x]` Code complete — 100 tests PASS, còn manual E2E `resolve_view`  
+**Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
 **Milestone 3 — "Semantic Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu  

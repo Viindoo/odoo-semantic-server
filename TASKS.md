@@ -37,6 +37,25 @@
 - [x] `tests/test_output_snapshots.py`: MCP output schema contract tests (anti-drift)
 - [ ] E2E test: kết nối VS Code + Claude Code, verify `resolve_view` kết quả
 
+## Milestone 2.5 — "Foundation Wow"
+**Intent:** Hạ tầng đủ để E2E test M1+M2 trên data thật + nền cho M5 per-user scoping.
+**Outcome:** `python -m src.indexer --profile viindoo_17` index full Odoo 17 + Viindoo addons; Claude Code gọi 4 MCP tools trên data thật.
+
+- [x] `src/config.py`: INI reader (`configparser`)
+- [x] `odoo-semantic.conf.example`: app config template
+- [x] `src/db/migrate.py`: schema `profiles` + `repos`
+- [x] `src/db/repo_registry.py`: CRUD profiles/repos
+- [x] `src/manager/__main__.py`: admin CLI (`add-profile`, `add-repo`, `list`)
+- [x] `src/indexer/pipeline.py`: wire `parser_xml` + `parser_qweb` (M2 blocker fix)
+- [x] `src/indexer/__main__.py`: `python -m src.indexer --profile / --all`
+- [x] `src/mcp/server.py`: read host/port from `odoo-semantic.conf`
+- [x] `docker-compose.yml`: bind DB ports `127.0.0.1` (same-server default)
+- [x] `Makefile`: extend `install` target — copy configs, hint next steps
+- [x] `.gitignore`: thêm `odoo-semantic.conf` (user secret)
+- [x] `README.md`: deploy steps thật
+- [x] `CONTRIBUTING.md`: cập nhật source tree
+- [ ] E2E manual: clone Odoo 17 → register → index → Claude Code call 4 tools
+
 ## Milestone 3 — "Semantic Wow"
 **Intent:** Tìm kiếm code theo ngữ nghĩa.  
 **Outcome:** `find_examples("compute tax based on partner country")` trả về code thật, dùng được ngay.
@@ -55,13 +74,17 @@
 - [ ] `src/mcp/server.py`: `impact_analysis` + risk_level scoring
 
 ## Milestone 5 — "Product Wow"
-**Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.  
-**Outcome:** `docker compose up -d && odoo-semantic index --version 17.0` → xong.
+**Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.
+**Outcome:** `docker compose up -d` + Web UI add repos + auto-clone qua SSH key + index.
 
 - [ ] `src/auth.py`: API key middleware + usage log (PostgreSQL)
-- [ ] `src/web_ui/`: dashboard + key management + index status (FastAPI + Jinja2)
-- [ ] `src/cli.py`: `index` / `backup` / `restore` commands
-- [ ] `docker-compose.yml`: hoàn thiện + `.env.example`
+- [ ] `src/web_ui/repos.py`: profile + repo management Web UI (replace `src.manager` CLI)
+- [ ] `src/web_ui/ssh_keys.py`: generate SSH key pair, expose public key cho user add vào repo họ
+- [ ] `src/web_ui/dashboard.py`: status + key management + index status (FastAPI + Jinja2)
+- [ ] `src/db/migrate.py`: thêm `ssh_key_pairs`, `api_keys`, `user_profile_access`
+- [ ] Auto-clone qua SSH khi user add repo (replace `--local-path` manual step)
+- [ ] `src/cli.py`: `backup` / `restore` (KHÔNG còn `index` — đã có ở M2.5)
+- [ ] `docker-compose.yml`: hoàn thiện cho production (volumes named, restart policy)
 - [ ] `install.sh`: non-Docker installation path
 - [ ] `README.md`: hướng dẫn setup + kết nối VS Code / Claude Code / Codex / Gemini
 
