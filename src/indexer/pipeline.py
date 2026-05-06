@@ -12,6 +12,7 @@ Public API:
 """
 import logging
 import os
+from pathlib import Path
 
 from neo4j import GraphDatabase
 
@@ -89,6 +90,9 @@ def _index_repo(
     """
     local_path: str = repo["local_path"]
     odoo_version: str = repo["odoo_version"]
+
+    if not Path(local_path).is_dir():
+        raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
 
     # build_registry expects list[tuple[repo_path, odoo_version]]
     registry = build_registry([(local_path, odoo_version)])
