@@ -101,7 +101,7 @@ def test_parse_view_type_from_arch(tmp_path, sale_module):
 
 
 def test_parse_view_type_with_data_wrapper(tmp_path, sale_module):
-    """Extension views thường bọc arch trong <data>, không phải trực tiếp view type."""
+    """Extension views often wrap arch inside <data> rather than directly using view type."""
     f = write_xml(tmp_path, "ext_views.xml", """
         <?xml version="1.0"?>
         <odoo>
