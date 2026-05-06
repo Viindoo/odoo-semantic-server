@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ModuleInfo:
-    """Thông tin về một Odoo module."""
+    """Info for a single Odoo module."""
     name: str
     odoo_version: str
     repo: str
@@ -15,7 +15,7 @@ class ModuleInfo:
 
 @dataclass
 class FieldInfo:
-    """Thông tin về một Odoo field."""
+    """Info for a single Odoo field."""
     name: str
     ttype: str
     related: str | None = None
@@ -26,7 +26,7 @@ class FieldInfo:
 
 @dataclass
 class MethodInfo:
-    """Thông tin về một method trong Odoo model."""
+    """Info for a method on an Odoo model."""
     name: str
     has_super_call: bool = False
     decorators: list[str] = field(default_factory=list)
@@ -34,7 +34,7 @@ class MethodInfo:
 
 @dataclass
 class ModelInfo:
-    """Thông tin về một Odoo model."""
+    """Info for a single Odoo model."""
     name: str
     module: str
     odoo_version: str
@@ -48,21 +48,21 @@ class ModelInfo:
 
 @dataclass
 class ParseResult:
-    """Kết quả parse một module: module info + danh sách models."""
+    """Parse result for a module: module info + list of models."""
     module: ModuleInfo
     models: list[ModelInfo] = field(default_factory=list)
 
 
 @dataclass
 class XPathInfo:
-    """XPath modification trong một extension view."""
+    """XPath modification entry in an extension view."""
     expr: str
     position: str  # before | after | inside | replace | attributes
 
 
 @dataclass
 class ViewInfo:
-    """Thông tin về một Odoo ir.ui.view record."""
+    """Info for a single Odoo ir.ui.view record."""
     xmlid: str           # "module.xml_id", e.g., "sale.view_sale_order_form"
     name: str
     model: str           # target Odoo model, e.g., "sale.order"
@@ -76,7 +76,7 @@ class ViewInfo:
 
 @dataclass
 class QWebInfo:
-    """Thông tin về một QWeb template."""
+    """Info for a single QWeb template."""
     xmlid: str           # "module.template_id"
     module: str
     odoo_version: str
@@ -85,7 +85,7 @@ class QWebInfo:
 
 @dataclass
 class ViewParseResult:
-    """Kết quả parse XML files trong một module."""
+    """Parse result for XML files in a module: views + qweb templates."""
     module: ModuleInfo
     views: list[ViewInfo] = field(default_factory=list)
     qweb: list[QWebInfo] = field(default_factory=list)
