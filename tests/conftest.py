@@ -162,3 +162,36 @@ def make_manifest(
         f"{{'name': {name!r}, 'version': {version!r}, "
         f"'depends': {depends!r}, 'installable': {installable!r}}}\n"
     )
+
+
+# --- PostgreSQL fixtures (for src/db tests) ---
+
+PG_TEST_DSN = os.getenv(
+    "PG_TEST_DSN",
+    "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
+)
+
+
+@pytest.fixture(scope="session")
+def pg_conn():
+    """Session-scoped PostgreSQL connection. Skips if not reachable."""
+    import psycopg2
+    try:
+        conn = psycopg2.connect(PG_TEST_DSN)
+    except Exception as e:
+        pytest.skip(f"PostgreSQL not reachable at {PG_TEST_DSN}: {e}")
+    conn.autocommit = True
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def clean_pg(pg_conn):
+    """Drop test tables before and after each test (idempotent)."""
+    with pg_conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS repos CASCADE")
+        cur.execute("DROP TABLE IF EXISTS profiles CASCADE")
+    yield pg_conn
+    with pg_conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS repos CASCADE")
+        cur.execute("DROP TABLE IF EXISTS profiles CASCADE")

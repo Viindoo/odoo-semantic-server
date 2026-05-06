@@ -29,13 +29,13 @@ install:
 test: test-unit
 
 test-unit:
-	$(PYTEST) tests/ -v -m "not neo4j" --tb=short
+	$(PYTEST) tests/ -v -m "not neo4j and not postgres" --tb=short
 
 # testcontainers tự spin up Neo4j nếu Docker có sẵn.
 # Nếu muốn dùng Neo4j đang chạy sẵn thay vì testcontainers:
 #   make neo4j-up && make _test-neo4j && make neo4j-down
 test-integration:
-	$(PYTEST) tests/ -v -m "neo4j" --tb=short -rs
+	$(PYTEST) tests/ -v -m "neo4j or postgres" --tb=short -rs
 
 test-all: test-unit test-integration
 
