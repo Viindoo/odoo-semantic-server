@@ -15,6 +15,34 @@
 
 ---
 
+## Post-Plan Adjustments (commits sau khi plan được viết)
+
+Các thay đổi sau xảy ra trong quá trình implement, **sau** khi plan được viết và approve. Ghi lại để future agent không bị confuse bởi discrepancy giữa plan code vs code thật.
+
+### A1. `index_profile` signature — commit `56aa74d`
+
+**Plan (§Task 5):** `index_profile(pg_conn, neo4j_driver, *, profile_name)` — 3 args, `neo4j_driver` nhận từ caller.
+
+**Thực tế:** `index_profile(pg_conn, *, profile_name)` — `neo4j_driver` bị drop vì Neo4jWriter tự đọc creds qua `_neo4j_creds()`. Caller không cần pass driver.
+
+**Lý do:** Code review phát hiện `neo4j_driver` parameter là dead code — writer không dùng nó. Simplicity win.
+
+**Fix tiếp theo (commit `2a5925e`):** Tạo `_neo4j_creds()` private helper, cả `open_production_neo4j()` và `index_profile()` đều dùng nó. Đọc `[database]/neo4j_uri` đúng section từ config file.
+
+### A2. `open_production_neo4j()` caller — commit `2a5925e`
+
+**Plan (§Task 6):** `__main__.py` import `open_production_neo4j` và gọi nó để build driver → pass vào `index_profile`.
+
+**Thực tế:** `__main__.py` không gọi `open_production_neo4j()`. `index_profile()` tự lấy creds qua `_neo4j_creds()`. `open_production_neo4j()` vẫn exported (public utility) nhưng không được `__main__.py` dùng.
+
+### A3. CI workflow + pyproject.toml — commit `22f4f60`
+
+**Plan:** Không liệt kê `.github/workflows/ci.yml` hoặc `pyproject.toml` trong §Cấu Trúc File.
+
+**Thực tế:** Cả hai được modify khi implement Task 2 (add postgres service container vào CI, add pytest marker `postgres`). Discovery khi integration test cần postgres service để chạy trong CI.
+
+---
+
 ## Zero-Trust Audit Findings
 
 **Verified vs spec:**

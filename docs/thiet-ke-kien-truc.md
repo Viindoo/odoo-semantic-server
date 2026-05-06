@@ -72,7 +72,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │  │  PYTHON RUNTIME  (Python 3.12+, venv tại ~/.venv/odoo-semantic-mcp)  │  │
 │  │                                                               │  │
 │  │  [CLI — one-shot]          [Server — long-running]            │  │
-│  │  python -m src.cli         python -m src.mcp.server           │  │
+│  │  python -m src.indexer     python -m src.mcp.server           │  │
 │  │  └─ INDEXER PIPELINE       └─ FastMCP HTTP :8002              │  │
 │  │     1. Scanner                 systemd giữ process alive      │  │
 │  │     2. Registry Builder                                       │  │
@@ -404,10 +404,9 @@ odoo-semantic-mcp/
 ├── docker-compose.yml      -- Neo4j + PostgreSQL + MCP server + Web UI
 ├── .env.example            -- NEO4J_IMAGE, NEO4J_PASSWORD, PG_DSN, API_MASTER_KEY
 ├── install.sh              -- cài đặt không dùng Docker
-└── cli/
-    ├── index.py            -- odoo-semantic index --base-dir ~/git --version 17.0
-    ├── backup.py           -- odoo-semantic backup --out backup-YYYYMMDD.tar.gz
-    └── restore.py          -- odoo-semantic restore --from backup-YYYYMMDD.tar.gz
+└── src/
+    ├── indexer/__main__.py -- python -m src.indexer --profile <name> | --all
+    └── manager/            -- python -m src.manager backup | restore (M5)
 ```
 
 **Quy trình chuyển server:**
@@ -510,7 +509,8 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
   - web_ui/: dashboard + key management + index status
 
 [Ngày 6]
-  - cli.py: index / backup / restore
+  - indexer/__main__.py: python -m src.indexer --profile <name> | --all
+  - manager/: python -m src.manager backup / restore
   - docker-compose.yml: hoàn thiện + .env.example
   - install.sh: non-Docker path
   - README.md:
@@ -547,7 +547,12 @@ odoo-semantic-mcp/
 ├── docs/
 │   └── thiet-ke-kien-truc.md       -- tài liệu này
 ├── src/
+│   ├── config.py                   -- đọc odoo-semantic.conf (configparser)
+│   ├── db/                         -- PostgreSQL helpers (profiles, repos registry)
+│   ├── manager/                    -- admin CLI: python -m src.manager (argparse)
 │   ├── indexer/
+│   │   ├── __main__.py             -- entrypoint: python -m src.indexer --profile <name> | --all
+│   │   ├── pipeline.py             -- orchestrate scanner→registry→resolver→parsers→writer
 │   │   ├── scanner.py              -- quét repo, phát hiện version
 │   │   ├── registry.py             -- module registry per version
 │   │   ├── resolver.py             -- topological sort dependencies
@@ -561,11 +566,10 @@ odoo-semantic-mcp/
 │   │   └── incremental.py          -- git hash tracking
 │   ├── mcp/
 │   │   └── server.py               -- MCP server + 6 tools
-│   ├── web_ui/
+│   ├── web_ui/                     -- M5: dashboard + API key mgmt
 │   │   ├── app.py                  -- FastAPI app
 │   │   └── templates/              -- Jinja2 templates
-│   ├── auth.py                     -- API key middleware
-│   └── cli.py                      -- index / backup / restore
+│   └── auth.py                     -- API key middleware (M5)
 └── tests/
 ```
 
