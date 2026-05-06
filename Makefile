@@ -23,19 +23,24 @@ help:
 install:
 	$(UV) venv $(VENV)
 	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
+	@[ -f .env ] || (cp .env.example .env && \
+		echo "✓ .env created — fill in NEO4J_PASSWORD, PG_PASSWORD")
+	@[ -f odoo-semantic.conf ] || (cp odoo-semantic.conf.example odoo-semantic.conf && \
+		echo "✓ odoo-semantic.conf created — fill in [database] passwords")
+	@echo "Next: docker compose up -d  →  $(VENV)/bin/python -m src.db.migrate"
 
 # --- Tests ---
 
 test: test-unit
 
 test-unit:
-	$(PYTEST) tests/ -v -m "not neo4j" --tb=short
+	$(PYTEST) tests/ -v -m "not neo4j and not postgres" --tb=short
 
 # testcontainers tự spin up Neo4j nếu Docker có sẵn.
 # Nếu muốn dùng Neo4j đang chạy sẵn thay vì testcontainers:
 #   make neo4j-up && make _test-neo4j && make neo4j-down
 test-integration:
-	$(PYTEST) tests/ -v -m "neo4j" --tb=short -rs
+	$(PYTEST) tests/ -v -m "neo4j or postgres" --tb=short -rs
 
 test-all: test-unit test-integration
 

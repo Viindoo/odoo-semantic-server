@@ -135,27 +135,15 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
-cp .env.example .env                      # điền NEO4J_PASSWORD, PG_PASSWORD, ...
-
-# 1. Python runtime (venv tạo tại ~/.venv/odoo-semantic-mcp/)
-make install
-# Hoặc thủ công: uv venv ~/.venv/odoo-semantic-mcp && uv pip install --python ~/.venv/odoo-semantic-mcp/bin/python -e ".[dev]"
-
-# 2. Databases (Docker)
-docker compose up -d                      # Neo4j + PostgreSQL
-
-# 3. Index lần đầu — Milestone 5 (chưa implement)
-# python -m src.cli index --base-dir ~/git --version 17.0
-
-# 4. Khởi động MCP server (long-running — dùng systemd hoặc tmux)
-python -m src.mcp.server                  # lắng nghe tại :8002
+make install                                           # tạo venv + config templates
+docker compose up -d                                   # start Neo4j + PostgreSQL
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate # bootstrap schema
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile viindoo_17 --version 17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
+~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
 ```
 
-**Backup / Restore khi chuyển server** *(Milestone 5 — chưa implement):*
-```bash
-# python -m src.cli backup --out backup-$(date +%Y%m%d).tar.gz
-# python -m src.cli restore --from backup-20260505.tar.gz
-```
+→ Xem [`docs/deploy.md`](docs/deploy.md) để biết cách cấu hình từng tier (DB, App, Proxy), systemd service, nginx/Caddy, TLS, backup, security checklist.
 
 ---
 
@@ -163,6 +151,7 @@ python -m src.mcp.server                  # lắng nghe tại :8002
 
 | File | Nội dung |
 |------|----------|
+| [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | **Bắt đầu ở đây nếu bạn là developer** — setup, chạy tests, workflow |
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
@@ -177,6 +166,7 @@ python -m src.mcp.server                  # lắng nghe tại :8002
 
 **Milestone 1 — "First Wow":** `[x]` Auto tests 56/56 PASSED — còn manual E2E với Claude Code thật  
 **Milestone 2 — "View Wow":** `[x]` Code complete — 100 tests PASS, còn manual E2E `resolve_view`  
+**Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
 **Milestone 3 — "Semantic Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu  

@@ -10,8 +10,10 @@ services:
       # để bolt client redirect đúng host (không bị redirect về container hostname):
       NEO4J_server_bolt_advertised__address: ${NEO4J_ADVERTISED_HOST:-localhost}:7687
     ports:
-      - "127.0.0.1:7474:7474"  # Browser UI — localhost only, không expose ra ngoài
-      - "7687:7687"             # Bolt — cần accessible từ app server
+      # Same-server default — DB localhost only. Reverse proxy / SSH tunnel
+      # for split-tier deploy: change to "7687:7687" + firewall app-server IP.
+      - "127.0.0.1:7474:7474"  # Browser UI
+      - "127.0.0.1:7687:7687"  # Bolt
     volumes:
       - neo4j_data:/data
     healthcheck:
@@ -26,7 +28,8 @@ services:
       POSTGRES_USER: odoo_semantic
       POSTGRES_PASSWORD: ${PG_PASSWORD:-password}
     ports:
-      - "5432:5432"             # Cần accessible từ app server
+      # Same-server default. For split-tier: change to "5432:5432" + firewall.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
