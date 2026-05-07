@@ -195,3 +195,26 @@ def clean_pg(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS repos CASCADE")
         cur.execute("DROP TABLE IF EXISTS profiles CASCADE")
+
+
+PG_EMBED_VERSION = "99.0"  # dedicated test version for embeddings tests
+
+
+@pytest.fixture
+def clean_pg_embeddings(pg_conn):
+    """Bootstrap embeddings schema and clean test rows before/after each test.
+
+    Skips automatically if the pgvector extension is not installed in the database.
+    Admin setup (once): run  CREATE EXTENSION vector;  as PostgreSQL superuser.
+    """
+    from pgvector.psycopg2 import register_vector
+    from src.db.migrate import run_migrations, _vector_extension_available
+    run_migrations(pg_conn)
+    if not _vector_extension_available(pg_conn):
+        pytest.skip("pgvector extension not installed — run as superuser: CREATE EXTENSION vector;")
+    register_vector(pg_conn)
+    with pg_conn.cursor() as cur:
+        cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
+    yield pg_conn
+    with pg_conn.cursor() as cur:
+        cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
