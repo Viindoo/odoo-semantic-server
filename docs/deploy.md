@@ -6,28 +6,82 @@ Hướng dẫn này dành cho **admin** deploy server. Developer xem [`CONTRIBUT
 
 ## 0. Topology
 
+Doc cover **2 topology** — chọn theo môi trường:
+
+### Topology A — All-in-one (dev / E2E test / ≤30 users)
+
+Tất cả service trên 1 host. Đơn giản, đủ cho dev test E2E hoặc team
+nhỏ. Đây là default doc khi không nói rõ split.
+
 ```
 Người dùng (AI tool)
         │ HTTPS :443
         ▼
-  ┌─────────────┐
-  │  Nginx/Caddy │  ← reverse proxy, TLS termination, auth
-  └──────┬──────┘
-         │ HTTP 127.0.0.1:8002
-         ▼
-  ┌─────────────┐
-  │  MCP Server  │  ← python -m src.mcp.server (systemd)
-  └──────┬───┬──┘
-         │   │
-   bolt  │   │ psycopg2
-7687 ▼   │   ▼ 5432
-  ┌──────┴───┴──┐
-  │  Databases   │  ← docker compose (Neo4j + PostgreSQL)
-  └─────────────┘
+  ┌────────────────────────────────────────────┐
+  │  HOST DUY NHẤT                             │
+  │                                            │
+  │  Nginx/Caddy  (reverse proxy + TLS)        │
+  │      │ 127.0.0.1:8002                      │
+  │      ▼                                     │
+  │  MCP Server   (systemd, user odoo-semantic)│
+  │      │            │              │          │
+  │  bolt│       psycopg2│        HTTP│         │
+  │  7687│         5432  │       11434│         │
+  │      ▼            ▼              ▼          │
+  │  Neo4j ─── Postgres ─── Ollama (M3 only)   │
+  │  (docker)  (docker)     (systemd)          │
+  └────────────────────────────────────────────┘
 ```
 
-**Same-server (default, ≤30 users):** tất cả tiers trên 1 host.
-**Split-tier (≥80 users / HA):** DB trên VM riêng — xem [§8 Split-Tier](#8-split-tier-migration).
+DB ports + Ollama bind `127.0.0.1` — không expose ra ngoài.
+
+### Topology B — Split-tier (production / ≥80 users / HA / shared embedder)
+
+4 tier riêng host. Đặc biệt phù hợp khi đã có **Ollama instance dùng
+chung** cho nhiều dự án — không cần cài lại trên server MCP.
+
+```
+                  Người dùng (AI tool)
+                          │ HTTPS
+                          ▼
+                  ┌────────────────┐
+                  │  Proxy tier    │  Nginx/Caddy + TLS
+                  └────────┬───────┘
+                           │ HTTP (private)
+                           ▼
+                  ┌────────────────┐
+                  │  App tier      │  MCP server + indexer venv
+                  │  (odoo-semantic)│
+                  └──┬──────┬───┬──┘
+              bolt  │  pg  │   │ HTTP 11434
+              7687  │ 5432 │   │
+                    ▼      ▼   ▼
+              ┌─────────────┐  ┌──────────────────┐
+              │ DB tier     │  │ Embedder tier    │
+              │ Neo4j +     │  │ Ollama (có thể   │
+              │ Postgres    │  │ shared multi-app)│
+              └─────────────┘  └──────────────────┘
+```
+
+Mỗi tier bind `0.0.0.0` + firewall whitelist IP App tier. Ollama không
+có auth built-in → SSH tunnel hoặc TLS reverse proxy nếu qua Internet
+(xem `docs/deploy/embedder-setup.md` §4).
+
+Migration A → B: xem [§8 Split-Tier](#8-split-tier-migration).
+
+### Tool dependency theo milestone
+
+Không phải tool nào cũng cần đầy đủ stack — admin có thể defer setup
+embedder cho đến khi cần M3:
+
+| Tool | M1-M2 (Neo4j) | M3 Semantic (pgvector + Ollama) | M4 Impact (Neo4j) |
+|------|:-:|:-:|:-:|
+| `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view` | ✓ | — | — |
+| `find_examples` | — | ✓ | — |
+| `impact_analysis` | — | — | ✓ |
+
+Test E2E M1+M2+M4 chỉ cần Neo4j + PostgreSQL (registry). M3 thêm
+Ollama — defer được, xem `docs/deploy/embedder-setup.md`.
 
 ---
 
@@ -536,12 +590,17 @@ Trước khi expose public internet:
 
 ## 8. Split-Tier Migration
 
-Khi cần tách DB ra VM riêng (≥80 users, hoặc HA):
+Khi chuyển từ Topology A (all-in-one) sang Topology B (production /
+HA / shared embedder).
+
+### 8.1 Tách DB tier (Neo4j + Postgres) ra VM riêng
 
 1. Move `docker-compose.yml` và `.env` sang DB VM.
-2. Đổi ports binding từ `127.0.0.1:7687:7687` → `0.0.0.0:7687:7687`.
-3. Cấu hình firewall DB VM: chỉ cho phép app VM IP kết nối port 7687 và 5432.
-4. Set `NEO4J_ADVERTISED_HOST=<DB-VM-public-IP>` trong `.env` (bắt buộc — bolt client dùng advertised address để redirect).
+2. Đổi ports binding từ `127.0.0.1:7687:7687` → `0.0.0.0:7687:7687`
+   (cả `5432:5432`).
+3. Firewall DB VM: chỉ cho phép App VM IP kết nối port 7687 và 5432.
+4. Set `NEO4J_ADVERTISED_HOST=<DB-VM-public-IP>` trong `.env` (bắt
+   buộc — bolt client dùng advertised address để redirect).
 5. Trên App VM: cập nhật `odoo-semantic.conf`:
    ```ini
    [database]
@@ -549,7 +608,31 @@ Khi cần tách DB ra VM riêng (≥80 users, hoặc HA):
    pg_dsn    = postgresql://odoo_semantic:<pass>@<DB-VM-IP>:5432/odoo_semantic
    ```
 6. `sudo systemctl restart odoo-semantic-mcp`
-7. Smoke test (§5).
+7. Smoke test §5.
+
+### 8.2 Tách Embedder tier (Ollama) ra VM riêng (hoặc dùng instance shared)
+
+Ollama có thể chạy trên VM riêng — đặc biệt hữu ích khi đã có instance
+phục vụ nhiều dự án (vd 1 GPU server share giữa MCP + chat coder +
+auto-complete). Setup chi tiết: xem
+[`docs/deploy/embedder-setup.md`](deploy/embedder-setup.md).
+
+Tóm tắt 4 bước:
+
+1. **Trên Embedder VM**: setup Ollama + `OLLAMA_HOST=0.0.0.0:11434`
+   (xem embedder-setup.md §2 + §4) + add model `qwen3-embedding-q5km`
+   (xem §3).
+2. **Firewall**: chỉ allow App VM IP truy cập port `11434` (Ollama
+   không có auth built-in — KHÔNG expose Internet trực tiếp).
+3. **Trên App VM**: cập nhật `odoo-semantic.conf`:
+   ```ini
+   [embedder]
+   url   = http://<embedder-vm-ip>:11434
+   model = qwen3-embedding-q5km
+   dim   = 1024
+   ```
+4. Re-index không `--no-embed` (xem §3.4) → smoke test
+   `find_examples` (xem §5.2 row #4).
 
 ---
 
