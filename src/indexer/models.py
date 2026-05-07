@@ -22,6 +22,7 @@ class FieldInfo:
     compute: str | None = None
     stored: bool = True
     required: bool = False
+    source_definition: str | None = None  # raw assignment line(s), for embedding
 
 
 @dataclass
@@ -30,6 +31,7 @@ class MethodInfo:
     name: str
     has_super_call: bool = False
     decorators: list[str] = field(default_factory=list)
+    source_code: str | None = None  # raw method source, for embedding
 
 
 @dataclass
@@ -72,6 +74,8 @@ class ViewInfo:
     mode: str            # "primary" | "extension"
     inherit_xmlid: str | None
     xpaths: list[XPathInfo] = field(default_factory=list)
+    arch: str | None = None       # serialized XML content of <arch> field, for embedding
+    file_path: str | None = None  # source XML file path
 
 
 @dataclass
@@ -81,6 +85,20 @@ class QWebInfo:
     module: str
     odoo_version: str
     inherit_xmlid: str | None = None
+    content: str | None = None    # serialized XML content of <template>, for embedding
+    file_path: str | None = None  # source XML file path
+
+
+@dataclass
+class JSChunk:
+    """A chunk of JavaScript code from a module, for embedding."""
+    module: str
+    odoo_version: str
+    file_path: str
+    era: str            # 'era1' | 'era2' | 'era3'
+    entity_name: str    # widget/component name, or file stem if unknown
+    chunk_idx: int
+    content: str        # raw JS snippet (~512 tokens)
 
 
 @dataclass

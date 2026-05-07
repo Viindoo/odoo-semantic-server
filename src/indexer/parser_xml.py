@@ -9,7 +9,7 @@ _VIEW_TYPES = {
 }
 
 
-def _parse_record(record: ET.Element, module: ModuleInfo) -> ViewInfo | None:
+def _parse_record(record: ET.Element, module: ModuleInfo, file_path: str | None = None) -> ViewInfo | None:
     """Parse a <record> element as an ir.ui.view."""
     if record.get("model") != "ir.ui.view":
         return None
@@ -24,6 +24,7 @@ def _parse_record(record: ET.Element, module: ModuleInfo) -> ViewInfo | None:
     view_type = "form"
     mode = "primary"
     xpaths: list[XPathInfo] = []
+    arch: str | None = None
 
     for child in record:
         if child.tag != "field":
@@ -39,6 +40,7 @@ def _parse_record(record: ET.Element, module: ModuleInfo) -> ViewInfo | None:
                 inherit_xmlid = ref
                 mode = "extension"
         elif fname == "arch":
+            arch = ET.tostring(child, encoding="unicode")
             arch_children = list(child)
             if arch_children:
                 first = arch_children[0]
@@ -68,6 +70,8 @@ def _parse_record(record: ET.Element, module: ModuleInfo) -> ViewInfo | None:
         mode=mode,
         inherit_xmlid=inherit_xmlid,
         xpaths=xpaths,
+        arch=arch,
+        file_path=file_path,
     )
 
 
@@ -80,7 +84,7 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
     root = tree.getroot()
     views = []
     for record in root.iter("record"):
-        view = _parse_record(record, module)
+        view = _parse_record(record, module, file_path=filepath)
         if view:
             views.append(view)
     return views

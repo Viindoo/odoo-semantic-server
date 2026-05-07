@@ -4,7 +4,9 @@ from pathlib import Path
 from .models import ModuleInfo, QWebInfo, ViewParseResult
 
 
-def _parse_template(elem: ET.Element, module: ModuleInfo) -> QWebInfo | None:
+def _parse_template(
+    elem: ET.Element, module: ModuleInfo, file_path: str | None = None
+) -> QWebInfo | None:
     """Extract QWebInfo from a <template> element.
 
     Returns None if template has no id attribute.
@@ -19,6 +21,8 @@ def _parse_template(elem: ET.Element, module: ModuleInfo) -> QWebInfo | None:
         module=module.name,
         odoo_version=module.odoo_version,
         inherit_xmlid=inherit_xmlid,
+        content=ET.tostring(elem, encoding="unicode"),
+        file_path=file_path,
     )
 
 
@@ -36,7 +40,7 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[QWebInfo]:
     root = tree.getroot()
     qweb = []
     for tmpl in root.iter("template"):
-        q = _parse_template(tmpl, module)
+        q = _parse_template(tmpl, module, file_path=filepath)
         if q:
             qweb.append(q)
     return qweb
