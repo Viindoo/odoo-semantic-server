@@ -141,3 +141,93 @@ def test_resolve_view_not_found_contract(snapshot_db):
     assert "nonexistent.view.xmlid" in result, (
         "NOT_FOUND response must echo the queried xmlid"
     )
+
+
+class TestFindExamplesOutputSchema:
+    """Lock find_examples output contract — format change breaks this test intentionally.
+
+    Requires both Neo4j + PostgreSQL + pgvector extension.
+    Skips gracefully when pgvector is not installed locally.
+    """
+
+    pytestmark = [pytest.mark.neo4j, pytest.mark.postgres]
+
+    @pytest.fixture(autouse=True)
+    def _seed(self, request, neo4j_driver):
+        from src.db.migrate import _vector_extension_available
+        # Check if pg_conn fixture is available (reachable)
+        pg_conn_fixture = request.getfixturevalue("pg_conn") if "pg_conn" in request.fixturenames else None
+        if pg_conn_fixture is None:
+            pytest.skip("PostgreSQL not reachable")
+        if not _vector_extension_available(pg_conn_fixture):
+            pytest.skip("pgvector extension not installed")
+
+        from pgvector.psycopg2 import register_vector
+        from src.db.migrate import run_migrations
+        from src.indexer.embedder import FakeEmbedder
+        from src.indexer.writer_pgvector import EmbeddingChunk, write_module_embeddings
+
+        run_migrations(pg_conn_fixture)
+        register_vector(pg_conn_fixture)
+
+        with pg_conn_fixture.cursor() as cur:
+            cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (_SNAP_VERSION,))
+
+        with neo4j_driver.session() as s:
+            s.run("MERGE (:Module {name:'snap_mod', odoo_version:$v})", v=_SNAP_VERSION)
+
+        embedder = FakeEmbedder(dim=1024)
+        chunks = [EmbeddingChunk(
+            "method", "snap_mod", _SNAP_VERSION, "snap_mod.sale.order.action_confirm",
+            "sale.order", "snap_mod/models/sale.py", 0,
+            f"[snap_mod] sale.order.action_confirm ({_SNAP_VERSION})\ndef action_confirm(self): ...",
+        )]
+        write_module_embeddings(pg_conn_fixture, "snap_mod", _SNAP_VERSION, chunks, embedder)
+
+        self._pg = pg_conn_fixture
+        self._neo4j = neo4j_driver
+
+        yield
+
+        with pg_conn_fixture.cursor() as cur:
+            cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (_SNAP_VERSION,))
+
+    def test_find_examples_output_header_contract(self):
+        """
+        Contract: first non-empty line = 'find_examples: "<query>" (<version>)'
+        Second line = 'Found N results'
+
+        If output format changes: update this test + architecture doc §MCP Tools.
+        """
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _find_examples
+
+        result = _find_examples(
+            "confirm order", odoo_version=_SNAP_VERSION,
+            _driver=self._neo4j, _pg_conn=self._pg, _embedder=FakeEmbedder(dim=1024),
+        )
+        lines = result.splitlines()
+        assert lines[0] == f'find_examples: "confirm order" ({_SNAP_VERSION})'
+        assert lines[1].startswith("Found ")
+
+    def test_find_examples_result_block_contract(self):
+        """
+        Each result block must contain:
+        - '#N · score X.XX · <type> · [<module>] <entity>'
+        - 'File: <path>'
+        - '┌' box border
+        - '│' content lines
+        - '└' box border
+        """
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _find_examples
+
+        result = _find_examples(
+            "confirm order", odoo_version=_SNAP_VERSION,
+            _driver=self._neo4j, _pg_conn=self._pg, _embedder=FakeEmbedder(dim=1024),
+        )
+        assert "· score" in result
+        assert "File:" in result
+        assert "┌" in result
+        assert "│" in result
+        assert "└" in result
