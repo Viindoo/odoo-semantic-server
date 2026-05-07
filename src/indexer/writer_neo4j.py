@@ -3,7 +3,7 @@ import logging
 
 from neo4j import GraphDatabase
 
-from .models import ParseResult, ViewParseResult
+from .models import JSGraphResult, ParseResult, ViewParseResult
 
 _logger = logging.getLogger(__name__)
 
@@ -202,6 +202,70 @@ def _write_view_parse_result(tx, result: ViewParseResult) -> None:
                      inherit_xmlid=qweb.inherit_xmlid)
 
 
+def _write_js_graph_result(tx, result: JSGraphResult) -> None:
+    # Write OWLComp nodes first so PATCHES can resolve against them
+    for comp in result.components:
+        tx.run("""
+            MERGE (mod:Module {name: $module_name, odoo_version: $v})
+            MERGE (c:OWLComp {name: $name, module: $module_name, odoo_version: $v})
+            SET c.template = $template, c.extends = $extends,
+                c.bound_model = $bound_model, c.file_path = $file_path
+            MERGE (c)-[:DEFINED_IN]->(mod)
+        """, module_name=comp.module, v=comp.odoo_version,
+             name=comp.name, template=comp.template, extends=comp.extends,
+             bound_model=comp.bound_model, file_path=comp.file_path)
+
+        # EXTENDS edge — only when parent OWLComp exists in same version (no placeholder)
+        if comp.extends:
+            tx.run("""
+                MATCH (child:OWLComp {name: $name, module: $mod, odoo_version: $v})
+                MATCH (parent:OWLComp {name: $parent, odoo_version: $v})
+                MERGE (child)-[:EXTENDS]->(parent)
+            """, name=comp.name, mod=comp.module, v=comp.odoo_version,
+                 parent=comp.extends)
+
+        # BOUND_TO edge — only when Model exists; skip silently otherwise
+        if comp.bound_model:
+            tx.run("""
+                MATCH (c:OWLComp {name: $name, module: $mod, odoo_version: $v})
+                MATCH (m:Model {name: $bound, odoo_version: $v})
+                MERGE (c)-[:BOUND_TO]->(m)
+            """, name=comp.name, mod=comp.module, v=comp.odoo_version,
+                 bound=comp.bound_model)
+
+    # Write JSPatch nodes + PATCHES edges
+    for patch in result.patches:
+        tx.run("""
+            MERGE (mod:Module {name: $module_name, odoo_version: $v})
+            MERGE (j:JSPatch {target: $target, patch_name: $patch_name,
+                              module: $module_name, odoo_version: $v})
+            SET j.era = $era, j.file_path = $file_path
+            MERGE (j)-[:DEFINED_IN]->(mod)
+        """, module_name=patch.module, v=patch.odoo_version,
+             target=patch.target, patch_name=patch.patch_name,
+             era=patch.era, file_path=patch.file_path)
+
+        # PATCHES edge — try resolve to existing OWLComp, else create placeholder
+        rec = tx.run("""
+            MATCH (j:JSPatch {target: $target, patch_name: $pn,
+                              module: $mod, odoo_version: $v})
+            MATCH (c:OWLComp {name: $target, odoo_version: $v})
+            MERGE (j)-[:PATCHES]->(c)
+            RETURN 1
+        """, target=patch.target, pn=patch.patch_name,
+             mod=patch.module, v=patch.odoo_version).single()
+        if rec is None:
+            tx.run("""
+                MATCH (j:JSPatch {target: $target, patch_name: $pn,
+                                  module: $mod, odoo_version: $v})
+                MERGE (placeholder:OWLComp {name: $target,
+                                            module: '__unresolved__', odoo_version: $v})
+                ON CREATE SET placeholder.unresolved = true
+                MERGE (j)-[:PATCHES {unresolved: true}]->(placeholder)
+            """, target=patch.target, pn=patch.patch_name,
+                 mod=patch.module, v=patch.odoo_version)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -220,6 +284,10 @@ class Neo4jWriter:
                 " ON (n.name, n.model, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:JSPatch)"
+                " ON (n.target, n.patch_name, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:OWLComp)"
+                " ON (n.name, n.module, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -232,3 +300,8 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for result in results:
                 session.execute_write(_write_view_parse_result, result)
+
+    def write_js_graph_results(self, results: list[JSGraphResult]) -> None:
+        with self.driver.session() as session:
+            for result in results:
+                session.execute_write(_write_js_graph_result, result)
