@@ -299,18 +299,18 @@ def _find_examples(
             placeholders = ",".join(["%s"] * len(selected_types))
             cur.execute(
                 f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                           chunk_idx, content, 1 - (vec <=> %s) AS cosine
+                           chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                     FROM embeddings
                     WHERE odoo_version = %s AND chunk_type IN ({placeholders})
-                    ORDER BY vec <=> %s LIMIT 20""",
+                    ORDER BY vec <=> %s::vector LIMIT 20""",
                 [query_vec, odoo_version] + selected_types + [query_vec],
             )
         else:
             cur.execute(
                 """SELECT chunk_type, module, entity_name, model_name, file_path,
-                          chunk_idx, content, 1 - (vec <=> %s) AS cosine
+                          chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                    FROM embeddings WHERE odoo_version = %s
-                   ORDER BY vec <=> %s LIMIT 20""",
+                   ORDER BY vec <=> %s::vector LIMIT 20""",
                 [query_vec, odoo_version, query_vec],
             )
         raw = [
