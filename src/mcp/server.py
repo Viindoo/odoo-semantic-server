@@ -318,27 +318,36 @@ def _find_examples(
     raw = [c for c in raw if c["module"] != "__unresolved__"]
 
     # Neo4j centrality rerank + optional context_module boost.
+    # Two UNWIND batch queries replace the previous N+1 per-chunk loop.
     # Coefficients are v0 placeholders — tune at M6 with held-out eval set.
+    module_names = list({c["module"] for c in raw})
     with driver.session() as session:
-        for chunk in raw:
-            rec = session.run(
-                "MATCH (m:Module {name: $name, odoo_version: $v})"
-                " OPTIONAL MATCH ()-[:DEPENDS_ON]->(m)"
-                " RETURN count(*) AS dependents",
-                name=chunk["module"], v=odoo_version,
-            ).single()
-            dependents = rec["dependents"] if rec else 0
-            chunk["score"] = chunk["cosine"] * (1 + 0.02 * math.log(dependents + 1))
+        dep_rows = session.run(
+            "UNWIND $names AS name"
+            " MATCH (m:Module {name: name, odoo_version: $v})"
+            " WITH m, name"
+            " OPTIONAL MATCH (dep)-[:DEPENDS_ON]->(m)"
+            " RETURN name, count(dep) AS dependents",
+            names=module_names, v=odoo_version,
+        ).data()
+        dependents_map = {r["name"]: r["dependents"] for r in dep_rows}
 
-            if context_module and context_module != chunk["module"]:
-                rec2 = session.run(
-                    "OPTIONAL MATCH path = (ctx:Module {name: $ctx, odoo_version: $v})"
-                    " -[:DEPENDS_ON*1..]->(tgt:Module {name: $tgt, odoo_version: $v})"
-                    " RETURN path IS NOT NULL AS in_chain",
-                    ctx=context_module, tgt=chunk["module"], v=odoo_version,
-                ).single()
-                if rec2 and rec2["in_chain"]:
-                    chunk["score"] += 0.20
+        in_chain_set: set[str] = set()
+        if context_module and module_names:
+            chain_rows = session.run(
+                "MATCH (ctx:Module {name: $ctx, odoo_version: $v})"
+                " -[:DEPENDS_ON*1..]->(tgt:Module)"
+                " WHERE tgt.name IN $names"
+                " RETURN DISTINCT tgt.name AS name",
+                ctx=context_module, v=odoo_version, names=module_names,
+            ).data()
+            in_chain_set = {r["name"] for r in chain_rows}
+
+    for chunk in raw:
+        dependents = dependents_map.get(chunk["module"], 0)
+        chunk["score"] = chunk["cosine"] * (1 + 0.02 * math.log(dependents + 1))
+        if chunk["module"] in in_chain_set:
+            chunk["score"] += 0.20
 
     reranked = sorted(raw, key=lambda c: c["score"], reverse=True)[:limit]
 
@@ -350,8 +359,15 @@ def _find_examples(
     lines = [header]
     for i, chunk in enumerate(reranked, 1):
         entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
+        # For view chunks, show the model so readers know which UI the view belongs to
+        if chunk["model_name"] and chunk["chunk_type"] == "view":
+            entity += f" (model: {chunk['model_name']})"
+        # For sliding-window chunks, show the window index so readers know it's a partial
+        chunk_label = chunk["chunk_type"]
+        if chunk["chunk_idx"] > 0:
+            chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
         lines.append(sep)
-        lines.append(f"#{i} · score {chunk['score']:.2f} · {chunk['chunk_type']} · {entity}")
+        lines.append(f"#{i} · score {chunk['score']:.2f} · {chunk_label} · {entity}")
         lines.append(f"   File: {chunk['file_path']}")
         lines.append("   ┌" + "─" * 42)
         for line in chunk["content"].splitlines():
