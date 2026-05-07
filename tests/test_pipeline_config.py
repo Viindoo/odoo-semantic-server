@@ -82,7 +82,13 @@ def test_neo4j_creds_test_env_beats_prod_env(monkeypatch):
 
 
 def test_neo4j_creds_fallback_defaults(tmp_path, monkeypatch):
-    """_neo4j_creds() returns hardcoded defaults when no env or config."""
+    """_neo4j_creds() raises when no env / no config supplies a password.
+
+    Behavior changed (B2): hardcoded `"password"` fallback removed for security.
+    Production must explicitly set NEO4J_PASSWORD or neo4j_password in config.
+    """
+    import pytest as _pytest  # noqa: I001 — keep grouped near use site
+
     import src.config as config_mod
 
     # Point ODOO_SEMANTIC_CONF at an empty file so config yields nothing
@@ -97,7 +103,28 @@ def test_neo4j_creds_fallback_defaults(tmp_path, monkeypatch):
     import src.indexer.pipeline as pipeline_mod
     importlib.reload(pipeline_mod)
 
+    with _pytest.raises(RuntimeError, match="Neo4j password missing"):
+        pipeline_mod._neo4j_creds()
+
+
+def test_neo4j_creds_uses_env_when_no_config(tmp_path, monkeypatch):
+    """When config file empty but env vars set, _neo4j_creds returns env values."""
+    import src.config as config_mod
+
+    cfg = tmp_path / "empty.conf"
+    cfg.write_text("")
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    for key in ("NEO4J_TEST_URI", "NEO4J_TEST_USER", "NEO4J_TEST_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "envpw")
+    config_mod._conf = None
+
+    import src.indexer.pipeline as pipeline_mod
+    importlib.reload(pipeline_mod)
+
     uri, user, password = pipeline_mod._neo4j_creds()
     assert uri == "bolt://localhost:7687"
     assert user == "neo4j"
-    assert password == "password"
+    assert password == "envpw"

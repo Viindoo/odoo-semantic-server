@@ -135,18 +135,23 @@ def run_migrations(conn) -> None:
 
 
 def main() -> int:
-    dsn = config.get(
-        "database", "pg_dsn",
-        fallback="postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-    )
+    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
+    if not dsn:
+        print(
+            "✗ PostgreSQL DSN missing. Set PG_DSN env var OR `pg_dsn` in "
+            "[database] section of odoo-semantic.conf.",
+            file=sys.stderr,
+        )
+        return 1
+    safe_dsn = config.mask_dsn(dsn)
     try:
         conn = psycopg2.connect(dsn)
     except psycopg2.OperationalError as e:
-        print(f"✗ Cannot connect to PostgreSQL ({dsn}): {e}", file=sys.stderr)
+        print(f"✗ Cannot connect to PostgreSQL ({safe_dsn}): {e}", file=sys.stderr)
         return 1
     try:
         run_migrations(conn)
-        print(f"✓ Migrations applied to {dsn}")
+        print(f"✓ Migrations applied to {safe_dsn}")
     finally:
         conn.close()
     return 0
