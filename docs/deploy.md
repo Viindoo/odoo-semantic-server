@@ -457,3 +457,82 @@ Khi cần tách DB ra VM riêng (≥80 users, hoặc HA):
    ```
 6. `sudo systemctl restart odoo-semantic-mcp`
 7. Smoke test (§5).
+
+---
+
+## 9. Embedder Setup (M3 Semantic Wow)
+
+`find_examples` tool dùng **Qwen3-Embedding-4B Q5_K_M** qua Ollama. Cần setup một lần trước khi chạy indexer với embeddings.
+
+### 9.1 Cài Ollama
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl enable --now ollama
+```
+
+### 9.2 Tải model GGUF + tạo Modelfile
+
+Default `ollama pull qwen3-embedding:4b` ship Q4_K_M. Dùng Q5_K_M để có chất lượng cao hơn:
+
+```bash
+# Download Q5_K_M từ HuggingFace (cần ~3.2 GB)
+mkdir -p ~/.ollama/models/gguf
+wget -O ~/.ollama/models/gguf/qwen3-embedding-4b-q5km.gguf \
+  "https://huggingface.co/Qwen/Qwen3-Embedding-GGUF/resolve/main/Qwen3-Embedding-4B-Q5_K_M.gguf"
+
+# Tạo Modelfile
+cat > /tmp/Modelfile-qwen3-embed << 'EOF'
+FROM /root/.ollama/models/gguf/qwen3-embedding-4b-q5km.gguf
+EOF
+
+# Register với Ollama
+ollama create qwen3-embedding-q5km -f /tmp/Modelfile-qwen3-embed
+
+# Kiểm tra
+ollama run qwen3-embedding-q5km "test" || echo "embed OK"
+```
+
+### 9.3 Cấu hình server
+
+Thêm vào `odoo-semantic.conf`:
+
+```ini
+[embedder]
+url = http://localhost:11434
+model = qwen3-embedding-q5km
+dim = 1024
+```
+
+Hoặc dùng env vars: `EMBEDDER_URL`, `EMBEDDER_MODEL`, `EMBEDDER_DIM`.
+
+### 9.4 Bootstrap pgvector extension
+
+Chạy một lần với superuser PostgreSQL:
+
+```bash
+# Khi dùng docker-compose (init script tự động)
+docker compose down && docker compose up -d postgres
+
+# Hoặc thủ công:
+PGPASSWORD=<superuser-pass> psql -h localhost -U postgres -d odoo_semantic \
+  -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+Sau đó run migrations:
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+```
+
+### 9.5 Run indexer với embeddings
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
+```
+
+Indexer sẽ gọi Ollama để tạo embeddings cho mỗi module. ~400 modules × ~500 chunks × 1024 dim ≈ 20 GB disk. Thời gian: ~30-60 phút lần đầu (incremental sau đó <5 phút).
+
+### 9.6 License note
+
+Qwen3-Embedding Apache 2.0. MS MARCO training data có issue đang pending (QwenLM/Qwen3-Embedding#166). **Internal tooling: OK. External SaaS**: cần legal review trước khi ship.

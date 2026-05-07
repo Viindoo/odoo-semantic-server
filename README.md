@@ -167,7 +167,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 1 — "First Wow":** `[x]` Auto tests 56/56 PASSED — còn manual E2E với Claude Code thật  
 **Milestone 2 — "View Wow":** `[x]` Code complete — 100 tests PASS, còn manual E2E `resolve_view`  
 **Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
-**Milestone 3 — "Semantic Wow":** `[ ]` Chưa bắt đầu  
+**Milestone 3 — "Semantic Wow":** `[~]` Code complete — 113 tests PASS — còn E2E manual + recall benchmark với Ollama thật  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  

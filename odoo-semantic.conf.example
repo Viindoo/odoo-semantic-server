@@ -22,3 +22,10 @@ port = 8002
 [indexer]
 # Fallback khi `repos.local_path` chưa được set trong PostgreSQL.
 repos_base_dir = /home/user/git
+
+[embedder]
+# Ollama endpoint cho Qwen3-Embedding-4B Q5_K_M
+# Xem docs/deploy.md §Embedder Setup để biết cách tải model GGUF + tạo Modelfile.
+url = http://localhost:11434
+model = qwen3-embedding-q5km
+dim = 1024

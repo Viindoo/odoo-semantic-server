@@ -61,9 +61,21 @@
 **Intent:** Tìm kiếm code theo ngữ nghĩa.  
 **Outcome:** `find_examples("compute tax based on partner country")` trả về code thật, dùng được ngay.
 
-- [ ] `src/indexer/embedder.py`: nomic-embed-text via Ollama (offline-first)
-- [ ] `src/indexer/writer_pgvector.py`: chunk + store embeddings
-- [ ] `src/mcp/server.py`: `find_examples` (hybrid: pgvector ANN + Neo4j rerank)
+- [x] `pyproject.toml`: thêm pgvector, tree-sitter, tree-sitter-javascript, ollama marker
+- [x] `src/indexer/models.py`: thêm `source_code`/`source_definition`/`arch`/`content`/`file_path` + `JSChunk`
+- [x] `src/indexer/parser_python.py`: capture source text cho method + field
+- [x] `src/indexer/parser_xml.py`: capture arch + file_path cho ViewInfo
+- [x] `src/indexer/parser_qweb.py`: capture content + file_path cho QWebInfo
+- [x] `src/db/migrate.py`: embeddings table + pgvector extension + HNSW index
+- [x] `src/embedding/instructions.py`: `INSTRUCT_NL_TO_CODE` constant (Qwen3 asymmetric)
+- [x] `src/indexer/embedder.py`: EmbedderClient Protocol + FakeEmbedder + Qwen3Embedder (MRL 1024-dim)
+- [x] `src/indexer/parser_js.py`: era-aware JS parser (Era1 Widget.extend, Era2 odoo.define, Era3 OWL/patch)
+- [x] `src/indexer/writer_pgvector.py`: EmbeddingChunk + make_chunks + write_module_embeddings (delete-before-insert)
+- [x] `src/mcp/server.py`: `find_examples` MCP tool (hybrid pgvector ANN + Neo4j centrality rerank)
+- [x] `tests/`: 100% unit test coverage cho tất cả M3 components
+- [x] `docs/deploy.md`: thêm §9 Embedder Setup (Ollama + pgvector bootstrap + license note)
+- [ ] **E2E manual**: Ollama chạy với qwen3-embedding-q5km → index Viindoo 17.0 → Claude Code call `find_examples`
+- [ ] **Recall benchmark**: `pytest tests/test_find_examples_recall.py -m ollama` → VN≥0.75, EN≥0.80
 
 ## Milestone 4 — "Impact Wow"
 **Intent:** Full-stack impact analysis từ Python model đến JS component.  
