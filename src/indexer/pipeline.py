@@ -83,10 +83,13 @@ def open_production_pg():
 def _index_repo(
     repo: dict,
     writer: Neo4jWriter,
+    pg_conn=None,
+    embedder=None,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
-    Returns per-repo counters: {modules, views, qweb}.
+    Returns per-repo counters: {modules, views, qweb, embeddings}.
+    Pass pg_conn + embedder to also write semantic embeddings to pgvector.
     """
     local_path: str = repo["local_path"]
     odoo_version: str = repo["odoo_version"]
@@ -105,6 +108,16 @@ def _index_repo(
     total_modules = 0
     total_views = 0
     total_qweb = 0
+    total_embeddings = 0
+
+    # Pre-flight: check whether embedding is possible (once, not per module).
+    embed_enabled = pg_conn is not None and embedder is not None
+    if embed_enabled:
+        from src.db.migrate import _vector_extension_available
+        embed_enabled = _vector_extension_available(pg_conn)
+    if embed_enabled:
+        from src.indexer import parser_js
+        from src.indexer.writer_pgvector import make_chunks, write_module_embeddings
 
     for version, modules in modules_by_version.items():
         sorted_names = topological_sort(modules)
@@ -133,26 +146,41 @@ def _index_repo(
             )
             view_results.append(merged)
 
+            # Semantic embeddings — optional, skipped when pg_conn/embedder absent
+            # or pgvector extension is not installed.
+            if embed_enabled:
+                js_chunks = parser_js.parse_module(info)
+                chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
+                write_module_embeddings(pg_conn, mod_name, version, chunks, embedder)
+                total_embeddings += len(chunks)
+
     writer.write_results(py_results)
     writer.write_view_results(view_results)
 
-    return {"modules": total_modules, "views": total_views, "qweb": total_qweb}
+    return {
+        "modules": total_modules,
+        "views": total_views,
+        "qweb": total_qweb,
+        "embeddings": total_embeddings,
+    }
 
 
-def index_profile(pg_conn, *, profile_name: str) -> dict:
+def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
     """Index all repos belonging to *profile_name*.
 
     Args:
         pg_conn:      psycopg2 connection (autocommit OK).
         profile_name: Name of the profile to index.
+        embedder:     Optional EmbedderClient. When provided (and pgvector is
+                      available), semantic embeddings are written to PostgreSQL.
 
     Returns:
-        Summary dict: {modules, views, qweb}.
+        Summary dict: {modules, views, qweb, embeddings}.
     """
     repos = get_repos_for_profile(pg_conn, profile_name)
     if not repos:
         _logger.warning("index_profile: no repos found for profile %r", profile_name)
-        return {"modules": 0, "views": 0, "qweb": 0}
+        return {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
 
     uri, user, password = _neo4j_creds()
     writer = Neo4jWriter(uri, user, password)
@@ -163,18 +191,22 @@ def index_profile(pg_conn, *, profile_name: str) -> dict:
         total_modules = 0
         total_views = 0
         total_qweb = 0
+        total_embeddings = 0
 
         for repo in repos:
             repo_id: int = repo["id"]
             try:
-                counters = _index_repo(repo, writer)
+                counters = _index_repo(repo, writer, pg_conn=pg_conn, embedder=embedder)
                 total_modules += counters["modules"]
                 total_views += counters["views"]
                 total_qweb += counters["qweb"]
+                total_embeddings += counters.get("embeddings", 0)
                 update_repo_status(pg_conn, repo_id, "indexed")
                 _logger.info(
-                    "Indexed repo id=%d: %d modules, %d views, %d qweb",
-                    repo_id, counters["modules"], counters["views"], counters["qweb"],
+                    "Indexed repo id=%d: %d modules, %d views, %d qweb, %d embeddings",
+                    repo_id,
+                    counters["modules"], counters["views"],
+                    counters["qweb"], counters.get("embeddings", 0),
                 )
             except Exception as e:
                 _logger.exception("Failed to index repo id=%d", repo_id)
@@ -183,31 +215,38 @@ def index_profile(pg_conn, *, profile_name: str) -> dict:
     finally:
         writer.close()
 
-    return {"modules": total_modules, "views": total_views, "qweb": total_qweb}
+    return {
+        "modules": total_modules,
+        "views": total_views,
+        "qweb": total_qweb,
+        "embeddings": total_embeddings,
+    }
 
 
-def index_all(pg_conn) -> dict:
+def index_all(pg_conn, embedder=None) -> dict:
     """Index every profile registered in PostgreSQL.
 
     Continues after per-profile failures — failed profiles are listed in
     the returned summary under 'profiles_failed'.
 
-    Returns aggregate summary: {profiles_ok, profiles_failed, modules, views, qweb}.
+    Returns aggregate summary: {profiles_ok, profiles_failed, modules, views, qweb, embeddings}.
     """
     profiles = list_profiles(pg_conn)
     agg_modules = 0
     agg_views = 0
     agg_qweb = 0
+    agg_embeddings = 0
     profiles_ok = 0
     profiles_failed: list[str] = []
 
     for profile in profiles:
         name = profile["name"]
         try:
-            summary = index_profile(pg_conn, profile_name=name)
+            summary = index_profile(pg_conn, profile_name=name, embedder=embedder)
             agg_modules += summary["modules"]
             agg_views += summary["views"]
             agg_qweb += summary["qweb"]
+            agg_embeddings += summary.get("embeddings", 0)
             profiles_ok += 1
         except Exception:
             _logger.exception("index_all: profile %r failed — skipping", name)
@@ -219,4 +258,5 @@ def index_all(pg_conn) -> dict:
         "modules": agg_modules,
         "views": agg_views,
         "qweb": agg_qweb,
+        "embeddings": agg_embeddings,
     }

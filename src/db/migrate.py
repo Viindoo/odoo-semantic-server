@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     content      TEXT NOT NULL,
     vec          vector(1024) NOT NULL,
     indexed_at   TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT ux_embeddings_chunk UNIQUE (chunk_type, module, odoo_version, entity_name, chunk_idx)
+    CONSTRAINT ux_embeddings_chunk UNIQUE (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx)
 );
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_vec
@@ -60,6 +60,25 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_vec
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_filter
     ON embeddings (odoo_version, chunk_type, module);
+"""
+
+# Upgrade existing installations: add file_path to the unique constraint if missing.
+# Safe to re-run; the DO block is a no-op when the constraint already has file_path.
+_EMBEDDINGS_UPGRADE_SQL = """
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'ux_embeddings_chunk' AND table_name = 'embeddings'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.constraint_column_usage
+    WHERE constraint_name = 'ux_embeddings_chunk' AND column_name = 'file_path'
+  ) THEN
+    ALTER TABLE embeddings DROP CONSTRAINT ux_embeddings_chunk;
+    ALTER TABLE embeddings ADD CONSTRAINT ux_embeddings_chunk
+      UNIQUE (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx);
+  END IF;
+END $$;
 """
 
 # Public alias — tests and callers that import SCHEMA_SQL get the full DDL string
@@ -103,6 +122,7 @@ def run_migrations(conn) -> None:
     if _ensure_extension(conn):
         with conn.cursor() as cur:
             cur.execute(_EMBEDDINGS_SQL)
+            cur.execute(_EMBEDDINGS_UPGRADE_SQL)
         if not conn.autocommit:
             conn.commit()
     else:

@@ -158,3 +158,77 @@ def test_index_repo_raises_for_missing_path(
             _index_repo(repos[0], writer)
     finally:
         writer.close()
+
+
+@pytest.mark.neo4j
+def test_pipeline_writes_embeddings_when_embedder_provided(
+    clean_neo4j, pg_conn, neo4j_driver, tmp_path
+):
+    """index_profile must populate embeddings table when embedder is passed.
+
+    Uses FakeEmbedder (deterministic, no GPU) so this test runs in CI.
+    Skips automatically when pgvector extension is not installed.
+    """
+    from pgvector.psycopg2 import register_vector
+
+    from src.db.migrate import _vector_extension_available, run_migrations
+    from src.db.repo_registry import add_profile, add_repo
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.pipeline import index_profile
+    from tests.conftest import PG_EMBED_VERSION
+
+    run_migrations(pg_conn)
+    if not _vector_extension_available(pg_conn):
+        pytest.skip("pgvector extension not installed — run as superuser: CREATE EXTENSION vector;")
+    register_vector(pg_conn)
+
+    # Isolate test data — clean up before and after
+    with pg_conn.cursor() as cur:
+        cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
+        cur.execute("DELETE FROM repos WHERE branch = %s", (PG_EMBED_VERSION,))
+        cur.execute(
+            "DELETE FROM profiles WHERE name = %s", ("embed_test_prof",)
+        )
+
+    try:
+        repo_path = make_git_repo(tmp_path / "repo_embed", branch=PG_EMBED_VERSION)
+        # Reuse _seed_module but with PG_EMBED_VERSION so Neo4j + embeddings use same version
+        module_dir = repo_path / "embed_mod"
+        make_manifest(module_dir, name="embed_mod",
+                      version=f"{PG_EMBED_VERSION}.1.0.0", depends=[])
+        (module_dir / "models").mkdir()
+        (module_dir / "models" / "__init__.py").write_text("")
+        (module_dir / "models" / "em.py").write_text(
+            "from odoo import models, fields\n\n"
+            "class EmbedModel(models.Model):\n"
+            "    _name = 'embed.model'\n\n"
+            "    name = fields.Char()\n\n"
+            "    def action_confirm(self):\n"
+            "        self.write({'state': 'confirmed'})\n"
+        )
+
+        pid = add_profile(pg_conn, "embed_test_prof", PG_EMBED_VERSION)
+        add_repo(pg_conn, pid, "local/embed", PG_EMBED_VERSION, str(repo_path))
+
+        summary = index_profile(
+            pg_conn,
+            profile_name="embed_test_prof",
+            embedder=FakeEmbedder(dim=1024),
+        )
+
+        assert summary["embeddings"] > 0, (
+            "index_profile must return embeddings > 0 when embedder is provided"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE odoo_version = %s AND module = 'embed_mod'",
+                (PG_EMBED_VERSION,),
+            )
+            count = cur.fetchone()[0]
+        assert count > 0, f"expected rows in embeddings table for embed_mod, got {count}"
+
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
+            cur.execute("DELETE FROM repos WHERE branch = %s", (PG_EMBED_VERSION,))
+            cur.execute("DELETE FROM profiles WHERE name = %s", ("embed_test_prof",))
