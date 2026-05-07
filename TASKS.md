@@ -81,10 +81,10 @@
 **Intent:** Full-stack impact analysis từ Python model đến JS component.  
 **Outcome:** `impact_analysis("field", "sale.order.amount_total", "17.0")` liệt kê chính xác tất cả thứ bị ảnh hưởng.
 
-- [ ] `src/indexer/writer_neo4j.py`: TARGETS_MODEL edge (View → Model) — hoãn từ M2, prerequisite để query view ảnh hưởng khi đổi model/field
-- [ ] `src/indexer/parser_js.py`: era-aware (era1: extend, era2: define+include, era3: patch)
-- [ ] `src/indexer/writer_neo4j.py`: JSPatch + OWLComponent nodes + PATCHES edges
-- [ ] `src/mcp/server.py`: `impact_analysis` + risk_level scoring
+- [x] `src/indexer/writer_neo4j.py`: TARGETS_MODEL edge (View → Model) — hoãn từ M2, prerequisite để query view ảnh hưởng khi đổi model/field
+- [x] `src/indexer/parser_js.py`: parse_module_graph() — extract JSPatchInfo + OWLCompInfo cho Neo4j
+- [x] `src/indexer/writer_neo4j.py`: JSPatch + OWLComponent nodes + PATCHES edges
+- [x] `src/mcp/server.py`: `impact_analysis` + risk_level scoring
 
 ## Milestone 5 — "Product Wow"
 **Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.

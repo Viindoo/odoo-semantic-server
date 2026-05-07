@@ -256,7 +256,7 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 // Lớp View / QWeb
 (:View    )-[:DEFINED_IN   ]->(:Module)
 (:View    )-[:INHERITS_VIEW]->(:View)
-(:View    )-[:TARGETS_MODEL]->(:Model)          // assigned M4 — prerequisite cho impact_analysis
+(:View    )-[:TARGETS_MODEL]->(:Model)
 (:QWebTmpl)-[:DEFINED_IN   ]->(:Module)
 (:QWebTmpl)-[:EXTENDS_TMPL ]->(:QWebTmpl)
 
