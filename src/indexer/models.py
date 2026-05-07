@@ -107,3 +107,34 @@ class ViewParseResult:
     module: ModuleInfo
     views: list[ViewInfo] = field(default_factory=list)
     qweb: list[QWebInfo] = field(default_factory=list)
+
+
+@dataclass
+class JSPatchInfo:
+    """A JS patch on an OWL component or legacy widget."""
+    target: str             # patched component/widget name
+    patch_name: str         # patch identifier (or file stem)
+    module: str
+    odoo_version: str
+    era: str                # 'extend' (era1) | 'include' (era2) | 'patch' (era3)
+    file_path: str
+
+
+@dataclass
+class OWLCompInfo:
+    """An OWL component class declaration."""
+    name: str
+    module: str
+    odoo_version: str
+    template: str | None = None    # `static template = "..."` if found
+    extends: str | None = None     # superclass name if extends Component
+    bound_model: str | None = None  # heuristic from props/services usage
+    file_path: str = ""
+
+
+@dataclass
+class JSGraphResult:
+    """JS graph extraction result for a module."""
+    module: ModuleInfo
+    patches: list[JSPatchInfo] = field(default_factory=list)
+    components: list[OWLCompInfo] = field(default_factory=list)
