@@ -7,10 +7,13 @@ Usage:
 import sys
 
 import psycopg2
+import psycopg2.errors
 
 from src import config
 
-SCHEMA_SQL = """
+_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector;"
+
+_BASE_SQL = """
 CREATE TABLE IF NOT EXISTS profiles (
     id           SERIAL PRIMARY KEY,
     name         TEXT UNIQUE NOT NULL,
@@ -35,13 +38,79 @@ CREATE TABLE IF NOT EXISTS repos (
 CREATE INDEX IF NOT EXISTS idx_repos_profile_id ON repos(profile_id);
 """
 
+_EMBEDDINGS_SQL = """
+CREATE TABLE IF NOT EXISTS embeddings (
+    id           BIGSERIAL PRIMARY KEY,
+    chunk_type   TEXT NOT NULL,
+    module       TEXT NOT NULL,
+    odoo_version TEXT NOT NULL,
+    entity_name  TEXT NOT NULL,
+    model_name   TEXT,
+    file_path    TEXT NOT NULL,
+    chunk_idx    INTEGER NOT NULL DEFAULT 0,
+    content      TEXT NOT NULL,
+    vec          vector(1024) NOT NULL,
+    indexed_at   TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT ux_embeddings_chunk UNIQUE (chunk_type, module, odoo_version, entity_name, chunk_idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_vec
+    ON embeddings USING hnsw (vec vector_cosine_ops)
+    WITH (m = 16, ef_construction = 200);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_filter
+    ON embeddings (odoo_version, chunk_type, module);
+"""
+
+# Public alias — tests and callers that import SCHEMA_SQL get the full DDL string
+SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL
+
+
+def _vector_extension_available(conn) -> bool:
+    """True if pgvector extension is installed (regardless of who created it)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+        return cur.fetchone() is not None
+
+
+def _ensure_extension(conn) -> bool:
+    """Attempt to create pgvector extension. Returns True if available after attempt."""
+    if _vector_extension_available(conn):
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_EXTENSION_SQL)
+        if not conn.autocommit:
+            conn.commit()
+        return True
+    except psycopg2.errors.InsufficientPrivilege:
+        if not conn.autocommit:
+            conn.rollback()
+        return False
+
 
 def run_migrations(conn) -> None:
-    """Execute schema DDL on an open psycopg2 connection."""
+    """Execute schema DDL on an open psycopg2 connection.
+
+    Profiles and repos tables are always created.
+    Embeddings table requires pgvector extension — skipped with a warning if not available.
+    """
     with conn.cursor() as cur:
-        cur.execute(SCHEMA_SQL)
+        cur.execute(_BASE_SQL)
     if not conn.autocommit:
         conn.commit()
+
+    if _ensure_extension(conn):
+        with conn.cursor() as cur:
+            cur.execute(_EMBEDDINGS_SQL)
+        if not conn.autocommit:
+            conn.commit()
+    else:
+        print(
+            "⚠ pgvector extension not available — embeddings table skipped.\n"
+            "  Run as superuser: CREATE EXTENSION vector; then re-run migrations.",
+            file=sys.stderr,
+        )
 
 
 def main() -> int:
