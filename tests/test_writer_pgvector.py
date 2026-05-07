@@ -186,7 +186,7 @@ def test_ann_query_returns_nearest_result(clean_pg_embeddings):
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
             "SELECT entity_name FROM embeddings "
-            "WHERE odoo_version = %s ORDER BY vec <=> %s LIMIT 1",
+            "WHERE odoo_version = %s ORDER BY vec <=> %s::vector LIMIT 1",
             (TEST_VERSION, query_vec),
         )
         row = cur.fetchone()
