@@ -208,7 +208,8 @@ def clean_pg_embeddings(pg_conn):
     Admin setup (once): run  CREATE EXTENSION vector;  as PostgreSQL superuser.
     """
     from pgvector.psycopg2 import register_vector
-    from src.db.migrate import run_migrations, _vector_extension_available
+
+    from src.db.migrate import _vector_extension_available, run_migrations
     run_migrations(pg_conn)
     if not _vector_extension_available(pg_conn):
         pytest.skip("pgvector extension not installed — run as superuser: CREATE EXTENSION vector;")

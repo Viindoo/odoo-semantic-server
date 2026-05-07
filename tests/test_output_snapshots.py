@@ -180,12 +180,24 @@ class TestFindExamplesOutputSchema:
             s.run("MERGE (:Module {name:'snap_mod', odoo_version:$v})", v=_SNAP_VERSION)
 
         embedder = FakeEmbedder(dim=1024)
-        chunks = [EmbeddingChunk(
-            "method", "snap_mod", _SNAP_VERSION, "snap_mod.sale.order.action_confirm",
-            "sale.order", "snap_mod/models/sale.py", 0,
-            f"[snap_mod] sale.order.action_confirm ({_SNAP_VERSION})\n"
-            "def action_confirm(self): ...",
-        )]
+        chunks = [
+            EmbeddingChunk(
+                "method", "snap_mod", _SNAP_VERSION, "snap_mod.sale.order.action_confirm",
+                "sale.order", "snap_mod/models/sale.py", 0,
+                f"[snap_mod] sale.order.action_confirm ({_SNAP_VERSION})\n"
+                "def action_confirm(self): ...",
+            ),
+            EmbeddingChunk(
+                "view", "snap_mod", _SNAP_VERSION, "snap_mod.sale_order_form",
+                "sale.order", "snap_mod/views/sale.xml", 0,
+                "[snap_mod] snap_mod.sale_order_form (form)\n<form/>",
+            ),
+            EmbeddingChunk(
+                "method", "snap_mod", _SNAP_VERSION, "snap_mod.sale.order.action_confirm",
+                "sale.order", "snap_mod/models/sale.py", 1,
+                "[snap_mod] ...continued...",
+            ),
+        ]
         write_module_embeddings(pg_conn_fixture, "snap_mod", _SNAP_VERSION, chunks, embedder)
 
         self._pg = pg_conn_fixture
@@ -235,3 +247,31 @@ class TestFindExamplesOutputSchema:
         assert "┌" in result
         assert "│" in result
         assert "└" in result
+
+    def test_find_examples_view_shows_model_name(self):
+        """View chunks must show model_name in the entity label."""
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _find_examples
+
+        result = _find_examples(
+            "sale form view", odoo_version=_SNAP_VERSION,
+            _driver=self._neo4j, _pg_conn=self._pg, _embedder=FakeEmbedder(dim=1024),
+            chunk_types=["view"],
+        )
+        assert "(model: sale.order)" in result, (
+            "View chunks must include model_name — see server.py _find_examples output format"
+        )
+
+    def test_find_examples_sliding_chunk_shows_chunk_index(self):
+        """Sliding-window chunks (chunk_idx > 0) must show 'chunk N' in the type label."""
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _find_examples
+
+        result = _find_examples(
+            "confirm action", odoo_version=_SNAP_VERSION, limit=10,
+            _driver=self._neo4j, _pg_conn=self._pg, _embedder=FakeEmbedder(dim=1024),
+            chunk_types=["method"],
+        )
+        assert "chunk 2" in result, (
+            "Sliding-window chunks (chunk_idx=1) must be labeled 'method chunk 2'"
+        )

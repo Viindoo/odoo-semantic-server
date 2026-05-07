@@ -1,6 +1,6 @@
 """Tests for FakeEmbedder and Qwen3Embedder."""
 import math
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
