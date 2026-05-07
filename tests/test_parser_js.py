@@ -1,7 +1,7 @@
 """Tests for JS parser — era detection and chunking."""
 
 from src.indexer.models import ModuleInfo
-from src.indexer.parser_js import _detect_era, parse_file
+from src.indexer.parser_js import _detect_era, parse_file, parse_module_graph
 
 
 def _module(tmp_path, name="sale", version="17.0"):
@@ -176,3 +176,90 @@ def test_parse_module_skips_oversized_file(tmp_path):
     m = _module(tmp_path)
     chunks = parse_module(m)
     assert all("huge.js" not in c.file_path for c in chunks), "oversized file must be skipped"
+
+
+# --- parse_module_graph ---
+
+def _make_static_js(tmp_path, filename: str, content: str, subdir: str = "") -> None:
+    """Write JS file into static/src/<subdir>/ of a fake module."""
+    base = tmp_path / "static" / "src"
+    if subdir:
+        base = base / subdir
+    base.mkdir(parents=True, exist_ok=True)
+    (base / filename).write_text(content, encoding="utf-8")
+
+
+def test_parse_module_graph_era1_widget_extend(tmp_path):
+    """era1: var Foo = Widget.extend({}) → JSPatchInfo era=extend."""
+    _make_static_js(tmp_path, "widget.js", "var Foo = Widget.extend({ start: function() {} });")
+    result = parse_module_graph(_module(tmp_path))
+    assert len(result.patches) == 1
+    p = result.patches[0]
+    assert p.era == "extend"
+    assert p.target == "Widget"
+    assert p.patch_name == "Foo"
+
+
+def test_parse_module_graph_era2_define_only_no_include(tmp_path):
+    """era2: odoo.define without .include → empty patches."""
+    _make_static_js(
+        tmp_path, "mod.js",
+        "odoo.define('mymod.Foo', function(require) { return {}; });"
+    )
+    result = parse_module_graph(_module(tmp_path))
+    assert result.patches == []
+
+
+def test_parse_module_graph_era2_include(tmp_path):
+    """era2: Foo.include({}) → JSPatchInfo era=include, target=Foo."""
+    src = (
+        "odoo.define('mymod.ext', function(require) {"
+        " var Foo = require('web.Foo');"
+        " Foo.include({ start: function() {} }); });"
+    )
+    _make_static_js(tmp_path, "inc.js", src)
+    result = parse_module_graph(_module(tmp_path))
+    assert len(result.patches) == 1
+    p = result.patches[0]
+    assert p.era == "include"
+    assert p.target == "Foo"
+
+
+def test_parse_module_graph_era3_patch(tmp_path):
+    """era3: patch(MyComp.prototype, 'p', {}) → JSPatchInfo era=patch."""
+    src = (
+        "/** @odoo-module */\n"
+        'import { patch } from "@web/core/utils/patch";\n'
+        'patch(MyComp.prototype, "my_patch", { setup() {} });'
+    )
+    _make_static_js(tmp_path, "patch.js", src)
+    result = parse_module_graph(_module(tmp_path))
+    assert len(result.patches) == 1
+    p = result.patches[0]
+    assert p.era == "patch"
+    assert p.target == "MyComp"
+    assert p.patch_name == "my_patch"
+
+
+def test_parse_module_graph_era3_class_component(tmp_path):
+    """era3: class FormView extends Component { static template = 'x.y' } → OWLCompInfo."""
+    _make_static_js(
+        tmp_path, "form_view.js",
+        '/** @odoo-module */\nclass FormView extends Component {\n    static template = "x.y";\n}\n'
+    )
+    result = parse_module_graph(_module(tmp_path))
+    assert len(result.components) == 1
+    c = result.components[0]
+    assert c.name == "FormView"
+    assert c.extends == "Component"
+    assert c.template == "x.y"
+
+
+def test_parse_module_graph_skip_lib_dir(tmp_path):
+    """Files inside static/src/lib/ must be skipped."""
+    _make_static_js(tmp_path, "jquery.min.js", "var $ = {};", subdir="lib")
+    # Also valid file outside lib/
+    _make_static_js(tmp_path, "app.js", "var App = Widget.extend({});")
+    result = parse_module_graph(_module(tmp_path))
+    paths = {p.file_path for p in result.patches}
+    assert not any("jquery.min.js" in fp for fp in paths), "lib/ file must be excluded"

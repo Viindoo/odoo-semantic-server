@@ -14,7 +14,7 @@ from pathlib import Path
 import tree_sitter_javascript as _tsjs
 from tree_sitter import Language, Node, Parser
 
-from .models import JSChunk, ModuleInfo
+from .models import JSChunk, JSGraphResult, JSPatchInfo, ModuleInfo, OWLCompInfo
 
 _LANG = Language(_tsjs.language())
 _PARSER = Parser(_LANG)
@@ -278,3 +278,226 @@ def parse_module(module_info: ModuleInfo) -> list[JSChunk]:
             continue
         chunks.extend(parse_file(str(js_file), module_info))
     return chunks
+
+
+# --- Graph extraction (M4: produces JSPatchInfo + OWLCompInfo) ---
+
+def _extract_era1_patches(
+    tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
+) -> None:
+    """era1: var Foo = SomeWidget.extend({}) → JSPatchInfo(era='extend')."""
+    for node in _walk(tree.root_node):
+        if node.type != "call_expression":
+            continue
+        func = _find_first_child_by_type(node, "member_expression")
+        if not func:
+            continue
+        prop = _find_first_child_by_type(func, "property_identifier")
+        if not prop or source[prop.start_byte:prop.end_byte] != b"extend":
+            continue
+        # target = the object being extended (left side of the dot)
+        obj = _find_first_child_by_type(func, "identifier")
+        if not obj:
+            continue
+        target = source[obj.start_byte:obj.end_byte].decode("utf-8", errors="ignore")
+
+        # patch_name = variable the result is assigned to
+        patch_name = Path(filepath).stem
+        parent = node.parent
+        if parent and parent.type == "variable_declarator":
+            id_node = _find_first_child_by_type(parent, "identifier")
+            if id_node:
+                patch_name = source[id_node.start_byte:id_node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                )
+        elif parent and parent.type == "assignment_expression":
+            left = _find_first_child_by_type(parent, "identifier")
+            if left:
+                patch_name = source[left.start_byte:left.end_byte].decode(
+                    "utf-8", errors="ignore"
+                ).split(".")[-1]
+
+        result.patches.append(JSPatchInfo(
+            target=target,
+            patch_name=patch_name,
+            module=module_info.name,
+            odoo_version=module_info.odoo_version,
+            era="extend",
+            file_path=filepath,
+        ))
+
+
+def _extract_era2_patches(
+    tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
+) -> None:
+    """era2: Foo.include({}) → JSPatchInfo(era='include').
+    odoo.define() without .include → no patch produced.
+    """
+    for node in _walk(tree.root_node):
+        if node.type != "call_expression":
+            continue
+        func = _find_first_child_by_type(node, "member_expression")
+        if not func:
+            continue
+        prop = _find_first_child_by_type(func, "property_identifier")
+        if not prop or source[prop.start_byte:prop.end_byte] != b"include":
+            continue
+        # target = the object calling .include
+        obj = _find_first_child_by_type(func, "identifier")
+        if not obj:
+            continue
+        target = source[obj.start_byte:obj.end_byte].decode("utf-8", errors="ignore")
+        result.patches.append(JSPatchInfo(
+            target=target,
+            patch_name=Path(filepath).stem,
+            module=module_info.name,
+            odoo_version=module_info.odoo_version,
+            era="include",
+            file_path=filepath,
+        ))
+
+
+def _extract_era3_patches(
+    tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
+) -> None:
+    """era3: patch(MyComp.prototype, "name", {}) → JSPatchInfo(era='patch')."""
+    for node in _walk(tree.root_node):
+        if node.type != "call_expression":
+            continue
+        func_node = _find_first_child_by_type(node, "identifier")
+        if not func_node or source[func_node.start_byte:func_node.end_byte] != b"patch":
+            continue
+
+        args = _find_first_child_by_type(node, "arguments")
+        if not args:
+            continue
+
+        # Collect non-punctuation argument nodes
+        arg_nodes = [c for c in args.children if c.type not in (",", "(", ")")]
+        if not arg_nodes:
+            continue
+
+        # First arg: MyComp.prototype or MyComp — extract the base identifier
+        first_arg = arg_nodes[0]
+        if first_arg.type == "member_expression":
+            # MyComp.prototype → take the object identifier
+            obj = _find_first_child_by_type(first_arg, "identifier")
+            target = (
+                source[obj.start_byte:obj.end_byte].decode("utf-8", errors="ignore")
+                if obj else Path(filepath).stem
+            )
+        elif first_arg.type == "identifier":
+            target = source[first_arg.start_byte:first_arg.end_byte].decode(
+                "utf-8", errors="ignore"
+            )
+        else:
+            target = Path(filepath).stem
+
+        # Optional second arg: string literal is the patch name
+        patch_name = Path(filepath).stem
+        if len(arg_nodes) >= 2 and arg_nodes[1].type in ("string", "template_string"):
+            raw = source[arg_nodes[1].start_byte:arg_nodes[1].end_byte]
+            patch_name = raw.decode("utf-8", errors="ignore").strip("\"'`")
+
+        result.patches.append(JSPatchInfo(
+            target=target,
+            patch_name=patch_name,
+            module=module_info.name,
+            odoo_version=module_info.odoo_version,
+            era="patch",
+            file_path=filepath,
+        ))
+
+
+def _extract_era3_components(
+    tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
+) -> None:
+    """era3: class Foo extends Bar { static template = "x.y" } → OWLCompInfo."""
+    for node in _walk(tree.root_node):
+        if node.type not in ("class_declaration", "class"):
+            continue
+        name_node = _find_first_child_by_type(node, "identifier")
+        if not name_node:
+            continue
+        class_name = source[name_node.start_byte:name_node.end_byte].decode(
+            "utf-8", errors="ignore"
+        )
+
+        # extends clause
+        extends_name: str | None = None
+        heritage = _find_first_child_by_type(node, "class_heritage")
+        if heritage:
+            # class_heritage: "extends Foo" — find the identifier
+            ext_id = _find_first_child_by_type(heritage, "identifier")
+            if ext_id:
+                extends_name = source[ext_id.start_byte:ext_id.end_byte].decode(
+                    "utf-8", errors="ignore"
+                )
+
+        # static template = "..." inside class body
+        template_val: str | None = None
+        body = _find_first_child_by_type(node, "class_body")
+        if body:
+            for child in body.children:
+                if child.type != "field_definition":
+                    continue
+                # Check it's named "template"
+                field_name_node = _find_first_child_by_type(child, "property_identifier")
+                if not field_name_node:
+                    continue
+                if source[field_name_node.start_byte:field_name_node.end_byte] != b"template":
+                    continue
+                # Get the value — look for string node
+                for val_node in child.children:
+                    if val_node.type in ("string", "template_string"):
+                        raw = source[val_node.start_byte:val_node.end_byte]
+                        template_val = raw.decode("utf-8", errors="ignore").strip("\"'`")
+                        break
+
+        result.components.append(OWLCompInfo(
+            name=class_name,
+            module=module_info.name,
+            odoo_version=module_info.odoo_version,
+            template=template_val,
+            extends=extends_name,
+            bound_model=None,  # best-effort: deferred to M6
+            file_path=filepath,
+        ))
+
+
+def _extract_graph_from_file(
+    filepath: str, module_info: ModuleInfo, result: JSGraphResult
+) -> None:
+    try:
+        source = Path(filepath).read_bytes()
+    except OSError:
+        return
+    src_str = source.decode("utf-8", errors="ignore")
+    era = _detect_era(src_str)
+    tree = _PARSER.parse(source)
+
+    if era == "era1":
+        _extract_era1_patches(tree, source, module_info, filepath, result)
+    elif era == "era2":
+        _extract_era2_patches(tree, source, module_info, filepath, result)
+    else:  # era3
+        _extract_era3_patches(tree, source, module_info, filepath, result)
+        _extract_era3_components(tree, source, module_info, filepath, result)
+
+
+def parse_module_graph(module_info: ModuleInfo) -> JSGraphResult:
+    """Extract JS graph entities (patches + OWL components) from a module's static/src/."""
+    result = JSGraphResult(module=module_info)
+    module_path = Path(module_info.path)
+    static_src = module_path / "static" / "src"
+    if not static_src.exists():
+        return result
+
+    for js_file in sorted(static_src.rglob("*.js")):
+        if any(part in _SKIP_DIRS for part in js_file.relative_to(static_src).parts):
+            continue
+        if js_file.stat().st_size > _MAX_JS_BYTES:
+            continue
+        _extract_graph_from_file(str(js_file), module_info, result)
+
+    return result
