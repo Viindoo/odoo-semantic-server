@@ -232,3 +232,86 @@ def test_pipeline_writes_embeddings_when_embedder_provided(
             cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
             cur.execute("DELETE FROM repos WHERE branch = %s", (PG_EMBED_VERSION,))
             cur.execute("DELETE FROM profiles WHERE name = %s", ("embed_test_prof",))
+
+
+def test_index_repo_returns_js_graph_counters(
+    clean_neo4j, clean_pg, neo4j_driver, tmp_path
+):
+    """_index_repo must return js_patches and owl_comps counters when parsing JS files."""
+    import os
+
+    from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
+    from src.indexer.pipeline import _index_repo
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    run_migrations(clean_pg)
+    repo = make_git_repo(tmp_path / "repo_js", branch=TEST_VERSION)
+
+    # Create module with static/src/test.js containing an OWL component
+    module_dir = repo / "js_test_mod"
+    make_manifest(module_dir, name="js_test_mod",
+                  version=f"{TEST_VERSION}.1.0.0", depends=[])
+    (module_dir / "static" / "src").mkdir(parents=True)
+    (module_dir / "static" / "src" / "test.js").write_text(textwrap.dedent("""
+        import { Component } from "@odoo/owl";
+
+        export class FooComponent extends Component {
+            static template = "module.FooTemplate";
+        }
+    """).strip())
+
+    pid = add_profile(clean_pg, "js_prof", TEST_VERSION)
+    add_repo(clean_pg, pid, "local/js", TEST_VERSION, str(repo))
+    repos = get_repos_for_profile(clean_pg, "js_prof")
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    try:
+        summary = _index_repo(repos[0], writer)
+
+        # Must have js_patches and owl_comps counters
+        assert "js_patches" in summary, f"summary missing 'js_patches' key: {summary}"
+        assert "owl_comps" in summary, f"summary missing 'owl_comps' key: {summary}"
+
+        # js_patches should be 0 (no patch() calls in the code)
+        assert summary["js_patches"] == 0, f"expected 0 patches, got {summary['js_patches']}"
+
+        # owl_comps should be 1 (FooComponent class)
+        assert summary["owl_comps"] >= 1, f"expected >= 1 component, got {summary['owl_comps']}"
+    finally:
+        writer.close()
+
+
+def test_index_profile_aggregates_js_counters(
+    clean_neo4j, clean_pg, neo4j_driver, tmp_path
+):
+    """index_profile must return aggregated js_patches and owl_comps counters."""
+    run_migrations(clean_pg)
+    repo = make_git_repo(tmp_path / "repo_js_agg", branch=TEST_VERSION)
+
+    # Create module with JS files
+    module_dir = repo / "agg_mod"
+    make_manifest(module_dir, name="agg_mod",
+                  version=f"{TEST_VERSION}.1.0.0", depends=[])
+    (module_dir / "static" / "src").mkdir(parents=True)
+    (module_dir / "static" / "src" / "comp.js").write_text(textwrap.dedent("""
+        import { Component } from "@odoo/owl";
+
+        export class MyComp extends Component {
+            static template = "agg_mod.MyTemplate";
+        }
+    """).strip())
+
+    pid = add_profile(clean_pg, "agg_prof", TEST_VERSION)
+    add_repo(clean_pg, pid, "local/agg", TEST_VERSION, str(repo))
+
+    summary = index_profile(clean_pg, profile_name="agg_prof")
+
+    # Must have js_patches and owl_comps in profile summary
+    assert "js_patches" in summary, f"summary missing 'js_patches': {summary}"
+    assert "owl_comps" in summary, f"summary missing 'owl_comps': {summary}"
