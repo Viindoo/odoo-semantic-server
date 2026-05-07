@@ -1,5 +1,12 @@
 # tests/test_models.py
-from src.indexer.models import ModelInfo, ModuleInfo, ParseResult
+from src.indexer.models import (
+    JSGraphResult,
+    JSPatchInfo,
+    ModelInfo,
+    ModuleInfo,
+    OWLCompInfo,
+    ParseResult,
+)
 
 
 def test_module_info_creation():
@@ -109,3 +116,49 @@ def test_view_parse_result_defaults():
     result = ViewParseResult(module=module)
     assert result.views == []
     assert result.qweb == []
+
+
+def test_js_patch_info_creation():
+    """Test JSPatchInfo instantiation with all required fields."""
+    patch = JSPatchInfo(
+        target="MyWidget",
+        patch_name="MyPatch",
+        module="viin_sale",
+        odoo_version="17.0",
+        era="extend",
+        file_path="/path/to/file.js",
+    )
+    assert patch.target == "MyWidget"
+    assert patch.patch_name == "MyPatch"
+    assert patch.module == "viin_sale"
+    assert patch.odoo_version == "17.0"
+    assert patch.era == "extend"
+    assert patch.file_path == "/path/to/file.js"
+
+
+def test_owl_comp_info_defaults():
+    """Test OWLCompInfo with required fields and default optionals."""
+    comp = OWLCompInfo(
+        name="FormView",
+        module="sale",
+        odoo_version="17.0",
+    )
+    assert comp.name == "FormView"
+    assert comp.module == "sale"
+    assert comp.odoo_version == "17.0"
+    assert comp.template is None
+    assert comp.extends is None
+    assert comp.bound_model is None
+    assert comp.file_path == ""
+
+
+def test_js_graph_result_empty_lists():
+    """Test JSGraphResult with empty patches and components defaults."""
+    module = ModuleInfo(
+        name="viin_sale", odoo_version="17.0", repo="odoo_17.0",
+        path="/tmp", depends=[], version_raw="",
+    )
+    result = JSGraphResult(module=module)
+    assert result.module == module
+    assert result.patches == []
+    assert result.components == []
