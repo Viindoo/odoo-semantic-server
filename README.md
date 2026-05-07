@@ -156,6 +156,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema evolution policy, M6 migration plan |
 | [`docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 (TDD, từng bước) |
 
 ---
@@ -164,10 +165,10 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 
 > Xem [`TASKS.md`](TASKS.md) để biết task nào đang làm và task nào tiếp theo.
 
-**Milestone 1 — "First Wow":** `[x]` Auto tests 56/56 PASSED — còn manual E2E với Claude Code thật  
-**Milestone 2 — "View Wow":** `[x]` Code complete — 100 tests PASS, còn manual E2E `resolve_view`  
+**Milestone 1 — "First Wow":** `[x]` Code + auto tests complete — còn manual E2E với Claude Code thật  
+**Milestone 2 — "View Wow":** `[x]` Code + auto tests complete — còn manual E2E `resolve_view`  
 **Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
-**Milestone 3 — "Semantic Wow":** `[x]` Code complete — 130 tests PASS — còn E2E manual + recall benchmark với Ollama thật  
+**Milestone 3 — "Semantic Wow":** `[x]` Code + auto tests complete — còn E2E manual + recall benchmark với Ollama thật  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  
@@ -179,6 +180,6 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 Nếu bạn là AI agent và cần bắt đầu implement:
 
 1. Đọc [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) — hiểu toàn bộ kiến trúc
-2. Đọc [`TASKS.md`](TASKS.md) — xem milestone nào đang cần làm
-3. Đọc plan tương ứng trong `docs/superpowers/plans/` — follow từng bước
+2. Mở [`TASKS.md`](TASKS.md) — tìm milestone đầu tiên có `[ ]` hoặc `[~]`, đó là điểm vào
+3. Nếu milestone đó có plan tương ứng trong [`docs/superpowers/plans/`](docs/superpowers/plans/) — follow từng bước. Nếu chưa có plan, đề xuất plan trước khi code.
 4. Tuân thủ nguyên tắc **Boil the Lake** + **Ship Wow Product** ở mọi quyết định

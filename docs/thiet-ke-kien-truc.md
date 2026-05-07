@@ -87,7 +87,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Nginx                                                        │  │
-│  │  /mcp  → MCP Server  :8002  (FastMCP, 6 tools)               │  │
+│  │  /mcp  → MCP Server  :8002  (FastMCP, 5 tools + M4)          │  │
 │  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)       │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────┬──────────────────────────────────────┘
@@ -551,11 +551,13 @@ odoo-semantic-mcp/
 │   └── thiet-ke-kien-truc.md       -- tài liệu này
 ├── src/
 │   ├── config.py                   -- đọc odoo-semantic.conf (configparser)
-│   ├── db/                         -- PostgreSQL helpers (profiles, repos registry)
+│   ├── db/                         -- PostgreSQL helpers (profiles, repos registry, embeddings)
+│   ├── embedding/                  -- Qwen3 INSTRUCT prefix constants (NL→code retrieval)
 │   ├── manager/                    -- admin CLI: python -m src.manager (argparse)
 │   ├── indexer/
 │   │   ├── __main__.py             -- entrypoint: python -m src.indexer --profile <name> | --all
-│   │   ├── pipeline.py             -- orchestrate scanner→registry→resolver→parsers→writer
+│   │   ├── pipeline.py             -- orchestrate scanner→registry→resolver→parsers→writers
+│   │   ├── models.py               -- dataclasses (ModuleInfo, ModelInfo, ViewInfo, QWebInfo, JSChunk)
 │   │   ├── scanner.py              -- quét repo, phát hiện version
 │   │   ├── registry.py             -- module registry per version
 │   │   ├── resolver.py             -- topological sort dependencies
@@ -566,13 +568,13 @@ odoo-semantic-mcp/
 │   │   ├── embedder.py             -- tạo embeddings
 │   │   ├── writer_neo4j.py         -- ghi graph vào Neo4j
 │   │   ├── writer_pgvector.py      -- ghi vectors vào pgvector
-│   │   └── incremental.py          -- git hash tracking
+│   │   └── incremental.py          -- (planned M6) git hash tracking
 │   ├── mcp/
-│   │   └── server.py               -- MCP server + 6 tools
-│   ├── web_ui/                     -- M5: dashboard + API key mgmt
+│   │   └── server.py               -- MCP server + 5 tools (M4: +impact_analysis)
+│   ├── web_ui/                     -- (planned M5) dashboard + API key mgmt
 │   │   ├── app.py                  -- FastAPI app
 │   │   └── templates/              -- Jinja2 templates
-│   └── auth.py                     -- API key middleware (M5)
+│   └── auth.py                     -- (planned M5) API key middleware
 └── tests/
 ```
 
