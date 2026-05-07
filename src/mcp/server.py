@@ -1,11 +1,15 @@
 # src/mcp/server.py
+import math
 import os
 
+import psycopg2
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
 
 mcp = FastMCP("odoo-semantic")
 _driver = None
+_pg_conn = None
+_embedder_instance = None
 
 
 def _get_driver():
@@ -27,6 +31,41 @@ def _get_driver():
         )
         _driver = GraphDatabase.driver(uri, auth=(user, password))
     return _driver
+
+
+def _get_pg_conn():
+    global _pg_conn
+    if _pg_conn is None or _pg_conn.closed:
+        from pgvector.psycopg2 import register_vector
+        from src import config
+        dsn = (
+            os.getenv("PG_DSN")
+            or config.get("database", "pg_dsn",
+                          fallback="postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        )
+        _pg_conn = psycopg2.connect(dsn)
+        register_vector(_pg_conn)
+    return _pg_conn
+
+
+def _get_embedder():
+    global _embedder_instance
+    if _embedder_instance is None:
+        from src import config
+        from src.indexer.embedder import Qwen3Embedder
+        url = (
+            os.getenv("EMBEDDER_URL")
+            or config.get("embedder", "url", fallback="http://localhost:11434")
+        )
+        model = (
+            os.getenv("EMBEDDER_MODEL")
+            or config.get("embedder", "model", fallback="qwen3-embedding-q5km")
+        )
+        dim = int(
+            os.getenv("EMBEDDER_DIM") or config.get("embedder", "dim", fallback="1024")
+        )
+        _embedder_instance = Qwen3Embedder(url, model, dim=dim)
+    return _embedder_instance
 
 
 def _latest_version(session) -> str:
@@ -225,6 +264,103 @@ def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     return "\n".join(lines)
 
 
+def _find_examples(
+    query: str,
+    odoo_version: str = "auto",
+    limit: int = 5,
+    context_module: str | None = None,
+    chunk_types: list[str] | None = None,
+    *,
+    _driver=None,
+    _pg_conn=None,
+    _embedder=None,
+) -> str:
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+
+    pg = _pg_conn or _get_pg_conn()
+    driver = _driver or _get_driver()
+    embedder = _embedder or _get_embedder()
+
+    with driver.session() as session:
+        if odoo_version in ("auto", "latest"):
+            odoo_version = _latest_version(session)
+
+    query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + query])[0]
+
+    VALID_TYPES = {"method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3"}
+    selected_types = [t for t in (chunk_types or []) if t in VALID_TYPES]
+
+    with pg.cursor() as cur:
+        if selected_types:
+            placeholders = ",".join(["%s"] * len(selected_types))
+            cur.execute(
+                f"""SELECT chunk_type, module, entity_name, model_name, file_path,
+                           chunk_idx, content, 1 - (vec <=> %s) AS cosine
+                    FROM embeddings
+                    WHERE odoo_version = %s AND chunk_type IN ({placeholders})
+                    ORDER BY vec <=> %s LIMIT 20""",
+                [query_vec, odoo_version] + selected_types + [query_vec],
+            )
+        else:
+            cur.execute(
+                """SELECT chunk_type, module, entity_name, model_name, file_path,
+                          chunk_idx, content, 1 - (vec <=> %s) AS cosine
+                   FROM embeddings WHERE odoo_version = %s
+                   ORDER BY vec <=> %s LIMIT 20""",
+                [query_vec, odoo_version, query_vec],
+            )
+        raw = [
+            dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
+                 file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]))
+            for r in cur.fetchall()
+        ]
+
+    raw = [c for c in raw if c["module"] != "__unresolved__"]
+
+    # Neo4j centrality rerank + optional context_module boost.
+    # Coefficients are v0 placeholders — tune at M6 with held-out eval set.
+    with driver.session() as session:
+        for chunk in raw:
+            rec = session.run(
+                "MATCH (m:Module {name: $name, odoo_version: $v})"
+                " OPTIONAL MATCH ()-[:DEPENDS_ON]->(m)"
+                " RETURN count(*) AS dependents",
+                name=chunk["module"], v=odoo_version,
+            ).single()
+            dependents = rec["dependents"] if rec else 0
+            chunk["score"] = chunk["cosine"] * (1 + 0.02 * math.log(dependents + 1))
+
+            if context_module and context_module != chunk["module"]:
+                rec2 = session.run(
+                    "OPTIONAL MATCH path = (ctx:Module {name: $ctx, odoo_version: $v})"
+                    " -[:DEPENDS_ON*1..]->(tgt:Module {name: $tgt, odoo_version: $v})"
+                    " RETURN path IS NOT NULL AS in_chain",
+                    ctx=context_module, tgt=chunk["module"], v=odoo_version,
+                ).single()
+                if rec2 and rec2["in_chain"]:
+                    chunk["score"] += 0.20
+
+    reranked = sorted(raw, key=lambda c: c["score"], reverse=True)[:limit]
+
+    header = f'find_examples: "{query}" ({odoo_version})\nFound {len(reranked)} results\n'
+    if not reranked:
+        return header
+
+    sep = "─" * 41
+    lines = [header]
+    for i, chunk in enumerate(reranked, 1):
+        entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
+        lines.append(sep)
+        lines.append(f"#{i} · score {chunk['score']:.2f} · {chunk['chunk_type']} · {entity}")
+        lines.append(f"   File: {chunk['file_path']}")
+        lines.append("   ┌" + "─" * 42)
+        for line in chunk["content"].splitlines():
+            lines.append(f"   │ {line}")
+        lines.append("   └" + "─" * 42)
+        lines.append("")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     """Return full info for an Odoo model: inheritance chain, field summary, method summary."""
@@ -247,6 +383,18 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
 def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     """Return view inheritance chain and XPath modifications from all extension modules."""
     return _resolve_view(xmlid, odoo_version)
+
+
+@mcp.tool()
+def find_examples(
+    query: str,
+    odoo_version: str = "auto",
+    limit: int = 5,
+    context_module: str | None = None,
+    chunk_types: list[str] | None = None,
+) -> str:
+    """Return semantically similar Odoo code chunks matching the query (any language)."""
+    return _find_examples(query, odoo_version, limit, context_module, chunk_types)
 
 
 def _mcp_host() -> str:
