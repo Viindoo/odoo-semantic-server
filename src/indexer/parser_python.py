@@ -60,7 +60,7 @@ def _get_base_class_names(cls_node: ast.ClassDef) -> set[str]:
     return names
 
 
-def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo) -> ModelInfo | None:
+def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo, source: str = "") -> ModelInfo | None:
     base_names = _get_base_class_names(cls_node)
     is_model_class = bool(base_names & MODEL_BASE_CLASSES)
 
@@ -111,10 +111,15 @@ def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo) -> ModelInfo |
                 else:
                     stored = (compute is None and related is None)
 
+                src_def = (
+                    ast.get_source_segment(source, node)
+                    if source else None
+                )
                 fields_list.append(FieldInfo(
                     name=field_name, ttype=field_type,
                     related=related, compute=compute,
                     stored=stored, required=required,
+                    source_definition=src_def,
                 ))
 
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):
@@ -127,10 +132,15 @@ def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo) -> ModelInfo |
                 elif isinstance(dec, ast.Name):
                     decorators.append(dec.id)
 
+            method_src = (
+                ast.get_source_segment(source, node)
+                if source else None
+            )
             methods_list.append(MethodInfo(
                 name=node.name,
                 has_super_call=_has_super_call(node),
                 decorators=decorators,
+                source_code=method_src,
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)
@@ -167,7 +177,7 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
     models = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
-            model = _parse_class(node, module_info)
+            model = _parse_class(node, module_info, source=source)
             if model:
                 models.append(model)
     return models
