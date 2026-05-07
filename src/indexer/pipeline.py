@@ -17,8 +17,12 @@ from pathlib import Path
 from neo4j import GraphDatabase
 
 from src import config
-from src.db.repo_registry import get_repos_for_profile, list_profiles, update_repo_status
-from src.indexer import parser_python, parser_qweb, parser_xml
+from src.db.repo_registry import (
+    get_repos_for_profile,
+    list_profiles,
+    update_repo_status,
+)
+from src.indexer import parser_js, parser_python, parser_qweb, parser_xml
 from src.indexer.models import ViewParseResult
 from src.indexer.registry import build_registry
 from src.indexer.resolver import topological_sort
@@ -104,11 +108,14 @@ def _index_repo(
 
     py_results = []
     view_results: list[ViewParseResult] = []
+    js_graph_results = []
 
     total_modules = 0
     total_views = 0
     total_qweb = 0
     total_embeddings = 0
+    total_js_patches = 0
+    total_owl_comps = 0
 
     # Pre-flight: check whether embedding is possible (once, not per module).
     embed_enabled = pg_conn is not None and embedder is not None
@@ -116,7 +123,6 @@ def _index_repo(
         from src.db.migrate import _vector_extension_available
         embed_enabled = _vector_extension_available(pg_conn)
     if embed_enabled:
-        from src.indexer import parser_js
         from src.indexer.writer_pgvector import make_chunks, write_module_embeddings
 
     for version, modules in modules_by_version.items():
@@ -146,6 +152,12 @@ def _index_repo(
             )
             view_results.append(merged)
 
+            # JS graph extraction — patches and OWL components
+            js_graph = parser_js.parse_module_graph(info)
+            js_graph_results.append(js_graph)
+            total_js_patches += len(js_graph.patches)
+            total_owl_comps += len(js_graph.components)
+
             # Semantic embeddings — optional, skipped when pg_conn/embedder absent,
             # pgvector extension is not installed, or version could not be resolved.
             if embed_enabled and version != "unknown":
@@ -156,12 +168,15 @@ def _index_repo(
 
     writer.write_results(py_results)
     writer.write_view_results(view_results)
+    writer.write_js_graph_results(js_graph_results)
 
     return {
         "modules": total_modules,
         "views": total_views,
         "qweb": total_qweb,
         "embeddings": total_embeddings,
+        "js_patches": total_js_patches,
+        "owl_comps": total_owl_comps,
     }
 
 
@@ -175,12 +190,19 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
                       available), semantic embeddings are written to PostgreSQL.
 
     Returns:
-        Summary dict: {modules, views, qweb, embeddings}.
+        Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
     """
     repos = get_repos_for_profile(pg_conn, profile_name)
     if not repos:
         _logger.warning("index_profile: no repos found for profile %r", profile_name)
-        return {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
+        return {
+            "modules": 0,
+            "views": 0,
+            "qweb": 0,
+            "embeddings": 0,
+            "js_patches": 0,
+            "owl_comps": 0,
+        }
 
     uri, user, password = _neo4j_creds()
     writer = Neo4jWriter(uri, user, password)
@@ -192,6 +214,8 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
         total_views = 0
         total_qweb = 0
         total_embeddings = 0
+        total_js_patches = 0
+        total_owl_comps = 0
 
         for repo in repos:
             repo_id: int = repo["id"]
@@ -201,12 +225,19 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
                 total_views += counters["views"]
                 total_qweb += counters["qweb"]
                 total_embeddings += counters.get("embeddings", 0)
+                total_js_patches += counters.get("js_patches", 0)
+                total_owl_comps += counters.get("owl_comps", 0)
                 update_repo_status(pg_conn, repo_id, "indexed")
                 _logger.info(
-                    "Indexed repo id=%d: %d modules, %d views, %d qweb, %d embeddings",
+                    "Indexed repo id=%d: %d modules, %d views, %d qweb, "
+                    "%d embeddings, %d js_patches, %d owl_comps",
                     repo_id,
-                    counters["modules"], counters["views"],
-                    counters["qweb"], counters.get("embeddings", 0),
+                    counters["modules"],
+                    counters["views"],
+                    counters["qweb"],
+                    counters.get("embeddings", 0),
+                    counters.get("js_patches", 0),
+                    counters.get("owl_comps", 0),
                 )
             except Exception as e:
                 _logger.exception("Failed to index repo id=%d", repo_id)
@@ -220,6 +251,8 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
         "views": total_views,
         "qweb": total_qweb,
         "embeddings": total_embeddings,
+        "js_patches": total_js_patches,
+        "owl_comps": total_owl_comps,
     }
 
 
@@ -229,13 +262,16 @@ def index_all(pg_conn, embedder=None) -> dict:
     Continues after per-profile failures — failed profiles are listed in
     the returned summary under 'profiles_failed'.
 
-    Returns aggregate summary: {profiles_ok, profiles_failed, modules, views, qweb, embeddings}.
+    Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
+    qweb, embeddings, js_patches, owl_comps}.
     """
     profiles = list_profiles(pg_conn)
     agg_modules = 0
     agg_views = 0
     agg_qweb = 0
     agg_embeddings = 0
+    agg_js_patches = 0
+    agg_owl_comps = 0
     profiles_ok = 0
     profiles_failed: list[str] = []
 
@@ -247,6 +283,8 @@ def index_all(pg_conn, embedder=None) -> dict:
             agg_views += summary["views"]
             agg_qweb += summary["qweb"]
             agg_embeddings += summary.get("embeddings", 0)
+            agg_js_patches += summary.get("js_patches", 0)
+            agg_owl_comps += summary.get("owl_comps", 0)
             profiles_ok += 1
         except Exception:
             _logger.exception("index_all: profile %r failed — skipping", name)
@@ -259,4 +297,6 @@ def index_all(pg_conn, embedder=None) -> dict:
         "views": agg_views,
         "qweb": agg_qweb,
         "embeddings": agg_embeddings,
+        "js_patches": agg_js_patches,
+        "owl_comps": agg_owl_comps,
     }
