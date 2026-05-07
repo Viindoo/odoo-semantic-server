@@ -427,6 +427,254 @@ def find_examples(
     return _find_examples(query, odoo_version, limit, context_module, chunk_types)
 
 
+def _compute_risk(view_count: int, method_count: int, js_count: int) -> str:
+    """Risk threshold v0 — tunable at M6.
+
+    HIGH >= 10 affected entities, MEDIUM 4-9, LOW < 4.
+    # Thresholds calibrated qualitatively against Odoo 17 + Viindoo addons typical fan-out:
+    # <4 changes = isolated, 4-9 = module-scope review needed, ≥10 = cross-module impact
+    # requiring full regression. M6 will recalibrate against held-out eval set.
+    """
+    total = view_count + method_count + js_count
+    if total >= 10:
+        return "HIGH"
+    if total >= 4:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _impact_analysis(
+    entity_type: str,
+    entity_name: str,
+    odoo_version: str = "auto",
+) -> str:
+    """Return everything affected by changing the given entity. Risk-scored."""
+    valid_types = ("field", "method", "model")
+    if entity_type not in valid_types:
+        return (
+            f"Invalid entity_type '{entity_type}'. Use: field, method, model."
+        )
+
+    with _get_driver().session() as session:
+        if odoo_version == "auto":
+            odoo_version = _latest_version(session)
+
+        # ------------------------------------------------------------------ #
+        # Parse entity_name per entity_type                                   #
+        # ------------------------------------------------------------------ #
+        if entity_type in ("field", "method"):
+            if "." not in entity_name:
+                return (
+                    f"Entity '{entity_name}' not found in Odoo {odoo_version}. "
+                    f"Expected format: '<model>.<{entity_type}>' "
+                    f"(e.g. 'sale.order.amount_total' for a field)."
+                )
+            # Split on LAST dot: model has dots, field/method does not
+            last_dot = entity_name.rfind(".")
+            model_name = entity_name[:last_dot]
+            member_name = entity_name[last_dot + 1:]
+        else:
+            # entity_type == "model"
+            model_name = entity_name
+            member_name = None
+
+        # ------------------------------------------------------------------ #
+        # Query 1: verify entity exists                                        #
+        # ------------------------------------------------------------------ #
+        if entity_type == "field":
+            exists = session.run(
+                "MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v}) "
+                "RETURN count(f) AS c",
+                fn=member_name, mn=model_name, v=odoo_version,
+            ).single()["c"]
+            if not exists:
+                return (
+                    f"Entity '{entity_name}' not found in Odoo {odoo_version}."
+                )
+        elif entity_type == "method":
+            exists = session.run(
+                "MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v}) "
+                "RETURN count(mth) AS c",
+                mn=member_name, model=model_name, v=odoo_version,
+            ).single()["c"]
+            if not exists:
+                return (
+                    f"Entity '{entity_name}' not found in Odoo {odoo_version}."
+                )
+        else:  # model
+            exists = session.run(
+                "MATCH (m:Model {name: $mn, odoo_version: $v}) "
+                "WHERE coalesce(m.unresolved, false) = false "
+                "AND m.module <> '__unresolved__' "
+                "RETURN count(m) AS c",
+                mn=model_name, v=odoo_version,
+            ).single()["c"]
+            if not exists:
+                return (
+                    f"Entity '{entity_name}' not found in Odoo {odoo_version}."
+                )
+
+        # ------------------------------------------------------------------ #
+        # Query 2: views targeting model (DISTINCT to avoid TARGETS_MODEL fan-out)
+        # ------------------------------------------------------------------ #
+        views = session.run("""
+            MATCH (m:Model {name: $mn, odoo_version: $v})<-[:TARGETS_MODEL]-(view:View)
+            RETURN DISTINCT view.xmlid AS xmlid, view.module AS module
+            ORDER BY view.module, view.xmlid
+        """, mn=model_name, v=odoo_version).data()
+
+        # ------------------------------------------------------------------ #
+        # Query 3: methods on this model (with super call filter for field;   #
+        #          all overrides for method entity_type)                       #
+        # ------------------------------------------------------------------ #
+        if entity_type == "field":
+            methods = session.run("""
+                MATCH (mth:Method {model: $mn, odoo_version: $v})
+                WHERE mth.has_super_call = true
+                RETURN DISTINCT mth.name AS name, mth.module AS module
+                ORDER BY mth.module, mth.name
+            """, mn=model_name, v=odoo_version).data()
+        elif entity_type == "method":
+            methods = session.run("""
+                MATCH (mth:Method {name: $mn2, model: $mn, odoo_version: $v})
+                RETURN DISTINCT mth.name AS name, mth.module AS module
+                ORDER BY mth.module
+            """, mn2=member_name, mn=model_name, v=odoo_version).data()
+        else:  # model
+            methods = session.run("""
+                MATCH (mth:Method {model: $mn, odoo_version: $v})
+                RETURN DISTINCT mth.name AS name, mth.module AS module
+                ORDER BY mth.module, mth.name
+            """, mn=model_name, v=odoo_version).data()
+
+        # ------------------------------------------------------------------ #
+        # Query 4: JS patches on components bound to this model               #
+        # ------------------------------------------------------------------ #
+        js_patches = session.run("""
+            MATCH (m:Model {name: $mn, odoo_version: $v})<-[:BOUND_TO]-(comp:OWLComp)
+                  <-[:PATCHES]-(jp:JSPatch)
+            RETURN DISTINCT jp.target AS target, jp.patch_name AS patch_name,
+                   jp.module AS module, jp.era AS era
+            ORDER BY jp.module, jp.target
+        """, mn=model_name, v=odoo_version).data()
+
+        # ------------------------------------------------------------------ #
+        # Query 5: dependent modules of all modules defining this model       #
+        # ------------------------------------------------------------------ #
+        dep_modules = session.run("""
+            MATCH (m:Model {name: $mn, odoo_version: $v})-[:DEFINED_IN]->(defmod:Module)
+                  <-[:DEPENDS_ON]-(depmod:Module)
+            RETURN DISTINCT depmod.name AS dep_name
+            ORDER BY depmod.name
+        """, mn=model_name, v=odoo_version).data()
+
+        # For model entity_type: also collect defining modules as "extensions"
+        if entity_type == "model":
+            def_modules = session.run("""
+                MATCH (m:Model {name: $mn, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
+                RETURN DISTINCT m.module AS module_name
+                ORDER BY m.module
+            """, mn=model_name, v=odoo_version).data()
+        else:
+            def_modules = []
+
+    # ---------------------------------------------------------------------- #
+    # Build output tree                                                        #
+    # ---------------------------------------------------------------------- #
+    view_count = len(views)
+    method_count = len(methods)
+    js_count = len(js_patches)
+    total = view_count + method_count + js_count
+    risk = _compute_risk(view_count, method_count, js_count)
+
+    lines = [f"impact_analysis({entity_type}, {entity_name}, {odoo_version})"]
+    lines.append(f"├─ Risk: {risk} ({total} affected entities)")
+
+    # Views section
+    if views:
+        lines.append(f"├─ Views ({view_count}):")
+        for i, v_item in enumerate(views):
+            connector = "└─" if i == view_count - 1 else "├─"
+            lines.append(f"│   {connector} [{v_item['module']}] {v_item['xmlid']}")
+    else:
+        lines.append("├─ Views: none")
+
+    # Methods section
+    if entity_type == "field":
+        methods_label = (
+            f"Methods on {model_name} with super() ({method_count})"
+            f" — field-level filter not yet implemented (M5)"
+        )
+    elif entity_type == "method":
+        methods_label = "Override chain"
+    else:
+        methods_label = "Methods"
+
+    if entity_type == "field":
+        # For field: use pre-built label that already contains count
+        if methods:
+            lines.append(f"├─ {methods_label}:")
+            for i, m_item in enumerate(methods):
+                connector = "└─" if i == method_count - 1 else "├─"
+                lines.append(f"│   {connector} [{m_item['module']}] {m_item['name']}")
+        else:
+            lines.append(f"├─ {methods_label}: none")
+        lines.append(
+            "│   Note: field-level impact requires F4 USES_FIELD edge"
+            " (deferred to M5). Current scope: model-level."
+        )
+    elif methods:
+        lines.append(f"├─ {methods_label} ({method_count}):")
+        for i, m_item in enumerate(methods):
+            connector = "└─" if i == method_count - 1 else "├─"
+            lines.append(f"│   {connector} [{m_item['module']}] {m_item['name']}")
+    else:
+        lines.append(f"├─ {methods_label}: none")
+
+    # JS patches section
+    if js_patches:
+        lines.append(f"├─ JS patches ({js_count}):")
+        for i, jp in enumerate(js_patches):
+            connector = "└─" if i == js_count - 1 else "├─"
+            lines.append(
+                f"│   {connector} [{jp['module']}] {jp['target']}"
+                f" via {jp['patch_name']} (era: {jp['era']})"
+            )
+    else:
+        lines.append("├─ JS patches: none")
+
+    # For model entity_type: extension modules section
+    if entity_type == "model" and def_modules:
+        mod_names = [d["module_name"] for d in def_modules]
+        lines.append(f"├─ Defined/extended in ({len(mod_names)}): {', '.join(mod_names)}")
+
+    # Dependent modules section
+    if dep_modules:
+        dep_names = [d["dep_name"] for d in dep_modules]
+        lines.append(f"└─ Dependent modules ({len(dep_names)}): {', '.join(dep_names)}")
+    else:
+        lines.append("└─ Dependent modules: none")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def impact_analysis(
+    entity_type: str,
+    entity_name: str,
+    odoo_version: str = "auto",
+) -> str:
+    """List everything affected if you change <entity>. Risk-scored.
+
+    Args:
+        entity_type: One of 'field', 'method', 'model'.
+        entity_name: For field/method: '<model>.<name>' e.g. 'sale.order.amount_total'.
+                     For model: '<model>' e.g. 'sale.order'.
+        odoo_version: Version Odoo (e.g. '17.0'). Default 'auto' = latest indexed version.
+    """
+    return _impact_analysis(entity_type, entity_name, odoo_version)
+
+
 def _mcp_host() -> str:
     from src import config
     return config.get("server", "host", fallback="127.0.0.1")

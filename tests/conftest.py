@@ -138,6 +138,19 @@ def tmp_git_repo(tmp_path):
     return tmp_path
 
 
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    """Module-scoped monkeypatch fixture (pytest built-in is function-scoped only).
+
+    Required by fixtures with scope='module' that need env var isolation.
+    Undo all patches after the module finishes.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+    mp = MonkeyPatch()
+    yield mp
+    mp.undo()
+
+
 def make_git_repo(path: Path, branch: str) -> Path:
     """Create a git repo at the given path with the given branch. Used in tests."""
     path.mkdir(parents=True, exist_ok=True)

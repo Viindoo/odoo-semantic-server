@@ -3,9 +3,12 @@ import pytest
 
 from src.indexer.models import (
     FieldInfo,
+    JSGraphResult,
+    JSPatchInfo,
     MethodInfo,
     ModelInfo,
     ModuleInfo,
+    OWLCompInfo,
     ParseResult,
     QWebInfo,
     ViewInfo,
@@ -454,3 +457,289 @@ def test_write_view_indexes_created(writer, neo4j_driver):
     )
     assert view_index, "Missing index on :View"
     assert qweb_index, "Missing index on :QWebTmpl"
+
+
+def test_write_view_creates_targets_model_edge(writer, neo4j_driver):
+    """View targeting model creates TARGETS_MODEL edge to all Model nodes with same name."""
+    # Seed Model nodes first
+    model_result = make_parse_result("sale", "sale.order")
+    writer.write_results([model_result])
+
+    # Now write View targeting that model
+    view = ViewInfo(
+        xmlid="sale.view_sale_order_form",
+        name="sale.order.form",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    result = make_view_parse_result("sale", views=[view])
+    writer.write_view_results([result])
+
+    # Assert TARGETS_MODEL edge exists
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+                  -[:TARGETS_MODEL]->
+                  (m:Model {name: $model_name, odoo_version: $ver})
+            RETURN count(*) AS cnt
+        """, xmlid="sale.view_sale_order_form",
+             model_name="sale.order", ver=TEST_VERSION).single()
+    assert rec["cnt"] >= 1, "TARGETS_MODEL edge should exist"
+
+
+def test_write_view_targets_model_multiple_module_nodes(writer, neo4j_driver):
+    """When same model exists in multiple modules, View.TARGETS_MODEL → all nodes."""
+    # Seed base model in 'sale' module
+    base_result = make_parse_result("sale", "sale.order")
+    writer.write_results([base_result])
+
+    # Seed extension model in 'viin_sale' module
+    ext_module = ModuleInfo(
+        name="viin_sale", odoo_version=TEST_VERSION,
+        repo="viin_sale_repo", path="/tmp", depends=["sale"], version_raw="",
+    )
+    ext_model = ModelInfo(
+        name="sale.order", module="viin_sale", odoo_version=TEST_VERSION,
+        inherit=["sale.order"],
+    )
+    ext_result = ParseResult(module=ext_module, models=[ext_model])
+    writer.write_results([ext_result])
+
+    # Write View targeting sale.order
+    view = ViewInfo(
+        xmlid="sale.view_sale_order_form",
+        name="sale.order.form",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    result = make_view_parse_result("sale", views=[view])
+    writer.write_view_results([result])
+
+    # Assert TARGETS_MODEL edges exist to both module nodes
+    with neo4j_driver.session() as session:
+        count_rec = session.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+                  -[:TARGETS_MODEL]->
+                  (m:Model {name: $model_name, odoo_version: $ver})
+            RETURN count(*) AS cnt
+        """, xmlid="sale.view_sale_order_form",
+             model_name="sale.order", ver=TEST_VERSION).single()
+        # Should have edges to both Model nodes (one per module)
+        assert count_rec["cnt"] >= 2, f"Expected >=2 TARGETS_MODEL edges, got {count_rec['cnt']}"
+
+
+def test_write_view_no_target_when_model_missing(writer, neo4j_driver):
+    """View targeting missing model skips silently (no placeholder TARGETS_MODEL edge)."""
+    # Write View with model that was never indexed
+    view = ViewInfo(
+        xmlid="custom.view_nonexistent_model",
+        name="nonexistent.view",
+        model="nonexistent.model",
+        module="custom",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    result = make_view_parse_result("custom", views=[view])
+    writer.write_view_results([result])
+
+    # Assert no TARGETS_MODEL edge exists (skip silently)
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+                  -[:TARGETS_MODEL]->
+                  (m:Model)
+            RETURN count(*) AS cnt
+        """, xmlid="custom.view_nonexistent_model",
+             ver=TEST_VERSION).single()
+    assert rec["cnt"] == 0, "No TARGETS_MODEL edge should be created for missing model"
+
+
+# --- JS Graph writer tests ---
+
+
+def make_js_module(module_name: str) -> ModuleInfo:
+    return ModuleInfo(
+        name=module_name, odoo_version=TEST_VERSION,
+        repo=f"{module_name}_repo", path="/tmp",
+        depends=[], version_raw="",
+    )
+
+
+def test_write_js_graph_creates_jspatch_node(writer, neo4j_driver):
+    """JSPatch node is created with correct composite key and properties."""
+    module = make_js_module("sale")
+    patch = JSPatchInfo(
+        target="SaleOrderWidget",
+        patch_name="sale_patch",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        era="patch",
+        file_path="/sale/static/src/js/sale.js",
+    )
+    result = JSGraphResult(module=module, patches=[patch])
+    writer.write_js_graph_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (j:JSPatch {target: $target, patch_name: $pn,
+                              module: $mod, odoo_version: $v})
+            RETURN j
+        """, target="SaleOrderWidget", pn="sale_patch",
+             mod="sale", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["j"]["era"] == "patch"
+    assert rec["j"]["file_path"] == "/sale/static/src/js/sale.js"
+
+
+def test_write_js_graph_creates_owlcomp_node(writer, neo4j_driver):
+    """OWLComp node is created with correct composite key and properties."""
+    module = make_js_module("sale")
+    comp = OWLCompInfo(
+        name="SaleOrderWidget",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        template="sale.SaleOrderWidget",
+        extends="Component",
+        bound_model=None,
+        file_path="/sale/static/src/components/sale_widget.js",
+    )
+    result = JSGraphResult(module=module, components=[comp])
+    writer.write_js_graph_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (c:OWLComp {name: $name, module: $mod, odoo_version: $v})
+            RETURN c
+        """, name="SaleOrderWidget", mod="sale", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["c"]["template"] == "sale.SaleOrderWidget"
+    assert rec["c"]["extends"] == "Component"
+    assert rec["c"]["file_path"] == "/sale/static/src/components/sale_widget.js"
+
+
+def test_write_js_graph_patches_edge_resolved(writer, neo4j_driver):
+    """PATCHES edge is created without unresolved flag when OWLComp target exists."""
+    module = make_js_module("viin_sale")
+    comp = OWLCompInfo(
+        name="MyComp",
+        module="viin_sale",
+        odoo_version=TEST_VERSION,
+        file_path="/viin_sale/static/src/components/my_comp.js",
+    )
+    patch = JSPatchInfo(
+        target="MyComp",
+        patch_name="my_comp_patch",
+        module="viin_sale",
+        odoo_version=TEST_VERSION,
+        era="patch",
+        file_path="/viin_sale/static/src/js/patch.js",
+    )
+    result = JSGraphResult(module=module, patches=[patch], components=[comp])
+    writer.write_js_graph_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (j:JSPatch {target: $target, patch_name: $pn,
+                              module: $mod, odoo_version: $v})
+                  -[r:PATCHES]->
+                  (c:OWLComp {name: $target, odoo_version: $v})
+            RETURN r
+        """, target="MyComp", pn="my_comp_patch",
+             mod="viin_sale", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["r"].get("unresolved") is None or rec["r"].get("unresolved") is False
+
+
+def test_write_js_graph_patches_edge_unresolved(writer, neo4j_driver):
+    """When PATCHES target OWLComp doesn't exist, placeholder is created with unresolved=true."""
+    module = make_js_module("viin_sale")
+    patch = JSPatchInfo(
+        target="Missing",
+        patch_name="missing_patch",
+        module="viin_sale",
+        odoo_version=TEST_VERSION,
+        era="patch",
+        file_path="/viin_sale/static/src/js/patch.js",
+    )
+    result = JSGraphResult(module=module, patches=[patch])
+    writer.write_js_graph_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (j:JSPatch {target: $target, patch_name: $pn,
+                              module: $mod, odoo_version: $v})
+                  -[r:PATCHES {unresolved: true}]->
+                  (ph:OWLComp {name: $target, module: '__unresolved__', odoo_version: $v})
+            RETURN ph.unresolved AS flag
+        """, target="Missing", pn="missing_patch",
+             mod="viin_sale", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["flag"] is True
+
+
+def test_write_js_graph_extends_only_when_match(writer, neo4j_driver):
+    """EXTENDS edge is NOT created when parent OWLComp doesn't exist (no placeholder)."""
+    module = make_js_module("sale")
+    comp = OWLCompInfo(
+        name="Child",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        extends="Parent",  # Parent does not exist
+        file_path="/sale/static/src/components/child.js",
+    )
+    result = JSGraphResult(module=module, components=[comp])
+    writer.write_js_graph_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (c:OWLComp {name: 'Child', odoo_version: $v})
+                  -[:EXTENDS]->(:OWLComp)
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert rec["cnt"] == 0, "No EXTENDS edge or placeholder when parent missing"
+
+    # Also verify no 'Parent' placeholder was created
+    with neo4j_driver.session() as session:
+        ph = session.run("""
+            MATCH (c:OWLComp {name: 'Parent', odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert ph["cnt"] == 0, "No placeholder for unresolved EXTENDS parent"
+
+
+def test_write_js_graph_bound_to_model(writer, neo4j_driver):
+    """BOUND_TO edge is created when bound_model exists as a Model node."""
+    # First seed the Model
+    model_result = make_parse_result("sale", "sale.order")
+    writer.write_results([model_result])
+
+    module = make_js_module("sale")
+    comp = OWLCompInfo(
+        name="SaleOrderComp",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        bound_model="sale.order",
+        file_path="/sale/static/src/components/sale_order_comp.js",
+    )
+    result = JSGraphResult(module=module, components=[comp])
+    writer.write_js_graph_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (c:OWLComp {name: $comp_name, odoo_version: $v})
+                  -[:BOUND_TO]->
+                  (m:Model {name: $model_name, odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, comp_name="SaleOrderComp", model_name="sale.order",
+             v=TEST_VERSION).single()
+    assert rec["cnt"] >= 1, "BOUND_TO edge should exist when model is indexed"
