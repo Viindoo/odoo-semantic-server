@@ -178,7 +178,7 @@ Cả hai lệnh phải chạy được **không có sudo**. Nếu `docker info` 
 make test-integration
 ```
 
-Lần chạy đầu tiên sẽ pull image `neo4j:5.26.25` (set trong `NEO4J_IMAGE` ở `.env.example`, ~500 MB) — có thể mất 2–5 phút. Các lần sau Docker cache lại, chạy trong vài giây. Nếu thành công sẽ thấy 16 tests PASSED thay vì SKIPPED.
+Lần chạy đầu tiên sẽ pull image `neo4j:5.26.25` (set trong `NEO4J_IMAGE` ở `.env.example`, ~500 MB) — có thể mất 2–5 phút. Các lần sau Docker cache lại, chạy trong vài giây. Nếu thành công các test có marker `neo4j` sẽ chuyển từ SKIPPED sang PASSED.
 
 ---
 
@@ -271,23 +271,28 @@ Status: Upstream issue in testcontainers 4.x. Will be resolved when upstream rem
 src/
 ├── config.py              # INI config reader (configparser)
 ├── db/
-│   ├── migrate.py         # PostgreSQL schema bootstrap (profiles + repos)
+│   ├── migrate.py         # PostgreSQL schema bootstrap (profiles + repos + embeddings)
 │   └── repo_registry.py   # CRUD profiles + repos
+├── embedding/
+│   └── instructions.py    # Qwen3 asymmetric INSTRUCT prefix (NL→code retrieval)
 ├── manager/
 │   └── __main__.py        # admin CLI: add-profile / add-repo / list
 ├── indexer/
-│   ├── models.py          # dataclasses: ModuleInfo, ModelInfo, ViewInfo, QWebInfo, ...
+│   ├── models.py          # dataclasses: ModuleInfo, ModelInfo, ViewInfo, QWebInfo, JSChunk, ...
 │   ├── scanner.py         # git repo discovery
 │   ├── registry.py        # __manifest__.py parsing + module map
 │   ├── resolver.py        # topological sort (Kahn's algorithm)
-│   ├── parser_python.py   # AST parser: _name/_inherit/_inherits/fields/methods
-│   ├── parser_xml.py      # ir.ui.view + xpath modifications
-│   ├── parser_qweb.py     # QWeb <template> inheritance
-│   ├── pipeline.py        # end-to-end: scanner → registry → resolver → parsers → writer
-│   ├── __main__.py        # CLI: python -m src.indexer --profile / --all
-│   └── writer_neo4j.py    # write nodes + edges vào Neo4j
+│   ├── parser_python.py   # AST parser: _name/_inherit/_inherits/fields/methods (+ source text)
+│   ├── parser_xml.py      # ir.ui.view + xpath modifications (+ arch capture)
+│   ├── parser_qweb.py     # QWeb <template> inheritance (+ content capture)
+│   ├── parser_js.py       # era-aware JS parser (Era1 Widget.extend, Era2 odoo.define, Era3 OWL/patch)
+│   ├── embedder.py        # EmbedderClient Protocol + FakeEmbedder + Qwen3Embedder (MRL 1024-dim)
+│   ├── pipeline.py        # end-to-end: scanner → registry → resolver → parsers → writers
+│   ├── __main__.py        # CLI: python -m src.indexer --profile / --all / --no-embed
+│   ├── writer_neo4j.py    # write nodes + edges vào Neo4j
+│   └── writer_pgvector.py # EmbeddingChunk + make_chunks + write_module_embeddings (HNSW)
 └── mcp/
-    └── server.py          # FastMCP: resolve_model/field/method/view
+    └── server.py          # FastMCP: resolve_model/field/method/view + find_examples
 ```
 
 Nguyên tắc: scanner → registry → resolver → parser → writer → server. Pipeline glue trong `src/indexer/pipeline.py` chỉ orchestrate, không chứa logic parse.
