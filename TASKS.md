@@ -88,7 +88,7 @@
 
 ## Milestone 5 — "Product Wow"
 **Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.
-**Outcome:** `docker compose up -d` + Web UI add repos + auto-clone qua SSH key + index.
+**Outcome:** `docker compose up -d` + Web UI add repos + auto-clone qua SSH key + index. Production-ready: health monitoring + data integrity baseline.
 
 - [ ] `src/auth.py`: API key middleware + usage log (PostgreSQL)
 - [ ] `src/web_ui/repos.py`: profile + repo management Web UI (replace `src.manager` CLI)
@@ -100,6 +100,19 @@
 - [ ] `docker-compose.yml`: hoàn thiện cho production (volumes named, restart policy)
 - [ ] `install.sh`: non-Docker installation path
 - [ ] `README.md`: hướng dẫn setup + kết nối VS Code / Claude Code / Codex / Gemini
+- [ ] **Production baseline (cross-cutting):**
+    - [ ] `src/mcp/server.py`: health check endpoint (Neo4j ping + Postgres ping + version) cho Web UI dashboard + systemd/k8s probe
+    - [ ] `src/indexer/pipeline.py`: file-based concurrency lock (`~/.odoo-semantic/indexer.lock`) — prevent overlapping indexer runs từ Web UI button + cron
+
+## Milestone 5.5 — "Polish Wow"
+**Intent:** Observability + test discipline + landing zone cho tech-debt phát sinh trong M5.
+**Outcome:** Mọi long-running operation có progress feedback; mọi MCP tool có anti-drift snapshot test.
+
+- [ ] `src/indexer/__main__.py`: `--verbose` flag enable INFO logging + `tqdm` progress bar (modules processed / total)
+- [ ] `tests/test_output_snapshots.py`: thêm snapshot test cho `resolve_view` (pattern khớp 5 tool còn lại — anti-drift guard cho output format)
+- [ ] (reserved) tech-debt rollup từ M5 — fill khi M5 implement xong
+
+> **Lý do tách M5.5:** items này không block M5 ship (`--verbose` chỉ là UX polish, snapshot test là coverage gap không phải bug). Tách giúp M5 ship sớm + có landing zone rõ cho debt M5 sinh ra. Pattern theo M2.5 precedent (foundation infra giữa các product feature milestone).
 
 ## Milestone 6 — "Scale Wow" (Ongoing)
 **Intent:** Hỗ trợ toàn bộ ecosystem Viindoo, multi-version, incremental updates.  
