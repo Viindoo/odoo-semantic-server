@@ -45,16 +45,21 @@ Người dùng (AI tool)
 
 ### 1.1 Linux User & Group
 
-Tạo system user/group **trước** khi setup DB và App tier — cần cho `chown` config file (§3.2) và systemd service (§3.4).
+Tạo system user/group **trước** khi setup DB và App tier — cần cho `chown` config file (§3.2) và systemd service (§3.5).
 
 ```bash
 # Tạo group trước để kiểm soát GID
 sudo groupadd --system odoo-semantic
 
-# Tạo system user: no login shell, no home dir, gán vào group
+# Tạo system user: nologin shell + có home dir cho venv.
+#   - Home dir bắt buộc: venv ở /home/odoo-semantic/.venv/odoo-semantic-mcp/
+#     consistent với Makefile ($HOME/.venv) + odoo-semantic-mcp.service
+#     (ExecStart trỏ /home/odoo-semantic/.venv/...).
+#   - Shell /usr/sbin/nologin vẫn chặn login interactive; -m chỉ tạo dir.
 sudo useradd \
     --system \
-    --no-create-home \
+    --create-home \
+    --home-dir /home/odoo-semantic \
     --shell /usr/sbin/nologin \
     --gid odoo-semantic \
     odoo-semantic
@@ -64,7 +69,16 @@ Xác nhận:
 ```bash
 id odoo-semantic
 # uid=999(odoo-semantic) gid=999(odoo-semantic) groups=999(odoo-semantic)
+ls -ld /home/odoo-semantic
+# drwxr-x--- 2 odoo-semantic odoo-semantic ... (home tồn tại, owner đúng)
 ```
+
+> **Recovery (nếu user đã tạo trước với `--no-create-home`):**
+> ```bash
+> sudo mkdir -p /home/odoo-semantic
+> sudo chown -R odoo-semantic:odoo-semantic /home/odoo-semantic
+> sudo usermod -d /home/odoo-semantic odoo-semantic
+> ```
 
 ---
 
@@ -116,20 +130,7 @@ Kiểm tra PostgreSQL:
 docker compose exec postgres pg_isready -U odoo_semantic
 ```
 
-### 2.3 Bootstrap PostgreSQL schema
-
-Chạy **một lần** sau khi postgres healthy:
-
-```bash
-ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
-    ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
-```
-
-Output: `✓ Migrations applied to postgresql://...`
-
-Lệnh này idempotent — chạy lại không có hại.
-
-### 2.4 Ports — Same-server vs Split-tier
+### 2.3 Ports — Same-server vs Split-tier
 
 `docker-compose.yml` mặc định bind ports `127.0.0.1` (chỉ localhost):
 
@@ -141,7 +142,7 @@ ports:
 
 **Split-tier:** đổi thành `"0.0.0.0:7687:7687"` + chặn firewall — xem [§8](#8-split-tier-migration).
 
-### 2.5 Backup thủ công (đến M5)
+### 2.4 Backup thủ công (đến M5)
 
 ```bash
 # Neo4j — dump database
@@ -158,13 +159,31 @@ docker compose exec postgres \
 
 ## 3. App Tier — Indexer + MCP Server
 
+> **Quan trọng — chạy bằng user `odoo-semantic`:** Tất cả lệnh
+> `make install`, `python -m src.*` từ đây phải chạy bằng user
+> `odoo-semantic` để venv được tạo tại `/home/odoo-semantic/.venv/...`
+> (consistent với `Makefile` + `odoo-semantic-mcp.service` ExecStart).
+> Sandwich mọi lệnh trong:
+> ```bash
+> sudo -u odoo-semantic -H bash -c '<lệnh>'
+> ```
+> Cờ `-H` set `$HOME=/home/odoo-semantic` cho `make install`. Nếu bỏ
+> `-H`, venv sẽ tạo ở `$HOME` của user invoke `sudo` → systemd service
+> sẽ fail "No such file or directory" khi start.
+
 ### 3.1 Cài đặt
 
 ```bash
-git clone https://github.com/Viindoo/odoo-semantic-mcp /opt/odoo-semantic-mcp
-cd /opt/odoo-semantic-mcp
-make install
-# → tạo ~/.venv/odoo-semantic-mcp + copy config templates
+sudo git clone https://github.com/Viindoo/odoo-semantic-mcp /opt/odoo-semantic-mcp
+sudo chown -R odoo-semantic:odoo-semantic /opt/odoo-semantic-mcp
+
+# make install chạy bằng user odoo-semantic — tạo venv tại
+# /home/odoo-semantic/.venv/odoo-semantic-mcp/ (NOT /root, NOT /home/<admin>)
+sudo -u odoo-semantic -H bash -c '
+    cd /opt/odoo-semantic-mcp && make install
+'
+# Verify:
+sudo -u odoo-semantic ls /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
 ```
 
 ### 3.2 Đặt config file
@@ -194,40 +213,77 @@ port = 8002
 repos_base_dir = /srv/odoo-repos
 ```
 
-### 3.3 Đăng ký repos + index lần đầu
+### 3.3 Bootstrap PostgreSQL schema
 
-Admin clone repos thủ công vào server trước:
+Chạy **một lần** sau khi DB tier (§2) healthy + venv (§3.1) đã tạo:
 
 ```bash
-git clone --branch 17.0 https://github.com/odoo/odoo /srv/odoo-repos/odoo_17.0
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+'
+```
+
+Output: `✓ Migrations applied to postgresql://...`
+
+Lệnh idempotent — chạy lại không có hại.
+
+### 3.4 Đăng ký repos + index lần đầu
+
+> **Callout — M3 `find_examples` cần Ollama (embedder).**
+> Lần index đầu dưới đây dùng `--no-embed` để bỏ qua embedder — đủ cho
+> M1 (`resolve_model`/`field`/`method`), M2 (`resolve_view`), M4
+> (`impact_analysis`). Khi muốn dùng `find_examples` (M3), setup Ollama
+> theo [`docs/deploy/embedder-setup.md`](deploy/embedder-setup.md) rồi
+> re-index **không** cờ `--no-embed`.
+
+Admin clone repos vào server trước (chạy bằng `odoo-semantic` để
+indexer đọc được):
+
+```bash
+sudo mkdir -p /srv/odoo-repos
+sudo chown -R odoo-semantic:odoo-semantic /srv/odoo-repos
+
+sudo -u odoo-semantic git clone --branch 17.0 \
+    https://github.com/odoo/odoo /srv/odoo-repos/odoo_17.0
 # ... clone thêm viindoo addons repos ...
 ```
 
-Đăng ký trong PostgreSQL:
+Đăng ký + index (sandwich `sudo -u odoo-semantic -H`):
 
 ```bash
-export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
-PY=~/.venv/odoo-semantic-mcp/bin/python
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    PY=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
 
-$PY -m src.manager add-profile viindoo_17 --version 17.0
-$PY -m src.manager add-repo \
-    --profile viindoo_17 \
-    --url github.com/odoo/odoo --branch 17.0 \
-    --local-path /srv/odoo-repos/odoo_17.0
-$PY -m src.manager list   # verify
-```
+    $PY -m src.manager add-profile viindoo_17 --version 17.0
+    $PY -m src.manager add-repo \
+        --profile viindoo_17 \
+        --url github.com/odoo/odoo --branch 17.0 \
+        --local-path /srv/odoo-repos/odoo_17.0
+    $PY -m src.manager list   # verify
 
-Index lần đầu (blocking, ~5–30 phút tùy số module):
-
-```bash
-$PY -m src.indexer --profile viindoo_17
-# hoặc index toàn bộ profiles:
-# $PY -m src.indexer --all
+    # Lần đầu: index Neo4j graph only (đủ M1+M2+M4) — chưa cần Ollama
+    $PY -m src.indexer --profile viindoo_17 --no-embed
+    # Hoặc tất cả profiles:
+    # $PY -m src.indexer --all --no-embed
+'
 ```
 
 Output: `Done: {'profiles_ok': 1, 'profiles_failed': [], 'modules': 412, 'views': 3801, 'qweb': 287}`
 
-### 3.4 MCP server dạng systemd service
+Khi đã setup embedder (xem `docs/deploy/embedder-setup.md`), re-index
+**không** `--no-embed` để bổ sung embeddings cho M3:
+
+```bash
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+        -m src.indexer --profile viindoo_17
+'
+```
+
+### 3.5 MCP server dạng systemd service
 
 > User `odoo-semantic` đã tạo ở §1.1.
 
@@ -251,7 +307,7 @@ Xem logs:
 sudo journalctl -u odoo-semantic-mcp -f
 ```
 
-### 3.5 Re-index định kỳ (cron, đến M6)
+### 3.6 Re-index định kỳ (cron, đến M6)
 
 ```bash
 sudo tee /etc/cron.d/odoo-semantic-reindex > /dev/null << 'EOF'
@@ -262,13 +318,13 @@ sudo tee /etc/cron.d/odoo-semantic-reindex > /dev/null << 'EOF'
 EOF
 ```
 
-### 3.6 tmux fallback (khi không có systemd)
+### 3.7 tmux fallback (khi không có systemd)
 
 ```bash
-tmux new -d -s odoo-semantic-mcp \
+sudo -u odoo-semantic -H tmux new -d -s odoo-semantic-mcp \
     'ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
-    ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server'
-tmux attach -t odoo-semantic-mcp   # để xem logs
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server'
+sudo -u odoo-semantic tmux attach -t odoo-semantic-mcp   # để xem logs
 ```
 
 ---
