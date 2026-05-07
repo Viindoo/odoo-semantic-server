@@ -275,3 +275,174 @@ class TestFindExamplesOutputSchema:
         assert "chunk 2" in result, (
             "Sliding-window chunks (chunk_idx=1) must be labeled 'method chunk 2'"
         )
+
+
+def test_impact_analysis_output_has_required_sections(snapshot_db, neo4j_driver):
+    """
+    Contract per docs/thiet-ke-kien-truc.md §MCP Tools Interface:
+        impact_analysis(field, snapshot.model.snap_field, 96.0)
+        ├─ Risk: LOW (0 affected entities)
+        ├─ Views (0):
+        ├─ Methods with super (N):
+        ├─ JS patches: none
+        └─ Dependent modules: none
+
+    If output format changes: update this test + architecture doc §MCP Tools.
+    """
+    from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    # Setup: create Module + Model + Field + 2 Views + 1 Method with super
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    # Create test data version
+    test_version = "97.0"
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=test_version)
+
+    mod = ModuleInfo("snapshot", test_version, "odoo_test", "/tmp", [], "")
+    model = ModelInfo(
+        name="snapshot.model",
+        module="snapshot",
+        odoo_version=test_version,
+        fields=[FieldInfo("snap_field", "char", required=True)],
+        methods=[MethodInfo("do_action", has_super_call=True)],
+    )
+    writer.write_results([ParseResult(module=mod, models=[model])])
+
+    # Add Views and JS patches via raw Cypher — Neo4jWriter doesn't expose these yet
+    with neo4j_driver.session() as session:
+        session.run("""
+            MATCH (m:Model {name: 'snapshot.model', odoo_version: $v})
+            CREATE (view1:View {xmlid: 'snapshot.view1', module: 'snapshot',
+                                type: 'form', odoo_version: $v})
+            CREATE (view2:View {xmlid: 'snapshot.view2', module: 'snapshot',
+                                type: 'tree', odoo_version: $v})
+            CREATE (view1)-[:TARGETS_MODEL]->(m)
+            CREATE (view2)-[:TARGETS_MODEL]->(m)
+            RETURN 'Views created'
+        """, v=test_version)
+
+    writer.close()
+
+    # Patch Neo4j env so _impact_analysis picks up test data
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _impact_analysis as impact_analysis_fresh
+
+    result = impact_analysis_fresh("field", "snapshot.model.snap_field", test_version)
+    lines = result.splitlines()
+
+    # Assert header line
+    assert lines[0] == f"impact_analysis(field, snapshot.model.snap_field, {test_version})", (
+        "Line 0 must be 'impact_analysis(<type>, <entity>, <version>)'"
+    )
+    # Assert Risk line present and has threshold
+    assert any("Risk:" in ln for ln in lines), "Missing 'Risk:' line"
+    assert any("HIGH" in ln or "MEDIUM" in ln or "LOW" in ln for ln in lines), (
+        "Risk level must be HIGH/MEDIUM/LOW"
+    )
+    # Assert Views section
+    assert any("Views" in ln for ln in lines), "Missing Views section header"
+    # Assert Methods section (for field, should say "Methods with super")
+    assert any("Methods with super" in ln or "Methods" in ln for ln in lines), (
+        "Missing Methods section header"
+    )
+    # Assert JS patches section
+    assert any("JS patches" in ln for ln in lines), "Missing JS patches section header"
+    # Assert Dependent modules section
+    assert any("Dependent modules" in ln for ln in lines), (
+        "Missing Dependent modules section header"
+    )
+    # Assert tree connectors present
+    assert any(ln.startswith("├─") or ln.startswith("└─") for ln in lines), (
+        "Missing tree connectors (Ship Wow Product requirement)"
+    )
+
+    # Cleanup
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=test_version)
+
+
+def test_impact_analysis_output_empty_sections_render_gracefully(snapshot_db, neo4j_driver):
+    """
+    impact_analysis with no affected views/methods/js should render without errors.
+    Empty sections show ': none' gracefully — no 'None' leak into output.
+
+    If output format changes: update this test.
+    """
+    from src.indexer.models import FieldInfo, ModelInfo, ModuleInfo, ParseResult
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    test_version = "98.0"
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=test_version)
+
+    # Minimal data: just module + model + field, no views/methods/js
+    mod = ModuleInfo("minimal", test_version, "odoo_test", "/tmp", [], "")
+    model = ModelInfo(
+        name="minimal.model",
+        module="minimal",
+        odoo_version=test_version,
+        fields=[FieldInfo("x", "integer")],
+        methods=[],
+    )
+    writer.write_results([ParseResult(module=mod, models=[model])])
+    writer.close()
+
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _impact_analysis as impact_analysis_fresh
+
+    result = impact_analysis_fresh("field", "minimal.model.x", test_version)
+
+    # Assert has risk line and should be LOW (0 affected)
+    assert "Risk:" in result and "LOW" in result, (
+        "Empty impact should render Risk: LOW"
+    )
+    # Assert no 'None' string leak
+    assert "None" not in result, "Output must not contain None literal"
+    # Assert graceful 'none' (lowercase) for empty sections
+    assert "none" in result, "Empty sections should show 'none'"
+
+    # Cleanup
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=test_version)
+
+
+def test_impact_analysis_invalid_entity_type_message_shape(snapshot_db):
+    """
+    Invalid entity_type must return error message with exact shape:
+        Invalid entity_type '...' Use: field, method, model.
+
+    If output format changes: update this test.
+    """
+    from src.mcp.server import _impact_analysis
+
+    result = _impact_analysis("garbage", "x.y", "96.0")
+
+    assert "Invalid entity_type" in result, (
+        "Invalid entity_type must mention 'Invalid entity_type'"
+    )
+    assert "garbage" in result, "Error must echo the invalid type provided"
+    # Assert all 3 valid types are listed
+    for valid in ["field", "method", "model"]:
+        assert valid in result, f"Error message must list '{valid}' as valid option"
