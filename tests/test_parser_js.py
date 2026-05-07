@@ -1,8 +1,7 @@
 """Tests for JS parser — era detection and chunking."""
-import pytest
 
-from src.indexer.parser_js import _detect_era, parse_file
 from src.indexer.models import ModuleInfo
+from src.indexer.parser_js import _detect_era, parse_file
 
 
 def _module(tmp_path, name="sale", version="17.0"):
@@ -137,3 +136,43 @@ def test_chunk_module_version_propagated(tmp_path):
     for c in chunks:
         assert c.module == "my_module"
         assert c.odoo_version == "17.0"
+
+
+# --- parse_module skip logic ---
+
+def test_parse_module_skips_lib_dir(tmp_path):
+    """Files inside static/src/lib/ must not produce chunks."""
+    from src.indexer.parser_js import parse_module
+
+    static_src = tmp_path / "static" / "src"
+    lib_dir = static_src / "lib"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / "jquery.min.js").write_text(
+        "/** @odoo-module */\nexport class JQuery {};", encoding="utf-8"
+    )
+    # Also put a valid file outside lib/
+    app_dir = static_src / "components"
+    app_dir.mkdir()
+    (app_dir / "my_widget.js").write_text(
+        "/** @odoo-module */\nexport class MyWidget {};", encoding="utf-8"
+    )
+
+    m = _module(tmp_path)
+    chunks = parse_module(m)
+    file_paths = {c.file_path for c in chunks}
+    assert not any("jquery.min.js" in fp for fp in file_paths), "lib/ file must be excluded"
+    assert any("my_widget.js" in fp for fp in file_paths), "non-lib file must be included"
+
+
+def test_parse_module_skips_oversized_file(tmp_path):
+    """Files over 200 KB must not produce chunks."""
+    from src.indexer.parser_js import _MAX_JS_BYTES, parse_module
+
+    static_src = tmp_path / "static" / "src"
+    static_src.mkdir(parents=True)
+    big_file = static_src / "huge.js"
+    big_file.write_bytes(b"x" * (_MAX_JS_BYTES + 1))
+
+    m = _module(tmp_path)
+    chunks = parse_module(m)
+    assert all("huge.js" not in c.file_path for c in chunks), "oversized file must be skipped"

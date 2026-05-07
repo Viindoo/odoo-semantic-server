@@ -146,9 +146,9 @@ def _index_repo(
             )
             view_results.append(merged)
 
-            # Semantic embeddings — optional, skipped when pg_conn/embedder absent
-            # or pgvector extension is not installed.
-            if embed_enabled:
+            # Semantic embeddings — optional, skipped when pg_conn/embedder absent,
+            # pgvector extension is not installed, or version could not be resolved.
+            if embed_enabled and version != "unknown":
                 js_chunks = parser_js.parse_module(info)
                 chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
                 write_module_embeddings(pg_conn, mod_name, version, chunks, embedder)
