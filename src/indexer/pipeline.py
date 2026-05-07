@@ -39,23 +39,32 @@ def _neo4j_creds() -> tuple[str, str, str]:
     """Return (uri, user, password) — single source of truth for Neo4j connection.
 
     Priority: NEO4J_TEST_* env (tests) → NEO4J_* env (Docker/CI) →
-              [database]/neo4j_* in config file → hardcoded fallback.
+              [database]/neo4j_* in config file → hardcoded fallback (none for password).
     """
     uri = (
         os.getenv("NEO4J_TEST_URI")
-        or os.getenv("NEO4J_URI")
-        or config.get("database", "neo4j_uri", fallback="bolt://localhost:7687")
+        or config.from_env_or_ini(
+            "NEO4J_URI", "database", "neo4j_uri",
+            fallback="bolt://localhost:7687",
+        )
     )
     user = (
         os.getenv("NEO4J_TEST_USER")
-        or os.getenv("NEO4J_USER")
-        or config.get("database", "neo4j_user", fallback="neo4j")
+        or config.from_env_or_ini(
+            "NEO4J_USER", "database", "neo4j_user", fallback="neo4j",
+        )
     )
     password = (
         os.getenv("NEO4J_TEST_PASSWORD")
-        or os.getenv("NEO4J_PASSWORD")
-        or config.get("database", "neo4j_password", fallback="password")
+        or config.from_env_or_ini(
+            "NEO4J_PASSWORD", "database", "neo4j_password", fallback=None,
+        )
     )
+    if not password:
+        raise RuntimeError(
+            "Neo4j password missing. Set NEO4J_PASSWORD env var OR "
+            "neo4j_password in [database] section of odoo-semantic.conf."
+        )
     return uri, user, password
 
 
@@ -68,13 +77,14 @@ def open_production_neo4j():
 def open_production_pg():
     """Open a psycopg2 connection using config / env vars."""
     import psycopg2  # lazy import — not available in all envs at module load time
-    dsn = (
-        os.getenv("PG_DSN")
-        or config.get(
-            "database", "pg_dsn",
-            fallback="postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+    dsn = config.from_env_or_ini(
+        "PG_DSN", "database", "pg_dsn", fallback=None,
     )
+    if not dsn:
+        raise RuntimeError(
+            "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
+            "in [database] section of odoo-semantic.conf."
+        )
     conn = psycopg2.connect(dsn)
     conn.autocommit = True
     return conn

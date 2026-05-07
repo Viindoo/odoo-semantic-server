@@ -2,17 +2,29 @@
 # Copy → odoo-semantic.conf rồi điền giá trị thật.
 # File `odoo-semantic.conf` thật KHÔNG commit (đã trong .gitignore).
 #
-# Các path tìm config khi runtime (theo thứ tự):
+# Các path tìm config FILE khi runtime (theo thứ tự):
 #   1. $ODOO_SEMANTIC_CONF (override — trả về ngay, không tìm tiếp)
 #   2. ~/.odoo-semantic/odoo-semantic.conf
 #   3. ./odoo-semantic.conf  (repo-local, dev convenience)
+#
+# Mỗi GIÁ TRỊ có thể override bằng env var (precedence cao hơn INI):
+#   neo4j_uri      ← NEO4J_URI
+#   neo4j_user     ← NEO4J_USER
+#   neo4j_password ← NEO4J_PASSWORD
+#   pg_dsn         ← PG_DSN
+#   embedder.url   ← EMBEDDER_URL
+#   embedder.model ← EMBEDDER_MODEL
+#   embedder.dim   ← EMBEDDER_DIM
+# → docker-compose.yml và .env dùng env var để cấu hình runtime,
+#   INI là default cho local dev.
 
 [database]
 neo4j_uri = bolt://localhost:7687
 neo4j_user = neo4j
-neo4j_password =                                ; bắt buộc điền
+neo4j_password =                                ; bắt buộc điền (hoặc set NEO4J_PASSWORD env)
 
-pg_dsn = postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+# Thay <PASSWORD> bằng password thật. KHÔNG để mặc định "password" trên prod.
+pg_dsn = postgresql://odoo_semantic:<PASSWORD>@localhost:5432/odoo_semantic
 
 [server]
 # Bind localhost — reverse proxy phía trước handle external + auth (M5).

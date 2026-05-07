@@ -1,16 +1,22 @@
 # src/db/repo_registry.py
 """CRUD for profiles + repos in PostgreSQL."""
+import psycopg2
+import psycopg2.errors
 from psycopg2.extras import RealDictCursor
 
 
 def add_profile(conn, name: str, odoo_version: str, description: str = "") -> int:
+    """Insert a new profile. Raises ValueError if name already exists."""
     with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO profiles (name, odoo_version, description) "
-            "VALUES (%s, %s, %s) RETURNING id",
-            (name, odoo_version, description),
-        )
-        return cur.fetchone()[0]
+        try:
+            cur.execute(
+                "INSERT INTO profiles (name, odoo_version, description) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                (name, odoo_version, description),
+            )
+            return cur.fetchone()[0]
+        except psycopg2.errors.UniqueViolation as e:
+            raise ValueError(f"Profile '{name}' already exists") from e
 
 
 def list_profiles(conn) -> list[dict]:

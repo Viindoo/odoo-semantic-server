@@ -157,3 +157,45 @@ def test_find_examples_rerank_by_dependents(clean_pg_embeddings, clean_neo4j):
     assert popular_pos < isolated_pos, (
         "popular_mod (5 dependents) must rank above isolated_mod (0 dependents)"
     )
+
+
+# --- Graceful degradation when embedder unavailable (I4) -------------------
+
+class _BrokenEmbedder:
+    """Simulates Ollama unreachable / model not loaded."""
+
+    def embed(self, texts):
+        raise ConnectionError("Connection refused: http://localhost:11434")
+
+
+def test_find_examples_handles_embedder_call_failure(seeded):
+    """When embedder.embed() raises, return actionable error message instead of 500."""
+    pg, neo4j_driver = seeded
+    from src.mcp.server import _find_examples
+
+    result = _find_examples(
+        "confirm sale", odoo_version=TEST_VERSION,
+        _driver=neo4j_driver, _pg_conn=pg, _embedder=_BrokenEmbedder(),
+    )
+    assert "embedding query failed" in result.lower()
+    assert "ollama" in result.lower() or "11434" in result
+    assert "Found 0 results" in result
+
+
+def test_find_examples_handles_embedder_construction_failure(seeded, monkeypatch):
+    """When _get_embedder() raises (config missing, model unavailable), surface friendly error."""
+    pg, neo4j_driver = seeded
+    from src.mcp import server as srv
+
+    # Force _get_embedder to raise — simulate misconfigured embedder section
+    def _broken():
+        raise RuntimeError("EMBEDDER_URL not set")
+
+    monkeypatch.setattr(srv, "_get_embedder", _broken)
+
+    result = srv._find_examples(
+        "confirm sale", odoo_version=TEST_VERSION,
+        _driver=neo4j_driver, _pg_conn=pg, _embedder=None,
+    )
+    assert "embedder unavailable" in result.lower()
+    assert "Found 0 results" in result
