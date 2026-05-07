@@ -431,6 +431,9 @@ def _compute_risk(view_count: int, method_count: int, js_count: int) -> str:
     """Risk threshold v0 — tunable at M6.
 
     HIGH >= 10 affected entities, MEDIUM 4-9, LOW < 4.
+    # Thresholds calibrated qualitatively against Odoo 17 + Viindoo addons typical fan-out:
+    # <4 changes = isolated, 4-9 = module-scope review needed, ≥10 = cross-module impact
+    # requiring full regression. M6 will recalibrate against held-out eval set.
     """
     total = view_count + method_count + js_count
     if total >= 10:
@@ -501,6 +504,8 @@ def _impact_analysis(
         else:  # model
             exists = session.run(
                 "MATCH (m:Model {name: $mn, odoo_version: $v}) "
+                "WHERE coalesce(m.unresolved, false) = false "
+                "AND m.module <> '__unresolved__' "
                 "RETURN count(m) AS c",
                 mn=model_name, v=odoo_version,
             ).single()["c"]
@@ -596,13 +601,29 @@ def _impact_analysis(
 
     # Methods section
     if entity_type == "field":
-        methods_label = "Methods with super"
+        methods_label = (
+            f"Methods on {model_name} with super() ({method_count})"
+            f" — field-level filter not yet implemented (M5)"
+        )
     elif entity_type == "method":
         methods_label = "Override chain"
     else:
         methods_label = "Methods"
 
-    if methods:
+    if entity_type == "field":
+        # For field: use pre-built label that already contains count
+        if methods:
+            lines.append(f"├─ {methods_label}:")
+            for i, m_item in enumerate(methods):
+                connector = "└─" if i == method_count - 1 else "├─"
+                lines.append(f"│   {connector} [{m_item['module']}] {m_item['name']}")
+        else:
+            lines.append(f"├─ {methods_label}: none")
+        lines.append(
+            "│   Note: field-level impact requires F4 USES_FIELD edge"
+            " (deferred to M5). Current scope: model-level."
+        )
+    elif methods:
         lines.append(f"├─ {methods_label} ({method_count}):")
         for i, m_item in enumerate(methods):
             connector = "└─" if i == method_count - 1 else "├─"

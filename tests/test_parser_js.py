@@ -263,3 +263,70 @@ def test_parse_module_graph_skip_lib_dir(tmp_path):
     result = parse_module_graph(_module(tmp_path))
     paths = {p.file_path for p in result.patches}
     assert not any("jquery.min.js" in fp for fp in paths), "lib/ file must be excluded"
+
+
+# --- bound_model heuristic (I2) ---
+
+def test_parse_module_graph_era3_bound_model_orm_call(tmp_path):
+    """era3: class with this.orm.read('sale.order', ...) → OWLCompInfo.bound_model='sale.order'."""
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n\n"
+        "class SaleOrderList extends Component {\n"
+        "    async loadData() {\n"
+        "        const records = await this.orm.read('sale.order', [1, 2], ['name']);\n"
+        "        return records;\n"
+        "    }\n"
+        "}\n"
+    )
+    _make_static_js(tmp_path, "sale_order_list.js", src)
+    result = parse_module_graph(_module(tmp_path))
+    assert result.components, "Expected at least one OWLCompInfo"
+    comp = next((c for c in result.components if c.name == "SaleOrderList"), None)
+    assert comp is not None, "Expected OWLCompInfo named 'SaleOrderList'"
+    assert comp.bound_model == "sale.order", (
+        f"Expected bound_model='sale.order', got {comp.bound_model!r}"
+    )
+
+
+def test_parse_module_graph_era3_bound_model_resmodel_kwarg(tmp_path):
+    """era3: class with resModel: 'sale.order' kwarg → OWLCompInfo.bound_model == 'sale.order'."""
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n\n"
+        "class SaleActionButton extends Component {\n"
+        "    doAction() {\n"
+        "        this.action.doAction({ resModel: 'sale.order', type: 'ir.actions.act_window' });\n"
+        "    }\n"
+        "}\n"
+    )
+    _make_static_js(tmp_path, "sale_action_button.js", src)
+    result = parse_module_graph(_module(tmp_path))
+    assert result.components, "Expected at least one OWLCompInfo"
+    comp = next((c for c in result.components if c.name == "SaleActionButton"), None)
+    assert comp is not None, "Expected OWLCompInfo named 'SaleActionButton'"
+    assert comp.bound_model == "sale.order", (
+        f"Expected bound_model='sale.order', got {comp.bound_model!r}"
+    )
+
+
+def test_parse_module_graph_era3_bound_model_none_when_dynamic(tmp_path):
+    """era3: class with dynamic this.orm.read(this.props.model, ...) → bound_model == None."""
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n\n"
+        "class DynamicModelList extends Component {\n"
+        "    async loadData() {\n"
+        "        const records = await this.orm.read(this.props.model, [1], ['name']);\n"
+        "        return records;\n"
+        "    }\n"
+        "}\n"
+    )
+    _make_static_js(tmp_path, "dynamic_model_list.js", src)
+    result = parse_module_graph(_module(tmp_path))
+    assert result.components, "Expected at least one OWLCompInfo"
+    comp = next((c for c in result.components if c.name == "DynamicModelList"), None)
+    assert comp is not None, "Expected OWLCompInfo named 'DynamicModelList'"
+    assert comp.bound_model is None, (
+        f"Dynamic model reference should not be resolved, got bound_model={comp.bound_model!r}"
+    )

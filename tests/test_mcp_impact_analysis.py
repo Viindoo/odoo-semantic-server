@@ -8,24 +8,24 @@ import sys
 
 import pytest
 
-from tests.conftest import TEST_VERSION
-
-pytestmark_neo4j = pytest.mark.neo4j
-
+from tests.conftest import TEST_VERSION  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Helpers — set Neo4j env vars so server module picks them up
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _setup_env():
-    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
-    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
-    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+def _import_tools(monkeypatch=None):
+    """Import _impact_analysis and _compute_risk, optionally using monkeypatch for env isolation."""
+    if monkeypatch is not None:
+        monkeypatch.setenv("NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"))
+        monkeypatch.setenv("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+        monkeypatch.setenv("NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"))
+    else:
+        # Fallback for pure-logic tests that don't need Neo4j (no side-effects matter)
+        os.environ.setdefault("NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"))
+        os.environ.setdefault("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+        os.environ.setdefault("NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"))
     sys.modules.pop("src.mcp.server", None)
-
-
-def _import_tools():
-    _setup_env()
     from src.mcp.server import _compute_risk, _impact_analysis
     return _impact_analysis, _compute_risk
 
@@ -35,7 +35,7 @@ def _import_tools():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def seeded_impact(clean_neo4j):
+def seeded_impact(clean_neo4j, monkeypatch):
     """Seed all node/edge types needed for impact_analysis tests."""
     from src.indexer.models import (
         FieldInfo,
@@ -54,6 +54,11 @@ def seeded_impact(clean_neo4j):
     uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
     user = os.getenv("NEO4J_TEST_USER", "neo4j")
     password = os.getenv("NEO4J_TEST_PASSWORD", "password")
+
+    # Isolate env vars for server module via monkeypatch
+    monkeypatch.setenv("NEO4J_URI", uri)
+    monkeypatch.setenv("NEO4J_USER", user)
+    monkeypatch.setenv("NEO4J_PASSWORD", password)
 
     writer = Neo4jWriter(uri=uri, user=user, password=password)
     writer.setup_indexes()
@@ -156,24 +161,24 @@ def test_compute_risk_thresholds():
     assert _compute_risk(0, 0, 0) == "LOW"     # total=0 → LOW
 
 
-def test_impact_analysis_invalid_entity_type():
+def test_impact_analysis_invalid_entity_type(monkeypatch):
     """Invalid entity_type returns friendly error."""
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("garbage", "test.model.test_field", TEST_VERSION)
     assert "Invalid entity_type" in result
     assert "garbage" in result
 
 
-def test_impact_analysis_unparseable_field():
+def test_impact_analysis_unparseable_field(monkeypatch):
     """Field entity_name without dot returns friendly error."""
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("field", "nodot", TEST_VERSION)
     assert "not found" in result.lower() or "invalid" in result.lower() or "error" in result.lower()
 
 
-def test_impact_analysis_unparseable_method():
+def test_impact_analysis_unparseable_method(monkeypatch):
     """Method entity_name without dot returns friendly error."""
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("method", "nodot", TEST_VERSION)
     assert "not found" in result.lower() or "invalid" in result.lower() or "error" in result.lower()
 
@@ -183,18 +188,18 @@ def test_impact_analysis_unparseable_method():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.neo4j
-def test_impact_analysis_entity_not_found(clean_neo4j):
+def test_impact_analysis_entity_not_found(clean_neo4j, monkeypatch):
     """Entity not in DB returns friendly 'not found' message."""
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("model", "nonexistent.model.xyz", TEST_VERSION)
     assert "not found" in result.lower()
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_field_returns_tree(seeded_impact):
+def test_impact_analysis_field_returns_tree(seeded_impact, monkeypatch):
     """Field impact analysis returns tree with all sections."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("field", "test.model.test_field", v)
 
     assert "Risk:" in result
@@ -205,10 +210,10 @@ def test_impact_analysis_field_returns_tree(seeded_impact):
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_field_shows_view(seeded_impact):
+def test_impact_analysis_field_shows_view(seeded_impact, monkeypatch):
     """Field analysis lists views that target the model."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("field", "test.model.test_field", v)
 
     # At least one of the seeded views should appear
@@ -216,19 +221,19 @@ def test_impact_analysis_field_shows_view(seeded_impact):
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_field_not_found(seeded_impact):
+def test_impact_analysis_field_not_found(seeded_impact, monkeypatch):
     """Field that does not exist in DB returns not found."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("field", "test.model.nonexistent_field", v)
     assert "not found" in result.lower()
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_method_basic(seeded_impact):
+def test_impact_analysis_method_basic(seeded_impact, monkeypatch):
     """Method impact analysis returns tree with Risk and sections."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("method", "test.model.action_do", v)
 
     assert "Risk:" in result
@@ -237,29 +242,29 @@ def test_impact_analysis_method_basic(seeded_impact):
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_method_shows_override_chain(seeded_impact):
+def test_impact_analysis_method_shows_override_chain(seeded_impact, monkeypatch):
     """Method analysis lists override chain entries."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("method", "test.model.action_do", v)
     # Both test_base and test_ext define action_do
     assert "test_base" in result or "test_ext" in result
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_method_not_found(seeded_impact):
+def test_impact_analysis_method_not_found(seeded_impact, monkeypatch):
     """Method that does not exist in DB returns not found."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("method", "test.model.nonexistent_method", v)
     assert "not found" in result.lower()
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_model_lists_extensions(seeded_impact):
+def test_impact_analysis_model_lists_extensions(seeded_impact, monkeypatch):
     """Model impact lists all extension modules."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("model", "test.model", v)
 
     assert "Risk:" in result
@@ -269,18 +274,46 @@ def test_impact_analysis_model_lists_extensions(seeded_impact):
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_model_lists_views(seeded_impact):
+def test_impact_analysis_model_lists_views(seeded_impact, monkeypatch):
     """Model impact shows views section."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("model", "test.model", v)
     assert "Views" in result
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_model_not_found(seeded_impact):
+def test_impact_analysis_model_not_found(seeded_impact, monkeypatch):
     """Model that does not exist returns not found."""
     v = seeded_impact
-    _impact_analysis, _ = _import_tools()
+    _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("model", "nonexistent.xyz", v)
     assert "not found" in result.lower()
+
+
+@pytest.mark.neo4j
+def test_impact_analysis_rejects_unresolved_placeholder_model(clean_neo4j, monkeypatch):
+    """__unresolved__ placeholder Model must be treated as 'not found'."""
+    from neo4j import GraphDatabase
+
+    # Seed a placeholder Model node directly
+    uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    user = os.getenv("NEO4J_TEST_USER", "neo4j")
+    password = os.getenv("NEO4J_TEST_PASSWORD", "password")
+
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    with driver.session() as session:
+        session.run(
+            "MERGE (m:Model {name: $name, module: $mod, odoo_version: $v}) "
+            "SET m.unresolved = true",
+            name="mail.thread", mod="__unresolved__", v=TEST_VERSION,
+        )
+    driver.close()
+
+    _impact_analysis, _ = _import_tools(monkeypatch)
+    result = _impact_analysis("model", "mail.thread", TEST_VERSION)
+
+    # Should be treated as not found — placeholder must not pass existence check
+    assert "not found" in result.lower(), (
+        f"__unresolved__ placeholder should be rejected as 'not found', got: {result!r}"
+    )

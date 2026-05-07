@@ -20,7 +20,7 @@ _SNAP_VERSION = "96.0"  # dedicated version — avoids conflict with 99.0 / 98.0
 
 
 @pytest.fixture(scope="module")
-def snapshot_db(neo4j_driver):
+def snapshot_db(neo4j_driver, monkeypatch_module):
     """Seed minimal account.move data + yield; teardown after module."""
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
@@ -42,9 +42,9 @@ def snapshot_db(neo4j_driver):
     writer.write_results([ParseResult(module=mod, models=[model])])
     writer.close()
 
-    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
-    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
-    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    monkeypatch_module.setenv("NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"))
+    monkeypatch_module.setenv("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+    monkeypatch_module.setenv("NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"))
     import sys
     sys.modules.pop("src.mcp.server", None)
 
@@ -277,7 +277,7 @@ class TestFindExamplesOutputSchema:
         )
 
 
-def test_impact_analysis_output_has_required_sections(snapshot_db, neo4j_driver):
+def test_impact_analysis_output_has_required_sections(snapshot_db, neo4j_driver, monkeypatch):
     """
     Contract per docs/thiet-ke-kien-truc.md §MCP Tools Interface:
         impact_analysis(field, snapshot.model.snap_field, 96.0)
@@ -330,10 +330,10 @@ def test_impact_analysis_output_has_required_sections(snapshot_db, neo4j_driver)
 
     writer.close()
 
-    # Patch Neo4j env so _impact_analysis picks up test data
-    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
-    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
-    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    # Patch Neo4j env so _impact_analysis picks up test data — use monkeypatch for isolation
+    monkeypatch.setenv("NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"))
+    monkeypatch.setenv("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+    monkeypatch.setenv("NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"))
     import sys
     sys.modules.pop("src.mcp.server", None)
     from src.mcp.server import _impact_analysis as impact_analysis_fresh
@@ -372,7 +372,9 @@ def test_impact_analysis_output_has_required_sections(snapshot_db, neo4j_driver)
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=test_version)
 
 
-def test_impact_analysis_output_empty_sections_render_gracefully(snapshot_db, neo4j_driver):
+def test_impact_analysis_output_empty_sections_render_gracefully(
+    snapshot_db, neo4j_driver, monkeypatch
+):
     """
     impact_analysis with no affected views/methods/js should render without errors.
     Empty sections show ': none' gracefully — no 'None' leak into output.
@@ -405,9 +407,9 @@ def test_impact_analysis_output_empty_sections_render_gracefully(snapshot_db, ne
     writer.write_results([ParseResult(module=mod, models=[model])])
     writer.close()
 
-    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
-    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
-    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    monkeypatch.setenv("NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"))
+    monkeypatch.setenv("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+    monkeypatch.setenv("NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"))
     import sys
     sys.modules.pop("src.mcp.server", None)
     from src.mcp.server import _impact_analysis as impact_analysis_fresh
