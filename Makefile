@@ -24,10 +24,16 @@ install:
 	$(UV) venv $(VENV)
 	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
 	@[ -f .env ] || (cp .env.example .env && \
-		echo "✓ .env created — fill in NEO4J_PASSWORD, PG_PASSWORD")
+		echo "✓ .env created")
 	@[ -f odoo-semantic.conf ] || (cp odoo-semantic.conf.example odoo-semantic.conf && \
-		echo "✓ odoo-semantic.conf created — fill in [database] passwords")
-	@echo "Next: docker compose up -d  →  $(VENV)/bin/python -m src.db.migrate"
+		echo "✓ odoo-semantic.conf created")
+	@echo ""
+	@echo "✓ Setup complete. Next steps:"
+	@echo "  1. Edit .env — điền NEO4J_PASSWORD + PG_PASSWORD (replace <PASSWORD> trong PG_DSN)"
+	@echo "  2. docker compose up -d        # khởi động Neo4j + PostgreSQL"
+	@echo "  3. $(VENV)/bin/python -m src.db.migrate    # bootstrap schema"
+	@echo "  4. Xem README §Local E2E Quickstart để index repo + start MCP server."
+	@echo ""
 
 # --- Tests ---
 
