@@ -118,7 +118,9 @@ def _parse_era1(source: bytes, module: str, version: str, file_path: str) -> lis
         elif parent and parent.type == "variable_declarator":
             id_node = _find_first_child_by_type(parent, "identifier")
             if id_node:
-                entity_name = source[id_node.start_byte:id_node.end_byte].decode("utf-8", errors="ignore")
+                entity_name = source[
+                    id_node.start_byte:id_node.end_byte
+                ].decode("utf-8", errors="ignore")
 
         content = src_str[node.start_byte:node.end_byte]
         if len(content) <= _WINDOW:
@@ -202,7 +204,9 @@ def _parse_era3(source: bytes, module: str, version: str, file_path: str) -> lis
                     era="era3", entity_name=entity_name, chunk_idx=0, content=content,
                 ))
             else:
-                chunks.extend(_sliding_chunks(content, module, version, file_path, "era3", entity_name))
+                chunks.extend(
+                    _sliding_chunks(content, module, version, file_path, "era3", entity_name)
+                )
 
         # patch() calls: patch("MyComponent", { ... })
         elif node.type == "call_expression":
@@ -223,7 +227,9 @@ def _parse_era3(source: bytes, module: str, version: str, file_path: str) -> lis
                         era="era3", entity_name=entity_name, chunk_idx=0, content=content,
                     ))
                 else:
-                    chunks.extend(_sliding_chunks(content, module, version, file_path, "era3", entity_name))
+                    chunks.extend(
+                        _sliding_chunks(content, module, version, file_path, "era3", entity_name)
+                    )
 
     if not chunks:
         chunks.extend(_sliding_chunks(src_str, module, version, file_path, "era3",

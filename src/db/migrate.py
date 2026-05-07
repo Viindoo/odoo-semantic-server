@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS embeddings (
     content      TEXT NOT NULL,
     vec          vector(1024) NOT NULL,
     indexed_at   TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT ux_embeddings_chunk UNIQUE (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx)
+    CONSTRAINT ux_embeddings_chunk
+        UNIQUE (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx)
 );
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_vec

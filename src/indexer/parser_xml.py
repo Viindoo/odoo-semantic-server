@@ -9,7 +9,9 @@ _VIEW_TYPES = {
 }
 
 
-def _parse_record(record: ET.Element, module: ModuleInfo, file_path: str | None = None) -> ViewInfo | None:
+def _parse_record(
+    record: ET.Element, module: ModuleInfo, file_path: str | None = None
+) -> ViewInfo | None:
     """Parse a <record> element as an ir.ui.view."""
     if record.get("model") != "ir.ui.view":
         return None

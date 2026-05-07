@@ -31,7 +31,7 @@ def seeded(clean_pg_embeddings, clean_neo4j):
     base_chunks = [EmbeddingChunk(
         "field", "base", TEST_VERSION, "res.partner.name",
         "res.partner", "base/models/partner.py", 0,
-        f"[base] res.partner: name (char)\nname = fields.Char(...)",
+        "[base] res.partner: name (char)\nname = fields.Char(...)",
     )]
     write_module_embeddings(clean_pg_embeddings, "sale", TEST_VERSION, sale_chunks, embedder)
     write_module_embeddings(clean_pg_embeddings, "base", TEST_VERSION, base_chunks, embedder)

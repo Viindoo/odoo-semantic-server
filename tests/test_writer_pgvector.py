@@ -3,8 +3,15 @@ import pytest
 
 from src.indexer.embedder import FakeEmbedder
 from src.indexer.models import (
-    FieldInfo, JSChunk, MethodInfo, ModelInfo, ModuleInfo,
-    ParseResult, QWebInfo, ViewInfo, ViewParseResult,
+    FieldInfo,
+    JSChunk,
+    MethodInfo,
+    ModelInfo,
+    ModuleInfo,
+    ParseResult,
+    QWebInfo,
+    ViewInfo,
+    ViewParseResult,
 )
 from src.indexer.writer_pgvector import EmbeddingChunk, make_chunks, write_module_embeddings
 
@@ -24,7 +31,9 @@ def _module_info() -> ModuleInfo:
 def test_make_chunks_from_method():
     model = ModelInfo(
         name="sale.order", module=TEST_MODULE, odoo_version=TEST_VERSION,
-        methods=[MethodInfo(name="action_confirm", source_code="def action_confirm(self):\n    pass")],
+        methods=[
+            MethodInfo(name="action_confirm", source_code="def action_confirm(self):\n    pass")
+        ],
     )
     result = ParseResult(module=_module_info(), models=[model])
     chunks = make_chunks(TEST_MODULE, TEST_VERSION, result, None, None)
@@ -176,7 +185,8 @@ def test_ann_query_returns_nearest_result(clean_pg_embeddings):
     query_vec = embedder.embed(["confirm sale order"])[0]
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
-            "SELECT entity_name FROM embeddings WHERE odoo_version = %s ORDER BY vec <=> %s LIMIT 1",
+            "SELECT entity_name FROM embeddings "
+            "WHERE odoo_version = %s ORDER BY vec <=> %s LIMIT 1",
             (TEST_VERSION, query_vec),
         )
         row = cur.fetchone()

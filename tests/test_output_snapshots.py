@@ -156,13 +156,16 @@ class TestFindExamplesOutputSchema:
     def _seed(self, request, neo4j_driver):
         from src.db.migrate import _vector_extension_available
         # Check if pg_conn fixture is available (reachable)
-        pg_conn_fixture = request.getfixturevalue("pg_conn") if "pg_conn" in request.fixturenames else None
+        pg_conn_fixture = (
+            request.getfixturevalue("pg_conn") if "pg_conn" in request.fixturenames else None
+        )
         if pg_conn_fixture is None:
             pytest.skip("PostgreSQL not reachable")
         if not _vector_extension_available(pg_conn_fixture):
             pytest.skip("pgvector extension not installed")
 
         from pgvector.psycopg2 import register_vector
+
         from src.db.migrate import run_migrations
         from src.indexer.embedder import FakeEmbedder
         from src.indexer.writer_pgvector import EmbeddingChunk, write_module_embeddings
@@ -180,7 +183,8 @@ class TestFindExamplesOutputSchema:
         chunks = [EmbeddingChunk(
             "method", "snap_mod", _SNAP_VERSION, "snap_mod.sale.order.action_confirm",
             "sale.order", "snap_mod/models/sale.py", 0,
-            f"[snap_mod] sale.order.action_confirm ({_SNAP_VERSION})\ndef action_confirm(self): ...",
+            f"[snap_mod] sale.order.action_confirm ({_SNAP_VERSION})\n"
+            "def action_confirm(self): ...",
         )]
         write_module_embeddings(pg_conn_fixture, "snap_mod", _SNAP_VERSION, chunks, embedder)
 

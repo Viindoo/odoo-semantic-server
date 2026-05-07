@@ -17,6 +17,7 @@ Requires:
                     PG_DSN
 """
 import os
+
 import pytest
 
 pytestmark = pytest.mark.ollama
@@ -153,8 +154,9 @@ def _extract_entities(result_text: str) -> list[str]:
 def live_connections():
     """Open real Neo4j + PostgreSQL + Ollama embedder connections."""
     import psycopg2
-    from pgvector.psycopg2 import register_vector
     from neo4j import GraphDatabase
+    from pgvector.psycopg2 import register_vector
+
     from src.indexer.embedder import Qwen3Embedder
 
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")

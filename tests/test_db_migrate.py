@@ -1,7 +1,7 @@
 """Integration tests for src.db.migrate — requires PostgreSQL."""
 import pytest
 
-from src.db.migrate import run_migrations, _vector_extension_available
+from src.db.migrate import _vector_extension_available, run_migrations
 
 pytestmark = pytest.mark.postgres
 
@@ -75,7 +75,8 @@ def test_migrate_embeddings_unique_index(clean_pg):
         cur.execute(
             "INSERT INTO embeddings (chunk_type, module, odoo_version, entity_name, "
             "file_path, content, vec) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            ("method", "sale", "99.0", "action_confirm", "models/sale.py", "def action_confirm(self):", vec),
+            ("method", "sale", "99.0", "action_confirm",
+             "models/sale.py", "def action_confirm(self):", vec),
         )
         with pytest.raises(psycopg2.errors.UniqueViolation):
             cur.execute(

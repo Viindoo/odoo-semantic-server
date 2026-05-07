@@ -60,7 +60,9 @@ def _get_base_class_names(cls_node: ast.ClassDef) -> set[str]:
     return names
 
 
-def _parse_class(cls_node: ast.ClassDef, module_info: ModuleInfo, source: str = "") -> ModelInfo | None:
+def _parse_class(
+    cls_node: ast.ClassDef, module_info: ModuleInfo, source: str = ""
+) -> ModelInfo | None:
     base_names = _get_base_class_names(cls_node)
     is_model_class = bool(base_names & MODEL_BASE_CLASSES)
 

@@ -52,7 +52,9 @@ def _sliding(
 ) -> list[EmbeddingChunk]:
     """Split large content into overlapping window EmbeddingChunks."""
     if len(raw) <= _WINDOW_CHARS:
-        return [EmbeddingChunk(chunk_type, module, version, entity_name, model_name, file_path, 0, raw)]
+        return [
+            EmbeddingChunk(chunk_type, module, version, entity_name, model_name, file_path, 0, raw)
+        ]
     chunks: list[EmbeddingChunk] = []
     start, idx = 0, 0
     while start < len(raw):
@@ -102,13 +104,17 @@ def make_chunks(
             prefix = f"[{module}] {view.xmlid} ({view.view_type}{inherit_str})"
             body = view.arch or f"<!-- arch missing for {view.xmlid} -->"
             fp = view.file_path or parse_result.module.path
-            chunks.extend(_sliding(f"{prefix}\n{body}", view.xmlid, "view", module, version, fp, view.model))
+            chunks.extend(
+                _sliding(f"{prefix}\n{body}", view.xmlid, "view", module, version, fp, view.model)
+            )
 
         for qweb in view_result.qweb:
             prefix = f"[{module}] {qweb.xmlid}"
             body = qweb.content or f"<!-- content missing for {qweb.xmlid} -->"
             fp = qweb.file_path or parse_result.module.path
-            chunks.extend(_sliding(f"{prefix}\n{body}", qweb.xmlid, "qweb", module, version, fp, None))
+            chunks.extend(
+                _sliding(f"{prefix}\n{body}", qweb.xmlid, "qweb", module, version, fp, None)
+            )
 
     for jsc in (js_chunks or []):
         chunk_type = f"js_{jsc.era}"
