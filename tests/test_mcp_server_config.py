@@ -90,3 +90,20 @@ def test_get_driver_env_overrides_config(tmp_path, monkeypatch):
 
     assert captured["uri"] == "bolt://env.example.com:7687"
     assert captured["auth"] == ("envuser", "envpass")
+
+
+def test_find_examples_empty_query_returns_early():
+    """_find_examples('') must return immediately without opening any DB connection."""
+    from src.mcp.server import _find_examples
+
+    result = _find_examples("", _driver=object(), _pg_conn=object(), _embedder=object())
+    assert "query rỗng" in result
+    assert "Found 0 results" in result
+
+
+def test_find_examples_whitespace_query_returns_early():
+    """_find_examples with only whitespace is treated the same as empty."""
+    from src.mcp.server import _find_examples
+
+    result = _find_examples("   ", _driver=object(), _pg_conn=object(), _embedder=object())
+    assert "query rỗng" in result

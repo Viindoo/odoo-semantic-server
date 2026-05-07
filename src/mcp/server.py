@@ -37,6 +37,7 @@ def _get_pg_conn():
     global _pg_conn
     if _pg_conn is None or _pg_conn.closed:
         from pgvector.psycopg2 import register_vector
+
         from src import config
         dsn = (
             os.getenv("PG_DSN")
@@ -275,6 +276,9 @@ def _find_examples(
     _pg_conn=None,
     _embedder=None,
 ) -> str:
+    if not query.strip():
+        return "find_examples: query rỗng — hãy nhập mô tả tính năng cần tìm\nFound 0 results\n"
+
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 
     pg = _pg_conn or _get_pg_conn()
@@ -409,7 +413,17 @@ def find_examples(
     context_module: str | None = None,
     chunk_types: list[str] | None = None,
 ) -> str:
-    """Return semantically similar Odoo code chunks matching the query (any language)."""
+    """Tìm code examples từ codebase Odoo theo mô tả ngôn ngữ tự nhiên.
+
+    Args:
+        query: Mô tả tính năng cần tìm (VN hoặc EN).
+        odoo_version: Version Odoo (ví dụ "17.0"). Mặc định "auto" = version mới nhất được index.
+        limit: Số kết quả trả về (mặc định 5, tối đa 20).
+        context_module: Module đang làm việc. Kết quả từ các module mà module này depends on
+            được ưu tiên cao hơn (+0.20 score boost).
+        chunk_types: Lọc theo loại code. Giá trị hợp lệ: method, field, view, qweb,
+            js_era1, js_era2, js_era3. Mặc định: tất cả loại.
+    """
     return _find_examples(query, odoo_version, limit, context_module, chunk_types)
 
 

@@ -22,6 +22,9 @@ _PARSER = Parser(_LANG)
 _WINDOW = 2048
 _OVERLAP = 256
 
+_SKIP_DIRS = frozenset({"lib", "tests"})  # Odoo convention: third-party libs + test dirs
+_MAX_JS_BYTES = 200_000  # 200 KB — minified third-party files are usually > 100 KB
+
 
 def _detect_era(source: str) -> str:
     if "@odoo-module" in source:
@@ -269,5 +272,9 @@ def parse_module(module_info: ModuleInfo) -> list[JSChunk]:
 
     chunks: list[JSChunk] = []
     for js_file in sorted(static_src.rglob("*.js")):
+        if any(part in _SKIP_DIRS for part in js_file.relative_to(static_src).parts):
+            continue
+        if js_file.stat().st_size > _MAX_JS_BYTES:
+            continue
         chunks.extend(parse_file(str(js_file), module_info))
     return chunks
