@@ -415,9 +415,35 @@ curl -I https://semantic.example.com/mcp
 
 ## 5. E2E Smoke Test
 
-Sau khi tất cả tiers đang chạy:
+Sau khi tất cả tiers đang chạy. Test cover full M1-M4 (M3 chỉ verify
+được nếu đã setup embedder + re-index không `--no-embed`).
 
-1. Thêm vào `~/.claude/settings.json` (developer laptop):
+### 5.1 Quick verify từ DB tier (không cần MCP client)
+
+Đếm nhanh để xác nhận indexer ghi đủ data:
+
+```bash
+# Neo4j — module + view + JS patch + OWL component count
+docker compose exec neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "
+MATCH (m:Module {odoo_version:'17.0'}) WITH count(m) AS modules
+MATCH (v:View   {odoo_version:'17.0'}) WITH modules, count(v) AS views
+MATCH (jp:JSPatch {odoo_version:'17.0'}) WITH modules, views, count(jp) AS js_patches
+RETURN modules, views, js_patches
+"
+# Expected (Odoo 17 base): modules ≥ 100, views ≥ 1000, js_patches ≥ 50
+
+# PostgreSQL — registry status + embeddings count
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT name, status FROM repos;
+SELECT count(*) AS embeddings FROM embeddings;
+"
+# Expected: status='indexed' cho mọi repo. embeddings = 0 nếu chạy
+# --no-embed; > 0 sau khi re-index có embedder.
+```
+
+### 5.2 Verify qua MCP client (Claude Code)
+
+Thêm vào `~/.claude/settings.json` trên laptop dev:
 
 ```json
 {
@@ -429,18 +455,29 @@ Sau khi tất cả tiers đang chạy:
 }
 ```
 
-2. Mở Claude Code, hỏi:
-   ```
-   resolve_model("account.move", "17.0")
-   ```
+Restart Claude Code, gọi 4 tool dưới đây. Mỗi tool cover 1 milestone:
 
-3. Expected: tool trả về inheritance chain của `account.move`.
+Output các tool đều là text tree (`├─ ... └─ ...`) — đọc được trực tiếp.
 
-4. Nếu trả về rỗng: kiểm tra `repos.status='indexed'` trong PostgreSQL:
-   ```bash
-   docker compose exec postgres \
-       psql -U odoo_semantic -c "SELECT name, status FROM repos;"
-   ```
+| # | Tool call | Milestone | Expected (key snippets trong output) |
+|---|-----------|-----------|--------------------------------------|
+| 1 | `resolve_model("account.move", "17.0")` | M1 | Header `account.move (Odoo 17.0)`; section `Inheritance` ≥ 1 module; section `Fields` non-empty (vd `name`, `state`, `amount_total`). |
+| 2 | `resolve_view("sale.view_order_form", "17.0")` | M2 | Header view xmlid; `View chain` ≥ 1 entry; `XPath modifications` list (có thể empty nếu chỉ view base). |
+| 3 | `impact_analysis("field", "sale.order.amount_total", "17.0")` | M4 | Dòng `├─ Risk: <LOW\|MEDIUM\|HIGH>`; section `Views (N)` non-empty; `JS patches (N)`; `Dependent modules`. |
+| 4 | `find_examples("compute tax based on partner country")` | M3 | List 5 results, mỗi entry có file path + score. **Skip nếu indexer chạy `--no-embed`** — tool sẽ báo "no embeddings indexed". |
+
+Nếu tool trả rỗng:
+
+```bash
+# Kiểm tra repo status
+docker compose exec postgres psql -U odoo_semantic \
+    -c "SELECT name, status, last_indexed_at FROM repos;"
+# status='indexed' → repo đã index
+# status='error'   → xem indexer log
+
+# Kiểm tra MCP server reach DB
+sudo journalctl -u odoo-semantic-mcp -n 50 | grep -iE "neo4j|postgres|error"
+```
 
 ---
 
