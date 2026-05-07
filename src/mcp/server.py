@@ -1,6 +1,5 @@
 # src/mcp/server.py
 import math
-import os
 
 import psycopg2
 from fastmcp import FastMCP
@@ -16,19 +15,22 @@ def _get_driver():
     global _driver
     if _driver is None:
         from src import config
-        # os.getenv returns None when var is unset; "" also falls through to config — intentional
-        uri = (
-            os.getenv("NEO4J_URI")
-            or config.get("database", "neo4j_uri", fallback="bolt://localhost:7687")
+        # Resolution order per from_env_or_ini: env var → INI → fallback
+        uri = config.from_env_or_ini(
+            "NEO4J_URI", "database", "neo4j_uri",
+            fallback="bolt://localhost:7687",
         )
-        user = (
-            os.getenv("NEO4J_USER")
-            or config.get("database", "neo4j_user", fallback="neo4j")
+        user = config.from_env_or_ini(
+            "NEO4J_USER", "database", "neo4j_user", fallback="neo4j",
         )
-        password = (
-            os.getenv("NEO4J_PASSWORD")
-            or config.get("database", "neo4j_password", fallback="password")
+        password = config.from_env_or_ini(
+            "NEO4J_PASSWORD", "database", "neo4j_password", fallback=None,
         )
+        if not password:
+            raise RuntimeError(
+                "Neo4j password missing. Set NEO4J_PASSWORD env var OR "
+                "neo4j_password in [database] section of odoo-semantic.conf."
+            )
         _driver = GraphDatabase.driver(uri, auth=(user, password))
     return _driver
 
@@ -39,11 +41,14 @@ def _get_pg_conn():
         from pgvector.psycopg2 import register_vector
 
         from src import config
-        dsn = (
-            os.getenv("PG_DSN")
-            or config.get("database", "pg_dsn",
-                          fallback="postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        dsn = config.from_env_or_ini(
+            "PG_DSN", "database", "pg_dsn", fallback=None,
         )
+        if not dsn:
+            raise RuntimeError(
+                "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
+                "in [database] section of odoo-semantic.conf."
+            )
         _pg_conn = psycopg2.connect(dsn)
         register_vector(_pg_conn)
     return _pg_conn
@@ -54,18 +59,18 @@ def _get_embedder():
     if _embedder_instance is None:
         from src import config
         from src.indexer.embedder import Qwen3Embedder
-        url = (
-            os.getenv("EMBEDDER_URL")
-            or config.get("embedder", "url", fallback="http://localhost:11434")
+        url = config.from_env_or_ini(
+            "EMBEDDER_URL", "embedder", "url",
+            fallback="http://localhost:11434",
         )
-        model = (
-            os.getenv("EMBEDDER_MODEL")
-            or config.get("embedder", "model", fallback="qwen3-embedding-q5km")
+        model = config.from_env_or_ini(
+            "EMBEDDER_MODEL", "embedder", "model",
+            fallback="qwen3-embedding-q5km",
         )
-        dim = int(
-            os.getenv("EMBEDDER_DIM") or config.get("embedder", "dim", fallback="1024")
+        dim_str = config.from_env_or_ini(
+            "EMBEDDER_DIM", "embedder", "dim", fallback="1024",
         )
-        _embedder_instance = Qwen3Embedder(url, model, dim=dim)
+        _embedder_instance = Qwen3Embedder(url, model, dim=int(dim_str))
     return _embedder_instance
 
 
@@ -283,13 +288,28 @@ def _find_examples(
 
     pg = _pg_conn or _get_pg_conn()
     driver = _driver or _get_driver()
-    embedder = _embedder or _get_embedder()
+    try:
+        embedder = _embedder or _get_embedder()
+    except Exception as e:
+        return (
+            f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama server is running (default: http://localhost:11434) "
+            "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
+        )
 
     with driver.session() as session:
         if odoo_version in ("auto", "latest"):
             odoo_version = _latest_version(session)
 
-    query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + query])[0]
+    try:
+        query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + query])[0]
+    except Exception as e:
+        return (
+            f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
+            "Hint: Ollama may be down, model not loaded, or network issue. "
+            "Verify with: curl http://localhost:11434/api/tags\n"
+            "Found 0 results\n"
+        )
 
     VALID_TYPES = {"method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3"}
     selected_types = [t for t in (chunk_types or []) if t in VALID_TYPES]
@@ -383,25 +403,97 @@ def _find_examples(
 
 @mcp.tool()
 def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
-    """Return full info for an Odoo model: inheritance chain, field summary, method summary."""
+    """Return full info for an Odoo model: inheritance chain, field summary, method summary.
+
+    Args:
+        model_name: Odoo dotted name, e.g. 'sale.order', 'res.partner'.
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed version.
+
+    Returns:
+        Tree-formatted text. Use to discover which modules extend a model
+        before adding a new override.
+
+    Example:
+        resolve_model("sale.order", "17.0")
+        →  sale.order (Odoo 17.0)
+           ├─ Base module: [odoo] sale
+           ├─ Extended by:
+           │   ├─ [viin_sale]
+           │   └─ [to_sale_custom]
+           ├─ Fields: 47   Methods: 23
+    """
     return _resolve_model(model_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
-    """Return field details: type, computed/related metadata, declaring module."""
+    """Return field details: type, computed/related metadata, declaring module.
+
+    Args:
+        model_name: e.g. 'sale.order'.
+        field_name: e.g. 'amount_total'.
+        odoo_version: e.g. '17.0'. Default 'auto'.
+
+    Returns:
+        Tree-formatted text including all extension layers, compute method,
+        related path, store flag, source snippet. Use before changing a field
+        to discover all writers/readers across modules.
+
+    Example:
+        resolve_field("sale.order", "amount_total", "17.0")
+        → sale.order.amount_total (Odoo 17.0)
+          Type: monetary | Computed: _compute_amounts | Stored: Yes
+          Defined in:
+          ├─ [odoo] sale          ← base
+          └─ [viin_sale]          ← override
+    """
     return _resolve_field(model_name, field_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
-    """Return override chain of a method, ordered base→top."""
+    """Return override chain of a method, ordered base→top.
+
+    Args:
+        model_name: e.g. 'sale.order'.
+        method_name: e.g. 'action_confirm'.
+        odoo_version: e.g. '17.0'. Default 'auto'.
+
+    Returns:
+        Override chain (base → topmost). Use before super()-overriding
+        to know which modules already extend the method and in what order.
+
+    Example:
+        resolve_method("sale.order", "action_confirm", "17.0")
+        → sale.order.action_confirm (Odoo 17.0)
+          Override chain (base → top):
+          1. [odoo] sale            (base, no super)
+          2. [viin_sale]            (calls super)
+          3. [to_sale_workflow]     (calls super)
+    """
     return _resolve_method(model_name, method_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
-    """Return view inheritance chain and XPath modifications from all extension modules."""
+    """Return view inheritance chain and XPath modifications from all extension modules.
+
+    Args:
+        xmlid: External ID of the view, e.g. 'sale.view_order_form'.
+        odoo_version: e.g. '17.0'. Default 'auto'.
+
+    Returns:
+        View tree + XPath operations applied by each extending module.
+        Use before adding XPath override to avoid conflicts with existing patches.
+
+    Example:
+        resolve_view("sale.view_order_form", "17.0")
+        → sale.view_order_form (form view of sale.order, Odoo 17.0)
+          Base in [odoo] sale
+          Extensions (in apply order):
+          1. [viin_sale] adds 3 xpath ops (after, before, replace)
+          2. [to_sale_custom] adds 1 xpath op (after //field[@name='partner_id'])
+    """
     return _resolve_view(xmlid, odoo_version)
 
 
@@ -413,7 +505,9 @@ def find_examples(
     context_module: str | None = None,
     chunk_types: list[str] | None = None,
 ) -> str:
-    """Tìm code examples từ codebase Odoo theo mô tả ngôn ngữ tự nhiên.
+    """Tìm code examples từ codebase Odoo theo mô tả ngôn ngữ tự nhiên (semantic search).
+
+    Yêu cầu Ollama đang chạy với model `qwen3-embedding-q5km` (xem README §Tool dependencies).
 
     Args:
         query: Mô tả tính năng cần tìm (VN hoặc EN).
@@ -423,6 +517,21 @@ def find_examples(
             được ưu tiên cao hơn (+0.20 score boost).
         chunk_types: Lọc theo loại code. Giá trị hợp lệ: method, field, view, qweb,
             js_era1, js_era2, js_era3. Mặc định: tất cả loại.
+
+    Returns:
+        Header + N kết quả ranked theo cosine + centrality + context boost.
+        Mỗi kết quả: score, type, module, entity, file path, content snippet.
+
+    Example:
+        find_examples("xác nhận đơn bán và gửi email cho khách", "17.0", limit=3)
+        → find_examples: "xác nhận đơn bán và gửi email cho khách" (17.0)
+          Found 3 results
+          ─────────────
+          #1 · score 0.82 · method · [sale] sale.order.action_confirm
+             File: sale/models/sale_order.py
+             ┌────────
+             │ def action_confirm(self):
+             │     ...
     """
     return _find_examples(query, odoo_version, limit, context_module, chunk_types)
 
@@ -664,13 +773,26 @@ def impact_analysis(
     entity_name: str,
     odoo_version: str = "auto",
 ) -> str:
-    """List everything affected if you change <entity>. Risk-scored.
+    """List everything affected if you change <entity>. Risk-scored (LOW/MEDIUM/HIGH).
 
     Args:
         entity_type: One of 'field', 'method', 'model'.
         entity_name: For field/method: '<model>.<name>' e.g. 'sale.order.amount_total'.
                      For model: '<model>' e.g. 'sale.order'.
         odoo_version: Version Odoo (e.g. '17.0'). Default 'auto' = latest indexed version.
+
+    Returns:
+        Risk score + breakdown of affected views, methods, JS patches across modules.
+        Use BEFORE renaming/removing a field, signature-changing a method,
+        or restructuring a model to estimate blast radius.
+
+    Example:
+        impact_analysis("field", "sale.order.amount_total", "17.0")
+        → Impact of changing sale.order.amount_total (17.0): MEDIUM (7 entities)
+          ├─ Views modifying field: 3 ([odoo]sale, [viin_sale], [to_sale_custom])
+          ├─ Methods reading/writing: 4
+          ├─ JS patches binding: 0
+          └─ Recommendation: confirm with [viin_sale, to_sale_custom] owners.
     """
     return _impact_analysis(entity_type, entity_name, odoo_version)
 

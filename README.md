@@ -54,6 +54,10 @@ Odoo repos (~/git/*_17.0/)
 
 Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 
+> ⚠️ **URL `https://semantic.viindoo.com/mcp` là placeholder** — chưa public deploy.
+> Đợi M5 (Product Wow) để có instance production. Hiện tại bạn có thể self-host
+> qua [Local E2E Quickstart](#local-e2e-quickstart) bên dưới.
+
 **Claude Code** — thêm vào `~/.claude/settings.json`:
 ```json
 {
@@ -66,7 +70,7 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 }
 ```
 
-**VS Code** — thêm vào settings (MCP extension):
+**VS Code** — thêm vào settings (MCP extension cụ thể, format có thể khác):
 ```json
 {
   "mcp.servers": {
@@ -79,6 +83,65 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 ```
 
 **Codex / Gemini CLI** — xem hướng dẫn tương ứng của từng tool, cùng cấu trúc URL + header.
+
+> 💡 **Test local trước khi prod**: thay URL trên thành `http://localhost:8002/mcp`,
+> bỏ header `X-API-Key` (M5 sẽ thêm auth). Xem [Local E2E Quickstart](#local-e2e-quickstart).
+
+---
+
+## Local E2E Quickstart
+
+Muốn test MCP local với Claude Code (không cần đợi production deploy)? 5 phút setup:
+
+### 1. Clone + cài deps + bootstrap DB
+```bash
+git clone https://github.com/Viindoo/odoo-semantic-mcp
+cd odoo-semantic-mcp
+make install                     # tạo venv + sao .env.example, odoo-semantic.conf.example
+# Sửa .env: điền NEO4J_PASSWORD và PG_PASSWORD (replace <PASSWORD> trong PG_DSN)
+docker compose up -d             # start Neo4j (:7474, :7687) + PostgreSQL (:5432)
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+```
+
+### 2. Đăng ký 1 profile + index 1 Odoo repo
+```bash
+# Cần sẵn 1 Odoo CE 17 repo local. Nếu chưa có:
+git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
+
+# Đăng ký + attach repo + index
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile odoo17 --version 17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
+  --profile odoo17 --url file://local --branch 17.0 --local-path ~/git/odoo_17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile odoo17 --no-embed
+# (--no-embed bỏ qua M3 semantic search; cần Ollama nếu muốn dùng find_examples)
+```
+
+### 3. Start MCP server
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+# → Server lắng nghe http://127.0.0.1:8002/mcp
+```
+
+### 4. Trỏ Claude Code vào local server
+Thêm vào `~/.claude/settings.json`:
+```json
+{ "mcpServers": { "odoo-semantic": { "url": "http://127.0.0.1:8002/mcp" } } }
+```
+
+Restart Claude Code. Trong chat:
+```
+@odoo-semantic resolve_model("sale.order", "17.0")
+```
+
+### Tool dependencies
+
+| Tool | M1–M2 | M3 Semantic | M4 Impact |
+|------|:---:|:---:|:---:|
+| `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view` | ✓ Neo4j | — | — |
+| `find_examples` | — | ✓ Neo4j + PostgreSQL + Ollama | — |
+| `impact_analysis` | — | — | ✓ Neo4j |
+
+`find_examples` cần Ollama chạy với model `qwen3-embedding-q5km`. Các tool khác không cần embedder.
 
 ---
 
