@@ -363,11 +363,14 @@ Trả về: override chain theo thứ tự base→top, có/không gọi `super()
 
 Trả về: inheritance chain, xpath modifications, XML skeleton sau khi merge.
 
-#### `find_examples(query, odoo_version?, limit?)`
+#### `find_examples(query, odoo_version?, limit?, context_module?, chunk_types?)`
+
+- `context_module`: tên module đang làm việc — chunks từ các module mà module này depends on được boost +0.20
+- `chunk_types`: filter theo loại code — giá trị hợp lệ: `method`, `field`, `view`, `qweb`, `js_era1`, `js_era2`, `js_era3`
 
 Hybrid retrieval:
 1. pgvector ANN search → top-20 candidates
-2. Neo4j rerank → ưu tiên candidates trong dependency chain của context
+2. Neo4j rerank → ưu tiên candidates trong dependency chain của context (bonus = min(0.05 × dependents, 0.20))
 3. Trả về top-N với snippet + file_path + score
 
 #### `impact_analysis(entity_type, entity_name, odoo_version?)`
@@ -469,7 +472,7 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
 
 ```
 [Ngày 4 sáng]
-  - embedder.py: nomic-embed-text via Ollama (offline-first)
+  - embedder.py: Qwen3-Embedding-4B via Ollama (offline-first, 1024-dim)
   - writer_pgvector.py: chunk + store embeddings
 
 [Ngày 4 chiều]

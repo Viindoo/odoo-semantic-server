@@ -46,8 +46,8 @@ Odoo repos (~/git/*_17.0/)
 | `find_examples` | Code examples từ codebase theo ngữ nghĩa |
 | `impact_analysis` | Đổi field/method này → ảnh hưởng đến những gì |
 
-> **M1 (available now):** `resolve_model`, `resolve_field`, `resolve_method`  
-> **M2–M4 (planned):** `resolve_view`, `find_examples`, `impact_analysis`
+> **M1–M3 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`  
+> **M4 (planned):** `impact_analysis`
 
 ---
 
@@ -167,7 +167,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 1 — "First Wow":** `[x]` Auto tests 56/56 PASSED — còn manual E2E với Claude Code thật  
 **Milestone 2 — "View Wow":** `[x]` Code complete — 100 tests PASS, còn manual E2E `resolve_view`  
 **Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
-**Milestone 3 — "Semantic Wow":** `[~]` Code complete — 113 tests PASS — còn E2E manual + recall benchmark với Ollama thật  
+**Milestone 3 — "Semantic Wow":** `[x]` Code complete — 130 tests PASS — còn E2E manual + recall benchmark với Ollama thật  
 **Milestone 4 — "Impact Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  

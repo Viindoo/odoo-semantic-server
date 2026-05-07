@@ -30,7 +30,7 @@ Venv nằm tại `~/.venv/odoo-semantic-mcp` — không bao giờ tạo `.venv/`
 ## Pipeline — Không Cross-Import Ngang Hàng
 
 ```
-scanner → registry → resolver → parser → writer → server
+scanner → registry → resolver → parser → (writer_neo4j | embedder → writer_pgvector) → server
 ```
 
 `scanner` không import `parser`. `registry` không import `writer`. Mỗi file một trách nhiệm.

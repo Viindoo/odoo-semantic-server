@@ -527,11 +527,22 @@ Sau đó run migrations:
 
 ### 9.5 Run indexer với embeddings
 
+Mặc định indexer sẽ embed (đọc `[embedder]` từ `odoo-semantic.conf`). Dùng `--no-embed` nếu chỉ muốn index Neo4j graph mà không ghi embeddings:
+
 ```bash
+# Index đầy đủ: Neo4j graph + pgvector embeddings (cần Ollama đang chạy)
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
+
+# Index chỉ Neo4j graph (không cần Ollama)
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17 --no-embed
+
+# Index tất cả profiles
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --all
 ```
 
 Indexer sẽ gọi Ollama để tạo embeddings cho mỗi module. ~400 modules × ~500 chunks × 1024 dim ≈ 20 GB disk. Thời gian: ~30-60 phút lần đầu (incremental sau đó <5 phút).
+
+> **Fresh install PostgreSQL:** volume `pg_data` chỉ được init khi tạo mới. Nếu volume đã tồn tại và thiếu pgvector, chạy `docker compose down -v && docker compose up -d` để reinit.
 
 ### 9.6 License note
 

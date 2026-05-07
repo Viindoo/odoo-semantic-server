@@ -89,19 +89,29 @@ tests/
 ├── test_resolver.py          # unit: topological sort
 ├── test_parser_python.py     # unit: AST parser
 ├── test_mcp_server_config.py # unit: server reads host/port from config
+├── test_embedding_instructions.py  # unit: Qwen3 asymmetric INSTRUCT prefix
+├── test_embedder.py                # unit: FakeEmbedder + Qwen3Embedder protocol
+├── test_parser_js.py               # unit: era-aware JS parser
+├── test_pipeline_config.py         # unit: Neo4j creds from config
+├── test_indexer_main.py            # unit: --no-embed flag + embedder build
 ├── test_writer_neo4j.py      # integration (neo4j marker)
 ├── test_mcp_server.py        # integration (neo4j marker)
 ├── test_db_migrate.py        # integration (postgres marker)
 ├── test_db_repo_registry.py  # integration (postgres marker)
 ├── test_manager_cli.py       # integration (postgres marker)
+├── test_writer_pgvector.py         # integration (postgres marker)
+├── test_mcp_find_examples.py       # integration (neo4j + postgres markers)
 ├── test_indexer_pipeline.py  # integration (neo4j + postgres markers)
 ├── test_doc_sync.py          # unit: TASKS.md [x] files exist on disk (anti-drift)
-└── test_output_snapshots.py  # unit: MCP output schema contract (anti-drift)
+├── test_output_snapshots.py  # unit: MCP output schema contract (anti-drift)
+└── test_find_examples_recall.py    # ollama marker (requires Ollama + indexed data)
 ```
 
 **Quy tắc marker:**
 - Test cần Neo4j → thêm `pytestmark = pytest.mark.neo4j` ở đầu file
 - Test cần PostgreSQL → thêm `pytestmark = pytest.mark.postgres` ở đầu file
+- Test cần Ollama + model loaded + data indexed → thêm `pytestmark = pytest.mark.ollama`
+  Chạy: `pytest tests/test_find_examples_recall.py -m ollama -v`
 - Test không cần DB → không thêm gì — chạy trong unit mode
 
 **`TEST_VERSION = "99.0"`** — tất cả dữ liệu test dùng version này để không conflict với dữ liệu thật. Fixture `clean_neo4j` dọn Neo4j, fixture `clean_pg` dọn PostgreSQL — luôn dùng fixture tương ứng.

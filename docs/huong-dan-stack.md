@@ -583,7 +583,7 @@ Brief overview — xem `docs/thiet-ke-kien-truc.md` khi đến M3.
 ```python
 # Setup (chạy 1 lần):
 cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-cur.execute("CREATE TABLE embeddings (id SERIAL, content TEXT, vec vector(768))")
+cur.execute("CREATE TABLE embeddings (id SERIAL, content TEXT, vec vector(1024))")
 
 # Insert:
 cur.execute("INSERT INTO embeddings (content, vec) VALUES (%s, %s)", (text, embedding))
@@ -596,7 +596,7 @@ cur.execute("""
 """, (query_embedding,))
 ```
 
-`nomic-embed-text` qua Ollama tạo vector 768 chiều. Offline-first — không cần OpenAI.
+Qwen3-Embedding-4B qua Ollama tạo vector 1024 chiều (MRL, asymmetric instruction). Offline-first — không cần OpenAI.
 
 ---
 
