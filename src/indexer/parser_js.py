@@ -409,10 +409,75 @@ def _extract_era3_patches(
         ))
 
 
+_ORM_READ_METHODS = frozenset({"read", "readGroup", "searchRead", "search_read"})
+
+
+def _detect_bound_model_from_class_body(body: Node, source: bytes) -> str | None:
+    """Heuristic: scan class body methods for ORM calls with a string literal model name.
+
+    Detects two patterns:
+    1. this.orm.read/readGroup/searchRead("<model>", ...) — first positional arg is string
+    2. kwargs with resModel: "<model>" or model: "<model>" anywhere in class body
+
+    Returns the first static string found, or None if only dynamic expressions detected.
+    """
+    for node in _walk(body):
+        # Pattern 1: this.orm.read("sale.order", ...) or this.orm.readGroup(...)
+        if node.type == "call_expression":
+            func = _find_first_child_by_type(node, "member_expression")
+            if func:
+                # Check for `orm.read`, `orm.readGroup`, etc.
+                prop = _find_first_child_by_type(func, "property_identifier")
+                if prop:
+                    method_name = source[prop.start_byte:prop.end_byte].decode(
+                        "utf-8", errors="ignore"
+                    )
+                    if method_name in _ORM_READ_METHODS:
+                        args = _find_first_child_by_type(node, "arguments")
+                        if args:
+                            # First non-punctuation argument
+                            arg_nodes = [
+                                c for c in args.children
+                                if c.type not in (",", "(", ")")
+                            ]
+                            if arg_nodes:
+                                first_arg = arg_nodes[0]
+                                val = _extract_string_from_node(first_arg, source)
+                                if val:
+                                    return val
+
+        # Pattern 2: resModel: "sale.order" or model: "sale.order" in object/pair
+        if node.type == "pair":
+            key_node = node.children[0] if node.children else None
+            if key_node and key_node.type in ("string", "property_identifier"):
+                key = source[key_node.start_byte:key_node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                ).strip("\"'`")
+                if key in ("resModel", "model"):
+                    # Value node — skip punctuation
+                    val_nodes = [
+                        c for c in node.children
+                        if c.type not in (":", ",")
+                    ][1:]  # skip key itself
+                    for val_node in val_nodes:
+                        val = _extract_string_from_node(val_node, source)
+                        if val:
+                            return val
+
+    return None
+
+
 def _extract_era3_components(
     tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
 ) -> None:
-    """era3: class Foo extends Bar { static template = "x.y" } → OWLCompInfo."""
+    """era3: class Foo extends Bar { static template = "x.y" } → OWLCompInfo.
+
+    bound_model is detected heuristically from ORM call patterns in the class body:
+    - this.orm.read/readGroup/searchRead("<model>", ...) → bound_model = "<model>"
+    - kwargs { resModel: "<model>" } or { model: "<model>" } → bound_model = "<model>"
+    Dynamic expressions (this.props.model, variables) are not resolved → bound_model = None.
+    Full static analysis via F4 USES_FIELD edge is deferred to M5.
+    """
     for node in _walk(tree.root_node):
         if node.type not in ("class_declaration", "class"):
             continue
@@ -454,13 +519,18 @@ def _extract_era3_components(
                         template_val = raw.decode("utf-8", errors="ignore").strip("\"'`")
                         break
 
+        # bound_model: heuristic from ORM calls and resModel/model kwargs in class body
+        bound_model: str | None = None
+        if body:
+            bound_model = _detect_bound_model_from_class_body(body, source)
+
         result.components.append(OWLCompInfo(
             name=class_name,
             module=module_info.name,
             odoo_version=module_info.odoo_version,
             template=template_val,
             extends=extends_name,
-            bound_model=None,  # best-effort: deferred to M6
+            bound_model=bound_model,
             file_path=filepath,
         ))
 
