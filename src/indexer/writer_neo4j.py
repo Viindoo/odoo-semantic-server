@@ -135,6 +135,14 @@ def _write_view_parse_result(tx, result: ViewParseResult) -> None:
             MERGE (v)-[:DEFINED_IN]->(mod)
         """, xmlid=view.xmlid, ver=view.odoo_version, module=view.module)
 
+        # Create TARGETS_MODEL edge to all Model nodes with matching name in same version
+        if view.model:
+            tx.run("""
+                MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+                MATCH (m:Model {name: $model_name, odoo_version: $ver})
+                MERGE (v)-[:TARGETS_MODEL]->(m)
+            """, xmlid=view.xmlid, ver=view.odoo_version, model_name=view.model)
+
         if view.inherit_xmlid:
             rec = tx.run("""
                 MATCH (ext:View {xmlid: $xmlid, odoo_version: $ver})
