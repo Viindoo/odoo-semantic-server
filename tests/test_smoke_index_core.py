@@ -23,14 +23,28 @@ from src.indexer.writer_neo4j import Neo4jWriter
 
 pytestmark = [pytest.mark.neo4j, pytest.mark.smoke]
 
-SMOKE_VERSION = "99.0"  # isolated test version — never conflicts with real data
+# All isolated test versions owned by smoke tests. Fixture cleanup iterates
+# this tuple — when a new lifecycle case adds another version, update here so
+# fixture teardown stays the single source of truth.
+_SMOKE_TEST_VERSIONS: tuple[str, ...] = ("99.0", "98.0")
+SMOKE_VERSION = _SMOKE_TEST_VERSIONS[0]  # primary "current" version
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "odoo_core_min"
 # spec_data lives alongside the parser sources; default lookup finds it automatically.
 
 
+def _purge_smoke_versions(session) -> None:
+    """Delete every node tagged with any smoke test version."""
+    session.run(
+        "MATCH (n) WHERE n.odoo_version IN $vs DETACH DELETE n",
+        vs=list(_SMOKE_TEST_VERSIONS),
+    )
+
+
 @pytest.fixture(scope="module")
 def smoke_writer(neo4j_driver):
-    """Module-scoped Neo4jWriter for smoke tests; auto-cleans SMOKE_VERSION nodes."""
+    """Module-scoped Neo4jWriter for smoke tests; auto-cleans all smoke versions
+    (SMOKE_VERSION + lifecycle versions) on setup AND teardown — guarantees
+    isolation even if a test fails before its inline cleanup runs."""
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
@@ -38,14 +52,10 @@ def smoke_writer(neo4j_driver):
     )
     writer.setup_indexes()
     with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SMOKE_VERSION
-        )
+        _purge_smoke_versions(session)
     yield writer
     with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SMOKE_VERSION
-        )
+        _purge_smoke_versions(session)
     writer.close()
 
 
@@ -199,7 +209,7 @@ class TestSmokeIndexCoreWritesNeo4j:
 # Test 3 — lifecycle: symbols from 2 fixture versions → diff properties set
 # ---------------------------------------------------------------------------
 
-_LIFECYCLE_V_OLD = "98.0"  # immediately preceding SMOKE_VERSION
+_LIFECYCLE_V_OLD = _SMOKE_TEST_VERSIONS[1]  # "98.0" — owned + cleaned by fixture
 _LIFECYCLE_V_NEW = SMOKE_VERSION  # 99.0
 
 
@@ -255,10 +265,5 @@ class TestSmokeLifecycleDiff:
             f"added_in expected {_LIFECYCLE_V_NEW!r}, got {row['ai']!r}. "
             "write_lifecycle_properties may be broken."
         )
-
-        # Cleanup v98 nodes (v99 cleaned by module fixture teardown)
-        with neo4j_driver.session() as s:
-            s.run(
-                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
-                v=_LIFECYCLE_V_OLD,
-            )
+        # Cleanup of both versions handled by smoke_writer module teardown
+        # — no need for inline DETACH DELETE (v98 is in _SMOKE_TEST_VERSIONS).
