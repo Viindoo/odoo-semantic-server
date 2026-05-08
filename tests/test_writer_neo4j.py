@@ -843,3 +843,65 @@ def test_setup_indexes_creates_core_symbol_index(writer, neo4j_driver):
         for lbls, props in labels_props
     )
     assert found, f"CoreSymbol index missing. Got: {labels_props}"
+
+
+# --- LintRule writer tests (M4.5 WI3) ----------------------------------
+
+from src.indexer.models import LintRuleInfo  # noqa: E402
+
+
+def test_write_lint_rule_node(writer, neo4j_driver):
+    """write_lint_rules persists a LintRule node with composite key + props."""
+    rule = LintRuleInfo(
+        rule_id="E8502",
+        odoo_version=TEST_VERSION,
+        kind="pylint-odoo",
+        message="Bad gettext usage",
+        severity="error",
+    )
+    writer.write_lint_rules([rule])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (l:LintRule {rule_id: $rid, odoo_version: $v}) RETURN l
+        """, rid="E8502", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["l"]["kind"] == "pylint-odoo"
+    assert rec["l"]["severity"] == "error"
+
+
+def test_write_lint_rule_checks_edge_to_core_symbol(writer, neo4j_driver):
+    """When rule.core_symbol_qname is set + target exists → CHECKS edge MERGEd."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.models.BaseModel.unlink",
+        kind="orm_method", odoo_version=TEST_VERSION,
+    )
+    writer.write_core_symbols([sym])
+    rule = LintRuleInfo(
+        rule_id="E8401",
+        odoo_version=TEST_VERSION,
+        kind="pylint-odoo",
+        core_symbol_qname="odoo.models.BaseModel.unlink",
+    )
+    writer.write_lint_rules([rule])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (l:LintRule {rule_id: 'E8401', odoo_version: $v})
+                  -[:CHECKS]->
+                  (cs:CoreSymbol {qualified_name: $cs_qn, odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION, cs_qn="odoo.models.BaseModel.unlink").single()
+    assert rec["c"] == 1
+
+
+def test_setup_indexes_creates_lint_rule_index(writer, neo4j_driver):
+    """setup_indexes creates an index on (LintRule.rule_id, odoo_version)."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    found = any(
+        "LintRule" in (i.get("labelsOrTypes") or [])
+        and "rule_id" in (i.get("properties") or [])
+        and "odoo_version" in (i.get("properties") or [])
+        for i in indexes
+    )
+    assert found, "LintRule(rule_id, odoo_version) index missing"

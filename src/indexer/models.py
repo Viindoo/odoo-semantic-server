@@ -159,3 +159,23 @@ class CoreSymbolInfo:
     line: int | None = None
     status: str = "stable"
     replacement_qname: str | None = None
+
+
+@dataclass
+class LintRuleInfo:
+    """A lint rule (pylint-odoo / ESLint / ruff) captured per Odoo version.
+
+    Composite key: (rule_id, odoo_version) — see ADR-0002 §1.
+    `kind` ∈ {pylint-odoo, pylint-stdlib, eslint-odoo, ruff-builtin}.
+    `severity` ∈ {error, warning, info}.
+    `core_symbol_qname` links the rule to a CoreSymbol when the rule checks
+    one specific API (e.g. unlink-override → odoo.models.BaseModel.unlink).
+    """
+    rule_id: str
+    odoo_version: str
+    kind: str
+    message: str | None = None
+    severity: str = "warning"
+    file_pattern: str | None = None
+    fix_template: str | None = None
+    core_symbol_qname: str | None = None

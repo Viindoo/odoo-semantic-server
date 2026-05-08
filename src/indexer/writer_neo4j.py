@@ -4,7 +4,13 @@ import logging
 from neo4j import GraphDatabase
 
 from .diff_engine import DiffResult
-from .models import CoreSymbolInfo, JSGraphResult, ParseResult, ViewParseResult
+from .models import (
+    CoreSymbolInfo,
+    JSGraphResult,
+    LintRuleInfo,
+    ParseResult,
+    ViewParseResult,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -299,6 +305,28 @@ def _write_replaced_by_edges(tx, replaced: list[tuple[str, str]],
              vfrom=from_version, vto=to_version)
 
 
+def _write_lint_rules_batch(tx, rules: list[LintRuleInfo]) -> None:
+    for r in rules:
+        tx.run("""
+            MERGE (l:LintRule {rule_id: $rid, odoo_version: $v})
+            SET l.kind = $kind,
+                l.message = $msg,
+                l.severity = $sev,
+                l.file_pattern = $fp,
+                l.fix_template = $fix,
+                l.core_symbol_qname = $cs
+        """, rid=r.rule_id, v=r.odoo_version, kind=r.kind,
+             msg=r.message, sev=r.severity, fp=r.file_pattern,
+             fix=r.fix_template, cs=r.core_symbol_qname)
+        # CHECKS edge: when rule is bound to a specific CoreSymbol, link them.
+        if r.core_symbol_qname:
+            tx.run("""
+                MATCH (l:LintRule {rule_id: $rid, odoo_version: $v})
+                MATCH (cs:CoreSymbol {qualified_name: $cs_qn, odoo_version: $v})
+                MERGE (l)-[:CHECKS]->(cs)
+            """, rid=r.rule_id, v=r.odoo_version, cs_qn=r.core_symbol_qname)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -324,6 +352,8 @@ class Neo4jWriter:
                 # M4.5 spec layer (per ADR-0002):
                 "CREATE INDEX IF NOT EXISTS FOR (n:CoreSymbol)"
                 " ON (n.qualified_name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:LintRule)"
+                " ON (n.rule_id, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -373,3 +403,16 @@ class Neo4jWriter:
                 _write_replaced_by_edges,
                 diff.replaced, from_version, to_version,
             )
+
+    def write_lint_rules(self, rules: list[LintRuleInfo]) -> None:
+        """Persist a batch of LintRule nodes (idempotent MERGE).
+
+        Composite key: (rule_id, odoo_version). Optionally creates a
+        CHECKS edge to a CoreSymbol when `core_symbol_qname` is set and
+        the target node already exists.
+        """
+        if not rules:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(rules, 500):
+                session.execute_write(_write_lint_rules_batch, batch)
