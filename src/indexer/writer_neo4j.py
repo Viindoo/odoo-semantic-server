@@ -417,6 +417,8 @@ class Neo4jWriter:
                 " ON (n.name, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:CLIFlag)"
                 " ON (n.flag_name, n.command_name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:SpecMetadata)"
+                " ON (n.kind, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -584,3 +586,21 @@ class Neo4jWriter:
                     MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
                     SET cs.deprecated_in = $deprecated_in
                 """, qn=sym.qualified_name, v=sym.odoo_version, deprecated_in=to_version)
+
+    def write_spec_metadata(
+        self, kind: str, odoo_version: str, curate_status: str,
+    ) -> None:
+        """Upsert a SpecMetadata node recording curation status for a spec kind + version.
+
+        Composite key: (kind, odoo_version). MERGE is idempotent.
+
+        Args:
+            kind:          'lint' | 'cli' — which spec category this metadata covers.
+            odoo_version:  Odoo version label, e.g. '8.0', '17.0'.
+            curate_status: 'pending' | 'done' (or any string per ADR-0002 §4).
+        """
+        with self.driver.session() as session:
+            session.run("""
+                MERGE (sm:SpecMetadata {kind: $kind, odoo_version: $v})
+                SET sm.curate_status = $curate_status
+            """, kind=kind, v=odoo_version, curate_status=curate_status)
