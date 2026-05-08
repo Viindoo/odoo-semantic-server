@@ -208,3 +208,104 @@ def test_parse_module_skips_manifest(tmp_path):
     (tmp_path / "__manifest__.py").write_text("{'name': 'Sales'}")
     result = parse_module(module)
     assert result.models == []
+
+
+# --- Era-aware parser tests (M4.5 WI1.2 — Odoo v8/v9 Python 2 / _columns) ---
+
+@pytest.fixture
+def v8_module(tmp_path) -> ModuleInfo:
+    return ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+
+
+def test_parser_python_era1_columns_dict_detects_fields(tmp_path, v8_module):
+    """_columns dict (v8/v9) → fields detected by name + type."""
+    f = write_py(tmp_path, "model.py", """
+        from openerp.osv import osv, fields
+
+        class X(osv.osv):
+            _name = 'x.model'
+            _columns = {
+                'amount': fields.float('Amount'),
+                'name': fields.char('Name', size=64),
+                'partner_id': fields.many2one('res.partner', 'Partner'),
+            }
+    """)
+    result = parse_file(f, v8_module)
+    assert len(result) == 1
+    model = result[0]
+    assert model.name == "x.model"
+    field_map = {fld.name: fld for fld in model.fields}
+    assert field_map["amount"].ttype == "float"
+    assert field_map["name"].ttype == "char"
+    assert field_map["partner_id"].ttype == "many2one"
+
+
+def test_parser_python_era1_python2_print_statement_no_crash(tmp_path, v8_module):
+    """Python 2 syntax (`print x`) outside class shouldn't crash — graceful fallback."""
+    bad = tmp_path / "x.py"
+    bad.write_text(
+        "print 'hello'\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'x'\n"
+        "    _columns = {'a': fields.char('A')}\n"
+    )
+    result = parse_file(str(bad), v8_module)
+    # Should not raise. Best-effort: extract _name + a field.
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0].name == "x"
+    assert any(fld.name == "a" for fld in result[0].fields)
+
+
+def test_parser_python_era1_legacy_field_types_detected(tmp_path, v8_module):
+    """fields.function, fields.related, fields.dummy → ttype detected (legacy types)."""
+    f = write_py(tmp_path, "model.py", """
+        from openerp.osv import osv, fields
+
+        class X(osv.osv):
+            _name = 'x'
+            _columns = {
+                'fn': fields.function(_compute_x, type='float'),
+                'rel': fields.related('partner_id', 'name', type='char'),
+                'dum': fields.dummy('Dummy'),
+            }
+    """)
+    result = parse_file(f, v8_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["fn"].ttype == "function"
+    assert field_map["rel"].ttype == "related"
+    assert field_map["dum"].ttype == "dummy"
+
+
+def test_parser_python_era1_inherit_string(tmp_path, v8_module):
+    """_inherit = 'res.partner' → model.inherit populated even without _name."""
+    f = write_py(tmp_path, "ext.py", """
+        from openerp.osv import osv, fields
+
+        class X(osv.osv):
+            _inherit = 'res.partner'
+            _columns = {'x_extra': fields.char('Extra')}
+    """)
+    result = parse_file(f, v8_module)
+    assert len(result) == 1
+    assert "res.partner" in result[0].inherit
+    # name = inherit[0] when _name missing (Odoo convention)
+    assert result[0].name == "res.partner"
+
+
+def test_parser_python_v17_unaffected_by_era_dispatch(tmp_path, sale_module):
+    """v17.0 module still uses AST parser — no regression."""
+    f = write_py(tmp_path, "sale_order.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            amount_total = fields.Monetary()
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].name == "sale.order"
+    assert any(fld.name == "amount_total" for fld in result[0].fields)
