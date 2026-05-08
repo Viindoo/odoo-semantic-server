@@ -328,12 +328,17 @@ def _extract_columns_block(body: str) -> str:
     start = m.end()  # char position right after the opening '{'
     fragment = body[start:]  # everything after the initial '{'
 
-    # Try tokenizer-based approach first
+    # Try tokenizer-based approach first.
     # We tokenize the fragment (which is the content AFTER the opening '{').
     # depth starts at 1 (we already consumed the first '{').
+    #
+    # Python 3.12 C tokenizer raises `tokenize.TokenError` (NOT `TokenizeError`)
+    # AND can also raise `IndentationError` / `SyntaxError` when fed Python 2
+    # source mid-file (Era1 path). Catch all three to fall through to the naive
+    # char scan — this is the v8/v9 Phase-0 promise.
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(fragment).readline))
-    except tokenize.TokenizeError:
+    except (tokenize.TokenError, IndentationError, SyntaxError):
         # Fallback: naive char scan (Python 2 syntax, balanced braces in strings
         # are allowed by convention — acceptable false-positive risk)
         depth = 1
