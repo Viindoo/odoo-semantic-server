@@ -5,6 +5,8 @@ from neo4j import GraphDatabase
 
 from .diff_engine import DiffResult
 from .models import (
+    CLICommandInfo,
+    CLIFlagInfo,
     CoreSymbolInfo,
     JSGraphResult,
     LintRuleInfo,
@@ -327,6 +329,50 @@ def _write_lint_rules_batch(tx, rules: list[LintRuleInfo]) -> None:
             """, rid=r.rule_id, v=r.odoo_version, cs_qn=r.core_symbol_qname)
 
 
+def _write_cli_commands_batch(tx, commands: list[CLICommandInfo]) -> None:
+    for c in commands:
+        tx.run("""
+            MERGE (c:CLICommand {name: $name, odoo_version: $v})
+            SET c.description = $desc,
+                c.file_path = $fp
+        """, name=c.name, v=c.odoo_version,
+             desc=c.description, fp=c.file_path)
+
+
+def _write_cli_flags_batch(tx, flags: list[CLIFlagInfo]) -> None:
+    for f in flags:
+        tx.run("""
+            MERGE (f:CLIFlag {flag_name: $fn, command_name: $cmd, odoo_version: $v})
+            SET f.status = $status,
+                f.default = $default,
+                f.type = $type,
+                f.help = $help,
+                f.replacement_flag_name = $repl,
+                f.env_name = $env,
+                f.posix_only = $posix
+        """, fn=f.flag_name, cmd=f.command_name, v=f.odoo_version,
+             status=f.status, default=f.default, type=f.type, help=f.help,
+             repl=f.replacement_flag_name, env=f.env_name, posix=f.posix_only)
+        # OF_COMMAND edge: link the flag to its command if the CLICommand exists.
+        tx.run("""
+            MATCH (f:CLIFlag {flag_name: $fn, command_name: $cmd, odoo_version: $v})
+            MATCH (c:CLICommand {name: $cmd, odoo_version: $v})
+            MERGE (f)-[:OF_COMMAND]->(c)
+        """, fn=f.flag_name, cmd=f.command_name, v=f.odoo_version)
+
+
+def _write_cli_flag_replacements(tx, replaced: list[tuple[str, str]],
+                                 command_name: str,
+                                 from_version: str, to_version: str) -> None:
+    for old_fn, new_fn in replaced:
+        tx.run("""
+            MATCH (a:CLIFlag {flag_name: $a_fn, command_name: $cmd, odoo_version: $vfrom})
+            MATCH (b:CLIFlag {flag_name: $b_fn, command_name: $cmd, odoo_version: $vto})
+            MERGE (a)-[:REPLACED_BY]->(b)
+        """, a_fn=old_fn, b_fn=new_fn, cmd=command_name,
+             vfrom=from_version, vto=to_version)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -354,6 +400,10 @@ class Neo4jWriter:
                 " ON (n.qualified_name, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:LintRule)"
                 " ON (n.rule_id, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:CLICommand)"
+                " ON (n.name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:CLIFlag)"
+                " ON (n.flag_name, n.command_name, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -416,3 +466,36 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for batch in _chunked(rules, 500):
                 session.execute_write(_write_lint_rules_batch, batch)
+
+    def write_cli_commands(self, commands: list[CLICommandInfo]) -> None:
+        """Persist CLICommand nodes (idempotent MERGE on (name, odoo_version))."""
+        if not commands:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(commands, 500):
+                session.execute_write(_write_cli_commands_batch, batch)
+
+    def write_cli_flags(self, flags: list[CLIFlagInfo]) -> None:
+        """Persist CLIFlag nodes + OF_COMMAND edges (when target CLICommand exists)."""
+        if not flags:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(flags, 500):
+                session.execute_write(_write_cli_flags_batch, batch)
+
+    def write_cli_flag_replacements(
+        self,
+        replaced: list[tuple[str, str]],
+        *,
+        command_name: str,
+        from_version: str,
+        to_version: str,
+    ) -> None:
+        """Persist REPLACED_BY edges between CLIFlag nodes."""
+        if not replaced:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                _write_cli_flag_replacements,
+                replaced, command_name, from_version, to_version,
+            )
