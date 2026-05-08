@@ -137,6 +137,7 @@
 - [ ] **Production baseline (cross-cutting):**
     - [ ] `src/mcp/server.py`: health check endpoint (Neo4j ping + Postgres ping + version) cho Web UI dashboard + systemd/k8s probe
     - [ ] `src/indexer/pipeline.py`: file-based concurrency lock (`~/.odoo-semantic/indexer.lock`) — prevent overlapping indexer runs từ Web UI button + cron
+- [ ] **Pattern feedback loop (M4.6 defer):** thumbs up/down trên `suggest_pattern` output, lưu vào PostgreSQL với api_key context — cần auth layer M5 trước (per M4.6 plan §Open Questions / Defer M5+)
 
 ## Milestone 5.5 — "Polish Wow"
 **Intent:** Observability + test discipline + landing zone cho tech-debt phát sinh trong M5.
@@ -144,6 +145,7 @@
 
 - [ ] `src/indexer/__main__.py`: `--verbose` flag enable INFO logging + `tqdm` progress bar (modules processed / total)
 - [ ] `tests/test_output_snapshots.py`: thêm snapshot test cho `resolve_view` (pattern khớp 5 tool còn lại — anti-drift guard cho output format)
+- [ ] **Test isolation fix (M4.6 carry-over):** `tests/test_mcp_server_config.py` patch module-level `_driver = object()` rò rỉ sang `tests/test_mcp_spec_tools.py` (AttributeError 'object' has no attribute 'session'). Pre-existing trên master, hiện workaround bằng `--ignore=tests/test_mcp_server_config.py`. Fix: switch sang `monkeypatch.setattr` hoặc dùng fixture-scoped patch reverted ở teardown.
 - [ ] (reserved) tech-debt rollup từ M5 — fill khi M5 implement xong
 
 > **Lý do tách M5.5:** items này không block M5 ship (`--verbose` chỉ là UX polish, snapshot test là coverage gap không phải bug). Tách giúp M5 ship sớm + có landing zone rõ cho debt M5 sinh ra. Pattern theo M2.5 precedent (foundation infra giữa các product feature milestone).
@@ -156,6 +158,12 @@
 - [ ] Multi-version: index song song nhiều versions
 - [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"
 - [ ] OpenUpgrade support: migration path awareness across versions
+- [ ] **Pattern catalogue maintenance (M4.6 defer):**
+    - [ ] Auto-reseed `seed_patterns.py` integrate vào indexer run thay vì one-shot CLI manual (per M4.6 plan §Defer M6)
+    - [ ] Seed expansion từ ~50 → ~200 patterns + community contribution path (PR template + `src/data/patterns.json` review checklist)
+    - [ ] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch)
+- [ ] **EE_CONFUSION auto-detect (M4.6 defer):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Vẫn keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
+- [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 defer):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name (per M4.6 plan §Defer M6).
 
 ---
 
