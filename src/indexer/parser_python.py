@@ -1,6 +1,8 @@
 # src/indexer/parser_python.py
 import ast
+import io
 import re
+import tokenize
 from pathlib import Path
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
@@ -305,22 +307,64 @@ def _slice_class_body(source: str, start_pos: int, next_pos: int | None) -> str:
 
 
 def _extract_columns_block(body: str) -> str:
-    """Return the raw text inside `_columns = { ... }` via brace counting, or ''."""
+    """Return the raw text inside `_columns = { ... }` via tokenizer-aware brace counting.
+
+    Uses Python `tokenize` module to count only OP `{`/`}` tokens, skipping braces
+    that appear inside STRING tokens (e.g. help strings with format placeholders like
+    'Use {curly}' or 'closed} only'). Falls back to naive char-scan on TokenizeError
+    (Python 2 syntax) with a warning log.
+
+    Returns '' if `_columns` dict not found or block not closed.
+    """
     m = _RE_COLUMNS_HEAD.search(body)
     if not m:
         return ""
-    start = m.end()  # position right after '{'
+    start = m.end()  # char position right after the opening '{'
+    fragment = body[start:]  # everything after the initial '{'
+
+    # Try tokenizer-based approach first
+    # We tokenize the fragment (which is the content AFTER the opening '{').
+    # depth starts at 1 (we already consumed the first '{').
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(fragment).readline))
+    except tokenize.TokenizeError:
+        # Fallback: naive char scan (Python 2 syntax, balanced braces in strings
+        # are allowed by convention — acceptable false-positive risk)
+        depth = 1
+        i = 0
+        while i < len(fragment) and depth > 0:
+            ch = fragment[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return fragment[:i]
+            i += 1
+        return ""
+
+    # Reconstruct char offset from token positions by tracking line/col
+    # tokenize gives (row, col) — we need char offset in `fragment`.
+    lines = fragment.splitlines(keepends=True)
+    # Pre-compute cumulative line starts for fast offset lookup
+    line_starts: list[int] = [0]
+    for ln in lines:
+        line_starts.append(line_starts[-1] + len(ln))
+
+    def tok_start_offset(tok) -> int:
+        row, col = tok.start  # 1-based row, 0-based col
+        return line_starts[row - 1] + col
+
     depth = 1
-    i = start
-    while i < len(body) and depth > 0:
-        ch = body[i]
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                return body[start:i]
-        i += 1
+    for tok in tokens:
+        if tok.type == tokenize.OP:
+            if tok.string == "{":
+                depth += 1
+            elif tok.string == "}":
+                depth -= 1
+                if depth == 0:
+                    end_offset = tok_start_offset(tok)
+                    return fragment[:end_offset]
     return ""
 
 

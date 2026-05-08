@@ -369,3 +369,49 @@ def test_method_info_default_core_symbol_refs_is_empty():
     from src.indexer.models import MethodInfo
     m = MethodInfo(name="action_post")
     assert m.core_symbol_refs == []
+
+
+# --- _extract_columns_block tokenizer-aware tests (PR#11 WI-F4) ---------------
+
+
+def test_extract_columns_handles_unbalanced_open_brace_in_string():
+    """Unbalanced '{' inside a string value must NOT stop extraction early."""
+    from src.indexer.parser_python import _extract_columns_block
+
+    body = "_columns = {'help': 'Use {only open', 'name': 'char'}"
+    result = _extract_columns_block(body)
+    # Must return the full inner block — not '' from premature termination
+    assert "'name': 'char'" in result, (
+        f"Expected full block but got: {result!r}"
+    )
+
+
+def test_extract_columns_handles_unbalanced_close_brace_in_string():
+    """Unbalanced '}' inside a string value must NOT cause early return."""
+    from src.indexer.parser_python import _extract_columns_block
+
+    body = "_columns = {'help': 'closed} only', 'name': 'char'}"
+    result = _extract_columns_block(body)
+    # Must not return early at '}' inside the string
+    assert "'name': 'char'" in result, (
+        f"Expected full block but got: {result!r}"
+    )
+
+
+def test_extract_columns_handles_nested_dict_correctly():
+    """Nested dict in _columns → brace counter tracks depth, returns full block."""
+    from src.indexer.parser_python import _extract_columns_block
+
+    body = "_columns = {'meta': {'a': 1}, 'name': 'char'}"
+    result = _extract_columns_block(body)
+    assert "'meta': {'a': 1}" in result
+    assert "'name': 'char'" in result
+
+
+def test_extract_columns_balanced_brace_in_string_works():
+    """Balanced '{...}' inside a string — already worked, must still work."""
+    from src.indexer.parser_python import _extract_columns_block
+
+    body = "_columns = {'help': 'Use {curly} braces', 'name': 'char'}"
+    result = _extract_columns_block(body)
+    assert "'name': 'char'" in result
