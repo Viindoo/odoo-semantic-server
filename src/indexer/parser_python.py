@@ -27,6 +27,45 @@ MODEL_BASE_CLASSES = {
     'osv', 'osv_memory', 'Model_memory', 'AbstractModel_memory',
 }
 
+# --- M4.5 WI6: USES_CORE_SYMBOL V0 scope -----------------------------------
+# Hot list of deprecated/removed Odoo core API symbols. When user code calls
+# any of these (via `self.X()` or direct `X(...)`), parser records the ref so
+# writer_neo4j can MERGE a USES_CORE_SYMBOL edge to the matching CoreSymbol.
+# V0 stays small to keep noise low; M6 expands per audit data + ADR-0002 §3.
+_DEPRECATED_API_SYMBOLS = frozenset({
+    "name_get",         # removed v18 (use display_name)
+    "name_search",      # signature changed v17 → v18
+    "read_group",       # deprecated v19 (use _read_group / formatted_read_group)
+    "group_operator",   # field option renamed → aggregator v18
+    "safe_eval",        # signature change v19
+})
+
+
+def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
+    """Walk a method body and return deprecated-API call names found.
+
+    Detection scope:
+      - Attribute calls: `self.name_get()`, `self.<chain>.name_get()` → record 'name_get'
+      - Direct calls: `safe_eval(...)` (after `from odoo.tools import safe_eval`)
+                                                                       → record 'safe_eval'
+    Only names in `_DEPRECATED_API_SYMBOLS` are surfaced. Order is insertion;
+    duplicates are deduplicated to keep the list short.
+    """
+    refs: list[str] = []
+    seen: set[str] = set()
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Call):
+            continue
+        target = None
+        if isinstance(node.func, ast.Attribute):
+            target = node.func.attr
+        elif isinstance(node.func, ast.Name):
+            target = node.func.id
+        if target and target in _DEPRECATED_API_SYMBOLS and target not in seen:
+            seen.add(target)
+            refs.append(target)
+    return refs
+
 
 def _detect_era(odoo_version: str) -> str:
     """era1: Odoo v8/v9 (Python 2, _columns dict). era2: v10+ (modern AST)."""
@@ -194,6 +233,7 @@ def _parse_class(
                 has_super_call=_has_super_call(node),
                 decorators=decorators,
                 source_code=method_src,
+                core_symbol_refs=_extract_core_symbol_refs(node),
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)

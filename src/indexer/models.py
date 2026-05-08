@@ -32,6 +32,10 @@ class MethodInfo:
     has_super_call: bool = False
     decorators: list[str] = field(default_factory=list)
     source_code: str | None = None  # raw method source, for embedding
+    # M4.5 WI6 — qualified-name fragments (e.g. 'name_get', 'safe_eval') that
+    # this method invokes. Used by writer_neo4j to MERGE USES_CORE_SYMBOL edges.
+    # V0 scope: deprecated/removed symbols only — see parser_python._DEPRECATED_API_SYMBOLS.
+    core_symbol_refs: list[str] = field(default_factory=list)
 
 
 @dataclass

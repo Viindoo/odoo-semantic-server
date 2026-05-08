@@ -990,3 +990,97 @@ def test_setup_indexes_creates_cli_indexes(writer, neo4j_driver):
     )
     assert cmd_found, "CLICommand index missing"
     assert flag_found, "CLIFlag index missing"
+
+
+# --- USES_CORE_SYMBOL edge tests (M4.5 WI6) -----------------------------
+
+
+def _make_parse_result_with_method_refs(
+    module_name: str, model_name: str, method_name: str, refs: list[str],
+) -> ParseResult:
+    """Build a ParseResult whose single Method carries `core_symbol_refs`."""
+    module = ModuleInfo(
+        name=module_name, odoo_version=TEST_VERSION,
+        repo=f"{module_name}_repo", path="/tmp",
+        depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name=model_name, module=module_name, odoo_version=TEST_VERSION,
+        methods=[
+            MethodInfo(
+                name=method_name, has_super_call=False, decorators=[],
+                core_symbol_refs=refs,
+            ),
+        ],
+    )
+    return ParseResult(module=module, models=[model])
+
+
+def test_uses_core_symbol_edge_when_target_exists_and_deprecated(writer, neo4j_driver):
+    """When a Method has core_symbol_refs and a deprecated CoreSymbol exists,
+    USES_CORE_SYMBOL edge is MERGEd."""
+    # Seed CoreSymbol
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.models.BaseModel.name_get",
+        kind="orm_method",
+        odoo_version=TEST_VERSION,
+        status="deprecated",
+        replacement_qname="odoo.models.BaseModel.display_name",
+    )
+    writer.write_core_symbols([sym])
+
+    # Seed Method with ref
+    pr = _make_parse_result_with_method_refs(
+        "viin_sale", "sale.order", "foo", refs=["name_get"],
+    )
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (mth:Method {name: 'foo', module: 'viin_sale', odoo_version: $v})
+                  -[:USES_CORE_SYMBOL]->
+                  (cs:CoreSymbol {qualified_name: $cs_qn, odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION,
+             cs_qn="odoo.models.BaseModel.name_get").single()
+    assert rec["c"] == 1
+
+
+def test_no_uses_core_symbol_edge_when_target_missing(writer, neo4j_driver):
+    """Method has refs but no CoreSymbol indexed → silent skip, no placeholder."""
+    pr = _make_parse_result_with_method_refs(
+        "viin_sale", "sale.order", "bar", refs=["name_get"],
+    )
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (mth:Method {name: 'bar', module: 'viin_sale', odoo_version: $v})
+                  -[:USES_CORE_SYMBOL]->()
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 0
+
+
+def test_no_uses_core_symbol_edge_when_target_is_stable(writer, neo4j_driver):
+    """V0 scope per ADR-0002 §3: only deprecated/removed CoreSymbol gets edges."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval.safe_eval",
+        kind="function",
+        odoo_version=TEST_VERSION,
+        status="stable",
+    )
+    writer.write_core_symbols([sym])
+
+    pr = _make_parse_result_with_method_refs(
+        "viin_sale", "sale.order", "baz", refs=["safe_eval"],
+    )
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (mth:Method {name: 'baz', module: 'viin_sale', odoo_version: $v})
+                  -[:USES_CORE_SYMBOL]->()
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 0  # stable status excluded by V0 scope

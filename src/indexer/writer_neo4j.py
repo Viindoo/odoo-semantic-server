@@ -123,6 +123,19 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                  name=mth.name, has_super_call=mth.has_super_call,
                  decorators=mth.decorators)
 
+            # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
+            # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
+            for ref in mth.core_symbol_refs:
+                tx.run("""
+                    MATCH (mth:Method {name: $name, model: $model_name,
+                                       module: $mod, odoo_version: $v})
+                    MATCH (cs:CoreSymbol {odoo_version: $v})
+                    WHERE cs.qualified_name ENDS WITH '.' + $ref
+                      AND cs.status IN ['deprecated', 'removed']
+                    MERGE (mth)-[:USES_CORE_SYMBOL]->(cs)
+                """, name=mth.name, model_name=model.name, mod=model.module,
+                     v=model.odoo_version, ref=ref)
+
 
 def _write_view_parse_result(tx, result: ViewParseResult) -> None:
     for view in result.views:
