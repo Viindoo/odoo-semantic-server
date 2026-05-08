@@ -2,25 +2,98 @@
 import ast
 import re
 from pathlib import Path
+from typing import Protocol
 
 from .models import ModuleInfo
 from .scanner import get_git_branch, is_odoo_version_branch
 
+# --- ManifestFinder Protocol (M4.5 WI1.1, per ADR-0002) --------------------
+# Odoo v8/v9 use __openerp__.py instead of __manifest__.py.
+# Pluggable finder keeps the rest of the pipeline version-agnostic.
+
+class ManifestFinder(Protocol):
+    def find(self, repo_path: str) -> list[str]: ...
+
+
+def _scan(repo_path: str, filename: str) -> list[str]:
+    results = []
+    for p in Path(repo_path).rglob(filename):
+        parts = p.parts
+        if '.git' in parts or 'node_modules' in parts:
+            continue
+        results.append(str(p))
+    return results
+
+
+class ModernManifestFinder:
+    """Locate __manifest__.py (Odoo v10+)."""
+
+    def find(self, repo_path: str) -> list[str]:
+        return _scan(repo_path, "__manifest__.py")
+
+
+class LegacyManifestFinder:
+    """Locate __openerp__.py (Odoo v8/v9)."""
+
+    def find(self, repo_path: str) -> list[str]:
+        return _scan(repo_path, "__openerp__.py")
+
+
+def get_manifest_finder(odoo_version: str) -> ManifestFinder:
+    """Dispatch finder by Odoo major version. Defaults to Modern when unknown."""
+    try:
+        major = int(odoo_version.split(".")[0])
+    except (ValueError, IndexError, AttributeError):
+        return ModernManifestFinder()
+    return LegacyManifestFinder() if major <= 9 else ModernManifestFinder()
+
+
+# --- Regex fallback for legacy __openerp__.py with Python 2 syntax ---------
+_RE_NAME = re.compile(r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]")
+_RE_VERSION = re.compile(r"['\"]version['\"]\s*:\s*['\"]([^'\"]+)['\"]")
+_RE_DEPENDS = re.compile(r"['\"]depends['\"]\s*:\s*\[([^\]]*)\]", re.DOTALL)
+_RE_INSTALLABLE = re.compile(r"['\"]installable['\"]\s*:\s*(True|False)")
+
+
+def _regex_extract_manifest(source: str) -> dict:
+    """Best-effort regex extract for legacy manifests that fail ast.parse.
+    Used only as fallback when Python 2 syntax outside the dict trips up Python 3 parser.
+    """
+    result: dict = {}
+    if m := _RE_NAME.search(source):
+        result['name'] = m.group(1)
+    if m := _RE_VERSION.search(source):
+        result['version'] = m.group(1)
+    if m := _RE_DEPENDS.search(source):
+        items = re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+        result['depends'] = items
+    if m := _RE_INSTALLABLE.search(source):
+        result['installable'] = m.group(1) == 'True'
+    return result
+
 
 def parse_manifest(manifest_path: str) -> dict:
-    """Read __manifest__.py and return the manifest dict. Returns {} on error.
+    """Read manifest file (__manifest__.py or __openerp__.py) → dict.
 
-    Only iterates tree.body (top-level statements) instead of ast.walk,
-    to avoid catching nested dicts like 'external_dependencies', 'assets', etc.
+    Iterates tree.body (top-level statements) only, to avoid catching nested
+    dicts like 'external_dependencies', 'assets', etc.
+    Falls back to regex extraction when ast.parse fails (Python 2 v8/v9 syntax).
     """
     try:
         source = Path(manifest_path).read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return {}
+
+    try:
         tree = ast.parse(source)
         for stmt in tree.body:
             if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Dict):
                 return ast.literal_eval(stmt.value)
+    except (SyntaxError, ValueError):
+        # Python 2-only syntax outside the dict — try regex.
+        return _regex_extract_manifest(source)
     except Exception:
-        pass
+        return {}
     return {}
 
 
@@ -43,14 +116,9 @@ def resolve_odoo_version(manifest_version: str, repo_path: str) -> str:
     return "unknown"
 
 
-def _find_manifests(repo_path: str) -> list[str]:
-    results = []
-    for p in Path(repo_path).rglob('__manifest__.py'):
-        parts = p.parts
-        if '.git' in parts or 'node_modules' in parts:
-            continue
-        results.append(str(p))
-    return results
+def _find_manifests(repo_path: str, odoo_version: str = "") -> list[str]:
+    """Find manifest files in repo, dispatching by version (v8/v9 → __openerp__.py)."""
+    return get_manifest_finder(odoo_version).find(repo_path)
 
 
 def build_registry(
@@ -66,7 +134,7 @@ def build_registry(
     registry: dict[str, dict[str, ModuleInfo]] = {}
 
     for repo_path, repo_version in repo_version_pairs:
-        for manifest_path in _find_manifests(repo_path):
+        for manifest_path in _find_manifests(repo_path, repo_version):
             module_dir = Path(manifest_path).parent
             module_name = module_dir.name
 
