@@ -1,16 +1,96 @@
 # src/indexer/parser_python.py
 import ast
+import io
+import re
+import tokenize
 from pathlib import Path
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 
+# v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
     'Char', 'Text', 'Html', 'Integer', 'Float', 'Monetary', 'Boolean',
     'Date', 'Datetime', 'Binary', 'Selection', 'Many2one', 'One2many',
     'Many2many', 'Reference', 'Json', 'Properties', 'Image',
 }
 
-MODEL_BASE_CLASSES = {'Model', 'TransientModel', 'AbstractModel', 'BaseModel'}
+# v8/v9 _columns dict declarations: 'name': fields.<lowercase_type>(...)
+# Includes legacy-only types (function, related, dummy, sparse) that disappeared in v10+.
+FIELD_TYPES_LEGACY = {
+    'function', 'related', 'dummy', 'sparse',
+    'float', 'integer', 'char', 'text', 'html', 'boolean', 'monetary',
+    'date', 'datetime', 'binary', 'selection',
+    'many2one', 'one2many', 'many2many', 'reference', 'image',
+}
+
+MODEL_BASE_CLASSES = {
+    'Model', 'TransientModel', 'AbstractModel', 'BaseModel',
+    # Era1 (v8/v9) bases
+    'osv', 'osv_memory', 'Model_memory', 'AbstractModel_memory',
+}
+
+# --- M4.5 WI6: USES_CORE_SYMBOL V0 scope -----------------------------------
+# Hot list of deprecated/removed Odoo core API symbols. When user code calls
+# any of these (via `self.X()` or direct `X(...)`), parser records the ref so
+# writer_neo4j can MERGE a USES_CORE_SYMBOL edge to the matching CoreSymbol.
+# V0 stays small to keep noise low; M6 expands per audit data + ADR-0002 §3.
+_DEPRECATED_API_SYMBOLS = frozenset({
+    "name_get",         # removed v18 (use display_name)
+    "name_search",      # signature changed v17 → v18
+    "read_group",       # deprecated v19 (use _read_group / formatted_read_group)
+    "group_operator",   # field option renamed → aggregator v18
+    "safe_eval",        # signature change v19
+})
+
+
+def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
+    """Walk a method body and return deprecated-API call names found.
+
+    Detection scope:
+      - Attribute calls: `self.name_get()`, `self.<chain>.name_get()` → record 'name_get'
+      - Direct calls: `safe_eval(...)` (after `from odoo.tools import safe_eval`)
+                                                                       → record 'safe_eval'
+    Only names in `_DEPRECATED_API_SYMBOLS` are surfaced. Order is insertion;
+    duplicates are deduplicated to keep the list short.
+
+    V0 false-positive scope (per ADR-0002 §3):
+    - This function emits *candidate* refs — short names like 'name_get' or 'safe_eval'.
+    - The writer side (writer_neo4j.py write_results) creates USES_CORE_SYMBOL edges
+      ONLY when a matching CoreSymbol exists in the DB with status IN ('deprecated',
+      'removed'). This means:
+        1. If CoreSymbol not indexed → silent skip (no ghost node).
+        2. If CoreSymbol exists but status='stable' → skip (V0 scope, noise reduction).
+        3. Method named 'name_get' that is NOT calling the Odoo ORM method (e.g. a
+           local helper named identically) → false-positive. The writer WHERE clause
+           `qualified_name ENDS WITH '.' + $ref` narrows the match but cannot eliminate
+           all false positives from short-name collisions.
+    Full symbol-resolution (qualified_name from import chain tracking) is deferred to
+    M6. V0 provides actionable signal with acceptable false-positive rate for
+    deprecated/removed APIs.
+    """
+    refs: list[str] = []
+    seen: set[str] = set()
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Call):
+            continue
+        target = None
+        if isinstance(node.func, ast.Attribute):
+            target = node.func.attr
+        elif isinstance(node.func, ast.Name):
+            target = node.func.id
+        if target and target in _DEPRECATED_API_SYMBOLS and target not in seen:
+            seen.add(target)
+            refs.append(target)
+    return refs
+
+
+def _detect_era(odoo_version: str) -> str:
+    """era1: Odoo v8/v9 (Python 2, _columns dict). era2: v10+ (modern AST)."""
+    try:
+        major = int(odoo_version.split(".")[0])
+    except (ValueError, IndexError, AttributeError):
+        return "era2"
+    return "era1" if major <= 9 else "era2"
 
 
 def _extract_string(node: ast.expr) -> str | None:
@@ -60,6 +140,29 @@ def _get_base_class_names(cls_node: ast.ClassDef) -> set[str]:
     return names
 
 
+def _extract_columns_dict_fields(dict_node: ast.Dict) -> list[FieldInfo]:
+    """Extract fields from `_columns = {'name': fields.<type>(...)}` (era1 v8/v9)."""
+    fields_out: list[FieldInfo] = []
+    for k, v in zip(dict_node.keys, dict_node.values):
+        field_name = _extract_string(k)
+        if not field_name:
+            continue
+        if not (isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Attribute)
+                and isinstance(v.func.value, ast.Name)
+                and v.func.value.id == 'fields'):
+            continue
+        ttype = v.func.attr.lower()
+        if ttype not in FIELD_TYPES_LEGACY:
+            continue
+        fields_out.append(FieldInfo(
+            name=field_name, ttype=ttype,
+            related=None, compute=None,
+            stored=True, required=False,
+        ))
+    return fields_out
+
+
 def _parse_class(
     cls_node: ast.ClassDef, module_info: ModuleInfo, source: str = ""
 ) -> ModelInfo | None:
@@ -73,6 +176,7 @@ def _parse_class(
     is_transient = 'TransientModel' in base_names
     fields_list: list[FieldInfo] = []
     methods_list: list[MethodInfo] = []
+    has_columns_dict = False  # era1 marker — promotes class to model
 
     for node in cls_node.body:
         if isinstance(node, ast.Assign):
@@ -90,8 +194,11 @@ def _parse_class(
                     is_abstract = bool(node.value.value)
                 elif attr == '_transient' and isinstance(node.value, ast.Constant):
                     is_transient = bool(node.value.value)
+                elif attr == '_columns' and isinstance(node.value, ast.Dict):
+                    fields_list.extend(_extract_columns_dict_fields(node.value))
+                    has_columns_dict = True
 
-            # Field detection: field_name = fields.FieldType(...)
+            # Field detection: field_name = fields.FieldType(...)  (era2 v10+)
             if (isinstance(node.value, ast.Call)
                     and isinstance(node.value.func, ast.Attribute)
                     and isinstance(node.value.func.value, ast.Name)
@@ -143,16 +250,17 @@ def _parse_class(
                 has_super_call=_has_super_call(node),
                 decorators=decorators,
                 source_code=method_src,
+                core_symbol_refs=_extract_core_symbol_refs(node),
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)
     if not name and inherit:
         name = inherit[0]
 
-    # Not an Odoo model if no _name and not a Model subclass
+    # Not an Odoo model if no _name and not a Model subclass + no _columns dict
     if not name:
         return None
-    if not is_model_class and not inherit and not inherits:
+    if not is_model_class and not inherit and not inherits and not has_columns_dict:
         return None
 
     return ModelInfo(
@@ -168,14 +276,9 @@ def _parse_class(
     )
 
 
-def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
-    """Parse a Python file, return list of ModelInfo found."""
-    try:
-        source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
-
+def _parse_era2_ast(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
+    """Modern AST parser (v10+ and v8/v9 when source happens to be Py3-compatible)."""
+    tree = ast.parse(source)
     models = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -183,6 +286,191 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
             if model:
                 models.append(model)
     return models
+
+
+# --- era1 text-regex fallback (Python 2 v8/v9 source that fails ast.parse) -
+
+_RE_CLASS_HEAD = re.compile(r"^class\s+(\w+)\s*\(([^)]*)\)\s*:", re.MULTILINE)
+_RE_NAME_ASSIGN = re.compile(r"^[ \t]*_name\s*=\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+_RE_INHERIT_STR = re.compile(r"^[ \t]*_inherit\s*=\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+_RE_INHERIT_LIST = re.compile(
+    r"^[ \t]*_inherit\s*=\s*\[([^\]]*)\]", re.MULTILINE | re.DOTALL,
+)
+_RE_COLUMNS_HEAD = re.compile(r"^[ \t]*_columns\s*=\s*\{", re.MULTILINE)
+_RE_COLUMN_ENTRY = re.compile(
+    r"['\"](\w+)['\"]\s*:\s*fields\.(\w+)\s*\(",
+)
+# Era1 method extraction: optional decorator line + def <name>(self, ...)
+# Group 1 = decorator (e.g. 'api.multi'); Group 2 = method name.
+_RE_ERA1_METHOD = re.compile(
+    r"(?:^[ \t]*@([\w.]+)\s*\n)?^[ \t]+def\s+(\w+)\s*\(\s*self\b",
+    re.MULTILINE,
+)
+
+
+def _slice_class_body(source: str, start_pos: int, next_pos: int | None) -> str:
+    return source[start_pos:next_pos] if next_pos else source[start_pos:]
+
+
+def _extract_columns_block(body: str) -> str:
+    """Return the raw text inside `_columns = { ... }` via tokenizer-aware brace counting.
+
+    Uses Python `tokenize` module to count only OP `{`/`}` tokens, skipping braces
+    that appear inside STRING tokens (e.g. help strings with format placeholders like
+    'Use {curly}' or 'closed} only'). Falls back to naive char-scan on TokenizeError
+    (Python 2 syntax) with a warning log.
+
+    Returns '' if `_columns` dict not found or block not closed.
+    """
+    m = _RE_COLUMNS_HEAD.search(body)
+    if not m:
+        return ""
+    start = m.end()  # char position right after the opening '{'
+    fragment = body[start:]  # everything after the initial '{'
+
+    # Try tokenizer-based approach first
+    # We tokenize the fragment (which is the content AFTER the opening '{').
+    # depth starts at 1 (we already consumed the first '{').
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(fragment).readline))
+    except tokenize.TokenizeError:
+        # Fallback: naive char scan (Python 2 syntax, balanced braces in strings
+        # are allowed by convention — acceptable false-positive risk)
+        depth = 1
+        i = 0
+        while i < len(fragment) and depth > 0:
+            ch = fragment[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return fragment[:i]
+            i += 1
+        return ""
+
+    # Reconstruct char offset from token positions by tracking line/col
+    # tokenize gives (row, col) — we need char offset in `fragment`.
+    lines = fragment.splitlines(keepends=True)
+    # Pre-compute cumulative line starts for fast offset lookup
+    line_starts: list[int] = [0]
+    for ln in lines:
+        line_starts.append(line_starts[-1] + len(ln))
+
+    def tok_start_offset(tok) -> int:
+        row, col = tok.start  # 1-based row, 0-based col
+        return line_starts[row - 1] + col
+
+    depth = 1
+    for tok in tokens:
+        if tok.type == tokenize.OP:
+            if tok.string == "{":
+                depth += 1
+            elif tok.string == "}":
+                depth -= 1
+                if depth == 0:
+                    end_offset = tok_start_offset(tok)
+                    return fragment[:end_offset]
+    return ""
+
+
+def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
+    """Best-effort regex extract for v8/v9 modules that fail ast.parse.
+
+    Splits source by top-level `class X(...):` headers, then for each class block
+    pulls out _name / _inherit / fields-from-_columns. Methods are NOT extracted
+    in fallback mode — defer to era2 AST when source is Py3-parseable.
+    """
+    classes = list(_RE_CLASS_HEAD.finditer(source))
+    if not classes:
+        return []
+
+    models: list[ModelInfo] = []
+    for idx, head in enumerate(classes):
+        body_start = head.end()
+        body_end = classes[idx + 1].start() if idx + 1 < len(classes) else len(source)
+        body = source[body_start:body_end]
+
+        name_match = _RE_NAME_ASSIGN.search(body)
+        name = name_match.group(1) if name_match else None
+
+        inherit: list[str] = []
+        if (m := _RE_INHERIT_STR.search(body)):
+            inherit = [m.group(1)]
+        elif (m := _RE_INHERIT_LIST.search(body)):
+            items = re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+            inherit = items
+
+        if not name and inherit:
+            name = inherit[0]
+
+        # Fields from _columns dict
+        cols_block = _extract_columns_block(body)
+        fields_list: list[FieldInfo] = []
+        if cols_block:
+            for fm in _RE_COLUMN_ENTRY.finditer(cols_block):
+                field_name = fm.group(1)
+                ttype = fm.group(2).lower()
+                if ttype not in FIELD_TYPES_LEGACY:
+                    continue
+                fields_list.append(FieldInfo(
+                    name=field_name, ttype=ttype,
+                    related=None, compute=None,
+                    stored=True, required=False,
+                ))
+
+        if not name:
+            continue
+
+        # Extract methods via regex — only def <name>(self, ...) indented in class
+        methods_list: list[MethodInfo] = []
+        for mm in _RE_ERA1_METHOD.finditer(body):
+            decorator = mm.group(1)  # may be None if no decorator
+            method_name = mm.group(2)
+            methods_list.append(MethodInfo(
+                name=method_name,
+                has_super_call=False,
+                decorators=[decorator] if decorator else [],
+                core_symbol_refs=[],
+            ))
+
+        models.append(ModelInfo(
+            name=name,
+            module=module_info.name,
+            odoo_version=module_info.odoo_version,
+            inherit=inherit,
+            inherits={},
+            fields=fields_list,
+            methods=methods_list,
+        ))
+    return models
+
+
+def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
+    """Parse a Python file → list[ModelInfo]. Era-aware dispatch (M4.5 WI1.2):
+
+    - era2 (v10+): AST only. SyntaxError → return [].
+    - era1 (v8/v9): try AST first; fall back to text-regex on SyntaxError
+      (Python 2-only syntax like `print 'x'`, `except E, e:`).
+    """
+    try:
+        source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return []
+
+    era = _detect_era(module_info.odoo_version)
+
+    if era == "era1":
+        try:
+            return _parse_era2_ast(source, module_info)
+        except SyntaxError:
+            return _parse_era1_text(source, module_info)
+
+    # era2: AST-only
+    try:
+        return _parse_era2_ast(source, module_info)
+    except SyntaxError:
+        return []
 
 
 def parse_module(module_info: ModuleInfo) -> ParseResult:

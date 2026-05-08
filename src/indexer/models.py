@@ -32,6 +32,10 @@ class MethodInfo:
     has_super_call: bool = False
     decorators: list[str] = field(default_factory=list)
     source_code: str | None = None  # raw method source, for embedding
+    # M4.5 WI6 — qualified-name fragments (e.g. 'name_get', 'safe_eval') that
+    # this method invokes. Used by writer_neo4j to MERGE USES_CORE_SYMBOL edges.
+    # V0 scope: deprecated/removed symbols only — see parser_python._DEPRECATED_API_SYMBOLS.
+    core_symbol_refs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -138,3 +142,77 @@ class JSGraphResult:
     module: ModuleInfo
     patches: list[JSPatchInfo] = field(default_factory=list)
     components: list[OWLCompInfo] = field(default_factory=list)
+
+
+# --- Spec layer (M4.5, per ADR-0002) ----------------------------------------
+
+@dataclass
+class CoreSymbolInfo:
+    """An Odoo upstream API entity, captured per version.
+
+    Composite key: (qualified_name, odoo_version) — see ADR-0002 §1.
+    `kind` ∈ {function, class, decorator, exception, field_type, orm_method, cursor_method}.
+    `status` ∈ {stable, deprecated, removed, added}.
+    `replacement_qname` non-null when this symbol is superseded by another.
+    """
+    qualified_name: str
+    kind: str
+    odoo_version: str
+    signature: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    status: str = "stable"
+    replacement_qname: str | None = None
+
+
+@dataclass
+class LintRuleInfo:
+    """A lint rule (pylint-odoo / ESLint / ruff) captured per Odoo version.
+
+    Composite key: (rule_id, odoo_version) — see ADR-0002 §1.
+    `kind` ∈ {pylint-odoo, pylint-stdlib, eslint-odoo, ruff-builtin}.
+    `severity` ∈ {error, warning, info}.
+    `core_symbol_qname` links the rule to a CoreSymbol when the rule checks
+    one specific API (e.g. unlink-override → odoo.models.BaseModel.unlink).
+    """
+    rule_id: str
+    odoo_version: str
+    kind: str
+    message: str | None = None
+    severity: str = "warning"
+    file_pattern: str | None = None
+    fix_template: str | None = None
+    core_symbol_qname: str | None = None
+
+
+@dataclass
+class CLICommandInfo:
+    """An odoo-bin subcommand (e.g. server, shell, scaffold, db).
+
+    Composite key: (name, odoo_version) — see ADR-0002 §1.
+    """
+    name: str
+    odoo_version: str
+    description: str | None = None
+    file_path: str | None = None
+
+
+@dataclass
+class CLIFlagInfo:
+    """A CLI flag belonging to a subcommand (e.g. --http-port on server).
+
+    Composite key: (flag_name, command_name, odoo_version) — see ADR-0002 §1.
+    `status` ∈ {stable, deprecated, removed, added}.
+    `replacement_flag_name` points to the successor flag when this one is
+    deprecated/removed (e.g. --longpolling-port → --gevent-port).
+    """
+    flag_name: str
+    command_name: str
+    odoo_version: str
+    status: str = "stable"
+    default: str | None = None
+    type: str | None = None
+    help: str | None = None
+    replacement_flag_name: str | None = None
+    env_name: str | None = None
+    posix_only: bool = False

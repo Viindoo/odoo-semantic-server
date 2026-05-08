@@ -46,9 +46,9 @@ Odoo repos (~/git/*_17.0/)
 | `find_examples` | Code examples từ codebase theo ngữ nghĩa |
 | `impact_analysis` | Đổi field/method này → ảnh hưởng đến những gì |
 
-> **M1–M4 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`
+> **M1–M4 + M4.5 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help` — 11 tools (Odoo core API lifecycle awareness across v8 → v20+).
 >
-> **M4.5 + M4.6 (planned — see [TASKS.md](TASKS.md)):** `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — 8 tool mới giúp AI hiểu Odoo core API thay đổi qua versions (v8 → v20+) + curated patterns + chống hallucinate Enterprise module trên stack Viindoo Community.
+> **M4.6 (planned — see [TASKS.md](TASKS.md)):** `suggest_pattern`, `check_module_exists`, `find_override_point` — 3 tool mới giúp AI viết code đúng idiom + chống hallucinate Enterprise module trên stack Viindoo Community.
 
 ---
 
@@ -114,8 +114,14 @@ git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile odoo17 --version 17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
   --profile odoo17 --url file://local --branch 17.0 --local-path ~/git/odoo_17.0
-~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile odoo17 --no-embed
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile odoo17 --no-embed
 # (--no-embed bỏ qua M3 semantic search; cần Ollama nếu muốn dùng find_examples)
+
+# (M4.5+) Index Odoo core API symbols + lint rules + CLI cho version 17.0:
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core \
+  --source ~/git/odoo_17.0 --version 17.0
+# Sau bước này: lookup_core_api / api_version_diff / find_deprecated_usage /
+# lint_check / cli_help mới có data để query.
 ```
 
 ### 3. Start MCP server
@@ -203,7 +209,9 @@ make install                                           # tạo venv + config tem
 docker compose up -d                                   # start Neo4j + PostgreSQL
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate # bootstrap schema
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile viindoo_17 --version 17.0
-~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile viindoo_17
+# (M4.5+) Index Odoo core specs (CoreSymbol/LintRule/CLI) per version:
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core --source <odoo_source> --version 17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
 ```
 
@@ -236,7 +244,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
 **Milestone 3 — "Semantic Wow":** `[x]` Code + auto tests complete — còn E2E manual + recall benchmark với Ollama thật  
 **Milestone 4 — "Impact Wow":** `[x]` Code + auto tests complete — còn manual E2E `impact_analysis`  
-**Milestone 4.5 — "Spec Wow":** `[ ]` Chưa bắt đầu — index Odoo upstream specs (CoreSymbol/LintRule/CLI) + unblock v8/v9 codebase support  
+**Milestone 4.5 — "Spec Wow":** `[x]` Code + auto tests complete (5 new MCP tools, 4 spec node labels, v8/v9 unblocked) — còn manual E2E `lookup_core_api` / `cli_help` với Odoo upstream indexed  
 **Milestone 4.6 — "Pattern Wow":** `[ ]` Chưa bắt đầu — curated patterns + override convention metadata + EE confusion guard  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu — Web UI admin + API key auth + production hardening (health endpoint, indexer concurrency lock)  
 **Milestone 5.5 — "Polish Wow":** `[ ]` Chưa bắt đầu — observability + test discipline; landing zone cho tech-debt phát sinh từ M5  
