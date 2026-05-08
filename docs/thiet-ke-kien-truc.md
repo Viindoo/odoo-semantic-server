@@ -236,6 +236,41 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:OWLComp  { name, odoo_version, module, template })
 ```
 
+**M4.5 + M4.6 (planned — see [ADR-0002](adr/0002-spec-schema-policy.md), [ADR-0003](adr/0003-pattern-example-storage.md)):**
+
+```
+// M4.5 — Odoo upstream specs (per-version, lifecycle qua edge)
+(:CoreSymbol   { qualified_name, odoo_version, kind, signature, file_path,
+                 line, status, replacement_qname })
+                                  // KEY = (qualified_name, odoo_version)
+                                  // kind: function|class|decorator|exception|field_type|orm_method|cursor_method
+                                  // status: stable|deprecated|removed|added
+(:LintRule     { rule_id, odoo_version, kind, message, severity,
+                 file_pattern, fix_template, core_symbol_qname })
+                                  // KEY = (rule_id, odoo_version)
+                                  // kind: pylint-odoo|pylint-stdlib|eslint-odoo|ruff-builtin
+(:CLICommand   { name, odoo_version, description, file_path })
+                                  // KEY = (name, odoo_version)
+(:CLIFlag      { flag_name, command_name, odoo_version, status, default,
+                 type, replacement_flag_name, env_name, posix_only })
+                                  // KEY = (flag_name, command_name, odoo_version)
+
+// M4.6 — Curated patterns
+(:PatternExample { pattern_id, intent_keywords, file_ref, snippet_text,
+                   gotchas, odoo_version_min, language })
+                                  // KEY = pattern_id (unique)
+                                  // language: python|xml|js
+                                  // Embedding vector lưu ở pgvector embeddings table
+                                  // (chunk_type='pattern_example', module='__patterns__')
+
+// M4.6 — Module/Method enrichment (property additions, không phải node mới)
+(:Module ..., edition, viindoo_equivalent_qname)
+                                  // edition: community|enterprise|viindoo|oca|custom
+(:Method ..., convention_kind, super_safety, return_required)
+                                  // convention_kind: compute|inverse|search|default|builder|prepare|check|action|crud|private|public
+                                  // super_safety: always|usually|never
+```
+
 #### Relationships
 
 ```
@@ -266,6 +301,30 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:JSPatch )-[:PATCHES   ]->(:JSPatch)               // legacy patch chain
 (:OWLComp )-[:EXTENDS   ]->(:OWLComp)
 (:OWLComp )-[:BOUND_TO  ]->(:Model)
+```
+
+**M4.5 + M4.6 (planned):**
+
+```
+// M4.5 — CoreSymbol lifecycle
+(:CoreSymbol)-[:ADDED_IN      { version }]->(:CoreSymbol)  // target có thể null nếu fresh
+(:CoreSymbol)-[:REMOVED_IN    { version }]->()             // no target — symbol biến mất
+(:CoreSymbol)-[:DEPRECATED_IN { version }]->(:CoreSymbol)  // target = replacement nếu có
+(:CoreSymbol)-[:REPLACED_BY   ]->(:CoreSymbol)             // group_operator → aggregator
+
+// M4.5 — User code dùng deprecated/removed API
+(:Method)-[:USES_CORE_SYMBOL]->(:CoreSymbol)               // V0 scope: status ∈ {deprecated, removed}
+(:Field )-[:USES_CORE_SYMBOL]->(:CoreSymbol)               // chỉ bind khi target tồn tại
+
+// M4.5 — LintRule check (optional)
+(:LintRule)-[:CHECKS]->(:CoreSymbol)                       // khi rule check 1 symbol cụ thể
+
+// M4.5 — CLIFlag belongs to CLICommand + lifecycle
+(:CLIFlag)-[:OF_COMMAND ]->(:CLICommand)
+(:CLIFlag)-[:REPLACED_BY]->(:CLIFlag)                      // --longpolling-port → --gevent-port
+
+// M4.6 — Pattern bind to API
+(:PatternExample)-[:USES_CORE_SYMBOL]->(:CoreSymbol)       // M4.5 dep, graceful skip nếu vắng
 ```
 
 #### Ví dụ query Cypher
@@ -376,6 +435,53 @@ Hybrid retrieval:
 #### `impact_analysis(entity_type, entity_name, odoo_version?)`
 
 Trả về: affected models, views, JS components, dependent modules, risk level (low/medium/high).
+
+---
+
+#### M4.5 — Spec tools (planned, see [plan](superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md))
+
+##### `lookup_core_api(name, odoo_version?)`
+
+Trả về signature, status (stable/deprecated/removed/added), replacement của 1 Odoo core symbol.
+Ví dụ: `lookup_core_api("name_get", "18.0")` → `status: removed, replacement: display_name property`.
+
+##### `api_version_diff(symbol, from_version, to_version)`
+
+Diff 1 symbol giữa 2 phiên bản Odoo: ADDED/REMOVED/REPLACED/SIGNATURE_CHANGE.
+Ví dụ: `api_version_diff("_search", "17.0", "18.0")` → return type list → Query.
+
+##### `find_deprecated_usage(odoo_version?, category?)`
+
+Quét user code, list Method/Field dùng API deprecated/removed ở target version.
+Migration killer feature: trước khi upgrade Odoo lên v19, gọi tool này để biết hệ thống có gì sẽ hỏng.
+
+##### `lint_check(code, odoo_version?, language?)`
+
+Pattern-match code chunk vs LintRule (E8501 SQL injection, E8505 gettext-placeholders, E8507 missing-gettext, ESLint OWL static-props…). Output: list violation + fix template.
+
+##### `cli_help(command?, flag?, odoo_version?)`
+
+CLICommand/CLIFlag spec + status + replacement.
+Ví dụ: `cli_help("server", "--longpolling-port", "18.0")` → `status: removed, replacement: --gevent-port`.
+
+---
+
+#### M4.6 — Pattern tools (planned, see [plan](superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md))
+
+##### `suggest_pattern(intent, odoo_version?, language?)`
+
+Semantic search trên `PatternExample` qua intent string → 3-5 ví dụ thật từ Odoo CE/Viindoo + gotchas ranked + file_ref.
+Ví dụ: `suggest_pattern("computed field cross-model partner_id", "17.0", "python")` → top match `computed-field-cross-model` + 3 gotchas.
+
+##### `check_module_exists(name, odoo_version?)`
+
+Lookup Module + EE_CONFUSION static dict → `{exists_in_ce, edition, is_ee_confusion, viindoo_equivalent}`.
+Hard-block AI hallucinate `depends: ['knowledge']` (Odoo Enterprise) trên stack Community/Viindoo.
+
+##### `find_override_point(model, method, odoo_version?)`
+
+Method node + INHERITS chain + anti-pattern map → `{convention_kind, super_safety, super_ratio, anti_patterns, canonical_examples}`.
+Ví dụ: `find_override_point("sale.order", "action_confirm", "17.0")` → `super_safety: always, super_ratio: 7/7, anti_patterns: [old-style super, missing return]`.
 
 ---
 
@@ -498,6 +604,59 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
 
 ---
 
+### Milestone 4.5 — "Spec Wow" (~15.5h AI-assisted)
+
+**Intent:** Index Odoo upstream specs (CoreSymbol API lifecycle, LintRule per-version, CLICommand/CLIFlag) + Phase 0 unblock v8/v9 codebase support (hiện đang silent-skip vì 3 blocker: Python 2 parser, `__openerp__.py` discovery, `_latest_version()` hardcode "17.0").
+
+**Outcome:** `lookup_core_api("name_get", "18.0")` → `status: removed`; `cli_help("server", "--longpolling-port", "18.0")` → `removed + replacement: --gevent-port`; `find_deprecated_usage("19.0")` quét user code chuẩn bị upgrade; clone Odoo 8 → indexer không silent-skip.
+
+```
+[Phase 0]
+  - registry.py: ManifestFinder Protocol (Modern + Legacy với __openerp__.py)
+  - parser_python.py: era-aware dispatch (era1 v8-9 text-regex, era2 v10+ AST)
+  - mcp/server.py: _latest_version() numeric compare via toInteger(split(v,'.')[0])
+
+[Spec layer]
+  - parser_odoo_core.py: extract CoreSymbol từ allow-list 8 file core
+  - parser_lint_rules.py: pylint-odoo + ESLint + ruff (code v17-v19, static placeholder v8-v16)
+  - parser_cli.py: CLICommand từ odoo/cli/, CLIFlag từ odoo/tools/config.py
+  - diff_engine.py: cross-version sinh ADDED_IN/REMOVED_IN/REPLACED_BY/DEPRECATED_IN edges
+
+[Tools]
+  - mcp/server.py: 5 tool mới (lookup_core_api, api_version_diff,
+    find_deprecated_usage, lint_check, cli_help)
+  - parser_python.py: extend AST visit detect USES_CORE_SYMBOL refs (deprecated/removed)
+```
+
+> Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md`](superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md) (9 WI)
+
+---
+
+### Milestone 4.6 — "Pattern Wow" (~7.5h AI-assisted)
+
+**Intent:** Curated patterns + override convention metadata để AI viết code đúng idiom Odoo + Viindoo, chống hallucinate Odoo Enterprise module trên stack Community.
+
+**Outcome:** `suggest_pattern("how to override write to read old value")` → 3 pattern thật + gotchas; `check_module_exists("knowledge", "17.0")` → EE confusion warning + Viindoo equivalent; `find_override_point` cho safety profile chính xác per method convention.
+
+```
+[Data layer]
+  - parser_python.py: _detect_module_edition() + _classify_method_convention()
+  - models.py: PatternExample dataclass + ModuleInfo.edition + MethodInfo.convention_kind
+  - writer_neo4j.py: write_pattern_examples + Module/Method enrichment SET property
+  - writer_pgvector.py: make_pattern_chunks() (chunk_type='pattern_example')
+  - data/patterns.json: ~50 curated entry + data/ee_modules.py EE_CONFUSION dict
+  - seed_patterns.py: one-shot CLI
+
+[Tools]
+  - mcp/server.py: 3 tool mới (suggest_pattern, check_module_exists, find_override_point)
+```
+
+> Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md`](superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md) (8 WI)
+>
+> Depends on M4.5: USES_CORE_SYMBOL edge graceful skip nếu CoreSymbol vắng.
+
+---
+
 ### Milestone 5 — "Product Wow" (Ngày 5–6)
 
 **Intent:** Đóng gói thành sản phẩm server admin deploy được trong dưới 10 phút; end user không cài gì.
@@ -586,6 +745,8 @@ odoo-semantic-mcp/
 Ngày 1–2  │ M1: First Wow    → resolve_model cross-repo hoạt động
 Ngày 3    │ M2: View Wow     → resolve_view + merged XML
 Ngày 4    │ M3+M4: Semantic + Impact Wow
++15.5h    │ M4.5: Spec Wow   → 5 tool API/lint/CLI + v8/v9 enablement
++7.5h     │ M4.6: Pattern Wow → 3 tool pattern/module/override
 Ngày 5–6  │ M5: Product Wow  → Docker deploy + Web UI + CLI
 Ngày 7+   │ M6: Scale Wow    → multi-version, incremental
 ```
