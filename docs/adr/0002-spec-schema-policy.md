@@ -1,7 +1,7 @@
 # ADR-0002: Spec Schema Policy — CoreSymbol, LintRule, CLI Nodes
 
 **Date:** 2026-05-08  
-**Status:** Draft
+**Status:** Accepted
 
 ## Context
 
