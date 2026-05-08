@@ -179,3 +179,36 @@ class LintRuleInfo:
     file_pattern: str | None = None
     fix_template: str | None = None
     core_symbol_qname: str | None = None
+
+
+@dataclass
+class CLICommandInfo:
+    """An odoo-bin subcommand (e.g. server, shell, scaffold, db).
+
+    Composite key: (name, odoo_version) — see ADR-0002 §1.
+    """
+    name: str
+    odoo_version: str
+    description: str | None = None
+    file_path: str | None = None
+
+
+@dataclass
+class CLIFlagInfo:
+    """A CLI flag belonging to a subcommand (e.g. --http-port on server).
+
+    Composite key: (flag_name, command_name, odoo_version) — see ADR-0002 §1.
+    `status` ∈ {stable, deprecated, removed, added}.
+    `replacement_flag_name` points to the successor flag when this one is
+    deprecated/removed (e.g. --longpolling-port → --gevent-port).
+    """
+    flag_name: str
+    command_name: str
+    odoo_version: str
+    status: str = "stable"
+    default: str | None = None
+    type: str | None = None
+    help: str | None = None
+    replacement_flag_name: str | None = None
+    env_name: str | None = None
+    posix_only: bool = False
