@@ -62,8 +62,10 @@ class TestSmokeParseFixture:
     def test_parse_core_extracts_minimum_symbols(self):
         """8-file fixture → ≥25 CoreSymbols across all 6 parser-defined kinds."""
         symbols = parse_odoo_core(str(FIXTURE_ROOT), SMOKE_VERSION)
-        assert len(symbols) >= 25, (
-            f"Expected ≥25 symbols from fixture, got {len(symbols)}. "
+        # C4 TEMP: threshold raised to impossible value to test failure path.
+        # REVERT this after verifying CI fails + issue-creation path triggers.
+        assert len(symbols) >= 99999, (
+            f"Expected ≥99999 symbols from fixture, got {len(symbols)}. "
             "Check fixture has content in all 8 allow-list files."
         )
 
