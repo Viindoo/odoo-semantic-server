@@ -905,3 +905,88 @@ def test_setup_indexes_creates_lint_rule_index(writer, neo4j_driver):
         for i in indexes
     )
     assert found, "LintRule(rule_id, odoo_version) index missing"
+
+
+# --- CLICommand + CLIFlag writer tests (M4.5 WI4) -----------------------
+
+from src.indexer.models import CLICommandInfo, CLIFlagInfo  # noqa: E402
+
+
+def test_write_cli_command_node(writer, neo4j_driver):
+    """write_cli_commands MERGEs a CLICommand node."""
+    cmd = CLICommandInfo(
+        name="server", odoo_version=TEST_VERSION,
+        description="Run Odoo server",
+    )
+    writer.write_cli_commands([cmd])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (c:CLICommand {name: 'server', odoo_version: $v}) RETURN c
+        """, v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["c"]["description"] == "Run Odoo server"
+
+
+def test_write_cli_flag_with_of_command_edge(writer, neo4j_driver):
+    """CLIFlag → OF_COMMAND → CLICommand edge created when both exist."""
+    writer.write_cli_commands([CLICommandInfo("server", TEST_VERSION)])
+    writer.write_cli_flags([CLIFlagInfo(
+        flag_name="--http-port",
+        command_name="server",
+        odoo_version=TEST_VERSION,
+        type="int",
+    )])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (f:CLIFlag {flag_name: '--http-port', odoo_version: $v})
+                  -[:OF_COMMAND]->
+                  (c:CLICommand {name: 'server', odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_write_cli_flag_replacement_creates_replaced_by_edge(writer, neo4j_driver):
+    """write_cli_flag_replacements creates REPLACED_BY between CLIFlag nodes."""
+    writer.write_cli_commands([CLICommandInfo("server", TEST_VERSION)])
+    writer.write_cli_flags([
+        CLIFlagInfo(
+            "--longpolling-port", "server", TEST_VERSION,
+            status="deprecated",
+            replacement_flag_name="--gevent-port",
+        ),
+        CLIFlagInfo("--gevent-port", "server", TEST_VERSION),
+    ])
+    writer.write_cli_flag_replacements(
+        [("--longpolling-port", "--gevent-port")],
+        command_name="server",
+        from_version=TEST_VERSION,
+        to_version=TEST_VERSION,
+    )
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (a:CLIFlag {flag_name: '--longpolling-port', odoo_version: $v})
+                  -[:REPLACED_BY]->
+                  (b:CLIFlag {flag_name: '--gevent-port', odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_setup_indexes_creates_cli_indexes(writer, neo4j_driver):
+    """setup_indexes creates CLICommand + CLIFlag indexes."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    cmd_found = any(
+        "CLICommand" in (i.get("labelsOrTypes") or [])
+        and "name" in (i.get("properties") or [])
+        for i in indexes
+    )
+    flag_found = any(
+        "CLIFlag" in (i.get("labelsOrTypes") or [])
+        and "flag_name" in (i.get("properties") or [])
+        for i in indexes
+    )
+    assert cmd_found, "CLICommand index missing"
+    assert flag_found, "CLIFlag index missing"
