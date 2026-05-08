@@ -743,3 +743,344 @@ def test_write_js_graph_bound_to_model(writer, neo4j_driver):
         """, comp_name="SaleOrderComp", model_name="sale.order",
              v=TEST_VERSION).single()
     assert rec["cnt"] >= 1, "BOUND_TO edge should exist when model is indexed"
+
+
+# --- CoreSymbol writer tests (M4.5 WI2.3, per ADR-0002) -------------------
+
+from src.indexer.diff_engine import DiffResult  # noqa: E402
+from src.indexer.models import CoreSymbolInfo  # noqa: E402
+
+
+def test_write_core_symbol_node(writer, neo4j_driver):
+    """write_core_symbols MERGEs a CoreSymbol node with composite key."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval.safe_eval",
+        kind="function",
+        odoo_version=TEST_VERSION,
+        signature="safe_eval(expr, context)",
+        file_path="/odoo/tools/safe_eval.py",
+        line=42,
+        status="stable",
+    )
+    writer.write_core_symbols([sym])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+            RETURN cs
+        """, qn=sym.qualified_name, v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["cs"]["kind"] == "function"
+    assert rec["cs"]["signature"] == "safe_eval(expr, context)"
+    assert rec["cs"]["status"] == "stable"
+
+
+def test_write_core_symbol_idempotent_on_repeat(writer, neo4j_driver):
+    """MERGE on (qualified_name, odoo_version) — repeat write doesn't duplicate."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.fields.Float",
+        kind="field_type",
+        odoo_version=TEST_VERSION,
+        status="stable",
+    )
+    writer.write_core_symbols([sym, sym])
+    writer.write_core_symbols([sym])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+            RETURN count(cs) AS c
+        """, qn=sym.qualified_name, v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_write_diff_replaced_by_edge_when_target_exists(writer, neo4j_driver):
+    """REPLACED_BY edge MERGEd when both old and new symbol nodes exist."""
+    old = CoreSymbolInfo(
+        qualified_name="odoo.fields.Field.group_operator",
+        kind="field_type", odoo_version=TEST_VERSION,
+        status="removed",
+        replacement_qname="odoo.fields.Field.aggregator",
+    )
+    new = CoreSymbolInfo(
+        qualified_name="odoo.fields.Field.aggregator",
+        kind="field_type", odoo_version=TEST_VERSION,
+        status="added",
+    )
+    writer.write_core_symbols([old, new])
+    diff = DiffResult(
+        replaced=[(
+            "odoo.fields.Field.group_operator",
+            "odoo.fields.Field.aggregator",
+        )],
+    )
+    writer.write_diff_edges(diff, from_version=TEST_VERSION, to_version=TEST_VERSION)
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (a:CoreSymbol {qualified_name: $a_qn, odoo_version: $v})
+                  -[:REPLACED_BY]->
+                  (b:CoreSymbol {qualified_name: $b_qn, odoo_version: $v})
+            RETURN count(*) AS c
+        """, a_qn=old.qualified_name, b_qn=new.qualified_name,
+             v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_setup_indexes_creates_core_symbol_index(writer, neo4j_driver):
+    """setup_indexes creates an index on (CoreSymbol.qualified_name, odoo_version)."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    labels_props = [
+        (i.get("labelsOrTypes") or [], i.get("properties") or [])
+        for i in indexes
+    ]
+    found = any(
+        "CoreSymbol" in (lbls or [])
+        and "qualified_name" in (props or [])
+        and "odoo_version" in (props or [])
+        for lbls, props in labels_props
+    )
+    assert found, f"CoreSymbol index missing. Got: {labels_props}"
+
+
+# --- LintRule writer tests (M4.5 WI3) ----------------------------------
+
+from src.indexer.models import LintRuleInfo  # noqa: E402
+
+
+def test_write_lint_rule_node(writer, neo4j_driver):
+    """write_lint_rules persists a LintRule node with composite key + props."""
+    rule = LintRuleInfo(
+        rule_id="E8502",
+        odoo_version=TEST_VERSION,
+        kind="pylint-odoo",
+        message="Bad gettext usage",
+        severity="error",
+    )
+    writer.write_lint_rules([rule])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (l:LintRule {rule_id: $rid, odoo_version: $v}) RETURN l
+        """, rid="E8502", v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["l"]["kind"] == "pylint-odoo"
+    assert rec["l"]["severity"] == "error"
+
+
+def test_write_lint_rule_checks_edge_to_core_symbol(writer, neo4j_driver):
+    """When rule.core_symbol_qname is set + target exists → CHECKS edge MERGEd."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.models.BaseModel.unlink",
+        kind="orm_method", odoo_version=TEST_VERSION,
+    )
+    writer.write_core_symbols([sym])
+    rule = LintRuleInfo(
+        rule_id="E8401",
+        odoo_version=TEST_VERSION,
+        kind="pylint-odoo",
+        core_symbol_qname="odoo.models.BaseModel.unlink",
+    )
+    writer.write_lint_rules([rule])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (l:LintRule {rule_id: 'E8401', odoo_version: $v})
+                  -[:CHECKS]->
+                  (cs:CoreSymbol {qualified_name: $cs_qn, odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION, cs_qn="odoo.models.BaseModel.unlink").single()
+    assert rec["c"] == 1
+
+
+def test_setup_indexes_creates_lint_rule_index(writer, neo4j_driver):
+    """setup_indexes creates an index on (LintRule.rule_id, odoo_version)."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    found = any(
+        "LintRule" in (i.get("labelsOrTypes") or [])
+        and "rule_id" in (i.get("properties") or [])
+        and "odoo_version" in (i.get("properties") or [])
+        for i in indexes
+    )
+    assert found, "LintRule(rule_id, odoo_version) index missing"
+
+
+# --- CLICommand + CLIFlag writer tests (M4.5 WI4) -----------------------
+
+from src.indexer.models import CLICommandInfo, CLIFlagInfo  # noqa: E402
+
+
+def test_write_cli_command_node(writer, neo4j_driver):
+    """write_cli_commands MERGEs a CLICommand node."""
+    cmd = CLICommandInfo(
+        name="server", odoo_version=TEST_VERSION,
+        description="Run Odoo server",
+    )
+    writer.write_cli_commands([cmd])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (c:CLICommand {name: 'server', odoo_version: $v}) RETURN c
+        """, v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["c"]["description"] == "Run Odoo server"
+
+
+def test_write_cli_flag_with_of_command_edge(writer, neo4j_driver):
+    """CLIFlag → OF_COMMAND → CLICommand edge created when both exist."""
+    writer.write_cli_commands([CLICommandInfo("server", TEST_VERSION)])
+    writer.write_cli_flags([CLIFlagInfo(
+        flag_name="--http-port",
+        command_name="server",
+        odoo_version=TEST_VERSION,
+        type="int",
+    )])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (f:CLIFlag {flag_name: '--http-port', odoo_version: $v})
+                  -[:OF_COMMAND]->
+                  (c:CLICommand {name: 'server', odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_write_cli_flag_replacement_creates_replaced_by_edge(writer, neo4j_driver):
+    """write_cli_flag_replacements creates REPLACED_BY between CLIFlag nodes."""
+    writer.write_cli_commands([CLICommandInfo("server", TEST_VERSION)])
+    writer.write_cli_flags([
+        CLIFlagInfo(
+            "--longpolling-port", "server", TEST_VERSION,
+            status="deprecated",
+            replacement_flag_name="--gevent-port",
+        ),
+        CLIFlagInfo("--gevent-port", "server", TEST_VERSION),
+    ])
+    writer.write_cli_flag_replacements(
+        [("--longpolling-port", "--gevent-port")],
+        command_name="server",
+        from_version=TEST_VERSION,
+        to_version=TEST_VERSION,
+    )
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (a:CLIFlag {flag_name: '--longpolling-port', odoo_version: $v})
+                  -[:REPLACED_BY]->
+                  (b:CLIFlag {flag_name: '--gevent-port', odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_setup_indexes_creates_cli_indexes(writer, neo4j_driver):
+    """setup_indexes creates CLICommand + CLIFlag indexes."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    cmd_found = any(
+        "CLICommand" in (i.get("labelsOrTypes") or [])
+        and "name" in (i.get("properties") or [])
+        for i in indexes
+    )
+    flag_found = any(
+        "CLIFlag" in (i.get("labelsOrTypes") or [])
+        and "flag_name" in (i.get("properties") or [])
+        for i in indexes
+    )
+    assert cmd_found, "CLICommand index missing"
+    assert flag_found, "CLIFlag index missing"
+
+
+# --- USES_CORE_SYMBOL edge tests (M4.5 WI6) -----------------------------
+
+
+def _make_parse_result_with_method_refs(
+    module_name: str, model_name: str, method_name: str, refs: list[str],
+) -> ParseResult:
+    """Build a ParseResult whose single Method carries `core_symbol_refs`."""
+    module = ModuleInfo(
+        name=module_name, odoo_version=TEST_VERSION,
+        repo=f"{module_name}_repo", path="/tmp",
+        depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name=model_name, module=module_name, odoo_version=TEST_VERSION,
+        methods=[
+            MethodInfo(
+                name=method_name, has_super_call=False, decorators=[],
+                core_symbol_refs=refs,
+            ),
+        ],
+    )
+    return ParseResult(module=module, models=[model])
+
+
+def test_uses_core_symbol_edge_when_target_exists_and_deprecated(writer, neo4j_driver):
+    """When a Method has core_symbol_refs and a deprecated CoreSymbol exists,
+    USES_CORE_SYMBOL edge is MERGEd."""
+    # Seed CoreSymbol
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.models.BaseModel.name_get",
+        kind="orm_method",
+        odoo_version=TEST_VERSION,
+        status="deprecated",
+        replacement_qname="odoo.models.BaseModel.display_name",
+    )
+    writer.write_core_symbols([sym])
+
+    # Seed Method with ref
+    pr = _make_parse_result_with_method_refs(
+        "viin_sale", "sale.order", "foo", refs=["name_get"],
+    )
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (mth:Method {name: 'foo', module: 'viin_sale', odoo_version: $v})
+                  -[:USES_CORE_SYMBOL]->
+                  (cs:CoreSymbol {qualified_name: $cs_qn, odoo_version: $v})
+            RETURN count(*) AS c
+        """, v=TEST_VERSION,
+             cs_qn="odoo.models.BaseModel.name_get").single()
+    assert rec["c"] == 1
+
+
+def test_no_uses_core_symbol_edge_when_target_missing(writer, neo4j_driver):
+    """Method has refs but no CoreSymbol indexed → silent skip, no placeholder."""
+    pr = _make_parse_result_with_method_refs(
+        "viin_sale", "sale.order", "bar", refs=["name_get"],
+    )
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (mth:Method {name: 'bar', module: 'viin_sale', odoo_version: $v})
+                  -[:USES_CORE_SYMBOL]->()
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 0
+
+
+def test_no_uses_core_symbol_edge_when_target_is_stable(writer, neo4j_driver):
+    """V0 scope per ADR-0002 §3: only deprecated/removed CoreSymbol gets edges."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval.safe_eval",
+        kind="function",
+        odoo_version=TEST_VERSION,
+        status="stable",
+    )
+    writer.write_core_symbols([sym])
+
+    pr = _make_parse_result_with_method_refs(
+        "viin_sale", "sale.order", "baz", refs=["safe_eval"],
+    )
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (mth:Method {name: 'baz', module: 'viin_sale', odoo_version: $v})
+                  -[:USES_CORE_SYMBOL]->()
+            RETURN count(*) AS c
+        """, v=TEST_VERSION).single()
+    assert rec["c"] == 0  # stable status excluded by V0 scope

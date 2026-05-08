@@ -3,7 +3,16 @@ import logging
 
 from neo4j import GraphDatabase
 
-from .models import JSGraphResult, ParseResult, ViewParseResult
+from .diff_engine import DiffResult
+from .models import (
+    CLICommandInfo,
+    CLIFlagInfo,
+    CoreSymbolInfo,
+    JSGraphResult,
+    LintRuleInfo,
+    ParseResult,
+    ViewParseResult,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -113,6 +122,19 @@ def _write_parse_result(tx, result: ParseResult) -> None:
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
                  decorators=mth.decorators)
+
+            # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
+            # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
+            for ref in mth.core_symbol_refs:
+                tx.run("""
+                    MATCH (mth:Method {name: $name, model: $model_name,
+                                       module: $mod, odoo_version: $v})
+                    MATCH (cs:CoreSymbol {odoo_version: $v})
+                    WHERE cs.qualified_name ENDS WITH '.' + $ref
+                      AND cs.status IN ['deprecated', 'removed']
+                    MERGE (mth)-[:USES_CORE_SYMBOL]->(cs)
+                """, name=mth.name, model_name=model.name, mod=model.module,
+                     v=model.odoo_version, ref=ref)
 
 
 def _write_view_parse_result(tx, result: ViewParseResult) -> None:
@@ -266,6 +288,104 @@ def _write_js_graph_result(tx, result: JSGraphResult) -> None:
                  mod=patch.module, v=patch.odoo_version)
 
 
+def _chunked(items, size):
+    """Yield successive chunks of `items` of length up to `size`."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _write_core_symbols_batch(tx, symbols: list[CoreSymbolInfo]) -> None:
+    for s in symbols:
+        tx.run("""
+            MERGE (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+            SET cs.kind = $kind,
+                cs.signature = $sig,
+                cs.file_path = $fp,
+                cs.line = $line,
+                cs.status = $status,
+                cs.replacement_qname = $repl
+        """, qn=s.qualified_name, v=s.odoo_version,
+             kind=s.kind, sig=s.signature, fp=s.file_path,
+             line=s.line, status=s.status, repl=s.replacement_qname)
+
+
+def _write_replaced_by_edges(tx, replaced: list[tuple[str, str]],
+                             from_version: str, to_version: str) -> None:
+    for old_qn, new_qn in replaced:
+        tx.run("""
+            MATCH (a:CoreSymbol {qualified_name: $old_qn, odoo_version: $vfrom})
+            MATCH (b:CoreSymbol {qualified_name: $new_qn, odoo_version: $vto})
+            MERGE (a)-[:REPLACED_BY]->(b)
+        """, old_qn=old_qn, new_qn=new_qn,
+             vfrom=from_version, vto=to_version)
+
+
+def _write_lint_rules_batch(tx, rules: list[LintRuleInfo]) -> None:
+    for r in rules:
+        tx.run("""
+            MERGE (l:LintRule {rule_id: $rid, odoo_version: $v})
+            SET l.kind = $kind,
+                l.message = $msg,
+                l.severity = $sev,
+                l.file_pattern = $fp,
+                l.fix_template = $fix,
+                l.core_symbol_qname = $cs
+        """, rid=r.rule_id, v=r.odoo_version, kind=r.kind,
+             msg=r.message, sev=r.severity, fp=r.file_pattern,
+             fix=r.fix_template, cs=r.core_symbol_qname)
+        # CHECKS edge: when rule is bound to a specific CoreSymbol, link them.
+        if r.core_symbol_qname:
+            tx.run("""
+                MATCH (l:LintRule {rule_id: $rid, odoo_version: $v})
+                MATCH (cs:CoreSymbol {qualified_name: $cs_qn, odoo_version: $v})
+                MERGE (l)-[:CHECKS]->(cs)
+            """, rid=r.rule_id, v=r.odoo_version, cs_qn=r.core_symbol_qname)
+
+
+def _write_cli_commands_batch(tx, commands: list[CLICommandInfo]) -> None:
+    for c in commands:
+        tx.run("""
+            MERGE (c:CLICommand {name: $name, odoo_version: $v})
+            SET c.description = $desc,
+                c.file_path = $fp
+        """, name=c.name, v=c.odoo_version,
+             desc=c.description, fp=c.file_path)
+
+
+def _write_cli_flags_batch(tx, flags: list[CLIFlagInfo]) -> None:
+    for f in flags:
+        tx.run("""
+            MERGE (f:CLIFlag {flag_name: $fn, command_name: $cmd, odoo_version: $v})
+            SET f.status = $status,
+                f.default = $default,
+                f.type = $type,
+                f.help = $help,
+                f.replacement_flag_name = $repl,
+                f.env_name = $env,
+                f.posix_only = $posix
+        """, fn=f.flag_name, cmd=f.command_name, v=f.odoo_version,
+             status=f.status, default=f.default, type=f.type, help=f.help,
+             repl=f.replacement_flag_name, env=f.env_name, posix=f.posix_only)
+        # OF_COMMAND edge: link the flag to its command if the CLICommand exists.
+        tx.run("""
+            MATCH (f:CLIFlag {flag_name: $fn, command_name: $cmd, odoo_version: $v})
+            MATCH (c:CLICommand {name: $cmd, odoo_version: $v})
+            MERGE (f)-[:OF_COMMAND]->(c)
+        """, fn=f.flag_name, cmd=f.command_name, v=f.odoo_version)
+
+
+def _write_cli_flag_replacements(tx, replaced: list[tuple[str, str]],
+                                 command_name: str,
+                                 from_version: str, to_version: str) -> None:
+    for old_fn, new_fn in replaced:
+        tx.run("""
+            MATCH (a:CLIFlag {flag_name: $a_fn, command_name: $cmd, odoo_version: $vfrom})
+            MATCH (b:CLIFlag {flag_name: $b_fn, command_name: $cmd, odoo_version: $vto})
+            MERGE (a)-[:REPLACED_BY]->(b)
+        """, a_fn=old_fn, b_fn=new_fn, cmd=command_name,
+             vfrom=from_version, vto=to_version)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -288,6 +408,17 @@ class Neo4jWriter:
                 " ON (n.target, n.patch_name, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:OWLComp)"
                 " ON (n.name, n.module, n.odoo_version)",
+                # M4.5 spec layer (per ADR-0002):
+                "CREATE INDEX IF NOT EXISTS FOR (n:CoreSymbol)"
+                " ON (n.qualified_name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:LintRule)"
+                " ON (n.rule_id, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:CLICommand)"
+                " ON (n.name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:CLIFlag)"
+                " ON (n.flag_name, n.command_name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:SpecMetadata)"
+                " ON (n.kind, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -305,3 +436,171 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for result in results:
                 session.execute_write(_write_js_graph_result, result)
+
+    # --- M4.5 spec layer (CoreSymbol + diff edges) -------------------------
+
+    def write_core_symbols(self, symbols: list[CoreSymbolInfo]) -> None:
+        """Persist a batch of CoreSymbol nodes (idempotent MERGE).
+
+        Composite key: (qualified_name, odoo_version). Mutable props (kind,
+        signature, file_path, line, status, replacement_qname) updated via SET.
+        Batched at 500/transaction to stay under driver memory budget.
+        """
+        if not symbols:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(symbols, 500):
+                session.execute_write(_write_core_symbols_batch, batch)
+
+    def write_diff_edges(
+        self, diff: DiffResult, *, from_version: str, to_version: str,
+    ) -> None:
+        """Persist cross-version diff edges (currently REPLACED_BY only).
+
+        Per ADR-0002 §2: ADDED_IN / REMOVED_IN are represented via `cs.status`
+        property (set during write_core_symbols), not as separate edges. Only
+        REPLACED_BY needs an actual edge because it links two distinct nodes.
+        """
+        if not diff.replaced:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                _write_replaced_by_edges,
+                diff.replaced, from_version, to_version,
+            )
+
+    def write_lint_rules(self, rules: list[LintRuleInfo]) -> None:
+        """Persist a batch of LintRule nodes (idempotent MERGE).
+
+        Composite key: (rule_id, odoo_version). Optionally creates a
+        CHECKS edge to a CoreSymbol when `core_symbol_qname` is set and
+        the target node already exists.
+        """
+        if not rules:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(rules, 500):
+                session.execute_write(_write_lint_rules_batch, batch)
+
+    def write_cli_commands(self, commands: list[CLICommandInfo]) -> None:
+        """Persist CLICommand nodes (idempotent MERGE on (name, odoo_version))."""
+        if not commands:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(commands, 500):
+                session.execute_write(_write_cli_commands_batch, batch)
+
+    def write_cli_flags(self, flags: list[CLIFlagInfo]) -> None:
+        """Persist CLIFlag nodes + OF_COMMAND edges (when target CLICommand exists)."""
+        if not flags:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(flags, 500):
+                session.execute_write(_write_cli_flags_batch, batch)
+
+    def write_cli_flag_replacements(
+        self,
+        replaced: list[tuple[str, str]],
+        *,
+        command_name: str,
+        from_version: str,
+        to_version: str,
+    ) -> None:
+        """Persist REPLACED_BY edges between CLIFlag nodes."""
+        if not replaced:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                _write_cli_flag_replacements,
+                replaced, command_name, from_version, to_version,
+            )
+
+    def fetch_core_symbols(self, odoo_version: str) -> list:
+        """Fetch all CoreSymbolInfo for a version from Neo4j.
+
+        Returns a list of CoreSymbolInfo-like dicts re-constructed as CoreSymbolInfo
+        objects so diff_engine can compare them. Used by index_core lifecycle diff.
+        """
+        from .models import CoreSymbolInfo
+        with self.driver.session() as session:
+            rows = session.run("""
+                MATCH (cs:CoreSymbol {odoo_version: $v})
+                RETURN cs.qualified_name AS qualified_name,
+                       cs.kind AS kind,
+                       cs.odoo_version AS odoo_version,
+                       cs.signature AS signature,
+                       cs.file_path AS file_path,
+                       cs.line AS line,
+                       cs.status AS status,
+                       cs.replacement_qname AS replacement_qname
+            """, v=odoo_version).data()
+        return [
+            CoreSymbolInfo(
+                qualified_name=r["qualified_name"],
+                kind=r["kind"] or "function",
+                odoo_version=r["odoo_version"],
+                signature=r.get("signature"),
+                file_path=r.get("file_path"),
+                line=r.get("line"),
+                status=r.get("status") or "stable",
+                replacement_qname=r.get("replacement_qname"),
+            )
+            for r in rows
+        ]
+
+    def write_lifecycle_properties(
+        self,
+        diff,  # DiffResult — import avoided at module level for circularity
+        *,
+        from_version: str,
+        to_version: str,
+    ) -> None:
+        """Write added_in / removed_in / deprecated_in properties on CoreSymbol nodes.
+
+        Per ADR-0002 §2 (revised): lifecycle expressed as properties on CoreSymbol
+        for query simplicity. REPLACED_BY is the only true edge.
+
+        - added (in to_version)   → cs.added_in = to_version  on the NEW node
+        - removed (from from_version) → cs.removed_in = to_version  on the OLD node
+        - deprecated (in to_version)  → cs.deprecated_in = to_version  on the NEW node
+        """
+        if not diff:
+            return
+        with self.driver.session() as session:
+            for sym in diff.added:
+                session.run("""
+                    MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+                    SET cs.added_in = $added_in
+                """, qn=sym.qualified_name, v=sym.odoo_version, added_in=to_version)
+
+            for sym in diff.removed:
+                # sym.odoo_version is from_version (old list)
+                session.run("""
+                    MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+                    SET cs.removed_in = $removed_in
+                """, qn=sym.qualified_name, v=from_version, removed_in=to_version)
+
+            deprecated = getattr(diff, "deprecated", [])
+            for sym in deprecated:
+                session.run("""
+                    MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+                    SET cs.deprecated_in = $deprecated_in
+                """, qn=sym.qualified_name, v=sym.odoo_version, deprecated_in=to_version)
+
+    def write_spec_metadata(
+        self, kind: str, odoo_version: str, curate_status: str,
+    ) -> None:
+        """Upsert a SpecMetadata node recording curation status for a spec kind + version.
+
+        Composite key: (kind, odoo_version). MERGE is idempotent.
+
+        Args:
+            kind:          'lint' | 'cli' — which spec category this metadata covers.
+            odoo_version:  Odoo version label, e.g. '8.0', '17.0'.
+            curate_status: 'pending' | 'done' (or any string per ADR-0002 §4).
+        """
+        with self.driver.session() as session:
+            session.run("""
+                MERGE (sm:SpecMetadata {kind: $kind, odoo_version: $v})
+                SET sm.curate_status = $curate_status
+            """, kind=kind, v=odoo_version, curate_status=curate_status)

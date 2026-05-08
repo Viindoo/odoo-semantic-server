@@ -99,7 +99,7 @@ def get_manifest_finder(odoo_version: str) -> ManifestFinder:
     return LegacyManifestFinder() if major <= 9 else ModernManifestFinder()
 ```
 
-Odoo v8/v9 dùng `__openerp__.py` thay `__manifest__.py`. Single rglob match một pattern là silent-skip toàn bộ v8/v9 modules — bug đã fix M4.5 Phase 0.
+Odoo v8/v9 dùng `__openerp__.py` thay `__manifest__.py`. Pluggable finder dispatch theo `odoo_version` — landed M4.5 WI1.1.
 
 **2. Era-aware parser_python.py** (giống `parser_js.py` era pattern):
 

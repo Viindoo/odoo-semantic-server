@@ -1,11 +1,15 @@
-"""Unit tests for src/indexer/__main__.py — no DB or Ollama required."""
+"""Unit tests for src/indexer/__main__.py — no DB or Ollama required.
+
+WI-F1: updated to use the new subcommand structure
+       (`index-repo --profile`, `index-repo --all`, `index-core --source`).
+"""
 from unittest.mock import MagicMock, patch
 
 import src.indexer.__main__ as main_mod
 
 
 def test_no_embed_flag_skips_embedder(monkeypatch, tmp_path):
-    """--no-embed passes embedder=None regardless of config."""
+    """index-repo --no-embed passes embedder=None regardless of config."""
     import src.config as config_mod
 
     cfg = tmp_path / "odoo-semantic.conf"
@@ -19,7 +23,7 @@ def test_no_embed_flag_skips_embedder(monkeypatch, tmp_path):
     ):
         mock_pg.return_value.close = MagicMock()
         mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
-        main_mod.main(["--profile", "test_prof", "--no-embed"])
+        main_mod.main(["index-repo", "--profile", "test_prof", "--no-embed"])
 
     mock_ip.assert_called_once()
     _, kwargs = mock_ip.call_args
@@ -46,7 +50,7 @@ def test_embedder_built_when_config_has_url(monkeypatch, tmp_path):
     ):
         mock_pg.return_value.close = MagicMock()
         mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
-        main_mod.main(["--profile", "test_prof"])
+        main_mod.main(["index-repo", "--profile", "test_prof"])
 
     mock_ip.assert_called_once()
     _, kwargs = mock_ip.call_args
@@ -68,7 +72,7 @@ def test_embedder_none_when_config_missing_url(monkeypatch, tmp_path):
     ):
         mock_pg.return_value.close = MagicMock()
         mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
-        main_mod.main(["--profile", "test_prof"])
+        main_mod.main(["index-repo", "--profile", "test_prof"])
 
     mock_ip.assert_called_once()
     _, kwargs = mock_ip.call_args
@@ -76,7 +80,7 @@ def test_embedder_none_when_config_missing_url(monkeypatch, tmp_path):
 
 
 def test_all_flag_passes_embedder_to_index_all(monkeypatch, tmp_path):
-    """--all uses index_all and passes embedder=None when --no-embed given."""
+    """index-repo --all uses index_all and passes embedder=None when --no-embed given."""
     import src.config as config_mod
 
     cfg = tmp_path / "empty.conf"
@@ -93,8 +97,30 @@ def test_all_flag_passes_embedder_to_index_all(monkeypatch, tmp_path):
             "profiles_ok": 0, "profiles_failed": [],
             "modules": 0, "views": 0, "qweb": 0, "embeddings": 0,
         }
-        main_mod.main(["--all", "--no-embed"])
+        main_mod.main(["index-repo", "--all", "--no-embed"])
 
     mock_ia.assert_called_once()
     _, kwargs = mock_ia.call_args
     assert kwargs.get("embedder") is None
+
+
+def test_index_core_subcommand_calls_index_core(monkeypatch, tmp_path):
+    """index-core subcommand dispatches to _run_index_core with correct args."""
+    import src.config as config_mod
+
+    cfg = tmp_path / "empty.conf"
+    cfg.write_text("")
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    config_mod._conf = None
+
+    odoo_source = tmp_path / "odoo_source"
+    odoo_source.mkdir()
+
+    with patch("src.indexer.__main__._run_index_core") as mock_run:
+        main_mod.main(["index-core", "--source", str(odoo_source), "--version", "17.0"])
+
+    mock_run.assert_called_once_with(
+        source=str(odoo_source),
+        version="17.0",
+        static_data_dir=None,
+    )
