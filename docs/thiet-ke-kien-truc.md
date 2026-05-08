@@ -303,7 +303,7 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:OWLComp )-[:BOUND_TO  ]->(:Model)
 ```
 
-**M4.5 (live) + M4.6 (planned):**
+**M4.5 + M4.6 (live):**
 
 ```
 // M4.5 — CoreSymbol lifecycle
@@ -466,7 +466,7 @@ Ví dụ: `cli_help("server", "--longpolling-port", "18.0")` → `status: remove
 
 ---
 
-#### M4.6 — Pattern tools (planned, see [plan](superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md))
+#### M4.6 — Pattern tools (live, see [plan](superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md))
 
 ##### `suggest_pattern(intent, odoo_version?, language?)`
 

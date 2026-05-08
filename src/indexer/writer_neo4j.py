@@ -11,6 +11,7 @@ from .models import (
     JSGraphResult,
     LintRuleInfo,
     ParseResult,
+    PatternExample,
     ViewParseResult,
 )
 
@@ -22,9 +23,13 @@ def _write_parse_result(tx, result: ParseResult) -> None:
 
     tx.run("""
         MERGE (m:Module {name: $name, odoo_version: $v})
-        SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw
+        SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
+            m.edition = $edition,
+            m.viindoo_equivalent_qname = $vvq
     """, name=module.name, v=module.odoo_version,
-         repo=module.repo, path=module.path, version_raw=module.version_raw)
+         repo=module.repo, path=module.path, version_raw=module.version_raw,
+         edition=module.edition,
+         vvq=module.viindoo_equivalent_qname)
 
     for dep in module.depends:
         tx.run("""
@@ -117,11 +122,15 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                 MERGE (mth:Method {name: $name, model: $model_name,
                                    module: $mod, odoo_version: $v})
                 SET mth.has_super_call = $has_super_call,
-                    mth.decorators = $decorators
+                    mth.decorators = $decorators,
+                    mth.convention_kind = $ck,
+                    mth.super_safety = $ss,
+                    mth.return_required = $rr
                 MERGE (mth)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
-                 decorators=mth.decorators)
+                 decorators=mth.decorators,
+                 ck=mth.convention_kind, ss=mth.super_safety, rr=mth.return_required)
 
             # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
             # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
@@ -374,6 +383,32 @@ def _write_cli_flags_batch(tx, flags: list[CLIFlagInfo]) -> None:
         """, fn=f.flag_name, cmd=f.command_name, v=f.odoo_version)
 
 
+def _write_pattern_examples_batch(tx, patterns: list[PatternExample]) -> None:
+    """MERGE PatternExample nodes + USES_CORE_SYMBOL edges (silent skip per ADR-0003)."""
+    for p in patterns:
+        tx.run("""
+            MERGE (pe:PatternExample {pattern_id: $pid})
+            SET pe.intent_keywords = $kw,
+                pe.file_ref = $fr,
+                pe.snippet_text = $sn,
+                pe.gotchas = $g,
+                pe.odoo_version_min = $vmin,
+                pe.language = $lang
+        """, pid=p.pattern_id, kw=p.intent_keywords, fr=p.file_ref,
+             sn=p.snippet_text, g=p.gotchas, vmin=p.odoo_version_min,
+             lang=p.language)
+        # USES_CORE_SYMBOL edges — silent skip when no CoreSymbol matches
+        # (M4.5 not shipped yet, or symbol simply absent at this version).
+        for cs_name in p.core_symbol_names:
+            tx.run("""
+                MATCH (pe:PatternExample {pattern_id: $pid})
+                MATCH (cs:CoreSymbol {odoo_version: $v})
+                WHERE cs.qualified_name = $cs
+                   OR cs.qualified_name ENDS WITH '.' + $cs
+                MERGE (pe)-[:USES_CORE_SYMBOL]->(cs)
+            """, pid=p.pattern_id, v=p.odoo_version_min, cs=cs_name)
+
+
 def _write_cli_flag_replacements(tx, replaced: list[tuple[str, str]],
                                  command_name: str,
                                  from_version: str, to_version: str) -> None:
@@ -419,6 +454,11 @@ class Neo4jWriter:
                 " ON (n.flag_name, n.command_name, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:SpecMetadata)"
                 " ON (n.kind, n.odoo_version)",
+                # M4.6 pattern layer (per ADR-0003):
+                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+                " ON (n.pattern_id)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+                " ON (n.language, n.odoo_version_min)",
             ]:
                 session.run(stmt)
 
@@ -586,6 +626,20 @@ class Neo4jWriter:
                     MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
                     SET cs.deprecated_in = $deprecated_in
                 """, qn=sym.qualified_name, v=sym.odoo_version, deprecated_in=to_version)
+
+    def write_pattern_examples(self, patterns: list[PatternExample]) -> None:
+        """Persist PatternExample nodes (idempotent MERGE on `pattern_id`).
+
+        USES_CORE_SYMBOL edges to CoreSymbol nodes are silently skipped when
+        the target does not exist — M4.5 graceful skip per ADR-0003 §5.
+        Batched at 200/transaction (smaller than CoreSymbol's 500 because
+        each pattern can fan-out N edge MERGEs).
+        """
+        if not patterns:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(patterns, 200):
+                session.execute_write(_write_pattern_examples_batch, batch)
 
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,

@@ -1394,6 +1394,418 @@ def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     return _api_version_diff(symbol, from_version, to_version)
 
 
+# --- M4.6 Pattern Wow tools -------------------------------------------------
+
+_VALID_PATTERN_LANGUAGES = ("python", "xml", "js", "all")
+
+
+def _suggest_pattern(
+    intent: str,
+    odoo_version: str = "auto",
+    language: str = "python",
+    limit: int = 5,
+    *,
+    _driver=None,
+    _pg_conn=None,
+    _embedder=None,
+) -> str:
+    """ANN-rank curated PatternExample chunks by intent string.
+
+    Per ADR-0003: pgvector ANN over embeddings (chunk_type='pattern_example') →
+    Neo4j batch fetch metadata via UNWIND on pattern_id list. Language filter
+    via entity_name slug LIKE '<language>__%'.
+    """
+    if not intent.strip():
+        return (
+            "suggest_pattern: intent is required (empty input).\n"
+            "Hint: pass a natural-language description, e.g. "
+            "'computed field cross-model partner'."
+        )
+    if language not in _VALID_PATTERN_LANGUAGES:
+        valid = ", ".join(_VALID_PATTERN_LANGUAGES)
+        return (
+            f"suggest_pattern: invalid language={language!r}. Valid: {valid}."
+        )
+
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+
+    driver = _driver or _get_driver()
+    pg = _pg_conn or _get_pg_conn()
+    try:
+        embedder = _embedder or _get_embedder()
+    except Exception as e:
+        return (
+            f"suggest_pattern: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama is running (default: http://localhost:11434)."
+        )
+
+    with driver.session() as session:
+        v = _resolve_version(odoo_version, session)
+
+    try:
+        intent_vec = embedder.embed([INSTRUCT_NL_TO_CODE + intent])[0]
+    except Exception as e:
+        return (
+            f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
+        )
+
+    with pg.cursor() as cur:
+        if language == "all":
+            cur.execute(
+                """SELECT entity_name, file_path,
+                          1 - (vec <=> %s::vector) AS cosine
+                   FROM embeddings
+                   WHERE chunk_type = 'pattern_example'
+                     AND module = '__patterns__'
+                   ORDER BY vec <=> %s::vector
+                   LIMIT %s""",
+                [intent_vec, intent_vec, limit],
+            )
+        else:
+            cur.execute(
+                """SELECT entity_name, file_path,
+                          1 - (vec <=> %s::vector) AS cosine
+                   FROM embeddings
+                   WHERE chunk_type = 'pattern_example'
+                     AND module = '__patterns__'
+                     AND entity_name LIKE %s
+                   ORDER BY vec <=> %s::vector
+                   LIMIT %s""",
+                [intent_vec, f"{language}__%", intent_vec, limit],
+            )
+        ranked = cur.fetchall()
+
+    if not ranked:
+        return (
+            f"suggest_pattern({intent!r}, {v!r}, language={language})\n"
+            "└─ no patterns indexed. Run: "
+            "python -m src.indexer.seed_patterns"
+        )
+
+    # Decode pattern_id from entity_name slug (<language>__<id>)
+    pattern_ids = []
+    score_map: dict[str, float] = {}
+    for entity_name, _file, cosine in ranked:
+        if "__" in entity_name:
+            _lang, pid = entity_name.split("__", 1)
+        else:
+            pid = entity_name
+        pattern_ids.append(pid)
+        score_map[pid] = float(cosine)
+
+    with driver.session() as session:
+        records = session.run("""
+            UNWIND $ids AS pid
+            MATCH (p:PatternExample {pattern_id: pid})
+            RETURN p.pattern_id AS id, p.intent_keywords AS kw,
+                   p.file_ref AS fr, p.snippet_text AS sn,
+                   p.gotchas AS g, p.language AS lang,
+                   p.odoo_version_min AS vmin
+        """, ids=pattern_ids).data()
+
+    by_id = {r["id"]: r for r in records}
+    return _format_suggest_pattern(
+        ordered_ids=pattern_ids, by_id=by_id, score_map=score_map,
+        intent=intent, version=v, language=language,
+    )
+
+
+def _format_suggest_pattern(
+    *, ordered_ids: list[str], by_id: dict[str, dict],
+    score_map: dict[str, float], intent: str, version: str, language: str,
+) -> str:
+    lines = [
+        f"suggest_pattern({intent!r}, {version}, language={language}) "
+        f"— {len(ordered_ids)} matches",
+    ]
+    last = len(ordered_ids) - 1
+    for i, pid in enumerate(ordered_ids):
+        rec = by_id.get(pid)
+        if not rec:
+            continue
+        connector = "└─" if i == last else "├─"
+        score = score_map.get(pid, 0.0)
+        lines.append(f"{connector} #{i + 1} · score {score:.2f} · {pid}")
+        prefix = "    " if i == last else "│   "
+        lines.append(f"{prefix}├─ Language: {rec['lang']} (min v{rec['vmin']})")
+        lines.append(f"{prefix}├─ File:     {rec['fr']}")
+        snippet_lines = (rec.get("sn") or "").splitlines()
+        if snippet_lines:
+            lines.append(f"{prefix}├─ Snippet:")
+            for sl in snippet_lines[:5]:
+                lines.append(f"{prefix}│    {sl}")
+            if len(snippet_lines) > 5:
+                lines.append(f"{prefix}│    ... ({len(snippet_lines) - 5} more lines)")
+        gotchas = rec.get("g") or []
+        if gotchas:
+            lines.append(f"{prefix}└─ Gotchas:")
+            for g in gotchas:
+                lines.append(f"{prefix}     • {g}")
+    return "\n".join(lines)
+
+
+def _check_module_exists(
+    name: str, odoo_version: str = "auto", *, _driver=None,
+) -> str:
+    """Report whether `name` is indexed + flag EE-confusion (per ADR-0003 §2)."""
+    from src.data.ee_modules import EE_CONFUSION
+
+    is_ee_confusion = name in EE_CONFUSION
+    viindoo_equivalent = EE_CONFUSION.get(name) if is_ee_confusion else None
+
+    driver = _driver or _get_driver()
+    with driver.session() as session:
+        v = _resolve_version(odoo_version, session)
+        rec = session.run("""
+            MATCH (m:Module {name: $n, odoo_version: $v})
+            RETURN m.edition AS edition,
+                   m.viindoo_equivalent_qname AS vvq,
+                   m.repo AS repo
+        """, n=name, v=v).single()
+
+    indexed = rec is not None
+    edition = rec["edition"] if rec else None
+    repo = rec.get("repo") if rec else None
+    # Prefer node-level viindoo_equivalent (fresher) over static dict
+    vvq_db = rec.get("vvq") if rec else None
+    final_equivalent = vvq_db or viindoo_equivalent
+
+    return _format_check_module_exists(
+        name=name, version=v, indexed=indexed, edition=edition, repo=repo,
+        is_ee_confusion=is_ee_confusion, viindoo_equivalent=final_equivalent,
+    )
+
+
+def _format_check_module_exists(
+    *, name: str, version: str, indexed: bool, edition: str | None,
+    repo: str | None, is_ee_confusion: bool, viindoo_equivalent: str | None,
+) -> str:
+    lines = [f"check_module_exists({name!r}, {version})"]
+    lines.append(f"├─ Indexed:         {'Yes' if indexed else 'No'}")
+    if indexed and edition:
+        repo_suffix = f" [{repo}]" if repo else ""
+        lines.append(f"├─ Edition:         {edition}{repo_suffix}")
+    lines.append(
+        f"├─ Is EE confusion: {'Yes' if is_ee_confusion else 'No'}"
+    )
+    if is_ee_confusion:
+        if viindoo_equivalent:
+            lines.append(f"├─ Viindoo equiv:   {viindoo_equivalent}")
+        else:
+            lines.append("├─ Viindoo equiv:   (none — feature not in Viindoo stack)")
+        lines.append(
+            "└─ ⚠ WARNING: this is an Odoo Enterprise module. "
+            "Do NOT depend on it in a Viindoo Community stack — "
+            "vi phạm GPL/Enterprise license boundary."
+        )
+    elif not indexed:
+        lines.append(
+            "└─ Hint: module not indexed in this profile. "
+            "If it should be, run: python -m src.indexer --profile <name>"
+        )
+    else:
+        lines[-1] = lines[-1].replace("├─", "└─")
+    return "\n".join(lines)
+
+
+_ANTI_PATTERNS_BASE = [
+    "Old-style super(ClassName, self) — use plain super() in Python 3",
+    "Missing return after super() — caller gets None, breaks chain",
+]
+
+
+def _anti_patterns_for_convention(kind: str) -> list[str]:
+    """Return convention-specific anti-pattern hints for find_override_point."""
+    if kind == "compute":
+        return [
+            "Calling super() in compute method — Odoo rebinds via @api.depends, "
+            "super-chain semantically meaningless",
+            "Forgetting @api.depends — silent stale data on field reads",
+        ]
+    if kind in ("inverse", "search", "default"):
+        return [
+            f"Calling super() in {kind} method — Odoo rebinds via decorator, "
+            "super-chain has no effect",
+        ]
+    if kind == "action":
+        return list(_ANTI_PATTERNS_BASE) + [
+            "Returning bool/None instead of action_window dict — UI can't refresh",
+        ]
+    if kind == "crud":
+        return list(_ANTI_PATTERNS_BASE) + [
+            "Missing @api.model_create_multi on create() override — slow batch import",
+            "Treating vals as single dict instead of vals_list — silent data loss",
+        ]
+    return list(_ANTI_PATTERNS_BASE)
+
+
+def _find_override_point(
+    model: str, method: str, odoo_version: str = "auto",
+    *, _driver=None,
+) -> str:
+    """Inspect Method override chain + surface convention hints + anti-patterns."""
+    driver = _driver or _get_driver()
+    with driver.session() as session:
+        v = _resolve_version(odoo_version, session)
+        records = session.run("""
+            MATCH (mth:Method {name: $method, model: $model, odoo_version: $v})
+            OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
+            RETURN mth.module AS module, mth.convention_kind AS ck,
+                   mth.super_safety AS ss, mth.return_required AS rr,
+                   coalesce(mth.has_super_call, false) AS has_super,
+                   mod.repo AS repo, mod.edition AS edition
+            ORDER BY mth.module
+        """, method=method, model=model, v=v).data()
+
+    if not records:
+        return (
+            f"find_override_point({model!r}, {method!r}, {v})\n"
+            f"└─ method not found on model {model!r} in Odoo {v}"
+        )
+
+    convention_kind = records[0]["ck"] or "private"
+    super_safety = records[0]["ss"] or "usually"
+    return_required = bool(records[0]["rr"])
+    super_count = sum(1 for r in records if r["has_super"])
+    super_ratio = f"{super_count}/{len(records)}"
+    anti_patterns = _anti_patterns_for_convention(convention_kind)
+
+    return _format_find_override_point(
+        model=model, method=method, version=v, records=records,
+        super_ratio=super_ratio, convention_kind=convention_kind,
+        super_safety=super_safety, return_required=return_required,
+        anti_patterns=anti_patterns,
+    )
+
+
+def _format_find_override_point(
+    *, model: str, method: str, version: str, records: list[dict],
+    super_ratio: str, convention_kind: str, super_safety: str,
+    return_required: bool, anti_patterns: list[str],
+) -> str:
+    lines = [f"find_override_point({model!r}, {method!r}, {version})"]
+    lines.append(f"├─ Convention:      {convention_kind}")
+    lines.append(f"├─ Super safety:    {super_safety}")
+    lines.append(f"├─ Return required: {'Yes' if return_required else 'No'}")
+    lines.append(f"├─ Super ratio:     {super_ratio} (overrides calling super)")
+    lines.append(f"├─ Override chain ({len(records)}):")
+    for i, r in enumerate(records):
+        connector = "└─" if i == len(records) - 1 else "├─"
+        repo = f"[{r['repo']}] " if r.get("repo") else ""
+        ed = f" ({r['edition']})" if r.get("edition") else ""
+        super_mark = "✓" if r["has_super"] else "✗"
+        lines.append(
+            f"│   {connector} {repo}{r['module']}{ed} — {super_mark} super()"
+        )
+    lines.append(f"└─ Anti-patterns ({len(anti_patterns)}):")
+    for i, ap in enumerate(anti_patterns):
+        connector = "└─" if i == len(anti_patterns) - 1 else "├─"
+        lines.append(f"    {connector} {ap}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def suggest_pattern(
+    intent: str,
+    odoo_version: str = "auto",
+    language: str = "python",
+    limit: int = 5,
+) -> str:
+    """Recommend curated Odoo patterns from a natural-language intent.
+
+    Patterns include canonical snippet + 3+ gotchas to avoid common bugs
+    (anti-patterns, version-specific renames, security pitfalls).
+
+    Args:
+        intent: NL description of what you're trying to do, e.g.
+                'computed field cross-model partner'.
+        odoo_version: '17.0' / '18.0' / 'auto' (latest indexed).
+        language: 'python' | 'xml' | 'js' | 'all'. Default 'python'.
+        limit: Max patterns to return (default 5).
+
+    Returns:
+        Tree-formatted list of patterns ranked by cosine score, each with
+        snippet (first 5 lines), file ref, and gotchas list. Empty index =>
+        instruction to run `python -m src.indexer.seed_patterns`.
+
+    Example:
+        suggest_pattern("override write to read old value", "17.0")
+        → suggest_pattern('override write to read old value', 17.0, language=python) — 1 matches
+          └─ #1 · score 0.81 · write-read-before-super
+              ├─ Language: python (min v17.0)
+              ├─ File:     addons/account/models/account_move.py:2891
+              └─ Gotchas:
+                   • Reading old values AFTER super().write() returns the new value
+                   • Always return the result of super().write()
+    """
+    return _suggest_pattern(intent, odoo_version, language, limit)
+
+
+@mcp.tool()
+def check_module_exists(name: str, odoo_version: str = "auto") -> str:
+    """Verify if a module name is indexed AND flag EE-confusion (Viindoo stack).
+
+    Used by AI tools BEFORE generating `depends=['<name>']` in __manifest__.py
+    to avoid hallucinating Odoo Enterprise modules (knowledge, helpdesk, sign,
+    etc.) that don't exist on Viindoo Community stack.
+
+    Args:
+        name: Module technical name (e.g. 'sale', 'helpdesk', 'viin_helpdesk').
+        odoo_version: '17.0' / '18.0' / 'auto'.
+
+    Returns:
+        Tree text: Indexed yes/no, edition, EE-confusion flag, Viindoo
+        equivalent (if any), and a WARNING when name is an EE-only module.
+
+    Example:
+        check_module_exists('helpdesk', '17.0')
+        → check_module_exists('helpdesk', 17.0)
+          ├─ Indexed:         No
+          ├─ Is EE confusion: Yes
+          ├─ Viindoo equiv:   viin_helpdesk
+          └─ ⚠ WARNING: this is an Odoo Enterprise module. Do NOT depend on it
+             in a Viindoo Community stack...
+    """
+    return _check_module_exists(name, odoo_version)
+
+
+@mcp.tool()
+def find_override_point(
+    model: str, method: str, odoo_version: str = "auto",
+) -> str:
+    """Show override chain of a method + super-call ratio + convention guidance.
+
+    Used BEFORE writing an override to know: (a) which modules already extend
+    the method, (b) whether super() call is required (action/crud) or
+    forbidden (compute/inverse), and (c) common anti-patterns to avoid.
+
+    Args:
+        model: Odoo model dotted name (e.g. 'sale.order').
+        method: Method name (e.g. 'action_confirm', '_compute_amount').
+        odoo_version: '17.0' / '18.0' / 'auto'.
+
+    Returns:
+        Tree text: convention_kind, super_safety, return_required,
+        super_ratio (e.g. 7/7 overrides calling super), full override chain,
+        and anti-patterns list contextualised by convention.
+
+    Example:
+        find_override_point('sale.order', 'action_confirm', '17.0')
+        → find_override_point('sale.order', 'action_confirm', 17.0)
+          ├─ Convention:      action
+          ├─ Super safety:    always
+          ├─ Return required: Yes
+          ├─ Super ratio:     7/7 (overrides calling super)
+          ├─ Override chain (7):
+          │   ├─ [odoo] sale (community) — ✗ super()
+          │   └─ [acme_addons17] viin_sale (viindoo) — ✓ super()
+          └─ Anti-patterns (3):
+              ├─ Old-style super(ClassName, self) — use plain super() in Python 3
+              └─ ...
+    """
+    return _find_override_point(model, method, odoo_version)
+
+
 def _mcp_host() -> str:
     from src import config
     return config.get("server", "host", fallback="127.0.0.1")

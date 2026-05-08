@@ -1,0 +1,54 @@
+[
+  {
+    "pattern_id": "smoke-computed-field",
+    "intent_keywords": ["compute", "depends", "smoke"],
+    "file_ref": "fixtures/smoke/sale_order.py:1",
+    "snippet_text": "@api.depends('partner_id.country_id')\ndef _compute_x(self):\n    for r in self:\n        r.x = r.partner_id.country_id.name",
+    "gotchas": [
+      "Missing Many2one root in @api.depends path",
+      "Don't add depends on related= field"
+    ],
+    "odoo_version_min": "99.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "smoke-action-confirm",
+    "intent_keywords": ["action", "super", "smoke"],
+    "file_ref": "fixtures/smoke/sale_order.py:50",
+    "snippet_text": "def action_confirm(self):\n    res = super().action_confirm()\n    return res",
+    "gotchas": [
+      "Missing return — super result lost",
+      "Old-style super(ClassName, self) anti-pattern"
+    ],
+    "odoo_version_min": "99.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "smoke-xpath-after",
+    "intent_keywords": ["xpath", "view", "smoke"],
+    "file_ref": "fixtures/smoke/sale_views.xml:1",
+    "snippet_text": "<xpath expr=\"//field[@name='partner_id']\" position=\"after\">\n    <field name=\"x_custom\"/>\n</xpath>",
+    "gotchas": [
+      "position='replace' breaks downstream extensions",
+      "Specific xpath expr avoids ambiguous match"
+    ],
+    "odoo_version_min": "99.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "smoke-owl-patch",
+    "intent_keywords": ["owl", "patch", "smoke"],
+    "file_ref": "fixtures/smoke/widget.js:1",
+    "snippet_text": "patch(MyWidget.prototype, {\n    setup() {\n        super.setup();\n    }\n});",
+    "gotchas": [
+      "Don't use Class.include() in v17+ — use patch()",
+      "Always call super.setup() inside patched setup"
+    ],
+    "odoo_version_min": "99.0",
+    "language": "js",
+    "core_symbol_names": []
+  }
+]

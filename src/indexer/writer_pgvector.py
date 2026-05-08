@@ -7,7 +7,7 @@ from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
 from .embedder import EmbedderClient
-from .models import JSChunk, ParseResult, ViewParseResult
+from .models import JSChunk, ParseResult, PatternExample, ViewParseResult
 
 _WINDOW_CHARS = 2048
 _OVERLAP_CHARS = 256
@@ -123,6 +123,34 @@ def make_chunks(
             jsc.entity_name, None, jsc.file_path, jsc.chunk_idx, jsc.content,
         ))
 
+    return chunks
+
+
+def make_pattern_chunks(patterns: list[PatternExample]) -> list[EmbeddingChunk]:
+    """Convert PatternExample → EmbeddingChunk (chunk_type='pattern_example').
+
+    Per ADR-0003 §4: language is encoded into entity_name slug as
+    `<language>__<pattern_id>` so `suggest_pattern` can filter by language
+    via B-tree LIKE without ALTERing the embeddings table.
+    Module sentinel is `__patterns__`. odoo_version = pattern.odoo_version_min.
+    """
+    chunks: list[EmbeddingChunk] = []
+    for p in patterns:
+        text_parts = [p.snippet_text]
+        if p.gotchas:
+            text_parts.append("---")
+            text_parts.extend(p.gotchas)
+        text = "\n".join(text_parts)
+        chunks.append(EmbeddingChunk(
+            chunk_type="pattern_example",
+            module="__patterns__",
+            odoo_version=p.odoo_version_min,
+            entity_name=f"{p.language}__{p.pattern_id}",
+            model_name=None,
+            file_path=p.file_ref,
+            chunk_idx=0,
+            content=text,
+        ))
     return chunks
 
 

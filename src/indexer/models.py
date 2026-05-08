@@ -4,13 +4,20 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ModuleInfo:
-    """Info for a single Odoo module."""
+    """Info for a single Odoo module.
+
+    M4.6 WI1: `edition` ∈ {community/enterprise/viindoo/oca/custom},
+    `viindoo_equivalent_qname` nullable string for EE-confusion lookup
+    (e.g. user types `helpdesk` on Viindoo stack → suggest `viin_helpdesk`).
+    """
     name: str
     odoo_version: str
     repo: str
     path: str
     depends: list[str]
     version_raw: str = ""
+    edition: str = "community"
+    viindoo_equivalent_qname: str | None = None
 
 
 @dataclass
@@ -27,7 +34,13 @@ class FieldInfo:
 
 @dataclass
 class MethodInfo:
-    """Info for a method on an Odoo model."""
+    """Info for a method on an Odoo model.
+
+    M4.6 WI2 — convention_kind / super_safety / return_required derived from
+    the method name regex map (`_classify_method_convention` in parser_python).
+    Used by `find_override_point` MCP tool to surface anti-patterns and
+    super() guidance per ADR-0003 §3.
+    """
     name: str
     has_super_call: bool = False
     decorators: list[str] = field(default_factory=list)
@@ -36,6 +49,10 @@ class MethodInfo:
     # this method invokes. Used by writer_neo4j to MERGE USES_CORE_SYMBOL edges.
     # V0 scope: deprecated/removed symbols only — see parser_python._DEPRECATED_API_SYMBOLS.
     core_symbol_refs: list[str] = field(default_factory=list)
+    # M4.6 WI2 — convention metadata (regex-derived, default = generic private).
+    convention_kind: str = "private"
+    super_safety: str = "usually"
+    return_required: bool = False
 
 
 @dataclass
@@ -142,6 +159,29 @@ class JSGraphResult:
     module: ModuleInfo
     patches: list[JSPatchInfo] = field(default_factory=list)
     components: list[OWLCompInfo] = field(default_factory=list)
+
+
+# --- Pattern layer (M4.6, per ADR-0003) -------------------------------------
+
+
+@dataclass
+class PatternExample:
+    """A curated Odoo idiom snippet — pattern_id keyed, language-tagged.
+
+    Lives in Neo4j as `(:PatternExample)` (composite key: `pattern_id`).
+    The `snippet_text` + `gotchas` are also embedded as a `pattern_example`
+    chunk in the `embeddings` table for `suggest_pattern` ANN search per
+    ADR-0003 §1. `core_symbol_names` MERGE USES_CORE_SYMBOL edges with
+    silent skip when the target CoreSymbol does not exist (M4.5 graceful).
+    """
+    pattern_id: str
+    intent_keywords: list[str]
+    file_ref: str            # 'addons/sale/models/sale_order.py:245'
+    snippet_text: str        # 3-5 line canonical excerpt
+    gotchas: list[str]
+    odoo_version_min: str
+    language: str            # 'python' | 'xml' | 'js'
+    core_symbol_names: list[str] = field(default_factory=list)
 
 
 # --- Spec layer (M4.5, per ADR-0002) ----------------------------------------

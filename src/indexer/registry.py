@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .models import ModuleInfo
+from .parser_python import _detect_module_edition, _detect_viindoo_equivalent
 from .scanner import get_git_branch, is_odoo_version_branch
 
 # --- ManifestFinder Protocol (M4.5 WI1.1, per ADR-0002) --------------------
@@ -158,6 +159,10 @@ def build_registry(
                 path=str(module_dir),
                 depends=manifest.get('depends', []),
                 version_raw=version_raw,
+                edition=_detect_module_edition(
+                    manifest, module_name, str(module_dir),
+                ),
+                viindoo_equivalent_qname=_detect_viindoo_equivalent(module_name),
             )
 
             if odoo_version not in registry:
