@@ -477,3 +477,29 @@ def test_extract_columns_balanced_brace_in_string_works():
     body = "_columns = {'help': 'Use {curly} braces', 'name': 'char'}"
     result = _extract_columns_block(body)
     assert "'name': 'char'" in result
+
+
+def test_extract_columns_falls_back_on_python2_syntax():
+    """Python 2 mid-file syntax (`print x`) makes Python 3 tokenize raise
+    TokenError / IndentationError / SyntaxError. Parser MUST fall through to
+    the naive char-scan fallback, not bubble up an exception.
+
+    Regression: nightly v8 smoke run 25546090542 caught
+    `AttributeError: tokenize.TokenizeError` — wrong exception name + missing
+    IndentationError handling. Era1 v8 indexing aborted, 0 nodes written.
+    """
+    from src.indexer.parser_python import _extract_columns_block
+
+    # Era1-shaped source that looks like a method defined RIGHT AFTER _columns
+    # with Python 2 print statement — would force the tokenizer to choke.
+    body = (
+        "_columns = {'name': 'char'}\n"
+        "    def _legacy_method(self, cr, uid):\n"
+        "        print 'python 2 syntax here'\n"
+        "        return\n"
+    )
+    # Must NOT raise — tokenize errors should fall through to char-scan fallback.
+    result = _extract_columns_block(body)
+    assert "'name': 'char'" in result, (
+        f"Expected fallback to extract _columns block, got: {result!r}"
+    )
