@@ -309,3 +309,63 @@ def test_parser_python_v17_unaffected_by_era_dispatch(tmp_path, sale_module):
     assert len(result) == 1
     assert result[0].name == "sale.order"
     assert any(fld.name == "amount_total" for fld in result[0].fields)
+
+
+# --- USES_CORE_SYMBOL detection (M4.5 WI6) ----------------------------------
+
+
+def test_detect_self_name_get_call_in_method_body(tmp_path, sale_module):
+    """`self.name_get()` in method body → core_symbol_refs contains 'name_get'."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _inherit = 'sale.order'
+
+            def foo(self):
+                return self.name_get()
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    assert "name_get" in foo.core_symbol_refs
+
+
+def test_detect_safe_eval_direct_call(tmp_path, sale_module):
+    """Direct `safe_eval(expr)` call (after import) → core_symbol_refs contains 'safe_eval'."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+        from odoo.tools import safe_eval
+
+        class X(models.Model):
+            _name = 'x'
+
+            def foo(self):
+                return safe_eval('1+1')
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    assert "safe_eval" in foo.core_symbol_refs
+
+
+def test_no_refs_for_non_deprecated_calls(tmp_path, sale_module):
+    """Calls to non-deprecated APIs are NOT recorded (V0 scope is hot deprecated set)."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class X(models.Model):
+            _name = 'x'
+
+            def foo(self):
+                return self.search([])
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    # `search` is not in V0 deprecated set → no ref
+    assert foo.core_symbol_refs == []
+
+
+def test_method_info_default_core_symbol_refs_is_empty():
+    """MethodInfo.core_symbol_refs defaults to [] when no refs detected."""
+    from src.indexer.models import MethodInfo
+    m = MethodInfo(name="action_post")
+    assert m.core_symbol_refs == []
