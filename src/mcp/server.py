@@ -1043,7 +1043,7 @@ def _format_lint_check(
 ) -> str:
     header = f"lint_check(Odoo {version}, language=python) — {len(violations)} violations"
     code_preview = (code or "")[:60].replace("\n", " ")
-    lines = [header, f"├─ Code: {code_preview!r}"]
+    lines = [_LINT_V0_BANNER, header, f"├─ Code: {code_preview!r}"]
     if not violations:
         lines.append("└─ no violations")
         return "\n".join(lines)
@@ -1057,24 +1057,47 @@ def _format_lint_check(
     return "\n".join(lines)
 
 
-def _match_lint_rule(code: str, rule: dict) -> bool:
-    """V0 lint match: case-insensitive substring on rule.message keyword tokens.
+# V0 lint matcher constant — surface in every lint_check output so users know this
+# is a fuzzy approximation requiring manual verification.
+_LINT_V0_BANNER = (
+    "⚠ V0 fuzzy matcher — verify manually before action. "
+    "Requires ≥2 significant token overlap between rule message and code."
+)
 
-    Each rule's message is split into significant words (>3 chars, not stop-word).
-    A rule fires if at least one significant word appears in the code.
+_LINT_STOPWORDS = frozenset({
+    "with", "from", "this", "that", "have", "must", "should",
+    "function", "usage", "literal", "string", "alias", "option",
+    "the", "and", "use", "not", "for", "are", "when", "avoid",
+    "call", "called", "calling", "instead", "please", "using",
+})
+
+
+def _match_lint_rule(code: str, rule: dict) -> bool:
+    """V0 lint match: ≥2 significant token overlap between rule.message and code.
+
+    Significant token: >3 chars, alpha-only (after split on [^a-z_]), not in stopword set.
+    Requires at least 2 such tokens from the rule message to appear in the code.
+    This reduces single-word false positives common in the previous ≥1 threshold.
+
+    Returns False if rule.message is empty or has fewer than 2 significant tokens.
     """
+    import re as _re
+
     msg = (rule.get("message") or "").lower()
     if not msg:
         return False
     code_lc = (code or "").lower()
-    # Tokenize on non-alpha boundaries.
-    tokens = [t for t in __import__("re").split(r"[^a-z_]+", msg) if len(t) > 3]
-    stopwords = {
-        "with", "from", "this", "that", "have", "must", "should", "must",
-        "function", "usage", "literal", "string", "alias", "option",
+    # Tokenize on non-alpha-underscore boundaries, keep tokens > 3 chars.
+    rule_tokens = {
+        t for t in _re.split(r"[^a-z_]+", msg)
+        if len(t) > 3 and t not in _LINT_STOPWORDS
     }
-    significant = [t for t in tokens if t not in stopwords]
-    return any(t in code_lc for t in significant)
+    if len(rule_tokens) < 2:
+        # Not enough significant tokens in the rule message itself → never fires.
+        return False
+    code_tokens = set(_re.split(r"[^a-z_]+", code_lc))
+    overlap = rule_tokens & code_tokens
+    return len(overlap) >= 2
 
 
 def _lint_check(
