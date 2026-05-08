@@ -236,7 +236,7 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:OWLComp  { name, odoo_version, module, template })
 ```
 
-**M4.5 + M4.6 (planned — see [ADR-0002](adr/0002-spec-schema-policy.md), [ADR-0003](adr/0003-pattern-example-storage.md)):**
+**M4.5 (live) + M4.6 (planned) — see [ADR-0002](adr/0002-spec-schema-policy.md), [ADR-0003](adr/0003-pattern-example-storage.md):**
 
 ```
 // M4.5 — Odoo upstream specs (per-version, lifecycle qua edge)
@@ -303,7 +303,7 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:OWLComp )-[:BOUND_TO  ]->(:Model)
 ```
 
-**M4.5 + M4.6 (planned):**
+**M4.5 (live) + M4.6 (planned):**
 
 ```
 // M4.5 — CoreSymbol lifecycle
@@ -438,7 +438,7 @@ Trả về: affected models, views, JS components, dependent modules, risk level
 
 ---
 
-#### M4.5 — Spec tools (planned, see [plan](superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md))
+#### M4.5 — Spec tools (live, see [plan](superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md))
 
 ##### `lookup_core_api(name, odoo_version?)`
 
