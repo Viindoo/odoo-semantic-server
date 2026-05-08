@@ -448,3 +448,170 @@ def test_impact_analysis_invalid_entity_type_message_shape(snapshot_db):
     # Assert all 3 valid types are listed
     for valid in ["field", "method", "model"]:
         assert valid in result, f"Error message must list '{valid}' as valid option"
+
+
+# --- M4.5 spec layer snapshot contracts ----------------------------------
+
+_SPEC_SNAP_VERSION = "94.0"
+
+
+@pytest.fixture(scope="module")
+def spec_snapshot_db(neo4j_driver, monkeypatch_module):
+    """Seed minimal CoreSymbol/LintRule/CLI* data for spec-tool snapshots."""
+    from src.indexer.models import (
+        CLICommandInfo,
+        CLIFlagInfo,
+        CoreSymbolInfo,
+        LintRuleInfo,
+    )
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_SPEC_SNAP_VERSION,
+        )
+
+    writer.write_core_symbols([
+        CoreSymbolInfo(
+            qualified_name="odoo.models.BaseModel.name_get",
+            kind="orm_method", odoo_version=_SPEC_SNAP_VERSION,
+            signature="name_get(self)",
+            status="deprecated",
+            replacement_qname="odoo.models.BaseModel.display_name",
+        ),
+    ])
+    writer.write_lint_rules([
+        LintRuleInfo(
+            rule_id="E8502", odoo_version=_SPEC_SNAP_VERSION,
+            kind="pylint-odoo",
+            message="Bad usage of _, _lt function",
+            severity="error",
+        ),
+    ])
+    writer.write_cli_commands([
+        CLICommandInfo("server", _SPEC_SNAP_VERSION, description="Run server"),
+    ])
+    writer.write_cli_flags([
+        CLIFlagInfo(
+            "--longpolling-port", "server", _SPEC_SNAP_VERSION,
+            type="int", status="deprecated",
+            replacement_flag_name="--gevent-port",
+            help="Deprecated alias",
+        ),
+        CLIFlagInfo(
+            "--gevent-port", "server", _SPEC_SNAP_VERSION,
+            type="int", default="8072",
+        ),
+    ])
+    writer.write_cli_flag_replacements(
+        [("--longpolling-port", "--gevent-port")],
+        command_name="server",
+        from_version=_SPEC_SNAP_VERSION,
+        to_version=_SPEC_SNAP_VERSION,
+    )
+    writer.close()
+
+    monkeypatch_module.setenv(
+        "NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+    )
+    monkeypatch_module.setenv(
+        "NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"),
+    )
+    monkeypatch_module.setenv(
+        "NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+
+    yield _SPEC_SNAP_VERSION
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_SPEC_SNAP_VERSION,
+        )
+
+
+def _assert_tree_format(output: str, label: str) -> None:
+    """Common contract: header + at least one tree connector + no None leak."""
+    assert output.startswith(label) or label in output.splitlines()[0], (
+        f"Header must start with {label!r}"
+    )
+    assert any(ln.startswith(("├─", "└─")) for ln in output.splitlines()), (
+        f"Missing tree connector (├─ or └─) in:\n{output}"
+    )
+    assert "None" not in output, f"Output must not contain None literal:\n{output}"
+
+
+def test_lookup_core_api_output_contract(spec_snapshot_db):
+    from src.mcp.server import _lookup_core_api
+    out = _lookup_core_api("name_get", spec_snapshot_db)
+    _assert_tree_format(out, "odoo.models.BaseModel.name_get")
+    assert "Status:" in out
+    assert "deprecated" in out.lower()
+
+
+def test_api_version_diff_output_contract(spec_snapshot_db):
+    from src.mcp.server import _api_version_diff
+    out = _api_version_diff("name_get", spec_snapshot_db, spec_snapshot_db)
+    # Same-version short-circuit message has the tool name in header.
+    assert out.startswith("api_version_diff")
+
+
+def test_find_deprecated_usage_output_contract(spec_snapshot_db):
+    from src.mcp.server import _find_deprecated_usage
+    out = _find_deprecated_usage(spec_snapshot_db)
+    assert out.startswith("find_deprecated_usage")
+    assert "None" not in out
+    has_connector = any(
+        ln.startswith(("├─", "└─")) for ln in out.splitlines()
+    )
+    assert has_connector or "no deprecated usage" in out.lower()
+
+
+def test_lint_check_output_contract(spec_snapshot_db):
+    from src.mcp.server import _lint_check
+    out = _lint_check("x = _('hello')", spec_snapshot_db, language="python")
+    assert out.startswith("lint_check")
+    assert "None" not in out
+
+
+def test_cli_help_output_contract(spec_snapshot_db):
+    from src.mcp.server import _cli_help
+    out = _cli_help("server", "--longpolling-port", spec_snapshot_db)
+    _assert_tree_format(out, "cli_help")
+    assert "Status:" in out
+    assert "--gevent-port" in out  # replacement surfaced
+
+
+def test_setup_indexes_creates_all_spec_indexes(neo4j_driver):
+    """Integration: setup_indexes() creates 4 M4.5 spec-layer indexes."""
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    writer.close()
+    labels_props = [
+        (i.get("labelsOrTypes") or [], i.get("properties") or [])
+        for i in indexes
+    ]
+    expected = [
+        ("CoreSymbol", "qualified_name"),
+        ("LintRule", "rule_id"),
+        ("CLICommand", "name"),
+        ("CLIFlag", "flag_name"),
+    ]
+    for label, prop in expected:
+        found = any(label in lbls and prop in props for lbls, props in labels_props)
+        assert found, f"Missing index on ({label}, {prop})"
+
