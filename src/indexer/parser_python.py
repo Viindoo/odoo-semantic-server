@@ -84,6 +84,79 @@ def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
     return refs
 
 
+# --- M4.6 WI2: Method convention classification ----------------------------
+# Pure name-based regex map. Order matters — first match wins. Each entry is
+# (pattern, (convention_kind, super_safety, return_required)). super_safety:
+#   'always'  → MUST call super() and return its result (action_/CRUD)
+#   'usually' → SHOULD call super() in most cases (helpers, builders)
+#   'never'   → MUST NOT call super() (compute/inverse/search/default — Odoo
+#                rebinds these via decorators, super() chain is meaningless).
+
+_CONVENTION_MAP: list[tuple[re.Pattern, tuple[str, str, bool]]] = [
+    (re.compile(r"^_compute_"),                       ("compute",  "never",   False)),
+    (re.compile(r"^_inverse_"),                       ("inverse",  "never",   False)),
+    (re.compile(r"^_search_"),                        ("search",   "never",   False)),
+    (re.compile(r"^_get_default_|^_default_"),        ("default",  "never",   False)),
+    (re.compile(r"^_get_"),                           ("builder",  "usually", False)),
+    (re.compile(r"^_prepare_"),                       ("prepare",  "usually", False)),
+    (re.compile(r"^_check_"),                         ("check",    "usually", False)),
+    (re.compile(r"^action_"),                         ("action",   "always",  True)),
+    (re.compile(r"^(create|write|unlink|copy|read)$"),
+                                                      ("crud",     "always",  True)),
+    (re.compile(r"^_"),                               ("private",  "usually", False)),
+]
+_DEFAULT_CONVENTION: tuple[str, str, bool] = ("public", "usually", False)
+
+
+def _classify_method_convention(method_name: str) -> tuple[str, str, bool]:
+    """Return (convention_kind, super_safety, return_required) for a method name.
+
+    Default for any non-matching public name is ('public', 'usually', False).
+    """
+    for pattern, result in _CONVENTION_MAP:
+        if pattern.match(method_name):
+            return result
+    return _DEFAULT_CONVENTION
+
+
+# --- M4.6 WI1: Module edition detection ------------------------------------
+# Detect ∈ {viindoo, oca, community, custom} (enterprise = upstream Odoo EE,
+# Viindoo stack does not ship it, so we never label as 'enterprise' from path
+# alone — only viindoo_equivalent lookup surfaces EE confusion via EE_CONFUSION
+# dict in src/data/ee_modules.py per ADR-0003).
+
+
+def _detect_module_edition(
+    manifest: dict, module_name: str, module_path: str,
+) -> str:
+    """Detect edition of a module from manifest + name + path heuristics.
+
+    Returns one of: 'viindoo' | 'oca' | 'community' | 'custom'.
+    Order matters — earlier rules win (Viindoo prefix > OCA license > CE path).
+    """
+    # Viindoo: name prefix or path
+    if module_name.startswith(("viin_", "to_")):
+        return "viindoo"
+    if any(seg in module_path for seg in ("acme_addons", "acme_enterprise")):
+        return "viindoo"
+    # OCA license string
+    license_v = (manifest.get("license") or "").upper()
+    if "OCA" in license_v:
+        return "oca"
+    # Community: Odoo CE addons path + LGPL/GPL/AGPL
+    ce_licenses = {"LGPL-3", "LGPL-3.0", "GPL-3", "GPL-3.0", "AGPL-3", "AGPL-3.0"}
+    if license_v in ce_licenses:
+        if "/odoo/addons/" in module_path or "/addons/" in module_path:
+            return "community"
+    return "custom"
+
+
+def _detect_viindoo_equivalent(module_name: str) -> str | None:
+    """Lookup EE_CONFUSION dict for the Viindoo equivalent of an EE-only module."""
+    from src.data.ee_modules import EE_CONFUSION
+    return EE_CONFUSION.get(module_name)
+
+
 def _detect_era(odoo_version: str) -> str:
     """era1: Odoo v8/v9 (Python 2, _columns dict). era2: v10+ (modern AST)."""
     try:
@@ -245,12 +318,16 @@ def _parse_class(
                 ast.get_source_segment(source, node)
                 if source else None
             )
+            ck, ss, rr = _classify_method_convention(node.name)
             methods_list.append(MethodInfo(
                 name=node.name,
                 has_super_call=_has_super_call(node),
                 decorators=decorators,
                 source_code=method_src,
                 core_symbol_refs=_extract_core_symbol_refs(node),
+                convention_kind=ck,
+                super_safety=ss,
+                return_required=rr,
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)
@@ -432,11 +509,15 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
         for mm in _RE_ERA1_METHOD.finditer(body):
             decorator = mm.group(1)  # may be None if no decorator
             method_name = mm.group(2)
+            ck, ss, rr = _classify_method_convention(method_name)
             methods_list.append(MethodInfo(
                 name=method_name,
                 has_super_call=False,
                 decorators=[decorator] if decorator else [],
                 core_symbol_refs=[],
+                convention_kind=ck,
+                super_safety=ss,
+                return_required=rr,
             ))
 
         models.append(ModelInfo(

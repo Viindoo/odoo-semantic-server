@@ -591,6 +591,184 @@ def test_cli_help_output_contract(spec_snapshot_db):
     assert "--gevent-port" in out  # replacement surfaced
 
 
+# --- M4.6 pattern layer snapshot contracts -------------------------------
+
+_PAT_SNAP_VERSION = "93.0"
+
+
+@pytest.fixture(scope="module")
+def pattern_snapshot_db(neo4j_driver, monkeypatch_module):
+    """Seed minimal Module + Method + PatternExample for M4.6 tool snapshots."""
+    from src.indexer.models import (
+        MethodInfo,
+        ModelInfo,
+        ModuleInfo,
+        ParseResult,
+        PatternExample,
+    )
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_PAT_SNAP_VERSION,
+        )
+
+    # Module: viindoo edition
+    sale_mod = ModuleInfo(
+        name="sale", odoo_version=_PAT_SNAP_VERSION, repo="odoo",
+        path="/odoo/addons/sale", depends=[], version_raw="",
+        edition="community",
+    )
+    viin_sale_mod = ModuleInfo(
+        name="viin_sale", odoo_version=_PAT_SNAP_VERSION, repo="acme_addons",
+        path="/acme_addons/viin_sale", depends=[], version_raw="",
+        edition="viindoo",
+    )
+    sale_model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=_PAT_SNAP_VERSION,
+        methods=[
+            MethodInfo(
+                name="action_confirm", has_super_call=False,
+                convention_kind="action", super_safety="always",
+                return_required=True,
+            ),
+        ],
+    )
+    viin_model = ModelInfo(
+        name="sale.order", module="viin_sale", odoo_version=_PAT_SNAP_VERSION,
+        methods=[
+            MethodInfo(
+                name="action_confirm", has_super_call=True,
+                convention_kind="action", super_safety="always",
+                return_required=True,
+            ),
+        ],
+    )
+    writer.write_results([
+        ParseResult(module=sale_mod, models=[sale_model]),
+        ParseResult(module=viin_sale_mod, models=[viin_model]),
+    ])
+    # PatternExample for find_override_point + suggest_pattern (Neo4j-only fetch)
+    writer.write_pattern_examples([
+        PatternExample(
+            pattern_id="snap-action-return-super",
+            intent_keywords=["action", "super", "return"],
+            file_ref="addons/sale/models/sale_order.py:1",
+            snippet_text="def action_confirm(self):\n    return super().action_confirm()",
+            gotchas=["Always return super() result"],
+            odoo_version_min=_PAT_SNAP_VERSION,
+            language="python",
+            core_symbol_names=[],
+        ),
+    ])
+    writer.close()
+
+    monkeypatch_module.setenv(
+        "NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+    )
+    monkeypatch_module.setenv(
+        "NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"),
+    )
+    monkeypatch_module.setenv(
+        "NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+
+    yield _PAT_SNAP_VERSION
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_PAT_SNAP_VERSION,
+        )
+
+
+def test_check_module_exists_output_contract(pattern_snapshot_db):
+    """check_module_exists header + Indexed/EE-confusion sections."""
+    from src.mcp.server import _check_module_exists
+    out = _check_module_exists("knowledge", pattern_snapshot_db)
+    assert out.startswith("check_module_exists(")
+    assert "Indexed:" in out
+    assert "Is EE confusion:" in out
+    assert "WARNING" in out
+    assert "None" not in out
+    assert any(ln.startswith(("├─", "└─")) for ln in out.splitlines())
+
+
+def test_find_override_point_output_contract(pattern_snapshot_db):
+    """find_override_point header + Convention/Super safety/Return required/Anti-patterns.
+
+    Note: anti-pattern text legitimately contains the word 'None' (e.g.
+    'caller gets None, breaks chain') so we only guard against literal
+    Neo4j null leakage like '[None]' / 'repo: None' / parenthesised standalone.
+    """
+    from src.mcp.server import _find_override_point
+    out = _find_override_point(
+        "sale.order", "action_confirm", pattern_snapshot_db,
+    )
+    assert out.startswith("find_override_point(")
+    for sec in ["Convention:", "Super safety:", "Return required:", "Anti-patterns"]:
+        assert sec in out, f"Missing section {sec!r}"
+    # Null-leak guards: standalone unwrapping shapes from Neo4j.
+    assert "[None]" not in out
+    assert "(None)" not in out
+    assert any(ln.startswith(("├─", "└─")) for ln in out.splitlines())
+
+
+@pytest.mark.postgres
+def test_suggest_pattern_output_contract(pattern_snapshot_db, clean_pg_embeddings):
+    """suggest_pattern header + tree connectors + no None leak.
+
+    Postgres-marked because pgvector ANN is required. Skipped when extension
+    not installed — same gate as find_examples / mcp_pattern_tools.
+    """
+    from psycopg2.extras import execute_values
+
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.models import PatternExample
+    from src.indexer.writer_pgvector import (
+        _INSERT_SQL,
+        make_pattern_chunks,
+    )
+
+    pe = PatternExample(
+        pattern_id="snap-action-return-super",
+        intent_keywords=["action"],
+        file_ref="addons/sale/models/sale_order.py:1",
+        snippet_text="def action_confirm(self): return super().action_confirm()",
+        gotchas=["Always return"],
+        odoo_version_min=pattern_snapshot_db,
+        language="python",
+    )
+    embedder = FakeEmbedder(dim=1024)
+    chunks = make_pattern_chunks([pe])
+    vecs = embedder.embed([c.content for c in chunks])
+    with clean_pg_embeddings.cursor() as cur:
+        execute_values(
+            cur, _INSERT_SQL,
+            [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
+        )
+
+    from src.mcp.server import _suggest_pattern
+    out = _suggest_pattern(
+        "action confirm super",
+        odoo_version=pattern_snapshot_db,
+        language="python",
+        _driver=None, _pg_conn=clean_pg_embeddings, _embedder=embedder,
+    )
+    assert out.startswith("suggest_pattern(")
+    assert "matches" in out
+    assert "None" not in out
+    assert any(ln.startswith(("├─", "└─")) for ln in out.splitlines())
+
+
 def test_setup_indexes_creates_all_spec_indexes(neo4j_driver):
     """Integration: setup_indexes() creates 4 M4.5 spec-layer indexes."""
     writer = Neo4jWriter(

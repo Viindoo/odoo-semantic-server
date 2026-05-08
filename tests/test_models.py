@@ -164,6 +164,23 @@ def test_js_graph_result_empty_lists():
     assert result.components == []
 
 
+def test_pattern_example_dataclass_defaults():
+    """PatternExample (M4.6 WI3) — required fields + core_symbol_names default empty."""
+    from src.indexer.models import PatternExample
+    pe = PatternExample(
+        pattern_id="computed-field-cross-model",
+        intent_keywords=["computed", "depends", "cross-model"],
+        file_ref="addons/sale/models/sale_order.py:245",
+        snippet_text="@api.depends(...)\ndef _compute(self): ...",
+        gotchas=["Missing Many2one root in path"],
+        odoo_version_min="17.0",
+        language="python",
+    )
+    assert pe.pattern_id == "computed-field-cross-model"
+    assert pe.core_symbol_names == []
+    assert pe.language == "python"
+
+
 def test_core_symbol_info_defaults():
     """CoreSymbolInfo (M4.5 WI2.1) — required fields + defaults."""
     from src.indexer.models import CoreSymbolInfo
