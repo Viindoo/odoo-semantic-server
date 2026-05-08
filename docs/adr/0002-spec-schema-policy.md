@@ -28,13 +28,15 @@ Cần policy rõ ràng cho composite key, version-range representation (per-vers
 
    Lý do: `status`, `signature`, `message` thay đổi per version → cần query riêng lẻ. Storage linear với version count (~15 version v8-v22 → acceptable).
 
-2. **Lifecycle qua edge với property `version` numeric-comparable.**
-   - `(:CoreSymbol)-[:ADDED_IN {version}]->(:CoreSymbol)` — symbol thêm mới ở version sau (target = symbol cùng tên ở version trước nếu có; null nếu hoàn toàn mới)
-   - `(:CoreSymbol)-[:REMOVED_IN {version}]->()` — không cần target node
-   - `(:CoreSymbol)-[:DEPRECATED_IN {version}]->(:CoreSymbol)` — target = replacement nếu có
-   - `(:CoreSymbol)-[:REPLACED_BY]->(:CoreSymbol)` — vd `group_operator@v17 → aggregator@v18`
+2. **Lifecycle qua property trên CoreSymbol node — không dùng lifecycle edge.**
+   - `cs.added_in: "<version>"` — version đầu tiên symbol xuất hiện (chỉ set khi diff engine phát hiện symbol này không có ở version trước).
+   - `cs.removed_in: "<version>"` — version symbol biến mất (set trên node version cũ nhất, value = version mới không còn symbol này).
+   - `cs.deprecated_in: "<version>"` — version status đổi sang `deprecated` (set trên node version mới, value = version đó).
+   - `(:CoreSymbol)-[:REPLACED_BY]->(:CoreSymbol)` — **duy nhất edge thực sự cross-symbol**. Vd `group_operator@v17 → aggregator@v18`. Tạo ONLY khi `old.replacement_qname` trỏ tới symbol tồn tại trong version mới.
 
-   Cypher sort: `ORDER BY toFloat(r.version) DESC` hoặc `toInteger(split(r.version,'.')[0])` (numeric, không lexicographic). Pattern này nhất quán với gotcha hiện có trong project `CLAUDE.md`.
+   **Lý do chọn property thay vì edge**: 3 loại lifecycle còn lại (`ADDED_IN`, `REMOVED_IN`, `DEPRECATED_IN`) không cần target node riêng — value là string version, không liên kết structural đến node khác. Property SET `added_in/removed_in/deprecated_in` trực tiếp lên node tương ứng đơn giản hơn, idempotent hơn, query nhanh hơn (không cần traverse edge). Chỉ `REPLACED_BY` cần edge vì nó biểu diễn relationship giữa 2 symbol khác nhau.
+
+   Cypher query lifecycle: `WHERE cs.added_in IS NOT NULL`, `WHERE cs.deprecated_in IS NOT NULL` — không cần traverse. Numeric version compare cho ORDER BY vẫn dùng `toFloat(cs.odoo_version) DESC` per gotcha `CLAUDE.md`.
 
 3. **`USES_CORE_SYMBOL` edge V0: chỉ bind khi `status ∈ {deprecated, removed}`.**
    - Edge: `(:Method|:Field)-[:USES_CORE_SYMBOL]->(:CoreSymbol)` — bind từ user code reference → Odoo core API
