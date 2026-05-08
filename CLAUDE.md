@@ -59,8 +59,12 @@ MERGE chỉ dùng key, SET properties riêng — không bao giờ đưa mutable 
 
 ```cypher
 -- Sắp xếp version (numeric, không phải lexicographic):
-ORDER BY toFloat(v) DESC               -- ĐÚNG
+ORDER BY toFloat(v) DESC               -- ĐÚNG cho Cypher
 ORDER BY v DESC                        -- SAI ("9.0" > "17.0")
+
+-- Sắp xếp chính xác hơn (split major.minor):
+ORDER BY toInteger(split(v,'.')[0]) DESC, toInteger(split(v,'.')[1]) DESC
+                                        -- ĐÚNG nhất, robust với "8.0", "17.0", "20.0"
 
 -- Đếm pattern expression:
 ORDER BY COUNT { ()-[:INHERITS]->(m) } -- ĐÚNG (Neo4j 5.x)
@@ -69,6 +73,44 @@ ORDER BY size(()-[:INHERITS]->(m))     -- SAI (Neo4j 4.x, CypherSyntaxError)
 
 Dùng `.single()` chỉ khi chắc chắn có đúng 1 row. Dùng `.data()` cho 0-N rows.
 `single()` trả `None` nếu không có row → dùng để phát hiện unresolved edge.
+
+**Python-side version compare** (cùng nguyên tắc):
+
+```python
+# ĐÚNG — numeric tuple compare:
+sorted(versions, key=lambda v: tuple(int(p) for p in v.split('.')), reverse=True)
+
+# SAI — string compare ("9.0" > "17.0" → False vì lexicographic):
+sorted(versions, reverse=True)
+```
+
+## v8/v9 Enablement (M4.5 Phase 0)
+
+Project hỗ trợ Odoo v8 → v20+. Hai pattern bắt buộc:
+
+**1. ManifestFinder Protocol pluggable** (per [ADR-0002](docs/adr/0002-spec-schema-policy.md)):
+
+```python
+class ModernManifestFinder:  # rglob '__manifest__.py' (v10+)
+class LegacyManifestFinder:  # rglob '__openerp__.py' (v8-9)
+
+def get_manifest_finder(odoo_version: str) -> ManifestFinder:
+    major = int(odoo_version.split('.')[0])
+    return LegacyManifestFinder() if major <= 9 else ModernManifestFinder()
+```
+
+Odoo v8/v9 dùng `__openerp__.py` thay `__manifest__.py`. Single rglob match một pattern là silent-skip toàn bộ v8/v9 modules — bug đã fix M4.5 Phase 0.
+
+**2. Era-aware parser_python.py** (giống `parser_js.py` era pattern):
+
+- Era1 (v8-9, Python 2 syntax): `_parse_era1_text()` text-regex extract `_name`, `_inherit`, `_columns` dict. Skip method body. Graceful fallback khi `ast.parse` raise `SyntaxError` (Python 2 syntax `print x`, `except E, e:`, etc.).
+- Era2 (v10+): AST như hiện tại.
+
+`FIELD_TYPES_LEGACY` set bao gồm `function`, `related`, `dummy`, `sparse` cho Era1 — Odoo v8-v10 declare field qua `_columns = {...}` dict thay vì class-level attribute.
+
+**3. `_latest_version()` numeric compare** (per ADR-0002):
+
+KHÔNG hardcode "17.0" fallback. Trả `None` khi DB rỗng → caller hiển thị error rõ "No data indexed. Run indexer first."
 
 ## AST Parsing Gotcha
 
@@ -123,4 +165,7 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 | `TASKS.md` | Trước khi bắt đầu task mới — xem milestone nào đang active |
 | `docs/thiet-ke-kien-truc.md` | Cần hiểu schema Neo4j, pipeline, MCP tool spec |
 | `docs/huong-dan-stack.md` | Cần hiểu sâu stack: Neo4j patterns, AST gotchas, FastMCP tips |
+| `docs/adr/` | Architecture Decision Records — đọc trước khi đụng schema/policy |
 | `CONTRIBUTING.md` | Setup dev, chạy tests, workflow commit |
+
+**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6).

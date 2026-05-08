@@ -306,4 +306,26 @@ Nguyên tắc: scanner → registry → resolver → parser → writer → serve
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Graph schema, pipeline, MCP tools — đọc trước khi code |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Neo4j patterns, AST gotchas, FastMCP, pytest tips |
 | [`docs/deploy.md`](docs/deploy.md) | Production deploy guide — cho admin, không phải dev |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records — đọc trước khi đụng schema/policy |
 | [`TASKS.md`](TASKS.md) | Tiến độ milestones — đánh dấu khi xong |
+
+---
+
+## Architecture Decision Records (ADR)
+
+Mọi quyết định kiến trúc lớn — schema policy, storage pattern, parser convention — phải có ADR trong `docs/adr/`. Format theo template ADR-0001: Date / Status / Context / Decision / Consequences (Positive/Negative/Risk) / Alternatives Considered.
+
+**ADR đã có:**
+
+| ADR | Tiêu đề | Áp dụng cho |
+|-----|---------|-------------|
+| [`0001`](docs/adr/0001-schema-evolution-policy.md) | Schema Evolution Policy | PostgreSQL: no ALTER TABLE until M6 — chỉ `CREATE TABLE IF NOT EXISTS`. M2.5–M5 add-only. |
+| [`0002`](docs/adr/0002-spec-schema-policy.md) | Spec Schema Policy (M4.5) | Neo4j: composite key per-version cho CoreSymbol/LintRule/CLI; lifecycle qua edge ADDED_IN/REMOVED_IN/REPLACED_BY/DEPRECATED_IN; USES_CORE_SYMBOL V0 scope hẹp deprecated/removed only. |
+| [`0003`](docs/adr/0003-pattern-example-storage.md) | PatternExample Storage (M4.6) | Neo4j PatternExample node + reuse `embeddings` table với `chunk_type='pattern_example'`; Module/Method enrichment qua SET property (no ALTER); language filter qua entity_name slug encoding. |
+
+**Workflow ADR mới:**
+
+1. Trước khi viết schema/policy mới (vd thêm node label, đổi composite key, tạo bảng), tạo ADR draft tại `docs/adr/000X-<kebab-slug>.md`.
+2. Status `Draft` → David review → `Accepted` (hoặc `Rejected` + lý do).
+3. Reference ADR ID trong commit message + plan file + code comment khi implement.
+4. ADR là immutable history — không xoá ADR. Nếu thay thế → mark `Status: Superseded by ADR-XXXX` thay vì delete.
