@@ -47,6 +47,8 @@ Odoo repos (~/git/*_17.0/)
 | `impact_analysis` | Đổi field/method này → ảnh hưởng đến những gì |
 
 > **M1–M4 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`
+>
+> **M4.5 + M4.6 (planned — see [TASKS.md](TASKS.md)):** `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — 8 tool mới giúp AI hiểu Odoo core API thay đổi qua versions (v8 → v20+) + curated patterns + chống hallucinate Enterprise module trên stack Viindoo Community.
 
 ---
 
@@ -218,8 +220,10 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
-| [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema evolution policy, M6 migration plan |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records — `0001` schema evolution policy, `0002` spec schema policy (M4.5), `0003` pattern storage (M4.6) |
 | [`docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 (TDD, từng bước) |
+| [`docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md) | Plan M4.5 — index Odoo upstream specs (CoreSymbol/LintRule/CLI) + Phase 0 v8/v9 enablement |
+| [`docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md) | Plan M4.6 — pattern catalog + override convention + EE confusion guard |
 
 ---
 
@@ -232,6 +236,8 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 2.5 — "Foundation Wow":** `[x]` Deploy foundation complete — config + PostgreSQL registry + indexer pipeline E2E-ready  
 **Milestone 3 — "Semantic Wow":** `[x]` Code + auto tests complete — còn E2E manual + recall benchmark với Ollama thật  
 **Milestone 4 — "Impact Wow":** `[x]` Code + auto tests complete — còn manual E2E `impact_analysis`  
+**Milestone 4.5 — "Spec Wow":** `[ ]` Chưa bắt đầu — index Odoo upstream specs (CoreSymbol/LintRule/CLI) + unblock v8/v9 codebase support  
+**Milestone 4.6 — "Pattern Wow":** `[ ]` Chưa bắt đầu — curated patterns + override convention metadata + EE confusion guard  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu — Web UI admin + API key auth + production hardening (health endpoint, indexer concurrency lock)  
 **Milestone 5.5 — "Polish Wow":** `[ ]` Chưa bắt đầu — observability + test discipline; landing zone cho tech-debt phát sinh từ M5  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  
