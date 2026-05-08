@@ -578,7 +578,8 @@ def test_find_deprecated_usage_output_contract(spec_snapshot_db):
 def test_lint_check_output_contract(spec_snapshot_db):
     from src.mcp.server import _lint_check
     out = _lint_check("x = _('hello')", spec_snapshot_db, language="python")
-    assert out.startswith("lint_check")
+    # Header `lint_check(...)` always present (banner may prepend per WI-F6).
+    assert "lint_check(" in out
     assert "None" not in out
 
 

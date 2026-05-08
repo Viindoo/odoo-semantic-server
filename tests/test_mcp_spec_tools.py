@@ -257,7 +257,8 @@ class TestLintCheck:
         code = "name = _(\"Hello %s\" % user.name)"
         out = spec_tools._lint_check(code, v_from, language="python")
         # The rule may or may not match — V0 contract is structured output.
-        assert out.startswith("lint_check")
+        # Header `lint_check(...)` always present (banner may prepend per WI-F6).
+        assert "lint_check(" in out
         # Output must mention either 'no violations' or list a rule id.
         assert "no violations" in out.lower() or "E8502" in out or "E" in out
 
