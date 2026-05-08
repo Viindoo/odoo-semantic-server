@@ -834,6 +834,9 @@ def _format_core_symbol(rec: dict, version: str) -> str:
     repl = rec.get("replacement_qname")
     file_path = rec.get("file_path")
     line = rec.get("line")
+    added_in = rec.get("added_in")
+    removed_in = rec.get("removed_in")
+    deprecated_in = rec.get("deprecated_in")
 
     lines = [f"{qn} (Odoo {version})"]
     lines.append(f"├─ Kind:        {kind}")
@@ -842,6 +845,12 @@ def _format_core_symbol(rec: dict, version: str) -> str:
         lines.append(f"├─ Signature:   {sig}")
     if repl:
         lines.append(f"├─ Replacement: {repl}")
+    if added_in:
+        lines.append(f"├─ Added in:    {added_in}")
+    if deprecated_in:
+        lines.append(f"├─ Deprecated:  {deprecated_in}")
+    if removed_in:
+        lines.append(f"├─ Removed in:  {removed_in}")
     if file_path:
         loc = file_path + (f":{line}" if line else "")
         lines.append(f"└─ Source:      {loc}")
@@ -865,7 +874,10 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
                    cs.signature AS signature,
                    cs.replacement_qname AS replacement_qname,
                    cs.file_path AS file_path,
-                   cs.line AS line
+                   cs.line AS line,
+                   cs.added_in AS added_in,
+                   cs.removed_in AS removed_in,
+                   cs.deprecated_in AS deprecated_in
             ORDER BY size(cs.qualified_name) ASC
             LIMIT 1
         """, name=name, v=odoo_version).single()
@@ -923,7 +935,10 @@ def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
                cs.signature AS signature,
                cs.replacement_qname AS replacement_qname,
                cs.file_path AS file_path,
-               cs.line AS line
+               cs.line AS line,
+               cs.added_in AS added_in,
+               cs.removed_in AS removed_in,
+               cs.deprecated_in AS deprecated_in
         ORDER BY size(cs.qualified_name) ASC
         LIMIT 1
     """, name=name, v=version).single()

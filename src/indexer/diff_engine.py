@@ -17,9 +17,24 @@ from .models import CoreSymbolInfo
 
 @dataclass
 class DiffResult:
-    """Result of compute_diff. All fields default to empty lists."""
+    """Result of compute_diff. All fields default to empty lists.
+
+    Per ADR-0002 §2 (revised): lifecycle expressed as properties on CoreSymbol
+    nodes, not as separate edges. This dataclass records the diff for the
+    writer to apply as SET properties (added_in, removed_in, deprecated_in)
+    and as a REPLACED_BY edge (the only true cross-symbol edge).
+
+    Fields:
+        added:      Symbols only in `symbols_new` (appear for first time).
+        removed:    Symbols only in `symbols_old` and NOT replaced.
+        deprecated: Symbols present in both versions where new.status changed
+                    to 'deprecated' and old.status was NOT 'deprecated'.
+        stable:     Symbols present in both, no status change.
+        replaced:   (old_qname, new_qname) pairs where old had replacement_qname.
+    """
     added: list[CoreSymbolInfo] = field(default_factory=list)
     removed: list[CoreSymbolInfo] = field(default_factory=list)
+    deprecated: list[CoreSymbolInfo] = field(default_factory=list)
     stable: list[tuple[CoreSymbolInfo, CoreSymbolInfo]] = field(default_factory=list)
     replaced: list[tuple[str, str]] = field(default_factory=list)
     """Each entry: (old_qualified_name, new_qualified_name)."""
@@ -31,13 +46,12 @@ def compute_diff(
 ) -> DiffResult:
     """Diff two CoreSymbol lists (typically from two consecutive Odoo versions).
 
-    REPLACED_BY edge is created ONLY when:
-    1. The old symbol carries a `replacement_qname` (set by the curator/parser)
-    2. The replacement_qname exists as a real symbol in `symbols_new`
-
-    A removed symbol with a dangling replacement_qname (target not indexed) is
-    treated as plain removed — we never create ghost replacement nodes (mirrors
-    the project-wide `:INHERITS {unresolved}` policy).
+    Rules:
+    - REPLACED_BY edge is created ONLY when old carries a `replacement_qname`
+      pointing to a real symbol in `symbols_new`.
+    - A removed symbol with a dangling replacement_qname is treated as plain
+      removed — no ghost nodes (mirrors `:INHERITS {unresolved}` policy).
+    - deprecated: present in both, new.status == 'deprecated' and old.status != 'deprecated'.
     """
     by_qname_old = {s.qualified_name: s for s in symbols_old}
     by_qname_new = {s.qualified_name: s for s in symbols_new}
@@ -47,7 +61,17 @@ def compute_diff(
     only_new = by_qname_new.keys() - by_qname_old.keys()
 
     added = [by_qname_new[qn] for qn in only_new]
-    stable = [(by_qname_old[qn], by_qname_new[qn]) for qn in common]
+
+    # Deprecated: present in both, status changed to 'deprecated'
+    deprecated: list[CoreSymbolInfo] = []
+    stable: list[tuple[CoreSymbolInfo, CoreSymbolInfo]] = []
+    for qn in common:
+        old_sym = by_qname_old[qn]
+        new_sym = by_qname_new[qn]
+        if new_sym.status == "deprecated" and old_sym.status != "deprecated":
+            deprecated.append(new_sym)
+        else:
+            stable.append((old_sym, new_sym))
 
     replaced: list[tuple[str, str]] = []
     replaced_old_qnames: set[str] = set()
@@ -66,6 +90,7 @@ def compute_diff(
     return DiffResult(
         added=added,
         removed=removed,
+        deprecated=deprecated,
         stable=stable,
         replaced=replaced,
     )
