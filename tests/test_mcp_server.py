@@ -270,3 +270,100 @@ def test_resolve_view_not_found(view_tools):
     resolve_view, version = view_tools
     result = resolve_view("nonexistent.view", version)
     assert "not found" in result
+
+
+# --- _latest_version numeric compare tests (M4.5 WI1.3) -------------------
+
+def test_latest_version_numeric_compare_picks_17_over_9(neo4j_driver):
+    """DB has 9.0 + 17.0 → numeric compare returns 17.0, not 9.0 lexicographic."""
+    from src.mcp.server import _latest_version
+
+    LV_VERSION_LO = "9.0"
+    LV_VERSION_HI = "17.0"
+    with neo4j_driver.session() as session:
+        # Cleanup
+        for v in (LV_VERSION_LO, LV_VERSION_HI):
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
+
+        # Seed two Module nodes at numerically distant versions.
+        session.run(
+            "MERGE (m:Module {name: $n, odoo_version: $v})",
+            n="base", v=LV_VERSION_LO,
+        )
+        session.run(
+            "MERGE (m:Module {name: $n, odoo_version: $v})",
+            n="base", v=LV_VERSION_HI,
+        )
+
+        # _latest_version filters out non-numeric and unknown — but here we
+        # need it to ignore real production data. Filter by a marker via
+        # property; alternative: only count modules from these two versions.
+        # The function as implemented ranks across ALL modules, so we cannot
+        # isolate test data without an extra filter. Instead assert the result
+        # is not "9.0" given that data older than test 17.0 also exists in DB.
+        result = _latest_version(session)
+        # Result must be parseable as int(major).int(minor) and >= 17
+        assert result is not None
+        major = int(result.split(".")[0])
+        assert major >= int(LV_VERSION_HI.split(".")[0]), (
+            f"_latest_version returned {result!r}; expected numeric latest >= 17.0"
+        )
+
+        # Cleanup
+        for v in (LV_VERSION_LO, LV_VERSION_HI):
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
+
+
+def test_latest_version_returns_none_when_db_empty(neo4j_driver):
+    """All Module nodes deleted → _latest_version returns None (no hardcoded fallback)."""
+    from src.mcp.server import _latest_version
+
+    with neo4j_driver.session() as session:
+        # Snapshot existing data, delete, run, restore.
+        existing = session.run(
+            "MATCH (m:Module) RETURN m.name AS name, m.odoo_version AS v"
+        ).data()
+        session.run("MATCH (m:Module) DETACH DELETE m")
+        try:
+            result = _latest_version(session)
+            assert result is None, f"expected None on empty DB, got {result!r}"
+        finally:
+            for row in existing:
+                session.run(
+                    "MERGE (m:Module {name: $n, odoo_version: $v})",
+                    n=row["name"], v=row["v"],
+                )
+
+
+def test_latest_version_skips_unknown_and_malformed(neo4j_driver):
+    """Module nodes with odoo_version='unknown' or 'foo' are filtered out."""
+    from src.mcp.server import _latest_version
+
+    JUNK_VERSIONS = ["unknown", "foo", "abc"]
+    GOOD_VERSION = "16.0"
+    with neo4j_driver.session() as session:
+        # Cleanup junk + good
+        for v in JUNK_VERSIONS + [GOOD_VERSION]:
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
+
+        for v in JUNK_VERSIONS:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v})", n="weird", v=v,
+            )
+        session.run(
+            "MERGE (m:Module {name: $n, odoo_version: $v})",
+            n="good", v=GOOD_VERSION,
+        )
+
+        result = _latest_version(session)
+        # Must skip junk strings; result must be a real semver-shaped version.
+        assert result is not None
+        assert result not in JUNK_VERSIONS, (
+            f"_latest_version returned junk {result!r}"
+        )
+        # Format `<int>.<int>`
+        parts = result.split(".")
+        assert len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit()
+
+        for v in JUNK_VERSIONS + [GOOD_VERSION]:
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
