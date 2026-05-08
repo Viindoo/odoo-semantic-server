@@ -823,6 +823,181 @@ def impact_analysis(
     return _impact_analysis(entity_type, entity_name, odoo_version)
 
 
+# --- M4.5 spec layer tools ----------------------------------------------
+
+def _format_core_symbol(rec: dict, version: str) -> str:
+    """Tree-format a single CoreSymbol query record."""
+    qn = rec.get("qualified_name") or "?"
+    kind = rec.get("kind") or "?"
+    status = rec.get("status") or "stable"
+    sig = rec.get("signature")
+    repl = rec.get("replacement_qname")
+    file_path = rec.get("file_path")
+    line = rec.get("line")
+
+    lines = [f"{qn} (Odoo {version})"]
+    lines.append(f"├─ Kind:        {kind}")
+    lines.append(f"├─ Status:      {status}")
+    if sig:
+        lines.append(f"├─ Signature:   {sig}")
+    if repl:
+        lines.append(f"├─ Replacement: {repl}")
+    if file_path:
+        loc = file_path + (f":{line}" if line else "")
+        lines.append(f"└─ Source:      {loc}")
+    else:
+        # Re-cap last branch as terminal
+        lines[-1] = lines[-1].replace("├─", "└─")
+    return "\n".join(lines)
+
+
+def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
+    """Return signature + status + replacement for a single Odoo core API symbol."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+        rec = session.run("""
+            MATCH (cs:CoreSymbol {odoo_version: $v})
+            WHERE cs.qualified_name = $name
+               OR cs.qualified_name ENDS WITH '.' + $name
+            RETURN cs.qualified_name AS qualified_name,
+                   cs.kind AS kind,
+                   cs.status AS status,
+                   cs.signature AS signature,
+                   cs.replacement_qname AS replacement_qname,
+                   cs.file_path AS file_path,
+                   cs.line AS line
+            ORDER BY size(cs.qualified_name) ASC
+            LIMIT 1
+        """, name=name, v=odoo_version).single()
+    if rec is None:
+        return (
+            f"lookup_core_api({name!r}, {odoo_version!r})\n"
+            f"└─ not found in indexed Odoo core for version {odoo_version}"
+        )
+    return _format_core_symbol(dict(rec), odoo_version)
+
+
+def _format_api_diff(
+    sym_old: dict | None,
+    sym_new: dict | None,
+    name: str,
+    from_version: str,
+    to_version: str,
+) -> str:
+    """Render the diff of one symbol between two versions."""
+    header = f"api_version_diff({name!r}: {from_version} → {to_version})"
+    lines = [header]
+    if sym_old and not sym_new:
+        lines.append(f"├─ Status:    removed in {to_version}")
+        lines.append(f"├─ Was:       {sym_old.get('signature') or '?'}")
+        repl = sym_old.get("replacement_qname")
+        if repl:
+            lines.append(f"└─ Replaced by: {repl}")
+        else:
+            lines[-1] = lines[-1].replace("├─", "└─")
+        return "\n".join(lines)
+    if sym_new and not sym_old:
+        lines.append(f"├─ Status:    added in {to_version}")
+        lines.append(f"└─ Now:       {sym_new.get('signature') or '?'}")
+        return "\n".join(lines)
+    # Both exist
+    sig_old = sym_old.get("signature") if sym_old else None
+    sig_new = sym_new.get("signature") if sym_new else None
+    lines.append(f"├─ {from_version}: {sig_old or '?'} (status={sym_old.get('status')})")
+    lines.append(f"├─ {to_version}: {sig_new or '?'} (status={sym_new.get('status')})")
+    if sig_old and sig_new and sig_old != sig_new:
+        lines.append("└─ Signature changed")
+    else:
+        lines.append("└─ Stable across versions")
+    return "\n".join(lines)
+
+
+def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
+    rec = session.run("""
+        MATCH (cs:CoreSymbol {odoo_version: $v})
+        WHERE cs.qualified_name = $name
+           OR cs.qualified_name ENDS WITH '.' + $name
+        RETURN cs.qualified_name AS qualified_name,
+               cs.kind AS kind,
+               cs.status AS status,
+               cs.signature AS signature,
+               cs.replacement_qname AS replacement_qname,
+               cs.file_path AS file_path,
+               cs.line AS line
+        ORDER BY size(cs.qualified_name) ASC
+        LIMIT 1
+    """, name=name, v=version).single()
+    return dict(rec) if rec else None
+
+
+def _api_version_diff(
+    symbol: str, from_version: str, to_version: str,
+) -> str:
+    """Diff a single API symbol between two indexed Odoo versions."""
+    if from_version == to_version:
+        return (
+            f"api_version_diff({symbol!r}, {from_version!r}, {to_version!r})\n"
+            f"└─ same version, no diff"
+        )
+    with _get_driver().session() as session:
+        sym_old = _fetch_core_symbol(session, symbol, from_version)
+        sym_new = _fetch_core_symbol(session, symbol, to_version)
+
+    if sym_old is None and sym_new is None:
+        return (
+            f"api_version_diff({symbol!r})\n"
+            f"└─ not found in either {from_version} or {to_version}"
+        )
+    return _format_api_diff(sym_old, sym_new, symbol, from_version, to_version)
+
+
+@mcp.tool()
+def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
+    """Look up an Odoo core API symbol by name, return its signature, status, replacement.
+
+    Args:
+        name: Symbol name (full qualified or short, e.g. 'safe_eval' or
+              'odoo.tools.safe_eval.safe_eval').
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
+
+    Returns:
+        Tree-formatted text. Use this BEFORE writing code that calls Odoo
+        upstream API to verify the symbol exists at the target version and
+        learn its replacement if deprecated/removed.
+
+    Example:
+        lookup_core_api("name_get", "18.0")
+        → odoo.models.BaseModel.name_get (Odoo 18.0)
+          ├─ Status:      removed
+          ├─ Signature:   name_get(self)
+          └─ Replacement: odoo.models.BaseModel.display_name
+    """
+    return _lookup_core_api(name, odoo_version)
+
+
+@mcp.tool()
+def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
+    """Diff a single Odoo core API symbol between two indexed versions.
+
+    Args:
+        symbol: Symbol name (full qualified or short).
+        from_version: Older Odoo version, e.g. '17.0'.
+        to_version: Newer Odoo version, e.g. '19.0'.
+
+    Returns:
+        Tree-formatted text describing whether the symbol was added, removed,
+        replaced, or had its signature changed.
+
+    Example:
+        api_version_diff("name_get", "17.0", "18.0")
+        → api_version_diff('name_get': 17.0 → 18.0)
+          ├─ Status:    removed in 18.0
+          ├─ Was:       name_get(self)
+          └─ Replaced by: odoo.models.BaseModel.display_name
+    """
+    return _api_version_diff(symbol, from_version, to_version)
+
+
 def _mcp_host() -> str:
     from src import config
     return config.get("server", "host", fallback="127.0.0.1")
