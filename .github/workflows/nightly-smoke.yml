@@ -1,0 +1,232 @@
+# .github/workflows/nightly-smoke.yml
+# Nightly smoke against real Odoo upstream sources (v17 + v8).
+# Catches B1 indexer-wiring regressions and Phase-0 ManifestFinder / era1 regressions.
+#
+# Schedule: 19:00 UTC = 02:00 Vietnam time (GitHub least-busy window).
+# On failure: auto-creates a GitHub issue with labels [nightly-smoke, bug, priority:high].
+# Manual trigger: gh workflow run nightly-smoke.yml [-r <branch>]
+
+name: Nightly Real-Source Smoke
+
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  smoke-real-odoo-17:
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.26.25
+        env:
+          NEO4J_AUTH: neo4j/password
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg16
+        env:
+          POSTGRES_DB: odoo_semantic
+          POSTGRES_USER: odoo_semantic
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: pip install -e ".[dev]"
+
+      - name: Bootstrap PostgreSQL schema
+        run: python -m src.db.migrate
+        env:
+          PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+
+      - name: Clone Odoo 17 (shallow, depth=1)
+        run: |
+          git clone --depth=1 -b 17.0 https://github.com/odoo/odoo /tmp/odoo_17.0
+          du -sh /tmp/odoo_17.0
+
+      - name: Smoke v17 — index-core (CoreSymbol + LintRule + CLICommand + CLIFlag)
+        id: smoke_v17_core
+        run: |
+          python -m src.indexer index-core \
+            --source /tmp/odoo_17.0 \
+            --version 17.0 \
+            2>&1 | tee /tmp/index-core-17.log
+        env:
+          NEO4J_TEST_URI: bolt://localhost:7687
+          NEO4J_TEST_USER: neo4j
+          NEO4J_TEST_PASSWORD: password
+          PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+
+      - name: Smoke v17 — verify Neo4j counts against B1 thresholds
+        run: |
+          python -c "
+          from neo4j import GraphDatabase
+          driver = GraphDatabase.driver(
+              'bolt://localhost:7687', auth=('neo4j', 'password')
+          )
+          with driver.session() as s:
+              cs = s.run(
+                  \"MATCH (cs:CoreSymbol {odoo_version:'17.0'}) RETURN count(cs) AS c\"
+              ).single()['c']
+              lr = s.run(
+                  \"MATCH (lr:LintRule {odoo_version:'17.0'}) RETURN count(lr) AS c\"
+              ).single()['c']
+              cc = s.run(
+                  \"MATCH (cc:CLICommand {odoo_version:'17.0'}) RETURN count(cc) AS c\"
+              ).single()['c']
+              cf = s.run(
+                  \"MATCH (cf:CLIFlag {odoo_version:'17.0'}) RETURN count(cf) AS c\"
+              ).single()['c']
+          driver.close()
+          print(f'v17 counts: CoreSymbol={cs} LintRule={lr} CLICommand={cc} CLIFlag={cf}')
+          assert cs >= 400, f'CoreSymbol {cs} < 400 — B1 regression? Check allow-list parsing'
+          assert lr >= 10, f'LintRule {lr} < 10 — B1 regression? Check lint rule extraction'
+          assert cc >= 10, f'CLICommand {cc} < 10 — B1 regression? Check odoo/cli/*.py parse'
+          assert cf >= 50, f'CLIFlag {cf} < 50 — B1 regression? Check odoo/tools/config.py parse'
+          print('v17 smoke PASS')
+          "
+
+  smoke-real-odoo-8:
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.26.25
+        env:
+          NEO4J_AUTH: neo4j/password
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg16
+        env:
+          POSTGRES_DB: odoo_semantic
+          POSTGRES_USER: odoo_semantic
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: pip install -e ".[dev]"
+
+      - name: Bootstrap PostgreSQL schema
+        run: python -m src.db.migrate
+        env:
+          PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+
+      - name: Clone Odoo 8 (shallow, depth=1)
+        run: git clone --depth=1 -b 8.0 https://github.com/odoo/odoo /tmp/odoo_8.0
+
+      - name: Register profile + repo for Odoo 8
+        run: |
+          python -m src.manager add-profile odoo8 --version 8.0
+          python -m src.manager add-repo \
+            --profile odoo8 \
+            --url file:///tmp/odoo_8.0 \
+            --branch 8.0 \
+            --local-path /tmp/odoo_8.0
+        env:
+          PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+
+      - name: Smoke v8 — index-repo (Phase-0 ManifestFinder + era1 parser)
+        run: |
+          python -m src.indexer index-repo --profile odoo8 --no-embed \
+            2>&1 | tee /tmp/index-v8.log
+        env:
+          NEO4J_TEST_URI: bolt://localhost:7687
+          NEO4J_TEST_USER: neo4j
+          NEO4J_TEST_PASSWORD: password
+          PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
+
+      - name: Smoke v8 — verify Module + Model + Method counts (Phase-0 + WI-F5)
+        run: |
+          python -c "
+          from neo4j import GraphDatabase
+          driver = GraphDatabase.driver(
+              'bolt://localhost:7687', auth=('neo4j', 'password')
+          )
+          with driver.session() as s:
+              modules = s.run(
+                  \"MATCH (m:Module {odoo_version:'8.0'}) RETURN count(m) AS c\"
+              ).single()['c']
+              models = s.run(
+                  \"MATCH (m:Model {odoo_version:'8.0'}) RETURN count(m) AS c\"
+              ).single()['c']
+              methods = s.run(
+                  \"MATCH (m:Method {odoo_version:'8.0'}) RETURN count(m) AS c\"
+              ).single()['c']
+          driver.close()
+          print(f'v8 counts: Module={modules} Model={models} Method={methods}')
+          assert modules >= 100, (
+              f'Module {modules} < 100 — Phase-0 ManifestFinder regression? '
+              'Check LegacyManifestFinder (__openerp__.py detection)'
+          )
+          assert models > 0, (
+              f'Model {models} = 0 — era1 _columns extract regression? '
+              'Check parser_python era1 path'
+          )
+          assert methods > 0, (
+              f'Method {methods} = 0 — WI-F5 era1 method extract regression? '
+              'Check parser_python era1 method extraction'
+          )
+          print('v8 smoke PASS')
+          "
+
+  report-failure:
+    needs: [smoke-real-odoo-17, smoke-real-odoo-8]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create GitHub issue on smoke failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Nightly smoke fail ${today}`,
+              body:
+                `Nightly smoke against real Odoo 17 + Odoo 8 sources failed.\n\n` +
+                `**Run**: ${runUrl}\n\n` +
+                `Check the workflow logs to identify which assertion failed.\n\n` +
+                `**Possible regressions:**\n` +
+                `- B1 indexer wiring: CoreSymbol/LintRule/CLICommand/CLIFlag counts < threshold\n` +
+                `- Phase-0 ManifestFinder: v8 Module count = 0 (LegacyManifestFinder broken)\n` +
+                `- WI-F5 era1 method extract: v8 Method count = 0\n` +
+                `- Upstream Odoo schema drift: file rename, allow-list outdated\n\n` +
+                `Assign to the engineer who last modified \`src/indexer/\`.`,
+              labels: ['nightly-smoke', 'bug', 'priority:high'],
+            });

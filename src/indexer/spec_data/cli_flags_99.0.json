@@ -1,0 +1,15 @@
+{
+  "_curate_status": "smoke-test-placeholder",
+  "_generated_at": "2026-05-08",
+  "_note": "Smoke test placeholder for SMOKE_VERSION=99.0. Has >=1 flag so write_cli_flags path is exercised.",
+  "flags": [
+    {
+      "flag_name": "--smoke-port",
+      "command_name": "server",
+      "status": "stable",
+      "type": "int",
+      "default": "9999",
+      "help": "Smoke test flag (not a real Odoo flag)"
+    }
+  ]
+}
