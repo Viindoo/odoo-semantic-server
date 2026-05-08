@@ -433,6 +433,158 @@ def test_method_info_default_core_symbol_refs_is_empty():
     assert m.core_symbol_refs == []
 
 
+# --- Method convention classification (M4.6 WI2) ---------------------------
+
+
+def test_classify_compute():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("_compute_amount") == (
+        "compute", "never", False,
+    )
+
+
+def test_classify_inverse():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("_inverse_amount") == (
+        "inverse", "never", False,
+    )
+
+
+def test_classify_search_method():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("_search_partner_id") == (
+        "search", "never", False,
+    )
+
+
+def test_classify_default():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("_default_company_id") == (
+        "default", "never", False,
+    )
+    assert _classify_method_convention("_get_default_user") == (
+        "default", "never", False,
+    )
+
+
+def test_classify_action():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("action_confirm") == (
+        "action", "always", True,
+    )
+
+
+def test_classify_crud_create():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("create") == ("crud", "always", True)
+
+
+def test_classify_prepare():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("_prepare_invoice_values") == (
+        "prepare", "usually", False,
+    )
+
+
+def test_classify_public_no_underscore():
+    from src.indexer.parser_python import _classify_method_convention
+    assert _classify_method_convention("compute_total") == (
+        "public", "usually", False,
+    )
+
+
+def test_method_info_default_convention_kind():
+    """MethodInfo defaults: convention_kind='private', super_safety='usually'."""
+    from src.indexer.models import MethodInfo
+    m = MethodInfo(name="foo")
+    assert m.convention_kind == "private"
+    assert m.super_safety == "usually"
+    assert m.return_required is False
+
+
+def test_parser_populates_convention_for_action(tmp_path, sale_module):
+    """Parsing `action_confirm` populates convention_kind='action' in MethodInfo."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _inherit = 'sale.order'
+
+            def action_confirm(self):
+                return super().action_confirm()
+    """)
+    result = parse_file(f, sale_module)
+    mth = next(m for m in result[0].methods if m.name == "action_confirm")
+    assert mth.convention_kind == "action"
+    assert mth.super_safety == "always"
+    assert mth.return_required is True
+
+
+# --- Module edition detection (M4.6 WI1) -----------------------------------
+
+
+def test_detect_edition_viindoo_prefix_viin():
+    from src.indexer.parser_python import _detect_module_edition
+    assert _detect_module_edition({}, "viin_helpdesk", "/any/path") == "viindoo"
+
+
+def test_detect_edition_viindoo_prefix_to():
+    from src.indexer.parser_python import _detect_module_edition
+    assert _detect_module_edition({}, "to_quality", "/any/path") == "viindoo"
+
+
+def test_detect_edition_viindoo_path():
+    from src.indexer.parser_python import _detect_module_edition
+    assert (
+        _detect_module_edition({}, "anymod", "/home/x/tvtmaaddons17/anymod")
+        == "viindoo"
+    )
+    assert (
+        _detect_module_edition(
+            {}, "anymod", "/home/x/erponline-enterprise17/anymod",
+        ) == "viindoo"
+    )
+
+
+def test_detect_edition_oca():
+    from src.indexer.parser_python import _detect_module_edition
+    assert _detect_module_edition({"license": "OCA-AGPL-3"}, "x", "/path") == "oca"
+
+
+def test_detect_edition_community():
+    from src.indexer.parser_python import _detect_module_edition
+    assert _detect_module_edition(
+        {"license": "LGPL-3"}, "sale",
+        "/home/x/odoo17/odoo/addons/sale",
+    ) == "community"
+
+
+def test_detect_edition_fallback_custom():
+    from src.indexer.parser_python import _detect_module_edition
+    assert _detect_module_edition({}, "x", "/path") == "custom"
+
+
+def test_detect_viindoo_equivalent_known():
+    from src.indexer.parser_python import _detect_viindoo_equivalent
+    assert _detect_viindoo_equivalent("helpdesk") == "viin_helpdesk"
+    assert _detect_viindoo_equivalent("documents") == "viin_document"
+
+
+def test_detect_viindoo_equivalent_unknown_returns_none():
+    from src.indexer.parser_python import _detect_viindoo_equivalent
+    assert _detect_viindoo_equivalent("nonexistent_xyz") is None
+
+
+def test_module_info_has_edition_default():
+    """ModuleInfo defaults: edition='community', viindoo_equivalent_qname=None."""
+    m = ModuleInfo(
+        name="x", odoo_version="17.0", repo="r", path="/x",
+        depends=[], version_raw="",
+    )
+    assert m.edition == "community"
+    assert m.viindoo_equivalent_qname is None
+
+
 # --- _extract_columns_block tokenizer-aware tests (PR#11 WI-F4) ---------------
 
 

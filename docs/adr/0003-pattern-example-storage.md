@@ -1,7 +1,7 @@
 # ADR-0003: PatternExample Storage — Neo4j Node + Reuse Embeddings Table
 
 **Date:** 2026-05-08  
-**Status:** Draft
+**Status:** Accepted
 
 ## Context
 

@@ -1084,3 +1084,191 @@ def test_no_uses_core_symbol_edge_when_target_is_stable(writer, neo4j_driver):
             RETURN count(*) AS c
         """, v=TEST_VERSION).single()
     assert rec["c"] == 0  # stable status excluded by V0 scope
+
+
+# --- M4.6 WI1: Module edition + viindoo_equivalent_qname --------------------
+
+
+def test_write_module_edition_default_community(writer, neo4j_driver):
+    """Module without explicit edition → defaults to 'community'."""
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: 'sale', odoo_version: $v}) "
+            "RETURN m.edition AS ed, m.viindoo_equivalent_qname AS vvq",
+            v=TEST_VERSION,
+        ).single()
+    assert rec["ed"] == "community"
+    assert rec["vvq"] is None
+
+
+# --- M4.6 WI2: Method convention props -------------------------------------
+
+
+def test_write_method_convention_props(writer, neo4j_driver):
+    """convention_kind / super_safety / return_required persisted on Method node."""
+    module = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION, repo="r", path="/tmp",
+        depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=TEST_VERSION,
+        methods=[
+            MethodInfo(
+                name="action_confirm", has_super_call=True,
+                convention_kind="action", super_safety="always",
+                return_required=True,
+            ),
+        ],
+    )
+    pr = ParseResult(module=module, models=[model])
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (mth:Method {name: 'action_confirm', model: 'sale.order', "
+            "module: 'sale', odoo_version: $v}) "
+            "RETURN mth.convention_kind AS ck, mth.super_safety AS ss, "
+            "mth.return_required AS rr",
+            v=TEST_VERSION,
+        ).single()
+    assert rec["ck"] == "action"
+    assert rec["ss"] == "always"
+    assert rec["rr"] is True
+
+
+# --- M4.6 WI3: PatternExample writes ---------------------------------------
+
+
+def test_write_pattern_example_node_created(writer, neo4j_driver):
+    """write_pattern_examples MERGE creates a PatternExample node with all props."""
+    from src.indexer.models import PatternExample
+    pe = PatternExample(
+        pattern_id="t-pattern-1",
+        intent_keywords=["compute", "depends"],
+        file_ref="addons/sale/models/sale_order.py:1",
+        snippet_text="@api.depends(...)\ndef _compute(self): ...",
+        gotchas=["Missing Many2one root"],
+        odoo_version_min=TEST_VERSION,
+        language="python",
+    )
+    writer.write_pattern_examples([pe])
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (p:PatternExample {pattern_id: 't-pattern-1'}) "
+            "RETURN p.language AS lang, p.odoo_version_min AS v, "
+            "p.intent_keywords AS kw, p.gotchas AS g",
+        ).single()
+    assert rec["lang"] == "python"
+    assert rec["v"] == TEST_VERSION
+    assert "compute" in rec["kw"]
+    assert "Missing Many2one root" in rec["g"]
+
+
+def test_write_pattern_example_idempotent(writer, neo4j_driver):
+    """MERGE idempotent — calling write twice yields one node."""
+    from src.indexer.models import PatternExample
+    pe = PatternExample(
+        pattern_id="t-pattern-idem",
+        intent_keywords=["x"],
+        file_ref="f:1",
+        snippet_text="x",
+        gotchas=["g"],
+        odoo_version_min=TEST_VERSION,
+        language="python",
+    )
+    writer.write_pattern_examples([pe])
+    writer.write_pattern_examples([pe])
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (p:PatternExample {pattern_id: 't-pattern-idem'}) "
+            "RETURN count(p) AS c",
+        ).single()
+    assert rec["c"] == 1
+
+
+def test_write_pattern_uses_core_symbol_when_target_exists(writer, neo4j_driver):
+    """USES_CORE_SYMBOL edge when CoreSymbol target exists at same version."""
+    from src.indexer.models import CoreSymbolInfo, PatternExample
+    cs = CoreSymbolInfo(
+        qualified_name="odoo.api.depends",
+        kind="decorator",
+        odoo_version=TEST_VERSION,
+    )
+    writer.write_core_symbols([cs])
+
+    pe = PatternExample(
+        pattern_id="t-pattern-ce",
+        intent_keywords=["x"],
+        file_ref="f:1",
+        snippet_text="x",
+        gotchas=["g"],
+        odoo_version_min=TEST_VERSION,
+        language="python",
+        core_symbol_names=["odoo.api.depends"],
+    )
+    writer.write_pattern_examples([pe])
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (p:PatternExample {pattern_id: 't-pattern-ce'})
+                  -[:USES_CORE_SYMBOL]->(cs:CoreSymbol)
+            RETURN cs.qualified_name AS qn
+        """).single()
+    assert rec["qn"] == "odoo.api.depends"
+
+
+def test_write_pattern_skips_uses_core_symbol_when_target_missing(
+    writer, neo4j_driver,
+):
+    """No edge when CoreSymbol target absent — silent skip per ADR-0003 §5."""
+    from src.indexer.models import PatternExample
+    pe = PatternExample(
+        pattern_id="t-pattern-skip",
+        intent_keywords=["x"],
+        file_ref="f:1",
+        snippet_text="x",
+        gotchas=["g"],
+        odoo_version_min=TEST_VERSION,
+        language="python",
+        core_symbol_names=["nonexistent_symbol_xyz"],
+    )
+    writer.write_pattern_examples([pe])
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (p:PatternExample {pattern_id: 't-pattern-skip'})"
+            "-[:USES_CORE_SYMBOL]->() RETURN count(*) AS c",
+        ).single()
+    assert rec["c"] == 0
+
+
+def test_setup_indexes_creates_pattern_example_index(writer, neo4j_driver):
+    """`setup_indexes()` creates PatternExample index (idempotent re-run)."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        labels = [r["labelsOrTypes"] for r in session.run("SHOW INDEXES").data()]
+    flat = [lbl for lbls in labels if lbls for lbl in lbls]
+    assert "PatternExample" in flat
+
+
+def test_write_module_edition_viindoo_with_equivalent(writer, neo4j_driver):
+    """Viindoo module with viindoo_equivalent_qname set → both props persisted."""
+    module = ModuleInfo(
+        name="viin_helpdesk", odoo_version=TEST_VERSION,
+        repo="tvtmaaddons17", path="/home/x/tvtmaaddons17/viin_helpdesk",
+        depends=[], version_raw="",
+        edition="viindoo", viindoo_equivalent_qname="viin_helpdesk",
+    )
+    pr = ParseResult(module=module, models=[])
+    writer.write_results([pr])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: 'viin_helpdesk', odoo_version: $v}) "
+            "RETURN m.edition AS ed, m.viindoo_equivalent_qname AS vvq",
+            v=TEST_VERSION,
+        ).single()
+    assert rec["ed"] == "viindoo"
+    assert rec["vvq"] == "viin_helpdesk"
+

@@ -107,14 +107,14 @@
 **Intent:** Curated patterns + override convention metadata để AI viết code đúng idiom Odoo + Viindoo, chống hallucinate Odoo Enterprise module trên stack Community/Viindoo.
 **Outcome:** `suggest_pattern("computed field cross-model partner_id")` → 3-5 ví dụ thật từ Odoo CE + gotchas ranked; `check_module_exists("knowledge", "17.0")` → `is_ee_confusion: Yes` + warning + Viindoo equivalent (nếu có); `find_override_point("sale.order", "action_confirm", "17.0")` → `super_safety: always`, `super_ratio: 7/7`, anti-patterns list.
 
-- [ ] WI0: ADR-0003 pattern storage policy review + accept
-- [ ] WI1: Module enrichment (`edition` ∈ {community/enterprise/viindoo/oca/custom} + `viindoo_equivalent_qname` + `EE_CONFUSION` dict 16 entry)
-- [ ] WI2: Method enrichment (`convention_kind` + `super_safety` + `return_required` từ method name regex map)
-- [ ] WI3: PatternExample Neo4j node + reuse `embeddings` table với `chunk_type='pattern_example'` (per ADR-0003)
-- [ ] WI4: Pattern seed ~50 entry curation (`src/data/patterns.json`) + `seed_patterns.py` one-shot CLI
-- [ ] WI5: 3 MCP tool (`suggest_pattern`, `check_module_exists`, `find_override_point`)
-- [ ] WI6: Tests + snapshots
-- [ ] WI7: Docs update (TASKS.md, README.md, kien-truc.md)
+- [x] WI0: ADR-0003 pattern storage policy review + accept
+- [x] WI1: Module enrichment (`edition` ∈ {community/enterprise/viindoo/oca/custom} + `viindoo_equivalent_qname` + `EE_CONFUSION` dict 16 entry)
+- [x] WI2: Method enrichment (`convention_kind` + `super_safety` + `return_required` từ method name regex map)
+- [x] WI3: PatternExample Neo4j node + reuse `embeddings` table với `chunk_type='pattern_example'` (per ADR-0003)
+- [x] WI4: Pattern seed ~50 entry curation (`src/data/patterns.json`) + `seed_patterns.py` one-shot CLI
+- [x] WI5: 3 MCP tool (`suggest_pattern`, `check_module_exists`, `find_override_point`)
+- [x] WI6: Tests + snapshots
+- [x] WI7: Docs update (TASKS.md, README.md, kien-truc.md)
 
 > Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md)  
 > ADR: [`docs/adr/0003-pattern-example-storage.md`](docs/adr/0003-pattern-example-storage.md)  

@@ -46,9 +46,7 @@ Odoo repos (~/git/*_17.0/)
 | `find_examples` | Code examples từ codebase theo ngữ nghĩa |
 | `impact_analysis` | Đổi field/method này → ảnh hưởng đến những gì |
 
-> **M1–M4 + M4.5 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help` — 11 tools (Odoo core API lifecycle awareness across v8 → v20+).
->
-> **M4.6 (planned — see [TASKS.md](TASKS.md)):** `suggest_pattern`, `check_module_exists`, `find_override_point` — 3 tool mới giúp AI viết code đúng idiom + chống hallucinate Enterprise module trên stack Viindoo Community.
+> **M1–M4 + M4.5 + M4.6 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — 14 tools (Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard across v8 → v20+).
 
 ---
 
@@ -122,6 +120,13 @@ git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
   --source ~/git/odoo_17.0 --version 17.0
 # Sau bước này: lookup_core_api / api_version_diff / find_deprecated_usage /
 # lint_check / cli_help mới có data để query.
+
+# (M4.6+) Seed curated PatternExample catalogue (~50 entries):
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer.seed_patterns
+# Hoặc skip embed (chỉ Neo4j nodes, không pgvector):
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer.seed_patterns --no-embed
+# Sau bước này: suggest_pattern / check_module_exists / find_override_point
+# có data để query.
 ```
 
 ### 3. Start MCP server
@@ -212,6 +217,8 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile viindoo_17
 # (M4.5+) Index Odoo core specs (CoreSymbol/LintRule/CLI) per version:
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core --source <odoo_source> --version 17.0
+# (M4.6+) Seed curated pattern catalogue (one-shot, idempotent):
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer.seed_patterns
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
 ```
 
@@ -245,7 +252,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 3 — "Semantic Wow":** `[x]` Code + auto tests complete — còn E2E manual + recall benchmark với Ollama thật  
 **Milestone 4 — "Impact Wow":** `[x]` Code + auto tests complete — còn manual E2E `impact_analysis`  
 **Milestone 4.5 — "Spec Wow":** `[x]` Code + auto tests complete (5 new MCP tools, 4 spec node labels, v8/v9 unblocked) — còn manual E2E `lookup_core_api` / `cli_help` với Odoo upstream indexed  
-**Milestone 4.6 — "Pattern Wow":** `[ ]` Chưa bắt đầu — curated patterns + override convention metadata + EE confusion guard  
+**Milestone 4.6 — "Pattern Wow":** `[x]` Code + auto tests complete (3 new MCP tools, 54 curated patterns, Module/Method enrichment, EE confusion guard) — còn manual E2E `suggest_pattern` / `check_module_exists` / `find_override_point` với data thật  
 **Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu — Web UI admin + API key auth + production hardening (health endpoint, indexer concurrency lock)  
 **Milestone 5.5 — "Polish Wow":** `[ ]` Chưa bắt đầu — observability + test discipline; landing zone cho tech-debt phát sinh từ M5  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  
