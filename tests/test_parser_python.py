@@ -296,6 +296,68 @@ def test_parser_python_era1_inherit_string(tmp_path, v8_module):
     assert result[0].name == "res.partner"
 
 
+# --- Era1 method extraction tests (PR#11 WI-F5) ------------------------------
+
+
+def test_era1_extracts_method_names_from_class_block(tmp_path, v8_module):
+    """Era1 fallback extracts def method_name(self, ...) from class body."""
+    bad = tmp_path / "x.py"
+    bad.write_text(
+        "print 'hello'\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'x.model'\n"
+        "    _columns = {}\n"
+        "    def create(self, cr, uid, vals, context=None):\n"
+        "        pass\n"
+        "    def write(self, cr, uid, ids, vals, context=None):\n"
+        "        pass\n"
+    )
+    result = parse_file(str(bad), v8_module)
+    assert len(result) == 1
+    method_names = [m.name for m in result[0].methods]
+    assert "create" in method_names
+    assert "write" in method_names
+
+
+def test_era1_method_decorator_captured(tmp_path, v8_module):
+    """Decorator before def in era1 class → decorators list populated."""
+    bad = tmp_path / "dec.py"
+    bad.write_text(
+        "print 'hello'\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'x.dec'\n"
+        "    _columns = {}\n"
+        "    @api.multi\n"
+        "    def baz(self, cr, uid, ids):\n"
+        "        pass\n"
+    )
+    result = parse_file(str(bad), v8_module)
+    assert len(result) == 1
+    baz = next((m for m in result[0].methods if m.name == "baz"), None)
+    assert baz is not None
+    assert "api.multi" in baz.decorators
+
+
+def test_era1_non_instance_method_not_extracted(tmp_path, v8_module):
+    """def not receiving self (e.g. module-level def) → not included in methods."""
+    bad = tmp_path / "noop.py"
+    bad.write_text(
+        "print 'hello'\n\n"
+        "def helper(x):\n"
+        "    pass\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'x.noop'\n"
+        "    _columns = {}\n"
+        "    def real_method(self, cr):\n"
+        "        pass\n"
+    )
+    result = parse_file(str(bad), v8_module)
+    assert len(result) == 1
+    method_names = [m.name for m in result[0].methods]
+    assert "helper" not in method_names
+    assert "real_method" in method_names
+
+
 def test_parser_python_v17_unaffected_by_era_dispatch(tmp_path, sale_module):
     """v17.0 module still uses AST parser — no regression."""
     f = write_py(tmp_path, "sale_order.py", """
