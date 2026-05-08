@@ -300,6 +300,12 @@ _RE_COLUMNS_HEAD = re.compile(r"^[ \t]*_columns\s*=\s*\{", re.MULTILINE)
 _RE_COLUMN_ENTRY = re.compile(
     r"['\"](\w+)['\"]\s*:\s*fields\.(\w+)\s*\(",
 )
+# Era1 method extraction: optional decorator line + def <name>(self, ...)
+# Group 1 = decorator (e.g. 'api.multi'); Group 2 = method name.
+_RE_ERA1_METHOD = re.compile(
+    r"(?:^[ \t]*@([\w.]+)\s*\n)?^[ \t]+def\s+(\w+)\s*\(\s*self\b",
+    re.MULTILINE,
+)
 
 
 def _slice_class_body(source: str, start_pos: int, next_pos: int | None) -> str:
@@ -416,6 +422,18 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
         if not name:
             continue
 
+        # Extract methods via regex — only def <name>(self, ...) indented in class
+        methods_list: list[MethodInfo] = []
+        for mm in _RE_ERA1_METHOD.finditer(body):
+            decorator = mm.group(1)  # may be None if no decorator
+            method_name = mm.group(2)
+            methods_list.append(MethodInfo(
+                name=method_name,
+                has_super_call=False,
+                decorators=[decorator] if decorator else [],
+                core_symbol_refs=[],
+            ))
+
         models.append(ModelInfo(
             name=name,
             module=module_info.name,
@@ -423,7 +441,7 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
             inherit=inherit,
             inherits={},
             fields=fields_list,
-            methods=[],
+            methods=methods_list,
         ))
     return models
 
