@@ -266,6 +266,136 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Spec layer (M4.5 WI-F1): index Odoo core API symbols + lint + CLI
+# ---------------------------------------------------------------------------
+
+def _find_previous_indexed_version(
+    current_version: str, writer: Neo4jWriter,
+) -> str | None:
+    """Return the latest indexed CoreSymbol version strictly less than current_version.
+
+    Used to compute lifecycle diff (added/removed/deprecated_in properties).
+    Returns None when the current_version is the first indexed version.
+
+    Version comparison is numeric (per project convention — avoids "9.0" > "17.0").
+    """
+    try:
+        current_major, current_minor = (int(p) for p in current_version.split(".")[:2])
+    except (ValueError, AttributeError):
+        return None
+
+    with writer.driver.session() as session:
+        rows = session.run(
+            "MATCH (cs:CoreSymbol) RETURN DISTINCT cs.odoo_version AS v"
+        ).data()
+
+    versions = [r["v"] for r in rows if r["v"] != current_version]
+    if not versions:
+        return None
+
+    def _ver_key(v: str) -> tuple[int, int]:
+        try:
+            parts = v.split(".")
+            return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+        except (ValueError, IndexError):
+            return (0, 0)
+
+    cur_key = (current_major, current_minor)
+    candidates = [v for v in versions if _ver_key(v) < cur_key]
+    if not candidates:
+        return None
+    return max(candidates, key=_ver_key)
+
+
+def index_core(
+    source_root: str,
+    odoo_version: str,
+    writer: Neo4jWriter,
+    *,
+    static_data_dir: str | None = None,
+) -> dict:
+    """Index Odoo core API symbols + lint rules + CLI commands/flags for one version.
+
+    This is the implementation backing the `index-core` CLI subcommand. It:
+    1. Parses CoreSymbol from the 8 allow-list files in `source_root`.
+    2. Parses LintRule from pylint-odoo/ESLint/ruff + static placeholders.
+    3. Parses CLICommand from `odoo/cli/*.py`.
+    4. Parses CLIFlag from `odoo/tools/config.py` + static placeholders.
+    5. Computes lifecycle diff vs previous indexed version → writes
+       added_in/removed_in/deprecated_in properties on CoreSymbol nodes.
+
+    Args:
+        source_root:     Path to Odoo upstream checkout root.
+        odoo_version:    Version label, e.g. "17.0".
+        writer:          Open Neo4jWriter instance.
+        static_data_dir: Override directory for static spec_data JSON files.
+                         Defaults to `src/indexer/spec_data/`.
+
+    Returns:
+        Summary dict: {core_symbols, lint_rules, cli_commands, cli_flags}.
+    """
+    from src.indexer.diff_engine import compute_diff
+    from src.indexer.parser_cli import parse_cli_commands, parse_cli_flags
+    from src.indexer.parser_lint_rules import parse_lint_rules_for_version
+    from src.indexer.parser_odoo_core import parse_odoo_core
+
+    _logger.info("index_core: version=%s source_root=%s", odoo_version, source_root)
+
+    # 1. CoreSymbol
+    symbols = parse_odoo_core(source_root, odoo_version)
+    writer.write_core_symbols(symbols)
+    _logger.info("index_core: wrote %d CoreSymbol nodes", len(symbols))
+
+    # 2. LintRule
+    rules = parse_lint_rules_for_version(
+        odoo_version,
+        odoo_source_root=source_root,
+        static_data_dir=static_data_dir,
+    )
+    writer.write_lint_rules(rules)
+    _logger.info("index_core: wrote %d LintRule nodes", len(rules))
+
+    # 3. CLICommand
+    commands = parse_cli_commands(source_root, odoo_version)
+    writer.write_cli_commands(commands)
+    _logger.info("index_core: wrote %d CLICommand nodes", len(commands))
+
+    # 4. CLIFlag
+    flags = parse_cli_flags(source_root, odoo_version, static_data_dir=static_data_dir)
+    writer.write_cli_flags(flags)
+    _logger.info("index_core: wrote %d CLIFlag nodes", len(flags))
+
+    # 5. Lifecycle diff vs previous indexed version
+    previous_version = _find_previous_indexed_version(odoo_version, writer)
+    if previous_version:
+        _logger.info(
+            "index_core: computing lifecycle diff %s → %s",
+            previous_version, odoo_version,
+        )
+        # fetch_core_symbols is a convenience method we add to Neo4jWriter
+        old_symbols = writer.fetch_core_symbols(previous_version)
+        diff = compute_diff(old_symbols, symbols)
+        writer.write_diff_edges(diff, from_version=previous_version, to_version=odoo_version)
+        # Write lifecycle properties (WI-F2 extension: added_in/removed_in/deprecated_in)
+        writer.write_lifecycle_properties(
+            diff, from_version=previous_version, to_version=odoo_version,
+        )
+        _logger.info(
+            "index_core: diff — +%d added, -%d removed, ~%d deprecated, %d replaced",
+            len(diff.added), len(diff.removed),
+            len(getattr(diff, "deprecated", [])),
+            len(diff.replaced),
+        )
+
+    return {
+        "core_symbols": len(symbols),
+        "lint_rules": len(rules),
+        "cli_commands": len(commands),
+        "cli_flags": len(flags),
+    }
+
+
 def index_all(pg_conn, embedder=None) -> dict:
     """Index every profile registered in PostgreSQL.
 

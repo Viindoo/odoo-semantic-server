@@ -512,3 +512,75 @@ class Neo4jWriter:
                 _write_cli_flag_replacements,
                 replaced, command_name, from_version, to_version,
             )
+
+    def fetch_core_symbols(self, odoo_version: str) -> list:
+        """Fetch all CoreSymbolInfo for a version from Neo4j.
+
+        Returns a list of CoreSymbolInfo-like dicts re-constructed as CoreSymbolInfo
+        objects so diff_engine can compare them. Used by index_core lifecycle diff.
+        """
+        from .models import CoreSymbolInfo
+        with self.driver.session() as session:
+            rows = session.run("""
+                MATCH (cs:CoreSymbol {odoo_version: $v})
+                RETURN cs.qualified_name AS qualified_name,
+                       cs.kind AS kind,
+                       cs.odoo_version AS odoo_version,
+                       cs.signature AS signature,
+                       cs.file_path AS file_path,
+                       cs.line AS line,
+                       cs.status AS status,
+                       cs.replacement_qname AS replacement_qname
+            """, v=odoo_version).data()
+        return [
+            CoreSymbolInfo(
+                qualified_name=r["qualified_name"],
+                kind=r["kind"] or "function",
+                odoo_version=r["odoo_version"],
+                signature=r.get("signature"),
+                file_path=r.get("file_path"),
+                line=r.get("line"),
+                status=r.get("status") or "stable",
+                replacement_qname=r.get("replacement_qname"),
+            )
+            for r in rows
+        ]
+
+    def write_lifecycle_properties(
+        self,
+        diff,  # DiffResult — import avoided at module level for circularity
+        *,
+        from_version: str,
+        to_version: str,
+    ) -> None:
+        """Write added_in / removed_in / deprecated_in properties on CoreSymbol nodes.
+
+        Per ADR-0002 §2 (revised): lifecycle expressed as properties on CoreSymbol
+        for query simplicity. REPLACED_BY is the only true edge.
+
+        - added (in to_version)   → cs.added_in = to_version  on the NEW node
+        - removed (from from_version) → cs.removed_in = to_version  on the OLD node
+        - deprecated (in to_version)  → cs.deprecated_in = to_version  on the NEW node
+        """
+        if not diff:
+            return
+        with self.driver.session() as session:
+            for sym in diff.added:
+                session.run("""
+                    MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+                    SET cs.added_in = $added_in
+                """, qn=sym.qualified_name, v=sym.odoo_version, added_in=to_version)
+
+            for sym in diff.removed:
+                # sym.odoo_version is from_version (old list)
+                session.run("""
+                    MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+                    SET cs.removed_in = $removed_in
+                """, qn=sym.qualified_name, v=from_version, removed_in=to_version)
+
+            deprecated = getattr(diff, "deprecated", [])
+            for sym in deprecated:
+                session.run("""
+                    MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+                    SET cs.deprecated_in = $deprecated_in
+                """, qn=sym.qualified_name, v=sym.odoo_version, deprecated_in=to_version)
