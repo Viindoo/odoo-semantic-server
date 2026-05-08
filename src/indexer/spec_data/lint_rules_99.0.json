@@ -1,0 +1,19 @@
+{
+  "_curate_status": "smoke-test-placeholder",
+  "_generated_at": "2026-05-08",
+  "_note": "Smoke test placeholder for SMOKE_VERSION=99.0. Has >=1 rule so write_lint_rules path is exercised.",
+  "rules": [
+    {
+      "rule_id": "E9901",
+      "kind": "pylint-odoo",
+      "message": "Smoke test lint rule alpha",
+      "severity": "error"
+    },
+    {
+      "rule_id": "W9901",
+      "kind": "pylint-odoo",
+      "message": "Smoke test lint rule beta",
+      "severity": "warning"
+    }
+  ]
+}
