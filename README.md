@@ -114,8 +114,14 @@ git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile odoo17 --version 17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
   --profile odoo17 --url file://local --branch 17.0 --local-path ~/git/odoo_17.0
-~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile odoo17 --no-embed
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile odoo17 --no-embed
 # (--no-embed bỏ qua M3 semantic search; cần Ollama nếu muốn dùng find_examples)
+
+# (M4.5+) Index Odoo core API symbols + lint rules + CLI cho version 17.0:
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core \
+  --source ~/git/odoo_17.0 --version 17.0
+# Sau bước này: lookup_core_api / api_version_diff / find_deprecated_usage /
+# lint_check / cli_help mới có data để query.
 ```
 
 ### 3. Start MCP server
@@ -203,7 +209,9 @@ make install                                           # tạo venv + config tem
 docker compose up -d                                   # start Neo4j + PostgreSQL
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate # bootstrap schema
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile viindoo_17 --version 17.0
-~/.venv/odoo-semantic-mcp/bin/python -m src.indexer --profile viindoo_17
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile viindoo_17
+# (M4.5+) Index Odoo core specs (CoreSymbol/LintRule/CLI) per version:
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core --source <odoo_source> --version 17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
 ```
 
