@@ -138,3 +138,24 @@ class JSGraphResult:
     module: ModuleInfo
     patches: list[JSPatchInfo] = field(default_factory=list)
     components: list[OWLCompInfo] = field(default_factory=list)
+
+
+# --- Spec layer (M4.5, per ADR-0002) ----------------------------------------
+
+@dataclass
+class CoreSymbolInfo:
+    """An Odoo upstream API entity, captured per version.
+
+    Composite key: (qualified_name, odoo_version) — see ADR-0002 §1.
+    `kind` ∈ {function, class, decorator, exception, field_type, orm_method, cursor_method}.
+    `status` ∈ {stable, deprecated, removed, added}.
+    `replacement_qname` non-null when this symbol is superseded by another.
+    """
+    qualified_name: str
+    kind: str
+    odoo_version: str
+    signature: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    status: str = "stable"
+    replacement_qname: str | None = None
