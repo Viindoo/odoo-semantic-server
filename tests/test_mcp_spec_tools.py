@@ -12,6 +12,8 @@ import sys
 import pytest
 
 from src.indexer.models import (
+    CLICommandInfo,
+    CLIFlagInfo,
     CoreSymbolInfo,
     LintRuleInfo,
     MethodInfo,
@@ -96,6 +98,38 @@ def seeded_spec_neo4j(neo4j_driver):
             status="added",
         ),
     ])
+
+    # CLI Commands + Flags (for cli_help)
+    writer.write_cli_commands([
+        CLICommandInfo(
+            name="server", odoo_version=SPEC_VERSION_FROM,
+            description="Run Odoo server",
+        ),
+    ])
+    writer.write_cli_flags([
+        CLIFlagInfo(
+            "--http-port", "server", SPEC_VERSION_FROM,
+            type="int", default="8069",
+            help="Listen port for the HTTP service",
+        ),
+        CLIFlagInfo(
+            "--longpolling-port", "server", SPEC_VERSION_FROM,
+            type="int", status="deprecated",
+            replacement_flag_name="--gevent-port",
+            help="Deprecated alias to the gevent-port option",
+        ),
+        CLIFlagInfo(
+            "--gevent-port", "server", SPEC_VERSION_FROM,
+            type="int", default="8072",
+            help="Listen port for the gevent worker",
+        ),
+    ])
+    writer.write_cli_flag_replacements(
+        [("--longpolling-port", "--gevent-port")],
+        command_name="server",
+        from_version=SPEC_VERSION_FROM,
+        to_version=SPEC_VERSION_FROM,
+    )
 
     # User Module + Model + Method that uses deprecated 'name_get' (for find_deprecated_usage)
     # Written AFTER CoreSymbols so USES_CORE_SYMBOL edge MERGE finds its target.
@@ -237,3 +271,35 @@ class TestLintCheck:
         out = spec_tools._lint_check("anything", "17.0", language="cobol")
         assert "language" in out.lower()
         assert "python" in out.lower() or "javascript" in out.lower()
+
+
+# --- cli_help -----------------------------------------------------------
+
+
+class TestCliHelp:
+    def test_command_only_lists_flags(self, spec_tools, seeded_spec_neo4j):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._cli_help("server", flag=None, odoo_version=v_from)
+        # Should include key flags from seeded data
+        assert "--http-port" in out
+        assert "--gevent-port" in out
+
+    def test_specific_flag_shows_status_and_replacement(
+        self, spec_tools, seeded_spec_neo4j,
+    ):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._cli_help(
+            "server", flag="--longpolling-port", odoo_version=v_from,
+        )
+        assert "--longpolling-port" in out
+        assert "deprecated" in out.lower()
+        assert "--gevent-port" in out
+
+    def test_command_not_found_returns_helpful_message(
+        self, spec_tools, seeded_spec_neo4j,
+    ):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._cli_help(
+            "nonexistent_cmd_xyz", flag=None, odoo_version=v_from,
+        )
+        assert "not found" in out.lower()

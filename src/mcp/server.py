@@ -1143,6 +1143,153 @@ def lint_check(
     return _lint_check(code, odoo_version, language)
 
 
+def _format_cli_flag_detail(rec: dict, replacement: str | None, version: str) -> str:
+    """Format a single CLIFlag detail."""
+    flag = rec.get("flag_name") or "?"
+    cmd = rec.get("command_name") or "?"
+    status = rec.get("status") or "stable"
+    typ = rec.get("type")
+    default = rec.get("default")
+    help_text = rec.get("help")
+    lines = [f"cli_help({cmd!r}, {flag!r}, Odoo {version})"]
+    lines.append(f"├─ Status:      {status}")
+    if typ:
+        lines.append(f"├─ Type:        {typ}")
+    if default is not None:
+        lines.append(f"├─ Default:     {default}")
+    if help_text:
+        lines.append(f"├─ Help:        {help_text}")
+    if replacement:
+        lines.append(f"└─ Replacement: {replacement}")
+    else:
+        lines[-1] = lines[-1].replace("├─", "└─")
+    return "\n".join(lines)
+
+
+def _format_cli_command_summary(
+    cmd_rec: dict, flags: list[dict], version: str,
+) -> str:
+    name = cmd_rec.get("name") or "?"
+    desc = cmd_rec.get("description")
+    lines = [f"cli_help({name!r}, Odoo {version})"]
+    if desc:
+        lines.append(f"├─ Description: {desc}")
+    if not flags:
+        lines.append("└─ no flags indexed")
+        return "\n".join(lines)
+    lines.append(f"├─ Flags ({len(flags)}):")
+    last_idx = len(flags) - 1
+    for i, f in enumerate(flags):
+        connector = "└─" if i == last_idx else "├─"
+        flag = f.get("flag_name") or "?"
+        status = f.get("status") or "stable"
+        suffix = f" (status={status})" if status != "stable" else ""
+        lines.append(f"   {connector} {flag}{suffix}")
+    return "\n".join(lines)
+
+
+def _cli_help(
+    command: str | None,
+    flag: str | None = None,
+    odoo_version: str = "auto",
+) -> str:
+    """Return CLICommand spec or CLIFlag status + replacement."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        if command and flag:
+            rec = session.run("""
+                MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd, odoo_version: $v})
+                OPTIONAL MATCH (f)-[:REPLACED_BY]->(repl:CLIFlag)
+                RETURN f.flag_name AS flag_name,
+                       f.command_name AS command_name,
+                       f.status AS status,
+                       f.type AS type,
+                       f.default AS default,
+                       f.help AS help,
+                       repl.flag_name AS replacement
+            """, flag=flag, cmd=command, v=odoo_version).single()
+            if rec is None:
+                return (
+                    f"cli_help({command!r}, {flag!r}, Odoo {odoo_version})\n"
+                    f"└─ flag {flag!r} not found on command {command!r}"
+                )
+            data = dict(rec)
+            replacement = data.pop("replacement", None)
+            # Fallback: replacement_flag_name property when no REPLACED_BY edge.
+            if not replacement:
+                fallback = session.run("""
+                    MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd, odoo_version: $v})
+                    RETURN f.replacement_flag_name AS r
+                """, flag=flag, cmd=command, v=odoo_version).single()
+                replacement = fallback["r"] if fallback else None
+            return _format_cli_flag_detail(data, replacement, odoo_version)
+
+        if command:
+            cmd_rec = session.run("""
+                MATCH (c:CLICommand {name: $cmd, odoo_version: $v})
+                RETURN c.name AS name, c.description AS description
+            """, cmd=command, v=odoo_version).single()
+            if cmd_rec is None:
+                return (
+                    f"cli_help({command!r}, Odoo {odoo_version})\n"
+                    f"└─ command {command!r} not found"
+                )
+            flags = session.run("""
+                MATCH (f:CLIFlag {command_name: $cmd, odoo_version: $v})
+                RETURN f.flag_name AS flag_name, f.status AS status
+                ORDER BY f.flag_name
+            """, cmd=command, v=odoo_version).data()
+            return _format_cli_command_summary(dict(cmd_rec), flags, odoo_version)
+
+        # No command — list all CLI commands at this version.
+        cmds = session.run("""
+            MATCH (c:CLICommand {odoo_version: $v})
+            RETURN c.name AS name
+            ORDER BY c.name
+        """, v=odoo_version).data()
+    if not cmds:
+        return (
+            f"cli_help(Odoo {odoo_version})\n"
+            f"└─ no CLI commands indexed for this version"
+        )
+    lines = [f"cli_help(Odoo {odoo_version}) — {len(cmds)} commands"]
+    last_idx = len(cmds) - 1
+    for i, c in enumerate(cmds):
+        connector = "└─" if i == last_idx else "├─"
+        lines.append(f"{connector} {c['name']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def cli_help(
+    command: str | None = None,
+    flag: str | None = None,
+    odoo_version: str = "auto",
+) -> str:
+    """Look up odoo-bin subcommand or flag info: status, replacement, help text.
+
+    Args:
+        command: Subcommand name (e.g. 'server', 'shell', 'scaffold').
+                 If None, list all known commands at this version.
+        flag: Optional flag name (e.g. '--http-port'). When set with command,
+              returns full flag details including replacement.
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
+
+    Returns:
+        Tree-formatted text. Use to verify a flag's status before scripting
+        an odoo-bin invocation, or to pick the replacement for a deprecated flag.
+
+    Example:
+        cli_help("server", "--longpolling-port", "18.0")
+        → cli_help('server', '--longpolling-port', Odoo 18.0)
+          ├─ Status:      removed
+          ├─ Help:        Deprecated alias to the gevent-port option
+          └─ Replacement: --gevent-port
+    """
+    return _cli_help(command, flag, odoo_version)
+
+
 @mcp.tool()
 def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     """Diff a single Odoo core API symbol between two indexed versions.
