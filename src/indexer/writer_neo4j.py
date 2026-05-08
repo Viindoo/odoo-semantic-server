@@ -3,7 +3,8 @@ import logging
 
 from neo4j import GraphDatabase
 
-from .models import JSGraphResult, ParseResult, ViewParseResult
+from .diff_engine import DiffResult
+from .models import CoreSymbolInfo, JSGraphResult, ParseResult, ViewParseResult
 
 _logger = logging.getLogger(__name__)
 
@@ -266,6 +267,38 @@ def _write_js_graph_result(tx, result: JSGraphResult) -> None:
                  mod=patch.module, v=patch.odoo_version)
 
 
+def _chunked(items, size):
+    """Yield successive chunks of `items` of length up to `size`."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _write_core_symbols_batch(tx, symbols: list[CoreSymbolInfo]) -> None:
+    for s in symbols:
+        tx.run("""
+            MERGE (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+            SET cs.kind = $kind,
+                cs.signature = $sig,
+                cs.file_path = $fp,
+                cs.line = $line,
+                cs.status = $status,
+                cs.replacement_qname = $repl
+        """, qn=s.qualified_name, v=s.odoo_version,
+             kind=s.kind, sig=s.signature, fp=s.file_path,
+             line=s.line, status=s.status, repl=s.replacement_qname)
+
+
+def _write_replaced_by_edges(tx, replaced: list[tuple[str, str]],
+                             from_version: str, to_version: str) -> None:
+    for old_qn, new_qn in replaced:
+        tx.run("""
+            MATCH (a:CoreSymbol {qualified_name: $old_qn, odoo_version: $vfrom})
+            MATCH (b:CoreSymbol {qualified_name: $new_qn, odoo_version: $vto})
+            MERGE (a)-[:REPLACED_BY]->(b)
+        """, old_qn=old_qn, new_qn=new_qn,
+             vfrom=from_version, vto=to_version)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -288,6 +321,9 @@ class Neo4jWriter:
                 " ON (n.target, n.patch_name, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:OWLComp)"
                 " ON (n.name, n.module, n.odoo_version)",
+                # M4.5 spec layer (per ADR-0002):
+                "CREATE INDEX IF NOT EXISTS FOR (n:CoreSymbol)"
+                " ON (n.qualified_name, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -305,3 +341,35 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for result in results:
                 session.execute_write(_write_js_graph_result, result)
+
+    # --- M4.5 spec layer (CoreSymbol + diff edges) -------------------------
+
+    def write_core_symbols(self, symbols: list[CoreSymbolInfo]) -> None:
+        """Persist a batch of CoreSymbol nodes (idempotent MERGE).
+
+        Composite key: (qualified_name, odoo_version). Mutable props (kind,
+        signature, file_path, line, status, replacement_qname) updated via SET.
+        Batched at 500/transaction to stay under driver memory budget.
+        """
+        if not symbols:
+            return
+        with self.driver.session() as session:
+            for batch in _chunked(symbols, 500):
+                session.execute_write(_write_core_symbols_batch, batch)
+
+    def write_diff_edges(
+        self, diff: DiffResult, *, from_version: str, to_version: str,
+    ) -> None:
+        """Persist cross-version diff edges (currently REPLACED_BY only).
+
+        Per ADR-0002 §2: ADDED_IN / REMOVED_IN are represented via `cs.status`
+        property (set during write_core_symbols), not as separate edges. Only
+        REPLACED_BY needs an actual edge because it links two distinct nodes.
+        """
+        if not diff.replaced:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                _write_replaced_by_edges,
+                diff.replaced, from_version, to_version,
+            )

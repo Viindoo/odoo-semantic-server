@@ -743,3 +743,103 @@ def test_write_js_graph_bound_to_model(writer, neo4j_driver):
         """, comp_name="SaleOrderComp", model_name="sale.order",
              v=TEST_VERSION).single()
     assert rec["cnt"] >= 1, "BOUND_TO edge should exist when model is indexed"
+
+
+# --- CoreSymbol writer tests (M4.5 WI2.3, per ADR-0002) -------------------
+
+from src.indexer.diff_engine import DiffResult  # noqa: E402
+from src.indexer.models import CoreSymbolInfo  # noqa: E402
+
+
+def test_write_core_symbol_node(writer, neo4j_driver):
+    """write_core_symbols MERGEs a CoreSymbol node with composite key."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval.safe_eval",
+        kind="function",
+        odoo_version=TEST_VERSION,
+        signature="safe_eval(expr, context)",
+        file_path="/odoo/tools/safe_eval.py",
+        line=42,
+        status="stable",
+    )
+    writer.write_core_symbols([sym])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+            RETURN cs
+        """, qn=sym.qualified_name, v=TEST_VERSION).single()
+    assert rec is not None
+    assert rec["cs"]["kind"] == "function"
+    assert rec["cs"]["signature"] == "safe_eval(expr, context)"
+    assert rec["cs"]["status"] == "stable"
+
+
+def test_write_core_symbol_idempotent_on_repeat(writer, neo4j_driver):
+    """MERGE on (qualified_name, odoo_version) — repeat write doesn't duplicate."""
+    sym = CoreSymbolInfo(
+        qualified_name="odoo.fields.Float",
+        kind="field_type",
+        odoo_version=TEST_VERSION,
+        status="stable",
+    )
+    writer.write_core_symbols([sym, sym])
+    writer.write_core_symbols([sym])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v})
+            RETURN count(cs) AS c
+        """, qn=sym.qualified_name, v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_write_diff_replaced_by_edge_when_target_exists(writer, neo4j_driver):
+    """REPLACED_BY edge MERGEd when both old and new symbol nodes exist."""
+    old = CoreSymbolInfo(
+        qualified_name="odoo.fields.Field.group_operator",
+        kind="field_type", odoo_version=TEST_VERSION,
+        status="removed",
+        replacement_qname="odoo.fields.Field.aggregator",
+    )
+    new = CoreSymbolInfo(
+        qualified_name="odoo.fields.Field.aggregator",
+        kind="field_type", odoo_version=TEST_VERSION,
+        status="added",
+    )
+    writer.write_core_symbols([old, new])
+    diff = DiffResult(
+        replaced=[(
+            "odoo.fields.Field.group_operator",
+            "odoo.fields.Field.aggregator",
+        )],
+    )
+    writer.write_diff_edges(diff, from_version=TEST_VERSION, to_version=TEST_VERSION)
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (a:CoreSymbol {qualified_name: $a_qn, odoo_version: $v})
+                  -[:REPLACED_BY]->
+                  (b:CoreSymbol {qualified_name: $b_qn, odoo_version: $v})
+            RETURN count(*) AS c
+        """, a_qn=old.qualified_name, b_qn=new.qualified_name,
+             v=TEST_VERSION).single()
+    assert rec["c"] == 1
+
+
+def test_setup_indexes_creates_core_symbol_index(writer, neo4j_driver):
+    """setup_indexes creates an index on (CoreSymbol.qualified_name, odoo_version)."""
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        indexes = session.run("SHOW INDEXES").data()
+    labels_props = [
+        (i.get("labelsOrTypes") or [], i.get("properties") or [])
+        for i in indexes
+    ]
+    found = any(
+        "CoreSymbol" in (lbls or [])
+        and "qualified_name" in (props or [])
+        and "odoo_version" in (props or [])
+        for lbls, props in labels_props
+    )
+    assert found, f"CoreSymbol index missing. Got: {labels_props}"
