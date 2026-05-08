@@ -31,6 +31,7 @@ markers = [
     "neo4j: integration tests yêu cầu Neo4j đang chạy (skip bằng -m 'not neo4j')",
     "postgres: integration tests yêu cầu PostgreSQL đang chạy (skip bằng -m 'not postgres')",
     "ollama: integration tests yêu cầu Ollama đang chạy (skip bằng -m 'not ollama')",
+    "smoke: end-to-end smoke tests (per-PR fast tier, requires Neo4j)",
 ]
 
 [tool.hatch.build.targets.wheel]
