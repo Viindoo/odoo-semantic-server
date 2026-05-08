@@ -9,11 +9,17 @@ from src.indexer.models import (
     ModelInfo,
     ModuleInfo,
     ParseResult,
+    PatternExample,
     QWebInfo,
     ViewInfo,
     ViewParseResult,
 )
-from src.indexer.writer_pgvector import EmbeddingChunk, make_chunks, write_module_embeddings
+from src.indexer.writer_pgvector import (
+    EmbeddingChunk,
+    make_chunks,
+    make_pattern_chunks,
+    write_module_embeddings,
+)
 
 TEST_VERSION = "99.0"
 TEST_MODULE = "test_sale"
@@ -126,6 +132,48 @@ def test_make_chunks_large_view_sliding_window():
     chunks = make_chunks(TEST_MODULE, TEST_VERSION, ParseResult(module=mi), vr, None)
     view_chunks = [c for c in chunks if c.chunk_type == "view"]
     assert len(view_chunks) > 1
+
+
+# --- make_pattern_chunks (M4.6 WI3, no DB needed) ---
+
+def _sample_pattern() -> PatternExample:
+    return PatternExample(
+        pattern_id="computed-field-cross-model",
+        intent_keywords=["computed", "depends"],
+        file_ref="addons/sale/models/sale_order.py:245",
+        snippet_text="@api.depends('partner_id.country_id')\ndef _compute(self): ...",
+        gotchas=["Missing Many2one root in path"],
+        odoo_version_min="17.0",
+        language="python",
+    )
+
+
+def test_make_pattern_chunks_chunk_type():
+    chunks = make_pattern_chunks([_sample_pattern()])
+    assert len(chunks) == 1
+    assert chunks[0].chunk_type == "pattern_example"
+
+
+def test_make_pattern_chunks_module_sentinel():
+    chunks = make_pattern_chunks([_sample_pattern()])
+    assert chunks[0].module == "__patterns__"
+
+
+def test_make_pattern_chunks_entity_name_slug():
+    chunks = make_pattern_chunks([_sample_pattern()])
+    assert chunks[0].entity_name == "python__computed-field-cross-model"
+
+
+def test_make_pattern_chunks_text_includes_snippet_and_gotchas():
+    chunks = make_pattern_chunks([_sample_pattern()])
+    assert "_compute" in chunks[0].content
+    assert "Many2one root" in chunks[0].content
+
+
+def test_make_pattern_chunks_uses_version_min():
+    chunks = make_pattern_chunks([_sample_pattern()])
+    assert chunks[0].odoo_version == "17.0"
+    assert chunks[0].file_path == "addons/sale/models/sale_order.py:245"
 
 
 # --- write_module_embeddings (postgres integration) ---

@@ -1,0 +1,758 @@
+[
+  {
+    "pattern_id": "computed-field-cross-model",
+    "intent_keywords": ["computed", "depends", "cross-model", "partner_id", "country", "related"],
+    "file_ref": "addons/account/models/account_move.py:1460",
+    "snippet_text": "@api.depends('company_id.account_fiscal_country_id', 'fiscal_position_id', 'fiscal_position_id.country_id')\ndef _compute_tax_country_id(self):\n    for record in self:\n        if record.fiscal_position_id.country_id:\n            record.tax_country_id = record.fiscal_position_id.country_id\n        else:\n            record.tax_country_id = record.company_id.account_fiscal_country_id",
+    "gotchas": [
+      "Missing Many2one root in @api.depends path — use full dotted path 'fiscal_position_id' AND 'fiscal_position_id.country_id'",
+      "Don't add @api.depends on related= field — Odoo auto-declares dependency chain",
+      "Cross-company field needs additional @api.depends_context('company') if multi-company aware"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "computed-field-lang-context",
+    "intent_keywords": ["compute", "depends_context", "lang", "translate", "translatable"],
+    "file_ref": "addons/product/models/product_template.py:226",
+    "snippet_text": "@api.depends_context('lang')\n@api.depends('product_variant_ids', 'product_variant_ids.default_code')\ndef _compute_default_code(self):\n    unique_variants = self.filtered(lambda template: len(template.product_variant_ids) == 1)\n    for template in unique_variants:\n        template.default_code = template.product_variant_ids.default_code\n    for template in (self - unique_variants):\n        template.default_code = False",
+    "gotchas": [
+      "Missing @api.depends_context('lang') makes computed translatable fields cache-leak across users",
+      "Order matters: @api.depends_context BEFORE @api.depends — both decorators stack",
+      "Field must have translate=True if the compute uses translatable inputs"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends_context", "odoo.api.depends"]
+  },
+  {
+    "pattern_id": "create-multi-v17",
+    "intent_keywords": ["create", "model_create_multi", "vals_list", "batch", "override"],
+    "file_ref": "addons/sale/models/sale_order.py:813",
+    "snippet_text": "@api.model_create_multi\ndef create(self, vals_list):\n    for vals in vals_list:\n        if vals.get('name', _('New')) == _('New'):\n            seq_date = fields.Datetime.context_timestamp(self, fields.Datetime.now())\n            vals['name'] = self.env['ir.sequence'].next_by_code(\n                'sale.order', sequence_date=seq_date,\n            ) or _('New')\n    return super().create(vals_list)",
+    "gotchas": [
+      "Don't use @api.model + def create(self, vals) — silently broken on batch import in v17+",
+      "super().create(vals_list) takes the full list, not single dict in loop",
+      "@api.model_create_single is removed in v18 — defaults to multi everywhere"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.model_create_multi"]
+  },
+  {
+    "pattern_id": "write-read-before-super",
+    "intent_keywords": ["write", "override", "old value", "before super", "audit"],
+    "file_ref": "addons/account/models/account_move.py:2891",
+    "snippet_text": "def write(self, vals):\n    # Read old values BEFORE super() — modifications inside super may overwrite them\n    old_state = {rec.id: rec.state for rec in self}\n    res = super().write(vals)\n    if 'state' in vals:\n        for rec in self:\n            if old_state[rec.id] != rec.state:\n                rec._on_state_changed(old_state[rec.id])\n    return res",
+    "gotchas": [
+      "Reading old values AFTER super().write() returns the new value — read BEFORE",
+      "Always return the result of super().write() — Odoo expects bool",
+      "Iterating self after write may trigger recompute; use rec.id snapshot to avoid"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "xpath-avoid-replace",
+    "intent_keywords": ["xpath", "replace", "inherit", "view", "extension"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:103",
+    "snippet_text": "<record id=\"view_sale_order_form_inherit\" model=\"ir.ui.view\">\n    <field name=\"inherit_id\" ref=\"sale.view_order_form\"/>\n    <field name=\"arch\" type=\"xml\">\n        <xpath expr=\"//field[@name='partner_id']\" position=\"after\">\n            <field name=\"x_custom_field\"/>\n        </xpath>\n    </xpath>\n</record>",
+    "gotchas": [
+      "position=\"replace\" wipes content + breaks downstream extension modules — prefer 'inside'/'after'/'before'/'attributes'",
+      "If you MUST replace, replace exactly the smallest target node — never replace whole <form>",
+      "Replacing a <field> drops its widget options + invisible attrs from base — re-declare them all"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "xpath-specific-expr",
+    "intent_keywords": ["xpath", "specific", "ambiguous", "match", "expr"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:267",
+    "snippet_text": "<!-- BAD: matches any <button> in form, ambiguous -->\n<xpath expr=\"//button\" position=\"before\">...</xpath>\n\n<!-- GOOD: anchors on name attribute, deterministic -->\n<xpath expr=\"//button[@name='action_confirm']\" position=\"before\">\n    <button name=\"action_my_check\" type=\"object\" string=\"Check\"/>\n</xpath>",
+    "gotchas": [
+      "Generic xpath like //field or //button matches first occurrence — module load order changes break it",
+      "Always anchor on stable attribute (name/id) or pair (model+name)",
+      "Avoid xpath by index //field[3] — count drifts when other modules insert siblings"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-patch-v17",
+    "intent_keywords": ["owl", "patch", "component", "extend", "javascript"],
+    "file_ref": "addons/web/static/src/views/form/form_controller.js:1",
+    "snippet_text": "import { patch } from \"@web/core/utils/patch\";\nimport { FormController } from \"@web/views/form/form_controller\";\n\npatch(FormController.prototype, {\n    setup() {\n        super.setup();\n        // your additions here\n    },\n});",
+    "gotchas": [
+      "Class.include() is removed in v17 — use patch(Class.prototype, {...})",
+      "Always call super.method() inside the patched method — patch doesn't auto-chain",
+      "Patch second arg in v17+ is plain object literal (no { name: ... } wrapper from older signature)"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "inherits-vs-inherit",
+    "intent_keywords": ["inherits", "delegation", "inherit", "extension", "model"],
+    "file_ref": "addons/hr/models/hr_employee.py:23",
+    "snippet_text": "class HrEmployee(models.Model):\n    _name = 'hr.employee'\n    _inherits = {'resource.resource': 'resource_id'}\n    _inherit = ['mail.thread', 'mail.activity.mixin']\n\n    resource_id = fields.Many2one('resource.resource', required=True, ondelete='cascade')",
+    "gotchas": [
+      "_inherits is DELEGATION (composes a different model via FK) — _inherit is EXTENSION (same model)",
+      "_inherits via_field MUST be required=True + ondelete='cascade' — Odoo expects ownership",
+      "_inherits delegates field reads + writes; _inherit shares the table"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "action-return-super",
+    "intent_keywords": ["action", "return", "super", "override", "result"],
+    "file_ref": "addons/sale/models/sale_order.py:471",
+    "snippet_text": "def action_confirm(self):\n    res = super().action_confirm()\n    for order in self:\n        order._send_order_confirmation_mail()\n    return res",
+    "gotchas": [
+      "Action methods MUST return the result of super() — caller may expect dict (action_window) or bool",
+      "Never return None silently — clients raise 'Action returned no value'",
+      "Side effects after super() — never replace super() with manual workflow logic"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "crud-return-value",
+    "intent_keywords": ["crud", "create", "write", "unlink", "return"],
+    "file_ref": "addons/sale/models/sale_order_line.py:687",
+    "snippet_text": "def write(self, vals):\n    res = super().write(vals)\n    if 'product_uom_qty' in vals:\n        self._update_taxes()\n    return res\n\ndef unlink(self):\n    self._cancel_remaining_invoices()\n    return super().unlink()",
+    "gotchas": [
+      "create/write/unlink/copy MUST return — super() result preserves recordset/bool contract",
+      "Never `super().write(vals); return self` — write returns bool, not self",
+      "unlink that returns False without raising silently aborts deletion"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "old-style-super",
+    "intent_keywords": ["super", "anti-pattern", "python2", "method-resolution"],
+    "file_ref": "addons/sale_crm/models/sale_order.py:14",
+    "snippet_text": "# ANTI-PATTERN — Python 2 idiom, useless boilerplate in Python 3:\nres = super(SaleOrder, self.with_context(...)).action_confirm()\n\n# CORRECT — Python 3 super():\nres = super().action_confirm()",
+    "gotchas": [
+      "Python 3 super() auto-binds the class — explicit ClassName argument is redundant",
+      "Exception: super(ClassName, self.with_context(...)) IS still valid when self is rebound",
+      "Mixed style across class methods is hard to read — pick one and stick to it"
+    ],
+    "odoo_version_min": "8.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "missing-return-override",
+    "intent_keywords": ["missing return", "anti-pattern", "override", "super"],
+    "file_ref": "addons/account/models/account_move.py:2890",
+    "snippet_text": "# ANTI-PATTERN — caller gets None, breaks chain:\ndef action_post(self):\n    super().action_post()\n    self._do_extra()\n\n# CORRECT — preserve super() return for downstream callers:\ndef action_post(self):\n    res = super().action_post()\n    self._do_extra()\n    return res",
+    "gotchas": [
+      "Forgetting return after super() is the #1 silent override bug — chain breaks at the first hop",
+      "Linter pylint-odoo: W7901 method-required-super (V18+: super-with-arguments)",
+      "Test pattern: assert res is not None — None means override forgot return"
+    ],
+    "odoo_version_min": "8.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "store-computed-field",
+    "intent_keywords": ["computed", "store", "domain", "search", "index"],
+    "file_ref": "addons/sale/models/sale_order.py:135",
+    "snippet_text": "amount_total = fields.Monetary(\n    string='Total',\n    compute='_compute_amounts',\n    store=True,\n    tracking=4,\n)\n\n@api.depends('order_line.price_total')\ndef _compute_amounts(self):\n    for order in self:\n        order.amount_total = sum(line.price_total for line in order.order_line)",
+    "gotchas": [
+      "Computed fields used in domain/groupby/search MUST have store=True — else slow N+1 query",
+      "store=True requires explicit @api.depends — partial deps cause stale data",
+      "Add `index=True` if field is in WHERE clause of frequent queries (audit slow_query log first)"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "model-create-multi-batch",
+    "intent_keywords": ["model_create_multi", "batch", "vals_list", "create"],
+    "file_ref": "addons/account/models/account_move.py:2541",
+    "snippet_text": "@api.model_create_multi\ndef create(self, vals_list):\n    # Pre-process the WHOLE batch — do not loop+single-create\n    for vals in vals_list:\n        if vals.get('move_type') in ('out_invoice', 'out_refund'):\n            vals.setdefault('partner_id', self.env.user.partner_id.id)\n    return super().create(vals_list)",
+    "gotchas": [
+      "Treat vals_list as ALL records being created in one call — single-record assumption causes O(N²) slowness",
+      "Don't `for vals in vals_list: super().create([vals])` — defeats batching",
+      "If you need per-record post-processing, do it AFTER super() returns the created recordset"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.model_create_multi"]
+  },
+  {
+    "pattern_id": "depends-full-dotted-path",
+    "intent_keywords": ["depends", "dotted", "path", "many2one", "compute"],
+    "file_ref": "addons/sale/models/sale_order.py:289",
+    "snippet_text": "@api.depends('partner_id', 'partner_id.country_id', 'partner_id.country_id.name')\ndef _compute_country_label(self):\n    for order in self:\n        order.country_label = order.partner_id.country_id.name or ''",
+    "gotchas": [
+      "Each Many2one hop in the path needs its own @api.depends entry — not just the final field",
+      "Missing intermediate field = no recompute when partner_id is REASSIGNED",
+      "Lambda in compute body that walks .partner_id.country_id is fine; depends still needs full chain"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "aggregator-not-group-operator",
+    "intent_keywords": ["aggregator", "group_operator", "deprecated", "v18", "field"],
+    "file_ref": "addons/sale/models/sale_order_line.py:62",
+    "snippet_text": "# v17 (deprecated):\nqty_invoiced = fields.Float(group_operator='sum')\n\n# v18+:\nqty_invoiced = fields.Float(aggregator='sum')",
+    "gotchas": [
+      "field option group_operator renamed to aggregator in v18 — silent ignore in v18 if you keep old name",
+      "Lint rule W8104 flags group_operator usage on v18 codebase",
+      "Migration script: regex replace `group_operator=` → `aggregator=` per-version safe"
+    ],
+    "odoo_version_min": "18.0",
+    "language": "python",
+    "core_symbol_names": ["group_operator"]
+  },
+  {
+    "pattern_id": "name-get-removed-v18",
+    "intent_keywords": ["name_get", "removed", "v18", "display_name", "anti-pattern"],
+    "file_ref": "addons/sale/models/sale_order.py:198",
+    "snippet_text": "# ANTI-PATTERN (removed in v18):\ndef name_get(self):\n    return [(rec.id, f'[{rec.name}] {rec.partner_id.name}') for rec in self]\n\n# CORRECT v18+:\n@api.depends('name', 'partner_id.name')\ndef _compute_display_name(self):\n    for rec in self:\n        rec.display_name = f'[{rec.name}] {rec.partner_id.name}'",
+    "gotchas": [
+      "name_get() removed entirely in v18 — must override _compute_display_name with @api.depends",
+      "display_name field is auto-declared by Odoo; you only override the compute",
+      "Calling self.name_get() in v18 raises AttributeError; calling in v17 returns [(id, label)] list"
+    ],
+    "odoo_version_min": "18.0",
+    "language": "python",
+    "core_symbol_names": ["name_get"]
+  },
+  {
+    "pattern_id": "field-states-removed",
+    "intent_keywords": ["states", "field", "removed", "v17", "invisible", "readonly"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:289",
+    "snippet_text": "<!-- ANTI-PATTERN (removed v17): -->\n<field name=\"partner_id\" states=\"draft,sent\"/>\n\n<!-- CORRECT v17+ — direct attrs in XML view: -->\n<field name=\"partner_id\" readonly=\"state not in ['draft','sent']\"/>",
+    "gotchas": [
+      "field `states=...` attribute removed v17 — use `readonly=\"<expr>\"` / `invisible=\"<expr>\"` directly",
+      "Old `attrs=\"{'invisible': [('state', '!=', 'draft')]}\"` also removed v17 — same direct-expression migration",
+      "Lint rule W8201 catches old states= on v17+; use ruff custom rule or grep -rn 'states='"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "safe-eval-v19-signature",
+    "intent_keywords": ["safe_eval", "v19", "signature", "tools", "deprecated"],
+    "file_ref": "addons/base/tools/safe_eval.py:312",
+    "snippet_text": "# v17/v18:\nfrom odoo.tools import safe_eval\nresult = safe_eval(expr, locals_dict)\n\n# v19 (signature changed — explicit parameter names):\nfrom odoo.tools.safe_eval import safe_eval\nresult = safe_eval(expr, locals_dict=locals_dict, mode='eval')",
+    "gotchas": [
+      "v19 makes locals_dict a keyword-only argument — positional call breaks",
+      "Import path stable: from odoo.tools.safe_eval import safe_eval (the module-level shortcut still works)",
+      "mode='eval' is the default; pass 'exec' for statement evaluation (rare in user code)"
+    ],
+    "odoo_version_min": "19.0",
+    "language": "python",
+    "core_symbol_names": ["safe_eval"]
+  },
+  {
+    "pattern_id": "read-group-v19-deprecated",
+    "intent_keywords": ["read_group", "_read_group", "deprecated", "v19", "groupby"],
+    "file_ref": "addons/sale/report/sale_report.py:147",
+    "snippet_text": "# v17/v18:\ngroups = self.env['sale.order'].read_group(\n    [('state', '=', 'sale')], ['amount_total:sum'], ['partner_id'])\n\n# v19+:\ngroups = self.env['sale.order']._read_group(\n    [('state', '=', 'sale')], groupby=['partner_id'],\n    aggregates=['amount_total:sum'])",
+    "gotchas": [
+      "read_group is now an internal-only API in v19 — public callers should use _read_group / formatted_read_group",
+      "_read_group returns rows as list of dicts (same shape) but kwarg names changed: aggregates= replaces fields=",
+      "formatted_read_group adds rendering metadata for kanban/dashboard — pick by use case"
+    ],
+    "odoo_version_min": "19.0",
+    "language": "python",
+    "core_symbol_names": ["read_group"]
+  },
+  {
+    "pattern_id": "query-init-cr-vs-env",
+    "intent_keywords": ["cr.execute", "self.env.cr", "query", "raw sql", "init"],
+    "file_ref": "addons/web/__init__.py:18",
+    "snippet_text": "# In post-init / migration hooks:\ndef post_init(env):\n    env.cr.execute(\"UPDATE res_partner SET active = TRUE WHERE id = ANY(%s)\", [[1, 2]])\n\n# In ORM model methods — use self.env.cr:\ndef _heavy_aggregate(self):\n    self.env.cr.execute(\"\"\"SELECT count(*) FROM ...\"\"\")",
+    "gotchas": [
+      "v17+ post_init signature is post_init(env) — old (cr, registry) is removed",
+      "Use parameterized %s + tuple — never f-string the value into SQL (SQL injection)",
+      "self.env.cr.execute() does NOT auto-flush — call self.env.flush_all() if reading data just written via ORM"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "mail-thread-mixin-inherit",
+    "intent_keywords": ["mail.thread", "mixin", "tracking", "messages"],
+    "file_ref": "addons/sale/models/sale_order.py:25",
+    "snippet_text": "class SaleOrder(models.Model):\n    _name = 'sale.order'\n    _inherit = ['mail.thread', 'mail.activity.mixin']\n    _description = 'Sales Order'\n\n    state = fields.Selection([...], tracking=True)",
+    "gotchas": [
+      "Add 'mail.thread' to _inherit list — never derive from mail.thread base class",
+      "Fields with tracking=True automatically post audit messages on write — costs DB write per change",
+      "Don't override message_post unless you know the chatter format contract — use sub_type_xmlid arg instead"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "mail-activity-mixin",
+    "intent_keywords": ["mail.activity.mixin", "activity", "todo", "schedule"],
+    "file_ref": "addons/crm/models/crm_lead.py:48",
+    "snippet_text": "class CrmLead(models.Model):\n    _name = 'crm.lead'\n    _inherit = ['mail.thread', 'mail.activity.mixin']\n\n    def action_create_followup(self):\n        self.activity_schedule(\n            'mail.mail_activity_data_todo',\n            user_id=self.user_id.id,\n            note='Send proposal',\n            date_deadline=fields.Date.today() + relativedelta(days=3),\n        )",
+    "gotchas": [
+      "activity_schedule needs the activity_type xmlid — never look up by name, breaks on translation",
+      "user_id arg defaults to current user — pass explicit user_id for delegated activities",
+      "date_deadline accepts date or relative offset; datetime gets truncated to date silently"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "recompute-store-true",
+    "intent_keywords": ["recompute", "store", "modified", "trigger"],
+    "file_ref": "addons/account/models/account_move.py:1893",
+    "snippet_text": "def _post(self, soft=True):\n    self.line_ids._compute_amount_currency()\n    self.invalidate_recordset(['amount_total'])  # force re-read from compute\n    return super()._post(soft=soft)",
+    "gotchas": [
+      "After raw SQL UPDATE that bypasses ORM, call invalidate_recordset to drop cache",
+      "modified() triggers recompute lazily on next read — explicit recompute() rarely needed",
+      "v17 dropped self.env['x'].recompute() — replaced by env.flush_all() + invalidate_*"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "compute-recursive-true",
+    "intent_keywords": ["compute", "recursive", "depends", "tree"],
+    "file_ref": "addons/account/models/account_account.py:88",
+    "snippet_text": "@api.depends('parent_id.complete_name')\ndef _compute_complete_name(self):\n    for account in self:\n        if account.parent_id:\n            account.complete_name = f'{account.parent_id.complete_name} / {account.name}'\n        else:\n            account.complete_name = account.name",
+    "gotchas": [
+      "Self-referencing @api.depends('parent_id.X') needs `recursive=True` ONLY on field definition (not decorator)",
+      "Recursive compute can hit recursion limit — keep tree depth bounded or batch process",
+      "Don't recompute on write of every child — use store=True + index for parent_path"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "monetary-currency-field",
+    "intent_keywords": ["monetary", "currency", "currency_field", "round"],
+    "file_ref": "addons/sale/models/sale_order.py:142",
+    "snippet_text": "currency_id = fields.Many2one('res.currency', related='company_id.currency_id', store=True)\namount_total = fields.Monetary(\n    string='Total',\n    compute='_compute_amounts',\n    store=True,\n    currency_field='currency_id',\n)",
+    "gotchas": [
+      "fields.Monetary REQUIRES a currency_field reference — silently uses 'currency_id' if omitted",
+      "Without currency_field, multi-currency rounding is wrong (uses company default, not record's currency)",
+      "Always store the related currency_id with store=True — domain queries on currency need it indexed"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "selection-extend",
+    "intent_keywords": ["selection", "extend", "selection_add", "ondelete"],
+    "file_ref": "addons/sale_management/models/sale_order.py:18",
+    "snippet_text": "class SaleOrder(models.Model):\n    _inherit = 'sale.order'\n\n    state = fields.Selection(\n        selection_add=[('quotation_template', 'Quotation Template')],\n        ondelete={'quotation_template': 'set default'},\n    )",
+    "gotchas": [
+      "selection_add appends — never replace `selection=[...]` to extend",
+      "ondelete is MANDATORY when selection_add is used — controls behavior when key disabled",
+      "Don't forget to also add the value to dependent compute fields' state-handling"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "many2many-relation-table",
+    "intent_keywords": ["many2many", "relation", "table", "explicit"],
+    "file_ref": "addons/account/models/account_account.py:115",
+    "snippet_text": "tag_ids = fields.Many2many(\n    'account.account.tag',\n    'account_account_account_tag',  # explicit junction table name\n    'account_id', 'tag_id',\n    string='Tags',\n)",
+    "gotchas": [
+      "Explicit relation table name avoids auto-generated 60-char-truncated default name",
+      "PostgreSQL identifier max 63 chars — auto-name like rel_account_account_account_account_tag_rel may collide",
+      "When 2 modules add Many2many between same models, explicit table prevents ambiguity"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "domain-leaf-tuple-format",
+    "intent_keywords": ["domain", "leaf", "tuple", "search"],
+    "file_ref": "addons/sale/models/sale_order.py:701",
+    "snippet_text": "domain = [\n    ('state', 'in', ('sale', 'done')),\n    ('partner_id.country_id.code', '=', 'VN'),\n    '|',\n    ('amount_total', '>', 1000),\n    ('user_id', '=', self.env.user.id),\n]",
+    "gotchas": [
+      "Domain leaf MUST be 3-element tuple/list: (field, operator, value)",
+      "Logical operators '|' '&' '!' are PREFIX (Polish notation) — they apply to the NEXT N leaves, not infix",
+      "Dotted-path leaves like 'partner_id.country_id.code' work for read but slow under search — store=True the chain"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "context-as-frozendict",
+    "intent_keywords": ["context", "frozendict", "with_context", "immutable"],
+    "file_ref": "addons/web/controllers/main.py:67",
+    "snippet_text": "# Don't mutate self.env.context — it's frozen.\nnew_ctx = dict(self.env.context, lang='vi_VN', tracking_disable=True)\nrecords = self.env['res.partner'].with_context(new_ctx).create(vals_list)\n\n# Or shorthand kwargs:\nrecords = self.env['res.partner'].with_context(lang='vi_VN').create(vals_list)",
+    "gotchas": [
+      "self.env.context is frozendict in v17+ — direct mutation raises TypeError",
+      "with_context kwargs ADD to existing ctx; pass dict to REPLACE (rarely useful)",
+      "tracking_disable=True suppresses mail.thread audit — useful for bulk create perf"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "with-company-context",
+    "intent_keywords": ["company", "with_company", "multi-company", "context"],
+    "file_ref": "addons/account/models/account_move.py:1402",
+    "snippet_text": "# Operate as a specific company — sets context['allowed_company_ids']\nrecords = self.env['account.journal'].with_company(target_company).search(\n    [('type', '=', 'sale')]\n)\n\n# Wrong: only changing company_id field doesn't fix record_rules\n# rec.company_id = target_company  # rules still filter by env.company",
+    "gotchas": [
+      "with_company resets env.company AND allowed_company_ids — affects record_rules domain",
+      "Don't pass company_id field assignment to switch — record rules still use env.company",
+      "Multi-company create: with_company(C).create(vals) sets correct default company_id"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "sudo-vs-with-user",
+    "intent_keywords": ["sudo", "with_user", "permission", "su", "access"],
+    "file_ref": "addons/portal/models/portal.py:48",
+    "snippet_text": "# sudo() — bypass record rules + ACL, run as superuser\norders = self.env['sale.order'].sudo().search([('partner_id', '=', portal_partner.id)])\n\n# with_user() — switch effective user (still subject to that user's rights)\nrecords = self.env['res.partner'].with_user(target_user).search([])",
+    "gotchas": [
+      "sudo() is a security knife — escapes record rules; only use when you've validated the access yourself",
+      "with_user is for AS-IF impersonation — record rules still apply per that user's groups",
+      "Audit log: sudo() bypass is invisible in CRUD log — log explicitly when sudo() critical actions"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "record-rule-domain-force",
+    "intent_keywords": ["record rule", "domain", "force", "ir.rule", "security"],
+    "file_ref": "addons/sale/security/sale_security.xml:35",
+    "snippet_text": "<record id=\"sale_order_personal_rule\" model=\"ir.rule\">\n    <field name=\"name\">Personal Sale Orders</field>\n    <field name=\"model_id\" ref=\"model_sale_order\"/>\n    <field name=\"domain_force\">[('user_id', '=', user.id)]</field>\n    <field name=\"groups\" eval=\"[(4, ref('sales_team.group_sale_salesman'))]\"/>\n</record>",
+    "gotchas": [
+      "domain_force is a Python-string expression evaluated PER REQUEST — keep it cheap (no heavy compute)",
+      "User context: `user`, `user.id`, `time`, `datetime`, `relativedelta` available; no other ORM calls",
+      "Empty groups => global rule applied to ALL users (rare); always scope groups for personal/team rules"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "sql-constraint-name-uniq",
+    "intent_keywords": ["_sql_constraints", "unique", "constraint", "models.Constraint", "v19"],
+    "file_ref": "addons/sale/models/sale_order.py:65",
+    "snippet_text": "# v17/v18:\n_sql_constraints = [\n    ('name_uniq', 'UNIQUE(name, company_id)', 'Reference must be unique per company'),\n]\n\n# v19+ class-level Constraint:\n_constraints = [\n    models.Constraint('UNIQUE(name, company_id)', 'Reference must be unique per company'),\n]",
+    "gotchas": [
+      "v19 introduces models.Constraint replacing _sql_constraints — both supported in transition window",
+      "Constraint name must be globally unique across the DB — namespace with module prefix",
+      "Composite UNIQUE on (name, company_id) — multi-company friendly; UNIQUE(name) breaks multi-company"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "sql-injection-cr-execute-safe",
+    "intent_keywords": ["sql injection", "cr.execute", "parameterized", "%s"],
+    "file_ref": "addons/account/models/account_move.py:3210",
+    "snippet_text": "# UNSAFE — SQL injection vector:\n# self.env.cr.execute(f\"SELECT * FROM res_partner WHERE name = '{name}'\")\n\n# SAFE — parameterized %s + tuple:\nself.env.cr.execute(\n    \"SELECT id FROM res_partner WHERE name = %s AND active = %s\",\n    (name, True),\n)",
+    "gotchas": [
+      "NEVER f-string user-controlled values into SQL — even % old-style format is unsafe",
+      "Use psycopg2 %s placeholder + tuple of params — psycopg2 escapes types correctly",
+      "For dynamic identifiers (column names), use psycopg2.sql.Identifier — never string-concat"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "pattern-orm-search-fetch-v17",
+    "intent_keywords": ["search_fetch", "search", "read", "n+1", "batch"],
+    "file_ref": "addons/sale/models/sale_order.py:912",
+    "snippet_text": "# v17+: search_fetch combines search + read in one DB roundtrip\norders = self.env['sale.order'].search_fetch(\n    [('state', '=', 'sale')],\n    ['name', 'partner_id', 'amount_total'],\n)\nfor order in orders:\n    # No additional SELECT — fields already prefetched\n    print(order.name, order.partner_id.name)",
+    "gotchas": [
+      "search_fetch eagerly loads given fields — saves N+1 vs search()+read() pattern",
+      "Don't pass relational fields directly: pass m2o name first, then `.partner_id.name` triggers ONE batch SELECT",
+      "v16- doesn't have search_fetch — use search().read([fields]) but accept slight overhead"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "ondelete-restrict-cascade",
+    "intent_keywords": ["ondelete", "many2one", "restrict", "cascade", "set null"],
+    "file_ref": "addons/sale/models/sale_order_line.py:48",
+    "snippet_text": "# Foreign-key delete behavior — choose deliberately:\norder_id = fields.Many2one('sale.order', ondelete='cascade', required=True)\nproduct_id = fields.Many2one('product.product', ondelete='restrict')\nsalesman_id = fields.Many2one('res.users', ondelete='set null')",
+    "gotchas": [
+      "Default ondelete='set null' — silent data loss on parent delete unless required=True",
+      "ondelete='cascade' is irreversible at DB level — use sparingly + only for child-of-aggregate rels",
+      "ondelete='restrict' forces user to delete children first — better default for shared masters"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "tree-list-tag-v18",
+    "intent_keywords": ["tree", "list", "tag", "view", "v18", "rename"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:165",
+    "snippet_text": "<!-- v17 and earlier: -->\n<tree string=\"Sales Orders\">\n    <field name=\"name\"/>\n</tree>\n\n<!-- v18+: -->\n<list string=\"Sales Orders\">\n    <field name=\"name\"/>\n</list>",
+    "gotchas": [
+      "<tree> tag renamed to <list> in v18 — silently ignored by v18 parser if you keep <tree>",
+      "view_type='list' field on ir.ui.view also valid in v18; v17 still says 'tree'",
+      "Migrate XML: sed -i 's/<tree/<list/g; s/<\\/tree>/<\\/list>/g' on the xml dir"
+    ],
+    "odoo_version_min": "18.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "qweb-t-out-not-t-esc",
+    "intent_keywords": ["qweb", "t-out", "t-esc", "v17", "rename"],
+    "file_ref": "addons/portal/views/portal_templates.xml:128",
+    "snippet_text": "<!-- v16 and earlier (deprecated): -->\n<span t-esc=\"order.amount_total\"/>\n\n<!-- v17+: -->\n<span t-out=\"order.amount_total\"/>",
+    "gotchas": [
+      "t-esc renamed to t-out in v17 — t-esc still works as alias but flagged by ESLint odoo rule",
+      "t-raw removed in v17 — use t-out + safe filter explicitly if you need unescaped HTML",
+      "t-out auto-escapes; pass t-options='{'widget': 'monetary'}' for currency-aware rendering"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "constrains-decorator-validation",
+    "intent_keywords": ["constrains", "validation", "ValidationError", "api"],
+    "file_ref": "addons/account/models/account_move.py:825",
+    "snippet_text": "from odoo.exceptions import ValidationError\n\n@api.constrains('amount_total', 'amount_paid')\ndef _check_amount_paid(self):\n    for rec in self:\n        if rec.amount_paid > rec.amount_total:\n            raise ValidationError(_('Paid amount cannot exceed total amount.'))",
+    "gotchas": [
+      "@api.constrains validates AFTER write/create — raises ValidationError to roll back",
+      "Use ValidationError (user-facing) — never raise UserError or generic Exception",
+      "Pass tuple of field names — wildcards/dotted-paths NOT supported (compute on-the-fly inside method)"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "onchange-vs-compute",
+    "intent_keywords": ["onchange", "compute", "form", "ui", "depends"],
+    "file_ref": "addons/sale/models/sale_order.py:445",
+    "snippet_text": "# UI-only reaction (form view), data not persisted from onchange:\n@api.onchange('partner_id')\ndef _onchange_partner_id(self):\n    if self.partner_id:\n        self.payment_term_id = self.partner_id.property_payment_term_id\n\n# Persistent recompute (works for create + write + import):\n@api.depends('partner_id')\ndef _compute_payment_term_id(self):\n    for rec in self:\n        rec.payment_term_id = rec.partner_id.property_payment_term_id",
+    "gotchas": [
+      "@api.onchange runs ONLY in form view — NOT during ORM create/write/import — data inconsistency risk",
+      "Prefer @api.depends compute fields — applies everywhere (UI, API, scheduled actions, import)",
+      "Use onchange for UX hints (warning dialog, dynamic domain) — use compute for invariants"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.onchange", "odoo.api.depends"]
+  },
+  {
+    "pattern_id": "state-machine-action-method",
+    "intent_keywords": ["state", "machine", "action", "transition", "guard"],
+    "file_ref": "addons/sale/models/sale_order.py:467",
+    "snippet_text": "def action_confirm(self):\n    if any(o.state not in ('draft', 'sent') for o in self):\n        raise UserError(_('Only draft/sent orders can be confirmed.'))\n    self.write({\n        'state': 'sale',\n        'date_order': fields.Datetime.now(),\n    })\n    return True",
+    "gotchas": [
+      "Guard the transition first (state check) — never assume button-click guarantees correct state",
+      "Bulk write (single self.write) is faster than per-record loop for state changes",
+      "Return True (or action_window dict) — UI uses return value to refresh / open next view"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "tree-decoration-v18-list",
+    "intent_keywords": ["decoration", "tree", "list", "color", "view"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:178",
+    "snippet_text": "<list decoration-success=\"state == 'sale'\"\n      decoration-warning=\"state == 'sent'\"\n      decoration-muted=\"state == 'cancel'\">\n    <field name=\"name\"/>\n    <field name=\"state\"/>\n</list>",
+    "gotchas": [
+      "decoration-* expression uses CURRENT record's fields — `state == 'sale'` not array form",
+      "Available classes: success/warning/danger/muted/info/primary — NO custom CSS hex codes",
+      "v18: tag is <list>, attribute name unchanged. v17 and below: <tree decoration-*>"
+    ],
+    "odoo_version_min": "18.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "view-arch-no-mixed-modes",
+    "intent_keywords": ["view", "arch", "primary", "extension", "inherit"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:42",
+    "snippet_text": "<!-- PRIMARY view (mode='primary' implicit when no inherit_id): -->\n<record id=\"view_order_form\" model=\"ir.ui.view\">\n    <field name=\"model\">sale.order</field>\n    <field name=\"arch\" type=\"xml\">\n        <form>...</form>\n    </field>\n</record>\n\n<!-- EXTENSION view: -->\n<record id=\"view_order_form_inherit\" model=\"ir.ui.view\">\n    <field name=\"inherit_id\" ref=\"sale.view_order_form\"/>\n    <field name=\"arch\" type=\"xml\">\n        <xpath ...>...</xpath>\n    </field>\n</record>",
+    "gotchas": [
+      "Don't mix <form> root + <xpath> children in same arch — extension views start from <xpath> ONLY",
+      "mode='primary' (default for inherit_id=null) replaces the view; mode='extension' merges into base",
+      "ref= path: 'module.xmlid' — same module can use just 'xmlid' but be explicit for cross-module refs"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-private-attr-v19",
+    "intent_keywords": ["owl", "@api.private", "v19", "decorator", "method"],
+    "file_ref": "addons/web/static/src/views/list/list_renderer.js:142",
+    "snippet_text": "import { Component } from \"@odoo/owl\";\n\nclass MyView extends Component {\n    setup() { ... }\n\n    @api.private  // v19+ — marks method NOT exposed via JSON-RPC\n    _internal_helper() {\n        return this.state.data.length;\n    }\n}",
+    "gotchas": [
+      "@api.private decorator added in v19 — marks method as not exposed over web RPC",
+      "Underscore-prefix _name is convention but NOT enforced by RPC layer; @api.private is hard guard",
+      "Only ORM models use @api.private effectively — OWL component methods don't need it"
+    ],
+    "odoo_version_min": "19.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "fields-translate-true",
+    "intent_keywords": ["translate", "fields.Char", "translatable", "i18n"],
+    "file_ref": "addons/sale/models/sale_order.py:128",
+    "snippet_text": "name = fields.Char(string='Reference', required=True, translate=False)\ndescription = fields.Html('Description', translate=True)\n# translate=True stores translations in jsonb column (v17+) or ir.translation (v16-)",
+    "gotchas": [
+      "translate=True is forever — once set, downgrading translate=False loses all translations",
+      "v17+: translations stored as jsonb in same column; v16-: separate ir.translation rows",
+      "Don't put translate=True on Char that holds technical reference (codes, IDs) — bloats DB"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "selection-extend-callable",
+    "intent_keywords": ["selection", "callable", "dynamic", "function"],
+    "file_ref": "addons/account/models/res_company.py:82",
+    "snippet_text": "def _get_country_selection(self):\n    return [(c.code, c.name) for c in self.env['res.country'].search([])]\n\ncountry_code = fields.Selection(selection=_get_country_selection, string='Country')",
+    "gotchas": [
+      "Callable selection is recomputed PER CALL — cache result if expensive",
+      "selection=fn must accept self — recordset method, not @api.model",
+      "Combining selection_add= with callable parent base does NOT work — pick one"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "company-dependent-field",
+    "intent_keywords": ["company_dependent", "multi-company", "ir.property"],
+    "file_ref": "addons/account/models/res_partner.py:123",
+    "snippet_text": "credit_limit = fields.Float(\n    string='Credit Limit',\n    company_dependent=True,\n    digits='Account',\n    groups='account.group_account_user',\n)",
+    "gotchas": [
+      "company_dependent=True stores per-company values via ir.property — same record can have N values",
+      "Reads in env.company context only — switch via with_company() for cross-company analysis",
+      "Don't mix company_dependent with required=True — Odoo raises (no global default possible)"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "groups-attribute-field-acl",
+    "intent_keywords": ["groups", "field", "acl", "permission", "view"],
+    "file_ref": "addons/account/models/account_move.py:215",
+    "snippet_text": "amount_residual = fields.Monetary(\n    string='Amount Due',\n    compute='_compute_amount',\n    store=True,\n    groups='account.group_account_invoice,account.group_account_readonly',\n)",
+    "gotchas": [
+      "groups= attribute hides field at FIELD LEVEL — record rules still apply on top",
+      "Comma-separated xmlids — ANY group satisfies (OR). For AND, use multiple field declarations",
+      "Hidden field not transmitted to client — won't appear in form view even without xpath modification"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "log-not-print",
+    "intent_keywords": ["logging", "print", "logger", "log"],
+    "file_ref": "addons/web/__init__.py:5",
+    "snippet_text": "import logging\n_logger = logging.getLogger(__name__)\n\n# Inside method:\n_logger.info('Order %s confirmed by user %s', order.name, user.login)\n_logger.warning('Slow query took %.2fs', elapsed)",
+    "gotchas": [
+      "Never `print()` in addons — bypasses Odoo log level filters + JSON log format",
+      "Use lazy %s formatting — _logger.info('%s', x) NOT _logger.info(f'{x}') (perf when log level filtered)",
+      "Log level: debug/info/warning/error/critical — match severity to operational need"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "default-for-field-callable",
+    "intent_keywords": ["default", "callable", "field", "context", "lambda"],
+    "file_ref": "addons/sale/models/sale_order.py:115",
+    "snippet_text": "user_id = fields.Many2one(\n    'res.users',\n    default=lambda self: self.env.user,\n)\ndate_order = fields.Datetime(default=fields.Datetime.now)\ncompany_id = fields.Many2one(\n    'res.company',\n    default=lambda self: self.env.company,\n    required=True,\n)",
+    "gotchas": [
+      "Callable default receives `self` — use lambda or method reference, NOT bare call like `self.env.user`",
+      "fields.Datetime.now is class-method ref (no parens) — `now()` would evaluate at module import",
+      "Default lambdas are evaluated PER create call — no caching, no closure over outer scope"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "cron-deferred-task",
+    "intent_keywords": ["cron", "ir.cron", "scheduled", "deferred"],
+    "file_ref": "addons/mail/data/mail_data.xml:42",
+    "snippet_text": "<record id=\"ir_cron_mail_scheduler\" model=\"ir.cron\">\n    <field name=\"name\">Mail: Send/Receive</field>\n    <field name=\"model_id\" ref=\"model_mail_mail\"/>\n    <field name=\"state\">code</field>\n    <field name=\"code\">model.process_email_queue()</field>\n    <field name=\"interval_type\">minutes</field>\n    <field name=\"interval_number\">1</field>\n</record>",
+    "gotchas": [
+      "Cron `code` runs in batch — wrap heavy work in self.env.cr.savepoint() to limit damage on partial failure",
+      "interval_type/number combined determines next-run; v17+ also accepts cron expressions in `nextcall`",
+      "Long-running cron blocks worker — split into chunks + commit periodically (cr.commit()) to avoid timeout"
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-component-state-vs-props",
+    "intent_keywords": ["owl", "state", "props", "useState", "reactive"],
+    "file_ref": "addons/web/static/src/views/form/form_renderer.js:54",
+    "snippet_text": "import { Component, useState } from \"@odoo/owl\";\n\nclass MyComp extends Component {\n    static props = { record: Object };\n    setup() {\n        this.state = useState({ count: 0 });\n    }\n    onClick() {\n        this.state.count++;  // reactive — triggers re-render\n    }\n}",
+    "gotchas": [
+      "Props are READ-ONLY — never mutate this.props.X (silently ignored, breaks tests)",
+      "useState returns proxy — must wrap object literal in useState({...}); plain class field is NOT reactive",
+      "Computed values from props: use getter `get total() { return this.props.x * 2 }` — re-runs on prop change"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-services-injection",
+    "intent_keywords": ["owl", "useService", "service", "injection", "rpc"],
+    "file_ref": "addons/web/static/src/core/orm_service.js:88",
+    "snippet_text": "import { useService } from \"@web/core/utils/hooks\";\n\nclass MyComponent extends Component {\n    setup() {\n        this.orm = useService(\"orm\");\n        this.notification = useService(\"notification\");\n    }\n    async loadData() {\n        const records = await this.orm.searchRead(\"sale.order\", [], [\"name\"]);\n        return records;\n    }\n}",
+    "gotchas": [
+      "useService MUST be called in setup() — hook order matters, never inside async fn or conditional",
+      "orm.searchRead replaces deprecated this.rpc(/web/dataset/search_read) — same payload",
+      "Don't import orm directly from a module — useService is required for proper teardown / mock"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "js",
+    "core_symbol_names": []
+  }
+]
