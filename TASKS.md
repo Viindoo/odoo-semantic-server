@@ -86,6 +86,40 @@
 - [x] `src/indexer/writer_neo4j.py`: JSPatch + OWLComponent nodes + PATCHES edges
 - [x] `src/mcp/server.py`: `impact_analysis` + risk_level scoring
 
+## Milestone 4.5 — "Spec Wow"
+**Intent:** Index Odoo upstream specs (API lifecycle, lint rules, CLI flags) + unblock Odoo v8/v9 codebase support (hiện đang silent-skip).
+**Outcome:** `lookup_core_api("name_get", "18.0")` → `status: removed`; `cli_help("server", "--longpolling-port", "18.0")` → `status: removed, replacement: --gevent-port`; `find_deprecated_usage("19.0")` quét code user upgrade chuẩn bị; clone Odoo 8 → indexer không silent-skip.
+
+- [ ] WI0: ADR-0002 spec schema policy review + accept
+- [ ] WI1: Phase 0 v8/v9 enablement (`registry.py` ManifestFinder Protocol, `parser_python.py` era-aware text-regex, `mcp/server.py` `_latest_version()` numeric compare fix)
+- [ ] WI2: `parser_odoo_core.py` + `diff_engine.py` + CoreSymbol nodes (allow-list 8 file core)
+- [ ] WI3: `parser_lint_rules.py` + LintRule nodes (code-extract v17-v19, static placeholder v8-v16)
+- [ ] WI4: `parser_cli.py` + CLICommand/CLIFlag nodes
+- [ ] WI5: 5 MCP tool (`lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`)
+- [ ] WI6: USES_CORE_SYMBOL edge từ user code (extend `parser_python.py` AST visit, V0 scope: deprecated/removed only)
+- [ ] WI7: Tests + snapshots + integration
+- [ ] WI8: Docs update (TASKS.md, README.md, kien-truc.md, CLAUDE.md)
+
+> Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md)  
+> ADR: [`docs/adr/0002-spec-schema-policy.md`](docs/adr/0002-spec-schema-policy.md)
+
+## Milestone 4.6 — "Pattern Wow"
+**Intent:** Curated patterns + override convention metadata để AI viết code đúng idiom Odoo + Viindoo, chống hallucinate Odoo Enterprise module trên stack Community/Viindoo.
+**Outcome:** `suggest_pattern("computed field cross-model partner_id")` → 3-5 ví dụ thật từ Odoo CE + gotchas ranked; `check_module_exists("knowledge", "17.0")` → `is_ee_confusion: Yes` + warning + Viindoo equivalent (nếu có); `find_override_point("sale.order", "action_confirm", "17.0")` → `super_safety: always`, `super_ratio: 7/7`, anti-patterns list.
+
+- [ ] WI0: ADR-0003 pattern storage policy review + accept
+- [ ] WI1: Module enrichment (`edition` ∈ {community/enterprise/viindoo/oca/custom} + `viindoo_equivalent_qname` + `EE_CONFUSION` dict 16 entry)
+- [ ] WI2: Method enrichment (`convention_kind` + `super_safety` + `return_required` từ method name regex map)
+- [ ] WI3: PatternExample Neo4j node + reuse `embeddings` table với `chunk_type='pattern_example'` (per ADR-0003)
+- [ ] WI4: Pattern seed ~50 entry curation (`src/data/patterns.json`) + `seed_patterns.py` one-shot CLI
+- [ ] WI5: 3 MCP tool (`suggest_pattern`, `check_module_exists`, `find_override_point`)
+- [ ] WI6: Tests + snapshots
+- [ ] WI7: Docs update (TASKS.md, README.md, kien-truc.md)
+
+> Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md)  
+> ADR: [`docs/adr/0003-pattern-example-storage.md`](docs/adr/0003-pattern-example-storage.md)  
+> Depends on: M4.5 (CoreSymbol node cho USES_CORE_SYMBOL edge — graceful skip nếu chưa ship)
+
 ## Milestone 5 — "Product Wow"
 **Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.
 **Outcome:** `docker compose up -d` + Web UI add repos + auto-clone qua SSH key + index. Production-ready: health monitoring + data integrity baseline.
