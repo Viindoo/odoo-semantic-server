@@ -74,19 +74,49 @@ def _get_embedder():
     return _embedder_instance
 
 
-def _latest_version(session) -> str:
+def _latest_version(session) -> str | None:
+    """Return the latest Odoo version present in the index, by NUMERIC compare.
+
+    Filters:
+      - excludes 'unknown' and any non-semver-shaped string (must match `\\d+\\.\\d+`)
+      - sorts by `toInteger(split(v,'.')[0])` then minor — handles 9.0 < 17.0 correctly
+        (lexicographic compare would put '9.0' > '17.0', a Neo4j 5.x gotcha — see
+        project CLAUDE.md).
+
+    Returns None when no indexed data exists (no hardcoded fallback). Callers
+    should surface a clear error instructing the user to run the indexer.
+    """
     rec = session.run("""
         MATCH (m:Module)
         WITH DISTINCT m.odoo_version AS v
-        RETURN v ORDER BY toFloat(v) DESC LIMIT 1
+        WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
+        RETURN v
+        ORDER BY toInteger(split(v, '.')[0]) DESC,
+                 toInteger(split(v, '.')[1]) DESC
+        LIMIT 1
     """).single()
-    return rec["v"] if rec else "17.0"
+    return rec["v"] if rec else None
+
+
+def _resolve_version(version_arg: str, session) -> str:
+    """Translate a user-facing version arg ('auto' or explicit) into a concrete version.
+
+    Raises ValueError when 'auto' is requested but the index is empty.
+    Explicit versions pass through unchanged.
+    """
+    if version_arg != "auto":
+        return version_arg
+    v = _latest_version(session)
+    if v is None:
+        raise ValueError(
+            "No data indexed. Run `python -m src.indexer --profile <name>` first."
+        )
+    return v
 
 
 def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
-        if odoo_version == "auto":
-            odoo_version = _latest_version(session)
+        odoo_version = _resolve_version(odoo_version, session)
 
         layers = session.run("""
             MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
@@ -137,8 +167,7 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
 
 def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
-        if odoo_version == "auto":
-            odoo_version = _latest_version(session)
+        odoo_version = _resolve_version(odoo_version, session)
 
         records = session.run("""
             MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
@@ -174,8 +203,7 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
 
 def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
-        if odoo_version == "auto":
-            odoo_version = _latest_version(session)
+        odoo_version = _resolve_version(odoo_version, session)
 
         records = session.run("""
             MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
@@ -204,8 +232,7 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
 
 def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
-        if odoo_version == "auto":
-            odoo_version = _latest_version(session)
+        odoo_version = _resolve_version(odoo_version, session)
 
         view_rec = session.run("""
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
@@ -299,7 +326,7 @@ def _find_examples(
 
     with driver.session() as session:
         if odoo_version in ("auto", "latest"):
-            odoo_version = _latest_version(session)
+            odoo_version = _resolve_version("auto", session)
 
     try:
         query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + query])[0]
@@ -565,8 +592,7 @@ def _impact_analysis(
         )
 
     with _get_driver().session() as session:
-        if odoo_version == "auto":
-            odoo_version = _latest_version(session)
+        odoo_version = _resolve_version(odoo_version, session)
 
         # ------------------------------------------------------------------ #
         # Parse entity_name per entity_type                                   #
