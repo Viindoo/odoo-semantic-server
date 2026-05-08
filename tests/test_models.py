@@ -162,3 +162,21 @@ def test_js_graph_result_empty_lists():
     assert result.module == module
     assert result.patches == []
     assert result.components == []
+
+
+def test_core_symbol_info_defaults():
+    """CoreSymbolInfo (M4.5 WI2.1) — required fields + defaults."""
+    from src.indexer.models import CoreSymbolInfo
+    cs = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval",
+        kind="function",
+        odoo_version="18.0",
+    )
+    assert cs.qualified_name == "odoo.tools.safe_eval"
+    assert cs.kind == "function"
+    assert cs.odoo_version == "18.0"
+    assert cs.signature is None
+    assert cs.file_path is None
+    assert cs.line is None
+    assert cs.status == "stable"
+    assert cs.replacement_qname is None
