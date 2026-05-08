@@ -308,6 +308,32 @@ def _find_previous_indexed_version(
     return max(candidates, key=_ver_key)
 
 
+def _read_spec_curate_status(
+    file_prefix: str, odoo_version: str, static_data_dir: str | None,
+) -> str:
+    """Read `_curate_status` from a static spec JSON file, defaulting to 'pending'.
+
+    File pattern: `<static_data_dir>/<file_prefix>_<odoo_version>.json`.
+    If file missing or field absent → returns 'pending' (safe default).
+    """
+    import json
+    from pathlib import Path as _Path
+
+    # Import here to avoid circular imports; mirrors _load_static_* pattern.
+    if static_data_dir:
+        spec_dir = _Path(static_data_dir)
+    else:
+        spec_dir = _Path(__file__).parent / "spec_data"
+    spec_path = spec_dir / f"{file_prefix}_{odoo_version}.json"
+    if not spec_path.is_file():
+        return "pending"
+    try:
+        data = json.loads(spec_path.read_text(encoding="utf-8"))
+        return data.get("_curate_status", "pending")
+    except (OSError, json.JSONDecodeError):
+        return "pending"
+
+
 def index_core(
     source_root: str,
     odoo_version: str,
@@ -355,6 +381,12 @@ def index_core(
     )
     writer.write_lint_rules(rules)
     _logger.info("index_core: wrote %d LintRule nodes", len(rules))
+    lint_curate_status = _read_spec_curate_status(
+        "lint_rules", odoo_version, static_data_dir,
+    )
+    writer.write_spec_metadata(
+        kind="lint", odoo_version=odoo_version, curate_status=lint_curate_status,
+    )
 
     # 3. CLICommand
     commands = parse_cli_commands(source_root, odoo_version)
@@ -365,6 +397,12 @@ def index_core(
     flags = parse_cli_flags(source_root, odoo_version, static_data_dir=static_data_dir)
     writer.write_cli_flags(flags)
     _logger.info("index_core: wrote %d CLIFlag nodes", len(flags))
+    cli_curate_status = _read_spec_curate_status(
+        "cli_flags", odoo_version, static_data_dir,
+    )
+    writer.write_spec_metadata(
+        kind="cli", odoo_version=odoo_version, curate_status=cli_curate_status,
+    )
 
     # 5. Lifecycle diff vs previous indexed version
     previous_version = _find_previous_indexed_version(odoo_version, writer)

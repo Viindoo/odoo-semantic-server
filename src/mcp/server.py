@@ -1125,8 +1125,18 @@ def _lint_check(
                    l.message AS message,
                    l.kind AS kind
         """, v=odoo_version, kp=kind_prefix).data()
+        curate_rec = session.run("""
+            MATCH (sm:SpecMetadata {kind: 'lint', odoo_version: $v})
+            RETURN sm.curate_status AS curate_status
+        """, v=odoo_version).single()
+        curate_status = curate_rec["curate_status"] if curate_rec else None
     violations = [r for r in rules if _match_lint_rule(code, r)]
-    return _format_lint_check(violations, odoo_version, code)
+    result = _format_lint_check(violations, odoo_version, code)
+    if curate_status == "pending":
+        result = (
+            f"ℹ Spec data v{odoo_version} pending curation — limited results.\n" + result
+        )
+    return result
 
 
 @mcp.tool()
@@ -1235,6 +1245,13 @@ def _cli_help(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
+        # Query SpecMetadata curation status for CLI at this version.
+        curate_rec = session.run("""
+            MATCH (sm:SpecMetadata {kind: 'cli', odoo_version: $v})
+            RETURN sm.curate_status AS curate_status
+        """, v=odoo_version).single()
+        curate_status = curate_rec["curate_status"] if curate_rec else None
+
         if command and flag:
             rec = session.run("""
                 MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd, odoo_version: $v})
@@ -1248,20 +1265,28 @@ def _cli_help(
                        repl.flag_name AS replacement
             """, flag=flag, cmd=command, v=odoo_version).single()
             if rec is None:
-                return (
+                result = (
                     f"cli_help({command!r}, {flag!r}, Odoo {odoo_version})\n"
                     f"└─ flag {flag!r} not found on command {command!r}"
                 )
-            data = dict(rec)
-            replacement = data.pop("replacement", None)
-            # Fallback: replacement_flag_name property when no REPLACED_BY edge.
-            if not replacement:
-                fallback = session.run("""
-                    MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd, odoo_version: $v})
-                    RETURN f.replacement_flag_name AS r
-                """, flag=flag, cmd=command, v=odoo_version).single()
-                replacement = fallback["r"] if fallback else None
-            return _format_cli_flag_detail(data, replacement, odoo_version)
+            else:
+                data = dict(rec)
+                replacement = data.pop("replacement", None)
+                # Fallback: replacement_flag_name property when no REPLACED_BY edge.
+                if not replacement:
+                    fallback = session.run("""
+                        MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd,
+                                          odoo_version: $v})
+                        RETURN f.replacement_flag_name AS r
+                    """, flag=flag, cmd=command, v=odoo_version).single()
+                    replacement = fallback["r"] if fallback else None
+                result = _format_cli_flag_detail(data, replacement, odoo_version)
+            if curate_status == "pending":
+                result = (
+                    f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
+                    + result
+                )
+            return result
 
         if command:
             cmd_rec = session.run("""
@@ -1269,16 +1294,23 @@ def _cli_help(
                 RETURN c.name AS name, c.description AS description
             """, cmd=command, v=odoo_version).single()
             if cmd_rec is None:
-                return (
+                result = (
                     f"cli_help({command!r}, Odoo {odoo_version})\n"
                     f"└─ command {command!r} not found"
                 )
-            flags = session.run("""
-                MATCH (f:CLIFlag {command_name: $cmd, odoo_version: $v})
-                RETURN f.flag_name AS flag_name, f.status AS status
-                ORDER BY f.flag_name
-            """, cmd=command, v=odoo_version).data()
-            return _format_cli_command_summary(dict(cmd_rec), flags, odoo_version)
+            else:
+                flags = session.run("""
+                    MATCH (f:CLIFlag {command_name: $cmd, odoo_version: $v})
+                    RETURN f.flag_name AS flag_name, f.status AS status
+                    ORDER BY f.flag_name
+                """, cmd=command, v=odoo_version).data()
+                result = _format_cli_command_summary(dict(cmd_rec), flags, odoo_version)
+            if curate_status == "pending":
+                result = (
+                    f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
+                    + result
+                )
+            return result
 
         # No command — list all CLI commands at this version.
         cmds = session.run("""
@@ -1287,16 +1319,27 @@ def _cli_help(
             ORDER BY c.name
         """, v=odoo_version).data()
     if not cmds:
-        return (
+        result = (
             f"cli_help(Odoo {odoo_version})\n"
             f"└─ no CLI commands indexed for this version"
         )
+        if curate_status == "pending":
+            result = (
+                f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
+                + result
+            )
+        return result
     lines = [f"cli_help(Odoo {odoo_version}) — {len(cmds)} commands"]
     last_idx = len(cmds) - 1
     for i, c in enumerate(cmds):
         connector = "└─" if i == last_idx else "├─"
         lines.append(f"{connector} {c['name']}")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    if curate_status == "pending":
+        result = (
+            f"ℹ Spec data v{odoo_version} pending curation — limited results.\n" + result
+        )
+    return result
 
 
 @mcp.tool()
