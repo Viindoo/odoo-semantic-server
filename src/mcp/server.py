@@ -975,6 +975,174 @@ def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     return _lookup_core_api(name, odoo_version)
 
 
+def _format_deprecated_usage(records: list[dict], version: str) -> str:
+    header = f"find_deprecated_usage(Odoo {version}) — {len(records)} hits"
+    if not records:
+        return header + "\n└─ no deprecated usage found in indexed code"
+    lines = [header]
+    last_idx = len(records) - 1
+    for i, r in enumerate(records):
+        connector = "└─" if i == last_idx else "├─"
+        loc = f"[{r['module']}] {r['model']}.{r['method']}"
+        sym = r["deprecated_symbol"]
+        status = r["status"]
+        repl = r.get("replacement") or "(no replacement set)"
+        lines.append(f"{connector} {loc}")
+        lines.append(
+            f"   ├─ uses: {sym} (status={status})"
+        )
+        lines.append(f"   └─ replacement: {repl}")
+    return "\n".join(lines)
+
+
+def _find_deprecated_usage(
+    odoo_version: str = "auto", kind: str | None = None,
+) -> str:
+    """Quét user code dùng CoreSymbol có status deprecated/removed."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+        cypher = """
+            MATCH (mth:Method {odoo_version: $v})-[:USES_CORE_SYMBOL]->(cs:CoreSymbol)
+            WHERE cs.status IN ['deprecated', 'removed']
+        """
+        params: dict = {"v": odoo_version}
+        if kind:
+            cypher += " AND cs.kind = $kind"
+            params["kind"] = kind
+        cypher += """
+            RETURN mth.module AS module, mth.model AS model, mth.name AS method,
+                   cs.qualified_name AS deprecated_symbol,
+                   cs.status AS status,
+                   cs.replacement_qname AS replacement
+            ORDER BY mth.module, mth.model, mth.name
+        """
+        records = session.run(cypher, **params).data()
+    return _format_deprecated_usage(records, odoo_version)
+
+
+_VALID_LINT_LANGUAGES = {"python", "javascript", "xml"}
+
+
+def _format_lint_check(
+    violations: list[dict], version: str, code: str,
+) -> str:
+    header = f"lint_check(Odoo {version}, language=python) — {len(violations)} violations"
+    code_preview = (code or "")[:60].replace("\n", " ")
+    lines = [header, f"├─ Code: {code_preview!r}"]
+    if not violations:
+        lines.append("└─ no violations")
+        return "\n".join(lines)
+    last_idx = len(violations) - 1
+    for i, r in enumerate(violations):
+        connector = "└─" if i == last_idx else "├─"
+        rule_id = r.get("rule_id") or "?"
+        sev = r.get("severity") or "warning"
+        msg = (r.get("message") or "").strip()
+        lines.append(f"{connector} {rule_id} ({sev}): {msg}")
+    return "\n".join(lines)
+
+
+def _match_lint_rule(code: str, rule: dict) -> bool:
+    """V0 lint match: case-insensitive substring on rule.message keyword tokens.
+
+    Each rule's message is split into significant words (>3 chars, not stop-word).
+    A rule fires if at least one significant word appears in the code.
+    """
+    msg = (rule.get("message") or "").lower()
+    if not msg:
+        return False
+    code_lc = (code or "").lower()
+    # Tokenize on non-alpha boundaries.
+    tokens = [t for t in __import__("re").split(r"[^a-z_]+", msg) if len(t) > 3]
+    stopwords = {
+        "with", "from", "this", "that", "have", "must", "should", "must",
+        "function", "usage", "literal", "string", "alias", "option",
+    }
+    significant = [t for t in tokens if t not in stopwords]
+    return any(t in code_lc for t in significant)
+
+
+def _lint_check(
+    code: str, odoo_version: str = "auto", language: str = "python",
+) -> str:
+    """Pattern-match user code against indexed LintRule.message (V0)."""
+    if language not in _VALID_LINT_LANGUAGES:
+        valid = ", ".join(sorted(_VALID_LINT_LANGUAGES))
+        return (
+            f"lint_check: invalid language {language!r}. "
+            f"Valid options: {valid}."
+        )
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+        kind_prefix = (
+            "pylint" if language == "python"
+            else "eslint" if language == "javascript"
+            else "static-xml"
+        )
+        rules = session.run("""
+            MATCH (l:LintRule {odoo_version: $v})
+            WHERE l.kind STARTS WITH $kp
+            RETURN l.rule_id AS rule_id,
+                   l.severity AS severity,
+                   l.message AS message,
+                   l.kind AS kind
+        """, v=odoo_version, kp=kind_prefix).data()
+    violations = [r for r in rules if _match_lint_rule(code, r)]
+    return _format_lint_check(violations, odoo_version, code)
+
+
+@mcp.tool()
+def find_deprecated_usage(
+    odoo_version: str = "auto", kind: str | None = None,
+) -> str:
+    """List indexed user methods that call deprecated/removed Odoo core APIs.
+
+    Args:
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
+        kind: Optional filter — restrict to one CoreSymbol.kind
+              (e.g. 'orm_method', 'function').
+
+    Returns:
+        Tree-formatted text grouped by module → model.method → core symbol →
+        replacement. Use BEFORE upgrading a Viindoo addon to a new Odoo
+        version to plan code changes.
+
+    Example:
+        find_deprecated_usage("18.0")
+        → find_deprecated_usage(Odoo 18.0) — 12 hits
+          ├─ [viin_sale] sale.order.legacy_label
+          │    ├─ uses: odoo.models.BaseModel.name_get (status=deprecated)
+          │    └─ replacement: odoo.models.BaseModel.display_name
+          └─ ...
+    """
+    return _find_deprecated_usage(odoo_version, kind=kind)
+
+
+@mcp.tool()
+def lint_check(
+    code: str, odoo_version: str = "auto", language: str = "python",
+) -> str:
+    """Quick lint check of a code snippet against indexed Odoo lint rules (V0).
+
+    Args:
+        code: Source code chunk to check.
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
+        language: 'python' | 'javascript' | 'xml'.
+
+    Returns:
+        Tree-formatted text listing matched rules (rule_id, severity, message).
+        V0 matcher is substring-on-rule-message — fast but fuzzy. Use as a
+        first-pass screen, NOT as authoritative pylint/ruff/eslint output.
+
+    Example:
+        lint_check("raise UserError('Hello %s' % name)", "19.0", "python")
+        → lint_check(Odoo 19.0, language=python) — 1 violations
+          ├─ Code: \"raise UserError('Hello %s' % name)\"
+          └─ E8502 (error): Bad usage of _, _lt function...
+    """
+    return _lint_check(code, odoo_version, language)
+
+
 @mcp.tool()
 def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     """Diff a single Odoo core API symbol between two indexed versions.
