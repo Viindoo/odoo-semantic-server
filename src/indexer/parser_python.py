@@ -50,6 +50,21 @@ def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
                                                                        → record 'safe_eval'
     Only names in `_DEPRECATED_API_SYMBOLS` are surfaced. Order is insertion;
     duplicates are deduplicated to keep the list short.
+
+    V0 false-positive scope (per ADR-0002 §3):
+    - This function emits *candidate* refs — short names like 'name_get' or 'safe_eval'.
+    - The writer side (writer_neo4j.py write_results) creates USES_CORE_SYMBOL edges
+      ONLY when a matching CoreSymbol exists in the DB with status IN ('deprecated',
+      'removed'). This means:
+        1. If CoreSymbol not indexed → silent skip (no ghost node).
+        2. If CoreSymbol exists but status='stable' → skip (V0 scope, noise reduction).
+        3. Method named 'name_get' that is NOT calling the Odoo ORM method (e.g. a
+           local helper named identically) → false-positive. The writer WHERE clause
+           `qualified_name ENDS WITH '.' + $ref` narrows the match but cannot eliminate
+           all false positives from short-name collisions.
+    Full symbol-resolution (qualified_name from import chain tracking) is deferred to
+    M6. V0 provides actionable signal with acceptable false-positive rate for
+    deprecated/removed APIs.
     """
     refs: list[str] = []
     seen: set[str] = set()
