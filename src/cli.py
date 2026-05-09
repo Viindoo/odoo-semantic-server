@@ -21,7 +21,7 @@ def _get_pg_dsn() -> str:
         from src import config
         dsn = config.get("database", "pg_dsn", fallback=None)
         return dsn or ""
-    except Exception:
+    except (ImportError, KeyError, AttributeError):
         return ""
 
 
@@ -70,6 +70,10 @@ def _cmd_restore(args) -> int:
 
 def _cmd_rotate_fernet(args) -> int:
     """Re-encrypt SSH private keys in ssh_key_pairs with a new FERNET_KEY."""
+    if args.old_key == args.new_key:
+        print("ERROR: --old-key and --new-key must differ.", file=sys.stderr)
+        return 1
+
     from cryptography.fernet import Fernet, InvalidToken
 
     try:

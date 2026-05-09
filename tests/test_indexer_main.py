@@ -104,6 +104,57 @@ def test_all_flag_passes_embedder_to_index_all(monkeypatch, tmp_path):
     assert kwargs.get("embedder") is None
 
 
+def test_verbose_flag_sets_info_logging(monkeypatch, tmp_path):
+    """--verbose flag passes logging.INFO to configure_logging (WI-2)."""
+    import logging
+
+    import src.config as config_mod
+
+    cfg = tmp_path / "empty.conf"
+    cfg.write_text("")
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    config_mod._conf = None
+
+    captured_levels = []
+
+    def fake_configure(level=logging.WARNING):
+        captured_levels.append(level)
+
+    with (
+        patch("src.indexer.__main__.open_production_pg") as mock_pg,
+        patch("src.indexer.__main__.index_profile") as mock_ip,
+        patch("src.logging_config.configure_logging", side_effect=fake_configure),
+    ):
+        mock_pg.return_value.close = MagicMock()
+        mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
+        main_mod.main(["index-repo", "--profile", "test_prof", "--verbose"])
+
+    assert captured_levels == [logging.INFO], f"Expected [INFO], got {captured_levels}"
+
+
+def test_verbose_flag_passes_progress_true(monkeypatch, tmp_path):
+    """--verbose flag passes progress=True to index_profile (WI-3)."""
+    import src.config as config_mod
+
+    cfg = tmp_path / "empty.conf"
+    cfg.write_text("")
+    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    config_mod._conf = None
+
+    with (
+        patch("src.indexer.__main__.open_production_pg") as mock_pg,
+        patch("src.indexer.__main__.index_profile") as mock_ip,
+        patch("src.logging_config.configure_logging"),
+    ):
+        mock_pg.return_value.close = MagicMock()
+        mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
+        main_mod.main(["index-repo", "--profile", "test_prof", "--verbose"])
+
+    mock_ip.assert_called_once()
+    _, kwargs = mock_ip.call_args
+    assert kwargs.get("progress") is True, f"Expected progress=True, got {kwargs}"
+
+
 def test_index_core_subcommand_calls_index_core(monkeypatch, tmp_path):
     """index-core subcommand dispatches to _run_index_core with correct args."""
     import src.config as config_mod
