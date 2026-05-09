@@ -1,9 +1,6 @@
 # tests/test_cli.py
 """Unit tests for src.cli — backup, restore, rotate-fernet commands."""
-import os
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.cli import _build_parser, _cmd_backup, _cmd_restore, _cmd_rotate_fernet
 

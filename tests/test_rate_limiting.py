@@ -39,8 +39,6 @@ def test_rate_limit_different_keys_isolated():
 
 def test_rate_limit_window_expiry():
     """Entries older than 60s should be pruned (we fake time via monkeypatching)."""
-    import unittest.mock as mock
-
     _rate_buckets.clear()
     # Pre-fill bucket with old timestamp (61s ago)
     old_ts = time.monotonic() - 61

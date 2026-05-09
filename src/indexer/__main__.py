@@ -116,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    log_level = logging.INFO if (args.subcommand == "index-repo" and getattr(args, "verbose", False)) else logging.WARNING
+    _verbose_mode = args.subcommand == "index-repo" and getattr(args, "verbose", False)
+    log_level = logging.INFO if _verbose_mode else logging.WARNING
     configure_logging(level=log_level)
 
     if args.subcommand == "index-repo":
@@ -127,7 +128,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.all:
                 summary = index_all(pg, embedder=embedder, progress=verbose)
             else:
-                summary = index_profile(pg, profile_name=args.profile, embedder=embedder, progress=verbose)
+                summary = index_profile(
+                    pg, profile_name=args.profile, embedder=embedder, progress=verbose
+                )
             print(f"Done: {summary}")
         finally:
             pg.close()

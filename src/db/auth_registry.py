@@ -143,7 +143,8 @@ def create_feedback(
 
     Args:
         conn: PostgreSQL connection.
-        pattern_node_id: Neo4j node id or pattern_id string (e.g. 'python__write-read-before-super').
+        pattern_node_id: Neo4j node id or pattern_id string
+            (e.g. 'python__write-read-before-super').
         api_key_id: Authenticated API key id (or None for anonymous).
         rating: 'up' or 'down'.
         comment: Optional free-text comment from the user.

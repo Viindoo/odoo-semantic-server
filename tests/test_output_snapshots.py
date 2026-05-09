@@ -839,7 +839,10 @@ class TestResolveViewSnapshots:
         )
         writer.setup_indexes()
         with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=self._VIEW_SNAP_VERSION)
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
 
         sale_mod = ModuleInfo(
             name="sale",
@@ -886,7 +889,10 @@ class TestResolveViewSnapshots:
 
         # Cleanup
         with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=self._VIEW_SNAP_VERSION)
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
 
     def test_resolve_view_extension_with_xpath(self, neo4j_driver):
         """Test 2: extension view (has parent, has xpaths).
@@ -896,7 +902,7 @@ class TestResolveViewSnapshots:
         - "XPath modifications (1):"
         - The xpath expr "//field[@name='partner_id']" with position "before"
         """
-        from src.indexer.models import ModuleInfo, ViewInfo, XPathInfo, ViewParseResult
+        from src.indexer.models import ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
 
         # Setup: seed base view + extension
         writer = Neo4jWriter(
@@ -906,7 +912,10 @@ class TestResolveViewSnapshots:
         )
         writer.setup_indexes()
         with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=self._VIEW_SNAP_VERSION)
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
 
         sale_mod = ModuleInfo(
             name="sale",
@@ -975,7 +984,10 @@ class TestResolveViewSnapshots:
 
         # Cleanup
         with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=self._VIEW_SNAP_VERSION)
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
 
     def test_resolve_view_base_with_extensions(self, neo4j_driver):
         """Test 3: base view with multiple extensions.
@@ -983,7 +995,7 @@ class TestResolveViewSnapshots:
         When querying the BASE view: output contains "Extended by (2 modules):"
         and both extension xmlids appear.
         """
-        from src.indexer.models import ModuleInfo, ViewInfo, XPathInfo, ViewParseResult
+        from src.indexer.models import ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
 
         # Setup: seed base + 2 extensions
         writer = Neo4jWriter(
@@ -993,7 +1005,10 @@ class TestResolveViewSnapshots:
         )
         writer.setup_indexes()
         with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=self._VIEW_SNAP_VERSION)
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
 
         sale_mod = ModuleInfo(
             name="sale",
@@ -1079,5 +1094,8 @@ class TestResolveViewSnapshots:
 
         # Cleanup
         with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=self._VIEW_SNAP_VERSION)
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
 
