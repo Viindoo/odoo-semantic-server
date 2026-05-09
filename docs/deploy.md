@@ -646,3 +646,131 @@ add-model dùng được cho admin đã có Ollama instance từ dự án khác:
 
 Nếu test E2E M1+M2+M4 (không cần `find_examples`), skip section này.
 Indexer chạy với `--no-embed` (xem §3.4) là đủ.
+
+---
+
+## 10. API Key Auth (M5)
+
+MCP server (port 8002) yêu cầu `X-API-Key` header với mọi request trừ `GET /health`.
+
+### Tạo API key đầu tiên
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager create-api-key admin
+# → Prints: osm_xxxxxxxxxxxx...  (shown once — save this)
+```
+
+Key được hash SHA-256 trong DB. Raw key không được lưu lại — nếu mất phải tạo key mới.
+
+### Quản lý key qua Web UI
+
+Hoặc tạo/deactivate key tại http://127.0.0.1:8003/api-keys (xem §11).
+
+### LRU Cache
+
+Server cache kết quả verify trong 5 phút để giảm DB load. Khi deactivate key, cache tự expire sau 5 phút.
+
+### Truyền key cho AI tool
+
+**Claude Code** — thêm vào `~/.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "odoo-semantic": {
+      "url": "https://semantic.viindoo.com/mcp",
+      "headers": { "X-API-Key": "osm_xxxx..." }
+    }
+  }
+}
+```
+
+---
+
+## 11. Web UI Admin (M5)
+
+Web UI quản lý profiles, repos, API keys, SSH keys.
+
+**Port**: 8003  
+**Bind**: `127.0.0.1` only (không expose ra internet — không có auth!)  
+**Access qua**: SSH tunnel hoặc Nginx proxy với IP allowlist
+
+### Khởi động
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
+# → http://127.0.0.1:8003/
+```
+
+Hoặc dùng systemd (xem §5):
+```bash
+sudo systemctl enable odoo-semantic-webui
+sudo systemctl start odoo-semantic-webui
+```
+
+### Nginx proxy (nếu cần truy cập từ xa)
+
+Thêm vào nginx config (chỉ dùng với IP allowlist hoặc VPN):
+```nginx
+location /admin/ {
+    allow 10.0.0.0/8;   # internal only
+    deny all;
+    proxy_pass http://127.0.0.1:8003/;
+}
+```
+
+⚠️ **KHÔNG expose Web UI trực tiếp ra internet** — không có authentication.
+
+---
+
+## 12. SSH Keys (M5)
+
+Web UI có thể generate Ed25519 keypair để clone private Odoo repos.
+
+### Yêu cầu: FERNET_KEY
+
+Private key được encrypt bằng Fernet symmetric encryption. Cần set `FERNET_KEY` trong `.env`:
+
+```bash
+# Generate key (chạy một lần, lưu an toàn):
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Thêm vào .env:
+echo "FERNET_KEY=<output_above>" >> .env
+```
+
+⚠️ **Nếu mất FERNET_KEY**: mọi SSH private key đã lưu sẽ không giải mã được. Backup FERNET_KEY an toàn (e.g. password manager).
+
+### Generate keypair
+
+1. Truy cập http://127.0.0.1:8003/ssh-keys
+2. Nhập tên → Generate
+3. Copy public key → thêm vào GitHub/GitLab Deploy Keys
+4. Private key được lưu encrypted trong DB
+
+---
+
+## 13. Manual Backup (M5)
+
+M5 chưa có automated backup. Backup thủ công:
+
+### Backup PostgreSQL (profiles, repos, API keys, SSH keys)
+
+```bash
+pg_dump -h localhost -U odoo_semantic odoo_semantic > backup_$(date +%Y%m%d).sql
+```
+
+### Backup Neo4j
+
+Dùng Neo4j Browser hoặc cypher-shell:
+```bash
+neo4j-admin database dump neo4j --to-path=/backups/
+```
+
+Hoặc đơn giản hơn: copy thư mục Neo4j data khi service stopped.
+
+### Restore
+
+```bash
+psql -h localhost -U odoo_semantic odoo_semantic < backup_2026XXXX.sql
+```
+
+⚠️ **M6 sẽ thêm**: automated backup script + S3 upload.
