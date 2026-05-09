@@ -186,8 +186,6 @@ class TestReposPage:
     @pytest.mark.asyncio
     async def test_index_repo_uses_profile_name_not_all(self, migrated_pg):
         """I4: index button must dispatch --profile <name>, not --all."""
-        import sys
-
         from src.db.repo_registry import add_profile, add_repo
 
         pid = add_profile(migrated_pg, name="myprofile", odoo_version="17.0")
