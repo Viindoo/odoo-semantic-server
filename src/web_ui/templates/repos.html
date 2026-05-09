@@ -3,6 +3,11 @@
 {% block content %}
 <h1>Repos &amp; Profiles</h1>
 
+{% if flash %}
+<div class="alert" style="background:#fef3c7;border-color:#f59e0b;color:#92400e">
+    ⚠ {{ flash }}
+</div>
+{% endif %}
 {% if error %}
 <div class="alert">{{ error }}</div>
 {% endif %}
