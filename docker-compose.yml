@@ -18,7 +18,13 @@ services:
     volumes:
       - neo4j_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-password} 'RETURN 1' || exit 1"]
+      # Extract password from NEO4J_AUTH ("neo4j/<pw>") inside the container.
+      # Using NEO4J_PASSWORD as a bare env var would be auto-translated by Neo4j's
+      # settings loader (NEO4J_FOO → foo) and rejected by strict_validation.
+      # Without this, the healthcheck loops with the literal "password" fallback,
+      # tripping `dbms.security.auth_max_failed_attempts` and locking out real
+      # clients with `Neo.ClientError.Security.AuthenticationRateLimit`.
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' || exit 1"]
       interval: 10s
       retries: 10
 
