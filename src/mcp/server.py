@@ -4,6 +4,7 @@ import math
 import psycopg2
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
+from starlette.requests import Request
 
 mcp = FastMCP("odoo-semantic")
 _driver = None
@@ -1814,6 +1815,13 @@ def _mcp_host() -> str:
 def _mcp_port() -> int:
     from src import config
     return int(config.get("server", "port", fallback="8002"))
+
+
+# Health endpoint — registered as custom route on MCP app
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request):
+    from src.mcp.health import health_handler
+    return await health_handler(request)
 
 
 if __name__ == "__main__":
