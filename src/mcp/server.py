@@ -136,12 +136,17 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         base = layers[0]
         extensions = layers[1:]
 
+        # DISTINCT on p.name only — the same parent (e.g. mail.thread) is reachable
+        # via multiple INHERITS edges (one per module that declares _inherit), and
+        # each one resolves to a separate (parent_name, module) pair. Without
+        # collapsing here the rendered list shows duplicates like
+        # "mail.thread, mail.thread, mail.thread, ..." (M5 install audit).
         parents = session.run("""
             MATCH (:Model {name: $name, odoo_version: $v})-[r:INHERITS]->(p:Model)
             WHERE p.name <> $name
               AND NOT coalesce(r.unresolved, false)
-            OPTIONAL MATCH (p)-[:DEFINED_IN]->(mod:Module)
-            RETURN DISTINCT p.name AS pname, mod.name AS module_name
+            RETURN DISTINCT p.name AS pname
+            ORDER BY pname
         """, name=model_name, v=odoo_version).data()
 
         fields_count = session.run(
@@ -163,8 +168,10 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
 
     if extensions:
         lines.append("├─ Extended by:")
-        for ext in extensions:
-            lines.append(f"│   └─ [{ext['repo']}] {ext['module_name']}")
+        last_ext = len(extensions) - 1
+        for i, ext in enumerate(extensions):
+            connector = "└─" if i == last_ext else "├─"
+            lines.append(f"│   {connector} [{ext['repo']}] {ext['module_name']}")
 
     lines.append(f"├─ Fields:         {fields_count}")
     lines.append(f"└─ Methods:        {methods_count}")
@@ -226,13 +233,21 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
             f" '{model_name}' in Odoo {odoo_version}."
         )
 
-    lines = [f"{model_name}.{method_name}() (Odoo {odoo_version})", "Override chain:"]
-    for r in records:
+    lines = [
+        f"{model_name}.{method_name}() (Odoo {odoo_version})",
+        f"└─ Override chain ({len(records)}):",
+    ]
+    last_idx = len(records) - 1
+    for i, r in enumerate(records):
         mth = r["mth"]
         super_info = "✓ calls super()" if mth.get("has_super_call") else "✗ no super()"
         decs = ", ".join(mth.get("decorators") or []) or "—"
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
-        lines.append(f"  {repo_str}{r['module_name']} — {super_info} — decorators: {decs}")
+        connector = "└─" if i == last_idx else "├─"
+        lines.append(
+            f"    {connector} {repo_str}{r['module_name']}"
+            f" — {super_info} — decorators: {decs}"
+        )
     return "\n".join(lines)
 
 
