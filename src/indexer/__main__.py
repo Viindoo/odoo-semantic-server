@@ -58,6 +58,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-embed", action="store_true",
         help="Skip embedding step (Neo4j only). Default: embed using [embedder] config.",
     )
+    sub_repo.add_argument(
+        "--verbose", action="store_true", default=False,
+        help="Enable INFO logging and progress bar.",
+    )
 
     # --- index-core subcommand (new in WI-F1) ------------------------------
     sub_core = subparsers.add_parser(
@@ -108,18 +112,22 @@ def _run_index_core(
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # Set logging level based on --verbose flag
+    log_level = logging.INFO if (args.subcommand == "index-repo" and getattr(args, "verbose", False)) else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(message)s")
+
     if args.subcommand == "index-repo":
+        verbose = getattr(args, "verbose", False)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
         try:
             if args.all:
-                summary = index_all(pg, embedder=embedder)
+                summary = index_all(pg, embedder=embedder, progress=verbose)
             else:
-                summary = index_profile(pg, profile_name=args.profile, embedder=embedder)
+                summary = index_profile(pg, profile_name=args.profile, embedder=embedder, progress=verbose)
             print(f"Done: {summary}")
         finally:
             pg.close()

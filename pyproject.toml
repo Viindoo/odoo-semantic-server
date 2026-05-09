@@ -19,6 +19,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "cryptography>=42",
     "uvicorn>=0.29",
+    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
