@@ -1825,22 +1825,14 @@ async def health_check(request: Request):
 
 
 if __name__ == "__main__":
-    import os as _os
-
     from starlette.middleware import Middleware as _Middleware
 
-    _auth_enabled = _os.getenv("AUTH_ENABLED", "true").lower() not in ("false", "0", "no")
-
-    _middleware: list = []
-    if _auth_enabled:
-        from src.mcp.middleware import AuthMiddleware
-
-        _middleware.append(_Middleware(AuthMiddleware))
+    from src.mcp.middleware import AuthMiddleware
 
     mcp.run(
         transport="streamable-http",
         host=_mcp_host(),
         port=_mcp_port(),
         path="/mcp",
-        middleware=_middleware,
+        middleware=[_Middleware(AuthMiddleware)],
     )
