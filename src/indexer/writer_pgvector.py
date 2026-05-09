@@ -165,6 +165,16 @@ def write_module_embeddings(
     if not chunks:
         return
     register_vector(conn)
+    # Dedup by the ux_embeddings_chunk unique key — make_module_chunks can emit
+    # the same (chunk_type, entity_name, file_path, chunk_idx) twice for one
+    # module (e.g. partial classes split across files). Postgres rejects a
+    # single INSERT batch containing such duplicates with `ON CONFLICT DO UPDATE
+    # command cannot affect row a second time` even when the ON CONFLICT clause
+    # would otherwise resolve them across separate statements. Last-wins.
+    seen: dict[tuple, EmbeddingChunk] = {}
+    for c in chunks:
+        seen[(c.chunk_type, c.entity_name, c.file_path, c.chunk_idx)] = c
+    chunks = list(seen.values())
     texts = [c.content for c in chunks]
     vecs = embedder.embed(texts)
     saved_autocommit = conn.autocommit
