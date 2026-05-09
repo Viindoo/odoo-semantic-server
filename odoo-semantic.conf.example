@@ -41,6 +41,10 @@ repos_base_dir = /home/user/git
 url = http://localhost:11434
 model = qwen3-embedding-q5km
 dim = 1024
+# auth_token = <bearer-token>
+# Optional — set if your Ollama is behind an authenticated reverse proxy
+# (e.g. Caddy/nginx with Authorization: Bearer check). Leave unset for
+# loopback / VPC-firewall-only setups. Env override: EMBEDDER_AUTH_TOKEN
 
 # [auth] — M5+ auth settings
 # Secrets được lưu trong .env, KHÔNG trong file conf này.
