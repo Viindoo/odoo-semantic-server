@@ -185,12 +185,10 @@ class TestApiKeyDeactivateInvariants:
     @pytest.mark.asyncio
     async def test_deactivate_calls_cache_invalidate(self, web_app, pg_conn):
         """B1: POST /api-keys/{id}/deactivate must call _cache_invalidate_by_key_id."""
-        import unittest.mock as mock
-
         import httpx
 
         from src.db.auth_registry import create_api_key
-        from src.mcp.middleware import _cache_set, _cache_get
+        from src.mcp.middleware import _cache_get, _cache_set
 
         raw, _, key_id = create_api_key(pg_conn, "deactivate-b1-test")
         _cache_set(raw, key_id)
