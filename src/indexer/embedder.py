@@ -8,7 +8,7 @@ import json
 import math
 import random
 import urllib.request
-from typing import Protocol, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
 
 def _normalize(vec: list[float]) -> list[float]:
@@ -51,6 +51,9 @@ class Qwen3Embedder:
 
     Expects Ollama /api/embed endpoint. Truncates to `dim` dimensions and
     L2-normalises — supports MRL (Matryoshka Representation Learning).
+
+    auth_token: optional Bearer token sent as `Authorization: Bearer <token>`.
+    Set when Ollama sits behind an authenticated reverse proxy.
     """
 
     def __init__(
@@ -59,21 +62,26 @@ class Qwen3Embedder:
         model: str = "qwen3-embedding-q5km",
         dim: int = 1024,
         retries: int = 3,
+        auth_token: Optional[str] = None,
     ):
         self._url = url.rstrip("/") + "/api/embed"
         self._model = model
         self._dim = dim
         self._retries = retries
+        self._auth_token = auth_token
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self._model, "input": texts}).encode()
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
         last_err: Exception | None = None
         for _ in range(self._retries):
             try:
                 req = urllib.request.Request(
                     self._url,
                     data=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=60) as resp:

@@ -115,3 +115,39 @@ def test_qwen3_embedder_raises_after_exhausting_retries():
         e = Qwen3Embedder(dim=4, retries=2)
         with pytest.raises(RuntimeError, match="failed after 2 attempts"):
             e.embed(["x"])
+
+
+# --- auth_token ---
+
+def test_qwen3_embedder_no_token_sends_no_auth_header():
+    """Without auth_token, Authorization header must NOT be present."""
+    raw = [[0.1, 0.2]]
+    captured: list = []
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(req)
+        return _mock_ollama_response(raw)
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        e = Qwen3Embedder(dim=2)
+        e.embed(["hello"])
+
+    assert len(captured) == 1
+    assert captured[0].get_header("Authorization") is None
+
+
+def test_qwen3_embedder_with_token_sends_bearer_header():
+    """With auth_token set, Authorization: Bearer <token> must be in the request."""
+    raw = [[0.1, 0.2]]
+    captured: list = []
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(req)
+        return _mock_ollama_response(raw)
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        e = Qwen3Embedder(dim=2, auth_token="abc123")
+        e.embed(["hello"])
+
+    assert len(captured) == 1
+    assert captured[0].get_header("Authorization") == "Bearer abc123"
