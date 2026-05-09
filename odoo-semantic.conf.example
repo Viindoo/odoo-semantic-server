@@ -41,3 +41,18 @@ repos_base_dir = /home/user/git
 url = http://localhost:11434
 model = qwen3-embedding-q5km
 dim = 1024
+
+# [auth] — M5+ auth settings
+# Secrets được lưu trong .env, KHÔNG trong file conf này.
+#
+# API key: tạo bằng `python -m src.manager create-api-key <name>`
+#   → raw key chỉ show một lần, được hash SHA-256 trong DB api_keys table
+#   → client gửi header: X-API-Key: osm_xxxx...
+#
+# SSH key (private): được encrypt bằng Fernet symmetric encryption.
+#   Cần set FERNET_KEY trong .env:
+#   $ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#   → Thêm vào .env: FERNET_KEY=<output>
+#   → Private key được lưu encrypted trong DB ssh_key_pairs table
+#
+# Xem docs/deploy.md §10–§12 để biết cách setup + quản lý.

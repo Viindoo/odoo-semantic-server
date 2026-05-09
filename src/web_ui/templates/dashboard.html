@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Odoo Semantic MCP Admin{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+{% if error %}
+<div class="alert">{{ error }}</div>
+{% endif %}
+
+<div class="stat-grid">
+    <div class="stat">
+        <div class="number">{{ profiles | length }}</div>
+        <div class="label">Profiles</div>
+    </div>
+    <div class="stat">
+        <div class="number">{{ profiles | sum(attribute='repos') | list | length if profiles else 0 }}</div>
+        <div class="label">Repos</div>
+    </div>
+    <div class="stat">
+        <div class="number">{{ api_key_count }}</div>
+        <div class="label">API Keys</div>
+    </div>
+    <div class="stat">
+        <div class="number">{{ ssh_key_count }}</div>
+        <div class="label">SSH Keys</div>
+    </div>
+</div>
+
+{% if profiles %}
+<div class="card">
+    <h2>Profiles &amp; Repos</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Profile</th>
+                <th>Odoo Version</th>
+                <th>Repos</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for p in profiles %}
+            {% if p.repos %}
+                {% for r in p.repos %}
+                <tr>
+                    {% if loop.first %}<td rowspan="{{ p.repos | length }}"><strong>{{ p.name }}</strong></td>
+                    <td rowspan="{{ p.repos | length }}">{{ p.odoo_version }}</td>{% endif %}
+                    <td><code>{{ r.local_path }}</code></td>
+                    <td>
+                        <span class="badge badge-{{ 'ok' if r.status == 'indexed' else ('error' if r.status == 'error' else 'pending') }}">
+                            {{ r.status }}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr>
+                    <td><strong>{{ p.name }}</strong></td>
+                    <td>{{ p.odoo_version }}</td>
+                    <td colspan="2"><em style="color:#94a3b8">No repos attached</em></td>
+                </tr>
+            {% endif %}
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card">
+    <p>No profiles yet. <a href="/repos">Add a profile and attach a repo</a> to get started.</p>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Quick Start</h2>
+    <ol style="padding-left:1.25rem; font-size:0.9rem; line-height:2">
+        <li>Create an API key: <a href="/api-keys">API Keys</a> &rarr; Create, or run <code>python -m src.manager create-api-key &lt;name&gt;</code></li>
+        <li>Add profile &amp; repo: <a href="/repos">Repos &amp; Profiles</a> &rarr; Add Profile &rarr; Add Repo &rarr; Index</li>
+        <li>Add API key to Claude Code <code>~/.claude/settings.json</code> under <code>mcpServers</code></li>
+    </ol>
+</div>
+{% endblock %}
