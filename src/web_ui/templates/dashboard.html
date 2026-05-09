@@ -13,7 +13,7 @@
         <div class="label">Profiles</div>
     </div>
     <div class="stat">
-        <div class="number">{{ profiles | sum(attribute='repos') | list | length if profiles else 0 }}</div>
+        <div class="number">{{ profiles | sum(attribute='repos', start=[]) | length if profiles else 0 }}</div>
         <div class="label">Repos</div>
     </div>
     <div class="stat">
