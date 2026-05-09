@@ -176,10 +176,10 @@ EMBEDDER_DIM=1024
 ### 6.1 Test embedder reach + dimension
 
 ```bash
-# Từ App tier — gọi /api/embeddings
-curl -s http://<embedder-host>:11434/api/embeddings \
-    -d '{"model":"qwen3-embedding-q5km","prompt":"sale order tax compute"}' \
-    | python3 -c 'import json,sys; r=json.load(sys.stdin); print("dim =",len(r["embedding"]))'
+# Từ App tier — gọi /api/embed (batch endpoint, input là array)
+curl -s http://<embedder-host>:11434/api/embed \
+    -d '{"model":"qwen3-embedding-q5km","input":["sale order tax compute"]}' \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin); print("dim =",len(r["embeddings"][0]))'
 # Expected: dim = 1024
 ```
 
@@ -192,7 +192,7 @@ Nếu lỗi connection → check firewall + `OLLAMA_HOST`. Nếu `dim` ≠ 1024
 sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
-        -m src.indexer --profile viindoo_17
+        -m src.indexer index-repo --profile viindoo_17
 '
 # KHÔNG có --no-embed → indexer sẽ gọi Ollama
 # ~400 modules × ~500 chunks × 1024 dim ≈ 20 GB disk
