@@ -32,6 +32,10 @@ make install
 
 # 2. Copy file cấu hình (chỉ cần cho chạy MCP server thật — không cần cho test)
 cp .env.example .env
+
+# 3. Generate FERNET_KEY for SSH key encryption:
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Add to .env: FERNET_KEY=<value>
 ```
 
 `make install` tự chọn Python 3.12 nhờ file `.python-version` và tạo venv tại `~/.venv/odoo-semantic-mcp/` — nằm ngoài repo, tránh ô nhiễm source tree. Nếu máy chưa có 3.12, uv tự download.
@@ -113,6 +117,7 @@ tests/
 - Test cần Ollama + model loaded + data indexed → thêm `pytestmark = pytest.mark.ollama`
   Chạy: `pytest tests/test_find_examples_recall.py -m ollama -v`
 - Test không cần DB → không thêm gì — chạy trong unit mode
+- `smoke` marker — health schema, auth 401, SSH keygen (M5+)
 
 **`TEST_VERSION = "99.0"`** — tất cả dữ liệu test dùng version này để không conflict với dữ liệu thật. Fixture `clean_neo4j` dọn Neo4j, fixture `clean_pg` dọn PostgreSQL — luôn dùng fixture tương ứng.
 
@@ -228,6 +233,24 @@ feat: thêm parser_xml cho view inheritance
 fix:  sửa MERGE query Neo4j khi multi-module
 test: thêm test case cho circular dependency
 docs: cập nhật schema diagram
+```
+
+---
+
+## Commands
+
+### Create API key (M5+)
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager create-api-key <name>
+# → prints raw key once
+```
+
+### Start Web UI admin (M5+)
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
+# → http://127.0.0.1:8003/
 ```
 
 ---

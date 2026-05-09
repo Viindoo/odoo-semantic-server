@@ -46,7 +46,7 @@ Odoo repos (~/git/*_17.0/)
 | `find_examples` | Code examples từ codebase theo ngữ nghĩa |
 | `impact_analysis` | Đổi field/method này → ảnh hưởng đến những gì |
 
-> **M1–M4 + M4.5 + M4.6 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — 14 tools (Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard across v8 → v20+).
+> **M1–M5 (available now):** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — 14 tools (Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard across v8 → v20+). API key auth + Web UI admin (M5).
 
 ---
 
@@ -69,6 +69,8 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
   }
 }
 ```
+
+> **M5+**: API key required. Admin creates one via CLI or Web UI — see Deploy Server section.
 
 **VS Code** — thêm vào settings (MCP extension cụ thể, format có thể khác):
 ```json
@@ -101,6 +103,18 @@ make install                     # tạo venv + sao .env.example, odoo-semantic.
 # Sửa .env: điền NEO4J_PASSWORD và PG_PASSWORD (replace <PASSWORD> trong PG_DSN)
 docker compose up -d             # start Neo4j (:7474, :7687) + PostgreSQL (:5432)
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+```
+
+### 1b. Generate FERNET_KEY + create first API key
+
+```bash
+# Generate FERNET_KEY (required for SSH key encryption):
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Add the output to .env as FERNET_KEY=<value>
+
+# Create your first API key:
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager create-api-key mykey
+# → prints: osm_xxxx... (save this — shown only once)
 ```
 
 ### 2. Đăng ký 1 profile + index 1 Odoo repo
@@ -138,7 +152,7 @@ git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
 ### 4. Trỏ Claude Code vào local server
 Thêm vào `~/.claude/settings.json`:
 ```json
-{ "mcpServers": { "odoo-semantic": { "url": "http://127.0.0.1:8002/mcp" } } }
+{ "mcpServers": { "odoo-semantic": { "url": "http://127.0.0.1:8002/mcp", "headers": { "X-API-Key": "osm_xxxx..." } } } }
 ```
 
 Restart Claude Code. Trong chat:
@@ -219,6 +233,15 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core --source <odoo_source> --version 17.0
 # (M4.6+) Seed curated pattern catalogue (one-shot, idempotent):
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer.seed_patterns
+# (M5+) Generate FERNET_KEY + create first API key:
+# echo "FERNET_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> .env
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager create-api-key admin
+# → prints raw key once — distribute to your team
+
+# (M5+) Optional: start Web UI admin on port 8003 (127.0.0.1 only):
+~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui &
+# → http://127.0.0.1:8003/
+
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
 ```
 
@@ -253,7 +276,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 4 — "Impact Wow":** `[x]` Code + auto tests complete — còn manual E2E `impact_analysis`  
 **Milestone 4.5 — "Spec Wow":** `[x]` Code + auto tests complete (5 new MCP tools, 4 spec node labels, v8/v9 unblocked) — còn manual E2E `lookup_core_api` / `cli_help` với Odoo upstream indexed  
 **Milestone 4.6 — "Pattern Wow":** `[x]` Code + auto tests complete (3 new MCP tools, 54 curated patterns, Module/Method enrichment, EE confusion guard) — còn manual E2E `suggest_pattern` / `check_module_exists` / `find_override_point` với data thật  
-**Milestone 5 — "Product Wow":** `[ ]` Chưa bắt đầu — Web UI admin + API key auth + production hardening (health endpoint, indexer concurrency lock)  
+**Milestone 5 — "Product Wow":** `[x]` Complete — API key auth + Web UI admin (port 8003) + Postgres advisory lock + health endpoint + install.sh  
 **Milestone 5.5 — "Polish Wow":** `[ ]` Chưa bắt đầu — observability + test discipline; landing zone cho tech-debt phát sinh từ M5  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  
 
