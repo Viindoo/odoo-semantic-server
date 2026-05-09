@@ -4,6 +4,7 @@
 Usage:
     python -m src.db.migrate
 """
+
 import sys
 
 import psycopg2

@@ -6,6 +6,7 @@ Usage:
     python -m src.manager add-repo --profile NAME --url URL --branch BRANCH --local-path PATH
     python -m src.manager list
 """
+
 import argparse
 import re
 import sys
@@ -39,8 +40,7 @@ def _open_conn() -> psycopg2.extensions.connection:
     except psycopg2.OperationalError as e:
         # Mask password in case psycopg2 echoes the DSN back in the error string
         msg = config.mask_dsn(str(e))
-        print(f"✗ Cannot connect to PostgreSQL ({config.mask_dsn(dsn)}): {msg}",
-              file=sys.stderr)
+        print(f"✗ Cannot connect to PostgreSQL ({config.mask_dsn(dsn)}): {msg}", file=sys.stderr)
         sys.exit(1)
     conn.autocommit = True
     return conn
@@ -57,19 +57,19 @@ def _cmd_add_profile(args, conn) -> int:
         return 1
     if not _VERSION_RE.match(args.version):
         print(
-            f"✗ Version '{args.version}' invalid. "
-            "Required format: N.N (e.g. 17.0, 18.0).",
+            f"✗ Version '{args.version}' invalid. Required format: N.N (e.g. 17.0, 18.0).",
             file=sys.stderr,
         )
         return 1
     try:
         pid = repo_registry.add_profile(
-            conn, name=args.name, odoo_version=args.version,
+            conn,
+            name=args.name,
+            odoo_version=args.version,
             description=args.description or "",
         )
     except ValueError as e:
-        print(f"✗ {e}. Use a different name or remove the existing profile first.",
-              file=sys.stderr)
+        print(f"✗ {e}. Use a different name or remove the existing profile first.", file=sys.stderr)
         return 2
     print(f"✓ Profile '{args.name}' (id={pid}) odoo_version={args.version}")
     return 0
@@ -87,8 +87,11 @@ def _cmd_add_repo(args, conn) -> int:
         )
         return 1
     rid = repo_registry.add_repo(
-        conn, profile_id=profiles[0]["id"],
-        url=args.url, branch=args.branch, local_path=args.local_path,
+        conn,
+        profile_id=profiles[0]["id"],
+        url=args.url,
+        branch=args.branch,
+        local_path=args.local_path,
     )
     print(f"✓ Repo (id={rid}) {args.url}@{args.branch} → {args.local_path}")
     return 0
@@ -144,11 +147,16 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_repo.add_argument("--profile", required=True, help="Existing profile name")
-    p_repo.add_argument("--url", required=True,
-                        help="Repo URL (informational; indexer reads local_path)")
+    p_repo.add_argument(
+        "--url", required=True, help="Repo URL (informational; indexer reads local_path)"
+    )
     p_repo.add_argument("--branch", required=True, help="Git branch")
-    p_repo.add_argument("--local-path", required=True, dest="local_path",
-                        help="Absolute path to local checkout (must exist)")
+    p_repo.add_argument(
+        "--local-path",
+        required=True,
+        dest="local_path",
+        help="Absolute path to local checkout (must exist)",
+    )
 
     sub.add_parser("list", help="List all profiles + their repos")
 
