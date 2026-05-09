@@ -767,11 +767,15 @@ echo "FERNET_KEY=<output_above>" >> .env
 
 ---
 
-## 13. Manual Backup (M5)
+## 13. Backup (M5.5)
 
-M5 chưa có automated backup. Backup thủ công:
+### Backup PostgreSQL — CLI (M5.5+)
 
-### Backup PostgreSQL (profiles, repos, API keys, SSH keys)
+```bash
+python -m src.cli backup --output backup_$(date +%Y%m%d).sql
+```
+
+Hoặc chạy `pg_dump` trực tiếp:
 
 ```bash
 pg_dump -h localhost -U odoo_semantic odoo_semantic > backup_$(date +%Y%m%d).sql
@@ -791,5 +795,17 @@ Hoặc đơn giản hơn: copy thư mục Neo4j data khi service stopped.
 ```bash
 psql -h localhost -U odoo_semantic odoo_semantic < backup_2026XXXX.sql
 ```
+
+### FERNET key rotation (M5.5+)
+
+Nếu cần đổi FERNET_KEY (vd: key bị lộ):
+
+```bash
+python -m src.cli rotate-fernet \
+  --old-key <FERNET_KEY_cũ> \
+  --new-key <FERNET_KEY_mới>
+```
+
+Cập nhật `FERNET_KEY` trong `.env` sau khi rotate xong.
 
 ⚠️ **M6 sẽ thêm**: automated backup script + S3 upload.

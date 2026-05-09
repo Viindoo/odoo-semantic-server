@@ -277,7 +277,7 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 **Milestone 4.5 — "Spec Wow":** `[x]` Code + auto tests complete (5 new MCP tools, 4 spec node labels, v8/v9 unblocked) — còn manual E2E `lookup_core_api` / `cli_help` với Odoo upstream indexed  
 **Milestone 4.6 — "Pattern Wow":** `[x]` Code + auto tests complete (3 new MCP tools, 54 curated patterns, Module/Method enrichment, EE confusion guard) — còn manual E2E `suggest_pattern` / `check_module_exists` / `find_override_point` với data thật  
 **Milestone 5 — "Product Wow":** `[x]` Complete — API key auth + Web UI admin (port 8003) + Postgres advisory lock + health endpoint + install.sh  
-**Milestone 5.5 — "Polish Wow":** `[ ]` Chưa bắt đầu — observability + test discipline; landing zone cho tech-debt phát sinh từ M5  
+**Milestone 5.5 — "Polish Wow":** `[x]` Complete — indexer `--verbose`/tqdm + test isolation + snapshot anti-drift + CLI backup/restore + FERNET rotation + JSON logging + rate limiting + pattern feedback (Wave 4 job-tracking → Section F)  
 **Milestone 6 — "Scale Wow":** `[ ]` Ongoing  
 
 ---
