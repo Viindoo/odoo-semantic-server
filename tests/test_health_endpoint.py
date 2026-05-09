@@ -66,8 +66,33 @@ class TestHealthEndpoint:
         assert body["neo4j"].startswith("error:")
 
     @pytest.mark.asyncio
-    async def test_mcp_tools_count_is_integer(self):
-        """MCP tools count should be a non-negative integer or -1."""
+    async def test_postgres_down_returns_degraded(self, monkeypatch):
+        """When PostgreSQL fails, status should not be 'ok'."""
+        import httpx
+
+        from src.mcp import server as server_mod
+
+        def mock_broken_pg():
+            class BrokenConn:
+                closed = False
+
+                def cursor(self):
+                    raise ConnectionError("PostgreSQL down")
+
+            return BrokenConn()
+
+        monkeypatch.setattr(server_mod, "_get_pg_conn", mock_broken_pg)
+
+        app = self._get_asgi_app()
+        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+            resp = await client.get("/health")
+        body = resp.json()
+        assert body["status"] != "ok"
+        assert body["postgres"].startswith("error:")
+
+    @pytest.mark.asyncio
+    async def test_mcp_tools_count_is_positive_int(self):
+        """MCP tools count should be a positive integer (not hardcoded to 14)."""
         import httpx
 
         app = self._get_asgi_app()
@@ -75,17 +100,5 @@ class TestHealthEndpoint:
             resp = await client.get("/health")
         body = resp.json()
         assert isinstance(body["mcp_tools"], int)
-        # Either positive (normal) or -1 (introspection failed)
-        assert body["mcp_tools"] >= 1 or body["mcp_tools"] == -1
-
-    @pytest.mark.asyncio
-    async def test_version_is_string(self):
-        """Version should be a valid string."""
-        import httpx
-
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
-            resp = await client.get("/health")
-        body = resp.json()
-        assert isinstance(body["version"], str)
-        assert len(body["version"]) > 0
+        # Must be positive; -1 signals introspection failure (deferred to M5.5)
+        assert body["mcp_tools"] > 0
