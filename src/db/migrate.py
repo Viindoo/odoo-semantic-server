@@ -4,6 +4,7 @@
 Usage:
     python -m src.db.migrate
 """
+
 import sys
 
 import psycopg2
@@ -82,8 +83,39 @@ BEGIN
 END $$;
 """
 
+_AUTH_SQL = """
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    key_hash     TEXT UNIQUE NOT NULL,
+    key_prefix   TEXT NOT NULL,
+    active       BOOLEAN DEFAULT TRUE,
+    created_at   TIMESTAMP DEFAULT NOW(),
+    last_used_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ssh_key_pairs (
+    id                    SERIAL PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    public_key            TEXT NOT NULL,
+    private_key_encrypted TEXT NOT NULL,
+    key_version           INTEGER NOT NULL DEFAULT 1,
+    created_at            TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS usage_log (
+    id           BIGSERIAL PRIMARY KEY,
+    api_key_id   INTEGER REFERENCES api_keys(id) ON DELETE SET NULL,
+    tool_name    TEXT NOT NULL,
+    called_at    TIMESTAMP DEFAULT NOW(),
+    response_ms  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log(api_key_id);
+CREATE INDEX IF NOT EXISTS idx_usage_log_called_at ON usage_log(called_at);
+"""
+
 # Public alias — tests and callers that import SCHEMA_SQL get the full DDL string
-SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL
+SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL
 
 
 def _vector_extension_available(conn) -> bool:
@@ -114,6 +146,7 @@ def run_migrations(conn) -> None:
 
     Profiles and repos tables are always created.
     Embeddings table requires pgvector extension — skipped with a warning if not available.
+    Auth tables (api_keys, ssh_key_pairs, usage_log) are always created.
     """
     with conn.cursor() as cur:
         cur.execute(_BASE_SQL)
@@ -132,6 +165,11 @@ def run_migrations(conn) -> None:
             "  Run as superuser: CREATE EXTENSION vector; then re-run migrations.",
             file=sys.stderr,
         )
+
+    with conn.cursor() as cur:
+        cur.execute(_AUTH_SQL)
+    if not conn.autocommit:
+        conn.commit()
 
 
 def main() -> int:

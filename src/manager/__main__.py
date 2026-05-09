@@ -1,11 +1,13 @@
 # src/manager/__main__.py
-"""Admin CLI for profiles + repos. M2.5 only — replaced by Web UI in M5.
+"""Admin CLI for profiles + repos + API keys. M2.5 — replaced by Web UI in M5.
 
 Usage:
     python -m src.manager add-profile NAME --version VERSION [--description TEXT]
     python -m src.manager add-repo --profile NAME --url URL --branch BRANCH --local-path PATH
     python -m src.manager list
+    python -m src.manager create-api-key NAME
 """
+
 import argparse
 import re
 import sys
@@ -15,7 +17,7 @@ from pathlib import Path
 import psycopg2
 
 from src import config
-from src.db import repo_registry
+from src.db import auth_registry, repo_registry
 
 # Profile name: alphanumeric + underscore, 1-50 chars (matches database TEXT but
 # enforces shell-safe + readable convention).
@@ -39,8 +41,7 @@ def _open_conn() -> psycopg2.extensions.connection:
     except psycopg2.OperationalError as e:
         # Mask password in case psycopg2 echoes the DSN back in the error string
         msg = config.mask_dsn(str(e))
-        print(f"✗ Cannot connect to PostgreSQL ({config.mask_dsn(dsn)}): {msg}",
-              file=sys.stderr)
+        print(f"✗ Cannot connect to PostgreSQL ({config.mask_dsn(dsn)}): {msg}", file=sys.stderr)
         sys.exit(1)
     conn.autocommit = True
     return conn
@@ -57,19 +58,19 @@ def _cmd_add_profile(args, conn) -> int:
         return 1
     if not _VERSION_RE.match(args.version):
         print(
-            f"✗ Version '{args.version}' invalid. "
-            "Required format: N.N (e.g. 17.0, 18.0).",
+            f"✗ Version '{args.version}' invalid. Required format: N.N (e.g. 17.0, 18.0).",
             file=sys.stderr,
         )
         return 1
     try:
         pid = repo_registry.add_profile(
-            conn, name=args.name, odoo_version=args.version,
+            conn,
+            name=args.name,
+            odoo_version=args.version,
             description=args.description or "",
         )
     except ValueError as e:
-        print(f"✗ {e}. Use a different name or remove the existing profile first.",
-              file=sys.stderr)
+        print(f"✗ {e}. Use a different name or remove the existing profile first.", file=sys.stderr)
         return 2
     print(f"✓ Profile '{args.name}' (id={pid}) odoo_version={args.version}")
     return 0
@@ -87,8 +88,11 @@ def _cmd_add_repo(args, conn) -> int:
         )
         return 1
     rid = repo_registry.add_repo(
-        conn, profile_id=profiles[0]["id"],
-        url=args.url, branch=args.branch, local_path=args.local_path,
+        conn,
+        profile_id=profiles[0]["id"],
+        url=args.url,
+        branch=args.branch,
+        local_path=args.local_path,
     )
     print(f"✓ Repo (id={rid}) {args.url}@{args.branch} → {args.local_path}")
     return 0
@@ -107,6 +111,18 @@ def _cmd_list(_args, conn) -> int:
             continue
         for r in repos:
             print(f"    - {r['url']}@{r['branch']} → {r['local_path']} [{r['status']}]")
+    return 0
+
+
+def _cmd_create_api_key(args, conn) -> int:
+    if not args.name:
+        print("✗ Name is required.", file=sys.stderr)
+        return 1
+    raw_key, key_prefix, key_id = auth_registry.create_api_key(conn, args.name)
+    print(f"API key: {raw_key}")
+    print(f"Key ID:  {key_id}")
+    print(f"Prefix:  {key_prefix}")
+    print("WARNING: This key will not be shown again. Store it securely.")
     return 0
 
 
@@ -144,13 +160,21 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_repo.add_argument("--profile", required=True, help="Existing profile name")
-    p_repo.add_argument("--url", required=True,
-                        help="Repo URL (informational; indexer reads local_path)")
+    p_repo.add_argument(
+        "--url", required=True, help="Repo URL (informational; indexer reads local_path)"
+    )
     p_repo.add_argument("--branch", required=True, help="Git branch")
-    p_repo.add_argument("--local-path", required=True, dest="local_path",
-                        help="Absolute path to local checkout (must exist)")
+    p_repo.add_argument(
+        "--local-path",
+        required=True,
+        dest="local_path",
+        help="Absolute path to local checkout (must exist)",
+    )
 
     sub.add_parser("list", help="List all profiles + their repos")
+
+    p_key = sub.add_parser("create-api-key", help="Create a new API key for MCP access")
+    p_key.add_argument("name", help="Descriptive name for this key (e.g. 'claude-code-laptop')")
 
     args = parser.parse_args(argv)
     conn = _open_conn()
@@ -159,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             "add-profile": _cmd_add_profile,
             "add-repo": _cmd_add_repo,
             "list": _cmd_list,
+            "create-api-key": _cmd_create_api_key,
         }[args.cmd](args, conn)
     finally:
         conn.close()
