@@ -445,17 +445,35 @@ semantic.example.com {
 sudo systemctl reload caddy
 ```
 
-### 4.3 Auth (M2.5 — chưa có API key validation)
+### 4.3 Auth (M5 — X-API-Key required)
 
-Chọn 1 option tạm thời:
+Từ M5, mọi request tới `/mcp` **phải** có header `X-API-Key` hợp lệ.
+Request thiếu key hoặc key không active → `401 Unauthorized`. Không có bypass.
 
-| Option | Phù hợp cho | Config |
-|--------|-------------|--------|
-| IP allowlist | Internal team (static IP) | `allow 10.0.0.0/8; deny all;` trong nginx location block |
-| HTTP Basic | Small team | `auth_basic` + `htpasswd` — xem comment trong `nginx.conf.example` |
-| (Không có) | Dev/staging nội bộ | Chỉ khi server không public internet |
+**Tạo API key (admin):**
 
-**Lưu ý:** `X-API-Key` trong cấu hình ví dụ Claude/VS Code là placeholder forward-compatible cho M5. Codebase **chưa validate** header này.
+```bash
+# Via CLI:
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager create-api-key <name>
+# → osm_xxxx... (raw key — hiển thị một lần duy nhất, lưu ngay)
+
+# Via Web UI (http://127.0.0.1:8003/api-keys):
+# Dashboard → API Keys → Create API Key → điền tên → Copy raw key ngay
+```
+
+**Phân phát key cho user:**
+- Gửi raw key qua kênh bảo mật (Bitwarden, 1Password — không qua email plain text)
+- Mỗi user/team nên có key riêng để revoke độc lập nếu cần
+- Deactivate key: Web UI → Deactivate, hoặc CLI: `UPDATE api_keys SET active=false WHERE name='<name>';`
+
+**Proxy phải forward header `X-API-Key`** (nginx mặc định không strip header — không cần config thêm nếu dùng `proxy_pass`). Caddy forward tất cả headers mặc định.
+
+**/health bypass auth:** `GET /health` không yêu cầu API key — dùng cho load balancer health check:
+
+```bash
+curl http://127.0.0.1:8002/health
+# → {"neo4j": "ok", "postgres": "ok"}
+```
 
 ### 4.4 Verify proxy
 
@@ -503,7 +521,8 @@ Thêm vào `~/.claude/settings.json` trên laptop dev:
 {
   "mcpServers": {
     "odoo-semantic": {
-      "url": "https://semantic.example.com/mcp"
+      "url": "https://semantic.example.com/mcp",
+      "headers": { "X-API-Key": "<raw-key-từ-create-api-key>" }
     }
   }
 }
