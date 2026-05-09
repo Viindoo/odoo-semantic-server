@@ -38,9 +38,11 @@ def test_rate_limit_different_keys_isolated():
 
 
 def test_rate_limit_window_expiry():
-    """Entries older than 60s should be pruned (we fake time via monkeypatching)."""
+    """Entries older than 60s should be pruned.
+
+    Pre-fills bucket with timestamps 61s in the past to trigger pruning logic.
+    """
     _rate_buckets.clear()
-    # Pre-fill bucket with old timestamp (61s ago)
     old_ts = time.monotonic() - 61
     from collections import deque
     _rate_buckets[77] = deque([old_ts] * 5)
