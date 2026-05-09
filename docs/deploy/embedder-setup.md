@@ -145,6 +145,7 @@ Thêm/cập nhật section `[embedder]` trong file config:
 url   = http://localhost:11434
 model = qwen3-embedding-q5km
 dim   = 1024
+# auth_token = <bearer-token>   # optional — see §5.1 below
 ```
 
 Hoặc env override (precedence cao hơn INI — phù hợp systemd
@@ -155,6 +156,27 @@ EMBEDDER_URL=http://<host>:11434
 EMBEDDER_MODEL=qwen3-embedding-q5km
 EMBEDDER_DIM=1024
 ```
+
+### 5.1 Bearer auth — Ollama behind authenticated reverse proxy
+
+Nếu Ollama được đặt sau Caddy/nginx với `Authorization: Bearer` check
+(ví dụ để expose qua Internet mà không dùng VPN/SSH tunnel), thêm token:
+
+```ini
+[embedder]
+url        = https://ollama.example.com
+auth_token = <your-bearer-token>
+```
+
+Hoặc env var (khuyến nghị cho systemd — không lưu secret trong INI file):
+
+```
+EMBEDDER_AUTH_TOKEN=<your-bearer-token>
+```
+
+Khi `auth_token` được set, mọi request tới `/api/embed` sẽ gửi header
+`Authorization: Bearer <token>`. Khi không set (default), header này bị
+bỏ qua hoàn toàn — không ảnh hưởng gì đến loopback / VPC setups.
 
 > **pgvector extension**: phải có trước khi indexer ghi embeddings.
 > Docker compose của project tự init pgvector qua
