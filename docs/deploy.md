@@ -74,14 +74,23 @@ Migration A → B: xem [§8 Split-Tier](#8-split-tier-migration).
 Không phải tool nào cũng cần đầy đủ stack — admin có thể defer setup
 embedder cho đến khi cần M3:
 
-| Tool | M1-M2 (Neo4j) | M3 Semantic (pgvector + Ollama) | M4 Impact (Neo4j) |
-|------|:-:|:-:|:-:|
-| `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view` | ✓ | — | — |
-| `find_examples` | — | ✓ | — |
-| `impact_analysis` | — | — | ✓ |
+| Tool | M1-M2 graph | M3 Semantic (Ollama) | M4 Impact | M4.5 Spec | M4.6 Pattern |
+|------|:-:|:-:|:-:|:-:|:-:|
+| `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view` | ✓ | — | — | — | — |
+| `find_examples` | — | ✓ | — | — | — |
+| `impact_analysis` | — | — | ✓ | — | — |
+| `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help` | — | — | — | ✓ | — |
+| `suggest_pattern`, `check_module_exists`, `find_override_point` | — | — | — | — | ✓ |
 
-Test E2E M1+M2+M4 chỉ cần Neo4j + PostgreSQL (registry). M3 thêm
-Ollama — defer được, xem `docs/deploy/embedder-setup.md`.
+Mỗi cột tương ứng với 1 lệnh setup ở §3.4 dưới đây:
+
+- **M1-M2 + M4** ← `index-repo --no-embed` (Neo4j + Postgres registry)
+- **M3** ← `index-repo` (không `--no-embed`) — cần Ollama embedder
+- **M4.5** ← `index-core --version <X.0> --source <odoo_X.0_clone>` (per version)
+- **M4.6** ← `python -m src.indexer.seed_patterns` (one-shot, idempotent)
+
+Test E2E M1+M2+M4 chỉ cần Neo4j + PostgreSQL (registry). M3 + M4.6
+embed thêm Ollama — defer được, xem `docs/deploy/embedder-setup.md`.
 
 ---
 
@@ -337,11 +346,77 @@ sudo -u odoo-semantic -H bash -c '
 '
 ```
 
-### 3.5 MCP server dạng systemd service
+> **Thời lượng thực tế khi index có embed:** Embedder là chokepoint —
+> 605 modules / ~46k embedding chunks ≈ **3–6 giờ** qua remote Ollama
+> proxy (≈22s/100 texts trên qwen3-embedding-q5km, batch 50). Local
+> Ollama nhanh hơn 1.5–2x. SSH có thể timeout giữa chừng → detach
+> bằng `tmux` (xem §3.7) hoặc:
+> ```bash
+> sudo -u odoo-semantic -H setsid nohup bash -c '
+>     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+>     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+>         -m src.indexer index-repo --profile viindoo_17 --verbose
+> ' > /var/log/odoo-semantic-index.log 2>&1 &
+> # Theo dõi tiến độ:
+> sudo tail -f /var/log/odoo-semantic-index.log
+> ```
+> Index-repo là idempotent (cập nhật theo content hash) — chạy lại an
+> toàn nếu bị ngắt giữa chừng.
+
+#### 3.4.1 Index Odoo core specs (M4.5 — `lookup_core_api` & friends)
+
+Cần cho 5 tool M4.5: `lookup_core_api`, `api_version_diff`,
+`find_deprecated_usage`, `lint_check`, `cli_help`. Chạy 1 lệnh per
+version (mỗi version index từ source clone Odoo upstream). Idempotent.
+
+```bash
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    PY=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
+
+    $PY -m src.indexer index-core --source /srv/odoo-repos/odoo_17.0 --version 17.0
+    # Thêm version để api_version_diff so sánh nhiều phiên bản:
+    # $PY -m src.indexer index-core --source /srv/odoo-repos/odoo_18.0 --version 18.0
+    # $PY -m src.indexer index-core --source /srv/odoo-repos/odoo_16.0 --version 16.0
+    # v8/v9 hỗ trợ qua __openerp__.py finder (M4.5 Phase 0):
+    # $PY -m src.indexer index-core --source /srv/odoo-repos/odoo_8.0  --version 8.0
+'
+```
+
+Output mong đợi: `Done: 502 CoreSymbol, 16 LintRule, 12 CLICommand, 80 CLIFlag` (per version, ±10%).
+Mất 30–60s/version.
+
+#### 3.4.2 Seed pattern catalogue (M4.6 — `suggest_pattern` & friends)
+
+One-shot, idempotent. Cần cho `suggest_pattern`, `check_module_exists`,
+`find_override_point`.
+
+```bash
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+        -m src.indexer.seed_patterns
+    # --no-embed nếu chưa setup Ollama (Neo4j nodes vẫn có,
+    # chỉ thiếu semantic ranking trong suggest_pattern):
+    # ... -m src.indexer.seed_patterns --no-embed
+'
+```
+
+Output: `INFO seed_patterns: Neo4j: wrote 54 PatternExample nodes` +
+`INFO seed_patterns: pgvector: wrote N embedding chunks`.
+
+### 3.5 systemd services (MCP + Web UI)
 
 > User `odoo-semantic` đã tạo ở §1.1.
 
-Copy systemd unit:
+Repo ship 2 unit file ở `docs/deploy/`:
+
+| File | Service | Bind | Cần |
+|------|---------|------|-----|
+| `odoo-semantic-mcp.service` | MCP server (port 8002) | `127.0.0.1` qua proxy tier | INI config |
+| `odoo-semantic-webui.service` | Web UI admin (port 8003) | `127.0.0.1` LAN-only | INI config + `webui.env` (FERNET_KEY) |
+
+Cài MCP unit:
 
 ```bash
 sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-mcp.service \
@@ -355,10 +430,31 @@ sudo systemctl enable --now odoo-semantic-mcp
 sudo systemctl status odoo-semantic-mcp
 ```
 
+Cài Web UI unit (cần FERNET_KEY — xem §12 để generate):
+
+```bash
+sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-webui.service \
+        /etc/systemd/system/
+
+# Tạo file secrets riêng cho Web UI — KHÔNG commit, mode 600:
+sudo install -o odoo-semantic -g odoo-semantic -m 600 /dev/null \
+    /etc/odoo-semantic/webui.env
+sudo tee /etc/odoo-semantic/webui.env > /dev/null <<EOF
+FERNET_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
+EOF
+
+sudo systemctl enable --now odoo-semantic-webui
+sudo systemctl status odoo-semantic-webui
+```
+
+⚠️ **Backup `webui.env` an toàn (vd password manager).** Nếu mất
+FERNET_KEY → mọi SSH private key đã lưu trong DB không giải mã được.
+
 Xem logs:
 
 ```bash
 sudo journalctl -u odoo-semantic-mcp -f
+sudo journalctl -u odoo-semantic-webui -f
 ```
 
 ### 3.6 Re-index định kỳ (cron, đến M6)
@@ -563,7 +659,11 @@ sudo journalctl -u odoo-semantic-mcp -n 50 | grep -iE "neo4j|postgres|error"
 | 502 Bad Gateway | MCP server không chạy | `sudo systemctl start odoo-semantic-mcp` |
 | "Không tìm thấy model" | Chưa index hoặc index lỗi | Kiểm tra `repos.status`, chạy lại indexer |
 | Neo4j OOM | JVM heap thiếu | Tăng `NEO4J_server_memory_heap_max__size` trong `docker-compose.yml` |
-| Index chậm | Nhiều module, network | Đây là expected — lần đầu ~10-30 phút cho 400+ modules |
+| Index chậm (no embed) | Nhiều module | Expected — `index-repo --no-embed` ~10-30 phút cho 400-600 modules (CPU-bound trên file parsing) |
+| Index rất chậm (có embed) | Embedder là chokepoint | Expected — `index-repo` (full) ~3-6h qua remote Ollama, ~1.5-3h local. Detach bằng `setsid nohup` hoặc tmux (xem §3.4 callout) |
+| Indexer fail giữa chừng | SSH timeout / OOM Ollama | Idempotent — chạy lại từ đầu an toàn (content hash dedup). Nếu OOM Ollama: giảm batch trong `src/indexer/embedder.py` (default 50) hoặc dùng model nhỏ hơn |
+| `lookup_core_api` / `cli_help` rỗng | Chưa chạy `index-core` | Chạy §3.4.1 cho version cần dùng |
+| `suggest_pattern` rỗng | Chưa chạy `seed_patterns` | Chạy §3.4.2 (idempotent) |
 | `✗ Cannot connect to PostgreSQL` | PG chưa healthy / sai DSN | `docker compose ps`, kiểm tra `pg_dsn` trong conf |
 
 ### Log locations
@@ -715,15 +815,24 @@ Web UI quản lý profiles, repos, API keys, SSH keys.
 
 ### Khởi động
 
+**Production (recommended)** — systemd unit (đã document ở §3.5):
+
 ```bash
-~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
-# → http://127.0.0.1:8003/
+sudo systemctl enable --now odoo-semantic-webui
+sudo systemctl status odoo-semantic-webui
 ```
 
-Hoặc dùng systemd (xem §5):
+Service file ship sẵn ở `docs/deploy/odoo-semantic-webui.service` —
+có `EnvironmentFile=/etc/odoo-semantic/webui.env` để load FERNET_KEY
+(cần cho SSH key encrypt/decrypt). Setup webui.env xem §3.5.
+
+**Foreground / dev** — chạy trực tiếp (đảm bảo `FERNET_KEY` trong env):
+
 ```bash
-sudo systemctl enable odoo-semantic-webui
-sudo systemctl start odoo-semantic-webui
+ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
+FERNET_KEY=<key> \
+~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
+# → http://127.0.0.1:8003/
 ```
 
 ### Nginx proxy (nếu cần truy cập từ xa)
@@ -747,16 +856,27 @@ Web UI có thể generate Ed25519 keypair để clone private Odoo repos.
 
 ### Yêu cầu: FERNET_KEY
 
-Private key được encrypt bằng Fernet symmetric encryption. Cần set `FERNET_KEY` trong `.env`:
+Private key được encrypt bằng Fernet symmetric encryption. `FERNET_KEY`
+chỉ đọc từ env var (không từ INI). Production deploy đặt trong
+`/etc/odoo-semantic/webui.env` (đã document ở §3.5):
 
 ```bash
 # Generate key (chạy một lần, lưu an toàn):
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# Thêm vào .env:
-echo "FERNET_KEY=<output_above>" >> .env
+
+# Đặt vào webui.env (loaded bởi systemd unit):
+echo "FERNET_KEY=<output_above>" | sudo tee /etc/odoo-semantic/webui.env
+sudo chmod 600 /etc/odoo-semantic/webui.env
+sudo chown odoo-semantic:odoo-semantic /etc/odoo-semantic/webui.env
+sudo systemctl restart odoo-semantic-webui
 ```
 
-⚠️ **Nếu mất FERNET_KEY**: mọi SSH private key đã lưu sẽ không giải mã được. Backup FERNET_KEY an toàn (e.g. password manager).
+Dev mode (chạy `python -m src.web_ui` trực tiếp): export `FERNET_KEY` trong shell hoặc thêm vào `.env` rồi `set -a; source .env; set +a`.
+
+⚠️ **Nếu mất FERNET_KEY**: mọi SSH private key đã lưu sẽ không giải
+mã được. Backup `webui.env` an toàn (vd password manager). Indexer/MCP
+server không cần FERNET_KEY runtime — chỉ Web UI và CLI
+`rotate-fernet` cần.
 
 ### Generate keypair
 

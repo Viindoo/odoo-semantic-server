@@ -1,0 +1,36 @@
+# odoo-semantic-webui.service — systemd unit cho Web UI admin
+# Đặt tại: /etc/systemd/system/odoo-semantic-webui.service
+# Sau khi copy:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now odoo-semantic-webui
+#
+# Web UI bind 127.0.0.1:8003 — KHÔNG expose ra Internet (không có auth riêng).
+# Truy cập từ xa qua SSH tunnel hoặc nginx proxy + IP allowlist.
+
+[Unit]
+Description=Odoo Semantic MCP — Web UI admin (LAN-only :8003)
+After=network.target docker.service odoo-semantic-mcp.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=odoo-semantic
+WorkingDirectory=/opt/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
+# FERNET_KEY (cần cho SSH key encrypt/decrypt) đọc từ env var.
+# Đặt trong file riêng — KHÔNG commit vào git, mode 600, owner odoo-semantic.
+# Chỉ Web UI cần file này; MCP server không decrypt SSH key tại runtime.
+EnvironmentFile=/etc/odoo-semantic/webui.env
+ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

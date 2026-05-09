@@ -242,11 +242,14 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 # (M5+) Optional: start Web UI admin on port 8003 (127.0.0.1 only):
 ~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui &
 # → http://127.0.0.1:8003/
+# Production: dùng systemd unit `odoo-semantic-webui.service` ship sẵn
+# trong docs/deploy/ — tự động restart + load FERNET_KEY từ webui.env.
 
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server  # start MCP server
+# Production: systemd unit `odoo-semantic-mcp.service` (cũng trong docs/deploy/).
 ```
 
-→ Xem [`docs/deploy.md`](docs/deploy.md) để biết cách cấu hình từng tier (DB, App, Proxy), systemd service, nginx/Caddy, TLS, backup, security checklist.
+→ Xem [`docs/deploy.md`](docs/deploy.md) để biết cách cấu hình từng tier (DB, App, Proxy), systemd service, nginx/Caddy, TLS, backup, security checklist. Hai topology được cover: **all-in-one** (1 host) và **split-tier** (DB + App + Embedder + Proxy ở host khác nhau).
 
 ---
 
