@@ -1825,6 +1825,11 @@ async def health_check(request: Request):
 
 
 if __name__ == "__main__":
+    import logging as _logging
+
+    from src.logging_config import configure_logging as _configure_logging
+    _configure_logging(level=_logging.INFO)
+
     from starlette.middleware import Middleware as _Middleware
 
     from src.mcp.middleware import AuthMiddleware

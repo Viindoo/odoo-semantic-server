@@ -794,3 +794,308 @@ def test_setup_indexes_creates_all_spec_indexes(neo4j_driver):
         found = any(label in lbls and prop in props for lbls, props in labels_props)
         assert found, f"Missing index on ({label}, {prop})"
 
+
+# --- M5.5 Wave 2 resolve_view snapshot contracts ---------------------------
+
+class TestResolveViewSnapshots:
+    """Lock resolve_view output contract (M5.5 Wave 2) — format change breaks tests."""
+
+    pytestmark = pytest.mark.neo4j
+
+    _VIEW_SNAP_VERSION = "95.0"
+
+    @pytest.fixture(autouse=True)
+    def _setup_env(self, monkeypatch):
+        """Setup Neo4j connection env vars for resolve_view tests."""
+        monkeypatch.setenv(
+            "NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        )
+        monkeypatch.setenv(
+            "NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"),
+        )
+        monkeypatch.setenv(
+            "NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        import sys
+        sys.modules.pop("src.mcp.server", None)
+        yield
+
+    def test_resolve_view_base_only(self, neo4j_driver):
+        """Test 1: base-only view (no extensions, no parent).
+
+        Output must contain:
+        - Header: "sale.view_sale_form (Odoo 95.0)"
+        - Type: form
+        - Model: sale.order
+        - "No extensions"
+        """
+        from src.indexer.models import ModuleInfo, ViewInfo, ViewParseResult
+
+        # Setup: clean and seed only the base view
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
+
+        sale_mod = ModuleInfo(
+            name="sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            repo="odoo",
+            path="/odoo/addons/sale",
+            depends=[],
+            version_raw="",
+        )
+        base_view = ViewInfo(
+            xmlid="sale.view_sale_form",
+            name="sale.order Form",
+            model="sale.order",
+            module="sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            view_type="form",
+            mode="primary",
+            inherit_xmlid=None,
+            xpaths=[],
+        )
+        writer.write_view_results([ViewParseResult(module=sale_mod, views=[base_view], qweb=[])])
+        writer.close()
+
+        from src.mcp.server import _resolve_view
+
+        result = _resolve_view("sale.view_sale_form", self._VIEW_SNAP_VERSION)
+        lines = result.splitlines()
+
+        assert lines[0] == f"sale.view_sale_form (Odoo {self._VIEW_SNAP_VERSION})", (
+            "Header must be '<xmlid> (Odoo <version>)'"
+        )
+        assert any("Type:" in ln and "form" in ln for ln in lines), (
+            "Missing 'Type: form' line"
+        )
+        assert any("Model:" in ln and "sale.order" in ln for ln in lines), (
+            "Missing 'Model: sale.order' line"
+        )
+        assert any("No extensions" in ln for ln in lines), (
+            f"Missing 'No extensions' line for base view. Lines: {lines}"
+        )
+        assert any(ln.startswith("├─") or ln.startswith("└─") for ln in lines), (
+            "Missing tree connectors"
+        )
+
+        # Cleanup
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
+
+    def test_resolve_view_extension_with_xpath(self, neo4j_driver):
+        """Test 2: extension view (has parent, has xpaths).
+
+        When querying the EXTENSION view's xmlid, output must contain:
+        - "Inherits from: sale.view_sale_form"
+        - "XPath modifications (1):"
+        - The xpath expr "//field[@name='partner_id']" with position "before"
+        """
+        from src.indexer.models import ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
+
+        # Setup: seed base view + extension
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
+
+        sale_mod = ModuleInfo(
+            name="sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            repo="odoo",
+            path="/odoo/addons/sale",
+            depends=[],
+            version_raw="",
+        )
+        viin_sale_mod = ModuleInfo(
+            name="viin_sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            repo="acme_addons",
+            path="/acme_addons/viin_sale",
+            depends=[],
+            version_raw="",
+        )
+        base_view = ViewInfo(
+            xmlid="sale.view_sale_form",
+            name="sale.order Form",
+            model="sale.order",
+            module="sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            view_type="form",
+            mode="primary",
+            inherit_xmlid=None,
+            xpaths=[],
+        )
+        ext_view = ViewInfo(
+            xmlid="viin_sale.view_sale_form_inherit",
+            name="Sale Order Form Extension",
+            model="sale.order",
+            module="viin_sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            view_type="form",
+            mode="extension",
+            inherit_xmlid="sale.view_sale_form",
+            xpaths=[XPathInfo(expr="//field[@name='partner_id']", position="before")],
+        )
+        writer.write_view_results([
+            ViewParseResult(module=sale_mod, views=[base_view], qweb=[]),
+            ViewParseResult(module=viin_sale_mod, views=[ext_view], qweb=[]),
+        ])
+        writer.close()
+
+        from src.mcp.server import _resolve_view
+
+        result = _resolve_view("viin_sale.view_sale_form_inherit", self._VIEW_SNAP_VERSION)
+        lines = result.splitlines()
+
+        assert lines[0] == f"viin_sale.view_sale_form_inherit (Odoo {self._VIEW_SNAP_VERSION})", (
+            "Header must be extension xmlid"
+        )
+        assert any("Inherits from:" in ln and "sale.view_sale_form" in ln for ln in lines), (
+            "Missing 'Inherits from: sale.view_sale_form' line"
+        )
+        assert any("XPath modifications" in ln for ln in lines), (
+            "Missing 'XPath modifications' line"
+        )
+        assert any("//field[@name='partner_id']" in ln for ln in lines), (
+            "Missing xpath expression"
+        )
+        assert any("[before]" in ln for ln in lines), (
+            "Missing xpath position [before]"
+        )
+
+        # Cleanup
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
+
+    def test_resolve_view_base_with_extensions(self, neo4j_driver):
+        """Test 3: base view with multiple extensions.
+
+        When querying the BASE view: output contains "Extended by (2 modules):"
+        and both extension xmlids appear.
+        """
+        from src.indexer.models import ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
+
+        # Setup: seed base + 2 extensions
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
+
+        sale_mod = ModuleInfo(
+            name="sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            repo="odoo",
+            path="/odoo/addons/sale",
+            depends=[],
+            version_raw="",
+        )
+        viin_sale_mod = ModuleInfo(
+            name="viin_sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            repo="acme_addons",
+            path="/acme_addons/viin_sale",
+            depends=[],
+            version_raw="",
+        )
+        to_sale_mod = ModuleInfo(
+            name="to_sale_custom",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            repo="customer",
+            path="/customer/to_sale_custom",
+            depends=[],
+            version_raw="",
+        )
+
+        base_view = ViewInfo(
+            xmlid="sale.view_sale_form",
+            name="sale.order Form",
+            model="sale.order",
+            module="sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            view_type="form",
+            mode="primary",
+            inherit_xmlid=None,
+            xpaths=[],
+        )
+        ext_view1 = ViewInfo(
+            xmlid="viin_sale.view_sale_form_inherit",
+            name="Sale Order Form Extension",
+            model="sale.order",
+            module="viin_sale",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            view_type="form",
+            mode="extension",
+            inherit_xmlid="sale.view_sale_form",
+            xpaths=[XPathInfo(expr="//field[@name='partner_id']", position="before")],
+        )
+        ext_view2 = ViewInfo(
+            xmlid="to_sale_custom.view_sale_form_inherit",
+            name="Sale Order Custom Extension",
+            model="sale.order",
+            module="to_sale_custom",
+            odoo_version=self._VIEW_SNAP_VERSION,
+            view_type="form",
+            mode="extension",
+            inherit_xmlid="sale.view_sale_form",
+            xpaths=[XPathInfo(expr="//field[@name='amount_total']", position="after")],
+        )
+
+        writer.write_view_results([
+            ViewParseResult(module=sale_mod, views=[base_view], qweb=[]),
+            ViewParseResult(module=viin_sale_mod, views=[ext_view1], qweb=[]),
+            ViewParseResult(module=to_sale_mod, views=[ext_view2], qweb=[]),
+        ])
+        writer.close()
+
+        from src.mcp.server import _resolve_view
+
+        result = _resolve_view("sale.view_sale_form", self._VIEW_SNAP_VERSION)
+        lines = result.splitlines()
+
+        assert lines[0] == f"sale.view_sale_form (Odoo {self._VIEW_SNAP_VERSION})"
+        assert any("Extended by (2 modules):" in ln for ln in lines), (
+            "Missing 'Extended by (2 modules):' line when base has 2 extensions"
+        )
+        assert any("viin_sale.view_sale_form_inherit" in ln for ln in lines), (
+            "Missing first extension xmlid"
+        )
+        assert any("to_sale_custom.view_sale_form_inherit" in ln for ln in lines), (
+            "Missing second extension xmlid"
+        )
+
+        # Cleanup
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self._VIEW_SNAP_VERSION,
+            )
+

@@ -131,6 +131,70 @@ def list_ssh_keys(conn) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def create_feedback(
+    conn,
+    *,
+    pattern_node_id: str,
+    api_key_id: int | None,
+    rating: str,
+    comment: str | None = None,
+) -> int:
+    """Store a thumbs-up/down rating for a PatternExample node.
+
+    Args:
+        conn: PostgreSQL connection.
+        pattern_node_id: Neo4j node id or pattern_id string
+            (e.g. 'python__write-read-before-super').
+        api_key_id: Authenticated API key id (or None for anonymous).
+        rating: 'up' or 'down'.
+        comment: Optional free-text comment from the user.
+
+    Returns:
+        Integer id of the newly created pattern_feedback row.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO pattern_feedback (pattern_node_id, api_key_id, rating, comment) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (pattern_node_id, api_key_id, rating, comment),
+        )
+        row = cur.fetchone()
+        if not conn.autocommit:
+            conn.commit()
+        return row[0]
+
+
+def list_feedback(conn, pattern_node_id: str) -> list[dict]:
+    """Return all feedback entries for a given pattern node, newest first.
+
+    Args:
+        conn: PostgreSQL connection.
+        pattern_node_id: The pattern id to filter on.
+
+    Returns:
+        List of dicts with keys: id, api_key_id, rating, comment, created_at.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, api_key_id, rating, comment, created_at "
+            "FROM pattern_feedback "
+            "WHERE pattern_node_id = %s "
+            "ORDER BY created_at DESC",
+            (pattern_node_id,),
+        )
+        rows = cur.fetchall()
+        return [
+            {
+                "id": r[0],
+                "api_key_id": r[1],
+                "rating": r[2],
+                "comment": r[3],
+                "created_at": str(r[4]),
+            }
+            for r in rows
+        ]
+
+
 def save_ssh_key(
     conn, name: str, public_key: str, private_key_encrypted: str, key_version: int = 1
 ) -> int:

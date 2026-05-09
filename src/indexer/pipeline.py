@@ -13,6 +13,7 @@ Public API:
 import hashlib
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -142,11 +143,13 @@ def _index_repo(
     writer: Neo4jWriter,
     pg_conn=None,
     embedder=None,
+    progress: bool = False,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
     Returns per-repo counters: {modules, views, qweb, embeddings}.
     Pass pg_conn + embedder to also write semantic embeddings to pgvector.
+    Set progress=True to show tqdm progress bar during module iteration.
     """
     local_path: str = repo["local_path"]
     odoo_version: str = repo["odoo_version"]
@@ -180,7 +183,19 @@ def _index_repo(
 
     for version, modules in modules_by_version.items():
         sorted_names = topological_sort(modules)
-        for mod_name in sorted_names:
+
+        # Try to import tqdm for progress bar; graceful fallback if not installed.
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+
+        # Wrap iteration with tqdm if progress enabled, tqdm available, and stdout is a TTY.
+        iterable = sorted_names
+        if progress and _tqdm is not None and sys.stdout.isatty():
+            iterable = _tqdm(sorted_names, desc=f"[{version}]", unit="mod", leave=True)
+
+        for mod_name in iterable:
             info = modules[mod_name]
             total_modules += 1
 
@@ -233,7 +248,7 @@ def _index_repo(
     }
 
 
-def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
+def index_profile(pg_conn, *, profile_name: str, embedder=None, progress: bool = False) -> dict:
     """Index all repos belonging to *profile_name*.
 
     Args:
@@ -241,6 +256,7 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
         profile_name: Name of the profile to index.
         embedder:     Optional EmbedderClient. When provided (and pgvector is
                       available), semantic embeddings are written to PostgreSQL.
+        progress:     When True, show tqdm progress bar for module iteration.
 
     Returns:
         Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
@@ -274,7 +290,9 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
             for repo in repos:
                 repo_id: int = repo["id"]
                 try:
-                    counters = _index_repo(repo, writer, pg_conn=pg_conn, embedder=embedder)
+                    counters = _index_repo(
+                        repo, writer, pg_conn=pg_conn, embedder=embedder, progress=progress
+                    )
                     total_modules += counters["modules"]
                     total_views += counters["views"]
                     total_qweb += counters["qweb"]
@@ -478,11 +496,16 @@ def index_core(
     }
 
 
-def index_all(pg_conn, embedder=None) -> dict:
+def index_all(pg_conn, embedder=None, progress: bool = False) -> dict:
     """Index every profile registered in PostgreSQL.
 
     Continues after per-profile failures — failed profiles are listed in
     the returned summary under 'profiles_failed'.
+
+    Args:
+        pg_conn:   psycopg2 connection (autocommit OK).
+        embedder:  Optional EmbedderClient for pgvector embeddings.
+        progress:  When True, show tqdm progress bar for module iteration.
 
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
@@ -500,7 +523,9 @@ def index_all(pg_conn, embedder=None) -> dict:
     for profile in profiles:
         name = profile["name"]
         try:
-            summary = index_profile(pg_conn, profile_name=name, embedder=embedder)
+            summary = index_profile(
+                pg_conn, profile_name=name, embedder=embedder, progress=progress
+            )
             agg_modules += summary["modules"]
             agg_views += summary["views"]
             agg_qweb += summary["qweb"]
