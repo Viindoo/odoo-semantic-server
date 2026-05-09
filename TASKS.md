@@ -215,7 +215,16 @@
 - [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 defer):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name (per M4.6 plan §Defer M6).
 - [ ] **Per-profile advisory locks (P3):** `src/indexer/pipeline.py` — thay `_LOCK_ID` global constant bằng `_profile_lock_id(profile_name: str) -> int` (hash `f"odoo-semantic-{profile_name}"`). Cập nhật `indexer_is_running()` nhận thêm `profile_name` param. Hai profile khác nhau có thể index song song không block nhau.
 - [ ] **ThreadPoolExecutor parallel repo scan (P3):** `src/indexer/pipeline.py` `index_profile()` thêm `max_workers: int = 1` param. Khi `> 1`: wrap `_index_repo()` bằng `ThreadPoolExecutor` — mỗi thread cần PG connection riêng.
-- [ ] **PostgreSQL connection pool (P3):** `src/mcp/server.py` + `src/mcp/middleware.py` — thay singleton `_pg_conn` + `_PG_LOCK` bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`.
+- [ ] **PostgreSQL connection pool (P3) — proper fix cho H1:** `src/mcp/server.py` + `src/mcp/middleware.py` — thay singleton `_pg_conn` + `_PG_LOCK` bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`. Workaround tạm thời (_PG_LOCK bao quanh cursor trong tool handlers) đã ship trong fix/pre-launch-critical.
+
+**Section G — Pre-launch audit deferred (2026-05-09):**
+- [ ] **M3 — Feedback API trên MCP server (P2):** `POST /api/feedback` hiện chỉ expose trên Web UI port 8003 (localhost-only). Remote end-user dùng MCP port 8002 không thể submit feedback. Fix: mount `feedback.router` trực tiếp vào ASGI app của MCP server, bỏ qua loopback guard (đã có X-API-Key auth).
+- [ ] **M4 — Qwen3Embedder default model name (P3):** `src/indexer/embedder.py:59` default `model="qwen3-embedding:4b"` khác với config default `qwen3-embedding-q5km`. Sửa class default thành `"qwen3-embedding-q5km"` cho nhất quán với README và `odoo-semantic.conf.example`.
+- [ ] **M5 — Password lộ trong process list khi pg_dump (P2):** `src/cli.py:38` — `subprocess.run(["pg_dump", dsn, ...])` expose password trong `/proc/<pid>/cmdline`. Fix: parse DSN → set `PGPASSWORD` env var, truyền host/port/user/dbname riêng thay vì DSN string.
+- [ ] **L1 — health endpoint dùng private FastMCP attr (P3):** `src/mcp/health.py:34` — `mcp._tool_manager._tools` là private internal API. Nếu FastMCP update, health trả `mcp_tools: -1` thay vì error rõ ràng. Tìm public API thay thế hoặc wrap trong try/except với fallback mô tả rõ hơn.
+- [ ] **L3 — No `maxlength` trên Web UI form inputs (P3):** `src/web_ui/templates/api_keys.html` + `repos.html` + `ssh_keys.html` — thêm `maxlength="200"` cho text inputs để tránh cực trị.
+- [ ] **L4 — Cache dict không có lock (P3):** `src/mcp/middleware.py` — `_KEY_CACHE` và `_CACHE_TS` được read/write từ multiple threads mà không lock. Thêm `_cache_lock = threading.Lock()` bao quanh toàn bộ cache operations.
+- [ ] **L6 — `embeddings: 0` không giải thích lý do (P3):** `src/indexer/__main__.py` — khi `embedder=None` (không config), in thêm dòng "Embeddings skipped — EMBEDDER_URL not configured. Use --no-embed to suppress." vào stdout cùng summary.
 
 ---
 

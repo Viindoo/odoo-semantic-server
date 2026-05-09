@@ -110,7 +110,7 @@ def _resolve_version(version_arg: str, session) -> str:
     v = _latest_version(session)
     if v is None:
         raise ValueError(
-            "No data indexed. Run `python -m src.indexer --profile <name>` first."
+            "No data indexed. Run `python -m src.indexer index-repo --profile <name>` first."
         )
     return v
 
@@ -342,30 +342,34 @@ def _find_examples(
     VALID_TYPES = {"method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3"}
     selected_types = [t for t in (chunk_types or []) if t in VALID_TYPES]
 
-    with pg.cursor() as cur:
-        if selected_types:
-            placeholders = ",".join(["%s"] * len(selected_types))
-            cur.execute(
-                f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                           chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
-                    FROM embeddings
-                    WHERE odoo_version = %s AND chunk_type IN ({placeholders})
-                    ORDER BY vec <=> %s::vector LIMIT 20""",
-                [query_vec, odoo_version] + selected_types + [query_vec],
-            )
-        else:
-            cur.execute(
-                """SELECT chunk_type, module, entity_name, model_name, file_path,
-                          chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
-                   FROM embeddings WHERE odoo_version = %s
-                   ORDER BY vec <=> %s::vector LIMIT 20""",
-                [query_vec, odoo_version, query_vec],
-            )
-        raw = [
-            dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
-                 file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]))
-            for r in cur.fetchall()
-        ]
+    # Lazy import avoids circular: middleware imports _get_pg_conn from server.
+    # Lock is required: psycopg2 connections are not thread-safe (B2).
+    from src.mcp.middleware import _PG_LOCK
+    with _PG_LOCK:
+        with pg.cursor() as cur:
+            if selected_types:
+                placeholders = ",".join(["%s"] * len(selected_types))
+                cur.execute(
+                    f"""SELECT chunk_type, module, entity_name, model_name, file_path,
+                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                        FROM embeddings
+                        WHERE odoo_version = %s AND chunk_type IN ({placeholders})
+                        ORDER BY vec <=> %s::vector LIMIT 20""",
+                    [query_vec, odoo_version] + selected_types + [query_vec],
+                )
+            else:
+                cur.execute(
+                    """SELECT chunk_type, module, entity_name, model_name, file_path,
+                              chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                       FROM embeddings WHERE odoo_version = %s
+                       ORDER BY vec <=> %s::vector LIMIT 20""",
+                    [query_vec, odoo_version, query_vec],
+                )
+            raw = [
+                dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
+                     file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]))
+                for r in cur.fetchall()
+            ]
 
     raw = [c for c in raw if c["module"] != "__unresolved__"]
 
@@ -1040,9 +1044,9 @@ _VALID_LINT_LANGUAGES = {"python", "javascript", "xml"}
 
 
 def _format_lint_check(
-    violations: list[dict], version: str, code: str,
+    violations: list[dict], version: str, code: str, language: str = "python",
 ) -> str:
-    header = f"lint_check(Odoo {version}, language=python) — {len(violations)} violations"
+    header = f"lint_check(Odoo {version}, language={language}) — {len(violations)} violations"
     code_preview = (code or "")[:60].replace("\n", " ")
     lines = [_LINT_V0_BANNER, header, f"├─ Code: {code_preview!r}"]
     if not violations:
@@ -1132,7 +1136,7 @@ def _lint_check(
         """, v=odoo_version).single()
         curate_status = curate_rec["curate_status"] if curate_rec else None
     violations = [r for r in rules if _match_lint_rule(code, r)]
-    result = _format_lint_check(violations, odoo_version, code)
+    result = _format_lint_check(violations, odoo_version, code, language)
     if curate_status == "pending":
         result = (
             f"ℹ Spec data v{odoo_version} pending curation — limited results.\n" + result
@@ -1450,31 +1454,35 @@ def _suggest_pattern(
             f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
         )
 
-    with pg.cursor() as cur:
-        if language == "all":
-            cur.execute(
-                """SELECT entity_name, file_path,
-                          1 - (vec <=> %s::vector) AS cosine
-                   FROM embeddings
-                   WHERE chunk_type = 'pattern_example'
-                     AND module = '__patterns__'
-                   ORDER BY vec <=> %s::vector
-                   LIMIT %s""",
-                [intent_vec, intent_vec, limit],
-            )
-        else:
-            cur.execute(
-                """SELECT entity_name, file_path,
-                          1 - (vec <=> %s::vector) AS cosine
-                   FROM embeddings
-                   WHERE chunk_type = 'pattern_example'
-                     AND module = '__patterns__'
-                     AND entity_name LIKE %s
-                   ORDER BY vec <=> %s::vector
-                   LIMIT %s""",
-                [intent_vec, f"{language}__%", intent_vec, limit],
-            )
-        ranked = cur.fetchall()
+    # Lazy import avoids circular: middleware imports _get_pg_conn from server.
+    # Lock is required: psycopg2 connections are not thread-safe (B2).
+    from src.mcp.middleware import _PG_LOCK
+    with _PG_LOCK:
+        with pg.cursor() as cur:
+            if language == "all":
+                cur.execute(
+                    """SELECT entity_name, file_path,
+                              1 - (vec <=> %s::vector) AS cosine
+                       FROM embeddings
+                       WHERE chunk_type = 'pattern_example'
+                         AND module = '__patterns__'
+                       ORDER BY vec <=> %s::vector
+                       LIMIT %s""",
+                    [intent_vec, intent_vec, limit],
+                )
+            else:
+                cur.execute(
+                    """SELECT entity_name, file_path,
+                              1 - (vec <=> %s::vector) AS cosine
+                       FROM embeddings
+                       WHERE chunk_type = 'pattern_example'
+                         AND module = '__patterns__'
+                         AND entity_name LIKE %s
+                       ORDER BY vec <=> %s::vector
+                       LIMIT %s""",
+                    [intent_vec, f"{language}__%", intent_vec, limit],
+                )
+            ranked = cur.fetchall()
 
     if not ranked:
         return (
@@ -1602,7 +1610,7 @@ def _format_check_module_exists(
     elif not indexed:
         lines.append(
             "└─ Hint: module not indexed in this profile. "
-            "If it should be, run: python -m src.indexer --profile <name>"
+            "If it should be, run: python -m src.indexer index-repo --profile <name>"
         )
     else:
         lines[-1] = lines[-1].replace("├─", "└─")
