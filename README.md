@@ -87,7 +87,7 @@ Người dùng **không cài gì**. Chỉ cần nhận URL + API key từ admin:
 **Codex / Gemini CLI** — xem hướng dẫn tương ứng của từng tool, cùng cấu trúc URL + header.
 
 > 💡 **Test local trước khi prod**: thay URL trên thành `http://localhost:8002/mcp`,
-> bỏ header `X-API-Key` (M5 sẽ thêm auth). Xem [Local E2E Quickstart](#local-e2e-quickstart).
+> giữ nguyên header `X-API-Key` với key tạo bằng `python -m src.manager create-api-key`. Xem [Local E2E Quickstart](#local-e2e-quickstart).
 
 ---
 

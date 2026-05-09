@@ -58,10 +58,14 @@ Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa cá
 - [ ] **FERNET_KEY rotation script:** `python -m src.cli rotate-fernet --old-key OLD --new-key NEW` → re-encrypt tất cả `ssh_key_pairs.private_key_encrypted` rows, bump `key_version`. Deploy.md M5 document manual procedure; script ở đây. **Moved from M5**.
 - [ ] **Structured JSON logging:** `logging.config` dictionary config hoặc `structlog` — emit JSON lines cho log aggregator (Loki, CloudWatch). WARN format plain text đủ M5; structured log cho production traffic analysis. **Moved from M5**.
 
-### Section D — Landing zone (reserved)
+### Section D — Landing zone (M5 debt rollup)
 
-- [ ] **(reserved)** Tech-debt rollup từ M5: bất kỳ debt nào sinh ra trong M5 implementation (vd: helper duplicated, test coverage gap mới, deploy.md outdated) đẩy vào đây thay vì để rải rác.
-- [ ] **Process:** khi đóng M5 PR, audit checklist 5 phút → list debt → add bullet vào section này → priority → execute trong M5.5.
+Items phát hiện sau khi đóng M5 PR #16:
+
+- [x] **Browser E2E tests:** `tests/test_web_ui_browser.py` — 24 Playwright headless tests cover toàn bộ Web UI (Dashboard, API Keys, SSH Keys, Repos, Navigation). Landed cùng CI refactor chuyển `services:` → `docker compose up -d` (single source of truth cho local + CI + server deploy).
+- [x] **`docs/deploy.md` §4.3 stale:** section heading và nội dung vẫn mô tả "M2.5 — chưa có API key validation" dù M5 đã ship auth. Fixed: auth section rewrite + `/health` bypass note + verify config snippet thêm `X-API-Key` header.
+- [x] **`README.md` stale note:** dòng "bỏ header `X-API-Key` (M5 sẽ thêm auth)" trong quickstart. Fixed: thay bằng "giữ header với key tạo bằng `create-api-key`".
+- [ ] **`tests/test_mcp_server_config.py` isolation:** monkeypatch `_driver = object()` leak sang `tests/test_mcp_spec_tools.py`. Fix: switch sang `monkeypatch.setattr` (carry-over từ M4.6 — ảnh hưởng khi test order thay đổi).
 
 ---
 
