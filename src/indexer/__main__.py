@@ -112,12 +112,12 @@ def _run_index_core(
 
 
 def main(argv: list[str] | None = None) -> int:
+    from src.logging_config import configure_logging
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # Set logging level based on --verbose flag
     log_level = logging.INFO if (args.subcommand == "index-repo" and getattr(args, "verbose", False)) else logging.WARNING
-    logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging(level=log_level)
 
     if args.subcommand == "index-repo":
         verbose = getattr(args, "verbose", False)

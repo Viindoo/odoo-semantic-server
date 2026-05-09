@@ -114,8 +114,20 @@ CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log(api_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_called_at ON usage_log(called_at);
 """
 
+_FEEDBACK_SQL = """
+CREATE TABLE IF NOT EXISTS pattern_feedback (
+    id               SERIAL PRIMARY KEY,
+    pattern_node_id  TEXT NOT NULL,
+    api_key_id       INTEGER REFERENCES api_keys(id) ON DELETE SET NULL,
+    rating           TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+    comment          TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pattern_feedback_node ON pattern_feedback (pattern_node_id);
+"""
+
 # Public alias — tests and callers that import SCHEMA_SQL get the full DDL string
-SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL
+SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL + _FEEDBACK_SQL
 
 
 def _vector_extension_available(conn) -> bool:
@@ -168,6 +180,11 @@ def run_migrations(conn) -> None:
 
     with conn.cursor() as cur:
         cur.execute(_AUTH_SQL)
+    if not conn.autocommit:
+        conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(_FEEDBACK_SQL)
     if not conn.autocommit:
         conn.commit()
 

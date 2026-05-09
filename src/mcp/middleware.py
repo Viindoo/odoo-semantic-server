@@ -2,6 +2,7 @@
 import asyncio
 import threading
 import time
+from collections import deque
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -14,6 +15,40 @@ from src.auth import hash_key as _hash_key
 _KEY_CACHE: dict[str, int | None] = {}
 _CACHE_TS: dict[str, float] = {}
 _CACHE_TTL = 300.0  # 5 minutes
+
+# ---------------------------------------------------------------------------
+# Per-API-key sliding-window rate limiter (WI-8)
+# ---------------------------------------------------------------------------
+# Maps api_key_id → deque of monotonic timestamps for requests in the last 60s.
+_rate_buckets: dict[int, deque] = {}
+_rate_lock = threading.Lock()
+
+
+def _check_rate_limit(api_key_id: int, limit_rpm: int = 120) -> tuple[bool, int]:
+    """Sliding-window rate limiter. Returns (allowed, remaining).
+
+    Thread-safe: guarded by _rate_lock.
+
+    Args:
+        api_key_id: The authenticated API key id.
+        limit_rpm:  Maximum requests per 60-second window (default: 120).
+
+    Returns:
+        (True, remaining)  if the request is within the limit.
+        (False, 0)         if the window is exhausted.
+    """
+    now = time.monotonic()
+    window = 60.0
+    with _rate_lock:
+        bucket = _rate_buckets.setdefault(api_key_id, deque())
+        # Prune timestamps older than the window
+        while bucket and now - bucket[0] > window:
+            bucket.popleft()
+        remaining = max(0, limit_rpm - len(bucket))
+        if len(bucket) >= limit_rpm:
+            return False, 0
+        bucket.append(now)
+        return True, remaining - 1
 
 # Strong references to background tasks prevent GC-before-completion (B3).
 _BG_TASKS: set[asyncio.Task] = set()
@@ -91,10 +126,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if key_id is None:
             return Response("Invalid or inactive API key", status_code=401)
 
+        # Rate limiting — applied after successful auth (WI-8)
+        from src import config as _config
+        limit_rpm = int(_config.get("auth", "rate_limit_rpm", fallback="120"))
+        allowed, remaining = _check_rate_limit(key_id, limit_rpm)
+        if not allowed:
+            return Response(
+                "Rate limit exceeded — try again in 60 seconds",
+                status_code=429,
+                headers={"X-RateLimit-Remaining": "0"},
+            )
+
         request.state.api_key_id = key_id
         start = time.monotonic()
         response = await call_next(request)
         ms = int((time.monotonic() - start) * 1000)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
 
         # Fire-and-forget usage log — hold strong ref to prevent GC (B3)
         task = asyncio.create_task(_log_usage_async(key_id, request, ms))

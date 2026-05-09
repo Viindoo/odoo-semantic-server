@@ -41,4 +41,8 @@ def create_app() -> FastAPI:
     app.include_router(api_keys.router)
     app.include_router(ssh_keys.router)
 
+    from src.web_ui.routes import feedback
+
+    app.include_router(feedback.router)
+
     return app
