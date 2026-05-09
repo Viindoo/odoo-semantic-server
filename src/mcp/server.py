@@ -71,7 +71,12 @@ def _get_embedder():
         dim_str = config.from_env_or_ini(
             "EMBEDDER_DIM", "embedder", "dim", fallback="1024",
         )
-        _embedder_instance = Qwen3Embedder(url, model, dim=int(dim_str))
+        auth_token = config.from_env_or_ini(
+            "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,
+        )
+        _embedder_instance = Qwen3Embedder(
+            url, model, dim=int(dim_str), auth_token=auth_token,
+        )
     return _embedder_instance
 
 
