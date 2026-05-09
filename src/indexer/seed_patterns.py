@@ -111,7 +111,12 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
     embedder_dim = int(config.from_env_or_ini(
         "EMBEDDER_DIM", "embedder", "dim", fallback="1024",
     ))
-    embedder = Qwen3Embedder(embedder_url, embedder_model, dim=embedder_dim)
+    embedder_auth = config.from_env_or_ini(
+        "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,
+    )
+    embedder = Qwen3Embedder(
+        embedder_url, embedder_model, dim=embedder_dim, auth_token=embedder_auth,
+    )
 
     texts = [c.content for c in chunks]
     vecs = embedder.embed(texts)
@@ -119,7 +124,6 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
     conn = psycopg2.connect(dsn)
     try:
         register_vector(conn)
-        conn.autocommit = False
         with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM embeddings "

@@ -38,7 +38,10 @@ def _build_embedder():
     from src.indexer.embedder import Qwen3Embedder
     model = config.get("embedder", "model", fallback="qwen3-embedding-q5km")
     dim = int(config.get("embedder", "dim", fallback="1024"))
-    return Qwen3Embedder(url=url, model=model, dim=dim)
+    auth_token = config.from_env_or_ini(
+        "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,
+    )
+    return Qwen3Embedder(url=url, model=model, dim=dim, auth_token=auth_token)
 
 
 def _build_parser() -> argparse.ArgumentParser:
