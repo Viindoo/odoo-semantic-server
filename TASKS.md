@@ -181,6 +181,21 @@
 - [x] `README.md`: bỏ note stale "bỏ header X-API-Key (M5 sẽ thêm auth)" → note đúng auth mandatory
 - [ ] `tests/test_mcp_server_config.py` isolation fix: monkeypatch leak `_driver = object()` sang `test_mcp_spec_tools.py` — switch sang `monkeypatch.setattr`
 
+**Section E — Concurrency Hardening (P1):**
+- [x] `src/indexer/pipeline.py`: thêm `indexer_is_running(pg_conn) -> bool` public helper
+- [x] `src/web_ui/routes/repos.py`: dedup check trước Popen + `flash` query param trong `repos_page()`
+- [x] `src/web_ui/templates/repos.html`: flash warning banner (amber style)
+- [x] `tests/test_web_ui_repos.py`: 2 unit tests dedup (blocked + ok path)
+
+**Section F — Job Tracking (P2 — chưa implement):**
+- [ ] `src/db/migrate.py`: table `indexer_jobs` (id, profile_name, status, started_at, finished_at, error_msg, pid, created_at) + indexes
+- [ ] `src/db/job_registry.py`: CRUD — `create_job()`, `update_job()`, `get_last_job()`, `list_running_jobs()`
+- [ ] `src/indexer/__main__.py`: thêm `--job-id INT` arg → update job status start/success/error
+- [ ] `src/web_ui/routes/repos.py`: `index_repo()` tạo job record + truyền `--job-id` vào subprocess
+- [ ] `GET /repos/jobs/{job_id}/status` route: JSON `{status, pid, error_msg}`
+- [ ] `src/web_ui/templates/repos.html`: status badge + JS polling 5s nếu running/queued
+- [ ] `tests/test_job_registry.py`: unit tests CRUD
+
 > **Lý do tách M5.5:** items polish không block M5 ship; deferred items cần auth layer M5 trước. Pattern theo M2.5 precedent (milestone phụ giữa product milestones).
 
 ## Milestone 6 — "Scale Wow" (Ongoing)
@@ -198,6 +213,9 @@
     - [ ] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch)
 - [ ] **EE_CONFUSION auto-detect (M4.6 defer):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Vẫn keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
 - [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 defer):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name (per M4.6 plan §Defer M6).
+- [ ] **Per-profile advisory locks (P3):** `src/indexer/pipeline.py` — thay `_LOCK_ID` global constant bằng `_profile_lock_id(profile_name: str) -> int` (hash `f"odoo-semantic-{profile_name}"`). Cập nhật `indexer_is_running()` nhận thêm `profile_name` param. Hai profile khác nhau có thể index song song không block nhau.
+- [ ] **ThreadPoolExecutor parallel repo scan (P3):** `src/indexer/pipeline.py` `index_profile()` thêm `max_workers: int = 1` param. Khi `> 1`: wrap `_index_repo()` bằng `ThreadPoolExecutor` — mỗi thread cần PG connection riêng.
+- [ ] **PostgreSQL connection pool (P3):** `src/mcp/server.py` + `src/mcp/middleware.py` — thay singleton `_pg_conn` + `_PG_LOCK` bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`.
 
 ---
 
