@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Repos &amp; Profiles — Odoo Semantic MCP Admin{% endblock %}
+{% block content %}
+<h1>Repos &amp; Profiles</h1>
+
+{% if error %}
+<div class="alert">{{ error }}</div>
+{% endif %}
+
+<!-- Add Profile -->
+<div class="card">
+    <h2>Add Profile</h2>
+    <form method="post" action="/repos/profiles" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end">
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Profile Name *</label>
+            <input type="text" name="name" placeholder="e.g. viindoo17" required
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem">
+        </div>
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Odoo Version *</label>
+            <input type="text" name="version" placeholder="17.0" required
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:90px">
+        </div>
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Description</label>
+            <input type="text" name="description" placeholder="optional"
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem">
+        </div>
+        <button type="submit" class="btn btn-primary">Add Profile</button>
+    </form>
+</div>
+
+<!-- Add Repo -->
+<div class="card">
+    <h2>Add Repo</h2>
+    {% if profiles %}
+    <form method="post" action="/repos/repos" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end">
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Profile *</label>
+            <select name="profile" required style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem">
+                {% for p in profiles %}
+                <option value="{{ p.name }}">{{ p.name }} ({{ p.odoo_version }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Repo URL</label>
+            <input type="text" name="url" placeholder="https://github.com/odoo/odoo" value="file://local"
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:240px">
+        </div>
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Branch *</label>
+            <input type="text" name="branch" placeholder="17.0" required
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:80px">
+        </div>
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Local Path *</label>
+            <input type="text" name="local_path" placeholder="/home/user/git/odoo_17.0" required
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:260px">
+        </div>
+        <button type="submit" class="btn btn-primary">Add Repo</button>
+    </form>
+    <p style="margin-top:0.5rem;font-size:0.8rem;color:#64748b">
+        Note: SSH auto-clone not yet available (M6). Git clone manually, then provide the local path.
+    </p>
+    {% else %}
+    <p style="color:#64748b;font-size:0.9rem">Add a profile first.</p>
+    {% endif %}
+</div>
+
+<!-- Profiles List -->
+{% if profiles %}
+{% for p in profiles %}
+<div class="card">
+    <h2>{{ p.name }} <span style="font-size:0.8rem;font-weight:400;color:#64748b">v{{ p.odoo_version }}</span></h2>
+    {% if p.repos %}
+    <table>
+        <thead>
+            <tr><th>Local Path</th><th>Branch</th><th>Status</th><th>Last Indexed</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for r in p.repos %}
+        <tr>
+            <td><code>{{ r.local_path }}</code></td>
+            <td>{{ r.branch }}</td>
+            <td>
+                <span class="badge badge-{{ 'ok' if r.status == 'indexed' else ('error' if r.status == 'error' else 'pending') }}">
+                    {{ r.status }}
+                </span>
+                {% if r.error_msg %}<span style="color:#dc2626;font-size:0.75rem;margin-left:0.5rem">{{ r.error_msg[:60] }}</span>{% endif %}
+            </td>
+            <td style="font-size:0.8rem;color:#64748b">{{ r.last_indexed_at or "—" }}</td>
+            <td>
+                <form method="post" action="/repos/repos/{{ r.id }}/index">
+                    <button type="submit" class="btn btn-primary" style="font-size:0.8rem">Index</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#94a3b8;font-size:0.9rem">No repos attached.</p>
+    {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+    <p>No profiles yet. Add one above.</p>
+</div>
+{% endif %}
+{% endblock %}
