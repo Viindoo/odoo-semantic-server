@@ -6,7 +6,7 @@ PYTEST  := $(VENV)/bin/pytest
 COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
-.PHONY: help install test test-unit test-integration test-all \
+.PHONY: help install test test-unit test-integration test-browser test-all \
         neo4j-up neo4j-down neo4j-logs lint
 
 help:
@@ -14,6 +14,7 @@ help:
 	@echo "  install           Cài dependencies vào ~/.venv/odoo-semantic-mcp"
 	@echo "  test              Chạy unit tests (không cần Docker)"
 	@echo "  test-integration  Chạy integration tests (cần Docker)"
+	@echo "  test-browser      Chạy browser E2E tests (cần Docker + PostgreSQL)"
 	@echo "  test-all          Chạy toàn bộ tests"
 	@echo "  neo4j-up          Start Neo4j container"
 	@echo "  neo4j-down        Stop Neo4j container"
@@ -47,6 +48,16 @@ test-unit:
 #   make neo4j-up && make _test-neo4j && make neo4j-down
 test-integration:
 	$(PYTEST) tests/ -v -m "neo4j or postgres" --tb=short -rs
+
+test-browser:
+	@$(COMPOSE) up -d postgres > /dev/null 2>&1
+	@echo "Đợi PostgreSQL sẵn sàng..."
+	@until $(COMPOSE) exec -T postgres pg_isready -U odoo_semantic > /dev/null 2>&1; do \
+		printf "."; sleep 2; \
+	done
+	@echo " PostgreSQL sẵn sàng"
+	$(VENV)/bin/playwright install chromium
+	$(PYTEST) tests/test_web_ui_browser.py -v -m "browser and postgres" --tb=short
 
 test-all: test-unit test-integration
 

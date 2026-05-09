@@ -1,6 +1,9 @@
 # tests/conftest.py
 import os
 import subprocess
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -232,3 +235,91 @@ def clean_pg_embeddings(pg_conn):
     yield pg_conn
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
+
+
+# ---------------------------------------------------------------------------
+# Browser test infrastructure (Playwright + uvicorn in-process server)
+# ---------------------------------------------------------------------------
+
+WEBUI_TEST_PORT = 8099  # Separate from production port 8003
+
+
+class _UvicornThread(threading.Thread):
+    """Run uvicorn in a daemon thread so the main pytest thread keeps control."""
+
+    def __init__(self, app, port: int):
+        super().__init__(daemon=True)
+        import uvicorn
+        self.server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="critical")
+        )
+
+    def run(self):
+        self.server.run()
+
+    def stop(self):
+        self.server.should_exit = True
+
+
+def _wipe_web_ui_tables(conn) -> None:
+    """DELETE all rows from Web UI tables in FK-safe order."""
+    with conn.cursor() as cur:
+        for tbl in ("usage_log", "repos", "api_keys", "ssh_keys", "profiles"):
+            try:
+                cur.execute(f"DELETE FROM {tbl}")
+            except Exception:
+                pass  # table absent (e.g. before first migration) — safe to skip
+
+
+@pytest.fixture(scope="session")
+def web_ui_server(pg_conn):
+    """Start Web UI on 127.0.0.1:{WEBUI_TEST_PORT} pointing to test DB.
+
+    Session-scoped: one server instance shared across all browser tests.
+    Sets PG_DSN + FERNET_KEY env vars (read at request-time by _get_conn/_get_fernet).
+    """
+    from cryptography.fernet import Fernet
+
+    from src.db.migrate import run_migrations
+    from src.web_ui.app import create_app
+
+    # Bootstrap schema once at session start
+    run_migrations(pg_conn)
+
+    # PG_DSN read by _get_conn() via os.getenv() at each request — set before first request
+    os.environ["PG_DSN"] = PG_TEST_DSN
+    # FERNET_KEY required for SSH key routes
+    if not os.environ.get("FERNET_KEY"):
+        os.environ["FERNET_KEY"] = Fernet.generate_key().decode()
+
+    app = create_app()
+    srv = _UvicornThread(app, port=WEBUI_TEST_PORT)
+    srv.start()
+
+    base_url = f"http://127.0.0.1:{WEBUI_TEST_PORT}"
+    for _ in range(30):
+        try:
+            urllib.request.urlopen(f"{base_url}/", timeout=0.5)
+            break
+        except Exception:
+            time.sleep(0.1)
+
+    yield base_url
+
+    srv.stop()
+    srv.join(timeout=3)
+
+
+@pytest.fixture
+def clean_browser(pg_conn):
+    """Ensure migrated schema + empty tables before/after each browser test.
+
+    Calls run_migrations() so tables exist even if a previous test dropped them
+    via clean_pg. Yields pg_conn for direct DB assertions in browser tests.
+    """
+    from src.db.migrate import run_migrations
+
+    run_migrations(pg_conn)
+    _wipe_web_ui_tables(pg_conn)
+    yield pg_conn
+    _wipe_web_ui_tables(pg_conn)

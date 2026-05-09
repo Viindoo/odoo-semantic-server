@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main, master]
 
+# Single source of truth for DB image versions:
+#   Neo4j  — NEO4J_IMAGE in .env.example (docker-compose reads via ${NEO4J_IMAGE})
+#   Postgres — image hardcoded in docker-compose.yml
+# All jobs use `docker compose up -d` so no version is duplicated here.
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -26,44 +31,37 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest tests/ -v -m "not neo4j and not postgres" --tb=short
+      - run: pytest tests/ -v -m "not neo4j and not postgres and not browser" --tb=short
 
   integration-tests:
     runs-on: ubuntu-latest
-    services:
-      neo4j:
-        image: neo4j:5.26.25
-        env:
-          NEO4J_AUTH: neo4j/password
-        ports:
-          - 7687:7687
-        options: >-
-          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 12
-      postgres:
-        image: pgvector/pgvector:0.8.2-pg16
-        env:
-          POSTGRES_DB: odoo_semantic
-          POSTGRES_USER: odoo_semantic
-          POSTGRES_PASSWORD: password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start DB services
+        run: |
+          cp .env.example .env
+          docker compose up -d
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      # Exclude smoke tests — they run in dedicated smoke-tests job below
-      # to keep failure signals separate (smoke fail = B1/B2 regression).
-      - run: pytest tests/ -v -m "(neo4j or postgres) and not smoke" --tb=short
+
+      - name: Wait for PostgreSQL
+        run: |
+          timeout 60 sh -c \
+            'until docker compose exec -T postgres pg_isready -U odoo_semantic 2>/dev/null; \
+             do sleep 2; done'
+
+      - name: Wait for Neo4j
+        run: |
+          timeout 120 sh -c \
+            'until docker compose exec -T neo4j wget -q --spider http://localhost:7474 2>/dev/null; \
+             do sleep 3; done'
+
+      # Exclude smoke + browser — each runs in its own job for clear failure signals.
+      - run: pytest tests/ -v -m "(neo4j or postgres) and not smoke and not browser" --tb=short
         env:
           NEO4J_TEST_URI: bolt://localhost:7687
           NEO4J_TEST_USER: neo4j
@@ -72,26 +70,55 @@ jobs:
 
   smoke-tests:
     runs-on: ubuntu-latest
-    services:
-      neo4j:
-        image: neo4j:5.26.25
-        env:
-          NEO4J_AUTH: neo4j/password
-        ports:
-          - 7687:7687
-        options: >-
-          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 12
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start Neo4j
+        run: |
+          cp .env.example .env
+          docker compose up -d neo4j
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest tests/test_smoke_index_core.py tests/test_smoke_pattern_wow.py tests/test_smoke_product_wow.py -v -m "smoke" --tb=short
+
+      - name: Wait for Neo4j
+        run: |
+          timeout 120 sh -c \
+            'until docker compose exec -T neo4j wget -q --spider http://localhost:7474 2>/dev/null; \
+             do sleep 3; done'
+
+      - run: >
+          pytest tests/test_smoke_index_core.py tests/test_smoke_pattern_wow.py
+          tests/test_smoke_product_wow.py -v -m smoke --tb=short
         env:
           NEO4J_TEST_URI: bolt://localhost:7687
           NEO4J_TEST_USER: neo4j
           NEO4J_TEST_PASSWORD: password
+
+  browser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start PostgreSQL
+        run: |
+          cp .env.example .env
+          docker compose up -d postgres
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: playwright install chromium --with-deps
+
+      - name: Wait for PostgreSQL
+        run: |
+          timeout 60 sh -c \
+            'until docker compose exec -T postgres pg_isready -U odoo_semantic 2>/dev/null; \
+             do sleep 2; done'
+
+      - run: pytest tests/test_web_ui_browser.py -v -m "browser and postgres" --tb=short
+        env:
+          PG_TEST_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
