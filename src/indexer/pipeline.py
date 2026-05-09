@@ -290,7 +290,9 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None, progress: bool =
             for repo in repos:
                 repo_id: int = repo["id"]
                 try:
-                    counters = _index_repo(repo, writer, pg_conn=pg_conn, embedder=embedder, progress=progress)
+                    counters = _index_repo(
+                        repo, writer, pg_conn=pg_conn, embedder=embedder, progress=progress
+                    )
                     total_modules += counters["modules"]
                     total_views += counters["views"]
                     total_qweb += counters["qweb"]
@@ -521,7 +523,9 @@ def index_all(pg_conn, embedder=None, progress: bool = False) -> dict:
     for profile in profiles:
         name = profile["name"]
         try:
-            summary = index_profile(pg_conn, profile_name=name, embedder=embedder, progress=progress)
+            summary = index_profile(
+                pg_conn, profile_name=name, embedder=embedder, progress=progress
+            )
             agg_modules += summary["modules"]
             agg_views += summary["views"]
             agg_qweb += summary["qweb"]
