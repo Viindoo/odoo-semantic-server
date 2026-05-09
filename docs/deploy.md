@@ -318,9 +318,9 @@ sudo -u odoo-semantic -H bash -c '
     $PY -m src.manager list   # verify
 
     # Lần đầu: index Neo4j graph only (đủ M1+M2+M4) — chưa cần Ollama
-    $PY -m src.indexer --profile viindoo_17 --no-embed
+    $PY -m src.indexer index-repo --profile viindoo_17 --no-embed
     # Hoặc tất cả profiles:
-    # $PY -m src.indexer --all --no-embed
+    # $PY -m src.indexer index-repo --all --no-embed
 '
 ```
 
@@ -333,7 +333,7 @@ Khi đã setup embedder (xem `docs/deploy/embedder-setup.md`), re-index
 sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
-        -m src.indexer --profile viindoo_17
+        -m src.indexer index-repo --profile viindoo_17
 '
 ```
 
@@ -367,7 +367,7 @@ sudo journalctl -u odoo-semantic-mcp -f
 sudo tee /etc/cron.d/odoo-semantic-reindex > /dev/null << 'EOF'
 # Re-index toàn bộ profiles mỗi ngày lúc 3 giờ sáng
 0 3 * * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
-    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer --all \
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all \
     >> /var/log/odoo-semantic-reindex.log 2>&1
 EOF
 ```

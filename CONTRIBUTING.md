@@ -311,7 +311,7 @@ src/
 │   ├── parser_js.py       # era-aware JS parser (Era1 Widget.extend, Era2 odoo.define, Era3 OWL/patch)
 │   ├── embedder.py        # EmbedderClient Protocol + FakeEmbedder + Qwen3Embedder (MRL 1024-dim)
 │   ├── pipeline.py        # end-to-end: scanner → registry → resolver → parsers → writers
-│   ├── __main__.py        # CLI: python -m src.indexer --profile / --all / --no-embed
+│   ├── __main__.py        # CLI: python -m src.indexer index-repo --profile / --all / --no-embed
 │   ├── writer_neo4j.py    # write nodes + edges vào Neo4j
 │   └── writer_pgvector.py # EmbeddingChunk + make_chunks + write_module_embeddings (HNSW)
 └── mcp/

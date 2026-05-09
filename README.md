@@ -101,6 +101,7 @@ git clone https://github.com/Viindoo/odoo-semantic-mcp
 cd odoo-semantic-mcp
 make install                     # tạo venv + sao .env.example, odoo-semantic.conf.example
 # Sửa .env: điền NEO4J_PASSWORD và PG_PASSWORD (replace <PASSWORD> trong PG_DSN)
+# Sửa odoo-semantic.conf: điền [neo4j] password + [postgresql] dsn (khớp với .env)
 docker compose up -d             # start Neo4j (:7474, :7687) + PostgreSQL (:5432)
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
 ```

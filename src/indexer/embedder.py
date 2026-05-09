@@ -56,7 +56,7 @@ class Qwen3Embedder:
     def __init__(
         self,
         url: str = "http://localhost:11434",
-        model: str = "qwen3-embedding:4b",
+        model: str = "qwen3-embedding-q5km",
         dim: int = 1024,
         retries: int = 3,
     ):
