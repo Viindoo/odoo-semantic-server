@@ -56,6 +56,11 @@ class Qwen3Embedder:
     Set when Ollama sits behind an authenticated reverse proxy.
     """
 
+    # Cap per-request batch so a single big module doesn't push past either the
+    # in-process timeout or any reverse proxy's `proxy_read_timeout` (typical 120s).
+    # Empirical: ~22s per 100 texts on qwen3-embedding-q5km, so 50 stays well under.
+    _MAX_BATCH = 50
+
     def __init__(
         self,
         url: str = "http://localhost:11434",
@@ -71,6 +76,14 @@ class Qwen3Embedder:
         self._auth_token = auth_token
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        if len(texts) > self._MAX_BATCH:
+            out: list[list[float]] = []
+            for i in range(0, len(texts), self._MAX_BATCH):
+                out.extend(self._embed_one(texts[i : i + self._MAX_BATCH]))
+            return out
+        return self._embed_one(texts)
+
+    def _embed_one(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self._model, "input": texts}).encode()
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._auth_token:
@@ -84,7 +97,10 @@ class Qwen3Embedder:
                     headers=headers,
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                # Timeout sized for full-module batches: a 250-text batch on
+                # qwen3-embedding-q5km via Ollama runs ~60s; large core modules
+                # (account, sale, web) push past 90s. 60s would always retry-fail.
+                with urllib.request.urlopen(req, timeout=600) as resp:
                     data = json.loads(resp.read())
                 return [_normalize(v[: self._dim]) for v in data["embeddings"]]
             except Exception as e:
