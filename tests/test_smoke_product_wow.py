@@ -116,7 +116,8 @@ class TestSmokeAuth:
         import src.mcp.server as srv
         with mock.patch.object(ar, "verify_api_key", return_value=None), \
              mock.patch.object(srv, "_get_pg_conn", return_value=object()):
-            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.get("/mcp", headers={"X-API-Key": "osm_bad_key"})
 
         assert resp.status_code == 401
@@ -137,7 +138,8 @@ class TestSmokeAuth:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/mcp")
 
         assert resp.status_code == 401
@@ -165,7 +167,8 @@ class TestSmokeAuth:
         app = Starlette(routes=[Route("/health", fake_health)])
         app.add_middleware(AuthMiddleware)
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/health")
 
         assert resp.status_code == 200
