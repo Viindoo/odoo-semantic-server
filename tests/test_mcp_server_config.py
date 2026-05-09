@@ -52,7 +52,7 @@ def test_get_driver_reads_neo4j_uri_from_config(tmp_path, monkeypatch):
         lambda uri, *, auth: captured.update({"uri": uri, "auth": auth}) or object(),
     )
 
-    server_mod._driver = None
+    monkeypatch.setattr(server_mod, "_driver", None)
 
     server_mod._get_driver()
 
@@ -84,7 +84,7 @@ def test_get_driver_env_overrides_config(tmp_path, monkeypatch):
         lambda uri, *, auth: captured.update({"uri": uri, "auth": auth}) or object(),
     )
 
-    server_mod._driver = None
+    monkeypatch.setattr(server_mod, "_driver", None)
 
     server_mod._get_driver()
 
