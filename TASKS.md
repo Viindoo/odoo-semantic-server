@@ -122,38 +122,69 @@
 
 ## Milestone 5 — "Product Wow"
 **Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.
-**Outcome:** `docker compose up -d` + Web UI add repos + auto-clone qua SSH key + index. Production-ready: health monitoring + data integrity baseline.
+**Outcome:** `docker compose up -d` + Web UI add repos + index. Admin tạo API key → user add vào Claude Code config → MCP tools respond. Production-ready: `GET /health` + Postgres advisory lock ngăn indexer chạy chồng.
 
-- [ ] `src/auth.py`: API key middleware + usage log (PostgreSQL)
-- [ ] `src/web_ui/repos.py`: profile + repo management Web UI (replace `src.manager` CLI)
-- [ ] `src/web_ui/ssh_keys.py`: generate SSH key pair, expose public key cho user add vào repo họ
-- [ ] `src/web_ui/dashboard.py`: status + key management + index status (FastAPI + Jinja2)
-- [ ] `src/db/migrate.py`: thêm `ssh_key_pairs`, `api_keys`, `user_profile_access`
-- [ ] Auto-clone qua SSH khi user add repo (replace `--local-path` manual step)
-- [ ] `src/cli.py`: `backup` / `restore` (KHÔNG còn `index` — đã có ở M2.5)
-- [ ] `docker-compose.yml`: hoàn thiện cho production (volumes named, restart policy)
-- [ ] `install.sh`: non-Docker installation path
-- [ ] `README.md`: hướng dẫn setup + kết nối VS Code / Claude Code / Codex / Gemini
-- [ ] **Production baseline (cross-cutting):**
-    - [ ] `src/mcp/server.py`: health check endpoint (Neo4j ping + Postgres ping + version) cho Web UI dashboard + systemd/k8s probe
-    - [ ] `src/indexer/pipeline.py`: file-based concurrency lock (`~/.odoo-semantic/indexer.lock`) — prevent overlapping indexer runs từ Web UI button + cron
-- [ ] **Pattern feedback loop (M4.6 defer):** thumbs up/down trên `suggest_pattern` output, lưu vào PostgreSQL với api_key context — cần auth layer M5 trước (per M4.6 plan §Open Questions / Defer M5+)
+> Plan: [`docs/superpowers/plans/2026-05-09-milestone-5-product-wow.md`](docs/superpowers/plans/2026-05-09-milestone-5-product-wow.md) (rev 2 — post-Opus debate)
+> ADR: [`docs/adr/0004-auth-web-ui-ssh-policy.md`](docs/adr/0004-auth-web-ui-ssh-policy.md)
+
+**Wave 1 — Foundation (Haiku):**
+- [ ] `docs/adr/0004-auth-web-ui-ssh-policy.md`: ADR record 10 quyết định kiến trúc M5 (no AUTH_DISABLED, Postgres lock, fail-fast FERNET_KEY, v.v.)
+- [ ] `src/db/migrate.py`: thêm `api_keys`, `ssh_key_pairs` (+ `key_version` INT), `usage_log` tables
+- [ ] `src/db/auth_registry.py`: CRUD api_keys, ssh_key_pairs, usage_log
+- [ ] `src/manager/__main__.py`: thêm `create-api-key <name>` subcommand — CLI bridge trước khi Web UI land
+- [ ] `src/indexer/pipeline.py`: **Postgres advisory lock** (`pg_try_advisory_lock`) — thay fcntl, cross-container, async-safe, auto-release on crash
+- [ ] `src/mcp/health.py` + `src/mcp/middleware.py` (stub): tách từ server.py — health endpoint + middleware placeholder cho Wave 2
+- [ ] `pyproject.toml`: thêm `jinja2`, `python-multipart`, `cryptography>=42`; httpx dev dep
+- [ ] `docker-compose.yml`: named volumes + `restart: unless-stopped`
+- [ ] `Dockerfile`: app container (python:3.12-slim + postgresql-client + git)
+- [ ] `install.sh` + `systemd/` templates: non-Docker installation path
+
+**Wave 2 — Backend Core:**
+- [ ] `src/auth.py` + `src/mcp/middleware.py`: AuthMiddleware — LRU cache 5 min + `asyncio.to_thread` DB + `asyncio.create_task` log, **không có AUTH_DISABLED bypass** (Sonnet)
+- [ ] `src/web_ui/` scaffold: FastAPI + Jinja2 port 8003 hard-bind `127.0.0.1`, dashboard route (Sonnet)
+- [ ] `tests/test_health_endpoint.py`: health endpoint tests — mcp_tools introspected, không hardcode (Haiku)
+
+**Wave 3 — Web UI Pages:**
+- [ ] Web UI `/repos`: list profiles + repos, create profile, add repo (SSH URL note: manual clone M6), trigger index non-blocking (Sonnet)
+- [ ] Web UI `/api-keys`: list + create (raw key shown once) + deactivate (Haiku)
+- [ ] Web UI `/ssh-keys`: generate Ed25519 keypair, FERNET_KEY **fail-fast** (không ephemeral fallback), show public key + deploy key instructions (Sonnet)
+
+**Wave 4 — Tests:**
+- [ ] `tests/test_auth_integration.py`: auth + DB end-to-end, advisory lock concurrency, cache TTL (Haiku)
+- [ ] `tests/test_smoke_product_wow.py` + ci.yml update: health schema, auth 401/bypass `/health` (Haiku)
+
+**Wave 5 — Docs:**
+- [ ] `README.md` + `CONTRIBUTING.md`: M5 onboarding (docker → Web UI → create-api-key → Claude Code) + manual backup note (Haiku)
+- [ ] `docs/deploy.md` §10–§13: Auth, Web UI, SSH Keys, Manual Backup; `TASKS.md` M5 `[x]` (Haiku)
 
 ## Milestone 5.5 — "Polish Wow"
 **Intent:** Observability + test discipline + landing zone cho tech-debt phát sinh trong M5.
-**Outcome:** Mọi long-running operation có progress feedback; mọi MCP tool có anti-drift snapshot test.
+**Outcome:** Mọi long-running operation có progress feedback; mọi MCP tool có anti-drift snapshot test; deferred M5 items hoàn tất.
 
+> Plan: [`docs/superpowers/plans/2026-05-07-milestone-5-5-polish-wow.md`](docs/superpowers/plans/2026-05-07-milestone-5-5-polish-wow.md)
+
+**Section A — Indexer observability:**
 - [ ] `src/indexer/__main__.py`: `--verbose` flag enable INFO logging + `tqdm` progress bar (modules processed / total)
-- [ ] `tests/test_output_snapshots.py`: thêm snapshot test cho `resolve_view` (pattern khớp 5 tool còn lại — anti-drift guard cho output format)
-- [ ] **Test isolation fix (M4.6 carry-over):** `tests/test_mcp_server_config.py` patch module-level `_driver = object()` rò rỉ sang `tests/test_mcp_spec_tools.py` (AttributeError 'object' has no attribute 'session'). Pre-existing trên master, hiện workaround bằng `--ignore=tests/test_mcp_server_config.py`. Fix: switch sang `monkeypatch.setattr` hoặc dùng fixture-scoped patch reverted ở teardown.
-- [ ] (reserved) tech-debt rollup từ M5 — fill khi M5 implement xong
+- [ ] `tests/test_output_snapshots.py`: thêm snapshot test cho `resolve_view` (pattern khớp 5 tool còn lại — anti-drift guard)
+- [ ] **Test isolation fix (M4.6 carry-over):** `tests/test_mcp_server_config.py` patch module-level `_driver = object()` rò rỉ sang `tests/test_mcp_spec_tools.py`. Fix: switch sang `monkeypatch.setattr`.
 
-> **Lý do tách M5.5:** items này không block M5 ship (`--verbose` chỉ là UX polish, snapshot test là coverage gap không phải bug). Tách giúp M5 ship sớm + có landing zone rõ cho debt M5 sinh ra. Pattern theo M2.5 precedent (foundation infra giữa các product feature milestone).
+**Section B — Deferred từ M5 (moved per Opus debate rev 2):**
+- [ ] `src/cli.py`: `backup`/`restore` via subprocess (pg_dump + manual Neo4j note; APOC not required) — moved from M5
+- [ ] **Pattern feedback loop:** `POST /api/feedback` endpoint + `pattern_feedback` table + thumbs up/down trên `suggest_pattern` output — moved from M5 (requires auth layer, ship sau M5)
+- [ ] Rate limiting per API key (per-minute sliding window) — DoS protection; local deploy M5 risk thấp → defer
+- [ ] FERNET_KEY rotation script: re-encrypt tất cả `ssh_key_pairs.private_key_encrypted` rows — document manual procedure M5; script ở đây
+- [ ] Structured JSON logging (`logging.config` hoặc `structlog`) — observability production
+
+**Section C — Landing zone (reserved):**
+- [ ] *(reserved)* tech-debt rollup từ M5 — fill khi M5 implement xong
+
+> **Lý do tách M5.5:** items polish không block M5 ship; deferred items cần auth layer M5 trước. Pattern theo M2.5 precedent (milestone phụ giữa product milestones).
 
 ## Milestone 6 — "Scale Wow" (Ongoing)
 **Intent:** Hỗ trợ toàn bộ ecosystem Viindoo, multi-version, incremental updates.  
 **Outcome:** Re-index chỉ mất vài giây. Index đồng thời 16.0 + 17.0 + 18.0.
 
+- [ ] **Auto-clone qua SSH khi user add repo (moved from M5):** detect SSH URL trong Web UI → auto-clone via Ed25519 private key + `GIT_SSH_COMMAND` + `tempfile.mkstemp(mode=0o600)` → set `local_path` automatically; companion: host fingerprint management UI (`StrictHostKeyChecking=accept-new` policy)
 - [ ] `src/indexer/incremental.py`: git commit hash tracking, skip unchanged modules
 - [ ] Multi-version: index song song nhiều versions
 - [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"

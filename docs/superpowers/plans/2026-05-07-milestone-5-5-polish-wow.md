@@ -7,11 +7,11 @@
 > - **Keep it simple (ETHOS §4.1.3):** stdlib + đã có dep (`tqdm` đã transitive qua `huggingface_hub`? — verify trước khi add). Không thêm rich, click.
 > - **Tests trước code:** mỗi task = failing test (snapshot baseline) → run đỏ → implement → run xanh → commit.
 
-**Goal:** Sau M5.5, mọi long-running operation (`indexer`) có progress feedback realtime cho admin; mọi MCP tool (6/6) có output snapshot test bảo vệ format khỏi drift trong PR sau.
+**Goal:** Sau M5.5, mọi long-running operation (`indexer`) có progress feedback realtime cho admin; mọi MCP tool (6/6) có output snapshot test bảo vệ format khỏi drift trong PR sau; deferred M5 items (backup, feedback, rate-limit, rotation, logging) hoàn tất.
 
-**Why a separate milestone (vs gom vào M5):** 4 items defer từ pre-M5 audit có nature khác nhau:
-- 2 items production baseline (health endpoint, concurrency lock) → block M5 ship → đẩy vào M5
-- 2 items polish (verbose, snapshot test) → KHÔNG block M5 ship → tách ra M5.5
+**Why a separate milestone (vs gom vào M5):** Items defer từ pre-M5 audit và Opus debate có nature khác nhau:
+- M5 ships: auth middleware, Web UI, health endpoint, Postgres advisory lock, SSH keygen
+- M5.5 nhận: polish (verbose, snapshot), deferred features (backup, feedback loop, rate-limit, logging, FERNET rotation)
 
 Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa các product feature milestone, gom infra/quality work để main milestone (M5 Product Wow) ship sớm + focus được.
 
@@ -19,7 +19,7 @@ Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa cá
 
 ---
 
-## Scope (4 items inherited from pre-M5 audit + landing zone for M5 debt)
+## Scope (2 items từ pre-M5 audit + 5 items deferred từ M5 Opus debate + landing zone)
 
 ### Section A — Indexer observability
 
@@ -50,7 +50,15 @@ Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa cá
 - [ ] **Test:** call `_resolve_view("sale.view_sale_order_form", TEST_VERSION)`, assert output match snapshot exact (tree separator `├─`, label "Base in", "Extensions (in apply order)", count XPath ops per layer).
 - [ ] **Snapshot baseline:** lần đầu chạy fail → review output → commit baseline. Lần sau bất kỳ ai sửa format `_resolve_view` mà không update snapshot → fail trong CI.
 
-### Section C — Landing zone (reserved)
+### Section C — Deferred từ M5 (moved per Opus debate rev 2, 2026-05-09)
+
+- [ ] `src/cli.py`: `backup`/`restore` via subprocess — `pg_dump $PG_DSN > pg_dump.sql` + manual Neo4j note (APOC không required). Mock subprocess trong test. **Moved from M5** (document manual procedure là đủ cho M5 ship; script an toàn hơn sau khi M5 stabilize).
+- [ ] **Pattern feedback loop:** `POST /api/feedback` endpoint trong Web UI (không phải MCP tool) + `pattern_feedback` PostgreSQL table + thumbs up/down từ `suggest_pattern` output. **Moved from M5** — cần auth layer M5 ship trước; `pattern_feedback` table schema defer kèm (add vào `src/db/auth_registry.py` + migration).
+- [ ] **Rate limiting per API key:** per-minute sliding window cap — DoS protection cho production. Local deploy M5 risk thấp (bind `127.0.0.1`). Implement bằng in-memory counter hoặc Redis nếu multi-process. **Moved from M5**.
+- [ ] **FERNET_KEY rotation script:** `python -m src.cli rotate-fernet --old-key OLD --new-key NEW` → re-encrypt tất cả `ssh_key_pairs.private_key_encrypted` rows, bump `key_version`. Deploy.md M5 document manual procedure; script ở đây. **Moved from M5**.
+- [ ] **Structured JSON logging:** `logging.config` dictionary config hoặc `structlog` — emit JSON lines cho log aggregator (Loki, CloudWatch). WARN format plain text đủ M5; structured log cho production traffic analysis. **Moved from M5**.
+
+### Section D — Landing zone (reserved)
 
 - [ ] **(reserved)** Tech-debt rollup từ M5: bất kỳ debt nào sinh ra trong M5 implementation (vd: helper duplicated, test coverage gap mới, deploy.md outdated) đẩy vào đây thay vì để rải rác.
 - [ ] **Process:** khi đóng M5 PR, audit checklist 5 phút → list debt → add bullet vào section này → priority → execute trong M5.5.
@@ -59,9 +67,9 @@ Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa cá
 
 ## Out of scope (defer xa hơn)
 
-- **Concurrency lock proper (PostgreSQL advisory lock)**: M5 baseline dùng file lock đủ cho 1-server. Multi-server lock defer M6 cùng với incremental indexing.
+- **Postgres advisory lock cross-server:** M5 đã ship Postgres advisory lock (single-server). Multi-server HA lock (distributed) defer M6 cùng với incremental indexing.
 - **Indexer resume từ partial state:** nếu indexer crash giữa chừng, không có rollback Neo4j transaction boundary. Defer M6 cùng incremental.
-- **Sentry / structured logging:** observability nâng cao defer khi có production traffic thật.
+- **Sentry / distributed tracing:** observability nâng cao defer khi có production traffic thật.
 
 ---
 
@@ -69,9 +77,11 @@ Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa cá
 
 1. ✅ `python -m src.indexer --profile X --verbose` in progress bar realtime + module-by-module log INFO.
 2. ✅ `tests/test_output_snapshots.py::test_resolve_view_*` exist + pass + cover ≥3 view scenarios (base only, 1 extension, multi-extension).
-3. ✅ Section C "landing zone" empty hoặc có items đã đóng — không bỏ ngỏ.
-4. ✅ `make test` green, `make lint` clean.
-5. ✅ TASKS.md M5.5 row `[x]`.
+3. ✅ `python -m src.cli backup --output backup.tar.gz` → file tạo thành công (mock subprocess OK).
+4. ✅ `POST /api/feedback` với valid JSON → 200 `{"ok": true}`.
+5. ✅ Section D "landing zone" empty hoặc có items đã đóng — không bỏ ngỏ.
+6. ✅ `make test` green, `make lint` clean.
+7. ✅ TASKS.md M5.5 row `[x]`.
 
 ---
 
@@ -80,8 +90,15 @@ Pattern này theo precedent M2.5 "Foundation Wow" — milestone phụ giữa cá
 - Task A1: ~20 min (1 test + 3 lines code)
 - Task A2: ~1h (decision + test + wire + TTY check)
 - Task B1: ~30 min (seed fixture là phần lớn time; logic test đơn giản)
-- Section C: variable, depends on M5 debt
+- Section C deferred items:
+  - CLI backup/restore: ~25 min (Haiku)
+  - Pattern feedback loop: ~25 min (Haiku)
+  - Rate limiting: ~30 min (Haiku)
+  - FERNET rotation script: ~20 min (Haiku)
+  - Structured logging: ~20 min (Haiku)
+- Section D: variable, depends on M5 debt
 - **Total core (A1+A2+B1):** ~2h
+- **Total with deferred M5 items:** ~4h
 
 ---
 
