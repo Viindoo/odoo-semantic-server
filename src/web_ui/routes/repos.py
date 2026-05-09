@@ -31,6 +31,7 @@ def _get_conn():
 @router.get("/repos", response_class=HTMLResponse)
 async def repos_page(request: Request):
     templates = request.app.state.templates
+    flash = request.query_params.get("flash")
     profiles = []
     error = None
     conn = _get_conn()
@@ -49,7 +50,7 @@ async def repos_page(request: Request):
         error = "Cannot connect to PostgreSQL. Check PG_DSN configuration."
 
     return templates.TemplateResponse(
-        request, "repos.html", {"profiles": profiles, "error": error, "flash": None}
+        request, "repos.html", {"profiles": profiles, "error": error, "flash": flash}
     )
 
 
@@ -109,11 +110,23 @@ async def index_repo(request: Request, repo_id: int):
     conn = _get_conn()
     if conn:
         try:
+            from urllib.parse import quote_plus
+
             from src.db.repo_registry import list_repos
+            from src.indexer.pipeline import indexer_is_running
 
             repos = list_repos(conn)
             repo = next((r for r in repos if r["id"] == repo_id), None)
             if repo and repo.get("profile_name"):
+                if indexer_is_running(conn):
+                    flash = (
+                        "Indexer already running for profile "
+                        f"{repo['profile_name']}. Wait for it to finish."
+                    )
+                    return RedirectResponse(
+                        f"/repos?flash={quote_plus(flash)}",
+                        status_code=303,
+                    )
                 subprocess.Popen(
                     [sys.executable, "-m", "src.indexer", "index-repo",
                      "--profile", repo["profile_name"]],

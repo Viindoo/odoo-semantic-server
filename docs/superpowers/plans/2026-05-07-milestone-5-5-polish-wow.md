@@ -67,6 +67,54 @@ Items phát hiện sau khi đóng M5 PR #16:
 - [x] **`README.md` stale note:** dòng "bỏ header `X-API-Key` (M5 sẽ thêm auth)" trong quickstart. Fixed: thay bằng "giữ header với key tạo bằng `create-api-key`".
 - [ ] **`tests/test_mcp_server_config.py` isolation:** monkeypatch `_driver = object()` leak sang `tests/test_mcp_spec_tools.py`. Fix: switch sang `monkeypatch.setattr` (carry-over từ M4.6 — ảnh hưởng khi test order thay đổi).
 
+### Section E — Concurrency Hardening (P1 — landed)
+
+Giải quyết silent failure khi 2 user bấm "Index" đồng thời. Audit 2026-05-09 xác nhận
+subprocess fire-and-forget không có dedup → advisory lock contention trong child process
+→ RuntimeError bị bỏ qua, Web UI vẫn redirect 303.
+
+- [x] `src/indexer/pipeline.py`: `indexer_is_running(pg_conn) -> bool` — acquire-then-release pattern, reuses `_LOCK_ID`
+- [x] `src/web_ui/routes/repos.py`: dedup check + `quote_plus` flash redirect trong `index_repo()`; đọc `?flash` query param trong `repos_page()`
+- [x] `src/web_ui/templates/repos.html`: amber flash banner `{% if flash %}`
+- [x] `tests/test_web_ui_repos.py`: 2 unit tests (`test_index_repo_dedup_blocked`, `test_index_repo_dedup_ok_spawns_popen`)
+
+Effort actual: ~1h. No new deps. No schema change. 354 tests pass.
+
+### Section F — Job Tracking (P2 — to implement)
+
+Sau P1 dedup: user biết indexer đang chạy nhưng không biết tiến độ / kết quả.
+P2 thêm `indexer_jobs` table để track status end-to-end.
+
+**Schema `indexer_jobs`:**
+
+```sql
+CREATE TABLE IF NOT EXISTS indexer_jobs (
+    id SERIAL PRIMARY KEY,
+    profile_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',  -- queued | running | done | error
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    error_msg TEXT,
+    pid INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_indexer_jobs_profile ON indexer_jobs (profile_name);
+CREATE INDEX IF NOT EXISTS idx_indexer_jobs_status ON indexer_jobs (status);
+```
+
+**Flow:**
+1. Web UI `index_repo()` POST → `create_job(conn, profile_name)` → get `job_id`
+2. Spawn subprocess với `--job-id {job_id}` arg
+3. Subprocess start: `update_job(pg, job_id, "running", pid=os.getpid())`
+4. Subprocess end: `update_job(pg, job_id, "done")` hoặc `"error"`
+5. `GET /repos/jobs/{job_id}/status` → JSON `{status, pid, error_msg}`
+6. Template: badge + `setInterval(5000)` polling nếu status là queued/running
+
+**Key constraint:** Subprocess tự mở PG connection riêng (`open_production_pg()`),
+KHÔNG dùng lại connection của parent Web UI process.
+
+Effort estimate: ~3h. 1 new DB table (add-only per ADR-0001). No new pypi deps.
+
 ---
 
 ## Out of scope (defer xa hơn)

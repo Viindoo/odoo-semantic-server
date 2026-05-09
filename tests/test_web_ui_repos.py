@@ -211,3 +211,65 @@ class TestReposPage:
         assert "--profile" in call_args
         idx = call_args.index("--profile")
         assert call_args[idx + 1] == "myprofile", "must pass the specific profile name"
+
+    @pytest.mark.asyncio
+    async def test_index_repo_dedup_blocked(self, migrated_pg):
+        """M5.5 Section E: when indexer is running, redirect with flash, Popen NOT called."""
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="p_dedup", odoo_version="17.0")
+        rid = add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_dedup",
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch(
+            "src.indexer.pipeline.indexer_is_running", return_value=True
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/repos/{rid}/index", follow_redirects=False
+                )
+
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "flash=" in location, "redirect must carry flash query param"
+        assert "already" in location.lower(), "flash must mention 'already'"
+        mock_popen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_index_repo_dedup_ok_spawns_popen(self, migrated_pg):
+        """M5.5 Section E: when indexer not running, Popen called once (dedup pass)."""
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="p_free", odoo_version="17.0")
+        rid = add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_free",
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch(
+            "src.indexer.pipeline.indexer_is_running", return_value=False
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/repos/{rid}/index", follow_redirects=False
+                )
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/repos"
+        mock_popen.assert_called_once()

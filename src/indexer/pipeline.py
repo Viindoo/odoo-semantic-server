@@ -59,6 +59,21 @@ def _indexer_lock(pg_conn, profile_name: str):
             cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
 
 
+def indexer_is_running(pg_conn) -> bool:
+    """Non-destructive advisory lock peek — True if the indexer is currently running.
+
+    Acquire-then-release pattern: avoids pg_locks table scan, stays consistent
+    with the same _LOCK_ID that _indexer_lock uses. Caller's connection must be
+    autocommit (Web UI _get_conn already sets autocommit=True).
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
+        acquired = cur.fetchone()[0]
+        if acquired:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
+    return not acquired
+
+
 # ---------------------------------------------------------------------------
 # Production connection helpers (consumed by __main__.py)
 # ---------------------------------------------------------------------------
