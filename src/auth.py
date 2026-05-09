@@ -1,5 +1,4 @@
 """API key utilities — hashing and generation."""
-import functools
 import hashlib
 import secrets
 
@@ -17,9 +16,3 @@ def generate_api_key() -> tuple[str, str]:
 def hash_key(raw: str) -> str:
     """Return SHA-256 hex digest of raw API key."""
     return hashlib.sha256(raw.encode()).hexdigest()
-
-
-@functools.lru_cache(maxsize=256)
-def _cached_hash(raw: str) -> str:
-    """Cached hash for hot path (verify calls). Same result as hash_key."""
-    return hash_key(raw)

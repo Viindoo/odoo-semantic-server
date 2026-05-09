@@ -1,11 +1,12 @@
 # src/web_ui/routes/api_keys.py
 """API key management routes."""
-
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+_logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -93,10 +94,13 @@ async def deactivate_api_key(request: Request, key_id: int):
     if conn:
         try:
             from src.db.auth_registry import deactivate_api_key as _deactivate
+            from src.mcp.middleware import _cache_invalidate_by_key_id
 
             _deactivate(conn, key_id)
-        except Exception:
-            pass
+            _cache_invalidate_by_key_id(key_id)  # B1: immediate in-process cache clear
+            _logger.info("API key %s deactivated", key_id)
+        except Exception as e:
+            _logger.warning("Deactivate key %s failed: %s", key_id, e)
         finally:
             conn.close()
     return RedirectResponse("/api-keys", status_code=303)

@@ -1,4 +1,5 @@
 """Health check endpoint for MCP server."""
+import asyncio
 import importlib.metadata
 
 from starlette.requests import Request
@@ -7,19 +8,25 @@ from starlette.responses import JSONResponse
 
 async def health_handler(request: Request) -> JSONResponse:
     """Check health of Neo4j and PostgreSQL connections, return status + version."""
+    from src.mcp.middleware import _PG_LOCK
     from src.mcp.server import _get_driver, _get_pg_conn, mcp
 
     neo4j_status = "ok"
     try:
-        _get_driver().verify_connectivity()
+        # verify_connectivity is synchronous — run in thread to avoid blocking event loop
+        await asyncio.to_thread(_get_driver().verify_connectivity)
     except Exception as e:
         neo4j_status = f"error:{str(e)[:100]}"
 
     pg_status = "ok"
     try:
-        conn = _get_pg_conn()
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
+        def _check_pg():
+            with _PG_LOCK:  # B2: serialise with auth middleware DB calls
+                conn = _get_pg_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+
+        await asyncio.to_thread(_check_pg)
     except Exception as e:
         pg_status = f"error:{str(e)[:100]}"
 

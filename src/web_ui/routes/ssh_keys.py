@@ -153,8 +153,9 @@ async def delete_ssh_key(request: Request, key_id: int):
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM ssh_key_pairs WHERE id = %s", (key_id,))
-        except Exception:
-            pass
+            _logger.info("SSH key %s deleted", key_id)
+        except Exception as e:
+            _logger.warning("Delete SSH key %s failed: %s", key_id, e)
         finally:
             conn.close()
     return RedirectResponse("/ssh-keys", status_code=303)

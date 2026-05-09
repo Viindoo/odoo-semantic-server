@@ -4,7 +4,9 @@
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -17,6 +19,15 @@ def create_app() -> FastAPI:
         docs_url=None,  # Disable OpenAPI docs in admin UI
         redoc_url=None,
     )
+
+    @app.middleware("http")
+    async def _loopback_only(request: Request, call_next):
+        """Reject requests from non-loopback addresses (I6 — CSRF mitigation)."""
+        host = request.client.host if request.client else ""
+        if host not in ("127.0.0.1", "::1"):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        return await call_next(request)
+
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.state.templates = templates
 
@@ -24,7 +35,6 @@ def create_app() -> FastAPI:
 
     app.include_router(dashboard.router)
 
-    # Wave 3 routers — uncomment as they land:
     from src.web_ui.routes import api_keys, repos, ssh_keys
 
     app.include_router(repos.router)

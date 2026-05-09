@@ -19,6 +19,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
+from src.auth import hash_key
 from src.db.auth_registry import (
     create_api_key,
     deactivate_api_key,
@@ -35,6 +36,7 @@ from src.mcp.middleware import (
     AuthMiddleware,
     _cache_get,
     _cache_invalidate,
+    _cache_invalidate_by_key_id,
     _cache_set,
 )
 
@@ -207,8 +209,8 @@ class TestCacheTTLExpiration:
     def test_cache_expired_after_ttl(self):
         """Expired cache entry treated as miss."""
         _cache_set("expiring_key", 7)
-        # Manually expire: set timestamp in the past
-        _CACHE_TS["expiring_key"] = time.monotonic() - _CACHE_TTL - 1
+        # Manually expire: use hash as cache key (I2: keys stored hashed)
+        _CACHE_TS[hash_key("expiring_key")] = time.monotonic() - _CACHE_TTL - 1
         hit, _ = _cache_get("expiring_key")
         assert hit is False
 
@@ -230,12 +232,96 @@ class TestCacheTTLExpiration:
         assert hit is True
         assert cached_id == key_id
 
-        # Manually expire cache
-        _CACHE_TS[raw] = time.monotonic() - _CACHE_TTL - 1
+        # Manually expire cache (use hash as cache key — I2)
+        _CACHE_TS[hash_key(raw)] = time.monotonic() - _CACHE_TTL - 1
 
         # Fresh DB verify should return None (because key is now inactive)
         result = verify_api_key(pg_auth_conn, raw)
         assert result is None
+
+    def test_deactivate_invalidates_cache_immediately(self, pg_auth_conn):
+        """B1: calling _cache_invalidate_by_key_id after deactivate removes cache entry."""
+        raw, _, key_id = create_api_key(pg_auth_conn, "b1-immediate")
+        _cache_set(raw, key_id)
+        hit, cached_id = _cache_get(raw)
+        assert hit is True and cached_id == key_id
+
+        deactivate_api_key(pg_auth_conn, key_id)
+        _cache_invalidate_by_key_id(key_id)  # simulates deactivate route
+
+        hit, _ = _cache_get(raw)
+        assert not hit, "cache must be empty immediately after deactivate+invalidate"
+
+    @pytest.mark.asyncio
+    async def test_deactivate_then_middleware_returns_401(self, pg_auth_conn):
+        """B1: middleware must return 401 after key deactivated + cache invalidated."""
+        import unittest.mock as mock
+
+        import httpx
+        from starlette.applications import Starlette
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        raw, _, key_id = create_api_key(pg_auth_conn, "b1-e2e")
+
+        async def dummy(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/mcp", dummy)])
+        app.add_middleware(AuthMiddleware)
+
+        # First request: primes cache (cache miss → DB verify → key_id cached)
+        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                r1 = await client.get("/mcp", headers={"X-API-Key": raw})
+        assert r1.status_code == 200
+
+        # Deactivate + invalidate cache immediately
+        deactivate_api_key(pg_auth_conn, key_id)
+        _cache_invalidate_by_key_id(key_id)
+
+        # Next request: cache miss → fresh DB verify → inactive → 401
+        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                r2 = await client.get("/mcp", headers={"X-API-Key": raw})
+        assert r2.status_code == 401, "deactivated key must be rejected immediately"
+
+    @pytest.mark.asyncio
+    async def test_bg_task_usage_log_written(self, pg_auth_conn):
+        """B3: fire-and-forget usage log task must complete (not be GC'd)."""
+        import unittest.mock as mock
+
+        import httpx
+        from starlette.applications import Starlette
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        raw, _, key_id = create_api_key(pg_auth_conn, "b3-bg-task")
+        _cache_set(raw, key_id)  # prime cache so no DB verify needed
+
+        async def dummy(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/mcp", dummy)])
+        app.add_middleware(AuthMiddleware)
+
+        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.get("/mcp", headers={"X-API-Key": raw})
+            # Yield control to allow the background log task to complete
+            import asyncio
+            await asyncio.sleep(0.1)
+
+        with pg_auth_conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM usage_log WHERE api_key_id = %s", (key_id,))
+            count = cur.fetchone()[0]
+        assert count >= 1, "usage_log entry must be written by background task (B3)"
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +472,8 @@ class TestAuthMiddlewareKeyVerification:
         # Deactivate the key in DB
         deactivate_api_key(pg_auth_conn, key_id)
 
-        # Expire cache manually
-        _CACHE_TS[raw] = time.monotonic() - _CACHE_TTL - 1
+        # Expire cache manually (use hash as cache key — I2)
+        _CACHE_TS[hash_key(raw)] = time.monotonic() - _CACHE_TTL - 1
 
         # Second request should fail (fresh DB lookup)
         with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):

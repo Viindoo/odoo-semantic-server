@@ -182,3 +182,34 @@ class TestReposPage:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/repos"
         mock_popen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_index_repo_uses_profile_name_not_all(self, migrated_pg):
+        """I4: index button must dispatch --profile <name>, not --all."""
+        import sys
+
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="myprofile", odoo_version="17.0")
+        rid = add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_17",
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                await client.post(f"/repos/repos/{rid}/index", follow_redirects=False)
+
+        mock_popen.assert_called_once()
+        call_args = mock_popen.call_args[0][0]  # first positional arg = command list
+        assert "--all" not in call_args, "index must not re-index all profiles (I4)"
+        assert "--profile" in call_args
+        idx = call_args.index("--profile")
+        assert call_args[idx + 1] == "myprofile", "must pass the specific profile name"

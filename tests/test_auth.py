@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from src.auth import _cached_hash, generate_api_key, hash_key
+from src.auth import generate_api_key, hash_key
 from src.mcp.middleware import (
     _CACHE_TS,
     _CACHE_TTL,
@@ -47,10 +47,6 @@ class TestHashKey:
         h = hash_key("any_key")
         assert len(h) == 64  # SHA-256 hex = 64 chars
 
-    def test_cached_hash_same_as_hash_key(self):
-        key = "osm_testkey123"
-        assert _cached_hash(key) == hash_key(key)
-
 
 class TestCacheOperations:
     def setup_method(self):
@@ -83,8 +79,8 @@ class TestCacheOperations:
 
     def test_cache_expired(self):
         _cache_set("key3", 7)
-        # Manually expire
-        _CACHE_TS["key3"] = time.monotonic() - _CACHE_TTL - 1
+        # Manually expire: use hash as cache key (I2: keys stored hashed)
+        _CACHE_TS[hash_key("key3")] = time.monotonic() - _CACHE_TTL - 1
         hit, _ = _cache_get("key3")
         assert hit is False
 

@@ -1,5 +1,6 @@
 # src/web_ui/routes/repos.py
 """Profiles & Repos management routes."""
+import logging
 import subprocess
 import sys
 from typing import Annotated
@@ -7,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+_logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -64,8 +66,8 @@ async def create_profile(
             from src.db.repo_registry import add_profile
 
             add_profile(conn, name=name, odoo_version=version, description=description)
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.warning("Create profile failed: %s", e)
         finally:
             conn.close()
     return RedirectResponse("/repos", status_code=303)
@@ -94,8 +96,8 @@ async def add_repo(
                     branch=branch,
                     local_path=local_path,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.warning("Add repo failed: %s", e)
         finally:
             conn.close()
     return RedirectResponse("/repos", status_code=303)
@@ -103,12 +105,22 @@ async def add_repo(
 
 @router.post("/repos/repos/{repo_id}/index", response_class=RedirectResponse)
 async def index_repo(request: Request, repo_id: int):
-    """Trigger indexer as a non-blocking subprocess."""
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "src.indexer", "--all"],
-            start_new_session=True,
-        )
-    except Exception:
-        pass
+    """Trigger indexer for a specific repo's profile (non-blocking subprocess)."""
+    conn = _get_conn()
+    if conn:
+        try:
+            from src.db.repo_registry import list_repos
+
+            repos = list_repos(conn)
+            repo = next((r for r in repos if r["id"] == repo_id), None)
+            if repo and repo.get("profile_name"):
+                subprocess.Popen(
+                    [sys.executable, "-m", "src.indexer", "index-repo",
+                     "--profile", repo["profile_name"]],
+                    start_new_session=True,
+                )
+        except Exception as e:
+            _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
+        finally:
+            conn.close()
     return RedirectResponse("/repos", status_code=303)

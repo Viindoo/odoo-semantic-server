@@ -177,3 +177,57 @@ class TestApiKeysPage:
         ) as client:
             resp = await client.get("/api-keys")
         assert "required" in resp.text or 'name="name"' in resp.text
+
+
+class TestApiKeyDeactivateInvariants:
+    """B1: deactivate must clear in-process cache immediately."""
+
+    @pytest.mark.asyncio
+    async def test_deactivate_calls_cache_invalidate(self, web_app, pg_conn):
+        """B1: POST /api-keys/{id}/deactivate must call _cache_invalidate_by_key_id."""
+        import unittest.mock as mock
+
+        import httpx
+
+        from src.db.auth_registry import create_api_key
+        from src.mcp.middleware import _cache_set, _cache_get
+
+        raw, _, key_id = create_api_key(pg_conn, "deactivate-b1-test")
+        _cache_set(raw, key_id)
+        hit, _ = _cache_get(raw)
+        assert hit  # cache primed
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=web_app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api-keys/{key_id}/deactivate")
+        assert resp.status_code == 303
+
+        hit, _ = _cache_get(raw)
+        assert not hit, "cache must be cleared immediately after deactivate (B1)"
+
+    @pytest.mark.asyncio
+    async def test_deactivate_exception_is_logged_not_swallowed(self, web_app, caplog):
+        """I3: exceptions during deactivate must be logged, not silently dropped."""
+        import unittest.mock as mock
+
+        import httpx
+
+        import src.web_ui.routes.api_keys as ak_mod
+
+        with mock.patch.object(ak_mod, "_get_conn") as mock_conn_fn:
+            mock_conn = mock.MagicMock()
+            mock_conn.__bool__ = lambda s: True
+            mock_conn.cursor.side_effect = RuntimeError("db exploded")
+            mock_conn_fn.return_value = mock_conn
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=web_app), base_url="http://test"
+            ) as client:
+                with caplog.at_level("WARNING", logger="src.web_ui.routes.api_keys"):
+                    resp = await client.post("/api-keys/999/deactivate")
+
+        assert resp.status_code == 303  # still redirects
+        assert any("Deactivate key" in r.message for r in caplog.records), (
+            "exception must be logged as warning (I3)"
+        )
