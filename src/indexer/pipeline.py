@@ -10,8 +10,10 @@ Public API:
     open_production_neo4j() -> neo4j.Driver   (external callers / health check)
     open_production_pg() -> psycopg2.connection (used by __main__.py)
 """
+import hashlib
 import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from neo4j import GraphDatabase
@@ -29,6 +31,32 @@ from src.indexer.resolver import topological_sort
 from src.indexer.writer_neo4j import Neo4jWriter
 
 _logger = logging.getLogger(__name__)
+
+
+_LOCK_ID = int(hashlib.md5(b"odoo-semantic-indexer").hexdigest(), 16) % (2**31)
+
+
+@contextmanager
+def _indexer_lock(pg_conn, profile_name: str):
+    """Postgres advisory lock — prevents concurrent indexer runs.
+
+    Auto-releases on process exit/crash (unlike fcntl which is process-local).
+    Cross-container safe — lock lives in PostgreSQL, not filesystem.
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
+        acquired = cur.fetchone()[0]
+    if not acquired:
+        raise RuntimeError(
+            f"Indexer already running for profile {profile_name!r} "
+            f"(Postgres advisory lock {_LOCK_ID} held). "
+            "Wait for it to finish or restart PostgreSQL to release stale lock."
+        )
+    try:
+        yield
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
 
 
 # ---------------------------------------------------------------------------
@@ -214,56 +242,57 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None) -> dict:
             "owl_comps": 0,
         }
 
-    uri, user, password = _neo4j_creds()
-    writer = Neo4jWriter(uri, user, password)
+    with _indexer_lock(pg_conn, profile_name):
+        uri, user, password = _neo4j_creds()
+        writer = Neo4jWriter(uri, user, password)
 
-    try:
-        writer.setup_indexes()
+        try:
+            writer.setup_indexes()
 
-        total_modules = 0
-        total_views = 0
-        total_qweb = 0
-        total_embeddings = 0
-        total_js_patches = 0
-        total_owl_comps = 0
+            total_modules = 0
+            total_views = 0
+            total_qweb = 0
+            total_embeddings = 0
+            total_js_patches = 0
+            total_owl_comps = 0
 
-        for repo in repos:
-            repo_id: int = repo["id"]
-            try:
-                counters = _index_repo(repo, writer, pg_conn=pg_conn, embedder=embedder)
-                total_modules += counters["modules"]
-                total_views += counters["views"]
-                total_qweb += counters["qweb"]
-                total_embeddings += counters.get("embeddings", 0)
-                total_js_patches += counters.get("js_patches", 0)
-                total_owl_comps += counters.get("owl_comps", 0)
-                update_repo_status(pg_conn, repo_id, "indexed")
-                _logger.info(
-                    "Indexed repo id=%d: %d modules, %d views, %d qweb, "
-                    "%d embeddings, %d js_patches, %d owl_comps",
-                    repo_id,
-                    counters["modules"],
-                    counters["views"],
-                    counters["qweb"],
-                    counters.get("embeddings", 0),
-                    counters.get("js_patches", 0),
-                    counters.get("owl_comps", 0),
-                )
-            except Exception as e:
-                _logger.exception("Failed to index repo id=%d", repo_id)
-                update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
-                raise  # re-raise so index_profile can propagate failure
-    finally:
-        writer.close()
+            for repo in repos:
+                repo_id: int = repo["id"]
+                try:
+                    counters = _index_repo(repo, writer, pg_conn=pg_conn, embedder=embedder)
+                    total_modules += counters["modules"]
+                    total_views += counters["views"]
+                    total_qweb += counters["qweb"]
+                    total_embeddings += counters.get("embeddings", 0)
+                    total_js_patches += counters.get("js_patches", 0)
+                    total_owl_comps += counters.get("owl_comps", 0)
+                    update_repo_status(pg_conn, repo_id, "indexed")
+                    _logger.info(
+                        "Indexed repo id=%d: %d modules, %d views, %d qweb, "
+                        "%d embeddings, %d js_patches, %d owl_comps",
+                        repo_id,
+                        counters["modules"],
+                        counters["views"],
+                        counters["qweb"],
+                        counters.get("embeddings", 0),
+                        counters.get("js_patches", 0),
+                        counters.get("owl_comps", 0),
+                    )
+                except Exception as e:
+                    _logger.exception("Failed to index repo id=%d", repo_id)
+                    update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
+                    raise  # re-raise so index_profile can propagate failure
+        finally:
+            writer.close()
 
-    return {
-        "modules": total_modules,
-        "views": total_views,
-        "qweb": total_qweb,
-        "embeddings": total_embeddings,
-        "js_patches": total_js_patches,
-        "owl_comps": total_owl_comps,
-    }
+        return {
+            "modules": total_modules,
+            "views": total_views,
+            "qweb": total_qweb,
+            "embeddings": total_embeddings,
+            "js_patches": total_js_patches,
+            "owl_comps": total_owl_comps,
+        }
 
 
 # ---------------------------------------------------------------------------
