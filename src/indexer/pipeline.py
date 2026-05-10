@@ -34,44 +34,51 @@ from src.indexer.writer_neo4j import Neo4jWriter
 _logger = logging.getLogger(__name__)
 
 
-_LOCK_ID = int(hashlib.md5(b"odoo-semantic-indexer").hexdigest(), 16) % (2**31)
+def _profile_lock_id(profile_name: str) -> int:
+    """Hash profile name to a 31-bit advisory lock id."""
+    return int(hashlib.md5(f"odoo-semantic-{profile_name}".encode()).hexdigest(), 16) % (2**31)
 
 
 @contextmanager
 def _indexer_lock(pg_conn, profile_name: str):
-    """Postgres advisory lock — prevents concurrent indexer runs.
+    """Postgres advisory lock — prevents concurrent indexer runs for a profile.
 
     Auto-releases on process exit/crash (unlike fcntl which is process-local).
     Cross-container safe — lock lives in PostgreSQL, not filesystem.
+    Each profile gets its own lock id, so parallel indexing of different profiles
+    is allowed.
     """
+    lock_id = _profile_lock_id(profile_name)
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
         acquired = cur.fetchone()[0]
     if not acquired:
         raise RuntimeError(
             f"Indexer already running for profile {profile_name!r} "
-            f"(Postgres advisory lock {_LOCK_ID} held). "
+            f"(Postgres advisory lock {lock_id} held). "
             "Wait for it to finish or restart PostgreSQL to release stale lock."
         )
     try:
         yield
     finally:
         with pg_conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
+            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
 
 
-def indexer_is_running(pg_conn) -> bool:
-    """Non-destructive advisory lock peek — True if the indexer is currently running.
+def indexer_is_running(pg_conn, profile_name: str) -> bool:
+    """Non-destructive advisory lock peek — True if the indexer is currently running
+    for the given profile.
 
     Acquire-then-release pattern: avoids pg_locks table scan, stays consistent
-    with the same _LOCK_ID that _indexer_lock uses. Caller's connection must be
+    with the same lock id that _indexer_lock uses. Caller's connection must be
     autocommit (Web UI _get_conn already sets autocommit=True).
     """
+    lock_id = _profile_lock_id(profile_name)
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
         acquired = cur.fetchone()[0]
         if acquired:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
+            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
     return not acquired
 
 

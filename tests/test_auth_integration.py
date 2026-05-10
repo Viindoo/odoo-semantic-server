@@ -28,7 +28,7 @@ from src.db.auth_registry import (
     verify_api_key,
 )
 from src.db.migrate import run_migrations
-from src.indexer.pipeline import _LOCK_ID, _indexer_lock
+from src.indexer.pipeline import _indexer_lock, _profile_lock_id
 from src.mcp.middleware import (
     _CACHE_TS,
     _CACHE_TTL,
@@ -500,9 +500,10 @@ class TestAdvisoryLockConcurrency:
         try:
             # Hold lock on pg_conn
             with _indexer_lock(pg_conn, "profile-concurrent-test"):
-                # Try to acquire on conn2 — should fail
+                # Try to acquire on conn2 — should fail (same profile name → same lock id)
+                lock_id = _profile_lock_id("profile-concurrent-test")
                 with conn2.cursor() as cur:
-                    cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
+                    cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
                     acquired = cur.fetchone()[0]
                 assert acquired is False, "Second connection should not acquire lock"
         finally:
@@ -519,16 +520,16 @@ class TestAdvisoryLockConcurrency:
             pass  # Should not raise
 
     def test_concurrent_index_profile_via_second_connection(self, pg_conn):
-        """If lock is held on one connection, second connection cannot acquire it."""
+        """If lock is held on one connection, second connection cannot acquire same profile."""
         # Hold lock on pg_conn via _indexer_lock
         conn2 = psycopg2.connect(PG_TEST_DSN)
         conn2.autocommit = True
 
         try:
             with _indexer_lock(pg_conn, "lock-held-profile"):
-                # Try on conn2 — should fail
+                # Try on conn2 with same profile name — should fail
                 with pytest.raises(RuntimeError, match="advisory lock"):
-                    with _indexer_lock(conn2, "blocked-profile"):
+                    with _indexer_lock(conn2, "lock-held-profile"):
                         pass
         finally:
             conn2.close()
