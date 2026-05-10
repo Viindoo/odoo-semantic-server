@@ -120,10 +120,11 @@ def _classify_method_convention(method_name: str) -> tuple[str, str, bool]:
 
 
 # --- M4.6 WI1: Module edition detection ------------------------------------
-# Detect ∈ {viindoo, oca, community, custom} (enterprise = upstream Odoo EE,
-# Viindoo stack does not ship it, so we never label as 'enterprise' from path
-# alone — only viindoo_equivalent lookup surfaces EE confusion via EE_CONFUSION
-# dict in src/data/ee_modules.py per ADR-0003).
+# Detect ∈ {viindoo, oca, community, custom, enterprise} (enterprise = upstream
+# Odoo EE labeled as OEEL-1; Viindoo stack does not ship it, so we never label
+# as 'enterprise' from path alone — only via OEEL-1 license or viindoo_equivalent
+# lookup surfaces EE confusion via EE_CONFUSION dict in src/data/ee_modules.py
+# per ADR-0003).
 
 
 def _detect_module_edition(
@@ -131,16 +132,19 @@ def _detect_module_edition(
 ) -> str:
     """Detect edition of a module from manifest + name + path heuristics.
 
-    Returns one of: 'viindoo' | 'oca' | 'community' | 'custom'.
-    Order matters — earlier rules win (Viindoo prefix > OCA license > CE path).
+    Returns one of: 'viindoo' | 'oca' | 'community' | 'custom' | 'enterprise'.
+    Order matters — earlier rules win (Viindoo > Enterprise > OCA > CE path > custom).
     """
     # Viindoo: name prefix or path
     if module_name.startswith(("viin_", "to_")):
         return "viindoo"
     if any(seg in module_path for seg in ("tvtmaaddons", "erponline-enterprise")):
         return "viindoo"
-    # OCA license string
+    # Enterprise: OEEL-1 license (Odoo EE, path-independent)
     license_v = (manifest.get("license") or "").upper()
+    if license_v == "OEEL-1":
+        return "enterprise"
+    # OCA license string
     if "OCA" in license_v:
         return "oca"
     # Community: Odoo CE addons path + LGPL/GPL/AGPL
