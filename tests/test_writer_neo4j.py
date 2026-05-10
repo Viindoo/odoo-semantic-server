@@ -1252,6 +1252,98 @@ def test_setup_indexes_creates_pattern_example_index(writer, neo4j_driver):
     assert "PatternExample" in flat
 
 
+# --- WI-3: had_explicit_name + is_definition + INHERITS order -------------------
+
+
+def test_inherits_edge_has_order_property(writer, neo4j_driver):
+    """Each INHERITS edge carries r.order matching its list position (0, 1, 2)."""
+    # Seed 3 parent models and 1 child that inherits all three
+    for parent_name in ("a.b", "c.d", "e.f"):
+        parent_module = ModuleInfo(
+            name=f"mod_{parent_name.replace('.', '_')}",
+            odoo_version=TEST_VERSION,
+            repo="test_repo", path="/tmp",
+            depends=[], version_raw="",
+        )
+        parent_model = ModelInfo(
+            name=parent_name,
+            module=parent_module.name,
+            odoo_version=TEST_VERSION,
+        )
+        writer.write_results([ParseResult(module=parent_module, models=[parent_model])])
+
+    child_module = ModuleInfo(
+        name="child_mod", odoo_version=TEST_VERSION,
+        repo="child_repo", path="/tmp", depends=[], version_raw="",
+    )
+    child_model = ModelInfo(
+        name="child.model", module="child_mod", odoo_version=TEST_VERSION,
+        inherit=["a.b", "c.d", "e.f"],
+        had_explicit_name=True,
+    )
+    writer.write_results([ParseResult(module=child_module, models=[child_model])])
+
+    with neo4j_driver.session() as session:
+        rows = session.run("""
+            MATCH (child:Model {name: 'child.model', module: 'child_mod',
+                                odoo_version: $v})
+                  -[r:INHERITS]->(parent:Model {odoo_version: $v})
+            RETURN parent.name AS parent_name, r.order AS order
+            ORDER BY r.order ASC
+        """, v=TEST_VERSION).data()
+
+    assert len(rows) == 3, f"Expected 3 INHERITS edges, got {len(rows)}: {rows}"
+    name_to_order = {r["parent_name"]: r["order"] for r in rows}
+    assert name_to_order["a.b"] == 0
+    assert name_to_order["c.d"] == 1
+    assert name_to_order["e.f"] == 2
+
+
+def test_model_node_is_definition_true_for_explicit_name(writer, neo4j_driver):
+    """Model with had_explicit_name=True and no self-inherit → is_definition=True."""
+    module = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION,
+        repo="sale_repo", path="/tmp", depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=TEST_VERSION,
+        inherit=[],
+        had_explicit_name=True,
+    )
+    writer.write_results([ParseResult(module=module, models=[model])])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (m:Model {name: 'sale.order', module: 'sale', odoo_version: $v})
+            RETURN m.is_definition AS is_def, m.had_explicit_name AS had_name
+        """, v=TEST_VERSION).single()
+    assert rec["had_name"] is True
+    assert rec["is_def"] is True
+
+
+def test_model_node_is_definition_false_for_extension(writer, neo4j_driver):
+    """Model with _name = _inherit[0] (Pattern C redeclare) → is_definition=False."""
+    module = ModuleInfo(
+        name="viin_sale", odoo_version=TEST_VERSION,
+        repo="viin_repo", path="/tmp", depends=["sale"], version_raw="",
+    )
+    # Pattern C: _name = 'sale.order', _inherit = ['sale.order']
+    model = ModelInfo(
+        name="sale.order", module="viin_sale", odoo_version=TEST_VERSION,
+        inherit=["sale.order"],
+        had_explicit_name=True,
+    )
+    writer.write_results([ParseResult(module=module, models=[model])])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (m:Model {name: 'sale.order', module: 'viin_sale', odoo_version: $v})
+            RETURN m.is_definition AS is_def, m.had_explicit_name AS had_name
+        """, v=TEST_VERSION).single()
+    assert rec["had_name"] is True
+    assert rec["is_def"] is False  # name IN inherit_list → extension, not definition
+
+
 def test_write_module_edition_viindoo_with_equivalent(writer, neo4j_driver):
     """Viindoo module with viindoo_equivalent_qname set → both props persisted."""
     module = ModuleInfo(
@@ -1271,4 +1363,272 @@ def test_write_module_edition_viindoo_with_equivalent(writer, neo4j_driver):
         ).single()
     assert rec["ed"] == "viindoo"
     assert rec["vvq"] == "viin_helpdesk"
+
+
+# --- WI-10: TC-1..TC-5 integration regression for inherit semantics -----------
+
+
+def test_tc1_pattern_d_self_extend_plus_mixin_edge_order(writer, neo4j_driver):
+    """TC-1 — Pattern D: _inherit = ['x', 'mixin.alpha'] on a model that redeclares _name='x'.
+
+    Synthetic Era2 source:
+        class Y(models.Model):
+            _name = 'x'
+            _inherit = ['x', 'mixin.alpha']
+
+    Assertions:
+    - mod_b Model has had_explicit_name=True, is_definition=False (name in inherit list).
+    - INHERITS {order:0} edge → mod_a:x (self-extend, position 0).
+    - INHERITS {order:1} edge → mixin.alpha (mixin injection, position 1).
+    """
+    # Seed mod_a as the original definition of 'x'
+    mod_a = ModuleInfo(
+        name="mod_a", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=[], version_raw="",
+    )
+    model_a = ModelInfo(
+        name="x", module="mod_a", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    # Seed mixin.alpha definition
+    mod_mixin = ModuleInfo(
+        name="mod_mixin", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=[], version_raw="",
+    )
+    model_mixin = ModelInfo(
+        name="mixin.alpha", module="mod_mixin", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    # mod_b extends 'x' and injects 'mixin.alpha'
+    mod_b = ModuleInfo(
+        name="mod_b", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=["mod_a", "mod_mixin"], version_raw="",
+    )
+    model_b = ModelInfo(
+        name="x", module="mod_b", odoo_version=TEST_VERSION,
+        inherit=["x", "mixin.alpha"],
+        had_explicit_name=True,   # _name = 'x' is present in class body
+    )
+    writer.write_results([
+        ParseResult(module=mod_a, models=[model_a]),
+        ParseResult(module=mod_mixin, models=[model_mixin]),
+        ParseResult(module=mod_b, models=[model_b]),
+    ])
+
+    with neo4j_driver.session() as session:
+        # 1. mod_b Model node: had_explicit_name=True, is_definition=False
+        node_rec = session.run("""
+            MATCH (m:Model {name: 'x', module: 'mod_b', odoo_version: $v})
+            RETURN m.had_explicit_name AS had_name, m.is_definition AS is_def
+        """, v=TEST_VERSION).single()
+    assert node_rec is not None, "mod_b Model node for 'x' must exist"
+    assert node_rec["had_name"] is True
+    assert node_rec["is_def"] is False, (
+        "had_explicit_name=True but name in inherit list → is_definition must be False"
+    )
+
+    with neo4j_driver.session() as session:
+        # 2. INHERITS {order:0} → mod_a:x (self-extend)
+        self_edge = session.run("""
+            MATCH (mod_b_node:Model {name: 'x', module: 'mod_b', odoo_version: $v})
+                  -[r:INHERITS {order: 0}]->
+                  (mod_a_node:Model {name: 'x', module: 'mod_a', odoo_version: $v})
+            RETURN r.order AS ord
+        """, v=TEST_VERSION).single()
+    assert self_edge is not None, "INHERITS{order:0} edge to mod_a:x must exist"
+
+    with neo4j_driver.session() as session:
+        # 3. INHERITS {order:1} → mixin.alpha
+        mixin_edge = session.run("""
+            MATCH (mod_b_node:Model {name: 'x', module: 'mod_b', odoo_version: $v})
+                  -[r:INHERITS {order: 1}]->
+                  (mixin_node:Model {name: 'mixin.alpha', odoo_version: $v})
+            RETURN r.order AS ord
+        """, v=TEST_VERSION).single()
+    assert mixin_edge is not None, "INHERITS{order:1} edge to mixin.alpha must exist"
+
+
+def test_tc2_delegation_only_no_inherits_edge(writer, neo4j_driver):
+    """TC-2 — Pattern E: _inherits only → DELEGATES_TO edge, NO INHERITS edge.
+
+    Synthetic:
+        class Child(models.Model):
+            _name = 'child'
+            _inherits = {'parent': 'p_id'}
+
+    Assertions:
+    - DELEGATES_TO {via_field:'p_id'} edge exists.
+    - NO INHERITS edge between child and parent (different relationship types).
+    """
+    base_module = ModuleInfo(
+        name="base_tc2", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=[], version_raw="",
+    )
+    parent_model = ModelInfo(
+        name="parent", module="base_tc2", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    child_module = ModuleInfo(
+        name="child_tc2", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=["base_tc2"], version_raw="",
+    )
+    child_model = ModelInfo(
+        name="child", module="child_tc2", odoo_version=TEST_VERSION,
+        inherits={"parent": "p_id"},
+        had_explicit_name=True,
+    )
+    writer.write_results([
+        ParseResult(module=base_module, models=[parent_model]),
+        ParseResult(module=child_module, models=[child_model]),
+    ])
+
+    with neo4j_driver.session() as session:
+        # DELEGATES_TO edge must exist
+        del_rec = session.run("""
+            MATCH (:Model {name: 'child', odoo_version: $v})
+                  -[r:DELEGATES_TO]->
+                  (:Model {name: 'parent', odoo_version: $v})
+            RETURN r.via_field AS via_field
+        """, v=TEST_VERSION).single()
+    assert del_rec is not None, "DELEGATES_TO edge must exist"
+    assert del_rec["via_field"] == "p_id"
+
+    with neo4j_driver.session() as session:
+        # INHERITS edge must NOT exist (delegation ≠ prototype inheritance)
+        inh_cnt = session.run("""
+            MATCH (:Model {name: 'child', odoo_version: $v})
+                  -[:INHERITS]->
+                  (:Model {name: 'parent', odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert inh_cnt["cnt"] == 0, (
+        "INHERITS edge must NOT exist for pure _inherits delegation — only DELEGATES_TO"
+    )
+
+
+def test_tc4_multiple_inherits_keys_two_delegates_to_edges(writer, neo4j_driver):
+    """TC-4 — Multiple _inherits keys → 2 DELEGATES_TO edges, one per parent.
+
+    Synthetic:
+        class Child(models.Model):
+            _name = 'child'
+            _inherits = {'parent.a': 'a_id', 'parent.b': 'b_id'}
+    """
+    mod_parents = ModuleInfo(
+        name="parents_tc4", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=[], version_raw="",
+    )
+    parent_a = ModelInfo(
+        name="parent.a", module="parents_tc4", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    parent_b = ModelInfo(
+        name="parent.b", module="parents_tc4", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    mod_child = ModuleInfo(
+        name="child_tc4", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=["parents_tc4"], version_raw="",
+    )
+    child_model = ModelInfo(
+        name="child", module="child_tc4", odoo_version=TEST_VERSION,
+        inherits={"parent.a": "a_id", "parent.b": "b_id"},
+        had_explicit_name=True,
+    )
+    writer.write_results([
+        ParseResult(module=mod_parents, models=[parent_a, parent_b]),
+        ParseResult(module=mod_child, models=[child_model]),
+    ])
+
+    with neo4j_driver.session() as session:
+        edges = session.run("""
+            MATCH (c:Model {name: 'child', odoo_version: $v})
+                  -[r:DELEGATES_TO]->
+                  (p:Model {odoo_version: $v})
+            RETURN p.name AS parent_name, r.via_field AS via_field
+            ORDER BY p.name
+        """, v=TEST_VERSION).data()
+
+    assert len(edges) == 2, f"Expected 2 DELEGATES_TO edges, got {len(edges)}: {edges}"
+    edge_map = {e["parent_name"]: e["via_field"] for e in edges}
+    assert edge_map.get("parent.a") == "a_id", "parent.a via a_id edge missing"
+    assert edge_map.get("parent.b") == "b_id", "parent.b via b_id edge missing"
+
+
+def test_tc5_combined_inherit_and_inherits_distinct_edge_types(writer, neo4j_driver):
+    """TC-5 — _inherit + _inherits on same model → 1 INHERITS + 1 DELEGATES_TO, not conflated.
+
+    Synthetic:
+        class Combo(models.Model):
+            _name = 'combo'
+            _inherit = ['mail.thread']
+            _inherits = {'res.partner': 'partner_id'}
+    """
+    mod_bases = ModuleInfo(
+        name="bases_tc5", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=[], version_raw="",
+    )
+    mail_thread = ModelInfo(
+        name="mail.thread", module="bases_tc5", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    res_partner = ModelInfo(
+        name="res.partner", module="bases_tc5", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
+    )
+    mod_combo = ModuleInfo(
+        name="combo_tc5", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=["bases_tc5"], version_raw="",
+    )
+    combo_model = ModelInfo(
+        name="combo", module="combo_tc5", odoo_version=TEST_VERSION,
+        inherit=["mail.thread"],
+        inherits={"res.partner": "partner_id"},
+        had_explicit_name=True,
+    )
+    writer.write_results([
+        ParseResult(module=mod_bases, models=[mail_thread, res_partner]),
+        ParseResult(module=mod_combo, models=[combo_model]),
+    ])
+
+    with neo4j_driver.session() as session:
+        # 1. INHERITS edge to mail.thread (prototype inheritance)
+        inh_rec = session.run("""
+            MATCH (:Model {name: 'combo', odoo_version: $v})
+                  -[r:INHERITS]->
+                  (:Model {name: 'mail.thread', odoo_version: $v})
+            RETURN count(r) AS cnt
+        """, v=TEST_VERSION).single()
+    assert inh_rec["cnt"] == 1, "Exactly 1 INHERITS edge to mail.thread must exist"
+
+    with neo4j_driver.session() as session:
+        # 2. DELEGATES_TO edge to res.partner (delegation)
+        del_rec = session.run("""
+            MATCH (:Model {name: 'combo', odoo_version: $v})
+                  -[r:DELEGATES_TO]->
+                  (:Model {name: 'res.partner', odoo_version: $v})
+            RETURN r.via_field AS via_field
+        """, v=TEST_VERSION).single()
+    assert del_rec is not None, "DELEGATES_TO edge to res.partner must exist"
+    assert del_rec["via_field"] == "partner_id"
+
+    with neo4j_driver.session() as session:
+        # 3. NO INHERITS edge to res.partner (not prototype inheritance)
+        bad_inh = session.run("""
+            MATCH (:Model {name: 'combo', odoo_version: $v})
+                  -[:INHERITS]->
+                  (:Model {name: 'res.partner', odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert bad_inh["cnt"] == 0, "res.partner must NOT be reached via INHERITS — only DELEGATES_TO"
+
+    with neo4j_driver.session() as session:
+        # 4. NO DELEGATES_TO edge to mail.thread (not delegation)
+        bad_del = session.run("""
+            MATCH (:Model {name: 'combo', odoo_version: $v})
+                  -[:DELEGATES_TO]->
+                  (:Model {name: 'mail.thread', odoo_version: $v})
+            RETURN count(*) AS cnt
+        """, v=TEST_VERSION).single()
+    assert bad_del["cnt"] == 0, "mail.thread must NOT be reached via DELEGATES_TO — only INHERITS"
 

@@ -124,11 +124,36 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        layers = session.run("""
+        # Ranking tiers — see docs/adr/0004:
+        # T1 is_def_rank: m.is_definition flag (post-reindex, authoritative).
+        # T2 field_count: Field nodes declared on this model in this module —
+        #                 100% accurate signal pre-reindex on real data
+        #                 (defining module always has the most fields).
+        # T3 dependents : DEPENDS_ON inbound on Module (manifest depends).
+        # T4 edition    : community < enterprise < viindoo < oca < custom.
+        # T5 mod_name   : alphabetical tiebreak — eliminates arbitrary order.
+        layers = session.run(
+            """
             MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
+            WITH m, mod,
+                 CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
+                 COUNT {
+                     (:Field {model: $name, module: m.module, odoo_version: $v})
+                 } AS field_count,
+                 COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents,
+                 CASE mod.edition
+                      WHEN 'community'  THEN 0
+                      WHEN 'enterprise' THEN 1
+                      WHEN 'viindoo'    THEN 2
+                      WHEN 'oca'        THEN 3
+                      ELSE 4 END AS edition_rank,
+                 mod.name AS mod_name
             RETURN m.module AS module_name, mod.repo AS repo
-            ORDER BY COUNT { ()-[:INHERITS]->(m) } ASC
-        """, name=model_name, v=odoo_version).data()
+            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                     edition_rank ASC, mod_name ASC
+            """,
+            name=model_name, v=odoo_version,
+        ).data()
 
         if not layers:
             return f"Model '{model_name}' not found in Odoo {odoo_version}."
@@ -182,13 +207,28 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
+        # 5-tier ranking via m_node proxy — see docs/adr/0004
         records = session.run("""
             MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
             OPTIONAL MATCH (mod:Module {name: f.module, odoo_version: $v})
             OPTIONAL MATCH (m_node:Model {name: $mn, module: f.module, odoo_version: $v})
-            RETURN f, f.module AS module_name, mod.repo AS repo,
-                   COUNT { ()-[:INHERITS]->(m_node) } AS depth
-            ORDER BY depth ASC
+            WITH f, mod, m_node,
+                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
+                      AS is_def_rank,
+                 COUNT {
+                     (:Field {model: $mn, module: f.module, odoo_version: $v})
+                 } AS field_count,
+                 COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents,
+                 CASE mod.edition
+                      WHEN 'community'  THEN 0
+                      WHEN 'enterprise' THEN 1
+                      WHEN 'viindoo'    THEN 2
+                      WHEN 'oca'        THEN 3
+                      ELSE 4 END AS edition_rank,
+                 mod.name AS mod_name
+            RETURN f, f.module AS module_name, mod.repo AS repo
+            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                     edition_rank ASC, mod_name ASC
         """, fn=field_name, mn=model_name, v=odoo_version).data()
 
     if not records:
@@ -218,13 +258,28 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
+        # 5-tier ranking via m_node proxy — see docs/adr/0004
         records = session.run("""
             MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
             OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
             OPTIONAL MATCH (m_node:Model {name: $model, module: mth.module, odoo_version: $v})
-            RETURN mth, mth.module AS module_name, mod.repo AS repo,
-                   COUNT { ()-[:INHERITS]->(m_node) } AS depth
-            ORDER BY depth ASC
+            WITH mth, mod, m_node,
+                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
+                      AS is_def_rank,
+                 COUNT {
+                     (:Field {model: $model, module: mth.module, odoo_version: $v})
+                 } AS field_count,
+                 COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents,
+                 CASE mod.edition
+                      WHEN 'community'  THEN 0
+                      WHEN 'enterprise' THEN 1
+                      WHEN 'viindoo'    THEN 2
+                      WHEN 'oca'        THEN 3
+                      ELSE 4 END AS edition_rank,
+                 mod.name AS mod_name
+            RETURN mth, mth.module AS module_name, mod.repo AS repo
+            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                     edition_rank ASC, mod_name ASC
         """, mn=method_name, model=model_name, v=odoo_version).data()
 
     if not records:
