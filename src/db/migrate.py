@@ -11,6 +11,7 @@ import psycopg2
 import psycopg2.errors
 
 from src import config
+from src.db._types import PgConn
 
 _EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector;"
 
@@ -147,14 +148,14 @@ CREATE INDEX IF NOT EXISTS ix_indexer_jobs_created ON indexer_jobs(created_at DE
 SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL + _FEEDBACK_SQL + _INDEXER_JOBS_SQL
 
 
-def _vector_extension_available(conn) -> bool:
+def _vector_extension_available(conn: PgConn) -> bool:
     """True if pgvector extension is installed (regardless of who created it)."""
     with conn.cursor() as cur:
         cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
         return cur.fetchone() is not None
 
 
-def _ensure_extension(conn) -> bool:
+def _ensure_extension(conn: PgConn) -> bool:
     """Attempt to create pgvector extension. Returns True if available after attempt.
 
     Raises RuntimeError if pgvector is available but version < 0.8.
@@ -201,7 +202,7 @@ def _ensure_extension(conn) -> bool:
         return False
 
 
-def run_migrations(conn) -> None:
+def run_migrations(conn: PgConn) -> None:
     """Execute schema DDL on an open psycopg2 connection.
 
     Profiles and repos tables are always created.

@@ -3,10 +3,12 @@ from datetime import datetime
 
 import psycopg2.extras
 
+from src.db._types import PgConn
+
 _VALID_STATUSES = {"queued", "running", "done", "error"}
 
 
-def create_job(conn, profile_name: str) -> int:
+def create_job(conn: PgConn, profile_name: str) -> int:
     """Create a new job in 'queued' status. Return job_id.
 
     Args:
@@ -27,7 +29,7 @@ def create_job(conn, profile_name: str) -> int:
     return row[0]
 
 
-def get_job(conn, job_id: int) -> dict | None:
+def get_job(conn: PgConn, job_id: int) -> dict | None:
     """Fetch one job. Return dict with all columns OR None if not found.
 
     Returns dict with keys: id, profile_name, status, pid, started_at,
@@ -47,7 +49,7 @@ def get_job(conn, job_id: int) -> dict | None:
 
 
 def update_job(
-    conn,
+    conn: PgConn,
     job_id: int,
     *,
     status: str | None = None,
@@ -102,7 +104,7 @@ def update_job(
         conn.commit()
 
 
-def list_running_jobs(conn) -> list[dict]:
+def list_running_jobs(conn: PgConn) -> list[dict]:
     """All jobs with status='running'. Empty list if none.
 
     Returns dicts shaped like get_job().
@@ -123,7 +125,7 @@ def list_running_jobs(conn) -> list[dict]:
     return result
 
 
-def get_last_job(conn, profile_name: str) -> dict | None:
+def get_last_job(conn: PgConn, profile_name: str) -> dict | None:
     """Most recent job for a profile (ORDER BY created_at DESC LIMIT 1)."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
