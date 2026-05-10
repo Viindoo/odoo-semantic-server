@@ -471,16 +471,29 @@ sudo journalctl -u odoo-semantic-mcp -f
 sudo journalctl -u odoo-semantic-webui -f
 ```
 
-### 3.6 Re-index định kỳ (cron, đến M6)
+### 3.6 Re-index định kỳ (cron, M6 Wave 2 incremental ready)
 
 ```bash
 sudo tee /etc/cron.d/odoo-semantic-reindex > /dev/null << 'EOF'
-# Re-index toàn bộ profiles mỗi ngày lúc 3 giờ sáng
-0 3 * * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
+# Re-index toàn bộ profiles mỗi giờ — M6 Wave 2 incremental skips unchanged repos.
+0 * * * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all \
+    --profile-workers 2 \
+    >> /var/log/odoo-semantic-reindex.log 2>&1
+
+# Monthly --full reindex để clean stale Module nodes từ rename/move (per ADR-0007).
+0 4 1 * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --full \
     >> /var/log/odoo-semantic-reindex.log 2>&1
 EOF
 ```
+
+> **M6 Wave 2 — incremental indexer:** `pipeline._index_repo` so sánh git HEAD với
+> `repos.head_sha` stored. Repo unchanged → zero-cost skip. Otherwise `git diff` để
+> filter scan results to changed modules only. `--profile-workers N` để index multi-version
+> đồng thời (per-profile lock đảm bảo safe). `--full` flag bypass skip cho periodic cleanup.
+> Auto-reseed pattern catalogue cũng wire vào pipeline (sha256 sentinel — cheap khi unchanged).
+> See `docs/adr/0007-incremental-indexer.md` cho design decisions.
 
 ### 3.7 tmux fallback (khi không có systemd)
 

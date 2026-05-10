@@ -192,6 +192,34 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 
 `tests/test_env_versions_sync.py` kiểm tra tự động: parse `.env.example` → assert `nightly-smoke.yml` chứa đúng image strings. Test fail = `.env.example` và workflow bị lệch.
 
+## Incremental Indexer (M6 Wave 2)
+
+`pipeline._index_repo` so sánh `git rev-parse HEAD` với stored `repos.head_sha`:
+- **Bằng nhau** → log "Repo unchanged — skipping" + return ngay (zero-cost).
+- **Force-push detected** (`is_ancestor` fail) → log warning + full reindex.
+- **Otherwise** → `git diff --name-only old..new` → filter scan results to changed module dirs only via `incremental.compute_changed_module_paths()`.
+- **head_sha chỉ update sau full success** — partial failure mid-write giữ nguyên head_sha cũ → next run retry.
+
+**Module node** thêm property `last_commit_sha` (NOT trong MERGE key — mutable SET props per ADR-0001). Cho phép query "module này last touched commit nào" trong `resolve_model` etc.
+
+`--full` flag (`python -m src.indexer index-repo --full ...`) bypass skip + diff filter — dùng định kỳ (recommend monthly) để clean up stale Module nodes từ rename/move.
+
+Module rename caveat: rename dir → cả old và new path xuất hiện trong diff, cả hai re-index. Stale Neo4j Module node cho old path còn lại; dùng `--full` để cleanup. Future Wave: explicit cleanup pass.
+
+## Auto-Reseed Pattern Catalogue (M6 Wave 2)
+
+`seed_patterns.main()` dùng `_SeedMeta {key:'patterns'}` Neo4j sentinel node lưu sha256 hash của `patterns.json`. Khi current_sha == stored_sha → skip (avoid re-embedding 54 patterns). Wired vào `index_profile()` end → mỗi `index-repo` / `index-all` run auto-reseed (cheap khi unchanged).
+
+`--force` flag bypass sentinel: `python -m src.indexer seed-patterns --force`. Auto-reseed failure log warning nhưng KHÔNG fail indexer run.
+
+## Cross-Profile Parallel Indexing (M6 Wave 2)
+
+```bash
+python -m src.indexer index-repo --all --profile-workers 3 --max-workers 2
+```
+
+3 profiles parallel (Wave 2 W2-8), each profile sử dụng 2 repo-workers nội bộ (Wave 1 P3). Per-profile Postgres advisory lock (Wave 1 P1) đảm bảo safe. Each profile-worker thread **phải tự open pg_conn** (psycopg2 thread-safety). `progress=False` forced khi `profile_workers > 1` (avoid tqdm bar collision).
+
 ## Tài Liệu Liên Quan
 
 | File | Đọc khi nào |
@@ -203,4 +231,4 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 | `docs/adr/` | Architecture Decision Records — đọc trước khi đụng schema/policy |
 | `CONTRIBUTING.md` | Setup dev, chạy tests, workflow commit |
 
-**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6) · `0004` Defined-in ranking heuristic (M5.5) · `0005` core coverage version paths (M5.5).
+**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6) · `0004` Defined-in ranking heuristic (M5.5) · `0005` core coverage version paths (M5.5) · `0006` environment harness (M6 Wave 1) · `0007` incremental indexer (M6 Wave 2 — head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel).
