@@ -2,10 +2,6 @@
 import concurrent.futures
 import time
 
-import pytest
-
-pytestmark = [pytest.mark.neo4j, pytest.mark.postgres]
-
 
 class TestAuthMiddlewareCache:
     """Test thread-safety of key cache in middleware."""

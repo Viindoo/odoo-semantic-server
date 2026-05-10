@@ -158,3 +158,23 @@ class TestHealthEndpoint:
         # Should return -1 (introspection failed) and HTTP 200/503 (not 500)
         assert body["mcp_tools"] == -1
         assert resp.status_code in (200, 503)  # depends on Neo4j/PG status
+
+
+@pytest.mark.asyncio
+async def test_get_tools_failure_falls_through_to_private_api(monkeypatch):
+    """When mcp.get_tools() raises, _tool_manager._tools fallback is used."""
+    from src.mcp import health as health_mod
+    from src.mcp.server import mcp
+
+    async def boom():
+        raise RuntimeError("FastMCP API unstable")
+
+    # Patch get_tools to raise; keep private _tool_manager intact
+    monkeypatch.setattr(mcp, "get_tools", boom, raising=False)
+
+    # Sanity: private API must exist for this test to be meaningful
+    assert hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools")
+    private_count = len(mcp._tool_manager._tools)
+
+    count = await health_mod._get_mcp_tool_count()
+    assert count == private_count  # fallback executed, returned private count
