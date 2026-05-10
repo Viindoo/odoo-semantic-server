@@ -298,6 +298,13 @@ Lệnh idempotent — chạy lại không có hại. Tạo các tables:
 `usage_log`, `pattern_feedback`, **`indexer_jobs`** (M5.5 — track lifecycle của
 indexer subprocess; populated bởi `index-repo --job-id N` + Web UI status badge).
 
+> **M6 Wave 1 — fail-fast version checks:** `run_migrations()` đầu function
+> verify `server_version_num >= 160000` (PostgreSQL 16+). Sau khi `CREATE EXTENSION
+> vector` thành công verify `extversion >= 0.8`. Migrations abort với `RuntimeError`
+> nếu một trong hai dưới min — nâng cấp `PG_IMAGE` trong `.env.example` rồi re-run.
+> MCP server startup (`src/mcp/server.py _get_driver()`) tương tự verify Neo4j ≥ 5.x
+> qua `CALL dbms.components()`.
+
 ### 3.4 Đăng ký repos + index lần đầu
 
 > **Callout — M3 `find_examples` cần Ollama (embedder).**
