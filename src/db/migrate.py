@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS repos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_repos_profile_id ON repos(profile_id);
+
+-- M6 Wave 2: head_sha column for incremental indexer (idempotent ALTER for upgrade path)
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS head_sha TEXT;
 """
 
 _EMBEDDINGS_SQL = """

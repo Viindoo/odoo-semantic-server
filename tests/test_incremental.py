@@ -115,6 +115,17 @@ def test_compute_changed_handles_module_rename(repo_3_modules: Path):
     # change, only inventory shows. Either is acceptable.
 
 
+def test_compute_changed_module_paths_skips_root_files(repo_3_modules: Path):
+    """Files at repo root (e.g. README.md) → skipped, not module dirs."""
+    sha1 = get_repo_head(repo_3_modules)
+    (repo_3_modules / "README.md").write_text("# project")
+    _git(repo_3_modules, "add", "-A")
+    _git(repo_3_modules, "commit", "-m", "add readme")
+    sha2 = get_repo_head(repo_3_modules)
+    changed = compute_changed_module_paths(repo_3_modules, sha1, sha2)
+    assert changed == set(), "Files at repo root should not be treated as modules"
+
+
 def test_filter_modules_by_changed():
     modules = {
         "sale": ModuleInfo(
