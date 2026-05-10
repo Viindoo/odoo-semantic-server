@@ -81,7 +81,7 @@
     {% if p.repos %}
     <table>
         <thead>
-            <tr><th>Local Path</th><th>Branch</th><th>Status</th><th>Last Indexed</th><th></th></tr>
+            <tr><th>Local Path</th><th>Branch</th><th>Status</th><th>Last Job</th><th>Last Indexed</th><th></th></tr>
         </thead>
         <tbody>
         {% for r in p.repos %}
@@ -93,6 +93,11 @@
                     {{ r.status }}
                 </span>
                 {% if r.error_msg %}<span style="color:#dc2626;font-size:0.75rem;margin-left:0.5rem">{{ r.error_msg[:60] }}</span>{% endif %}
+            </td>
+            <td data-job-id="{% if r.last_job %}{{ r.last_job.id }}{% endif %}" data-job-status="{% if r.last_job %}{{ r.last_job.status }}{% endif %}">
+                {% if r.last_job is none %}
+                    <span style="color:#9ca3af">—</span>
+                {% endif %}
             </td>
             <td style="font-size:0.8rem;color:#64748b">{{ r.last_indexed_at or "—" }}</td>
             <td>
@@ -114,4 +119,57 @@
     <p>No profiles yet. Add one above.</p>
 </div>
 {% endif %}
+
+<script>
+(function() {
+  const POLL_MS = 5000;
+
+  function renderBadge(job) {
+    if (!job) return '<span style="color:#9ca3af">—</span>';
+    const colors = {
+      queued:  { bg: '#e5e7eb', fg: '#374151', text: 'queued' },
+      running: { bg: '#fef3c7', fg: '#92400e', text: '⏳ running' },
+      done:    { bg: '#d1fae5', fg: '#065f46', text: '✓ done' },
+      error:   { bg: '#fee2e2', fg: '#991b1b', text: '✗ error' },
+    };
+    const c = colors[job.status] || { bg: '#e5e7eb', fg: '#374151', text: job.status };
+    const tooltip = job.error_msg ? ` title="${(job.error_msg || '').replace(/"/g, '&quot;')}"` : '';
+    return `<span style="background:${c.bg};color:${c.fg};padding:2px 8px;border-radius:4px;font-size:0.75rem"${tooltip}>${c.text}</span>`;
+  }
+
+  function pollCells() {
+    document.querySelectorAll('[data-job-id]').forEach(cell => {
+      const jobId = cell.getAttribute('data-job-id');
+      if (!jobId) return;  // cell has no job
+      const status = cell.getAttribute('data-job-status');
+      if (status === 'done' || status === 'error') return;  // stop polling done/error
+      fetch(`/repos/jobs/${jobId}/status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(job => {
+          if (!job) return;
+          cell.setAttribute('data-job-status', job.status);
+          cell.innerHTML = renderBadge(job);
+        })
+        .catch(() => {});
+    });
+  }
+
+  // Initial render for jobs with data
+  document.querySelectorAll('[data-job-id]').forEach(cell => {
+    const jobId = cell.getAttribute('data-job-id');
+    const status = cell.getAttribute('data-job-status');
+    if (jobId && status) {
+      fetch(`/repos/jobs/${jobId}/status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(job => {
+          if (!job) return;
+          cell.innerHTML = renderBadge(job);
+        })
+        .catch(() => {});
+    }
+  });
+
+  setInterval(pollCells, POLL_MS);
+})();
+</script>
 {% endblock %}

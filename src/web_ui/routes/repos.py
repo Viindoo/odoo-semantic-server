@@ -37,10 +37,14 @@ async def repos_page(request: Request):
     conn = _get_conn()
     if conn:
         try:
+            from src.db import job_registry
             from src.db.repo_registry import get_repos_for_profile, list_profiles
 
             for p in list_profiles(conn):
                 repos = get_repos_for_profile(conn, p["name"])
+                # Attach last_job to each repo for status badge
+                for repo in repos:
+                    repo["last_job"] = job_registry.get_last_job(conn, p["name"])
                 profiles.append({**p, "repos": repos})
         except Exception as e:
             error = str(e)
