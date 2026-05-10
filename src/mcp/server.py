@@ -1936,6 +1936,19 @@ if __name__ == "__main__":
             name="install",
         )
 
+    # Mount feedback API on MCP port so remote users can submit thumbs-up/down.
+    # feedback.router exposes POST /api/feedback and GET /api/feedback/{pattern_id}.
+    # Auth is already enforced by AuthMiddleware above — no loopback guard needed.
+    # We wrap the router in a mini FastAPI sub-app (include_router) and mount it
+    # at the root prefix '' so its /api/feedback paths remain unchanged.
+    from fastapi import FastAPI as _FastAPI
+
+    from src.web_ui.routes import feedback as _feedback
+
+    _feedback_app = _FastAPI()
+    _feedback_app.include_router(_feedback.router)
+    _app.mount("", _feedback_app)
+
     _uvicorn.run(
         _app,
         host=_mcp_host(),
