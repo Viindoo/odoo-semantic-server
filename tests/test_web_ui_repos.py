@@ -273,3 +273,147 @@ class TestReposPage:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/repos"
         mock_popen.assert_called_once()
+
+
+class TestJobIntegration:
+    """WI-F3: job record creation + GET /repos/jobs/{id}/status endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_jobs(self, migrated_pg):
+        """Delete indexer_jobs rows before and after each test in this class."""
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM indexer_jobs")
+        yield
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM indexer_jobs")
+
+    @pytest.mark.asyncio
+    async def test_index_repo_creates_job_and_passes_job_id(self, migrated_pg):
+        """POST /repos/repos/{id}/index → job created, --job-id in argv."""
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="p_job", odoo_version="17.0")
+        rid = add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_job",
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch(
+            "src.indexer.pipeline.indexer_is_running", return_value=False
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/repos/{rid}/index", follow_redirects=False
+                )
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/repos"
+        mock_popen.assert_called_once()
+
+        call_argv = mock_popen.call_args[0][0]
+        assert "--job-id" in call_argv, "--job-id flag must be in Popen argv"
+        job_id_idx = call_argv.index("--job-id")
+        job_id_str = call_argv[job_id_idx + 1]
+        assert job_id_str.isdigit(), "--job-id value must be a numeric string"
+
+        # Verify indexer_jobs row was created
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM indexer_jobs")
+            count = cur.fetchone()[0]
+        assert count == 1
+
+        # Verify the job has status 'queued'
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT status, profile_name FROM indexer_jobs WHERE id = %s",
+                (int(job_id_str),),
+            )
+            row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "queued"
+        assert row[1] == "p_job"
+
+    @pytest.mark.asyncio
+    async def test_index_repo_dedup_blocks_no_job_created(self, migrated_pg):
+        """Khi indexer_is_running True → KHÔNG tạo job, KHÔNG Popen, flash redirect."""
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="p_dedup2", odoo_version="17.0")
+        rid = add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_dedup2",
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch(
+            "src.indexer.pipeline.indexer_is_running", return_value=True
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/repos/{rid}/index", follow_redirects=False
+                )
+
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "flash=" in location, "redirect must carry flash query param"
+        mock_popen.assert_not_called()
+
+        # No job row created
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM indexer_jobs")
+            count = cur.fetchone()[0]
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_get_job_status_existing(self, migrated_pg):
+        """GET /repos/jobs/{id}/status with existing job → 200 + correct JSON shape."""
+        from src.db import job_registry
+
+        job_id = job_registry.create_job(migrated_pg, "p_status")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get(f"/repos/jobs/{job_id}/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == job_id
+        assert data["profile_name"] == "p_status"
+        assert data["status"] == "queued"
+        assert data["pid"] is None
+        assert data["started_at"] is None
+        assert data["finished_at"] is None
+        assert data["error_msg"] is None
+        assert "created_at" in data
+
+    @pytest.mark.asyncio
+    async def test_get_job_status_missing(self, migrated_pg):
+        """GET /repos/jobs/999999/status → 404."""
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos/jobs/999999/status")
+
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["error"] == "job not found"
