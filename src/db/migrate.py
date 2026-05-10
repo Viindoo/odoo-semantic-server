@@ -155,14 +155,45 @@ def _vector_extension_available(conn) -> bool:
 
 
 def _ensure_extension(conn) -> bool:
-    """Attempt to create pgvector extension. Returns True if available after attempt."""
+    """Attempt to create pgvector extension. Returns True if available after attempt.
+
+    Raises RuntimeError if pgvector is available but version < 0.8.
+    """
     if _vector_extension_available(conn):
+        # Verify pgvector version is >= 0.8
+        with conn.cursor() as cur:
+            cur.execute("SELECT extversion FROM pg_extension WHERE extname='vector'")
+            row = cur.fetchone()
+            if row is not None:
+                v = row[0]
+                parts = v.split('.')
+                major = int(parts[0])
+                minor = int(parts[1]) if len(parts) > 1 else 0
+                if (major, minor) < (0, 8):
+                    raise RuntimeError(
+                        f"pgvector 0.8+ required (found {v}). "
+                        f"Update docker-compose.yml PG_IMAGE and re-run."
+                    )
         return True
     try:
         with conn.cursor() as cur:
             cur.execute(_EXTENSION_SQL)
         if not conn.autocommit:
             conn.commit()
+        # Verify installed version is >= 0.8
+        with conn.cursor() as cur:
+            cur.execute("SELECT extversion FROM pg_extension WHERE extname='vector'")
+            row = cur.fetchone()
+            if row is not None:
+                v = row[0]
+                parts = v.split('.')
+                major = int(parts[0])
+                minor = int(parts[1]) if len(parts) > 1 else 0
+                if (major, minor) < (0, 8):
+                    raise RuntimeError(
+                        f"pgvector 0.8+ required (found {v}). "
+                        f"Update docker-compose.yml PG_IMAGE and re-run."
+                    )
         return True
     except psycopg2.errors.InsufficientPrivilege:
         if not conn.autocommit:
@@ -176,7 +207,19 @@ def run_migrations(conn) -> None:
     Profiles and repos tables are always created.
     Embeddings table requires pgvector extension — skipped with a warning if not available.
     Auth tables (api_keys, ssh_key_pairs, usage_log) are always created.
+
+    Raises RuntimeError if PostgreSQL version < 16 or pgvector < 0.8.
     """
+    # Check PostgreSQL version is >= 16
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('server_version_num')::int")
+        ver = cur.fetchone()[0]
+        if ver < 160000:
+            raise RuntimeError(
+                f"PostgreSQL 16+ required (found server_version_num={ver}). "
+                f"Update docker-compose.yml PG_IMAGE and re-run."
+            )
+
     with conn.cursor() as cur:
         cur.execute(_BASE_SQL)
     if not conn.autocommit:
