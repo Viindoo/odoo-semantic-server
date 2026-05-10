@@ -1252,6 +1252,98 @@ def test_setup_indexes_creates_pattern_example_index(writer, neo4j_driver):
     assert "PatternExample" in flat
 
 
+# --- WI-3: had_explicit_name + is_definition + INHERITS order -------------------
+
+
+def test_inherits_edge_has_order_property(writer, neo4j_driver):
+    """Each INHERITS edge carries r.order matching its list position (0, 1, 2)."""
+    # Seed 3 parent models and 1 child that inherits all three
+    for parent_name in ("a.b", "c.d", "e.f"):
+        parent_module = ModuleInfo(
+            name=f"mod_{parent_name.replace('.', '_')}",
+            odoo_version=TEST_VERSION,
+            repo="test_repo", path="/tmp",
+            depends=[], version_raw="",
+        )
+        parent_model = ModelInfo(
+            name=parent_name,
+            module=parent_module.name,
+            odoo_version=TEST_VERSION,
+        )
+        writer.write_results([ParseResult(module=parent_module, models=[parent_model])])
+
+    child_module = ModuleInfo(
+        name="child_mod", odoo_version=TEST_VERSION,
+        repo="child_repo", path="/tmp", depends=[], version_raw="",
+    )
+    child_model = ModelInfo(
+        name="child.model", module="child_mod", odoo_version=TEST_VERSION,
+        inherit=["a.b", "c.d", "e.f"],
+        had_explicit_name=True,
+    )
+    writer.write_results([ParseResult(module=child_module, models=[child_model])])
+
+    with neo4j_driver.session() as session:
+        rows = session.run("""
+            MATCH (child:Model {name: 'child.model', module: 'child_mod',
+                                odoo_version: $v})
+                  -[r:INHERITS]->(parent:Model {odoo_version: $v})
+            RETURN parent.name AS parent_name, r.order AS order
+            ORDER BY r.order ASC
+        """, v=TEST_VERSION).data()
+
+    assert len(rows) == 3, f"Expected 3 INHERITS edges, got {len(rows)}: {rows}"
+    name_to_order = {r["parent_name"]: r["order"] for r in rows}
+    assert name_to_order["a.b"] == 0
+    assert name_to_order["c.d"] == 1
+    assert name_to_order["e.f"] == 2
+
+
+def test_model_node_is_definition_true_for_explicit_name(writer, neo4j_driver):
+    """Model with had_explicit_name=True and no self-inherit → is_definition=True."""
+    module = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION,
+        repo="sale_repo", path="/tmp", depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=TEST_VERSION,
+        inherit=[],
+        had_explicit_name=True,
+    )
+    writer.write_results([ParseResult(module=module, models=[model])])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (m:Model {name: 'sale.order', module: 'sale', odoo_version: $v})
+            RETURN m.is_definition AS is_def, m.had_explicit_name AS had_name
+        """, v=TEST_VERSION).single()
+    assert rec["had_name"] is True
+    assert rec["is_def"] is True
+
+
+def test_model_node_is_definition_false_for_extension(writer, neo4j_driver):
+    """Model with _name = _inherit[0] (Pattern C redeclare) → is_definition=False."""
+    module = ModuleInfo(
+        name="viin_sale", odoo_version=TEST_VERSION,
+        repo="viin_repo", path="/tmp", depends=["sale"], version_raw="",
+    )
+    # Pattern C: _name = 'sale.order', _inherit = ['sale.order']
+    model = ModelInfo(
+        name="sale.order", module="viin_sale", odoo_version=TEST_VERSION,
+        inherit=["sale.order"],
+        had_explicit_name=True,
+    )
+    writer.write_results([ParseResult(module=module, models=[model])])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (m:Model {name: 'sale.order', module: 'viin_sale', odoo_version: $v})
+            RETURN m.is_definition AS is_def, m.had_explicit_name AS had_name
+        """, v=TEST_VERSION).single()
+    assert rec["had_name"] is True
+    assert rec["is_def"] is False  # name IN inherit_list → extension, not definition
+
+
 def test_write_module_edition_viindoo_with_equivalent(writer, neo4j_driver):
     """Viindoo module with viindoo_equivalent_qname set → both props persisted."""
     module = ModuleInfo(

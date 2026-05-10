@@ -67,6 +67,7 @@ class ModelInfo:
     methods: list[MethodInfo] = field(default_factory=list)
     is_abstract: bool = False
     is_transient: bool = False
+    had_explicit_name: bool = False  # True when _name = "..." appears in class body
 
 
 @dataclass
