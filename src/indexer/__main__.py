@@ -74,6 +74,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="(Optional) indexer_jobs.id to update lifecycle status during run.",
     )
+    sub_repo.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel threads for repo scanning within a profile. "
+            "Default 1 (sequential). Set >1 to scan multiple repos concurrently."
+        ),
+    )
 
     # --- index-core subcommand (new in WI-F1) ------------------------------
     sub_core = subparsers.add_parser(
@@ -137,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         job_id = getattr(args, "job_id", None)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
+        max_workers = getattr(args, "max_workers", 1)
         try:
             if job_id is not None:
                 try:
@@ -151,10 +161,16 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             try:
                 if args.all:
-                    summary = index_all(pg, embedder=embedder, progress=verbose)
+                    summary = index_all(
+                        pg, embedder=embedder, progress=verbose, max_workers=max_workers
+                    )
                 else:
                     summary = index_profile(
-                        pg, profile_name=args.profile, embedder=embedder, progress=verbose
+                        pg,
+                        profile_name=args.profile,
+                        embedder=embedder,
+                        progress=verbose,
+                        max_workers=max_workers,
                     )
                 print(f"Done: {summary}")
                 if embedder is None:
