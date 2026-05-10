@@ -84,8 +84,70 @@ async def add_repo(
     profile: Annotated[str, Form()],
     url: Annotated[str, Form()],
     branch: Annotated[str, Form()],
-    local_path: Annotated[str, Form()],
+    local_path: Annotated[str, Form()] = "",
+    ssh_key_id: Annotated[str, Form()] = "",
 ):
+    from urllib.parse import quote_plus
+
+    from src.git_utils import default_clone_dir, is_ssh_url
+
+    templates = request.app.state.templates
+
+    if is_ssh_url(url):
+        if not ssh_key_id or not ssh_key_id.strip().isdigit():
+            conn = _get_conn()
+            profiles = []
+            if conn:
+                try:
+                    from src.db.repo_registry import list_profiles
+                    profiles = list_profiles(conn)
+                finally:
+                    conn.close()
+            return templates.TemplateResponse(
+                request,
+                "repos.html",
+                {
+                    "profiles": profiles,
+                    "error": "SSH URL requires an SSH key. Select one from the dropdown.",
+                    "flash": None,
+                },
+                status_code=400,
+            )
+        ssh_key_id_int = int(ssh_key_id.strip())
+        repo_id: int | None = None
+        conn = _get_conn()
+        if conn:
+            try:
+                from src.db.repo_registry import add_repo as _add_repo
+                from src.db.repo_registry import list_profiles
+
+                profiles = [p for p in list_profiles(conn) if p["name"] == profile]
+                if profiles:
+                    target_dir = default_clone_dir(profile, url)
+                    repo_id = _add_repo(
+                        conn,
+                        profile_id=profiles[0]["id"],
+                        url=url,
+                        branch=branch,
+                        local_path=str(target_dir),
+                        ssh_key_id=ssh_key_id_int,
+                        clone_status="manual",
+                    )
+            except Exception as e:
+                _logger.warning("Add SSH repo failed: %s", e)
+            finally:
+                conn.close()
+
+        if repo_id is not None:
+            subprocess.Popen(
+                [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
+                start_new_session=True,
+            )
+            flash = quote_plus("Clone started — refresh to see status")
+            return RedirectResponse(f"/repos?flash={flash}", status_code=303)
+        return RedirectResponse("/repos", status_code=303)
+
+    # HTTPS / file:// / manual path — legacy behavior unchanged
     conn = _get_conn()
     if conn:
         try:
@@ -100,12 +162,50 @@ async def add_repo(
                     url=url,
                     branch=branch,
                     local_path=local_path,
+                    ssh_key_id=None,
+                    clone_status="manual",
                 )
         except Exception as e:
             _logger.warning("Add repo failed: %s", e)
         finally:
             conn.close()
     return RedirectResponse("/repos", status_code=303)
+
+
+@router.get("/repos/ssh-keys-list")
+async def ssh_keys_list(request: Request):
+    """Return JSON array of SSH key pairs (id + name) for the add-repo form dropdown."""
+    conn = _get_conn()
+    if not conn:
+        return JSONResponse({"error": "database unavailable"}, status_code=503)
+    try:
+        from src.db.auth_registry import list_ssh_keys
+
+        keys = list_ssh_keys(conn)
+    finally:
+        conn.close()
+    return JSONResponse([{"id": k["id"], "name": k["name"]} for k in keys])
+
+
+@router.get("/repos/repos/{repo_id}/clone-status")
+async def clone_status(request: Request, repo_id: int):
+    """Return JSON clone_status for a single repo (used by badge polling)."""
+    conn = _get_conn()
+    if not conn:
+        return JSONResponse({"error": "database unavailable"}, status_code=503)
+    try:
+        from src.db.repo_registry import get_repo_by_id
+
+        repo = get_repo_by_id(conn, repo_id)
+    finally:
+        conn.close()
+    if repo is None:
+        return JSONResponse({"error": "repo not found"}, status_code=404)
+    return JSONResponse({
+        "id": repo["id"],
+        "clone_status": repo.get("clone_status", "manual"),
+        "error_msg": repo.get("error_msg"),
+    })
 
 
 @router.post("/repos/repos/{repo_id}/index", response_class=RedirectResponse)

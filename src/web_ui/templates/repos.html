@@ -39,7 +39,7 @@
 <div class="card">
     <h2>Add Repo</h2>
     {% if profiles %}
-    <form method="post" action="/repos/repos" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end">
+    <form id="add-repo-form" method="post" action="/repos/repos" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end">
         <div>
             <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Profile *</label>
             <select name="profile" required style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem">
@@ -50,23 +50,35 @@
         </div>
         <div>
             <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Repo URL</label>
-            <input type="text" name="url" placeholder="https://github.com/odoo/odoo" value="file://local" maxlength="200"
-                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:240px">
+            <input id="repo-url-input" type="text" name="url" placeholder="https://github.com/odoo/odoo or git@github.com:org/repo.git" value="file://local" maxlength="500"
+                   oninput="onRepoUrlChange(this.value)"
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:320px">
         </div>
         <div>
             <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Branch *</label>
             <input type="text" name="branch" placeholder="17.0" maxlength="200" required
                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:80px">
         </div>
-        <div>
+        <div id="local-path-field">
             <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Local Path *</label>
-            <input type="text" name="local_path" placeholder="/home/user/git/odoo_17.0" maxlength="200" required
+            <input id="local-path-input" type="text" name="local_path" placeholder="/home/user/git/odoo_17.0" maxlength="500" required
                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:260px">
+        </div>
+        <div id="ssh-key-field" style="display:none">
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">SSH Key *</label>
+            <select id="ssh-key-select" name="ssh_key_id"
+                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:200px">
+                <option value="">Loading…</option>
+            </select>
+            <span id="ssh-key-empty-hint" style="display:none;font-size:0.8rem;color:#64748b;margin-left:0.5rem">
+                No SSH keys — <a href="/ssh-keys">generate one</a>
+            </span>
         </div>
         <button type="submit" class="btn btn-primary">Add Repo</button>
     </form>
     <p style="margin-top:0.5rem;font-size:0.8rem;color:#64748b">
-        Note: SSH auto-clone not yet available (M6). Git clone manually, then provide the local path.
+        SSH URL (git@… or ssh://…) → auto-clone using a stored SSH key.
+        HTTPS / file:// → provide local path manually.
     </p>
     {% else %}
     <p style="color:#64748b;font-size:0.9rem">Add a profile first.</p>
@@ -81,13 +93,16 @@
     {% if p.repos %}
     <table>
         <thead>
-            <tr><th>Local Path</th><th>Branch</th><th>Status</th><th>Last Job</th><th>Last Indexed</th><th></th></tr>
+            <tr><th>Local Path</th><th>Branch</th><th>Clone</th><th>Status</th><th>Last Job</th><th>Last Indexed</th><th></th></tr>
         </thead>
         <tbody>
         {% for r in p.repos %}
         <tr>
             <td><code>{{ r.local_path }}</code></td>
             <td>{{ r.branch }}</td>
+            <td data-clone-id="{{ r.id }}" data-clone-status="{{ r.clone_status or 'manual' }}">
+                {# clone_status badge — JS will update pending rows via polling #}
+            </td>
             <td>
                 <span class="badge badge-{{ 'ok' if r.status == 'indexed' else ('error' if r.status == 'error' else 'pending') }}">
                     {{ r.status }}
@@ -124,6 +139,7 @@
 (function() {
   const POLL_MS = 5000;
 
+  // ── Indexer job badge ─────────────────────────────────────────────────────
   function renderBadge(job) {
     if (!job) return '<span style="color:#9ca3af">—</span>';
     const colors = {
@@ -170,6 +186,94 @@
   });
 
   setInterval(pollCells, POLL_MS);
+
+  // ── Clone status badge ────────────────────────────────────────────────────
+  function renderCloneBadge(status) {
+    const map = {
+      manual:  { bg: '#e5e7eb', fg: '#374151', text: 'manual' },
+      pending: { bg: '#dbeafe', fg: '#1e40af', text: '⏳ pending' },
+      cloned:  { bg: '#d1fae5', fg: '#065f46', text: '✓ cloned' },
+      error:   { bg: '#fee2e2', fg: '#991b1b', text: '✗ error' },
+    };
+    const c = map[status] || { bg: '#e5e7eb', fg: '#374151', text: status };
+    return `<span style="background:${c.bg};color:${c.fg};padding:2px 8px;border-radius:4px;font-size:0.75rem">${c.text}</span>`;
+  }
+
+  function initCloneBadges() {
+    document.querySelectorAll('[data-clone-id]').forEach(cell => {
+      const status = cell.getAttribute('data-clone-status') || 'manual';
+      cell.innerHTML = renderCloneBadge(status);
+    });
+  }
+
+  function pollCloneCells() {
+    document.querySelectorAll('[data-clone-id]').forEach(cell => {
+      const repoId = cell.getAttribute('data-clone-id');
+      const status = cell.getAttribute('data-clone-status');
+      if (status === 'cloned' || status === 'error' || status === 'manual') return;
+      fetch(`/repos/repos/${repoId}/clone-status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data) return;
+          cell.setAttribute('data-clone-status', data.clone_status);
+          cell.innerHTML = renderCloneBadge(data.clone_status);
+        })
+        .catch(() => {});
+    });
+  }
+
+  initCloneBadges();
+  setInterval(pollCloneCells, POLL_MS);
+
+  // ── Add-repo form: SSH URL detection ─────────────────────────────────────
+  const SSH_RE = /^(git@|ssh:\/\/)/;
+
+  function isSshUrl(url) {
+    return SSH_RE.test(url.trim());
+  }
+
+  let sshKeysLoaded = false;
+
+  function loadSshKeys() {
+    if (sshKeysLoaded) return;
+    sshKeysLoaded = true;
+    fetch('/repos/ssh-keys-list')
+      .then(r => r.ok ? r.json() : [])
+      .then(keys => {
+        const sel = document.getElementById('ssh-key-select');
+        const hint = document.getElementById('ssh-key-empty-hint');
+        if (!sel) return;
+        if (keys.length === 0) {
+          sel.style.display = 'none';
+          if (hint) hint.style.display = 'inline';
+          return;
+        }
+        sel.innerHTML = keys.map(k => `<option value="${k.id}">${k.name}</option>`).join('');
+        sel.required = true;
+      })
+      .catch(() => { sshKeysLoaded = false; });
+  }
+
+  function onRepoUrlChange(url) {
+    const localPathField = document.getElementById('local-path-field');
+    const sshKeyField = document.getElementById('ssh-key-field');
+    const localPathInput = document.getElementById('local-path-input');
+    if (!localPathField || !sshKeyField) return;
+    if (isSshUrl(url)) {
+      localPathField.style.display = 'none';
+      if (localPathInput) { localPathInput.required = false; localPathInput.value = ''; }
+      sshKeyField.style.display = 'block';
+      loadSshKeys();
+    } else {
+      sshKeyField.style.display = 'none';
+      localPathField.style.display = 'block';
+      if (localPathInput) localPathInput.required = true;
+    }
+  }
+
+  // Run once on page load in case form has a pre-filled SSH URL
+  const urlInput = document.getElementById('repo-url-input');
+  if (urlInput) onRepoUrlChange(urlInput.value);
 })();
 </script>
 {% endblock %}
