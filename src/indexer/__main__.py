@@ -83,6 +83,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Default 1 (sequential). Set >1 to scan multiple repos concurrently."
         ),
     )
+    sub_repo.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help=(
+            "Force full reindex (bypass incremental skip-unchanged + diff filter). "
+            "Use periodically to clean up stale Module nodes from rename/move."
+        ),
+    )
 
     # --- index-core subcommand (new in WI-F1) ------------------------------
     sub_core = subparsers.add_parser(
@@ -144,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.subcommand == "index-repo":
         verbose = getattr(args, "verbose", False)
         job_id = getattr(args, "job_id", None)
+        full_reindex = getattr(args, "full", False)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
         max_workers = getattr(args, "max_workers", 1)
@@ -162,7 +172,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 if args.all:
                     summary = index_all(
-                        pg, embedder=embedder, progress=verbose, max_workers=max_workers
+                        pg, embedder=embedder, progress=verbose,
+                        max_workers=max_workers, full_reindex=full_reindex,
                     )
                 else:
                     summary = index_profile(
@@ -171,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                         embedder=embedder,
                         progress=verbose,
                         max_workers=max_workers,
+                        full_reindex=full_reindex,
                     )
                 print(f"Done: {summary}")
                 if embedder is None:
