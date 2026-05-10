@@ -1913,14 +1913,33 @@ if __name__ == "__main__":
     from src.logging_config import configure_logging as _configure_logging
     _configure_logging(level=_logging.INFO)
 
+    from pathlib import Path as _Path
+
+    import uvicorn as _uvicorn
     from starlette.middleware import Middleware as _Middleware
+    from starlette.staticfiles import StaticFiles as _StaticFiles
 
     from src.mcp.middleware import AuthMiddleware
 
-    mcp.run(
+    # Replace mcp.run(...) with explicit app+uvicorn so we can mount /install StaticFiles.
+    _app = mcp.http_app(
         transport="streamable-http",
-        host=_mcp_host(),
-        port=_mcp_port(),
         path="/mcp",
         middleware=[_Middleware(AuthMiddleware)],
+    )
+
+    _install_dir = _Path(__file__).parent / "static" / "install"
+    if _install_dir.is_dir():
+        _app.mount(
+            "/install",
+            _StaticFiles(directory=str(_install_dir), html=True),
+            name="install",
+        )
+
+    _uvicorn.run(
+        _app,
+        host=_mcp_host(),
+        port=_mcp_port(),
+        timeout_graceful_shutdown=0,
+        lifespan="on",
     )
