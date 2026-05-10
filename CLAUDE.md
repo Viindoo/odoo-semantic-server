@@ -186,9 +186,11 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 
 ## Image Versions — Nguồn Sự Thật
 
-`NEO4J_IMAGE` trong `.env.example` là nguồn sự thật cho local dev (testcontainers đọc biến này). Khi bump version: sửa `.env.example`.
+`NEO4J_IMAGE` và `PG_IMAGE` trong `.env.example` là nguồn sự thật cho local dev (testcontainers đọc các biến này). `docker-compose.yml` đọc cả hai qua `${NEO4J_IMAGE:-...}` và `${PG_IMAGE:-...}`. Khi bump version: sửa `.env.example`.
 
-**CI exception:** GitHub Actions service containers được khởi động *trước* bất kỳ step nào — không thể đọc `.env.example` tại parse time. Do đó `ci.yml` phải hardcode image version. Khi bump Neo4j: cập nhật **cả hai** `.env.example` VÀ `ci.yml:services.neo4j.image`.
+**CI exception:** GitHub Actions service containers được khởi động *trước* bất kỳ step nào — không thể đọc `.env.example` tại parse time. Do đó `.github/workflows/nightly-smoke.yml` phải hardcode image version. Khi bump `NEO4J_IMAGE` hoặc `PG_IMAGE`: cập nhật **cả hai** `.env.example` VÀ `.github/workflows/nightly-smoke.yml` (tất cả jobs có service container).
+
+`tests/test_env_versions_sync.py` kiểm tra tự động: parse `.env.example` → assert `nightly-smoke.yml` chứa đúng image strings. Test fail = `.env.example` và workflow bị lệch.
 
 ## Tài Liệu Liên Quan
 

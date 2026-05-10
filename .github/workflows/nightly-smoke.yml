@@ -1,5 +1,15 @@
 # .github/workflows/nightly-smoke.yml
 # Nightly smoke against real Odoo upstream sources (v17 + v8).
+#
+# ── IMAGE VERSION SYNC ────────────────────────────────────────────────
+# Nguồn sự thật: NEO4J_IMAGE và PG_IMAGE trong .env.example (repo root).
+# GitHub Actions service containers được khởi động TRƯỚC bất kỳ step nào —
+# không thể đọc .env.example lúc parse time → phải hardcode ở đây.
+# Khi bump NEO4J_IMAGE hoặc PG_IMAGE trong .env.example:
+#   1. Cập nhật services.neo4j.image trong CẢ HAI job (smoke-real-odoo-17 + smoke-real-odoo-8)
+#   2. Cập nhật services.postgres.image trong CẢ HAI job
+# tests/test_env_versions_sync.py sẽ fail CI nếu .env.example và file này bị lệch.
+# ─────────────────────────────────────────────────────────────────────
 # Catches B1 indexer-wiring regressions and Phase-0 ManifestFinder / era1 regressions.
 #
 # Schedule: 19:00 UTC = 02:00 Vietnam time (GitHub least-busy window).
