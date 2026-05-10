@@ -192,7 +192,7 @@
 - [x] `src/db/job_registry.py`: CRUD — `create_job()`, `update_job()`, `get_last_job()`, `list_running_jobs()`, `get_job()`
 - [x] `src/indexer/__main__.py`: thêm `--job-id INT` arg → update job status start/success/error
 - [x] `src/web_ui/routes/repos.py`: `index_repo()` tạo job record + truyền `--job-id` vào subprocess
-- [x] `GET /repos/jobs/{job_id}/status` route: JSON `{id, profile_name, status, pid, started_at, finished_at, error_msg, created_at}`
+- [x] route GET /repos/jobs/{job_id}/status: JSON `{id, profile_name, status, pid, started_at, finished_at, error_msg, created_at}` — landed cùng `src/web_ui/routes/repos.py`
 - [x] `src/web_ui/templates/repos.html`: status badge + JS polling 5s nếu running/queued
 - [x] `tests/test_job_registry.py`: unit tests CRUD (15 tests)
 
