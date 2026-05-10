@@ -2,7 +2,93 @@
 """Unit tests for src.cli — backup, restore, rotate-fernet commands."""
 from unittest.mock import MagicMock, patch
 
-from src.cli import _build_parser, _cmd_backup, _cmd_restore, _cmd_rotate_fernet
+from src.cli import (
+    _build_parser,
+    _cmd_backup,
+    _cmd_restore,
+    _cmd_rotate_fernet,
+    _dsn_to_pg_args_and_env,
+)
+
+
+class TestDsnParsing:
+    """Tests for _dsn_to_pg_args_and_env() — ensure password never leaks to argv."""
+
+    def test_url_dsn_with_password(self):
+        """PostgreSQL URL with password → password in env, not argv."""
+        argv, env = _dsn_to_pg_args_and_env("postgresql://user:secret@localhost:5432/mydb")
+        joined_cmd = " ".join(argv)
+
+        # Password must NOT be in argv
+        assert "secret" not in joined_cmd
+        assert "secret" not in str(argv)
+
+        # Password must be in env
+        assert env.get("PGPASSWORD") == "secret"
+
+        # All components must be parsed
+        assert "--host" in argv and "localhost" in argv
+        assert "--port" in argv and "5432" in argv
+        assert "--username" in argv and "user" in argv
+        assert "--dbname" in argv and "mydb" in argv
+
+    def test_url_dsn_no_password(self):
+        """PostgreSQL URL without password → no PGPASSWORD in env."""
+        argv, env = _dsn_to_pg_args_and_env("postgresql://user@localhost/mydb")
+
+        # No password in env
+        assert "PGPASSWORD" not in env
+
+        # User and dbname still present
+        assert "--username" in argv and "user" in argv
+        assert "--dbname" in argv and "mydb" in argv
+
+    def test_url_dsn_special_chars_in_password(self):
+        """Password with special characters (URL-encoded) → decoded correctly."""
+        # @ symbol in password should be URL-encoded as %40
+        argv, env = _dsn_to_pg_args_and_env("postgresql://user:p%40ss@localhost/db")
+        assert env.get("PGPASSWORD") == "p@ss"
+        assert "p@ss" not in " ".join(argv)
+
+    def test_keyword_dsn_with_password(self):
+        """Keyword form DSN with password → parsed correctly."""
+        argv, env = _dsn_to_pg_args_and_env(
+            "host=localhost port=5432 user=myuser password=mysecret dbname=mydb"
+        )
+        joined_cmd = " ".join(argv)
+
+        # Password must NOT be in argv
+        assert "mysecret" not in joined_cmd
+        assert "mysecret" not in str(argv)
+
+        # Password in env
+        assert env.get("PGPASSWORD") == "mysecret"
+
+        # All components parsed
+        assert "--host" in argv and "localhost" in argv
+        assert "--port" in argv and "5432" in argv
+        assert "--username" in argv and "myuser" in argv
+        assert "--dbname" in argv and "mydb" in argv
+
+    def test_keyword_dsn_no_password(self):
+        """Keyword DSN without password → no PGPASSWORD in env."""
+        argv, env = _dsn_to_pg_args_and_env("host=localhost user=myuser dbname=mydb")
+        assert "PGPASSWORD" not in env
+        assert "--host" in argv and "--username" in argv and "--dbname" in argv
+
+    def test_invalid_dsn_format(self):
+        """Unrecognized DSN format → raises ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Unrecognized PostgreSQL DSN format"):
+            _dsn_to_pg_args_and_env("invalid-dsn-format")
+
+    def test_empty_dsn(self):
+        """Empty DSN → raises ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError):
+            _dsn_to_pg_args_and_env("")
 
 
 def test_backup_calls_pg_dump(monkeypatch, tmp_path):
@@ -16,6 +102,11 @@ def test_backup_calls_pg_dump(monkeypatch, tmp_path):
     called_cmd = mock_run.call_args[0][0]
     assert "pg_dump" in called_cmd[0]
     assert str(out) in called_cmd
+    # Password must NOT be in argv
+    assert "pw" not in " ".join(called_cmd)
+    # Password must be in env
+    called_env = mock_run.call_args[1].get("env", {})
+    assert called_env.get("PGPASSWORD") == "pw"
 
 
 def test_backup_missing_dsn(monkeypatch, tmp_path):
@@ -54,6 +145,11 @@ def test_restore_calls_psql(monkeypatch, tmp_path):
     assert result == 0
     called_cmd = mock_run.call_args[0][0]
     assert "psql" in called_cmd[0]
+    # Password must NOT be in argv
+    assert "pw" not in " ".join(called_cmd)
+    # Password must be in env
+    called_env = mock_run.call_args[1].get("env", {})
+    assert called_env.get("PGPASSWORD") == "pw"
 
 
 def test_restore_psql_failure(monkeypatch, tmp_path):
