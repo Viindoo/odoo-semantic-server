@@ -215,3 +215,40 @@ class TestSmokeSshKeyGen:
             match="FERNET_KEY|not found|not set",
         ):
             generate_ed25519_keypair()
+
+
+# ---------------------------------------------------------------------------
+# Install page (static onboarding HTML)
+# ---------------------------------------------------------------------------
+
+class TestSmokeInstallPage:
+    @pytest.mark.asyncio
+    async def test_install_page_returns_html_without_auth(self):
+        """GET /install returns the static onboarding HTML without an API key."""
+        from pathlib import Path
+
+        import httpx
+        from starlette.staticfiles import StaticFiles
+
+        from src.mcp.server import mcp
+
+        app = mcp.http_app(transport="streamable-http", path="/mcp")
+
+        # Mount /install static files if directory exists (mimics production server setup)
+        install_dir = Path(__file__).parent.parent / "src" / "mcp" / "static" / "install"
+        if install_dir.is_dir():
+            app.mount(
+                "/install",
+                StaticFiles(directory=str(install_dir), html=True),
+                name="install",
+            )
+        else:
+            pytest.skip("Install static directory not found")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/install/")
+
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert b"X-API-Key" in resp.content
