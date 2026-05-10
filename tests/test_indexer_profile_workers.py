@@ -87,7 +87,9 @@ class TestTwoProfilesParallel:
         def fake_get_repos(pg_conn, profile_name):
             return repos_alpha if profile_name == "alpha" else repos_beta
 
-        def fake_index_repo(repo, writer, pg_conn=None, embedder=None, progress=False):
+        def fake_index_repo(
+            repo, writer, pg_conn=None, embedder=None, progress=False, full_reindex=False,
+        ):
             # repo id 1 → 3 modules, repo id 2 → 5 modules
             return _fake_counters(modules=3 if repo["id"] == 1 else 5)
 
@@ -151,7 +153,9 @@ class TestProfileFailureDoesNotBlockOthers:
         def fake_get_repos(pg_conn, profile_name):
             return repos_good if profile_name == "good" else repos_bad
 
-        def fake_index_repo(repo, writer, pg_conn=None, embedder=None, progress=False):
+        def fake_index_repo(
+            repo, writer, pg_conn=None, embedder=None, progress=False, full_reindex=False,
+        ):
             if repo["id"] == 2:
                 raise RuntimeError("simulated failure for profile 'bad'")
             good_indexed.set()
@@ -186,7 +190,9 @@ class TestSequentialFallback:
         profiles = [_make_profile("p1"), _make_profile("p2")]
         call_order: list[str] = []
 
-        def fake_index_profile(pg_conn, *, profile_name, embedder, progress, max_workers):
+        def fake_index_profile(
+            pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
+        ):
             call_order.append(profile_name)
             return _fake_counters(modules=2)
 
