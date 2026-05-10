@@ -48,6 +48,22 @@ Verify: `/mcp` trong session đang chạy, hoặc `claude mcp list` ngoài shell
 
 ⚠️ **Pitfall 2:** Sau khi add phải **restart Claude Code** — entry mới không load runtime.
 
+### auto-trust: skip permission prompts
+<a id="claude-code-auto-trust"></a>
+
+Thêm vào `~/.claude/settings.json` để pre-approve mọi tool của server này:
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__odoo-semantic"]
+  }
+}
+```
+
+> Nếu file đã có `permissions.allow`, chỉ thêm chuỗi `"mcp__odoo-semantic"` vào array.
+> Wildcard không có tool name = pre-approve TẤT CẢ tool của server này.
+
 ---
 
 ## OpenAI Codex CLI
@@ -64,6 +80,27 @@ http_headers = { "X-API-Key" = "<API_KEY>" }
 Restart Codex. Verify: `codex mcp list`.
 
 ⚠️ **Pitfall:** Phải dùng key `http_headers` (snake_case + plural). Viết `headers = ...` Codex sẽ silently ignore và server không gửi auth header → 401 từ MCP.
+
+### auto-trust: skip permission prompts
+<a id="codex-cli-auto-trust"></a>
+
+> ⚠️ **Trade-off**: Codex CLI không có cơ chế pre-approve per-server. Mỗi tool sẽ
+> bị hỏi xác nhận lần đầu sử dụng. Đây là giới hạn của OpenAI Codex, không phải
+> server. Workaround duy nhất: set `approval_policy = "never"` trong config —
+> nhưng ảnh hưởng tất cả tool khác, không khuyến nghị.
+
+API key qua envvar (sạch hơn hardcode trong toml):
+
+```bash
+echo 'export ODOO_SEMANTIC_KEY="YOUR_API_KEY"' >> ~/.bashrc
+```
+
+Trong `~/.codex/config.toml`:
+```toml
+[mcp_servers.odoo-semantic]
+url = "https://odoo-semantic.viindoo.com:9999/mcp"
+env_http_headers = { "X-API-Key" = "ODOO_SEMANTIC_KEY" }
+```
 
 ---
 
@@ -88,6 +125,25 @@ Restart `gemini`. Verify: `/mcp` trong CLI.
 
 ⚠️ **Pitfall:** Property phải là `httpUrl` (không phải `url`). Viết `url` thì Gemini coi là SSE deprecated transport → handshake hang/fail.
 
+### auto-trust: skip permission prompts
+<a id="gemini-cli-auto-trust"></a>
+
+Thêm `"trust": true` vào server entry trong `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "odoo-semantic": {
+      "httpUrl": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "headers": { "X-API-Key": "YOUR_API_KEY" },
+      "trust": true
+    }
+  }
+}
+```
+
+> `"trust": true` = bypass mọi confirmation prompt cho server này.
+
 ---
 
 ## VS Code (built-in MCP, v1.99+)
@@ -111,6 +167,26 @@ Click **Start** codelens xuất hiện trên server block, hoặc reload window.
 
 ⚠️ **Pitfall:** Top-level key là `servers` (KHÔNG phải `mcpServers` như Claude/Gemini/Antigravity). `type` phải đúng `"http"` (KHÔNG phải `"streamable-http"`). KHÔNG đặt MCP servers vào `settings.json` — phải file `mcp.json` riêng.
 
+### auto-trust: skip permission prompts
+<a id="vs-code-auto-trust"></a>
+
+VS Code không có config flag để pre-trust. Phải click **"Always allow for this
+server"** trong Chat UI lần đầu gọi tool.
+
+**One-click install URL** (paste vào browser, VS Code tự xử lý):
+
+```
+vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%3A9999%2Fmcp%22%2C%22headers%22%3A%7B%22X-API-Key%22%3A%22YOUR_API_KEY%22%7D%7D
+```
+
+JSON pre-encode (replace `YOUR_API_KEY`):
+```json
+{"name":"odoo-semantic","type":"http","url":"https://odoo-semantic.viindoo.com:9999/mcp","headers":{"X-API-Key":"YOUR_API_KEY"}}
+```
+
+> ⚠️ VS Code hiện chưa rõ có honor `headers` field trong URL handler không. Nếu
+> install xong mà tool 401, thêm `headers` thủ công vào `.vscode/mcp.json`.
+
 ---
 
 ## Google Antigravity
@@ -132,6 +208,16 @@ IDE → **Manage MCP Servers → View raw config** — hoặc edit thẳng `~/.g
 Save → click **Refresh** ở MCP panel.
 
 ⚠️ **Pitfall:** Property phải là `serverUrl` (camelCase, không phải `url` hay `httpUrl`). File ở `~/.gemini/antigravity/` (chia sẻ prefix với Gemini CLI nhưng schema khác).
+
+### auto-trust: skip permission prompts
+<a id="antigravity-auto-trust"></a>
+
+Sau khi add server: vào **...** → **MCP Servers** → tìm `odoo-semantic` →
+add allow-list pattern `mcp(odoo-semantic.*)` để pre-approve tất cả tool.
+
+> ⚠️ Antigravity chỉ có global config, không có project-level. API key lưu
+> plaintext trong `~/.gemini/antigravity/mcp_config.json` — đảm bảo file
+> permission 600.
 
 ---
 
