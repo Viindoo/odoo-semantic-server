@@ -1,5 +1,6 @@
 # src/mcp/server.py
 import math
+import os
 
 import psycopg2
 from fastmcp import FastMCP
@@ -10,10 +11,11 @@ mcp = FastMCP("odoo-semantic")
 _driver = None
 _pg_conn = None
 _embedder_instance = None
+_version_checked = False
 
 
 def _get_driver():
-    global _driver
+    global _driver, _version_checked
     if _driver is None:
         from src import config
         # Resolution order per from_env_or_ini: env var → INI → fallback
@@ -33,6 +35,23 @@ def _get_driver():
                 "neo4j_password in [database] section of odoo-semantic.conf."
             )
         _driver = GraphDatabase.driver(uri, auth=(user, password))
+
+        # Version check: fail-fast if Neo4j < 5.x (unless in CI with pinned image)
+        if not _version_checked and os.getenv("CI") != "true":
+            with _driver.session() as _s:
+                _row = _s.run(
+                    "CALL dbms.components() YIELD versions RETURN versions[0] AS v"
+                ).single()
+                if _row:
+                    _v = str(_row["v"])
+                    _major = int(_v.split(".")[0])
+                    if _major < 5:
+                        raise RuntimeError(
+                            f"Neo4j 5.x+ required (found {_v}). "
+                            f"Update docker-compose.yml NEO4J_IMAGE and re-run."
+                        )
+            _version_checked = True
+
     return _driver
 
 
