@@ -367,3 +367,280 @@ def test_latest_version_skips_unknown_and_malformed(neo4j_driver):
 
         for v in JUNK_VERSIONS + [GOOD_VERSION]:
             session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for PR #26 (fix/resolve-output-polish)
+# Covers: DISTINCT dedup on parent names, tree-format ├─/└─ connectors
+# ---------------------------------------------------------------------------
+
+MULTI_EXT_VERSION = "96.0"  # purchase.order with ≥2 extensions + mail.thread mixin
+MULTI_MTH_VERSION = "95.0"  # account.move with 3 action_post overrides
+MULTI_VIEW_VERSION = "94.0"  # sale view with 2 extension views
+
+
+@pytest.fixture(scope="module")
+def seeded_multi_extension(neo4j_driver):
+    """Seed purchase.order across 3 modules; both extensions inherit mail.thread.
+
+    This creates 2 INHERITS edges pointing to mail.mail.thread from different
+    purchase.order nodes — the DISTINCT dedup fix prevents duplicate parents.
+    It also creates ≥2 entries in the 'Extended by' block to exercise ├─/└─.
+    """
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MULTI_EXT_VERSION)
+
+    mail_mod = ModuleInfo("mail", MULTI_EXT_VERSION, "odoo_test", "/tmp", [], "")
+    mail_model = ModelInfo(name="mail.thread", module="mail", odoo_version=MULTI_EXT_VERSION)
+
+    base_mod = ModuleInfo("purchase", MULTI_EXT_VERSION, "odoo_test", "/tmp", [], "")
+    base_model = ModelInfo(
+        name="purchase.order", module="purchase", odoo_version=MULTI_EXT_VERSION,
+        fields=[FieldInfo("name", "char")],
+    )
+
+    ext1_mod = ModuleInfo("viin_purchase", MULTI_EXT_VERSION, "acme_addons_test", "/tmp",
+                          ["purchase"], "")
+    ext1_model = ModelInfo(
+        name="purchase.order", module="viin_purchase", odoo_version=MULTI_EXT_VERSION,
+        inherit=["purchase.order", "mail.thread"],
+        fields=[FieldInfo("x_approval_state", "selection")],
+    )
+
+    ext2_mod = ModuleInfo("custom_purchase", MULTI_EXT_VERSION, "custom_test", "/tmp",
+                          ["purchase"], "")
+    ext2_model = ModelInfo(
+        name="purchase.order", module="custom_purchase", odoo_version=MULTI_EXT_VERSION,
+        inherit=["purchase.order", "mail.thread"],
+        fields=[FieldInfo("x_custom_ref", "char")],
+    )
+
+    writer.write_results([
+        ParseResult(module=mail_mod, models=[mail_model]),
+        ParseResult(module=base_mod, models=[base_model]),
+        ParseResult(module=ext1_mod, models=[ext1_model]),
+        ParseResult(module=ext2_mod, models=[ext2_model]),
+    ])
+    writer.close()
+    yield MULTI_EXT_VERSION
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MULTI_EXT_VERSION)
+
+
+@pytest.fixture(scope="module")
+def seeded_multi_method(neo4j_driver):
+    """Seed account.move with action_post in 3 modules to test Override chain connectors."""
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MULTI_MTH_VERSION)
+
+    base_mod = ModuleInfo("account", MULTI_MTH_VERSION, "odoo_test", "/tmp", [], "")
+    base_model = ModelInfo(
+        name="account.move", module="account", odoo_version=MULTI_MTH_VERSION,
+        methods=[MethodInfo("action_post", has_super_call=False)],
+    )
+
+    ext1_mod = ModuleInfo("viin_account", MULTI_MTH_VERSION, "acme_addons_test", "/tmp",
+                          ["account"], "")
+    ext1_model = ModelInfo(
+        name="account.move", module="viin_account", odoo_version=MULTI_MTH_VERSION,
+        inherit=["account.move"],
+        methods=[MethodInfo("action_post", has_super_call=True)],
+    )
+
+    ext2_mod = ModuleInfo("custom_account", MULTI_MTH_VERSION, "custom_test", "/tmp",
+                          ["account"], "")
+    ext2_model = ModelInfo(
+        name="account.move", module="custom_account", odoo_version=MULTI_MTH_VERSION,
+        inherit=["account.move"],
+        methods=[MethodInfo("action_post", has_super_call=True)],
+    )
+
+    writer.write_results([
+        ParseResult(module=base_mod, models=[base_model]),
+        ParseResult(module=ext1_mod, models=[ext1_model]),
+        ParseResult(module=ext2_mod, models=[ext2_model]),
+    ])
+    writer.close()
+    yield MULTI_MTH_VERSION
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MULTI_MTH_VERSION)
+
+
+@pytest.fixture(scope="module")
+def seeded_multi_view_ext(neo4j_driver):
+    """Seed sale view with 2 extension views to test Extended-by ├─/└─ connectors."""
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MULTI_VIEW_VERSION)
+
+    base_mod = ModuleInfo("sale", MULTI_VIEW_VERSION, "odoo_test", "/tmp", [], "")
+    ext1_mod = ModuleInfo("viin_sale", MULTI_VIEW_VERSION, "acme_addons_test", "/tmp",
+                          ["sale"], "")
+    ext2_mod = ModuleInfo("custom_sale", MULTI_VIEW_VERSION, "custom_test", "/tmp",
+                          ["sale"], "")
+
+    base_view = ViewInfo(
+        xmlid="sale.view_sale_order_form",
+        name="sale.order.form",
+        model="sale.order",
+        module="sale",
+        odoo_version=MULTI_VIEW_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    ext1_view = ViewInfo(
+        xmlid="viin_sale.view_inherit_1",
+        name="viin sale inherit 1",
+        model="sale.order",
+        module="viin_sale",
+        odoo_version=MULTI_VIEW_VERSION,
+        view_type="form",
+        mode="extension",
+        inherit_xmlid="sale.view_sale_order_form",
+        xpaths=[XPathInfo(expr="//field[@name='partner_id']", position="after")],
+    )
+    ext2_view = ViewInfo(
+        xmlid="custom_sale.view_inherit_2",
+        name="custom sale inherit 2",
+        model="sale.order",
+        module="custom_sale",
+        odoo_version=MULTI_VIEW_VERSION,
+        view_type="form",
+        mode="extension",
+        inherit_xmlid="sale.view_sale_order_form",
+        xpaths=[XPathInfo(expr="//field[@name='amount_total']", position="before")],
+    )
+
+    writer.write_view_results([
+        ViewParseResult(module=base_mod, views=[base_view]),
+        ViewParseResult(module=ext1_mod, views=[ext1_view]),
+        ViewParseResult(module=ext2_mod, views=[ext2_view]),
+    ])
+    writer.close()
+    yield MULTI_VIEW_VERSION
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MULTI_VIEW_VERSION)
+
+
+@pytest.fixture
+def multi_ext_tools(seeded_multi_extension):
+    version = seeded_multi_extension
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _resolve_model
+    return _resolve_model, version
+
+
+@pytest.fixture
+def multi_mth_tools(seeded_multi_method):
+    version = seeded_multi_method
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _resolve_method
+    return _resolve_method, version
+
+
+@pytest.fixture
+def multi_view_tools(seeded_multi_view_ext):
+    version = seeded_multi_view_ext
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _resolve_view
+    return _resolve_view, version
+
+
+def test_resolve_model_dedup_inherited_parents(multi_ext_tools):
+    """Two extensions both inherit mail.thread → parent appears exactly once (DISTINCT fix)."""
+    resolve_model, version = multi_ext_tools
+    result = resolve_model("purchase.order", version)
+    assert "mail.thread" in result, "mail.thread should be listed as parent"
+    assert result.count("mail.thread") == 1, (
+        f"mail.thread must appear once (DISTINCT dedup), got:\n{result}"
+    )
+
+
+def test_resolve_model_extended_by_tree_format(multi_ext_tools):
+    """Model with ≥2 extensions uses ├─ for non-last entries and └─ for the last."""
+    resolve_model, version = multi_ext_tools
+    result = resolve_model("purchase.order", version)
+    assert "Extended by:" in result
+
+    lines = result.splitlines()
+    ext_start = next(i for i, line in enumerate(lines) if "Extended by:" in line)
+    ext_block = [line for line in lines[ext_start + 1:] if line.startswith("│   ")]
+
+    assert len(ext_block) >= 2, (
+        f"Expected ≥2 extensions in 'Extended by' block, got {len(ext_block)}:\n{result}"
+    )
+    assert "└─" in ext_block[-1], f"Last extension must use └─:\n{ext_block[-1]}"
+    assert all("├─" in line for line in ext_block[:-1]), (
+        f"Non-last extensions must use ├─:\n{ext_block[:-1]}"
+    )
+
+
+def test_resolve_method_override_chain_tree_format(multi_mth_tools):
+    """Method with 3 overrides: first two use ├─, last uses └─ in Override chain."""
+    resolve_method, version = multi_mth_tools
+    result = resolve_method("account.move", "action_post", version)
+    assert "Override chain (3)" in result, f"Expected 3-override chain:\n{result}"
+
+    lines = result.splitlines()
+    chain_start = next(i for i, line in enumerate(lines) if "Override chain" in line)
+    chain_lines = [line for line in lines[chain_start + 1:] if line.startswith("    ")]
+
+    assert len(chain_lines) == 3, (
+        f"Expected 3 override entries, got {len(chain_lines)}:\n{result}"
+    )
+    assert "└─" in chain_lines[-1], f"Last override must use └─:\n{chain_lines[-1]}"
+    assert all("├─" in line for line in chain_lines[:-1]), (
+        f"Non-last overrides must use ├─:\n{chain_lines[:-1]}"
+    )
+
+
+def test_resolve_view_extended_by_tree_format(multi_view_tools):
+    """View with 2 extensions uses ├─ for first entry and └─ for the last."""
+    resolve_view, version = multi_view_tools
+    result = resolve_view("sale.view_sale_order_form", version)
+    assert "Extended by (2 modules)" in result, f"Expected 2-extension block:\n{result}"
+
+    lines = result.splitlines()
+    ext_lines = [line for line in lines if "view_inherit" in line]
+
+    assert len(ext_lines) == 2, (
+        f"Expected 2 extension lines containing 'view_inherit', got {len(ext_lines)}:\n{result}"
+    )
+    assert "└─" in ext_lines[-1], f"Last extension must use └─:\n{ext_lines[-1]}"
+    assert "├─" in ext_lines[0], f"First extension must use ├─:\n{ext_lines[0]}"
