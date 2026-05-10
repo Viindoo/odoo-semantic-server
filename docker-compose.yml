@@ -29,7 +29,7 @@ services:
       retries: 10
 
   postgres:
-    image: pgvector/pgvector:0.8.2-pg16
+    image: ${PG_IMAGE:-pgvector/pgvector:0.8.2-pg16}  # canonical version in .env.example
     restart: unless-stopped
     environment:
       POSTGRES_DB: odoo_semantic
