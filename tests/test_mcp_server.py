@@ -537,6 +537,252 @@ def test_resolve_model_edition_rank_orders_community_then_enterprise_then_custom
             session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=EDITION_VERSION)
 
 
+def test_resolve_model_abstract_mixin_is_base(neo4j_driver):
+    """Mixin model with is_definition=true is correctly identified as Defined-in.
+
+    Synthetic mixin 'test.mixin' has 1 Model node (is_definition=true) and 5
+    consumer models that inherit from it under different model names.
+    The mixin itself has no INHERITS edge going outward to *its own* name, so
+    is_ext=0 → it ranks as the definition even though it has many inbound edges.
+    """
+    MIXIN_BASE_VERSION = "86.0"
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MIXIN_BASE_VERSION)
+
+    try:
+        with neo4j_driver.session() as session:
+            # Mixin module + Model node with is_definition=true
+            session.run(
+                "MERGE (mod:Module {name: 'mixin_core', odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = 'community'",
+                v=MIXIN_BASE_VERSION,
+            )
+            session.run(
+                "MERGE (m:Model {name: 'test.mixin', module: 'mixin_core', odoo_version: $v}) "
+                "SET m.is_definition = true, m.is_abstract = true "
+                "MERGE (mod:Module {name: 'mixin_core', odoo_version: $v}) "
+                "MERGE (m)-[:DEFINED_IN]->(mod)",
+                v=MIXIN_BASE_VERSION,
+            )
+            # 5 consumer models inherit from test.mixin but under different model names
+            for i in range(5):
+                consumer_name = f"consumer.model.{i}"
+                consumer_mod = f"consumer_mod_{i}"
+                session.run(
+                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                    "SET mod.repo = 'consumer_repo', mod.edition = 'community'",
+                    mod=consumer_mod, v=MIXIN_BASE_VERSION,
+                )
+                session.run(
+                    "MERGE (c:Model {name: $cname, module: $mod, odoo_version: $v}) "
+                    "SET c.is_definition = true "
+                    "MERGE (mx:Model {name: 'test.mixin', module: 'mixin_core', odoo_version: $v}) "
+                    "MERGE (c)-[:INHERITS]->(mx) "
+                    "MERGE (cmod:Module {name: $mod, odoo_version: $v}) "
+                    "MERGE (c)-[:DEFINED_IN]->(cmod)",
+                    cname=consumer_name, mod=consumer_mod, v=MIXIN_BASE_VERSION,
+                )
+
+        resolve_model = _make_ranking_tools(neo4j_driver)
+        result = resolve_model("test.mixin", MIXIN_BASE_VERSION)
+
+        assert "Defined in:" in result
+        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+        assert "mixin_core" in first_defined_in_line, (
+            f"Expected 'mixin_core' as Defined-in for mixin model; got:\n{result}"
+        )
+    finally:
+        with neo4j_driver.session() as session:
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MIXIN_BASE_VERSION)
+
+
+def test_resolve_model_sub_mixin_with_different_name(neo4j_driver):
+    """Sub-mixin with _name != _inherit is treated as a new base definition.
+
+    'mixin.alpha' has _name='mixin.alpha' and _inherit='base.mixin' (different names).
+    Because the INHERITS edge goes to 'base.mixin' (a different model name), the
+    is_ext heuristic treats 'mixin.alpha' as is_ext=0 → it is its own base.
+    Assert Defined-in is 'mixin_alpha_mod', not 'base_mixin_mod'.
+    """
+    SUB_MIXIN_VERSION = "85.0"
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SUB_MIXIN_VERSION)
+
+    try:
+        with neo4j_driver.session() as session:
+            # Parent mixin: base.mixin
+            session.run(
+                "MERGE (mod:Module {name: 'base_mixin_mod', odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = 'community'",
+                v=SUB_MIXIN_VERSION,
+            )
+            session.run(
+                "MERGE (m:Model {name: 'base.mixin', module: 'base_mixin_mod', odoo_version: $v}) "
+                "SET m.is_definition = true "
+                "MERGE (mod:Module {name: 'base_mixin_mod', odoo_version: $v}) "
+                "MERGE (m)-[:DEFINED_IN]->(mod)",
+                v=SUB_MIXIN_VERSION,
+            )
+
+            # Sub-mixin: mixin.alpha inherits base.mixin but has a DIFFERENT _name
+            # This is the pattern: _name = 'mixin.alpha'; _inherit = 'base.mixin'
+            session.run(
+                "MERGE (mod:Module {name: 'mixin_alpha_mod', odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = 'community'",
+                v=SUB_MIXIN_VERSION,
+            )
+            session.run(
+                "MERGE (alpha:Model {name: 'mixin.alpha', module: 'mixin_alpha_mod', "
+                "odoo_version: $v}) "
+                "SET alpha.is_definition = true "
+                "MERGE (parent:Model {name: 'base.mixin', module: 'base_mixin_mod', "
+                "odoo_version: $v}) "
+                "MERGE (alpha)-[:INHERITS]->(parent) "
+                "MERGE (mod:Module {name: 'mixin_alpha_mod', odoo_version: $v}) "
+                "MERGE (alpha)-[:DEFINED_IN]->(mod)",
+                v=SUB_MIXIN_VERSION,
+            )
+
+        resolve_model = _make_ranking_tools(neo4j_driver)
+        result = resolve_model("mixin.alpha", SUB_MIXIN_VERSION)
+
+        assert "Defined in:" in result
+        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+        assert "mixin_alpha_mod" in first_defined_in_line, (
+            f"Expected 'mixin_alpha_mod' as Defined-in for sub-mixin; got:\n{result}"
+        )
+    finally:
+        with neo4j_driver.session() as session:
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SUB_MIXIN_VERSION)
+
+
+def test_resolve_model_transient_wizard_single_node(neo4j_driver):
+    """Transient wizard with a single node resolves without error.
+
+    A wizard model (is_transient=true) with exactly 1 Model node and no INHERITS
+    edges. The resolver must return a valid result (no crash, no 'not found') and
+    correctly identify that single node as Defined-in.
+    """
+    TRANSIENT_VERSION = "84.0"
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TRANSIENT_VERSION)
+
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (mod:Module {name: 'wizard_mod', odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = 'community'",
+                v=TRANSIENT_VERSION,
+            )
+            session.run(
+                "MERGE (m:Model {name: 'wizard.confirm', module: 'wizard_mod', odoo_version: $v}) "
+                "SET m.is_transient = true, m.is_definition = true "
+                "MERGE (mod:Module {name: 'wizard_mod', odoo_version: $v}) "
+                "MERGE (m)-[:DEFINED_IN]->(mod)",
+                v=TRANSIENT_VERSION,
+            )
+
+        resolve_model = _make_ranking_tools(neo4j_driver)
+        result = resolve_model("wizard.confirm", TRANSIENT_VERSION)
+
+        assert "not found" not in result.lower(), (
+            f"Single-node transient model should resolve; got:\n{result}"
+        )
+        assert "wizard.confirm" in result
+        assert "Defined in:" in result
+        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+        assert "wizard_mod" in first_defined_in_line, (
+            f"Expected 'wizard_mod' as Defined-in; got:\n{result}"
+        )
+    finally:
+        with neo4j_driver.session() as session:
+            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TRANSIENT_VERSION)
+
+
+def test_resolve_model_redeclare_with_mixin_injection(neo4j_driver):
+    """Redeclare pattern (_name=X, _inherit=[X, mail.thread]) is ranked as extension.
+
+    The redeclare module has both:
+      - An INHERITS edge to 'doc.order' (same name → is_ext=1 via CASE 2)
+      - An INHERITS edge to 'mail.thread' (mixin injection, different name)
+    The base module (is_definition=true) must win Defined-in over the redeclare module.
+    """
+    REDECLARE_MIXIN_VERSION = "83.0"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=REDECLARE_MIXIN_VERSION
+        )
+
+    try:
+        with neo4j_driver.session() as session:
+            # Base module: original definition of doc.order
+            session.run(
+                "MERGE (mod:Module {name: 'doc_base_mod', odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = 'community'",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+            session.run(
+                "MERGE (m:Model {name: 'doc.order', module: 'doc_base_mod', odoo_version: $v}) "
+                "SET m.is_definition = true "
+                "MERGE (mod:Module {name: 'doc_base_mod', odoo_version: $v}) "
+                "MERGE (m)-[:DEFINED_IN]->(mod)",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+
+            # mail.thread mixin (referenced but lives in another module)
+            session.run(
+                "MERGE (mod:Module {name: 'mail_mod', odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = 'community'",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+            session.run(
+                "MERGE (mt:Model {name: 'mail.thread', module: 'mail_mod', odoo_version: $v}) "
+                "SET mt.is_definition = true "
+                "MERGE (mod:Module {name: 'mail_mod', odoo_version: $v}) "
+                "MERGE (mt)-[:DEFINED_IN]->(mod)",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+
+            # Redeclare module: _name='doc.order', _inherit=['doc.order', 'mail.thread']
+            # Creates INHERITS to same-name base (→ is_ext=1) AND to mail.thread mixin
+            session.run(
+                "MERGE (mod:Module {name: 'doc_mixin_mod', odoo_version: $v}) "
+                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+            session.run(
+                "MERGE (ext:Model {name: 'doc.order', module: 'doc_mixin_mod', odoo_version: $v}) "
+                "SET ext.is_definition = false "
+                "MERGE (base:Model {name: 'doc.order', module: 'doc_base_mod', odoo_version: $v}) "
+                "MERGE (ext)-[:INHERITS]->(base) "
+                "MERGE (mt:Model {name: 'mail.thread', module: 'mail_mod', odoo_version: $v}) "
+                "MERGE (ext)-[:INHERITS]->(mt) "
+                "MERGE (extmod:Module {name: 'doc_mixin_mod', odoo_version: $v}) "
+                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+
+        resolve_model = _make_ranking_tools(neo4j_driver)
+        result = resolve_model("doc.order", REDECLARE_MIXIN_VERSION)
+
+        assert "Defined in:" in result
+        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+        assert "doc_base_mod" in first_defined_in_line, (
+            f"Expected 'doc_base_mod' (base) as Defined-in; "
+            f"redeclare module must not win; got:\n{result}"
+        )
+        # The redeclare module must appear in Extended-by (not Defined-in)
+        assert "doc_mixin_mod" in result, (
+            f"Expected redeclare module 'doc_mixin_mod' somewhere in output; got:\n{result}"
+        )
+    finally:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=REDECLARE_MIXIN_VERSION,
+            )
+
+
 # --- _resolve_field 4-tier ranking tests ------
 
 def _make_field_tools(neo4j_driver):

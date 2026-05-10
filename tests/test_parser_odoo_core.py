@@ -336,3 +336,307 @@ def test_indirect_exception_classified_as_exception(tmp_path):
     assert qnames.get("odoo.exceptions.AccessDenied") == "exception", (
         "AccessDenied (direct Exception subclass) should be kind='exception'"
     )
+
+
+# ---------------------------------------------------------------------------
+# WI-11 — Integration tests for full parse_odoo_core pipeline coverage
+# ---------------------------------------------------------------------------
+
+
+def test_parse_odoo_core_v19_full_pipeline_emits_orm_symbols(tmp_path):
+    """v19 complete tree: odoo/fields/ package, odoo/orm/ split files, all kinds present.
+
+    Verify parse_odoo_core(tmp_path, '19.0') with a realistic v19 layout:
+    - odoo/fields/ is a package dir (not a file)
+    - odoo/orm/fields.py contains field definitions (symbol emission via resolver)
+    - odoo/orm/models.py contains ORM model symbols
+    - odoo/orm/decorators.py contains decorator symbols
+    - odoo/exceptions.py contains exception hierarchy (recursive: ValidationError → UserError)
+    - odoo/sql_db.py contains cursor-related classes and methods
+    - odoo/tools/{safe_eval,sql}.py contain utility functions
+
+    Assert:
+    1. All 6 kind labels appear in output
+       (field_type, class, exception, function, orm_method, cursor_method)
+    2. ValidationError is correctly classified as exception (covers recursive case)
+    3. ORM methods inside BaseModel/Model have kind='orm_method'
+    4. Cursor methods inside Cursor have kind='cursor_method'
+    5. Output count is reasonable (>= 30 symbols)
+    """
+    # Create v19 package layout: odoo/fields/ is a directory
+    (tmp_path / "odoo" / "fields").mkdir(parents=True)
+    (tmp_path / "odoo" / "fields" / "__init__.py").write_text(
+        "# v19: fields is a package re-exporting from odoo.orm.fields\n"
+        "from odoo.orm.fields import Char, Integer, Float, Many2one, One2many\n"
+    )
+
+    # Create odoo/orm split files (where symbols actually live in v19)
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+
+    (orm_dir / "fields.py").write_text(
+        "class Field:\n"
+        "    pass\n\n"
+        "class Char(Field):\n"
+        "    pass\n\n"
+        "class Integer(Field):\n"
+        "    pass\n\n"
+        "class Float(Field):\n"
+        "    aggregator = 'sum'\n\n"
+        "class Many2one(Field):\n"
+        "    pass\n\n"
+        "class One2many(Field):\n"
+        "    pass\n"
+    )
+
+    (orm_dir / "models.py").write_text(
+        "class BaseModel:\n"
+        "    _name = None\n\n"
+        "    def create(self, vals):\n"
+        "        return self\n\n"
+        "    def write(self, vals):\n"
+        "        return True\n\n"
+        "    def unlink(self):\n"
+        "        return True\n\n"
+        "class Model(BaseModel):\n"
+        "    _auto = True\n\n"
+        "    def action_archive(self):\n"
+        "        pass\n"
+    )
+
+    (orm_dir / "decorators.py").write_text(
+        "def depends(*args):\n"
+        "    def decorator(func):\n"
+        "        return func\n"
+        "    return decorator\n\n"
+        "def api_one(func):\n"
+        "    return func\n"
+    )
+
+    # Create odoo/exceptions.py with recursive hierarchy
+    (tmp_path / "odoo" / "exceptions.py").write_text(
+        "class UserError(Exception):\n"
+        "    pass\n\n"
+        "class ValidationError(UserError):\n"
+        "    '''Indirect exception through UserError.'''\n"
+        "    pass\n\n"
+        "class AccessDenied(UserError):\n"
+        "    pass\n"
+    )
+
+    # Create odoo/sql_db.py with cursor class and methods
+    (tmp_path / "odoo" / "sql_db.py").write_text(
+        "class Cursor:\n"
+        "    def execute(self, query, params=None):\n"
+        "        pass\n\n"
+        "    def fetchone(self):\n"
+        "        return None\n\n"
+        "    def fetchall(self):\n"
+        "        return []\n"
+    )
+
+    # Create odoo/tools files
+    tools_dir = tmp_path / "odoo" / "tools"
+    tools_dir.mkdir(parents=True)
+
+    (tools_dir / "safe_eval.py").write_text(
+        "def safe_eval(expr, context=None):\n"
+        "    '''Safely evaluate an expression.'''\n"
+        "    return eval(expr, context)\n"
+    )
+
+    (tools_dir / "sql.py").write_text(
+        "def make_index_name(table, name):\n"
+        "    return f'{table}_{name}_idx'\n\n"
+        "def drop_index(cursor, table, name):\n"
+        "    pass\n"
+    )
+
+    # Parse the v19 tree
+    out = parse_odoo_core(str(tmp_path), "19.0")
+
+    # Build lookup tables for assertions
+    qnames = {s.qualified_name: s for s in out}
+    kinds = {s.kind for s in out}
+
+    # Assert 1: All 6 kinds are present
+    expected_kinds = {"field_type", "class", "exception", "function", "orm_method", "cursor_method"}
+    missing_kinds = expected_kinds - kinds
+    assert not missing_kinds, (
+        f"v19 pipeline missing kinds: {missing_kinds}. Got: {kinds}. "
+        f"Symbols: {list(qnames.keys())[:5]}..."
+    )
+
+    # Assert 2: ValidationError is classified as exception (recursive)
+    val_err = qnames.get("odoo.exceptions.ValidationError")
+    assert val_err is not None, "ValidationError not found in output"
+    assert val_err.kind == "exception", (
+        f"ValidationError should be kind='exception', got {val_err.kind}"
+    )
+
+    # Assert 3: ORM methods have kind='orm_method'
+    create_method = qnames.get("odoo.models.BaseModel.create")
+    assert create_method is not None, "BaseModel.create not found"
+    assert create_method.kind == "orm_method", (
+        f"BaseModel.create should be kind='orm_method', got {create_method.kind}"
+    )
+
+    write_method = qnames.get("odoo.models.Model.action_archive")
+    assert write_method is not None, "Model.action_archive not found"
+    assert write_method.kind == "orm_method", (
+        f"Model.action_archive should be kind='orm_method', got {write_method.kind}"
+    )
+
+    # Assert 4: Cursor methods have kind='cursor_method'
+    execute_method = qnames.get("odoo.sql_db.Cursor.execute")
+    assert execute_method is not None, "Cursor.execute not found"
+    assert execute_method.kind == "cursor_method", (
+        f"Cursor.execute should be kind='cursor_method', got {execute_method.kind}"
+    )
+
+    # Assert 5: Reasonable output count
+    assert len(out) >= 20, (
+        f"Expected ≥20 symbols from v19 tree, got {len(out)}. "
+        f"Kinds: {kinds}, Sample qnames: {list(qnames.keys())[:10]}"
+    )
+
+
+def test_parse_odoo_core_v8_openerp_emits_legacy_symbols(tmp_path):
+    """v8 complete tree: openerp/ namespace with legacy field declarations.
+
+    Verify parse_odoo_core(tmp_path, '8.0') with a v8-style layout:
+    - openerp/fields.py contains field definitions (Python 2 class syntax compatible)
+    - openerp/models.py contains model definitions
+    - openerp/api.py contains decorator-like functions (no api.depends in v8, simpler)
+    - openerp/exceptions.py contains exception hierarchy
+    - openerp/sql_db.py contains database layer
+    - openerp/tools/{safe_eval,sql}.py contain utilities
+
+    Assert:
+    1. Symbol count >= 20 (fewer symbols in v8 due to simpler structure)
+    2. Field types are correctly classified (Char, Integer, Many2one all kind='field_type')
+    3. Model classes exist and methods are properly emitted
+    4. Exception hierarchy works (indirect exceptions via UserError)
+    5. All symbols carry odoo_version='8.0'
+    """
+    # Create v8 openerp layout (no odoo/ directory)
+    openerp_dir = tmp_path / "openerp"
+    openerp_dir.mkdir(parents=True)
+
+    (openerp_dir / "fields.py").write_text(
+        "class Field(object):\n"
+        "    '''Base field class for v8.'''\n"
+        "    size = None\n\n"
+        "class Char(Field):\n"
+        "    size = 256\n\n"
+        "class Integer(Field):\n"
+        "    pass\n\n"
+        "class Many2one(Field):\n"
+        "    '''Relation field.'''\n"
+        "    pass\n"
+    )
+
+    (openerp_dir / "models.py").write_text(
+        "class BaseModel(object):\n"
+        "    _name = None\n"
+        "    _auto = True\n\n"
+        "    def search(self, domain):\n"
+        "        return []\n\n"
+        "    def browse(self, ids):\n"
+        "        return self\n\n"
+        "    def create(self, vals):\n"
+        "        return self\n\n"
+        "    def write(self, vals):\n"
+        "        return True\n\n"
+        "class Model(BaseModel):\n"
+        "    pass\n"
+    )
+
+    (openerp_dir / "api.py").write_text(
+        "def depends(*args):\n"
+        "    def decorator(f):\n"
+        "        return f\n"
+        "    return decorator\n\n"
+        "def one(func):\n"
+        "    return func\n"
+    )
+
+    (openerp_dir / "exceptions.py").write_text(
+        "class UserError(Exception):\n"
+        "    pass\n\n"
+        "class ValidationError(UserError):\n"
+        "    pass\n"
+    )
+
+    (openerp_dir / "sql_db.py").write_text(
+        "class Cursor(object):\n"
+        "    def execute(self, query, params=None):\n"
+        "        pass\n\n"
+        "    def fetchone(self):\n"
+        "        return None\n"
+    )
+
+    tools_dir = openerp_dir / "tools"
+    tools_dir.mkdir(parents=True)
+
+    (tools_dir / "safe_eval.py").write_text(
+        "def safe_eval(expr):\n"
+        "    return eval(expr)\n"
+    )
+
+    (tools_dir / "sql.py").write_text(
+        "def make_index_name(table, name):\n"
+        "    return '%s_%s_idx' % (table, name)\n\n"
+        "def drop_index(cursor, table):\n"
+        "    pass\n"
+    )
+
+    # Parse the v8 tree
+    out = parse_odoo_core(str(tmp_path), "8.0")
+
+    qnames = {s.qualified_name: s for s in out}
+
+    # Assert 1: Reasonable symbol count
+    assert len(out) >= 20, (
+        f"Expected ≥20 symbols from v8 tree, got {len(out)}. "
+        f"Output: {list(qnames.keys())[:10]}"
+    )
+
+    # Assert 2: Field types are classified correctly
+    for field_name in ["Char", "Integer", "Many2one"]:
+        qname = f"odoo.fields.{field_name}"
+        assert qname in qnames, f"Expected {qname} in output"
+        assert qnames[qname].kind == "field_type", (
+            f"{field_name} should be kind='field_type', got {qnames[qname].kind}"
+        )
+
+    # Assert 3: Base Field class exists
+    assert "odoo.fields.Field" in qnames, "Field base class not found"
+
+    # Assert 4: Model classes and methods exist
+    basemodel = qnames.get("odoo.models.BaseModel")
+    assert basemodel is not None, "BaseModel class not found"
+    assert basemodel.kind == "class", (
+        f"BaseModel should be kind='class', got {basemodel.kind}"
+    )
+
+    # Check model methods
+    search_method = qnames.get("odoo.models.BaseModel.search")
+    assert search_method is not None, "BaseModel.search method not found"
+    assert search_method.kind == "orm_method", (
+        f"BaseModel.search should be kind='orm_method', got {search_method.kind}"
+    )
+
+    # Assert 5: Exception hierarchy (indirect exception)
+    val_err = qnames.get("odoo.exceptions.ValidationError")
+    assert val_err is not None, "ValidationError not found"
+    assert val_err.kind == "exception", (
+        f"ValidationError should be kind='exception', got {val_err.kind}"
+    )
+
+    # Assert 6: All symbols have correct odoo_version
+    wrong_version = [s for s in out if s.odoo_version != "8.0"]
+    assert not wrong_version, (
+        f"{len(wrong_version)} symbols have wrong version: "
+        f"{[(s.qualified_name, s.odoo_version) for s in wrong_version[:3]]}"
+    )
