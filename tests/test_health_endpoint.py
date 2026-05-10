@@ -68,20 +68,23 @@ class TestHealthEndpoint:
     @pytest.mark.asyncio
     async def test_postgres_down_returns_degraded(self, monkeypatch):
         """When PostgreSQL fails, status should not be 'ok'."""
+        from contextlib import contextmanager
+
         import httpx
 
         from src.mcp import server as server_mod
 
-        def mock_broken_pg():
-            class BrokenConn:
-                closed = False
+        class BrokenConn:
+            closed = False
 
-                def cursor(self):
-                    raise ConnectionError("PostgreSQL down")
+            def cursor(self):
+                raise ConnectionError("PostgreSQL down")
 
-            return BrokenConn()
+        @contextmanager
+        def mock_broken_checkout():
+            yield BrokenConn()
 
-        monkeypatch.setattr(server_mod, "_get_pg_conn", mock_broken_pg)
+        monkeypatch.setattr(server_mod, "_checkout_pg", mock_broken_checkout)
 
         app = self._get_asgi_app()
         async with httpx.AsyncClient(app=app, base_url="http://test") as client:

@@ -11,6 +11,7 @@ Tests cover:
 import os
 import time
 import unittest.mock as mock
+from contextlib import contextmanager
 
 import httpx
 import psycopg2
@@ -41,6 +42,20 @@ from src.mcp.middleware import (
 )
 
 pytestmark = pytest.mark.postgres
+
+
+def _checkout_pg_yielding(conn):
+    """Return a contextmanager callable that always yields *conn*.
+
+    Used in tests to patch ``src.mcp.server._checkout_pg`` with a
+    context manager that yields a specific (test) connection instead of
+    drawing from the real pool.
+    """
+    @contextmanager
+    def _cm():
+        yield conn
+    return _cm
+
 
 PG_TEST_DSN = os.getenv(
     "PG_TEST_DSN",
@@ -271,7 +286,7 @@ class TestCacheTTLExpiration:
         app.add_middleware(AuthMiddleware)
 
         # First request: primes cache (cache miss → DB verify → key_id cached)
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -283,7 +298,7 @@ class TestCacheTTLExpiration:
         _cache_invalidate_by_key_id(key_id)
 
         # Next request: cache miss → fresh DB verify → inactive → 401
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -309,7 +324,7 @@ class TestCacheTTLExpiration:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -385,7 +400,7 @@ class TestAuthMiddlewareKeyVerification:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -407,7 +422,7 @@ class TestAuthMiddlewareKeyVerification:
         app = Starlette(routes=[Route("/mcp", capture_state)])
         app.add_middleware(AuthMiddleware)
 
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -437,7 +452,7 @@ class TestAuthMiddlewareKeyVerification:
 
         with mock.patch(
             "src.db.auth_registry.verify_api_key", side_effect=counting_verify
-        ), mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        ), mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -462,7 +477,7 @@ class TestAuthMiddlewareKeyVerification:
         app.add_middleware(AuthMiddleware)
 
         # First request should succeed (cache hit)
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -476,7 +491,7 @@ class TestAuthMiddlewareKeyVerification:
         _CACHE_TS[hash_key(raw)] = time.monotonic() - _CACHE_TTL - 1
 
         # Second request should fail (fresh DB lookup)
-        with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
