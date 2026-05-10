@@ -216,3 +216,68 @@ class TestMethodVersionDiff:
         assert "not stored" in result or "run" in result.lower()
 
         _clean_version(driver, ALT_VERSION)
+
+    def test_diff_method_absent_in_both_versions(self, clean_neo4j):
+        """When model/method missing in both versions, output says 'absent in both'.
+
+        Previously the else-branch would incorrectly label this as 'added in to_version'
+        which is actively misleading. Fix: explicit both-absent branch with early return.
+        """
+        driver = clean_neo4j
+        _clean_version(driver, ALT_VERSION)
+
+        # Seed nothing — neither version has nonexistent.model.phantom_method
+        from src.mcp.server import _find_override_point
+        result = _find_override_point(
+            "nonexistent.model", "phantom_method",
+            odoo_version=TEST_VERSION,
+            to_version=ALT_VERSION,
+            _driver=driver,
+        )
+
+        assert isinstance(result, str)
+        assert "absent in both" in result
+        # Must NOT say "added in" or "removed in" — those are incorrect
+        assert "added in" not in result
+        assert "removed in" not in result
+
+        _clean_version(driver, ALT_VERSION)
+
+    def test_diff_body_whitespace_change_not_reported(self, clean_neo4j):
+        """Whitespace-only body changes are NOT surfaced in diff output.
+
+        The diff compares decorator set, convention_kind, super_safety, and signature
+        only — not source_code. A method with identical metadata but different whitespace
+        in source_code MUST NOT produce spurious decorator/convention/signature/super
+        changes. Confirms V0 invariant: 'False positive (whitespace-only body change)
+        NOT reported'.
+        """
+        driver = clean_neo4j
+        _clean_version(driver, ALT_VERSION)
+
+        # Both versions identical metadata; source_code intentionally not seeded
+        # (defaults to None) — confirms no crash and no spurious diff lines.
+        _seed_method(driver, TEST_VERSION, "action_confirm",
+                     decorators=[], signature="self", convention_kind="action",
+                     super_safety="always")
+        _seed_method(driver, ALT_VERSION, "action_confirm",
+                     decorators=[], signature="self", convention_kind="action",
+                     super_safety="always")
+
+        from src.mcp.server import _find_override_point
+        result = _find_override_point(
+            "sale.order", "action_confirm",
+            odoo_version=TEST_VERSION,
+            to_version=ALT_VERSION,
+            _driver=driver,
+        )
+
+        # All attributes unchanged
+        assert "unchanged" in result
+        # No spurious body/source references
+        assert "body" not in result.lower()
+        assert "source_code" not in result
+        # Decorator section says "none" (no changes)
+        assert "none" in result.lower() or "Decorator changes: none" in result
+
+        _clean_version(driver, ALT_VERSION)
