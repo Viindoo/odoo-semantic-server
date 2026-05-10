@@ -10,6 +10,7 @@ Public API:
     open_production_neo4j() -> neo4j.Driver   (external callers / health check)
     open_production_pg() -> psycopg2.connection (used by __main__.py)
 """
+import concurrent.futures
 import hashlib
 import logging
 import os
@@ -255,7 +256,14 @@ def _index_repo(
     }
 
 
-def index_profile(pg_conn, *, profile_name: str, embedder=None, progress: bool = False) -> dict:
+def index_profile(
+    pg_conn,
+    *,
+    profile_name: str,
+    embedder=None,
+    progress: bool = False,
+    max_workers: int = 1,
+) -> dict:
     """Index all repos belonging to *profile_name*.
 
     Args:
@@ -264,6 +272,12 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None, progress: bool =
         embedder:     Optional EmbedderClient. When provided (and pgvector is
                       available), semantic embeddings are written to PostgreSQL.
         progress:     When True, show tqdm progress bar for module iteration.
+        max_workers:  Number of parallel threads for repo scanning. Default 1
+                      (sequential, unchanged behaviour). When > 1, repos are
+                      indexed concurrently via ThreadPoolExecutor. Each thread
+                      opens its own psycopg2 connection (psycopg2 connections
+                      are NOT thread-safe). Neo4jWriter is shared across threads
+                      (safe: every method uses a per-call session).
 
     Returns:
         Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
@@ -294,34 +308,100 @@ def index_profile(pg_conn, *, profile_name: str, embedder=None, progress: bool =
             total_js_patches = 0
             total_owl_comps = 0
 
-            for repo in repos:
-                repo_id: int = repo["id"]
-                try:
-                    counters = _index_repo(
-                        repo, writer, pg_conn=pg_conn, embedder=embedder, progress=progress
+            if max_workers <= 1:
+                # --- Sequential path (original behaviour, unchanged) ----------
+                for repo in repos:
+                    repo_id: int = repo["id"]
+                    try:
+                        counters = _index_repo(
+                            repo, writer, pg_conn=pg_conn, embedder=embedder, progress=progress
+                        )
+                        total_modules += counters["modules"]
+                        total_views += counters["views"]
+                        total_qweb += counters["qweb"]
+                        total_embeddings += counters.get("embeddings", 0)
+                        total_js_patches += counters.get("js_patches", 0)
+                        total_owl_comps += counters.get("owl_comps", 0)
+                        update_repo_status(pg_conn, repo_id, "indexed")
+                        _logger.info(
+                            "Indexed repo id=%d: %d modules, %d views, %d qweb, "
+                            "%d embeddings, %d js_patches, %d owl_comps",
+                            repo_id,
+                            counters["modules"],
+                            counters["views"],
+                            counters["qweb"],
+                            counters.get("embeddings", 0),
+                            counters.get("js_patches", 0),
+                            counters.get("owl_comps", 0),
+                        )
+                    except Exception as e:
+                        _logger.exception("Failed to index repo id=%d", repo_id)
+                        update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
+                        raise  # re-raise so index_profile can propagate failure
+            else:
+                # --- Parallel path (ThreadPoolExecutor) ----------------------
+                if progress:
+                    print(
+                        f"[index_profile] progress bar disabled when max_workers={max_workers} "
+                        f"(parallel mode — tqdm bars would interleave)"
                     )
-                    total_modules += counters["modules"]
-                    total_views += counters["views"]
-                    total_qweb += counters["qweb"]
-                    total_embeddings += counters.get("embeddings", 0)
-                    total_js_patches += counters.get("js_patches", 0)
-                    total_owl_comps += counters.get("owl_comps", 0)
-                    update_repo_status(pg_conn, repo_id, "indexed")
-                    _logger.info(
-                        "Indexed repo id=%d: %d modules, %d views, %d qweb, "
-                        "%d embeddings, %d js_patches, %d owl_comps",
-                        repo_id,
-                        counters["modules"],
-                        counters["views"],
-                        counters["qweb"],
-                        counters.get("embeddings", 0),
-                        counters.get("js_patches", 0),
-                        counters.get("owl_comps", 0),
-                    )
-                except Exception as e:
-                    _logger.exception("Failed to index repo id=%d", repo_id)
-                    update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
-                    raise  # re-raise so index_profile can propagate failure
+
+                def _worker(repo: dict) -> dict:
+                    """Per-repo worker: own pg_conn + shared writer."""
+                    repo_id: int = repo["id"]
+                    pg_conn_local = open_production_pg()
+                    try:
+                        counters = _index_repo(
+                            repo, writer,
+                            pg_conn=pg_conn_local,
+                            embedder=embedder,
+                            progress=False,
+                        )
+                        update_repo_status(pg_conn_local, repo_id, "indexed")
+                        _logger.info(
+                            "Indexed repo id=%d: %d modules, %d views, %d qweb, "
+                            "%d embeddings, %d js_patches, %d owl_comps",
+                            repo_id,
+                            counters["modules"],
+                            counters["views"],
+                            counters["qweb"],
+                            counters.get("embeddings", 0),
+                            counters.get("js_patches", 0),
+                            counters.get("owl_comps", 0),
+                        )
+                        return counters
+                    except Exception as e:
+                        _logger.exception("Failed to index repo id=%d", repo_id)
+                        try:
+                            update_repo_status(
+                                pg_conn_local, repo_id, "error", error_msg=str(e)[:500]
+                            )
+                        except Exception:
+                            pass
+                        raise
+                    finally:
+                        pg_conn_local.close()
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max_workers
+                ) as executor:
+                    futures = {executor.submit(_worker, repo): repo for repo in repos}
+                    first_exc: BaseException | None = None
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            counters = future.result()
+                            total_modules += counters["modules"]
+                            total_views += counters["views"]
+                            total_qweb += counters["qweb"]
+                            total_embeddings += counters.get("embeddings", 0)
+                            total_js_patches += counters.get("js_patches", 0)
+                            total_owl_comps += counters.get("owl_comps", 0)
+                        except Exception as e:
+                            if first_exc is None:
+                                first_exc = e
+                    if first_exc is not None:
+                        raise first_exc
+
         finally:
             writer.close()
 
@@ -503,16 +583,18 @@ def index_core(
     }
 
 
-def index_all(pg_conn, embedder=None, progress: bool = False) -> dict:
+def index_all(pg_conn, embedder=None, progress: bool = False, max_workers: int = 1) -> dict:
     """Index every profile registered in PostgreSQL.
 
     Continues after per-profile failures — failed profiles are listed in
     the returned summary under 'profiles_failed'.
 
     Args:
-        pg_conn:   psycopg2 connection (autocommit OK).
-        embedder:  Optional EmbedderClient for pgvector embeddings.
-        progress:  When True, show tqdm progress bar for module iteration.
+        pg_conn:      psycopg2 connection (autocommit OK).
+        embedder:     Optional EmbedderClient for pgvector embeddings.
+        progress:     When True, show tqdm progress bar for module iteration.
+        max_workers:  Passed through to index_profile() for intra-profile
+                      parallel repo scanning.
 
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
@@ -531,7 +613,11 @@ def index_all(pg_conn, embedder=None, progress: bool = False) -> dict:
         name = profile["name"]
         try:
             summary = index_profile(
-                pg_conn, profile_name=name, embedder=embedder, progress=progress
+                pg_conn,
+                profile_name=name,
+                embedder=embedder,
+                progress=progress,
+                max_workers=max_workers,
             )
             agg_modules += summary["modules"]
             agg_views += summary["views"]
