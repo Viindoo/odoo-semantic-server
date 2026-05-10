@@ -754,5 +754,411 @@
     "odoo_version_min": "17.0",
     "language": "js",
     "core_symbol_names": []
+  },
+  {
+    "pattern_id": "portal-sudo-public-user-access",
+    "intent_keywords": ["portal", "sudo", "public user", "controller", "access guard"],
+    "file_ref": "addons/portal/controllers/portal.py:335",
+    "snippet_text": "IrAttachment = request.env['ir.attachment']\n\n# Avoid using sudo when not necessary: internal users can create attachments,\n# as opposed to public and portal users.\nif not request.env.user._is_internal():\n    IrAttachment = IrAttachment.sudo()\n\nattachment = IrAttachment.create({\n    'name': name,\n    'datas': base64.b64encode(file.read()),\n    'res_model': 'mail.compose.message',\n    'res_id': 0,\n})",
+    "gotchas": [
+      "`request.env.user._is_internal()` returns False for portal AND public users — use `_is_portal()` separately if you need to distinguish them; confusing the two can grant public users portal-level access.",
+      "Applying `sudo()` to the full `request.env` (not just the model recordset) widens privileges for every subsequent ORM call in the same scope; always narrow it to a single model as shown.",
+      "`request.env` is bound to the current HTTP user — do NOT cache a sudo'd env between requests; a shared module-level variable retains elevated rights across sessions."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.http.request"]
+  },
+  {
+    "pattern_id": "portal-layout-template-inherit",
+    "intent_keywords": ["portal", "template", "portal_layout", "breadcrumbs", "frontend"],
+    "file_ref": "addons/sale/views/sale_portal_templates.xml:4",
+    "snippet_text": "<template id=\"portal_my_home_menu_sale\"\n          name=\"Portal layout : sales menu entries\"\n          inherit_id=\"portal.portal_breadcrumbs\"\n          priority=\"20\">\n    <xpath expr=\"//ol[hasclass('o_portal_submenu')]\" position=\"inside\">\n        <li id=\"portal_breadcrumbs_sale\"\n            t-if=\"page_name == 'quote'\"\n            t-attf-class=\"breadcrumb-item #{'active ' if not sale_order else ''}\">\n            <a t-if=\"sale_order\"\n               t-attf-href=\"/my/quotes?{{ keep_query() }}\">Quotations</a>\n            <t t-else=\"\">Quotations</t>\n        </li>\n    </xpath>\n</template>",
+    "gotchas": [
+      "`inherit_id=\"portal.portal_breadcrumbs\"` extends the breadcrumb list; `inherit_id=\"portal.portal_layout\"` wraps the whole page — using the wrong one results in duplicate navigation bars or missing layout wrappers.",
+      "`priority` on a `<template>` controls render order when multiple modules inherit the same template; lower number = rendered first; a missing priority defaults to 16 which can silently override community templates.",
+      "`t-attf-class` uses `#{}` interpolation (Jinja-style), NOT `${}` — mixing the syntaxes produces a literal `${}` string in the rendered HTML without any error."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "portal-mixin-ensure-token",
+    "intent_keywords": ["portal", "access_token", "portal.mixin", "share url", "token"],
+    "file_ref": "addons/portal/models/portal_mixin.py:29",
+    "snippet_text": "def _portal_ensure_token(self):\n    \"\"\" Get the current record access token \"\"\"\n    if not self.access_token:\n        # we use a `write` to force the cache clearing otherwise\n        # `return self.access_token` will return False\n        self.sudo().write({'access_token': str(uuid.uuid4())})\n    return self.access_token",
+    "gotchas": [
+      "`self.sudo().write(...)` is required (not just field assignment) because Odoo's ORM field cache is NOT invalidated by a plain `self.access_token = ...` assignment on a stored field — the stale cached value would be returned.",
+      "`portal.mixin` adds `access_token` but does NOT add `access_url` logic for your model — you must override `_compute_access_url` to return a meaningful URL otherwise `access_url` is always `'#'`.",
+      "Never expose `access_token` in a context key or URL fragment that is logged by a proxy/firewall; treat it as a secret credential — even a Read-only portal share token grants full record read access to anyone who has it."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.addons.portal.models.portal_mixin.PortalMixin"]
+  },
+  {
+    "pattern_id": "portal-compute-with-sudo",
+    "intent_keywords": ["portal", "compute", "sudo", "public", "website access"],
+    "file_ref": "addons/portal/controllers/portal.py:213",
+    "snippet_text": "countries = request.env['res.country'].sudo().search([])\nstates = request.env['res.country.state'].sudo().search([])\n\nvalues = {\n    'partner': partner,\n    'countries': countries,\n    'states': states,\n    'has_check_vat': hasattr(request.env['res.partner'], 'check_vat'),\n}",
+    "gotchas": [
+      "Portal users typically have no read rights on `res.country` by default — `sudo()` is needed for multi-country selector widgets; omitting it raises `AccessError` silently handled as a 500 in production.",
+      "`.sudo().search([])` fetches ALL records regardless of `ir.rule` domain restrictions — if the model has multi-company rules, always add an explicit company filter: `.sudo().search([('company_id', '=', ...)])` or `('company_id', 'in', request.env.companies.ids)`.",
+      "`request.env['res.partner']` used bare (without sudo) still reflects the portal user's rights — `hasattr` for optional module features like `check_vat` is safe because it is a Python attribute check, not an ORM query."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "wizard-transient-default-get-context",
+    "intent_keywords": ["wizard", "TransientModel", "default_get", "context", "prefill", "active_id"],
+    "file_ref": "addons/stock/wizard/stock_picking_return.py:26",
+    "snippet_text": "@api.model\ndef default_get(self, fields):\n    res = super(ReturnPicking, self).default_get(fields)\n    if self.env.context.get('active_id') and \\\n            self.env.context.get('active_model') == 'stock.picking':\n        if len(self.env.context.get('active_ids', list())) > 1:\n            raise UserError(_('You may only return one picking at a time.'))\n        picking = self.env['stock.picking'].browse(\n            self.env.context.get('active_id'))\n        if picking.exists():\n            res.update({'picking_id': picking.id})\n    return res",
+    "gotchas": [
+      "`default_get` receives only the list of field names declared in the view — if a field is not in the view it will NOT be in the `fields` arg; always guard with `if 'my_field' in fields` before setting it to avoid silently ignored defaults.",
+      "Always call `super().default_get(fields)` first and update the returned dict — skipping super loses defaults set by parent classes (e.g. `_defaults` class attribute or `default=` on field definition).",
+      "`self.env.context.get('active_ids')` can be a list of IDs from multi-select; `active_id` is only the last-clicked record in a list view and may differ from `active_ids[0]` when records are selected in reverse order — always prefer `active_ids` for batch wizards."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.models.TransientModel"]
+  },
+  {
+    "pattern_id": "wizard-action-close-vs-open",
+    "intent_keywords": ["wizard", "action", "close", "act_window_close", "return action", "popup"],
+    "file_ref": "addons/stock/wizard/stock_change_product_qty.py:44",
+    "snippet_text": "def change_product_qty(self):\n    self.env['stock.quant'].with_context(\n        inventory_mode=True\n    ).create({\n        'product_id': self.product_id.id,\n        'location_id': warehouse.lot_stock_id.id,\n        'inventory_quantity': self.new_quantity,\n    })._apply_inventory()\n    return {'type': 'ir.actions.act_window_close'}",
+    "gotchas": [
+      "Returning `{'type': 'ir.actions.act_window_close'}` closes the dialog and reloads the underlying list/form; returning `None` or omitting a return also closes the dialog but does NOT reload — use `act_window_close` when changes must be reflected immediately.",
+      "To re-open the current wizard (multi-step): return a new `ir.actions.act_window` dict pointing to the same `res_model`; the previous wizard record stays in the DB until the `ir.autovacuum` cron cleans stale `TransientModel` rows.",
+      "Returning an `ir.actions.act_window` dict that opens another model's form view (e.g. to show the created invoice) requires setting both `res_model` AND `res_id` for a single-record form view; omitting `res_id` opens a new empty form."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "wizard-backorder-default-get-x2m",
+    "intent_keywords": ["wizard", "default_get", "One2many", "Many2many", "Command", "x2m default"],
+    "file_ref": "addons/stock/wizard/stock_backorder_confirmation.py:29",
+    "snippet_text": "@api.model\ndef default_get(self, fields):\n    res = super().default_get(fields)\n    if 'backorder_confirmation_line_ids' in fields and res.get('pick_ids'):\n        res['backorder_confirmation_line_ids'] = [\n            (0, 0, {'to_backorder': True, 'picking_id': pick_id})\n            for pick_id in res['pick_ids'][0][2]\n        ]\n        # default_get returns x2m values as [(6, 0, ids)]\n        # because of webclient limitations\n    return res",
+    "gotchas": [
+      "`default_get` must return One2many/Many2many values as ORM command tuples `(0, 0, vals)` for create — NOT as plain dicts; the webclient deserialises the return value differently from `create()`.",
+      "The comment `res['pick_ids'][0][2]` unpacks a `(6, 0, ids)` Command 6 tuple: index 0=command, 1=0 (unused), 2=list of ids; this pattern is brittle — use `odoo.fields.Command.set(ids)` in v16+ for clarity.",
+      "Setting an x2m field value in `default_get` creates those child records immediately on save — if the user cancels the wizard without saving, those records are never written; do not create records with side-effects inside `default_get`."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "multi-company-with-company-context",
+    "intent_keywords": ["multi-company", "with_company", "company_id", "company context"],
+    "file_ref": "addons/sale/models/sale_order.py:817",
+    "snippet_text": "@api.model_create_multi\ndef create(self, vals_list):\n    for vals in vals_list:\n        if 'company_id' in vals:\n            self = self.with_company(vals['company_id'])\n        if vals.get('name', _('New')) == _('New'):\n            seq_date = fields.Datetime.context_timestamp(\n                self, fields.Datetime.to_datetime(vals['date_order'])\n            ) if 'date_order' in vals else None\n            vals['name'] = self.env['ir.sequence'].next_by_code(\n                'sale.order', sequence_date=seq_date) or _('New')\n    return super().create(vals_list)",
+    "gotchas": [
+      "`self.with_company(company_id)` switches the active company context for sequence generation and fiscal-position lookup — omitting it causes the sequence to increment on the wrong company's counter when creating records via a background job.",
+      "`with_company` does NOT change `self.env.user` — it only updates `self.env.company` and `self.env.companies`; access rights are still evaluated for the original user, so privileged background jobs must also use `with_user(SUPERUSER_ID)` if needed.",
+      "Reassigning `self = self.with_company(...)` inside a loop replaces the local variable but does NOT mutate the original recordset for callers of this method; the pattern is valid only within the same method scope."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.Environment.company"]
+  },
+  {
+    "pattern_id": "multi-company-ir-rule-domain-force",
+    "intent_keywords": ["multi-company", "ir.rule", "domain_force", "company_ids", "record rule"],
+    "file_ref": "addons/sale/security/ir_rules.xml:5",
+    "snippet_text": "<record id=\"sale_order_comp_rule\" model=\"ir.rule\">\n    <field name=\"name\">Sales Order multi-company</field>\n    <field name=\"model_id\" ref=\"model_sale_order\"/>\n    <field name=\"domain_force\">[('company_id', 'in', company_ids)]</field>\n</record>",
+    "gotchas": [
+      "`company_ids` in `domain_force` is a special ORM-evaluated variable that resolves to the list of all company IDs the current user has access to — it is NOT a Python variable; using `env.company.id` instead would restrict to the single active company and break multi-company switching.",
+      "Omitting `<field name=\"groups\">` makes the rule apply to ALL users including admin — always explicitly scope rules to specific groups or add `global=\"True\"` only when truly universal restriction is intended.",
+      "When `perm_read`, `perm_write`, `perm_create`, `perm_unlink` are all omitted, the rule defaults to applying only to read; explicitly declare all four perms you intend to restrict to avoid silently missing write/unlink protection."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "multi-company-property-field",
+    "intent_keywords": ["company_dependent", "property field", "ir.property", "per-company value"],
+    "file_ref": "addons/account/models/partner.py:568",
+    "snippet_text": "property_account_payable_id = fields.Many2one(\n    'account.account',\n    company_dependent=True,\n    string='Account Payable',\n    domain=\"[('account_type', '=', 'liability_payable'),\"\n           \" ('deprecated', '=', False)]\",\n    help='This account will be used instead of the default one'\n         ' as the payable account for the current partner',\n    required=True\n)",
+    "gotchas": [
+      "`company_dependent=True` stores values in `ir.property` keyed by `(field, res_id, company_id)` — `search()` on a company-dependent field is expensive (cross-joins `ir.property`) and should be avoided in large datasets; use a regular stored field with a multi-company default method instead when you need fast search.",
+      "The `default=` kwarg on a `company_dependent` field is ignored at runtime; Odoo replaces it with `_default_company_dependent()` which reads from `ir.property`; set per-company defaults via `ir.property` records in a data XML file instead.",
+      "Deleting a company in a multi-company setup does NOT cascade-delete its `ir.property` rows — stale property values for a deleted company survive and can silently re-appear if a new company is created with the same ID."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.fields.Many2one"]
+  },
+  {
+    "pattern_id": "ir-attachment-create-res-model-res-id",
+    "intent_keywords": ["ir.attachment", "create attachment", "res_model", "res_id", "binary upload"],
+    "file_ref": "addons/portal/controllers/portal.py:348",
+    "snippet_text": "attachment = IrAttachment.create({\n    'name': name,\n    'datas': base64.b64encode(file.read()),\n    'res_model': 'mail.compose.message',\n    'res_id': 0,\n    'access_token': IrAttachment._generate_access_token(),\n})",
+    "gotchas": [
+      "Setting `res_model='mail.compose.message'` and `res_id=0` is the standard Odoo pattern for a 'pending' attachment that will be linked to the real record when the message is posted — do NOT set the final `res_model`/`res_id` before the record exists or the attachment becomes orphaned if the message creation fails.",
+      "`datas` expects a base64-encoded `bytes` string — passing raw bytes raises a validation error; always call `base64.b64encode(raw).decode()` (Python str) not just `base64.b64encode(raw)` (bytes) because the ORM validates string type.",
+      "Attachments with no `res_model`/`res_id` (or the staging `mail.compose.message` placeholder) are collected by `ir.autovacuum._gc_attachments()` if not linked within ~7 days — long-lived pending attachments must be linked to a real record or they will be deleted silently."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.addons.base.models.ir_attachment.IrAttachment"]
+  },
+  {
+    "pattern_id": "ir-attachment-binary-field-attachment-true",
+    "intent_keywords": ["Binary field", "attachment=True", "ir.attachment", "store file", "binary storage"],
+    "file_ref": "addons/account/models/account_move.py:584",
+    "snippet_text": "invoice_pdf_report_file = fields.Binary(\n    attachment=True,\n    string='PDF File',\n    copy=False,\n)",
+    "gotchas": [
+      "`attachment=True` stores the binary content in `ir.attachment` instead of the model's database column — the field value in the model table is `NULL`; querying with SQL directly will always return `NULL` for that column, confusing reports that bypass the ORM.",
+      "Copying a record with `copy=False` preserves the `attachment=True` semantic correctly; omitting `copy=False` copies the attachment record but creates a shared `ir.attachment` with the same `res_id` pointing to the original — mutating the copy's binary would silently corrupt the original.",
+      "`attachment=True` fields are lazily loaded — reading the field fetches from `ir.attachment` and populates the cache; accessing hundreds of records in a loop triggers N+1 attachment queries unless you `sudo().read(['invoice_pdf_report_file'])` in a single call first."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.fields.Binary"]
+  },
+  {
+    "pattern_id": "ir-attachment-download-url",
+    "intent_keywords": ["ir.attachment", "download", "/web/content", "URL", "file download"],
+    "file_ref": "addons/web/controllers/binary.py:61",
+    "snippet_text": "@http.route([\n    '/web/content',\n    '/web/content/<int:id>',\n    '/web/content/<int:id>/<string:filename>',\n    '/web/content/<string:model>/<int:id>/<string:field>',\n], type='http', auth='public')\ndef content_common(self, model='ir.attachment', id=None, field='raw',\n                   filename=None, download=False, access_token=None):\n    record = request.env['ir.binary']._find_record(\n        None, model, int(id), access_token\n    )\n    stream = request.env['ir.binary']._get_stream_from(record, field, ...)\n    return stream.get_response(as_attachment=str2bool(download))",
+    "gotchas": [
+      "The `download=True` query parameter triggers `Content-Disposition: attachment` — omitting it serves the file inline (e.g. PDFs open in the browser tab instead of downloading); always add `?download=1` when building download buttons.",
+      "Public attachments (`ir.attachment.public=True`) are served without authentication; private attachments require either a valid session or an `access_token` query parameter — missing `access_token` for portal share links returns HTTP 403 with no descriptive error.",
+      "The route `/web/content/<int:id>` resolves `ir.attachment` by default; to serve a binary field from another model use the long form `/web/content/<model>/<id>/<field>` — using the short form for custom models returns `not found`."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-onmounted-lifecycle",
+    "intent_keywords": ["OWL", "onMounted", "lifecycle", "setup", "DOM ready"],
+    "file_ref": "addons/web/static/src/core/file_input/file_input.js:36",
+    "snippet_text": "import { Component, onMounted, useRef, useState } from \"@odoo/owl\";\nimport { useService } from \"@web/core/utils/hooks\";\n\nexport class FileInput extends Component {\n    setup() {\n        this.http = useService(\"http\");\n        this.fileInputRef = useRef(\"file-input\");\n        this.state = useState({ isDisable: false });\n\n        onMounted(() => {\n            if (this.props.autoOpen) {\n                this.onTriggerClicked();\n            }\n        });\n    }\n}",
+    "gotchas": [
+      "`onMounted` fires after the first render when the DOM node is available — `this.ref.el` is `null` BEFORE `onMounted`; accessing `useRef(...).el` in `setup()` synchronously always returns `null` and causes silent failures.",
+      "Do NOT call `onMounted` inside an `if` branch or a loop — OWL hooks must be called unconditionally in the same `setup()` order on every render; conditional hook calls throw a runtime OWL error.",
+      "Use `onWillUnmount` to clean up DOM event listeners registered in `onMounted`; forgetting cleanup causes memory leaks for components that mount/unmount frequently (e.g. modal dialogs)."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-usestate-reactive-mutation",
+    "intent_keywords": ["OWL", "useState", "reactive", "state mutation", "re-render"],
+    "file_ref": "addons/web/static/src/core/dialog/dialog.js:58",
+    "snippet_text": "import { Component, useState } from \"@odoo/owl\";\n\nexport class Dialog extends Component {\n    setup() {\n        this.data = useState(this.env.dialogData);\n        this.position = useState({ left: 0, top: 0 });\n    }\n    onDrop({ top, left }) {\n        this.position.left += left;   // reactive — triggers re-render\n        this.position.top  += top;\n    }\n}",
+    "gotchas": [
+      "`useState` returns an OWL reactive Proxy — mutating a nested object inside the proxy (e.g. `this.state.nested.x = 1`) DOES trigger re-render only if `nested` was itself wrapped in `useState`; a plain nested object reference is not observed.",
+      "Replacing the entire state object (`this.state = { ... }`) silently breaks reactivity because you are reassigning the local variable, not mutating the proxy — always mutate existing proxy properties instead.",
+      "`useState(this.env.dialogData)` subscribes this component to the env-level reactive object — multiple components reading the same `useState`-wrapped object share state updates; changes in one component re-render ALL subscribers."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-template-t-attf-class",
+    "intent_keywords": ["OWL", "t-attf-class", "class interpolation", "conditional class", "template"],
+    "file_ref": "addons/sale/report/ir_actions_report_templates.xml:121",
+    "snippet_text": "<t t-set=\"taxes\" t-value=\"', '.join([(tax.invoice_label or tax.name) for tax in line.tax_id])\"/>\n<td name=\"td_taxes\"\n    t-attf-class=\"text-end {{ 'text-nowrap' if len(taxes) &lt; 10 else '' }}\">\n    <span t-out=\"taxes\">Tax 15%</span>\n</td>",
+    "gotchas": [
+      "`t-attf-class` uses `{{ }}` for inline Python expressions (Mako-style) while `t-att-class` expects a pure expression string — mixing them (`t-att-class=\"'a ' + ...\"`) is valid but `t-attf-class` is preferred for mixed literal+expression strings.",
+      "In QWeb XML, `<` must be escaped as `&lt;` inside attribute values — `{{ len(x) < 10 }}` causes an XML parse error; always use `&lt;` for comparison operators inside `t-attf-*` attributes.",
+      "`t-attf-class` APPENDS to any static `class=\"...\"` attribute on the same element — if both are present the final class list is concatenated; using both together is valid but unintentional duplicates can create rendering issues."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-patch-service-override",
+    "intent_keywords": ["OWL", "patch", "override component", "extend OWL", "monkey-patch"],
+    "file_ref": "addons/web/static/src/core/debug/debug_menu.js:11",
+    "snippet_text": "import { useService } from \"@web/core/utils/hooks\";\nimport { DebugMenuBasic } from \"@web/core/debug/debug_menu_basic\";\n\nexport class DebugMenu extends DebugMenuBasic {\n    setup() {\n        super.setup();\n        this.command = useService(\"command\");\n    }\n}\n\n// In a custom addon (patch.js):\nimport { patch } from \"@web/core/utils/patch\";\nimport { DebugMenu } from \"@web/core/debug/debug_menu\";\npatch(DebugMenu.prototype, {\n    setup() {\n        super.setup(...arguments);\n        // extend setup without replacing it\n    },\n});",
+    "gotchas": [
+      "`patch()` modifies the prototype in-place globally — patching a component used in multiple views will affect ALL instances; use `owl Component inheritance` (extend the class) instead when you only need to override behaviour in one context.",
+      "Always call `super.setup(...arguments)` inside a patched `setup()` — skipping it prevents the parent's hooks (`useService`, `useState`, etc.) from running, causing `undefined` service references or missing reactive state.",
+      "`patch` is idempotent only if you import and apply it once; applying the same patch twice (e.g. due to circular imports or repeated module loading in tests) stacks the patches and calls `super.setup()` twice."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "security-acl-csv-group-model",
+    "intent_keywords": ["ir.model.access", "ACL", "CSV", "group", "model access", "permissions"],
+    "file_ref": "addons/sale/security/ir.model.access.csv:2",
+    "snippet_text": "id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\naccess_sale_order_salesman,sale_order salesman,sale.model_sale_order,sales_team.group_sale_salesman,1,0,0,0\naccess_sale_order_manager,sale_order manager,sale.model_sale_order,sales_team.group_sale_manager,1,1,1,1",
+    "gotchas": [
+      "`model_id:id` must reference the model's XML ID in the format `<addon>.model_<model_name_with_underscores>` — using the model's technical name (`sale.order`) directly raises an `External ID not found` error during module install.",
+      "Omitting a row for a group means that group inherits access only from parent groups (via `implied_ids`) — if the parent group has no access either, the user gets AccessError; always add explicit rows for every group that needs access, even if it only inherits.",
+      "The CSV `id` column must be globally unique across all installed addons — duplicate IDs in different modules silently overwrite each other during install; prefix with the module name (e.g. `access_sale_order_manager`) to avoid collisions."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "security-ir-rule-portal-domain",
+    "intent_keywords": ["ir.rule", "portal", "record rule", "child_of", "domain_force", "group_portal"],
+    "file_ref": "addons/sale/security/ir_rules.xml:24",
+    "snippet_text": "<record id=\"sale_order_rule_portal\" model=\"ir.rule\">\n    <field name=\"name\">Portal Personal Quotations/Sales Orders</field>\n    <field name=\"model_id\" ref=\"sale.model_sale_order\"/>\n    <field name=\"domain_force\">[('message_partner_ids','child_of',[user.commercial_partner_id.id])]</field>\n    <field name=\"groups\" eval=\"[(4, ref('base.group_portal'))]\"/>\n    <field name=\"perm_unlink\" eval=\"True\"/>\n    <field name=\"perm_write\" eval=\"True\"/>\n    <field name=\"perm_read\" eval=\"True\"/>\n    <field name=\"perm_create\" eval=\"False\"/>\n</record>",
+    "gotchas": [
+      "`child_of` in `domain_force` evaluates against the partner hierarchy at query time — if a portal user's `commercial_partner_id` is not set (e.g. for a standalone contact without a company), the domain resolves to no records; always ensure portal users have a properly set `commercial_partner_id`.",
+      "`eval=\"[(4, ref('base.group_portal'))]\"` adds the group to the rule's `groups` Many2many; using Command 6 `[(6, 0, [ref(...)])]` would REPLACE all groups — use command 4 (link) to safely append to existing groups.",
+      "Portal rules apply ON TOP OF model-level ACL — a portal user who passes the `ir.rule` filter but lacks `perm_read=1` in `ir.model.access.csv` still gets `AccessError`; both ACL and record rules must allow access."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "security-groups-field-attribute",
+    "intent_keywords": ["groups attribute", "field visibility", "group restriction", "groups=", "ACL field"],
+    "file_ref": "addons/account/models/partner.py:541",
+    "snippet_text": "credit_limit = fields.Float(\n    string='Credit Limit',\n    help='Credit limit specific to this partner.',\n    groups='account.group_account_invoice,account.group_account_readonly',\n    company_dependent=True,\n    copy=False,\n    readonly=False\n)",
+    "gotchas": [
+      "The `groups=` attribute on a field definition restricts both VIEW visibility AND ORM read access — a user outside the listed groups who reads the field via `sudo()` will see the value, but the webclient will not render it in views; use `sudo()` intentionally only for backend logic, never to bypass field-level security in portal/website routes.",
+      "Multiple groups in `groups=` are comma-separated and evaluated as OR — the field is visible if the user belongs to ANY of the listed groups; there is no AND syntax for field-level groups.",
+      "Adding `groups=` to a field that is already in a `<form>` view does NOT auto-hide the field in the view — you must also add `groups=` to the corresponding `<field name=\"...\">` tag in the XML view, otherwise the field remains visible regardless of the Python field definition."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.fields.Float"]
+  },
+  {
+    "pattern_id": "domain-or-operator-prefix-notation",
+    "intent_keywords": ["domain", "OR operator", "pipe prefix", "domain_force", "ir.rule domain"],
+    "file_ref": "addons/sale/security/ir_rules.xml:47",
+    "snippet_text": "<record id=\"sale_order_personal_rule\" model=\"ir.rule\">\n    <field name=\"name\">Personal Orders</field>\n    <field ref=\"model_sale_order\" name=\"model_id\"/>\n    <field name=\"domain_force\">['|',('user_id','=',user.id),('user_id','=',False)]</field>\n    <field name=\"groups\" eval=\"[(4, ref('sales_team.group_sale_salesman'))]\"/>\n</record>",
+    "gotchas": [
+      "The `'|'` prefix operator applies to the NEXT TWO conditions only — `['|', A, B, C]` means `(A OR B) AND C`, NOT `A OR B OR C`; for a 3-way OR write `['|', '|', A, B, C]`.",
+      "In `domain_force`, `user` is a special ORM-evaluated variable bound to the current user's `res.users` record — it is NOT available in Python `search([...])` API calls; use `self.env.user.id` there instead.",
+      "Mixing `'|'` and `'&'` prefixes without careful counting causes silent logic errors — draw the expression tree first; Odoo's domain normaliser will not warn about unbalanced prefix operators."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "domain-child-of-parent-of",
+    "intent_keywords": ["domain", "child_of", "parent_of", "hierarchy", "company hierarchy"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:417",
+    "snippet_text": "<field name=\"tax_id\"\n       widget=\"many2many_tags\"\n       domain=\"[('type_tax_use', '=', 'sale'),\n                ('company_id', 'parent_of', parent.company_id),\n                ('country_id', '=', parent.tax_country_id)]\"/>",
+    "gotchas": [
+      "`parent_of` returns all ancestors of the given record including itself; `child_of` returns all descendants including itself — both traverse the `parent_id` hierarchy field, which must exist on the model or `ValueError` is raised.",
+      "`parent_of` and `child_of` are evaluated in Python-side domain normalisation BEFORE sending to the database — they expand to an `in` clause with all matching IDs; on very large hierarchies (>10k nodes) this can produce queries with thousands of IDs in an `IN (...)` clause.",
+      "In view domains, `parent.company_id` refers to the PARENT FORM's `company_id` field — this syntax is only valid in view XML `domain=` attributes; using it in `model.search([...])` Python code raises `KeyError` because there is no `parent` binding in Python ORM context."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "domain-filter-domain-search-view",
+    "intent_keywords": ["filter_domain", "search view", "searchbar", "ilike", "domain override"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:771",
+    "snippet_text": "<field name=\"name\" string=\"Order\"\n    filter_domain=\"['|', '|',\n        ('name', 'ilike', self),\n        ('client_order_ref', 'ilike', self),\n        ('partner_id', 'child_of', self)]\"/>\n<field name=\"partner_id\" operator=\"child_of\"/>",
+    "gotchas": [
+      "`self` in `filter_domain` is the search string typed by the user (a Python string) — it is only available in search view `filter_domain` attributes; inside `ir.rule` `domain_force` or Python `search()` calls, `self` is the recordset and will not produce the expected string substitution.",
+      "`operator=\"child_of\"` on a `<field>` in a search view changes the operator for the default search — without it, `partner_id` uses `=` (exact ID match) not hierarchy traversal; adding `operator=\"child_of\"` enables searching all sub-partners.",
+      "Combining multiple `'|'` prefixes with `child_of` can be slow — `child_of` expands to a large `IN (...)` clause first, then the `OR` with `ilike` forces a full-table scan; index the name fields and consider limiting `child_of` to known hierarchy depths."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "mail-thread-mixin-message-post",
+    "intent_keywords": ["mail.thread", "message_post", "chatter", "log note", "body HTML"],
+    "file_ref": "addons/sale/models/sale_order.py:1133",
+    "snippet_text": "def action_update_taxes(self):\n    self.ensure_one()\n    self._recompute_taxes()\n    if self.partner_id:\n        self.message_post(\n            body=_('Product taxes have been recomputed according to'\n                   ' fiscal position %s.',\n                   self.fiscal_position_id._get_html_link()\n                   if self.fiscal_position_id else '')\n        )",
+    "gotchas": [
+      "`message_post(body=...)` accepts HTML — do NOT pass user-controlled input directly as `body` without escaping; always wrap dynamic values in `markupsafe.Markup(...)` or use `odoo.tools.html_escape()` to prevent stored XSS in the chatter.",
+      "`_inherit = ['mail.thread']` alone adds chatter support but does NOT enable email notifications for followers — you also need `mail.thread` tracking via `tracking=True` on fields or explicit `message_subscribe()` calls; missing `_mail_post_access` can silently block chatter posts for non-admin users.",
+      "`message_post` called on a recordset with multiple records creates one message per record — if you intend to post a single message to multiple records, use `self.filtered(...)` first or iterate explicitly; broadcasting to a large recordset triggers N chatter entries."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"]
+  },
+  {
+    "pattern_id": "mail-thread-activity-schedule",
+    "intent_keywords": ["activity_schedule", "mail.activity", "schedule activity", "upsell", "activity type"],
+    "file_ref": "addons/sale/models/sale_order.py:1752",
+    "snippet_text": "order.activity_unlink(['sale.mail_act_sale_upsell'])\nfor order in self:\n    order_ref  = order._get_html_link()\n    customer_ref = order.partner_id._get_html_link()\n    order.activity_schedule(\n        'sale.mail_act_sale_upsell',\n        user_id=order.user_id.id or order.partner_id.user_id.id,\n        note=_('Upsell %(order)s for customer %(customer)s',\n               order=order_ref, customer=customer_ref)\n    )",
+    "gotchas": [
+      "`activity_schedule` requires `_inherit = ['mail.activity.mixin']` (in addition to `mail.thread`) — calling it on a model that only inherits `mail.thread` raises `AttributeError: 'activity_schedule'`.",
+      "Always call `activity_unlink([xml_id])` before `activity_schedule` for the same activity type to avoid duplicating activities on repeated trigger events; a missing unlink causes N activities to pile up after N button clicks.",
+      "`user_id` in `activity_schedule` must be an internal user ID — passing a portal or public user ID raises an error because activities can only be assigned to employees with a valid `employee_id` or at minimum `share=False`."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.addons.mail.models.mail_activity_mixin.MailActivityMixin.activity_schedule"]
+  },
+  {
+    "pattern_id": "mail-thread-override-message-post",
+    "intent_keywords": ["message_post", "override", "mail.thread", "autofollow", "context"],
+    "file_ref": "addons/sale/models/sale_order.py:1497",
+    "snippet_text": "@api.returns('mail.message', lambda value: value.id)\ndef message_post(self, **kwargs):\n    if self.env.context.get('mark_so_as_sent'):\n        self.filtered(\n            lambda o: o.state == 'draft'\n        ).with_context(tracking_disable=True).write({'state': 'sent'})\n    so_ctx = {\n        'mail_post_autofollow':\n            self.env.context.get('mail_post_autofollow', True)\n    }\n    return super(SaleOrder, self.with_context(**so_ctx)).message_post(**kwargs)",
+    "gotchas": [
+      "`@api.returns('mail.message', ...)` is required when overriding `message_post` — it tells the ORM that the return value is a `mail.message` record (or its ID via the lambda); omitting it breaks RPC callers that expect a message ID.",
+      "Always pass `tracking_disable=True` in context when doing silent `write()` inside `message_post` to prevent an infinite loop: `write` triggers `_track_changes` which calls `message_post` again.",
+      "`self.with_context(**so_ctx).message_post(...)` passes the modified context to super — NOT `super(...).message_post(self.with_context(...), ...)` (wrong signature); the context must be applied to `self` before the super call."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"]
+  },
+  {
+    "pattern_id": "report-qweb-t-foreach-docs",
+    "intent_keywords": ["QWeb report", "t-foreach", "docs", "PDF report", "ir.actions.report"],
+    "file_ref": "addons/sale/report/ir_actions_report_templates.xml:203",
+    "snippet_text": "<template id=\"report_saleorder_raw\">\n    <t t-call=\"web.html_container\">\n        <t t-foreach=\"docs\" t-as=\"doc\">\n            <t t-call=\"sale.report_saleorder_document\"\n               t-lang=\"doc.partner_id.lang\"/>\n        </t>\n    </t>\n</template>",
+    "gotchas": [
+      "`docs` is the recordset passed by `ir.actions.report` — it is available ONLY when the template is called from a report action; if you call `t-call=\"my_module.report_template\"` directly from another template without providing `docs`, the QWeb engine raises `KeyError: docs`.",
+      "`t-lang=\"doc.partner_id.lang\"` switches the translation context PER-DOCUMENT inside the loop — essential for multi-language batch reports; omitting it renders ALL documents in the server's default language regardless of partner preference.",
+      "The `t-as` variable (`doc`) is block-scoped to the `t-foreach` iteration; accessing `doc` outside the `t-foreach` block raises `NameError`; use `t-set` before the loop to keep a reference across blocks."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "report-qweb-t-set-subtotal",
+    "intent_keywords": ["QWeb report", "t-set", "t-value", "running total", "accumulator", "t-foreach"],
+    "file_ref": "addons/sale/report/ir_actions_report_templates.xml:93",
+    "snippet_text": "<t t-set=\"current_subtotal\" t-value=\"0\"/>\n\n<t t-foreach=\"lines_to_report\" t-as=\"line\">\n    <t t-set=\"current_subtotal\"\n       t-value=\"current_subtotal + line.price_subtotal\"/>\n    <tr t-att-class=\"'bg-200 fw-bold o_line_section'\n                    if line.display_type == 'line_section' else ''\">\n        <td name=\"td_name\"><span t-field=\"line.name\"/></td>\n        <td name=\"td_subtotal\" class=\"text-end\">\n            <span t-field=\"line.price_subtotal\"/>\n        </td>\n    </tr>\n</t>",
+    "gotchas": [
+      "`t-set`/`t-value` reassignment inside a `t-foreach` loop accumulates across iterations only if the variable is in the SAME template scope — if the loop body calls `t-call` to a sub-template, the sub-template gets its own scope and cannot mutate the parent's `current_subtotal`.",
+      "`t-field` renders the value using the field's widget (with formatting, currency symbol, etc.) — do NOT use `t-out` for monetary fields unless you explicitly format the value; `t-out` renders the raw Python float without currency symbol.",
+      "Computed QWeb expressions in `t-value` are evaluated as Python — `line.price_subtotal` accesses the ORM field; accessing a non-existent field silently returns `0.0` (not an error) which can hide data model mismatches in report templates."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "website-published-mixin",
+    "intent_keywords": ["website.published.mixin", "is_published", "can_publish", "website_url", "publish toggle"],
+    "file_ref": "addons/website/models/mixins.py:183",
+    "snippet_text": "class WebsitePublishedMixin(models.AbstractModel):\n    _name = 'website.published.mixin'\n\n    website_published = fields.Boolean(\n        'Visible on current website',\n        related='is_published', readonly=False\n    )\n    is_published = fields.Boolean(\n        'Is Published', copy=False,\n        default=lambda self: self._default_is_published(),\n        index=True\n    )\n    can_publish = fields.Boolean(\n        'Can Publish', compute='_compute_can_publish'\n    )\n\n    def website_publish_button(self):\n        self.ensure_one()\n        return self.write({'website_published': not self.website_published})",
+    "gotchas": [
+      "`_compute_can_publish` must be overridden in the concrete model — the base implementation grants `can_publish=True` only when the user has `write` access; if your model has custom publish permissions (e.g. only website admin), override this method or the Publish button will be incorrectly hidden.",
+      "`website_published` is a `related` field to `is_published` — setting `is_published=True` directly works and is equivalent; but `copy=False` means duplicated records start as unpublished regardless of the original, which is intentional to prevent accidental publishing of copied drafts.",
+      "`website.published.mixin` vs `website.published.multi.mixin`: the multi variant adds a `website_id` field for multi-website setups and restricts publication per-website — using the single-site mixin in a multi-website Odoo installation publishes the record on ALL websites simultaneously."
+    ],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "core_symbol_names": []
   }
 ]

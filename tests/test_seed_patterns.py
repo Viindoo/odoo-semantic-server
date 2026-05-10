@@ -30,7 +30,7 @@ def test_patterns_json_valid_and_non_empty():
     """patterns.json parses as JSON list with ≥50 entries."""
     data = json.loads(PATTERNS_PATH.read_text(encoding="utf-8"))
     assert isinstance(data, list)
-    assert len(data) >= 50, f"Expected ≥50 patterns, got {len(data)}"
+    assert len(data) >= 80, f"Expected ≥80 patterns, got {len(data)}"
 
 
 def test_patterns_required_core_ids_present():
@@ -97,19 +97,19 @@ def test_load_patterns_filters_by_version(tmp_path):
     sample = [
         {
             "pattern_id": "p1",
-            "intent_keywords": [],
+            "intent_keywords": ["test"],
             "file_ref": "f:1",
             "snippet_text": "x",
-            "gotchas": ["g"],
+            "gotchas": ["g1", "g2", "g3"],
             "odoo_version_min": "17.0",
             "language": "python",
         },
         {
             "pattern_id": "p2",
-            "intent_keywords": [],
+            "intent_keywords": ["test"],
             "file_ref": "f:2",
             "snippet_text": "y",
-            "gotchas": ["g"],
+            "gotchas": ["g1", "g2", "g3"],
             "odoo_version_min": "18.0",
             "language": "python",
         },
