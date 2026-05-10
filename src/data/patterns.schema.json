@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Viindoo/odoo-semantic-mcp/src/data/patterns.schema.json",
+  "$comment": "JSON Schema for src/data/patterns.json. gotchas minItems=3 is enforced at this level because all 54 existing entries already have ≥3 gotchas (verified 2026-05-10). Community PRs must provide at least 3 gotchas per ADR-0009 rule 5.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "required": [
+      "pattern_id",
+      "intent_keywords",
+      "file_ref",
+      "snippet_text",
+      "gotchas",
+      "odoo_version_min",
+      "language"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "pattern_id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*$",
+        "description": "Unique kebab-case identifier for the pattern (e.g. 'computed-field-cross-model')."
+      },
+      "intent_keywords": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1,
+        "description": "Keywords used for semantic search / intent matching."
+      },
+      "file_ref": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Source file reference in the form 'path/to/file.py:lineno' (e.g. 'addons/sale/models/sale_order.py:120')."
+      },
+      "snippet_text": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Code snippet illustrating the pattern."
+      },
+      "gotchas": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 3,
+        "description": "At least 3 common mistakes or caveats for this pattern (ADR-0009 rule 5)."
+      },
+      "odoo_version_min": {
+        "type": "string",
+        "description": "Minimum Odoo version for this pattern (e.g. '16.0', '17.0', '18.0')."
+      },
+      "language": {
+        "type": "string",
+        "enum": ["python", "xml", "js"],
+        "description": "Programming language of the snippet."
+      },
+      "core_symbol_names": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Optional list of Odoo core symbol FQNs referenced by this pattern (e.g. ['odoo.api.depends'])."
+      },
+      "odoo_version_max": {
+        "type": "string",
+        "description": "Optional maximum Odoo version for this pattern (e.g. '17.0')."
+      }
+    }
+  }
+}

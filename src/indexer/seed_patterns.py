@@ -35,6 +35,24 @@ _DEFAULT_PATTERNS_FILE = (
     Path(__file__).resolve().parent.parent / "data" / "patterns.json"
 )
 
+# Schema file lives next to patterns.json.
+_PATTERNS_SCHEMA_FILE = (
+    Path(__file__).resolve().parent.parent / "data" / "patterns.schema.json"
+)
+
+# Module-level cached validator — built once on first call to _load_patterns.
+_patterns_validator = None
+
+
+def _get_patterns_validator():
+    """Return a cached Draft202012Validator for patterns.schema.json."""
+    global _patterns_validator
+    if _patterns_validator is None:
+        from jsonschema import Draft202012Validator
+        schema = json.loads(_PATTERNS_SCHEMA_FILE.read_text(encoding="utf-8"))
+        _patterns_validator = Draft202012Validator(schema)
+    return _patterns_validator
+
 
 def _compute_patterns_sha256(json_path: Path) -> str:
     """SHA-256 hex of patterns.json content (for change detection)."""
@@ -64,6 +82,27 @@ def _load_patterns(
     patterns_file: Path, version_filter: str | None,
 ) -> list[PatternExample]:
     raw = json.loads(patterns_file.read_text(encoding="utf-8"))
+
+    # Validate against JSON Schema (Draft 2020-12) before processing.
+    # Raises ValueError with human-readable path + message on first violation.
+    if _PATTERNS_SCHEMA_FILE.exists():
+        validator = _get_patterns_validator()
+        errors = list(validator.iter_errors(raw))
+        if errors:
+            # Report the first error with its JSON path and message.
+            first = errors[0]
+            path = list(first.absolute_path)
+            # Try to extract pattern_id for actionable error message.
+            pattern_id = "<unknown>"
+            if path and isinstance(path[0], int) and isinstance(raw, list):
+                entry = raw[path[0]]
+                if isinstance(entry, dict):
+                    pattern_id = entry.get("pattern_id", f"index {path[0]}")
+            raise ValueError(
+                f"patterns.json schema validation failed "
+                f"(pattern_id={pattern_id!r}, path={path}): {first.message}"
+            )
+
     patterns: list[PatternExample] = []
     for entry in raw:
         if version_filter and entry.get("odoo_version_min") != version_filter:
