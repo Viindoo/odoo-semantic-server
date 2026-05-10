@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Odoo Semantic MCP — Install for your AI tool</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; line-height: 1.6; }
+    .container { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
+    h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem; color: #1a1a1a; }
+    .intro { color: #555; margin-bottom: 1.5rem; }
+    .intro a { color: #6d28d9; }
+    .key-row { margin-bottom: 1.5rem; }
+    .key-row label { display: block; font-weight: 600; margin-bottom: 0.4rem; font-size: 0.9rem; }
+    #apikey {
+      width: 100%; padding: 0.55rem 0.75rem; font-family: monospace; font-size: 0.95rem;
+      border: 1.5px solid #c4b5fd; border-radius: 6px; outline: none; background: #fff;
+    }
+    #apikey:focus { border-color: #7c3aed; box-shadow: 0 0 0 3px #ede9fe; }
+    /* Tabs */
+    .tabs { display: flex; gap: 0; border-bottom: 2px solid #e5e7eb; margin-bottom: 1.25rem; flex-wrap: wrap; }
+    .tab-btn {
+      padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 500; cursor: pointer;
+      background: none; border: none; border-bottom: 2px solid transparent;
+      margin-bottom: -2px; color: #666; transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: #7c3aed; }
+    .tab-btn.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    /* Code block */
+    .code-wrap { position: relative; background: #1e1e2e; border-radius: 8px; overflow: hidden; margin-bottom: 0.75rem; }
+    .file-label { font-size: 0.75rem; color: #a0aec0; padding: 0.4rem 0.75rem 0; font-family: monospace; }
+    pre.code-block {
+      margin: 0; padding: 0.75rem 0.75rem 0.75rem; overflow-x: auto; font-size: 0.85rem;
+      background: transparent; color: #cdd6f4; font-family: 'Fira Code', 'Cascadia Code', monospace;
+    }
+    pre.code-block code { background: transparent; padding: 0; }
+    .copy-btn {
+      position: absolute; top: 0.4rem; right: 0.4rem;
+      padding: 0.3rem 0.65rem; font-size: 0.75rem; cursor: pointer;
+      background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+      border-radius: 5px; transition: background 0.15s;
+    }
+    .copy-btn:hover { background: #45475a; }
+    .copy-btn.copied { background: #a6e3a1; color: #1e1e2e; border-color: #a6e3a1; }
+    /* VS Code button */
+    .vscode-btn {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      padding: 0.5rem 1.1rem; border-radius: 6px; text-decoration: none;
+      background: #0078d4; color: #fff; font-size: 0.875rem; font-weight: 600;
+      transition: background 0.15s; margin-top: 0.25rem;
+    }
+    .vscode-btn:hover { background: #106ebe; }
+    .footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.825rem; color: #888; }
+    .footer a { color: #7c3aed; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Odoo Semantic MCP — Install for your AI tool</h1>
+  <p class="intro">
+    Connect your AI coding tool to Odoo Semantic MCP to get real inheritance chains, field types,
+    and view overrides — no more hallucinations.
+    <strong>API key: contact your admin.</strong>
+  </p>
+
+  <div class="key-row">
+    <label for="apikey">Your API Key</label>
+    <input type="text" id="apikey" placeholder="YOUR_API_KEY" autocomplete="off" spellcheck="false">
+  </div>
+
+  <!-- Tab nav -->
+  <div class="tabs" role="tablist">
+    <button class="tab-btn active" data-tab="claude" role="tab">Claude Code</button>
+    <button class="tab-btn" data-tab="codex" role="tab">Codex CLI</button>
+    <button class="tab-btn" data-tab="gemini" role="tab">Gemini CLI</button>
+    <button class="tab-btn" data-tab="vscode" role="tab">VS Code</button>
+    <button class="tab-btn" data-tab="antigravity" role="tab">Antigravity</button>
+  </div>
+
+  <!-- Claude Code -->
+  <div class="tab-panel active" id="tab-claude" role="tabpanel">
+    <div class="code-wrap">
+      <button class="copy-btn" data-target="code-claude">Copy</button>
+      <pre class="code-block" id="code-claude"><code class="language-bash">claude mcp add --transport http --scope user odoo-semantic \
+  https://odoo-semantic.viindoo.com:9999/mcp \
+  --header "X-API-Key: YOUR_API_KEY"</code></pre>
+    </div>
+  </div>
+
+  <!-- Codex CLI -->
+  <div class="tab-panel" id="tab-codex" role="tabpanel">
+    <div class="file-label-outer" style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">~/.codex/config.toml</div>
+    <div class="code-wrap">
+      <button class="copy-btn" data-target="code-codex">Copy</button>
+      <pre class="code-block" id="code-codex"><code class="language-toml">[mcp_servers.odoo-semantic]
+url = "https://odoo-semantic.viindoo.com:9999/mcp"
+http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
+    </div>
+  </div>
+
+  <!-- Gemini CLI -->
+  <div class="tab-panel" id="tab-gemini" role="tabpanel">
+    <div class="file-label-outer" style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">~/.gemini/settings.json</div>
+    <div class="code-wrap">
+      <button class="copy-btn" data-target="code-gemini">Copy</button>
+      <pre class="code-block" id="code-gemini"><code class="language-json">{
+  "mcpServers": {
+    "odoo-semantic": {
+      "httpUrl": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "headers": { "X-API-Key": "YOUR_API_KEY" },
+      "trust": true
+    }
+  }
+}</code></pre>
+    </div>
+  </div>
+
+  <!-- VS Code -->
+  <div class="tab-panel" id="tab-vscode" role="tabpanel">
+    <div class="file-label-outer" style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">.vscode/mcp.json</div>
+    <div class="code-wrap">
+      <button class="copy-btn" data-target="code-vscode">Copy</button>
+      <pre class="code-block" id="code-vscode"><code class="language-json">{
+  "servers": {
+    "odoo-semantic": {
+      "type": "http",
+      "url": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "headers": { "X-API-Key": "YOUR_API_KEY" }
+    }
+  }
+}</code></pre>
+    </div>
+    <a class="vscode-btn" id="vscode-install-btn"
+       href="vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%3A9999%2Fmcp%22%2C%22headers%22%3A%7B%22X-API-Key%22%3A%22YOUR_API_KEY%22%7D%7D">
+      &#x25B6; Install in VS Code
+    </a>
+  </div>
+
+  <!-- Antigravity -->
+  <div class="tab-panel" id="tab-antigravity" role="tabpanel">
+    <div class="file-label-outer" style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">~/.gemini/antigravity/mcp_config.json</div>
+    <div class="code-wrap">
+      <button class="copy-btn" data-target="code-antigravity">Copy</button>
+      <pre class="code-block" id="code-antigravity"><code class="language-json">{
+  "mcpServers": {
+    "odoo-semantic": {
+      "serverUrl": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "headers": { "X-API-Key": "YOUR_API_KEY" }
+    }
+  }
+}</code></pre>
+    </div>
+  </div>
+
+  <div class="footer">
+    Full documentation and source:
+    <a href="https://github.com/Viindoo/odoo-semantic-mcp" target="_blank" rel="noopener">
+      github.com/Viindoo/odoo-semantic-mcp
+    </a>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+<script>
+  // Originals — captured before hljs mutates innerHTML
+  const originals = {};
+  document.querySelectorAll('pre.code-block code').forEach(function(el) {
+    originals[el.parentElement.id] = el.textContent;
+  });
+
+  // Run highlight.js
+  if (window.hljs) { hljs.highlightAll(); }
+
+  // ---- Tab switching ----
+  var tabBtns = document.querySelectorAll('.tab-btn');
+  var tabPanels = document.querySelectorAll('.tab-panel');
+  tabBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      tabBtns.forEach(function(b) { b.classList.remove('active'); });
+      tabPanels.forEach(function(p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ---- API key live substitution ----
+  var apikeyInput = document.getElementById('apikey');
+
+  function updateSnippets() {
+    var val = apikeyInput.value.trim() || 'YOUR_API_KEY';
+    document.querySelectorAll('pre.code-block').forEach(function(pre) {
+      var code = pre.querySelector('code');
+      var text = originals[pre.id].replace(/YOUR_API_KEY/g, val);
+      code.textContent = text;
+      if (window.hljs) { hljs.highlightElement(code); }
+    });
+    updateVsCodeBtn(val);
+  }
+
+  function updateVsCodeBtn(apiKey) {
+    var cfg = {
+      name: 'odoo-semantic',
+      type: 'http',
+      url: 'https://odoo-semantic.viindoo.com:9999/mcp',
+      headers: { 'X-API-Key': apiKey }
+    };
+    var btn = document.getElementById('vscode-install-btn');
+    btn.href = 'vscode:mcp/install?' + encodeURIComponent(JSON.stringify(cfg));
+  }
+
+  apikeyInput.addEventListener('input', updateSnippets);
+
+  // ---- Copy buttons ----
+  document.querySelectorAll('.copy-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var pre = document.getElementById(btn.dataset.target);
+      var text = pre ? pre.querySelector('code').textContent : '';
+      navigator.clipboard.writeText(text).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 2000);
+      }).catch(function() {
+        btn.textContent = 'Error';
+        setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+      });
+    });
+  });
+</script>
+</body>
+</html>

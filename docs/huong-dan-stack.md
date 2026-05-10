@@ -66,6 +66,8 @@ make install   # Tạo venv tại ~/.venv/odoo-semantic-mcp/ + cài dependencies
 
 ### Giữ MCP Server sống với systemd
 
+Replace `<APP_USER>` with the actual Linux user running the service (e.g., `odoo-semantic` for production, your username for dev).
+
 ```ini
 # /etc/systemd/system/odoo-semantic-mcp.service
 [Unit]
@@ -73,10 +75,10 @@ Description=Odoo Semantic MCP Server
 After=network.target docker.service
 
 [Service]
-User=tran-ngoc-tuan
-WorkingDirectory=/home/tran-ngoc-tuan/odoo-semantic-mcp
-EnvironmentFile=/home/tran-ngoc-tuan/odoo-semantic-mcp/.env
-ExecStart=/home/USER/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+User=<APP_USER>
+WorkingDirectory=/home/<APP_USER>/odoo-semantic-mcp
+EnvironmentFile=/home/<APP_USER>/odoo-semantic-mcp/.env
+ExecStart=/home/<APP_USER>/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 Restart=on-failure
 RestartSec=5s
 

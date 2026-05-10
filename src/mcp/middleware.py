@@ -60,6 +60,7 @@ _PG_LOCK = threading.Lock()
 
 # Paths that bypass auth entirely
 _PUBLIC_PATHS = frozenset({"/health"})
+_PUBLIC_PATH_PREFIXES = frozenset({"/install"})
 
 
 def _cache_get(raw_key: str) -> tuple[bool, int | None]:
@@ -102,8 +103,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Verify X-API-Key header on every request except public paths."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # Public paths bypass auth
-        if request.url.path in _PUBLIC_PATHS:
+        # Public paths bypass auth (exact match or prefix match)
+        if request.url.path in _PUBLIC_PATHS or any(
+            request.url.path.startswith(prefix) for prefix in _PUBLIC_PATH_PREFIXES
+        ):
             return await call_next(request)
 
         raw_key = request.headers.get("X-API-Key")
