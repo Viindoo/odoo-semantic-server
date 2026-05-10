@@ -1,15 +1,17 @@
 # src/mcp/server.py
 import math
 import os
+from contextlib import contextmanager, nullcontext
 
 import psycopg2
+import psycopg2.pool
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
 from starlette.requests import Request
 
 mcp = FastMCP("odoo-semantic")
 _driver = None
-_pg_conn = None
+_pg_pool: psycopg2.pool.SimpleConnectionPool | None = None
 _embedder_instance = None
 _version_checked = False
 
@@ -55,11 +57,10 @@ def _get_driver():
     return _driver
 
 
-def _get_pg_conn():
-    global _pg_conn
-    if _pg_conn is None or _pg_conn.closed:
-        from pgvector.psycopg2 import register_vector
-
+def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
+    """Return (creating on first call) the module-level connection pool."""
+    global _pg_pool
+    if _pg_pool is None:
         from src import config
         dsn = config.from_env_or_ini(
             "PG_DSN", "database", "pg_dsn", fallback=None,
@@ -69,9 +70,27 @@ def _get_pg_conn():
                 "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
                 "in [database] section of odoo-semantic.conf."
             )
-        _pg_conn = psycopg2.connect(dsn)
-        register_vector(_pg_conn)
-    return _pg_conn
+        _pg_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10, dsn=dsn)
+    return _pg_pool
+
+
+@contextmanager
+def _checkout_pg():
+    """Check out a pooled PG connection, register pgvector, return on exit.
+
+    pgvector registration is idempotent — safe to call on every checkout.
+    This ensures any connection (including newly grown pool slots) works for
+    ``::vector`` casts without a separate eager-registration step.
+    """
+    from pgvector.psycopg2 import register_vector
+
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        register_vector(conn)
+        yield conn
+    finally:
+        pool.putconn(conn)
 
 
 def _get_embedder():
@@ -408,7 +427,6 @@ def _find_examples(
 
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 
-    pg = _pg_conn or _get_pg_conn()
     driver = _driver or _get_driver()
     try:
         embedder = _embedder or _get_embedder()
@@ -436,10 +454,9 @@ def _find_examples(
     VALID_TYPES = {"method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3"}
     selected_types = [t for t in (chunk_types or []) if t in VALID_TYPES]
 
-    # Lazy import avoids circular: middleware imports _get_pg_conn from server.
-    # Lock is required: psycopg2 connections are not thread-safe (B2).
-    from src.mcp.middleware import _PG_LOCK
-    with _PG_LOCK:
+    # Use injected connection (test path) or check out from pool (production).
+    _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
+    with _pg_ctx as pg:
         with pg.cursor() as cur:
             if selected_types:
                 placeholders = ",".join(["%s"] * len(selected_types))
@@ -1529,7 +1546,6 @@ def _suggest_pattern(
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 
     driver = _driver or _get_driver()
-    pg = _pg_conn or _get_pg_conn()
     try:
         embedder = _embedder or _get_embedder()
     except Exception as e:
@@ -1548,10 +1564,9 @@ def _suggest_pattern(
             f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
         )
 
-    # Lazy import avoids circular: middleware imports _get_pg_conn from server.
-    # Lock is required: psycopg2 connections are not thread-safe (B2).
-    from src.mcp.middleware import _PG_LOCK
-    with _PG_LOCK:
+    # Use injected connection (test path) or check out from pool (production).
+    _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
+    with _pg_ctx as pg:
         with pg.cursor() as cur:
             if language == "all":
                 cur.execute(

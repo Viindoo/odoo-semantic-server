@@ -44,8 +44,7 @@ async def _get_mcp_tool_count() -> int:
 
 async def health_handler(request: Request) -> JSONResponse:
     """Check health of Neo4j and PostgreSQL connections, return status + version."""
-    from src.mcp.middleware import _PG_LOCK
-    from src.mcp.server import _get_driver, _get_pg_conn
+    from src.mcp.server import _checkout_pg, _get_driver
 
     neo4j_status = "ok"
     try:
@@ -57,8 +56,7 @@ async def health_handler(request: Request) -> JSONResponse:
     pg_status = "ok"
     try:
         def _check_pg():
-            with _PG_LOCK:  # B2: serialise with auth middleware DB calls
-                conn = _get_pg_conn()
+            with _checkout_pg() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
 
