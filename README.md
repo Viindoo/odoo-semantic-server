@@ -150,6 +150,17 @@ git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
 # có data để query.
 ```
 
+### Multi-version parallel indexing
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all \
+    --profile-workers 3 --max-workers 2
+```
+
+Indexes 3 profiles in parallel; each profile uses 2 repo-workers internally
+(up to 6 threads total). Per-profile Postgres advisory locks ensure no two
+indexer runs collide on the same profile.
+
 ### 3. Start MCP server
 ```bash
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
