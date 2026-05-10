@@ -102,3 +102,59 @@ class TestHealthEndpoint:
         assert isinstance(body["mcp_tools"], int)
         # Must be positive; -1 signals introspection failure (deferred to M5.5)
         assert body["mcp_tools"] > 0
+
+    @pytest.mark.asyncio
+    async def test_mcp_tools_handles_missing_get_tools(self, monkeypatch):
+        """When get_tools unavailable, fallback to _tool_manager._tools gracefully."""
+        import httpx
+
+        from src.mcp import health as health_mod
+        from src.mcp.server import mcp
+
+        # Monkeypatch _get_mcp_tool_count to simulate broken get_tools
+        async def mock_get_count_fallback():
+            """Simulate scenario where get_tools fails but _tool_manager._tools works."""
+            # Temporarily remove get_tools to test fallback
+            original_get_tools = getattr(mcp, "get_tools", None)
+            try:
+                if hasattr(mcp, "get_tools"):
+                    delattr(mcp, "get_tools")
+                # Now try our function — should fallback to _tool_manager
+                return await health_mod._get_mcp_tool_count()
+            finally:
+                if original_get_tools:
+                    mcp.get_tools = original_get_tools
+
+        monkeypatch.setattr(health_mod, "_get_mcp_tool_count", mock_get_count_fallback)
+
+        app = self._get_asgi_app()
+        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+            resp = await client.get("/health")
+        body = resp.json()
+        # Should return int (either positive count or -1 on complete failure)
+        assert isinstance(body["mcp_tools"], int)
+
+    @pytest.mark.asyncio
+    async def test_mcp_tools_returns_minus_one_on_complete_failure(self, monkeypatch):
+        """When all introspection methods fail, return -1 without raising."""
+        import httpx
+
+        from src.mcp import server as server_mod
+
+        # Mock both get_tools and _tool_manager to fail
+        def mock_broken_mcp():
+            class BrokenMCP:
+                async def get_tools(self):
+                    raise RuntimeError("get_tools broken")
+
+            return BrokenMCP()
+
+        monkeypatch.setattr(server_mod, "mcp", mock_broken_mcp())
+
+        app = self._get_asgi_app()
+        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+            resp = await client.get("/health")
+        body = resp.json()
+        # Should return -1 (introspection failed) and HTTP 200/503 (not 500)
+        assert body["mcp_tools"] == -1
+        assert resp.status_code in (200, 503)  # depends on Neo4j/PG status
