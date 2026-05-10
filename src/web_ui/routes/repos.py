@@ -123,7 +123,7 @@ async def index_repo(request: Request, repo_id: int):
             repos = list_repos(conn)
             repo = next((r for r in repos if r["id"] == repo_id), None)
             if repo and repo.get("profile_name"):
-                if indexer_is_running(conn):
+                if indexer_is_running(conn, repo["profile_name"]):
                     flash = (
                         "Indexer already running for profile "
                         f"{repo['profile_name']}. Wait for it to finish."
