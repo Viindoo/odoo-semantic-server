@@ -96,10 +96,11 @@ ALTER TABLE IF NOT EXISTS repos ADD COLUMN clone_status TEXT NOT NULL DEFAULT 'm
 
 Idempotent `ALTER TABLE IF NOT EXISTS` per ADR-0001. Existing rows: `clone_status='manual'` (legacy behavior preserved). New rows default to `'manual'` until user explicitly clones via Web UI.
 
-Optional fourth column for error details (deferred to first failure scenario):
-```sql
--- Future: ALTER TABLE repos ADD COLUMN clone_error_msg TEXT;
-```
+Distinct columns prevent overwrite collision:
+- `repos.error_msg` — written exclusively by `update_repo_status` (indexer)
+- `repos.clone_error_msg` — written exclusively by `set_clone_status` (cloner)
+
+Keeping them separate ensures a cloner success path (`set_clone_status('cloned', error_msg=None)`) never clears a prior indexer error stored in `error_msg`, and vice versa. Implemented in M6 W4 Opus review fixup.
 
 ### D8 — Default clone target dir configurable
 

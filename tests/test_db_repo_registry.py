@@ -5,6 +5,7 @@ from src.db.migrate import run_migrations
 from src.db.repo_registry import (
     add_profile,
     add_repo,
+    get_repo_by_id,
     get_repo_head_sha,
     get_repos_by_clone_status,
     get_repos_for_profile,
@@ -157,14 +158,18 @@ def test_set_clone_status_lifecycle(migrated_pg):
 
 
 def test_set_clone_status_error_with_msg(migrated_pg):
-    """Test set_clone_status with error status and error message."""
+    """Test set_clone_status with error status stores message in clone_error_msg.
+
+    Cloner errors go to clone_error_msg (NOT error_msg) to avoid overwriting
+    indexer errors. See ADR-0008 D7 and W4 Opus review fix 1.
+    """
     pid = add_profile(migrated_pg, "p1", "17.0")
     rid = add_repo(migrated_pg, pid, "github.com/a/b", "17.0", "/tmp/a")
     error_msg = "git clone failed: timeout"
     set_clone_status(migrated_pg, rid, "error", error_msg=error_msg)
     repos = list_repos(migrated_pg)
     assert repos[0]["clone_status"] == "error"
-    assert repos[0]["error_msg"] == error_msg
+    assert repos[0]["clone_error_msg"] == error_msg
 
 
 def test_get_repos_by_clone_status_filters_correctly(migrated_pg):
@@ -189,3 +194,57 @@ def test_get_repos_by_clone_status_filters_correctly(migrated_pg):
     cloned_repos = get_repos_by_clone_status(migrated_pg, "p1", "cloned")
     assert len(cloned_repos) == 1
     assert cloned_repos[0]["id"] == rid3
+
+
+def test_indexer_error_survives_cloner_success(migrated_pg):
+    """Regression guard: cloner success must NOT clear an existing indexer error.
+
+    Before the Fix-1 fix, set_clone_status wrote to repos.error_msg, so a successful
+    clone (error_msg=None) would silently clear a prior indexer failure message.
+    """
+    pid = add_profile(migrated_pg, "p1", "17.0")
+    rid = add_repo(migrated_pg, pid, "github.com/a/b", "17.0", "/tmp/a")
+    # Simulate a prior indexer failure
+    update_repo_status(migrated_pg, rid, status="error", error_msg="OSError: indexer fail")
+    # Cloner finishes successfully
+    set_clone_status(migrated_pg, rid, "cloned")
+    # Verify: indexer error_msg preserved; clone_error_msg NULL on success
+    repo = get_repo_by_id(migrated_pg, rid)
+    assert repo is not None
+    assert repo["error_msg"] == "OSError: indexer fail", (
+        "Indexer error_msg must be preserved after cloner success"
+    )
+    assert repo["clone_error_msg"] is None, (
+        "clone_error_msg should be NULL on successful clone"
+    )
+
+
+def test_ssh_key_delete_sets_repo_ssh_key_id_null(migrated_pg):
+    """FK ON DELETE SET NULL: deleting an ssh_key_pair NULLs repos.ssh_key_id, not CASCADE."""
+    pid = add_profile(migrated_pg, "p1", "17.0")
+    with migrated_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            ("deploy", "ssh-ed25519 AAAA...", "enc"),
+        )
+        key_id = cur.fetchone()[0]
+    migrated_pg.commit()
+    rid = add_repo(
+        migrated_pg, pid, "git@host:org/repo.git", "main", "/tmp/r",
+        ssh_key_id=key_id,
+    )
+    # Confirm ssh_key_id set
+    repo_before = get_repo_by_id(migrated_pg, rid)
+    assert repo_before is not None
+    assert repo_before["ssh_key_id"] == key_id
+    # Delete the SSH key
+    with migrated_pg.cursor() as cur:
+        cur.execute("DELETE FROM ssh_key_pairs WHERE id = %s", (key_id,))
+    migrated_pg.commit()
+    # Repo row must still exist with ssh_key_id NULLed (not cascaded away)
+    repo_after = get_repo_by_id(migrated_pg, rid)
+    assert repo_after is not None, "Repo row must not be deleted when ssh key is removed"
+    assert repo_after["ssh_key_id"] is None, (
+        "repos.ssh_key_id must be NULL after FK ON DELETE SET NULL"
+    )

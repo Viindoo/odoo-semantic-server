@@ -102,9 +102,14 @@ def update_repo_head_sha(conn: PgConn, repo_id: int, head_sha: str) -> None:
 def set_clone_status(
     conn: PgConn, repo_id: int, status: str, error_msg: str | None = None
 ) -> None:
-    """Update clone_status and optionally error_msg.
+    """Update clone_status and optionally clone_error_msg.
 
     Status enum: 'manual', 'pending', 'cloned', 'error'.
+
+    Note: cloner errors are stored in `clone_error_msg` (NOT `error_msg`).
+    `error_msg` is reserved for indexer errors (written by `update_repo_status`).
+    Keeping them separate prevents the cloner success path from clearing a prior
+    indexer error and vice versa.
     """
     valid_statuses = ("manual", "pending", "cloned", "error")
     if status not in valid_statuses:
@@ -112,7 +117,7 @@ def set_clone_status(
 
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE repos SET clone_status = %s, error_msg = %s WHERE id = %s",
+            "UPDATE repos SET clone_status = %s, clone_error_msg = %s WHERE id = %s",
             (status, error_msg, repo_id),
         )
         if cur.rowcount == 0:
@@ -153,10 +158,14 @@ def get_repo_by_id(conn: PgConn, repo_id: int) -> dict | None:
 
 
 def update_repo_local_path(conn: PgConn, repo_id: int, local_path: str) -> None:
-    """Update local_path for a repo and bump last_indexed_at."""
+    """Update local_path for a repo after a successful clone.
+
+    Does NOT touch last_indexed_at — cloning is not indexing. last_indexed_at
+    is bumped only by update_repo_head_sha (called at the end of a real index run).
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE repos SET local_path = %s, last_indexed_at = NOW() WHERE id = %s",
+            "UPDATE repos SET local_path = %s WHERE id = %s",
             (local_path, repo_id),
         )
         if cur.rowcount == 0:

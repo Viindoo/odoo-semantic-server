@@ -204,7 +204,11 @@ async def clone_status(request: Request, repo_id: int):
     return JSONResponse({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
-        "error_msg": repo.get("error_msg"),
+        # Return clone_error_msg under the key "error_msg" to preserve API contract.
+        # clone_error_msg is written exclusively by the cloner; repos.error_msg is
+        # written exclusively by the indexer (update_repo_status). Keeping them separate
+        # prevents a cloner success from clearing an indexer error and vice versa.
+        "error_msg": repo.get("clone_error_msg"),
     })
 
 

@@ -74,37 +74,37 @@ def main(argv: list[str] | None = None) -> int:
         profile_name: str = repo["profile_name"]
         ssh_key_id: int | None = repo.get("ssh_key_id")
 
-        # Decrypt private key if SSH URL
-        private_key_pem: bytes | None = None
-        if is_ssh_url(url):
-            if ssh_key_id is None:
-                logger.error(
-                    "SSH URL %s but no ssh_key_id set on repo id=%s", url, args.repo_id
-                )
-                set_clone_status(
-                    conn,
-                    args.repo_id,
-                    "error",
-                    error_msg="SSH URL but no ssh_key_id",
-                )
-                return 2
-            key_row = get_ssh_key_by_id(conn, ssh_key_id)
-            if key_row is None:
-                logger.error("ssh_key_id=%s not found", ssh_key_id)
-                set_clone_status(
-                    conn,
-                    args.repo_id,
-                    "error",
-                    error_msg=f"ssh_key_id={ssh_key_id} not found",
-                )
-                return 2
-            private_key_pem = decrypt_private_key(key_row["private_key_encrypted"])
+        # Validate SSH URL requirements BEFORE setting pending (misconfiguration = exit 2,
+        # not a transient error that should leave the row in 'pending').
+        if is_ssh_url(url) and ssh_key_id is None:
+            logger.error(
+                "SSH URL %s but no ssh_key_id set on repo id=%s", url, args.repo_id
+            )
+            set_clone_status(
+                conn,
+                args.repo_id,
+                "error",
+                error_msg="SSH URL but no ssh_key_id",
+            )
+            return 2
+
+        # Mark pending as the FIRST DB write — ensures that any subsequent failure
+        # (FERNET decrypt, key lookup, network) is caught by the outer except block
+        # and transitions the row to 'error' rather than leaving it stuck in 'manual'.
+        set_clone_status(conn, args.repo_id, "pending")
 
         target_dir = default_clone_dir(profile_name, url)
 
         # Lifecycle: pending → clone → cloned / error
-        set_clone_status(conn, args.repo_id, "pending")
         try:
+            # Decrypt private key if SSH URL (FERNET errors handled here)
+            private_key_pem: bytes | None = None
+            if is_ssh_url(url):
+                key_row = get_ssh_key_by_id(conn, ssh_key_id)
+                if key_row is None:
+                    raise ValueError(f"ssh_key_id={ssh_key_id} not found")
+                private_key_pem = decrypt_private_key(key_row["private_key_encrypted"])
+
             clone_repo(url, branch, target_dir, private_key_pem=private_key_pem)
         except Exception as e:
             logger.exception("clone failed for repo id=%s", args.repo_id)

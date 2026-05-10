@@ -52,6 +52,7 @@ _REPOS_SSH_LINK_SQL = """
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS ssh_key_id INTEGER
     REFERENCES ssh_key_pairs(id) ON DELETE SET NULL;
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS clone_status TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS clone_error_msg TEXT;
 """
 
 _EMBEDDINGS_SQL = """
@@ -159,7 +160,14 @@ CREATE INDEX IF NOT EXISTS ix_indexer_jobs_created ON indexer_jobs(created_at DE
 """
 
 # Public alias — tests and callers that import SCHEMA_SQL get the full DDL string
-SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL + _FEEDBACK_SQL + _INDEXER_JOBS_SQL
+SCHEMA_SQL = (
+    _BASE_SQL
+    + _EMBEDDINGS_SQL
+    + _AUTH_SQL
+    + _REPOS_SSH_LINK_SQL
+    + _FEEDBACK_SQL
+    + _INDEXER_JOBS_SQL
+)
 
 
 def _vector_extension_available(conn: PgConn) -> bool:

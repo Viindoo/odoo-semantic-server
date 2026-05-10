@@ -105,3 +105,61 @@ def test_repos_unique_constraint_on_url_branch(clean_pg):
                 "VALUES (%s, 'github.com/x/y', '17.0', '/tmp/other')",
                 (pid,),
             )
+
+
+def test_repos_ssh_key_id_fk_ordering(clean_pg):
+    """Regression guard: repos.ssh_key_id FK must reference ssh_key_pairs after fresh migrate.
+
+    Earlier bug: _BASE_SQL declared the FK inline, causing PostgreSQL to error
+    'relation ssh_key_pairs does not exist' on fresh DB because _AUTH_SQL ran later.
+    Fix: split into _REPOS_SSH_LINK_SQL executed AFTER _AUTH_SQL.
+    """
+    run_migrations(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        # Confirm column exists
+        cur.execute("""
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_name = 'repos' AND column_name = 'ssh_key_id'
+        """)
+        assert cur.fetchone() is not None, "repos.ssh_key_id column missing"
+
+        # Confirm FK constraint with delete_rule = SET NULL
+        cur.execute("""
+            SELECT rc.delete_rule, ccu.table_name AS referenced_table
+              FROM information_schema.referential_constraints rc
+              JOIN information_schema.key_column_usage kcu
+                ON kcu.constraint_name = rc.constraint_name
+              JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = rc.constraint_name
+             WHERE kcu.table_name = 'repos' AND kcu.column_name = 'ssh_key_id'
+        """)
+        rows = cur.fetchall()
+        assert len(rows) == 1, f"expected 1 FK on repos.ssh_key_id, found {len(rows)}"
+        delete_rule, referenced_table = rows[0]
+        assert delete_rule == "SET NULL"
+        assert referenced_table == "ssh_key_pairs"
+
+        # Confirm clone_status column with proper default
+        cur.execute("""
+            SELECT column_default, is_nullable
+              FROM information_schema.columns
+             WHERE table_name = 'repos' AND column_name = 'clone_status'
+        """)
+        row = cur.fetchone()
+        assert row is not None
+        assert "manual" in str(row[0])
+        assert row[1] == "NO"
+
+
+def test_schema_sql_alias_includes_w4_columns():
+    """SCHEMA_SQL alias must include _REPOS_SSH_LINK_SQL columns.
+
+    External consumers who import SCHEMA_SQL must see the full schema including
+    ssh_key_id, clone_status, and clone_error_msg columns added in M6 W4.
+    """
+    from src.db.migrate import SCHEMA_SQL
+    assert "ssh_key_id" in SCHEMA_SQL
+    assert "clone_status" in SCHEMA_SQL
+    assert "clone_error_msg" in SCHEMA_SQL

@@ -423,6 +423,35 @@ class TestSshCloneFlow:
         assert names == {"key-alpha", "key-beta"}
 
     @pytest.mark.asyncio
+    async def test_post_ssh_url_non_numeric_key_id_returns_400(self, migrated_pg):
+        """SSH URL with non-numeric ssh_key_id → 400, no Popen (Fix 6)."""
+        from src.db.repo_registry import add_profile, list_repos
+
+        add_profile(migrated_pg, name="ssh_abc_profile", odoo_version="17.0")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    "/repos/repos",
+                    data={
+                        "profile": "ssh_abc_profile",
+                        "url": "git@host:org/repo.git",
+                        "branch": "main",
+                        "ssh_key_id": "abc",  # non-numeric
+                    },
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 400
+        mock_popen.assert_not_called()
+        repos = list_repos(migrated_pg)
+        assert len(repos) == 0
+
+    @pytest.mark.asyncio
     async def test_get_clone_status_returns_current(self, migrated_pg):
         """GET /repos/repos/{id}/clone-status → JSON with clone_status + error_msg."""
         from src.db.repo_registry import add_profile, add_repo, set_clone_status
