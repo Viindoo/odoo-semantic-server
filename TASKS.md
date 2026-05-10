@@ -202,19 +202,28 @@
 **Intent:** Hỗ trợ toàn bộ ecosystem Viindoo, multi-version, incremental updates.  
 **Outcome:** Re-index chỉ mất vài giây. Index đồng thời 16.0 + 17.0 + 18.0.
 
-- [ ] **Auto-clone qua SSH khi user add repo (moved from M5, defer Wave 4):** detect SSH URL trong Web UI → auto-clone via Ed25519 private key + `GIT_SSH_COMMAND` + `tempfile.mkstemp(mode=0o600)` → set `local_path` automatically; companion: host fingerprint management UI (`StrictHostKeyChecking=accept-new` policy)
-- [x] **Incremental indexer (Wave 2 Chain A — 5 WIs):** `src/indexer/incremental.py` git diff helpers (get_repo_head, is_ancestor, compute_changed_module_paths, filter_modules_by_changed) + `repos.head_sha` column + `ModuleInfo.commit_sha` field + scanner.get_module_commit_sha + writer_neo4j SET m.last_commit_sha + pipeline._index_repo skip-unchanged early-exit + diff-filter scan results + force-push fallback (is_ancestor check) + `--full` flag for cleanup + partial-failure semantics (head_sha only updates after full success). See ADR-0007.
-- [x] **Multi-version cross-profile parallel (Wave 2 Chain C):** `index_all()` adds `profile_workers: int = 1` keyword-only param. When > 1: ThreadPoolExecutor wraps profile loop, each thread opens own pg_conn (psycopg2 thread-safety). Per-profile lock from Wave 1 ensures safety. CLI: `index-repo --all --profile-workers N --max-workers M`. README snippet added.
-- [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0" (defer Wave 3)
-- [ ] **Pattern catalogue maintenance (M4.6 defer):**
-    - [x] Auto-reseed `seed_patterns.py` integrate vào indexer run (Wave 2 Chain B): `_SeedMeta {key:'patterns'}` Neo4j sentinel stores sha256 of patterns.json. `seed_patterns(force=False)` skips when current_sha == stored_sha. Auto-called at end of `index_profile()` (auto-reseed failure logged but doesn't fail indexer run). `--force` CLI flag bypasses gating. Per M4.6 plan §Defer M6.
-    - [ ] Seed expansion từ ~50 → ~200 patterns + community contribution path (PR template + `src/data/patterns.json` review checklist) (defer Wave 3)
-    - [ ] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch) (defer Wave 3)
-- [ ] **EE_CONFUSION auto-detect (M4.6 defer, defer Wave 3):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Vẫn keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
-- [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 defer, defer M7):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name. **Investigation 2026-05-10 (Wave 2 planning) recommend defer M7:** graph traversal cannot replace curated 1-to-1 mapping; hardcode dict 8 entries actually correct + low maintenance. Per M4.6 plan §Defer M6.
-- [x] **Per-profile advisory locks (P3 — Wave 1):** `src/indexer/pipeline.py` — `_LOCK_ID` global constant thay bằng `_profile_lock_id(profile_name)` hash. `indexer_is_running()` nhận thêm `profile_name` param. Hai profile khác nhau index song song không block nhau. Tests cập nhật + 2 test mới (`test_different_profiles_dont_block`, `test_same_profile_blocks`).
-- [x] **ThreadPoolExecutor parallel repo scan (P3 — Wave 1):** `src/indexer/pipeline.py` `index_profile()` + `index_all()` thêm `max_workers: int = 1` param. Khi `> 1`: `ThreadPoolExecutor` mỗi worker thread tự `open_production_pg()` cho PG conn riêng (Neo4jWriter share-safe per per-method session). CLI `--max-workers` arg trong `src/indexer/__main__.py`.
-- [x] **PostgreSQL connection pool (P3 — Wave 1) — proper fix cho H1:** `src/mcp/server.py` + `src/mcp/middleware.py` + `src/mcp/health.py` — singleton `_pg_conn` + `_PG_LOCK` thay bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`. `_checkout_pg()` context manager registers pgvector per-checkout (idempotent). `_PG_LOCK` xoá hoàn toàn khỏi codebase.
+**Backlog top-level (deferred — see Wave 3 / Wave 4 / M7 grouping below):**
+
+*Wave 3 (next, ~10 WIs):*
+- [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"
+- [ ] **Pattern catalogue maintenance (M4.6 defer) — remaining sub-items:**
+    - [ ] Seed expansion từ ~50 → ~200 patterns + community contribution path (PR template + `src/data/patterns.json` review checklist)
+    - [ ] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch)
+- [ ] **EE_CONFUSION auto-detect (M4.6 defer):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
+
+*Wave 4 (~5 WIs):*
+- [ ] **Auto-clone qua SSH khi user add repo (moved from M5):** detect SSH URL trong Web UI → auto-clone via Ed25519 private key + `GIT_SSH_COMMAND` + `tempfile.mkstemp(mode=0o600)` → set `local_path` automatically; companion: host fingerprint management UI (`StrictHostKeyChecking=accept-new` policy). Khảo sát 2026-05-10 confirm M5 SSH-key infra (FERNET, ssh_key_pairs table, generate Ed25519, list/CRUD) đầy đủ; chỉ thiếu bridge → add-repo flow (URL detection regex + clone helper + form selector + known_hosts UI optional).
+
+*Defer M7 (xem Milestone 7 section below):*
+- → 214 `viindoo_equivalent_qname` auto-populate (graph traversal heuristic)
+
+**Shipped highlights (full audit trail trong Section H/I/G dưới):**
+- [x] Wave 1 P3: Per-profile advisory locks — 2 profile khác nhau index song song không block nhau (`src/indexer/pipeline.py _profile_lock_id`).
+- [x] Wave 1 P3: ThreadPoolExecutor parallel repo scan — `--max-workers` flag (`pipeline.py index_profile`).
+- [x] Wave 1 P3: PostgreSQL connection pool — `_pg_pool` SimpleConnectionPool replaces `_pg_conn` singleton + `_PG_LOCK`.
+- [x] Wave 2 Chain A (5 WIs): Incremental indexer — `repos.head_sha` + `Module.last_commit_sha` + `incremental.py` git diff helpers + `pipeline._index_repo` skip-unchanged + force-push fallback + `--full` flag. ADR-0007 records 7 design decisions.
+- [x] Wave 2 Chain B (2 WIs): Auto-reseed pattern catalogue — `_SeedMeta` Neo4j sha256 sentinel + `seed_patterns.run()` public callable + auto-call at end of `index_profile()` + `--force` bypass.
+- [x] Wave 2 Chain C (1 WI): `index_all --profile-workers` ThreadPoolExecutor wraps profile loop — closes M6 thesis "Index đồng thời 16.0 + 17.0 + 18.0".
 
 **Section H — Environment harness (P2 — Wave 1 shipped 2026-05-10):**
 
@@ -251,6 +260,23 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [x] **L3 — `maxlength="200"` trên Web UI form inputs (P3):** 8 text-input/textarea trong `api_keys.html` + `repos.html` + `ssh_keys.html`.
 - [x] **L4 — Thread-safe key cache (P3):** `src/mcp/middleware.py` thêm module-level `threading.Lock()` bao quanh tất cả `_KEY_CACHE`/`_CACHE_TS` access (4 hàm `_cache_*`).
 - [x] **L6 — `embeddings: 0` không giải thích lý do (P3):** `src/indexer/__main__.py` in dòng "Embeddings skipped — EMBEDDER_URL not configured. Use --no-embed to suppress this notice." khi embedder=None.
+
+## Milestone 7 — "Lifecycle Wow"
+
+**Intent:** Track ecosystem evolution — multi-repo dependency change ripples, auto-curation of Viindoo↔EE mapping, observability of embedding costs, hygiene cleanup beyond M6 incremental thesis.
+**Outcome:** AI client trả lời được "đổi file Y trong repo A làm vỡ những gì trong repo B", "module EE Z có Viindoo equivalent nào auto-detected"; admin có metrics về embedding cost + auto-cleanup tools.
+
+**Carry-over từ M6 (defer M7 confirmed):**
+- [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 → M6 → M7):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name. **Investigation 2026-05-10 (Wave 2 planning) recommend defer M7:** graph traversal cannot replace curated 1-to-1 mapping; hardcode dict 8 entries actually correct + low-maintenance. Reconsider when Viindoo addons indexed in shared profile + feature-tag heuristic available (e.g. manifest `category` + `summary` keyword overlap).
+
+**Spawned từ ADR-0007 §"Out of scope" (M6 Wave 2):**
+- [ ] **Module rename garbage collection (ADR-0007 §D5):** thay vì recommend periodic `--full`, add explicit `--gc` flag chạy "DETACH DELETE Module nodes whose path no longer exists in current scan". Risk-gated (only if scanner found modules cho repo X) để tránh accidental delete khi scan fail. Replaces D5's "stale orphans accepted" stance with explicit cleanup pass.
+- [ ] **Cross-repo dependency change tracking (ADR-0007 §Out of scope):** today mỗi repo's diff được tính độc lập. Nếu repo A's module depend on repo B's module B vừa thay đổi, dependency graph rebuild của A là implicit on next full reindex. M7 explicit: detect inter-repo edge changes + propagate re-index trigger (e.g. via Neo4j relationship watching).
+- [ ] **Embedding cost observability (ADR-0007 §Out of scope):** today per-module embedding incremental implicit qua `delete_embeddings_for_module`. M7 add explicit metrics — Ollama API call count per indexer run, vector store delta size, surface trong MCP `/health` hoặc admin Web UI dashboard.
+
+> **Lý do định danh "Lifecycle Wow":** items đa dạng nhưng chung chủ đề "track sự thay đổi theo thời gian" — repo rename hygiene (GC), inter-repo dependency drift, ecosystem correlation (Viindoo↔EE auto-curation), production cost observability.
+>
+> **Khi nào start M7:** sau khi M6 Wave 3 + Wave 4 đóng. Trước khi start, re-evaluate priority ranking — Viindoo addon indexing maturity + embedding cost pain points + cross-repo dependency surface area.
 
 ---
 

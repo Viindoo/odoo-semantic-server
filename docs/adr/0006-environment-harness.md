@@ -81,4 +81,3 @@ PEP 695 native trong 3.12 — không cần `from __future__`. 22 functions trong
 - Multi-version preset (`version_presets.py`) + cross-version pattern diff
 - EE_CONFUSION auto-detect + `viindoo_equivalent_qname` graph traversal
 - Pattern catalogue auto-reseed + 50 → 200 expansion
-- OpenUpgrade support (removed from M6 entirely per user decision — future M7+ if needed)
