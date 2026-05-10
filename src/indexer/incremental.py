@@ -93,7 +93,7 @@ def compute_changed_module_paths(
         file_path = Path(file_rel)
         # Walk up looking for a manifest
         current = file_path.parent
-        while current != Path():
+        while str(current) and str(current) != '.':
             for manifest in ("__manifest__.py", "__openerp__.py"):
                 if (repo_path / current / manifest).is_file():
                     module_paths.add(str(current))

@@ -26,6 +26,11 @@ Behaviour: log warning, treat `last_head` as None → full reindex. The new HEAD
 
 `is_ancestor()` returns False on any git error (graceful) so non-repo, missing-sha, etc. all fall back to full reindex safely.
 
+**Edge case:** When `get_repo_head()` returns None (git error, no commits, detached
+without HEAD), the function falls through to a full reindex without advancing
+`head_sha` — so the next run repeats the same situation. A warning log surfaces
+this state.
+
 ### D3 — head_sha advances ONLY after full success
 
 If `_index_repo()` raises mid-write (Neo4j down, parser error, etc.), `head_sha` must NOT update — next run will retry the same diff range (or fall back to full reindex if force-push happened in between).
