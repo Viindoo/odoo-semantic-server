@@ -41,37 +41,42 @@ Khảo sát corpus Odoo v8–v17 cho thấy 5 pattern khai báo class:
 
 ## Decision
 
-### 4-tier deterministic ranking
+### 5-tier deterministic ranking
 
 ```cypher
-ORDER BY is_ext ASC, inbound DESC, edition_rank ASC, mod_name ASC
+ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+         edition_rank ASC, mod_name ASC
 ```
 
-**Tier 1 — `is_ext`** (0 = base, 1 = extension):
+Smoke test trên data thật cho thấy heuristic dựa thuần `is_ext` (EXISTS outgoing same-name INHERITS) **không reliable**: writer's self-inherit branch tạo edge ngược trên một số Model node (vd `[odoo_8.0] sale` có outgoing INHERITS đến `sale.order` ở module khác do thứ tự xử lý), khiến base thực sự bị classify là extension. Do đó Decision dùng signal độc lập với chất lượng INHERITS edge.
+
+**Tier 1 — `is_def_rank`** (0 = base post-reindex, 1 = không/chưa biết):
 
 ```cypher
-CASE WHEN coalesce(m.is_definition, false) THEN 0
-     WHEN EXISTS {
-         (m)-[:INHERITS]->(:Model {name: $name, odoo_version: $v})
-     } THEN 1
-     ELSE 0 END AS is_ext
+CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank
 ```
 
-- `m.is_definition = true` (post-reindex): node được parser đánh dấu tường minh là base → `is_ext=0`.
-- `m.is_definition` null/false + EXISTS outgoing same-name INHERITS: đây là extension → `is_ext=1`.
-- `m.is_definition` null/false + không EXISTS: fallback an toàn cho data chưa reindex → `is_ext=0`.
+`m.is_definition` được parser+writer set tường minh khi `had_explicit_name=True AND name NOT IN inherit_list` — authoritative signal sau reindex.
 
-Fallback EXISTS subquery đảm bảo fix hoạt động ngay trên data hiện tại **trước khi reindex**.
-
-**Tier 2 — `inbound DESC`** (số INHERITS edge trỏ vào node):
+**Tier 2 — `field_count DESC`** (số Field node module này khai báo cho model):
 
 ```cypher
-COUNT { ()-[:INHERITS]->(m) } AS inbound
+COUNT {
+    (:Field {model: $name, module: m.module, odoo_version: $v})
+} AS field_count
 ```
 
-Base thực sự có nhiều inbound (mọi extension trỏ vào). Parser-miss orphan extension có `inbound=0` → bị đẩy xuống trong cùng `is_ext` bucket. Xử lý graceful cho case v8 orphan node.
+Smoke test 9 model thật (sale.order/res.partner/product.*/stock.picking/mail.thread/account.move qua v8 và v17): module base **luôn** có nhiều field nhất cho model đó. Vd `sale.order @ 17.0`: `[odoo_17.0] sale` có 59 fields, `sale_stock` có 12, customer extensions 1–10. Robust 100% trên empirical sample. Đây là pre-reindex signal duy nhất đạt 100% accuracy.
 
-**Tier 3 — `edition_rank ASC`** (community = base, custom = leaf):
+**Tier 3 — `dependents DESC`** (số module phụ thuộc vào module chứa Model node):
+
+```cypher
+COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents
+```
+
+Tiebreak khi nhiều module có cùng `field_count` (hiếm với Pattern A bases). Module base thường có `dependents` cao do toàn bộ ecosystem phụ thuộc nó. Lưu ý: signal này **một mình** không đủ — `account` có 122 dependents trong v17 nhưng KHÔNG phải base của `res.partner` (`base` mới là). Dùng kết hợp với `field_count` mới đúng.
+
+**Tier 4 — `edition_rank ASC`** (community = base, custom = leaf):
 
 ```cypher
 CASE mod.edition
@@ -82,18 +87,23 @@ CASE mod.edition
      ELSE 4 END AS edition_rank
 ```
 
-Rank thấp = base hơn. Portable qua mọi deployment — không hardcode repo name hay path prefix. Dựa trên `Module.edition` property (ADR-0003, M4.6).
+Rank thấp = base hơn. Portable qua mọi deployment. Dựa trên `Module.edition` property (ADR-0003, M4.6).
 
-**Tier 4 — `mod_name ASC`** (tiebreak alphabetical):
+**Tier 5 — `mod_name ASC`** (tiebreak alphabetical):
 
-```cypher
-mod.name AS mod_name
--- ... ORDER BY ... mod_name ASC
-```
+Loại bỏ hoàn toàn Cypher arbitrary-order khi 4 tier trên tie.
 
-Loại bỏ hoàn toàn Cypher arbitrary-order khi 3 tier trên tie.
+**Áp dụng đồng nhất cho 3 tool:** `_resolve_model`, `_resolve_field`, `_resolve_method` trong `src/mcp/server.py` — tất cả dùng cùng 5-tier pattern với `m_node` (resolved Model proxy) thay `m` cho field/method query.
 
-**Áp dụng đồng nhất cho 3 tool:** `_resolve_model` (lines 127–150), `_resolve_field` (lines 207–227), `_resolve_method` (lines 257–277) trong `src/mcp/server.py` — tất cả dùng cùng 4-tier pattern với `m_node` thay `m` cho field/method query.
+### Tại sao KHÔNG dùng EXISTS subquery + inbound DESC
+
+Heuristic ban đầu của plan dùng `EXISTS { (m)-[:INHERITS]->(:Model {name: $name}) }` để detect extension, và `inbound DESC` làm secondary signal. Smoke test phơi bày 2 vấn đề:
+
+1. **Writer self-inherit edge bug**: Khi extension declare `_inherit = "sale.order"`, writer chạy branch đặc biệt (`writer_neo4j.py:54-61`) tìm "tip" Model cùng tên không có incoming INHERITS, rồi tạo edge `(ext)-[:INHERITS]->(tip)`. Tùy thứ tự index, "tip" có thể là base thực sự (đúng) HOẶC là một extension đã indexed trước (sai). Result: graph có edge `(odoo_8.0/sale)-[:INHERITS]->(website_sale_delivery/sale.order)` — base node lại có outgoing INHERITS cùng tên.
+
+2. **Parser miss orphan**: Một số customer Era1 module declare `_inherit = "sale.order"` nhưng parser không emit edge (lý do khác nhau — có thể manifest issue, có thể parser regex miss). Resulting orphan có `EXISTS = false`, được rank như base → wrong.
+
+Field count signal không phụ thuộc vào INHERITS edge quality, do đó immune to cả 2 vấn đề này.
 
 ### Schema additions (implementation trong WI-3)
 
@@ -109,17 +119,19 @@ Loại bỏ hoàn toàn Cypher arbitrary-order khi 3 tier trên tie.
 
 **Positive:**
 - Deterministic hoàn toàn — không có Cypher arbitrary-order cho bất kỳ input nào.
-- Fix ngay lập tức trên data hiện tại qua EXISTS fallback — không cần reindex trước khi deploy.
-- Sau reindex: `is_definition` property nhanh hơn EXISTS subquery (property lookup O(1) thay vì graph traversal).
-- Portable: không hardcode repo name, path prefix, hay module name — hoạt động cho mọi customer deployment.
-- `r.order` property mở đường cho MRO reconstruction tương lai mà không cần schema change.
+- **Pre-reindex correctness validated**: smoke test trên 9 real model (v8 + v17) đạt 100% accuracy trước khi reindex nhờ `field_count` primary signal.
+- Sau reindex: `is_definition` property accelerate ranking (tier 1 short-circuit, không cần count subquery cho 99% query).
+- Portable: không hardcode repo name, path prefix, hay module name. Field count + DEPENDS_ON count + edition rank đều derive từ existing schema.
+- `r.order` property (WI-3 schema add) mở đường MRO reconstruction tương lai.
+- Robust against writer self-inherit edge bug + parser-miss orphan: field count không phụ thuộc INHERITS edge quality.
 
 **Negative:**
-- Reindex bắt buộc để backfill `is_definition` và `r.order`. Trước reindex: EXISTS fallback đúng nhưng chậm hơn (~2–5ms/node traversal thay vì property lookup).
-- `edition_rank` phụ thuộc `Module.edition` (M4.6). Nếu module chưa có edition (custom addon không có manifest license field) → fallback `edition_rank=4` (đúng — custom = leaf). Không gây sai kết quả, chỉ mất tiebreak tier 3.
+- Reindex bắt buộc để backfill `is_definition` và `r.order`. Trước reindex: count subqueries (3 trên 5 tier) chạy mỗi query — chậm hơn property lookup nhưng vẫn O(neighborhood).
+- `field_count` signal có thể bị skewed nếu một extension module declare nhiều field hơn base (rất hiếm trong CE/Enterprise; có thể xảy ra với customer module patch nặng). Empirical sample 9 model không phát hiện case này — nếu xảy ra trong thực tế, `is_definition` post-reindex sẽ correct.
+- `edition_rank` phụ thuộc `Module.edition` (M4.6). Module v8 trong DB hiện tại có nhiều node tag `edition=custom` thay vì `community` (data quality issue from initial registration) — không ảnh hưởng kết quả vì `field_count` đứng trước trong tier order.
 
 **Risk:**
-- **Parser-miss orphan node** (v8 bug case): `is_ext=0`, `inbound=0` → xếp sau node có `inbound>0` cùng `is_ext=0`. Nếu không có node nào có `inbound>0`, orphan sẽ thắng — vẫn sai. Mitigation: WI-5 fix Era1 `_columns.update()` + `_columns = X._columns.copy()` parser để giảm miss rate. Long-term: M6 validator flag orphan Model node.
+- **Parser-miss field nodes**: Nếu parser fail extract một số field từ base module (vd Era1 `_columns.update` chưa fix), `field_count` của base bị undercount → có thể tie với extension. WI-4 + WI-5 đã giảm miss rate. Mitigation: tier 3 (`dependents DESC`) làm secondary signal.
 - **Pattern C redeclare** (cùng `_name` và `_inherit`): `is_definition=False` → xếp đúng là extension. Một số Odoo community module dùng pattern này để "re-open" model — behavior đúng theo invariant.
 
 ## Alternatives Considered
@@ -132,7 +144,9 @@ Loại bỏ hoàn toàn Cypher arbitrary-order khi 3 tier trên tie.
 
 4. **Chỉ dùng `inbound DESC`, không có `is_ext`** — reject. Parser-miss orphan extension có `inbound=0`, base thực sự trong codebase nhỏ có thể cũng `inbound=0` (nếu chỉ có 1 module). Không distinguish được.
 
-5. **`is_ext` chỉ từ `is_definition` property, bỏ EXISTS fallback** — reject. Yêu cầu reindex trước khi deploy. Với codebase lớn (400+ modules), reindex mất 30–60 phút. EXISTS fallback cho phép fix deploy ngay, reindex background.
+5. **`is_ext` chỉ từ `is_definition` property, bỏ EXISTS fallback** — reject (initial), accepted (final). Plan ban đầu giữ EXISTS subquery làm pre-reindex fallback. Smoke test cho thấy EXISTS không reliable do writer self-inherit edge bug. Final design loại bỏ EXISTS, dùng `field_count` (data-driven, robust) thay thế.
+
+6. **`is_ext` từ `EXISTS outgoing same-name` + `inbound DESC` + `mod_name`** (plan ban đầu) — reject sau smoke test. EXISTS subquery sai trên 5/9 model thật (writer self-inherit edge). `inbound DESC` cũng không reliable vì các Model node thường tie ở `inbound=1` (chain pattern thay vì star pattern).
 
 ## References
 

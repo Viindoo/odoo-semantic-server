@@ -59,8 +59,9 @@ MERGE chỉ dùng key, SET properties riêng — không bao giờ đưa mutable 
 - `_name` được declare explicit trong class body (`had_explicit_name=True`), AND
 - `name NOT IN inherit_list` (loại trừ redeclare extensions Pattern C/D).
 
-Dùng cho ranking "Defined in" trong `resolve_*`. Cypher có fallback EXISTS check
-khi property absent (data cũ chưa reindex). Xem `docs/adr/0004`.
+Dùng làm tier 1 ranking "Defined in" trong `resolve_*` (post-reindex authoritative).
+Pre-reindex fallback chính là `field_count DESC` (số Field declared cho model trong
+mỗi module — base luôn nhiều nhất). Xem `docs/adr/0004`.
 
 **INHERITS edge `order` property** — `r.order` = list-index trong `_inherit`,
 preserving Pattern D mixin injection order cho future MRO reconstruction.
