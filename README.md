@@ -54,13 +54,13 @@ Odoo repos (~/git/*_17.0/)
 
 Người dùng **không cài gì**. Nhận URL + API key từ admin → chọn AI tool:
 
-| AI Tool | Config file | Key property | Verify |
-|---------|------------|--------------|--------|
-| **Claude Code** | `~/.claude.json` | `mcpServers[].type: "http"` | `claude mcp list` |
-| **Codex CLI** | `~/.codex/config.toml` | `[mcp_servers.x].http_headers` | `codex mcp list` |
-| **Gemini CLI** | `~/.gemini/settings.json` | `mcpServers[].httpUrl` | `/mcp` in CLI |
-| **VS Code** | `mcp.json` (Command Palette) | `servers[].type: "http"` | Start codelens |
-| **Antigravity** | `~/.gemini/antigravity/mcp_config.json` | `mcpServers[].serverUrl` | Refresh panel |
+| AI Tool | Config file | Key property | Verify | Auto-trust |
+|---------|------------|--------------|--------|------------|
+| **Claude Code** | `~/.claude.json` | `mcpServers[].type: "http"` | `claude mcp list` | [→ allow-list](docs/client-setup.md#claude-code-auto-trust) |
+| **Codex CLI** | `~/.codex/config.toml` | `[mcp_servers.x].http_headers` | `codex mcp list` | [→ allow-list](docs/client-setup.md#codex-cli-auto-trust) |
+| **Gemini CLI** | `~/.gemini/settings.json` | `mcpServers[].httpUrl` | `/mcp` in CLI | [→ allow-list](docs/client-setup.md#gemini-cli-auto-trust) |
+| **VS Code** | `mcp.json` (Command Palette) | `servers[].type: "http"` | Start codelens | [→ allow-list](docs/client-setup.md#vs-code-auto-trust) |
+| **Antigravity** | `~/.gemini/antigravity/mcp_config.json` | `mcpServers[].serverUrl` | Refresh panel | [→ allow-list](docs/client-setup.md#antigravity-auto-trust) |
 
 > ⚠️ Mỗi client có **file config và schema khác nhau**. Copy-paste snippet sai client → MCP không load (silent fail, chỉ báo "tool not found" khi gọi).
 
