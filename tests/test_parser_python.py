@@ -546,6 +546,18 @@ def test_detect_edition_viindoo_path():
     )
 
 
+def test_detect_edition_oeel1_returns_enterprise():
+    from src.indexer.parser_python import _detect_module_edition
+    # OEEL-1 → enterprise, regardless of path (path-independent)
+    assert _detect_module_edition({"license": "OEEL-1"}, "knowledge", "/any/path") == "enterprise"
+    assert (
+        _detect_module_edition(
+            {"license": "OEEL-1"}, "knowledge",
+            "/home/x/proprietary/knowledge",
+        ) == "enterprise"
+    )
+
+
 def test_detect_edition_oca():
     from src.indexer.parser_python import _detect_module_edition
     assert _detect_module_edition({"license": "OCA-AGPL-3"}, "x", "/path") == "oca"
