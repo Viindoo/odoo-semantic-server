@@ -34,8 +34,6 @@ CREATE TABLE IF NOT EXISTS repos (
     last_indexed_at TIMESTAMP,
     head_sha        TEXT,
     error_msg       TEXT,
-    ssh_key_id      INTEGER REFERENCES ssh_key_pairs(id) ON DELETE SET NULL,
-    clone_status    TEXT NOT NULL DEFAULT 'manual',
     created_at      TIMESTAMP DEFAULT NOW(),
     UNIQUE (url, branch)
 );
@@ -45,7 +43,12 @@ CREATE INDEX IF NOT EXISTS idx_repos_profile_id ON repos(profile_id);
 -- M6 Wave 2: head_sha column for incremental indexer (idempotent ALTER for upgrade path)
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS head_sha TEXT;
 
--- M6 Wave 4: ssh_key_id + clone_status columns for SSH auto-clone support
+-- M6 Wave 4 ssh_key_id + clone_status columns are added in _REPOS_SSH_LINK_SQL,
+-- executed AFTER _AUTH_SQL creates ssh_key_pairs (FK ordering constraint).
+"""
+
+_REPOS_SSH_LINK_SQL = """
+-- M6 Wave 4: link repos → ssh_key_pairs. Must run AFTER _AUTH_SQL creates ssh_key_pairs.
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS ssh_key_id INTEGER
     REFERENCES ssh_key_pairs(id) ON DELETE SET NULL;
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS clone_status TEXT NOT NULL DEFAULT 'manual';
@@ -252,6 +255,12 @@ def run_migrations(conn: PgConn) -> None:
 
     with conn.cursor() as cur:
         cur.execute(_AUTH_SQL)
+    if not conn.autocommit:
+        conn.commit()
+
+    # M6 Wave 4: link repos.ssh_key_id → ssh_key_pairs (must run after _AUTH_SQL).
+    with conn.cursor() as cur:
+        cur.execute(_REPOS_SSH_LINK_SQL)
     if not conn.autocommit:
         conn.commit()
 
