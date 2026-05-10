@@ -1506,6 +1506,91 @@ def test_tc2_delegation_only_no_inherits_edge(writer, neo4j_driver):
     )
 
 
+def test_tc3_pattern_b_vs_c_had_explicit_name_distinguishable(writer, neo4j_driver):
+    """TC-3 — Pattern A/B/C: had_explicit_name + is_definition correctly persisted.
+
+    Synthetic setup (all same model name, different modules):
+        mod_a: Pattern A — _name only        → had_explicit_name=True,  is_definition=True
+        mod_b: Pattern B — _inherit only     → had_explicit_name=False, is_definition=False
+        mod_c: Pattern C — _name + _inherit  → had_explicit_name=True,  is_definition=False
+
+    Parser-level coverage exists in test_parser_python.py:637-689. This test
+    closes the writer→Neo4j integration gap (ADR-0004 Defined-in ranking).
+    """
+    mod_a = ModuleInfo(
+        name="test_mod_a", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=[], version_raw="",
+    )
+    model_a = ModelInfo(
+        name="test.alpha", module="test_mod_a", odoo_version=TEST_VERSION,
+        inherit=[],
+        had_explicit_name=True,  # Pattern A: only _name declared
+    )
+
+    mod_b = ModuleInfo(
+        name="test_mod_b", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=["test_mod_a"], version_raw="",
+    )
+    model_b = ModelInfo(
+        name="test.alpha", module="test_mod_b", odoo_version=TEST_VERSION,
+        inherit=["test.alpha"],
+        had_explicit_name=False,  # Pattern B: only _inherit, name auto-derived
+    )
+
+    mod_c = ModuleInfo(
+        name="test_mod_c", odoo_version=TEST_VERSION,
+        repo="test_repo", path="/tmp", depends=["test_mod_a"], version_raw="",
+    )
+    model_c = ModelInfo(
+        name="test.alpha", module="test_mod_c", odoo_version=TEST_VERSION,
+        inherit=["test.alpha"],
+        had_explicit_name=True,  # Pattern C: both _name and _inherit declared (redeclare)
+    )
+
+    writer.write_results([
+        ParseResult(module=mod_a, models=[model_a]),
+        ParseResult(module=mod_b, models=[model_b]),
+        ParseResult(module=mod_c, models=[model_c]),
+    ])
+
+    with neo4j_driver.session() as session:
+        # Pattern A (test_mod_a): had_explicit_name=True, is_definition=True
+        rec_a = session.run("""
+            MATCH (m:Model {name: 'test.alpha', module: 'test_mod_a', odoo_version: $v})
+            RETURN m.had_explicit_name AS had_name, m.is_definition AS is_def
+        """, v=TEST_VERSION).single()
+    assert rec_a is not None, "Pattern A Model node (test_mod_a) must exist"
+    assert rec_a["had_name"] is True, "Pattern A: had_explicit_name must be True"
+    assert rec_a["is_def"] is True, (
+        "Pattern A: _name explicit + name NOT in inherit list → is_definition must be True"
+    )
+
+    with neo4j_driver.session() as session:
+        # Pattern B (test_mod_b): had_explicit_name=False, is_definition=False
+        rec_b = session.run("""
+            MATCH (m:Model {name: 'test.alpha', module: 'test_mod_b', odoo_version: $v})
+            RETURN m.had_explicit_name AS had_name, m.is_definition AS is_def
+        """, v=TEST_VERSION).single()
+    assert rec_b is not None, "Pattern B Model node (test_mod_b) must exist"
+    assert rec_b["had_name"] is False, "Pattern B: had_explicit_name must be False"
+    assert rec_b["is_def"] is False, (
+        "Pattern B: no explicit _name → is_definition must be False"
+    )
+
+    with neo4j_driver.session() as session:
+        # Pattern C (test_mod_c): had_explicit_name=True but IS in inherit list
+        rec_c = session.run("""
+            MATCH (m:Model {name: 'test.alpha', module: 'test_mod_c', odoo_version: $v})
+            RETURN m.had_explicit_name AS had_name, m.is_definition AS is_def
+        """, v=TEST_VERSION).single()
+    assert rec_c is not None, "Pattern C Model node (test_mod_c) must exist"
+    assert rec_c["had_name"] is True, "Pattern C: had_explicit_name must be True"
+    assert rec_c["is_def"] is False, (
+        "Pattern C: _name explicit BUT name in inherit list (redeclare)"
+        " → is_definition must be False"
+    )
+
+
 def test_tc4_multiple_inherits_keys_two_delegates_to_edges(writer, neo4j_driver):
     """TC-4 — Multiple _inherits keys → 2 DELEGATES_TO edges, one per parent.
 
