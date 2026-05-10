@@ -157,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
                         pg, profile_name=args.profile, embedder=embedder, progress=verbose
                     )
                 print(f"Done: {summary}")
+                if embedder is None:
+                    print(
+                        "Embeddings skipped — EMBEDDER_URL not configured. "
+                        "Use --no-embed to suppress this notice.",
+                        file=sys.stdout,
+                    )
                 if job_id is not None:
                     try:
                         job_registry.update_job(
