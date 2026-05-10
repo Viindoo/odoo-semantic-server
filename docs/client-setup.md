@@ -17,6 +17,8 @@ Hướng dẫn này dành cho **end user** muốn kết nối AI tool của mìn
 > dưới đây có canonical add command + JSON fallback + verify command + 1 pitfall
 > đặc trưng của client đó.
 
+> 💡 **Nhanh nhất:** truy cập **https://odoo-semantic.viindoo.com:9999/install/** và dán API key — trang tự sinh snippet đúng cho từng client. Các section dưới đây là tài liệu tham khảo chính thức để setup nâng cao, troubleshooting, và auto-trust patterns.
+
 ---
 
 ## Claude Code

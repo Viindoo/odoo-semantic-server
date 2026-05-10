@@ -54,6 +54,8 @@ Odoo repos (~/git/*_17.0/)
 
 Người dùng **không cài gì**. Nhận URL + API key từ admin → chọn AI tool:
 
+> 🚀 **Nhanh nhất:** truy cập **https://odoo-semantic.viindoo.com:9999/install/**, dán API key vào, copy snippet cho tool của bạn. Bảng dưới là fallback thủ công (hoặc cho self-host với URL `http://127.0.0.1:8002/install/`).
+
 | AI Tool | Config file | Key property | Verify | Auto-trust |
 |---------|------------|--------------|--------|------------|
 | **Claude Code** | `~/.claude.json` | `mcpServers[].type: "http"` | `claude mcp list` | [→ allow-list](docs/client-setup.md#claude-code-auto-trust) |
