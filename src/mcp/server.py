@@ -124,11 +124,33 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        layers = session.run("""
+        # 4-tier ranking: (1) is_ext ASC, (2) inbound DESC, (3) edition ASC, (4) name ASC
+        # Tier 1: is_definition prop (post-reindex) OR EXISTS subquery fallback (pre-reindex)
+        # Tier 2: base has many inbound INHERITS; parser-miss extension has 0 → demote
+        # Tier 3: Module.edition property (community < enterprise < viindoo < oca < custom)
+        # Tier 4: deterministic alphabetical tiebreak
+        layers = session.run(
+            """
             MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
+            WITH m, mod,
+                 CASE WHEN coalesce(m.is_definition, false) THEN 0
+                      WHEN EXISTS {
+                          (m)-[:INHERITS]->(:Model {name: $name, odoo_version: $v})
+                      } THEN 1
+                      ELSE 0 END AS is_ext,
+                 COUNT { ()-[:INHERITS]->(m) } AS inbound,
+                 CASE mod.edition
+                      WHEN 'community'  THEN 0
+                      WHEN 'enterprise' THEN 1
+                      WHEN 'viindoo'    THEN 2
+                      WHEN 'oca'        THEN 3
+                      ELSE 4 END AS edition_rank,
+                 mod.name AS mod_name
             RETURN m.module AS module_name, mod.repo AS repo
-            ORDER BY COUNT { ()-[:INHERITS]->(m) } ASC
-        """, name=model_name, v=odoo_version).data()
+            ORDER BY is_ext ASC, inbound DESC, edition_rank ASC, mod_name ASC
+            """,
+            name=model_name, v=odoo_version,
+        ).data()
 
         if not layers:
             return f"Model '{model_name}' not found in Odoo {odoo_version}."
@@ -182,13 +204,27 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
+        # 4-tier ranking: (1) is_ext ASC, (2) inbound DESC, (3) edition ASC, (4) name ASC
         records = session.run("""
             MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
             OPTIONAL MATCH (mod:Module {name: f.module, odoo_version: $v})
             OPTIONAL MATCH (m_node:Model {name: $mn, module: f.module, odoo_version: $v})
-            RETURN f, f.module AS module_name, mod.repo AS repo,
-                   COUNT { ()-[:INHERITS]->(m_node) } AS depth
-            ORDER BY depth ASC
+            WITH f, mod, m_node,
+                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0
+                      WHEN EXISTS {
+                          (m_node)-[:INHERITS]->(:Model {name: $mn, odoo_version: $v})
+                      } THEN 1
+                      ELSE 0 END AS is_ext,
+                 COUNT { ()-[:INHERITS]->(m_node) } AS inbound,
+                 CASE mod.edition
+                      WHEN 'community'  THEN 0
+                      WHEN 'enterprise' THEN 1
+                      WHEN 'viindoo'    THEN 2
+                      WHEN 'oca'        THEN 3
+                      ELSE 4 END AS edition_rank,
+                 mod.name AS mod_name
+            RETURN f, f.module AS module_name, mod.repo AS repo
+            ORDER BY is_ext ASC, inbound DESC, edition_rank ASC, mod_name ASC
         """, fn=field_name, mn=model_name, v=odoo_version).data()
 
     if not records:
@@ -218,13 +254,27 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
+        # 4-tier ranking: (1) is_ext ASC, (2) inbound DESC, (3) edition ASC, (4) name ASC
         records = session.run("""
             MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
             OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
             OPTIONAL MATCH (m_node:Model {name: $model, module: mth.module, odoo_version: $v})
-            RETURN mth, mth.module AS module_name, mod.repo AS repo,
-                   COUNT { ()-[:INHERITS]->(m_node) } AS depth
-            ORDER BY depth ASC
+            WITH mth, mod, m_node,
+                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0
+                      WHEN EXISTS {
+                          (m_node)-[:INHERITS]->(:Model {name: $model, odoo_version: $v})
+                      } THEN 1
+                      ELSE 0 END AS is_ext,
+                 COUNT { ()-[:INHERITS]->(m_node) } AS inbound,
+                 CASE mod.edition
+                      WHEN 'community'  THEN 0
+                      WHEN 'enterprise' THEN 1
+                      WHEN 'viindoo'    THEN 2
+                      WHEN 'oca'        THEN 3
+                      ELSE 4 END AS edition_rank,
+                 mod.name AS mod_name
+            RETURN mth, mth.module AS module_name, mod.repo AS repo
+            ORDER BY is_ext ASC, inbound DESC, edition_rank ASC, mod_name ASC
         """, mn=method_name, model=model_name, v=odoo_version).data()
 
     if not records:
