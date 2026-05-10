@@ -90,13 +90,9 @@ def test_index_profile_seeds_patterns(
 ):
     """After index_profile completes, PatternExample nodes exist in Neo4j."""
     # Patch the default patterns file to our minimal test file.
+    # After FIX-5, pipeline no longer references _DEFAULT_PATTERNS_FILE directly;
+    # patching at seed_patterns module level is sufficient.
     patterns_file = _make_minimal_patterns_json(tmp_path)
-    monkeypatch.setattr(
-        "src.indexer.pipeline._DEFAULT_PATTERNS_FILE",
-        patterns_file,
-        raising=False,
-    )
-    # We also need to patch inside the lazy import inside index_profile itself.
     import src.indexer.seed_patterns as _sp_mod
     monkeypatch.setattr(_sp_mod, "_DEFAULT_PATTERNS_FILE", patterns_file)
 
@@ -187,6 +183,21 @@ def test_index_profile_no_embed_skips_pattern_embeddings(
     _wipe_seed_meta(neo4j_driver)
 
     run_migrations(clean_pg)
+
+    # Capture pre-index pattern_example count — clean_pg fixture doesn't wipe the
+    # embeddings table, so prior tests in this file may have left rows. We assert
+    # NO NEW rows are added by this test (rather than absolute count == 0).
+    from src.db.migrate import _vector_extension_available
+    pgvector_available = _vector_extension_available(clean_pg)
+    pre_count = 0
+    if pgvector_available:
+        with clean_pg.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM embeddings "
+                "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'"
+            )
+            pre_count = cur.fetchone()[0]
+
     repo = make_git_repo(tmp_path / "repo_noembed", branch=TEST_VERSION)
     _seed_minimal_module(repo, "noembed_mod")
     pid = add_profile(clean_pg, "noembed_prof", TEST_VERSION)
@@ -209,6 +220,19 @@ def test_index_profile_no_embed_skips_pattern_embeddings(
     assert "skip" in caplog.text.lower(), (
         f"Expected skip notice in log for embedder=None.\nLog:\n{caplog.text}"
     )
+
+    # NEW: verify NO new pattern embeddings added (delta == 0 when embedder=None)
+    if pgvector_available:
+        with clean_pg.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM embeddings "
+                "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'"
+            )
+            post_count = cur.fetchone()[0]
+        assert post_count == pre_count, (
+            f"Pattern embeddings must not be written when embedder=None "
+            f"(pre={pre_count}, post={post_count}, delta={post_count - pre_count})"
+        )
 
     _wipe_seed_meta(neo4j_driver)
 

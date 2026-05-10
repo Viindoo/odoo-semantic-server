@@ -81,6 +81,97 @@ def _load_patterns(
     return patterns
 
 
+def run(
+    *,
+    writer,
+    embedder=None,
+    force: bool = False,
+    patterns_file: Path | None = None,
+    odoo_version_min_filter: str | None = None,
+) -> dict:
+    """Public entry point: idempotent seed of pattern catalogue.
+
+    Re-uses an EXISTING Neo4jWriter (no open/close inside) — caller manages lifecycle.
+
+    Returns: {"patterns": N_written, "embeddings": N_embedded, "skipped": bool}
+    """
+    patterns_path = patterns_file or _DEFAULT_PATTERNS_FILE
+    if not patterns_path.exists():
+        _logger.warning("patterns file not found at %s — skipping reseed", patterns_path)
+        return {"patterns": 0, "embeddings": 0, "skipped": True}
+
+    current_sha = _compute_patterns_sha256(patterns_path)
+
+    if not force:
+        stored_sha = _get_stored_patterns_sha(writer.driver)
+        if current_sha == stored_sha:
+            _logger.info(
+                "Patterns unchanged (sha=%s) — skipping reseed", current_sha[:12]
+            )
+            return {"patterns": 0, "embeddings": 0, "skipped": True}
+
+    patterns = _load_patterns(patterns_path, odoo_version_min_filter)
+    writer.write_pattern_examples(patterns)
+
+    n_embeddings = 0
+    if embedder is not None:
+        from src.indexer.writer_pgvector import make_pattern_chunks
+        chunks = make_pattern_chunks(patterns)
+        _write_pgvector_with_embedder(chunks, embedder)
+        n_embeddings = len(chunks)
+    else:
+        _logger.info("embedder=None — skipping pattern embeddings")
+
+    # Sentinel updated only after success
+    _set_stored_patterns_sha(writer.driver, current_sha)
+    return {"patterns": len(patterns), "embeddings": n_embeddings, "skipped": False}
+
+
+def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
+    """Embed pattern chunks using an already-constructed embedder + write to pgvector.
+
+    Replaces existing pattern_example rows for clean re-seed (idempotent).
+    This variant accepts an external embedder object (unlike _write_pgvector which
+    constructs one from config).
+    """
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+    from psycopg2.extras import execute_values
+
+    from src.indexer.writer_pgvector import _INSERT_SQL
+
+    dsn = config.from_env_or_ini(
+        "PG_DSN", "database", "pg_dsn", fallback=None,
+    )
+    if not dsn:
+        raise RuntimeError(
+            "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
+            "in [database] section of odoo-semantic.conf.",
+        )
+
+    texts = [c.content for c in chunks]
+    vecs = embedder.embed(texts)
+
+    conn = psycopg2.connect(dsn)
+    try:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM embeddings "
+                "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
+            )
+            execute_values(
+                cur, _INSERT_SQL,
+                [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _write_neo4j(patterns: list[PatternExample]) -> None:
     uri = config.from_env_or_ini(
         "NEO4J_URI", "database", "neo4j_uri",

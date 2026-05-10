@@ -182,6 +182,12 @@ def _index_repo(
     current_head = _incremental.get_repo_head(repo_path)
     last_head: str | None = None
 
+    if current_head is None:
+        _logger.warning(
+            "Cannot determine HEAD for repo %s — full reindex without head_sha tracking",
+            repo["url"],
+        )
+
     if not full_reindex and pg_conn is not None:
         last_head = _repo_registry.get_repo_head_sha(pg_conn, repo["id"])
 
@@ -509,50 +515,22 @@ def index_profile(
             # Hash-gated via _SeedMeta sentinel (W2-6) — cheap when patterns.json unchanged.
             # Per --no-embed semantic: if embedder is None, pattern embedding is also skipped.
             try:
-                from src.indexer.seed_patterns import (
-                    _DEFAULT_PATTERNS_FILE,
-                    _compute_patterns_sha256,
-                    _get_stored_patterns_sha,
-                    _load_patterns,
-                    _set_stored_patterns_sha,
+                from src.indexer.seed_patterns import run as _seed_patterns_run
+
+                seed_summary = _seed_patterns_run(
+                    writer=writer,
+                    embedder=embedder,
+                    force=False,
                 )
-
-                _patterns_file = _DEFAULT_PATTERNS_FILE
-                if _patterns_file.exists():
-                    _current_sha = _compute_patterns_sha256(_patterns_file)
-                    _stored_sha = _get_stored_patterns_sha(writer.driver)
-                    if _current_sha == _stored_sha:
-                        _logger.info(
-                            "Auto-reseed: patterns unchanged (sha=%s) — skipping",
-                            _current_sha[:8],
-                        )
-                    else:
-                        _patterns = _load_patterns(_patterns_file, version_filter=None)
-                        writer.write_pattern_examples(_patterns)
-                        _logger.info(
-                            "Auto-reseed: wrote %d PatternExample nodes", len(_patterns)
-                        )
-                        if embedder is not None:
-                            from src.indexer.writer_pgvector import make_pattern_chunks
-
-                            _chunks = make_pattern_chunks(_patterns)
-                            from src.indexer.seed_patterns import _write_pgvector
-
-                            _write_pgvector(_chunks)
-                            _logger.info(
-                                "Auto-reseed: wrote %d pattern embedding chunks",
-                                len(_chunks),
-                            )
-                        else:
-                            _logger.info(
-                                "Auto-reseed: embedder=None — skipping pattern embeddings"
-                            )
-                        _set_stored_patterns_sha(writer.driver, _current_sha)
-                else:
-                    _logger.warning(
-                        "Auto-reseed: patterns file not found at %s — skipping",
-                        _patterns_file,
+                if not seed_summary["skipped"]:
+                    _logger.info(
+                        "Auto-reseed: %d patterns + %d embeddings%s",
+                        seed_summary["patterns"], seed_summary["embeddings"],
+                        " (embedder=None — skipping pattern embeddings)"
+                        if embedder is None else "",
                     )
+                else:
+                    _logger.info("Auto-reseed: patterns unchanged — skipping")
             except Exception as _seed_exc:
                 _logger.warning("Auto-reseed pattern catalogue failed: %s", _seed_exc)
 

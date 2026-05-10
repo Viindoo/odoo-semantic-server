@@ -171,12 +171,52 @@ class TestProfileFailureDoesNotBlockOthers:
             patch("src.indexer.pipeline.open_production_pg", side_effect=_make_thread_pg),
         ):
             from src.indexer.pipeline import index_all
-            with pytest.raises(RuntimeError, match="simulated failure for profile 'bad'"):
+            with pytest.raises(RuntimeError) as exc_info:
                 index_all(mock_pg_conn, profile_workers=2)
+
+        assert "simulated failure" in str(exc_info.value), (
+            "first_exc should be the bad profile's exception"
+        )
 
         # 'good' profile should have been indexed
         assert good_indexed.is_set(), (
             "profile 'good' should complete even when profile 'bad' failed"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 3b: full_reindex propagates through parallel profile workers
+# ---------------------------------------------------------------------------
+
+class TestProfileWorkersFullReindex:
+    """Cross-impact W2-4 ↔ W2-8: full_reindex propagates through parallel path."""
+
+    def test_full_reindex_passes_through_parallel_workers(self, mock_pg_conn):
+        profiles = [_make_profile("p1"), _make_profile("p2")]
+        seen_full_reindex: list[bool] = []
+
+        def fake_index_profile(
+            pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
+        ):
+            seen_full_reindex.append(full_reindex)
+            return _fake_counters(modules=1)
+
+        with (
+            patch("src.indexer.pipeline.list_profiles", return_value=profiles),
+            patch("src.indexer.pipeline.index_profile", side_effect=fake_index_profile),
+            patch("src.indexer.pipeline.open_production_pg", side_effect=_make_thread_pg),
+        ):
+            from src.indexer.pipeline import index_all
+            result = index_all(
+                mock_pg_conn,
+                profile_workers=2,
+                full_reindex=True,
+            )
+
+        assert result["profiles_ok"] == 2
+        assert len(seen_full_reindex) == 2
+        assert all(seen_full_reindex), (
+            "full_reindex must propagate to all parallel profile workers"
         )
 
 
