@@ -15,6 +15,7 @@ from src.auth import hash_key as _hash_key
 _KEY_CACHE: dict[str, int | None] = {}
 _CACHE_TS: dict[str, float] = {}
 _CACHE_TTL = 300.0  # 5 minutes
+_cache_lock = threading.Lock()  # Protects read/write to _KEY_CACHE and _CACHE_TS
 
 # ---------------------------------------------------------------------------
 # Per-API-key sliding-window rate limiter (WI-8)
@@ -64,26 +65,38 @@ _PUBLIC_PATH_PREFIXES = frozenset({"/install"})
 
 
 def _cache_get(raw_key: str) -> tuple[bool, int | None]:
-    """Return (hit, api_key_id). hit=False means cache miss or expired."""
+    """Return (hit, api_key_id). hit=False means cache miss or expired.
+
+    Thread-safe: guarded by _cache_lock.
+    """
     h = _hash_key(raw_key)
-    ts = _CACHE_TS.get(h)
-    if ts is not None and time.monotonic() - ts < _CACHE_TTL:
-        return True, _KEY_CACHE[h]
-    return False, None
+    with _cache_lock:
+        ts = _CACHE_TS.get(h)
+        if ts is not None and time.monotonic() - ts < _CACHE_TTL:
+            return True, _KEY_CACHE.get(h)
+        return False, None
 
 
 def _cache_set(raw_key: str, key_id: int | None) -> None:
-    """Store key_id for raw_key (stored as hash) in the in-memory cache."""
+    """Store key_id for raw_key (stored as hash) in the in-memory cache.
+
+    Thread-safe: guarded by _cache_lock.
+    """
     h = _hash_key(raw_key)
-    _KEY_CACHE[h] = key_id
-    _CACHE_TS[h] = time.monotonic()
+    with _cache_lock:
+        _KEY_CACHE[h] = key_id
+        _CACHE_TS[h] = time.monotonic()
 
 
 def _cache_invalidate(raw_key: str) -> None:
-    """Remove a key from cache (call after deactivate with raw_key known)."""
+    """Remove a key from cache (call after deactivate with raw_key known).
+
+    Thread-safe: guarded by _cache_lock.
+    """
     h = _hash_key(raw_key)
-    _KEY_CACHE.pop(h, None)
-    _CACHE_TS.pop(h, None)
+    with _cache_lock:
+        _KEY_CACHE.pop(h, None)
+        _CACHE_TS.pop(h, None)
 
 
 def _cache_invalidate_by_key_id(key_id: int) -> None:
@@ -92,11 +105,14 @@ def _cache_invalidate_by_key_id(key_id: int) -> None:
     Used when only key_id is available (e.g. Web UI deactivate route).
     O(n) scan is fine — cache holds at most a few hundred entries.
     Works in-process; cross-process invalidation is bounded by _CACHE_TTL.
+
+    Thread-safe: guarded by _cache_lock.
     """
-    stale = [h for h, v in _KEY_CACHE.items() if v == key_id]
-    for h in stale:
-        _KEY_CACHE.pop(h, None)
-        _CACHE_TS.pop(h, None)
+    with _cache_lock:
+        stale = [h for h, v in _KEY_CACHE.items() if v == key_id]
+        for h in stale:
+            _KEY_CACHE.pop(h, None)
+            _CACHE_TS.pop(h, None)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
