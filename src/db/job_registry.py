@@ -1,6 +1,8 @@
 """CRUD for indexer_jobs table — track indexer subprocess lifecycle."""
 from datetime import datetime
 
+import psycopg2.extras
+
 _VALID_STATUSES = {"queued", "running", "done", "error"}
 
 
@@ -32,18 +34,12 @@ def get_job(conn, job_id: int) -> dict | None:
     finished_at, error_msg, created_at. Datetime values are ISO strings
     (str(value)) for JSON serialization friendliness.
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, profile_name, status, pid, started_at, finished_at, error_msg, created_at "
-            "FROM indexer_jobs WHERE id = %s",
-            (job_id,),
-        )
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM indexer_jobs WHERE id = %s", (job_id,))
         row = cur.fetchone()
-        if row is None:
-            return None
-        cols = [d[0] for d in cur.description]
-        result = dict(zip(cols, row))
-    # Convert datetime values to strings for JSON serialization friendliness
+    if row is None:
+        return None
+    result = dict(row)
     for key in ("started_at", "finished_at", "created_at"):
         if result[key] is not None:
             result[key] = str(result[key])
@@ -111,17 +107,15 @@ def list_running_jobs(conn) -> list[dict]:
 
     Returns dicts shaped like get_job().
     """
-    with conn.cursor() as cur:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            "SELECT id, profile_name, status, pid, started_at, finished_at, error_msg, created_at "
-            "FROM indexer_jobs WHERE status = 'running' ORDER BY created_at ASC"
+            "SELECT * FROM indexer_jobs WHERE status = 'running' ORDER BY created_at ASC"
         )
-        cols = [d[0] for d in cur.description]
         rows = cur.fetchall()
 
     result = []
     for row in rows:
-        entry = dict(zip(cols, row))
+        entry = dict(row)
         for key in ("started_at", "finished_at", "created_at"):
             if entry[key] is not None:
                 entry[key] = str(entry[key])
@@ -131,17 +125,15 @@ def list_running_jobs(conn) -> list[dict]:
 
 def get_last_job(conn, profile_name: str) -> dict | None:
     """Most recent job for a profile (ORDER BY created_at DESC LIMIT 1)."""
-    with conn.cursor() as cur:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            "SELECT id, profile_name, status, pid, started_at, finished_at, error_msg, created_at "
-            "FROM indexer_jobs WHERE profile_name = %s ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM indexer_jobs WHERE profile_name = %s ORDER BY created_at DESC LIMIT 1",
             (profile_name,),
         )
         row = cur.fetchone()
-        if row is None:
-            return None
-        cols = [d[0] for d in cur.description]
-        result = dict(zip(cols, row))
+    if row is None:
+        return None
+    result = dict(row)
     for key in ("started_at", "finished_at", "created_at"):
         if result[key] is not None:
             result[key] = str(result[key])

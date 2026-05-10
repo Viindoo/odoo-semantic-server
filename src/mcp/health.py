@@ -16,32 +16,30 @@ async def _get_mcp_tool_count() -> int:
         int: Positive count of tools, or -1 if introspection failed.
 
     Approach:
-        1. Try public API mcp.get_tools() (async).
-        2. Fallback to private _tool_manager._tools if public API unavailable.
-        3. Return -1 and log warning on any exception.
+        1. Try public API mcp.get_tools() (async, FastMCP 2.3+).
+        2. Fallback to private _tool_manager._tools if public API unavailable or raises.
+        3. Return -1 and log warning if both methods fail.
     """
     from src.mcp.server import mcp
 
-    try:
-        # Prefer public API (FastMCP 2.3+)
-        if hasattr(mcp, "get_tools") and callable(mcp.get_tools):
-            try:
-                tools_dict = await mcp.get_tools()
-                return len(tools_dict) if isinstance(tools_dict, dict) else -1
-            except Exception as e:
-                logger.warning(f"get_tools() call failed: {e}")
-                raise  # Fall through to private API below
+    # Try public API first (FastMCP 2.3+)
+    if hasattr(mcp, "get_tools") and callable(mcp.get_tools):
+        try:
+            tools_dict = await mcp.get_tools()
+            if isinstance(tools_dict, dict):
+                return len(tools_dict)
+        except Exception as e:
+            logger.warning(f"get_tools() call failed: {e}; falling back to private API")
 
-        # Fallback: private API (FastMCP internals)
+    # Fallback: private API (FastMCP internals)
+    try:
         if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
             return len(mcp._tool_manager._tools)
-
-        logger.warning("No tool introspection method available (get_tools or _tool_manager)")
-        return -1
-
     except Exception as e:
-        logger.warning(f"Tool count introspection failed: {type(e).__name__}: {str(e)[:100]}")
-        return -1
+        logger.warning(f"Private API introspection failed: {e}")
+
+    logger.warning("No tool introspection method available (get_tools or _tool_manager)")
+    return -1
 
 
 async def health_handler(request: Request) -> JSONResponse:
