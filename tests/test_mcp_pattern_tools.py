@@ -275,6 +275,52 @@ class TestCheckModuleExists:
         assert "Indexed:         No" in result
         assert "Is EE confusion: No" in result
 
+    def test_check_module_exists_indexed_enterprise_not_in_dict(self, clean_neo4j):
+        """Indexed Module with edition='enterprise' (OEEL-1) → EE warning (indexed source)."""
+        import os
+
+        from src.indexer.models import ModuleInfo, ParseResult
+        from src.indexer.writer_neo4j import Neo4jWriter
+        from src.mcp.server import _check_module_exists
+
+        # Seed Module node: knowledge_pro with edition='enterprise' NOT in dict
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        knowledge_pro = ModuleInfo(
+            name="knowledge_pro", odoo_version=TEST_VERSION, repo="odoo-ee",
+            path="/odoo-ee/addons/knowledge_pro", depends=[], version_raw="",
+            edition="enterprise",
+        )
+        writer.write_results([ParseResult(module=knowledge_pro, models=[])])
+        writer.close()
+
+        result = _check_module_exists(
+            "knowledge_pro", odoo_version=TEST_VERSION, _driver=clean_neo4j,
+        )
+        assert "Indexed:         Yes" in result
+        assert "Is EE confusion: Yes" in result
+        assert "license=OEEL-1" in result
+        assert "WARNING" in result
+        assert "Do NOT" in result
+
+    def test_check_module_exists_not_indexed_in_dict_fallback(self, clean_neo4j):
+        """Not indexed but in EE_CONFUSION dict → EE warning (dict fallback)."""
+        from src.mcp.server import _check_module_exists
+
+        # Pick "knowledge" from EE_CONFUSION dict (not indexed)
+        result = _check_module_exists(
+            "knowledge", odoo_version=TEST_VERSION, _driver=clean_neo4j,
+        )
+        assert "Indexed:         No" in result
+        assert "Is EE confusion: Yes" in result
+        assert "legacy hardcoded dict" in result
+        assert "WARNING" in result
+        assert "Do NOT" in result
+
 
 # --- find_override_point tests ----------------------------------------------
 

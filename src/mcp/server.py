@@ -1665,11 +1665,12 @@ def _format_suggest_pattern(
 def _check_module_exists(
     name: str, odoo_version: str = "auto", *, _driver=None,
 ) -> str:
-    """Report whether `name` is indexed + flag EE-confusion (per ADR-0003 §2)."""
-    from src.data.ee_modules import EE_CONFUSION
+    """Report whether `name` is indexed + flag EE-confusion (per ADR-0003 §2).
 
-    is_ee_confusion = name in EE_CONFUSION
-    viindoo_equivalent = EE_CONFUSION.get(name) if is_ee_confusion else None
+    Edition-first strategy: query Neo4j for indexed edition (OEEL-1 detected),
+    fallback to hardcoded dict if not indexed. Both paths produce same EE warning.
+    """
+    from src.data.ee_modules import EE_CONFUSION
 
     driver = _driver or _get_driver()
     with driver.session() as session:
@@ -1684,19 +1685,35 @@ def _check_module_exists(
     indexed = rec is not None
     edition = rec["edition"] if rec else None
     repo = rec.get("repo") if rec else None
-    # Prefer node-level viindoo_equivalent (fresher) over static dict
     vvq_db = rec.get("vvq") if rec else None
-    final_equivalent = vvq_db or viindoo_equivalent
+
+    # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 license detection)
+    is_ee_confusion = False
+    ee_source = ""  # track source for output messaging
+    viindoo_equivalent = None
+
+    if indexed and edition == "enterprise":
+        # Indexed data has OEEL-1 → is EE module
+        is_ee_confusion = True
+        ee_source = "indexed"
+        viindoo_equivalent = vvq_db or EE_CONFUSION.get(name)
+    elif name in EE_CONFUSION:
+        # Not indexed (or not marked 'enterprise') but in hardcoded dict
+        is_ee_confusion = True
+        ee_source = "dict"
+        viindoo_equivalent = EE_CONFUSION.get(name)
 
     return _format_check_module_exists(
         name=name, version=v, indexed=indexed, edition=edition, repo=repo,
-        is_ee_confusion=is_ee_confusion, viindoo_equivalent=final_equivalent,
+        is_ee_confusion=is_ee_confusion, viindoo_equivalent=viindoo_equivalent,
+        ee_source=ee_source,
     )
 
 
 def _format_check_module_exists(
     *, name: str, version: str, indexed: bool, edition: str | None,
     repo: str | None, is_ee_confusion: bool, viindoo_equivalent: str | None,
+    ee_source: str = "",
 ) -> str:
     lines = [f"check_module_exists({name!r}, {version})"]
     lines.append(f"├─ Indexed:         {'Yes' if indexed else 'No'}")
@@ -1711,8 +1728,14 @@ def _format_check_module_exists(
             lines.append(f"├─ Viindoo equiv:   {viindoo_equivalent}")
         else:
             lines.append("├─ Viindoo equiv:   (none — feature not in Viindoo stack)")
+        # Differentiate source for debugging
+        source_hint = ""
+        if ee_source == "indexed":
+            source_hint = " (license=OEEL-1)"
+        elif ee_source == "dict":
+            source_hint = " (legacy hardcoded dict)"
         lines.append(
-            "└─ ⚠ WARNING: this is an Odoo Enterprise module. "
+            f"└─ ⚠ WARNING: this is an Odoo Enterprise module{source_hint}. "
             "Do NOT depend on it in a Viindoo Community stack — "
             "vi phạm GPL/Enterprise license boundary."
         )
