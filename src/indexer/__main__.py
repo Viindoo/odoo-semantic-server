@@ -111,6 +111,28 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override path for static spec_data JSON files (optional).",
     )
 
+    # --- seed-patterns subcommand (new in WI-W2-6) -------------------------
+    sub_seed = subparsers.add_parser(
+        "seed-patterns",
+        help="Load patterns.json → write Neo4j PatternExample nodes + embed pgvector.",
+    )
+    sub_seed.add_argument(
+        "--version", default=None,
+        help="Filter to a specific odoo_version_min (e.g. 17.0). Default: all versions.",
+    )
+    sub_seed.add_argument(
+        "--no-embed", action="store_true",
+        help="Skip the pgvector embed+write step (Neo4j only).",
+    )
+    sub_seed.add_argument(
+        "--patterns-file", default=None,
+        help="Path to patterns.json (optional, defaults to src/data/patterns.json).",
+    )
+    sub_seed.add_argument(
+        "--force", action="store_true",
+        help="Bypass sha256 gating, force reseed even if patterns.json unchanged.",
+    )
+
     return parser
 
 
@@ -221,6 +243,17 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             static_data_dir=args.static_data_dir,
         )
+
+    elif args.subcommand == "seed-patterns":
+        from src.indexer import seed_patterns as seed_patterns_module
+        argv_seed = ["--version", args.version] if args.version else []
+        if args.no_embed:
+            argv_seed.append("--no-embed")
+        if args.patterns_file:
+            argv_seed.extend(["--patterns-file", args.patterns_file])
+        if args.force:
+            argv_seed.append("--force")
+        return seed_patterns_module.main(argv_seed)
 
     return 0
 
