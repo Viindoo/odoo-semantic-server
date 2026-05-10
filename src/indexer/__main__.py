@@ -11,9 +11,12 @@ Subcommands:
 """
 import argparse
 import logging
+import os
 import sys
+from datetime import datetime, timezone
 
 from src import config
+from src.db import job_registry
 from src.indexer.pipeline import (
     index_all,
     index_core,
@@ -64,6 +67,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub_repo.add_argument(
         "--verbose", action="store_true", default=False,
         help="Enable INFO logging and progress bar.",
+    )
+    sub_repo.add_argument(
+        "--job-id",
+        type=int,
+        default=None,
+        help="(Optional) indexer_jobs.id to update lifecycle status during run.",
     )
 
     # --- index-core subcommand (new in WI-F1) ------------------------------
@@ -125,16 +134,50 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.subcommand == "index-repo":
         verbose = getattr(args, "verbose", False)
+        job_id = getattr(args, "job_id", None)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
         try:
-            if args.all:
-                summary = index_all(pg, embedder=embedder, progress=verbose)
-            else:
-                summary = index_profile(
-                    pg, profile_name=args.profile, embedder=embedder, progress=verbose
-                )
-            print(f"Done: {summary}")
+            if job_id is not None:
+                try:
+                    job_registry.update_job(
+                        pg, job_id,
+                        status="running",
+                        pid=os.getpid(),
+                        started_at=datetime.now(timezone.utc),
+                    )
+                except Exception:
+                    # Don't block indexing if job tracking fails (job may have been deleted, etc.)
+                    pass
+            try:
+                if args.all:
+                    summary = index_all(pg, embedder=embedder, progress=verbose)
+                else:
+                    summary = index_profile(
+                        pg, profile_name=args.profile, embedder=embedder, progress=verbose
+                    )
+                print(f"Done: {summary}")
+                if job_id is not None:
+                    try:
+                        job_registry.update_job(
+                            pg, job_id,
+                            status="done",
+                            finished_at=datetime.now(timezone.utc),
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                if job_id is not None:
+                    try:
+                        job_registry.update_job(
+                            pg, job_id,
+                            status="error",
+                            finished_at=datetime.now(timezone.utc),
+                            error_msg=str(e)[:1000],
+                        )
+                    except Exception:
+                        pass
+                raise
         finally:
             pg.close()
 
