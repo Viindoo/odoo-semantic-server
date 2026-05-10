@@ -1780,14 +1780,148 @@ def _anti_patterns_for_convention(kind: str) -> list[str]:
     return list(_ANTI_PATTERNS_BASE)
 
 
-def _find_override_point(
-    model: str, method: str, odoo_version: str = "auto",
+def _fetch_method_for_diff(session, model: str, method: str, version: str) -> dict | None:
+    """Fetch a single Method node's properties for cross-version diff.
+
+    Returns a dict with keys: decorators, convention_kind, super_safety,
+    has_super_call, signature. Returns None when no Method found.
+    Aggregates across all modules (decorators union, super_call OR).
+    """
+    rows = session.run("""
+        MATCH (mth:Method {name: $method, model: $model, odoo_version: $v})
+        RETURN mth.decorators AS decorators,
+               mth.convention_kind AS ck,
+               mth.super_safety AS ss,
+               coalesce(mth.has_super_call, false) AS has_super,
+               mth.signature AS signature
+        ORDER BY mth.module
+    """, method=method, model=model, v=version).data()
+    if not rows:
+        return None
+    # Merge across override chain: union decorators, OR has_super, first non-null sig
+    all_decs: list[str] = []
+    seen_decs: set[str] = set()
+    has_super = False
+    sig: str | None = None
+    ck = rows[0]["ck"] or "private"
+    ss = rows[0]["ss"] or "usually"
+    for r in rows:
+        for d in (r["decorators"] or []):
+            if d not in seen_decs:
+                seen_decs.add(d)
+                all_decs.append(d)
+        if r["has_super"]:
+            has_super = True
+        if sig is None and r["signature"] is not None:
+            sig = r["signature"]
+    return {
+        "decorators": all_decs,
+        "convention_kind": ck,
+        "super_safety": ss,
+        "has_super_call": has_super,
+        "signature": sig,
+    }
+
+
+def _diff_method_across_versions(
+    model: str, method: str, from_version: str, to_version: str,
     *, _driver=None,
 ) -> str:
-    """Inspect Method override chain + surface convention hints + anti-patterns."""
+    """Diff a method between two Odoo versions.
+
+    Compares decorator set, convention_kind, super_safety, and signature
+    between from_version and to_version. Returns tree-formatted string.
+    """
+    driver = _driver or _get_driver()
+    with driver.session() as session:
+        from_data = _fetch_method_for_diff(session, model, method, from_version)
+        to_data = _fetch_method_for_diff(session, model, method, to_version)
+
+    header = f"Method version diff ({model}.{method}: {from_version} → {to_version})"
+    lines = [header]
+
+    # Presence
+    if from_data and to_data:
+        presence_label = "both versions present"
+    elif from_data and not to_data:
+        presence_label = f"deleted in {to_version} (not found)"
+    else:
+        presence_label = f"added in {to_version} (not in {from_version})"
+    lines.append(f"├─ Status:           {presence_label}")
+
+    # Decorator diff
+    from_decs = set(from_data["decorators"]) if from_data else set()
+    to_decs = set(to_data["decorators"]) if to_data else set()
+    removed = sorted(from_decs - to_decs)
+    added = sorted(to_decs - from_decs)
+    if removed or added:
+        lines.append("├─ Decorator changes:")
+        for d in removed:
+            lines.append(f"│   ├─ Removed in {to_version}: {d}")
+        for d in added:
+            lines.append(f"│   └─ Added in {to_version}:   {d}")
+    else:
+        lines.append("├─ Decorator changes: none")
+
+    # Convention diff
+    from_ck = from_data["convention_kind"] if from_data else "?"
+    to_ck = to_data["convention_kind"] if to_data else "?"
+    if from_ck != to_ck:
+        lines.append(f"├─ Convention:        changed ({from_ck} → {to_ck})")
+    else:
+        lines.append(f"├─ Convention:        unchanged ({from_ck})")
+
+    # Signature diff
+    _NULL_HINT = "(not stored, run 'index-repo --full' to populate)"
+    from_sig = from_data["signature"] if from_data else None
+    to_sig = to_data["signature"] if to_data else None
+    from_sig_str = from_sig if from_sig is not None else _NULL_HINT
+    to_sig_str = to_sig if to_sig is not None else _NULL_HINT
+    if from_sig is None or to_sig is None:
+        lines.append(
+            f"├─ Signature:         {from_version}={from_sig_str!r}"
+            f" → {to_version}={to_sig_str!r}"
+        )
+    elif from_sig != to_sig:
+        lines.append(
+            f"├─ Signature:         {from_version}={from_sig!r}"
+            f" → {to_version}={to_sig!r}"
+        )
+    else:
+        lines.append(f"├─ Signature:         unchanged ({from_sig!r})")
+
+    # Super safety
+    from_ss = from_data["super_safety"] if from_data else "?"
+    to_ss = to_data["super_safety"] if to_data else "?"
+    if from_ss != to_ss:
+        lines.append(f"└─ Super safety:      changed ({from_ss} → {to_ss})")
+    else:
+        lines.append(f"└─ Super safety:      unchanged ({from_ss})")
+
+    return "\n".join(lines)
+
+
+def _find_override_point(
+    model: str, method: str, odoo_version: str = "auto",
+    *, to_version: str = "", _driver=None,
+) -> str:
+    """Inspect Method override chain + surface convention hints + anti-patterns.
+
+    When to_version is non-empty and differs from odoo_version, performs a
+    cross-version diff instead of single-version inspection.
+    """
     driver = _driver or _get_driver()
     with driver.session() as session:
         v = _resolve_version(odoo_version, session)
+
+    # Cross-version diff mode
+    if to_version and to_version != v:
+        return _diff_method_across_versions(
+            model, method, from_version=v, to_version=to_version, _driver=driver,
+        )
+
+    # Single-version mode (existing behaviour)
+    with driver.session() as session:
         records = session.run("""
             MATCH (mth:Method {name: $method, model: $model, odoo_version: $v})
             OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
@@ -1912,7 +2046,7 @@ def check_module_exists(name: str, odoo_version: str = "auto") -> str:
 
 @mcp.tool()
 def find_override_point(
-    model: str, method: str, odoo_version: str = "auto",
+    model: str, method: str, odoo_version: str = "auto", to_version: str = "",
 ) -> str:
     """Show override chain of a method + super-call ratio + convention guidance.
 
@@ -1920,17 +2054,26 @@ def find_override_point(
     the method, (b) whether super() call is required (action/crud) or
     forbidden (compute/inverse), and (c) common anti-patterns to avoid.
 
+    When to_version is provided and differs from odoo_version, performs a
+    cross-version diff (decorator changes, signature changes, convention changes)
+    between odoo_version and to_version — useful when migrating addons.
+
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
         method: Method name (e.g. 'action_confirm', '_compute_amount').
-        odoo_version: '17.0' / '18.0' / 'auto'.
+        odoo_version: '17.0' / '18.0' / 'auto'. Acts as from_version in diff mode.
+        to_version: Optional. When set and different from odoo_version, activates
+                    cross-version diff mode (e.g. '18.0' to diff 17.0 → 18.0).
+                    Default '' = single-version mode (backward compatible).
 
     Returns:
-        Tree text: convention_kind, super_safety, return_required,
-        super_ratio (e.g. 7/7 overrides calling super), full override chain,
-        and anti-patterns list contextualised by convention.
+        Single-version mode: Tree text with convention_kind, super_safety,
+        return_required, super_ratio, full override chain, and anti-patterns.
 
-    Example:
+        Cross-version diff mode: Tree text with presence, decorator changes,
+        convention change, signature diff, super safety change.
+
+    Example (single-version):
         find_override_point('sale.order', 'action_confirm', '17.0')
         → find_override_point('sale.order', 'action_confirm', 17.0)
           ├─ Convention:      action
@@ -1943,8 +2086,18 @@ def find_override_point(
           └─ Anti-patterns (3):
               ├─ Old-style super(ClassName, self) — use plain super() in Python 3
               └─ ...
+
+    Example (cross-version diff):
+        find_override_point('sale.order', 'action_confirm', '17.0', to_version='18.0')
+        → Method version diff (sale.order.action_confirm: 17.0 → 18.0)
+          ├─ Status:           both versions present
+          ├─ Decorator changes:
+          │   ├─ Removed in 18.0: api.multi
+          ├─ Convention:        unchanged (action)
+          ├─ Signature:         17.0='self' → 18.0='self, *, ctx=None'
+          └─ Super safety:      unchanged (always)
     """
-    return _find_override_point(model, method, odoo_version)
+    return _find_override_point(model, method, odoo_version, to_version=to_version)
 
 
 def _mcp_host() -> str:
