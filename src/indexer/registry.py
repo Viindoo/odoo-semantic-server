@@ -6,7 +6,7 @@ from typing import Protocol
 
 from .models import ModuleInfo
 from .parser_python import _detect_module_edition, _detect_viindoo_equivalent
-from .scanner import get_git_branch, is_odoo_version_branch
+from .scanner import get_git_branch, get_module_commit_sha, is_odoo_version_branch
 
 # --- ManifestFinder Protocol (M4.5 WI1.1, per ADR-0002) --------------------
 # Odoo v8/v9 use __openerp__.py instead of __manifest__.py.
@@ -135,6 +135,7 @@ def build_registry(
     registry: dict[str, dict[str, ModuleInfo]] = {}
 
     for repo_path, repo_version in repo_version_pairs:
+        repo_root = Path(repo_path)
         for manifest_path in _find_manifests(repo_path, repo_version):
             module_dir = Path(manifest_path).parent
             module_name = module_dir.name
@@ -152,10 +153,18 @@ def build_registry(
             if odoo_version == "unknown":
                 continue
 
+            # Compute commit_sha: relative path from repo root to module directory
+            try:
+                module_relpath = module_dir.relative_to(repo_root)
+            except ValueError:
+                # module_dir is not under repo_root (shouldn't happen, but graceful)
+                module_relpath = module_dir
+            commit_sha = get_module_commit_sha(repo_root, module_relpath)
+
             info = ModuleInfo(
                 name=module_name,
                 odoo_version=odoo_version,
-                repo=Path(repo_path).name,
+                repo=repo_root.name,
                 path=str(module_dir),
                 depends=manifest.get('depends', []),
                 version_raw=version_raw,
@@ -163,6 +172,7 @@ def build_registry(
                     manifest, module_name, str(module_dir),
                 ),
                 viindoo_equivalent_qname=_detect_viindoo_equivalent(module_name),
+                commit_sha=commit_sha,
             )
 
             if odoo_version not in registry:

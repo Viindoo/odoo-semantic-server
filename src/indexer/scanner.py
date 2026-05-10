@@ -20,6 +20,27 @@ def get_git_branch(repo_path: str) -> str | None:
         return None
 
 
+def get_module_commit_sha(repo_path: Path, module_relpath: Path) -> str | None:
+    """Get HEAD commit sha that last touched the module.
+
+    Runs `git -C <repo_path> log -1 --format=%H -- <module_relpath>`.
+    Returns None on any failure (no commits, path outside repo, git error).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "log", "-1", "--format=%H", "--", str(module_relpath)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        sha = result.stdout.strip()
+        if result.returncode != 0 or not sha:
+            return None
+        return sha
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
 def is_odoo_version_branch(branch: str) -> bool:
     """Return True if branch matches Odoo version format (e.g. 17.0, 8.0, 16.0)."""
     if not branch:
