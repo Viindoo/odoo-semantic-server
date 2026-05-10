@@ -270,6 +270,19 @@ CI sẽ fail nếu lint không pass.
 
 ---
 
+## Python 3.12 Code Style
+
+Project locks Python 3.12+ (`pyproject.toml` `requires-python = ">=3.12"`). Để codebase nhất quán với PEP 604/PEP 695:
+
+- **Cấm `from __future__ import annotations`** — Python 3.12 native. Lazy evaluation cũng tự nhiên trong PEP 695 type aliases.
+- **Cấm `typing.Dict / typing.List / typing.Optional / typing.Union[]`** — dùng generics built-in: `dict`, `list`, `X | None`, `X | Y`.
+- **Cấm `sys.version_info` guards** — chỉ chạy trên 3.12+, fork branches không cần thiết.
+- **Ruff `UP` rules enforce** — `pyproject.toml [tool.ruff.lint] select = ["E", "F", "I", "UP"]` tự fail khi vi phạm.
+
+Khi `ruff check` raise UP violation, sửa root cause (đổi syntax sang form mới) — không suppress.
+
+---
+
 ## Known Upstream Warnings
 
 **`make test` (unit tests):** 0 warnings.

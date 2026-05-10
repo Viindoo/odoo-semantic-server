@@ -13,7 +13,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src import config
 from src.db import job_registry
@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                         pg, job_id,
                         status="running",
                         pid=os.getpid(),
-                        started_at=datetime.now(timezone.utc),
+                        started_at=datetime.now(UTC),
                     )
                 except Exception:
                     # Don't block indexing if job tracking fails (job may have been deleted, etc.)
@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                         job_registry.update_job(
                             pg, job_id,
                             status="done",
-                            finished_at=datetime.now(timezone.utc),
+                            finished_at=datetime.now(UTC),
                         )
                     except Exception:
                         pass
@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                         job_registry.update_job(
                             pg, job_id,
                             status="error",
-                            finished_at=datetime.now(timezone.utc),
+                            finished_at=datetime.now(UTC),
                             error_msg=str(e)[:1000],
                         )
                     except Exception:

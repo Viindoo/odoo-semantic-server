@@ -1,5 +1,5 @@
 """Tests for src/db/job_registry.py — requires PostgreSQL."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -70,7 +70,7 @@ class TestCreateAndGet:
 class TestUpdateJob:
     def test_update_status_to_running(self, pg_jobs_conn):
         job_id = create_job(pg_jobs_conn, "odoo17")
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         update_job(pg_jobs_conn, job_id, status="running", pid=12345, started_at=now)
         job = get_job(pg_jobs_conn, job_id)
         assert job["status"] == "running"
@@ -80,7 +80,7 @@ class TestUpdateJob:
 
     def test_update_status_to_done(self, pg_jobs_conn):
         job_id = create_job(pg_jobs_conn, "odoo17")
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         update_job(pg_jobs_conn, job_id, status="running", pid=42, started_at=now)
         update_job(pg_jobs_conn, job_id, status="done", finished_at=now)
         job = get_job(pg_jobs_conn, job_id)
@@ -90,7 +90,7 @@ class TestUpdateJob:
 
     def test_update_status_to_error_with_msg(self, pg_jobs_conn):
         job_id = create_job(pg_jobs_conn, "odoo17")
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         update_job(
             pg_jobs_conn,
             job_id,
@@ -114,7 +114,7 @@ class TestUpdateJob:
     def test_update_partial_doesnt_clobber(self, pg_jobs_conn):
         """Updating only status should not clobber previously-set pid."""
         job_id = create_job(pg_jobs_conn, "odoo17")
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         update_job(pg_jobs_conn, job_id, status="running", pid=7777, started_at=now)
         # Now update only status — pid should remain 7777
         update_job(pg_jobs_conn, job_id, status="done")
@@ -126,7 +126,7 @@ class TestUpdateJob:
 class TestListAndLast:
     def test_list_running_filters(self, pg_jobs_conn):
         """3 jobs with different statuses — list_running_jobs returns only running ones."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         j1 = create_job(pg_jobs_conn, "odoo17")
         j2 = create_job(pg_jobs_conn, "odoo17")
         j3 = create_job(pg_jobs_conn, "odoo17")

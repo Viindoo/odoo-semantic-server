@@ -8,7 +8,7 @@ import json
 import math
 import random
 import urllib.request
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 def _normalize(vec: list[float]) -> list[float]:
@@ -67,7 +67,7 @@ class Qwen3Embedder:
         model: str = "qwen3-embedding-q5km",
         dim: int = 1024,
         retries: int = 3,
-        auth_token: Optional[str] = None,
+        auth_token: str | None = None,
     ):
         self._url = url.rstrip("/") + "/api/embed"
         self._model = model

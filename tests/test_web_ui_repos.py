@@ -1,6 +1,7 @@
 # tests/test_web_ui_repos.py
 """Tests for /repos Web UI routes — requires PostgreSQL."""
 import unittest.mock as mock
+from datetime import UTC
 
 import httpx
 import pytest
@@ -511,7 +512,7 @@ class TestStatusBadgeTemplate:
             job_id,
             status="running",
             pid=12345,
-            started_at=datetime.now(),
+            started_at=datetime.now(tz=UTC),
         )
 
         app = create_app()
@@ -549,7 +550,7 @@ class TestStatusBadgeTemplate:
             job_id,
             status="error",
             error_msg="Sample indexing error",
-            finished_at=datetime.now(),
+            finished_at=datetime.now(tz=UTC),
         )
 
         app = create_app()

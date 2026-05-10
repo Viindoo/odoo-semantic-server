@@ -19,7 +19,6 @@ import configparser
 import os
 import pathlib
 import re
-from typing import Optional
 
 _conf: configparser.ConfigParser | None = None
 
@@ -58,8 +57,8 @@ def from_env_or_ini(
     env_var: str,
     section: str,
     key: str,
-    fallback: Optional[str] = None,
-) -> Optional[str]:
+    fallback: str | None = None,
+) -> str | None:
     """Read a config value with consistent precedence: env var → INI → fallback.
 
     Empty-string env values fall through to INI (so `unset X` and `export X=`

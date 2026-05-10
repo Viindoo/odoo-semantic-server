@@ -11,10 +11,7 @@ import subprocess
 import sys
 import urllib.parse
 
-try:
-    from psycopg2 import extensions
-except ImportError:
-    extensions = None
+from psycopg2 import extensions
 
 
 def _get_pg_dsn() -> str:
@@ -81,16 +78,8 @@ def _dsn_to_pg_args_and_env(dsn: str) -> tuple[list[str], dict[str, str]]:
     # Try keyword form (host=... port=... user=... password=... dbname=...)
     if "=" in dsn:
         try:
-            # Use psycopg2's parser if available for robustness
-            if extensions and hasattr(extensions, "parse_dsn"):
-                parsed_kw = extensions.parse_dsn(dsn)
-            else:
-                # Fallback: simple parser for keyword form
-                parsed_kw = {}
-                for pair in dsn.split():
-                    if "=" in pair:
-                        key, val = pair.split("=", 1)
-                        parsed_kw[key.strip()] = val.strip()
+            # Use psycopg2's parser for robustness
+            parsed_kw = extensions.parse_dsn(dsn)
 
             if parsed_kw.get("host"):
                 argv_flags.extend(["--host", parsed_kw["host"]])
