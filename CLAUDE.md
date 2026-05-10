@@ -55,6 +55,17 @@ scanner → registry → resolver → parser → (writer_neo4j | embedder → wr
 
 MERGE chỉ dùng key, SET properties riêng — không bao giờ đưa mutable props vào MERGE key.
 
+**Model.is_definition flag** — set bởi parser/writer khi:
+- `_name` được declare explicit trong class body (`had_explicit_name=True`), AND
+- `name NOT IN inherit_list` (loại trừ redeclare extensions Pattern C/D).
+
+Dùng cho ranking "Defined in" trong `resolve_*`. Cypher có fallback EXISTS check
+khi property absent (data cũ chưa reindex). Xem `docs/adr/0004`.
+
+**INHERITS edge `order` property** — `r.order` = list-index trong `_inherit`,
+preserving Pattern D mixin injection order cho future MRO reconstruction.
+Resolver dùng `coalesce(r.order, 0)` cho data pre-reindex.
+
 ## Neo4j 5.x Gotchas
 
 ```cypher
@@ -73,6 +84,18 @@ ORDER BY size(()-[:INHERITS]->(m))     -- SAI (Neo4j 4.x, CypherSyntaxError)
 
 Dùng `.single()` chỉ khi chắc chắn có đúng 1 row. Dùng `.data()` cho 0-N rows.
 `single()` trả `None` nếu không có row → dùng để phát hiện unresolved edge.
+
+**ORDER BY phải có deterministic tiebreak** khi nhiều row có thể tie:
+
+```cypher
+-- ĐÚNG — tiebreak bằng column ổn định:
+ORDER BY rank_key DESC, mod.name ASC
+
+-- SAI — Cypher không guarantee order khi tie, gây bug ngầm:
+ORDER BY rank_key DESC
+```
+
+Đặc biệt áp dụng cho ranking heuristic trong `resolve_*` (xem `docs/adr/0004`).
 
 **Python-side version compare** (cùng nguyên tắc):
 
@@ -111,6 +134,15 @@ Odoo v8/v9 dùng `__openerp__.py` thay `__manifest__.py`. Pluggable finder dispa
 **3. `_latest_version()` numeric compare** (per ADR-0002):
 
 KHÔNG hardcode "17.0" fallback. Trả `None` khi DB rỗng → caller hiển thị error rõ "No data indexed. Run indexer first."
+
+## Version-aware paths cho `index-core`
+
+`parser_odoo_core.py` dùng `_resolve_core_paths(odoo_root, logical_path, version)` để map allow-list paths:
+
+- **v8/v9**: prefix `openerp/` thay `odoo/` (Odoo namespace rename ở v10).
+- **v19+**: `odoo/{fields,models,api}.py` đã thành package directories — fallback sang `odoo/orm/{fields*,models,decorators,environments}.py`.
+
+Khi Odoo release major mới, kiểm tra CoreSymbol count diff vs version trước. Drop > 20% trong bất kỳ kind nào nghi ngờ file path refactor → update `_resolve_core_paths` + add regression test. Xem `docs/adr/0005`.
 
 ## AST Parsing Gotcha
 
@@ -168,4 +200,4 @@ Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ aut
 | `docs/adr/` | Architecture Decision Records — đọc trước khi đụng schema/policy |
 | `CONTRIBUTING.md` | Setup dev, chạy tests, workflow commit |
 
-**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6).
+**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6) · `0004` Defined-in ranking heuristic (M5.5) · `0005` core coverage version paths (M5.5).
