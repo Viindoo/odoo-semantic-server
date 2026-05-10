@@ -21,11 +21,13 @@ from pathlib import Path
 from neo4j import GraphDatabase
 
 from src import config
+from src.db import repo_registry as _repo_registry
 from src.db.repo_registry import (
     get_repos_for_profile,
     list_profiles,
     update_repo_status,
 )
+from src.indexer import incremental as _incremental
 from src.indexer import parser_js, parser_python, parser_qweb, parser_xml
 from src.indexer.models import ViewParseResult
 from src.indexer.registry import build_registry
@@ -152,12 +154,21 @@ def _index_repo(
     pg_conn=None,
     embedder=None,
     progress: bool = False,
+    full_reindex: bool = False,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
     Returns per-repo counters: {modules, views, qweb, embeddings}.
     Pass pg_conn + embedder to also write semantic embeddings to pgvector.
     Set progress=True to show tqdm progress bar during module iteration.
+
+    Incremental behaviour (M6 W2-4):
+    - Compares current git HEAD to repos.head_sha (stored from last run).
+    - Equal → zero-cost skip.
+    - Force-push detected (stored sha not ancestor of HEAD) → full reindex.
+    - Otherwise → diff-filter scan results to changed modules only.
+    - head_sha advanced to current HEAD ONLY after all writes succeed.
+    - full_reindex=True bypasses the skip + diff filter (use to clean stale nodes).
     """
     local_path: str = repo["local_path"]
     odoo_version: str = repo["odoo_version"]
@@ -165,10 +176,89 @@ def _index_repo(
     if not Path(local_path).is_dir():
         raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
 
+    repo_path = Path(local_path)
+
+    # === Incremental check (W2-4) ===
+    current_head = _incremental.get_repo_head(repo_path)
+    last_head: str | None = None
+
+    if not full_reindex and pg_conn is not None:
+        last_head = _repo_registry.get_repo_head_sha(pg_conn, repo["id"])
+
+        if current_head and last_head and current_head == last_head:
+            _logger.info(
+                "Repo %s unchanged (HEAD %s) — skipping reindex",
+                repo.get("url", local_path), current_head[:8],
+            )
+            return {
+                "modules": 0,
+                "views": 0,
+                "qweb": 0,
+                "embeddings": 0,
+                "js_patches": 0,
+                "owl_comps": 0,
+            }
+
+        if last_head and current_head and not _incremental.is_ancestor(
+            repo_path, last_head, current_head
+        ):
+            _logger.warning(
+                "Repo %s: force-push or history rewrite detected "
+                "(stored %s not ancestor of HEAD %s) — falling back to full reindex",
+                repo.get("url", local_path),
+                last_head[:8],
+                current_head[:8],
+            )
+            last_head = None  # force full reindex below
+    elif full_reindex:
+        last_head = None  # ensure diff filter is skipped
+    # === End incremental check ===
+
     # build_registry expects list[tuple[repo_path, odoo_version]]
     registry = build_registry([(local_path, odoo_version)])
     # registry: {odoo_version: {module_name: ModuleInfo}}
     modules_by_version = registry  # alias for clarity
+
+    # === Incremental filter (W2-4) ===
+    if last_head and current_head and not full_reindex:
+        changed_rel_paths = _incremental.compute_changed_module_paths(
+            repo_path, last_head, current_head,
+        )
+        # convert relative paths to absolute to match ModuleInfo.path
+        changed_abs_paths = {str(repo_path / rel) for rel in changed_rel_paths}
+
+        filtered_by_version: dict[str, dict] = {}
+        total_before = sum(len(mods) for mods in modules_by_version.values())
+        for ver, mods in modules_by_version.items():
+            filtered_by_version[ver] = _incremental.filter_modules_by_changed(
+                mods, changed_abs_paths,
+            )
+        total_after = sum(len(mods) for mods in filtered_by_version.values())
+
+        _logger.info(
+            "Repo %s: incremental — %d/%d modules changed",
+            repo.get("url", local_path), total_after, total_before,
+        )
+
+        if total_after == 0:
+            _logger.info(
+                "Repo %s: no module dirs changed (only meta files) — "
+                "head_sha will still be advanced",
+                repo.get("url", local_path),
+            )
+            if current_head and pg_conn is not None:
+                _repo_registry.update_repo_head_sha(pg_conn, repo["id"], current_head)
+            return {
+                "modules": 0,
+                "views": 0,
+                "qweb": 0,
+                "embeddings": 0,
+                "js_patches": 0,
+                "owl_comps": 0,
+            }
+
+        modules_by_version = filtered_by_version
+    # === End incremental filter ===
 
     py_results = []
     view_results: list[ViewParseResult] = []
@@ -246,6 +336,13 @@ def _index_repo(
     writer.write_view_results(view_results)
     writer.write_js_graph_results(js_graph_results)
 
+    # === On full success (W2-4): advance head_sha AFTER all writes ===
+    # Must be the last statement — any exception above prevents this,
+    # preserving last_head so next run retries the same diff (or full reindex).
+    if current_head and pg_conn is not None:
+        _repo_registry.update_repo_head_sha(pg_conn, repo["id"], current_head)
+    # =====================================================================
+
     return {
         "modules": total_modules,
         "views": total_views,
@@ -263,21 +360,25 @@ def index_profile(
     embedder=None,
     progress: bool = False,
     max_workers: int = 1,
+    full_reindex: bool = False,
 ) -> dict:
     """Index all repos belonging to *profile_name*.
 
     Args:
-        pg_conn:      psycopg2 connection (autocommit OK).
-        profile_name: Name of the profile to index.
-        embedder:     Optional EmbedderClient. When provided (and pgvector is
-                      available), semantic embeddings are written to PostgreSQL.
-        progress:     When True, show tqdm progress bar for module iteration.
-        max_workers:  Number of parallel threads for repo scanning. Default 1
-                      (sequential, unchanged behaviour). When > 1, repos are
-                      indexed concurrently via ThreadPoolExecutor. Each thread
-                      opens its own psycopg2 connection (psycopg2 connections
-                      are NOT thread-safe). Neo4jWriter is shared across threads
-                      (safe: every method uses a per-call session).
+        pg_conn:       psycopg2 connection (autocommit OK).
+        profile_name:  Name of the profile to index.
+        embedder:      Optional EmbedderClient. When provided (and pgvector is
+                       available), semantic embeddings are written to PostgreSQL.
+        progress:      When True, show tqdm progress bar for module iteration.
+        max_workers:   Number of parallel threads for repo scanning. Default 1
+                       (sequential, unchanged behaviour). When > 1, repos are
+                       indexed concurrently via ThreadPoolExecutor. Each thread
+                       opens its own psycopg2 connection (psycopg2 connections
+                       are NOT thread-safe). Neo4jWriter is shared across threads
+                       (safe: every method uses a per-call session).
+        full_reindex:  When True, bypass incremental skip-unchanged + diff filter
+                       and force a full reindex for all repos. Use periodically
+                       to clean up stale Neo4j Module nodes from rename/move.
 
     Returns:
         Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
@@ -314,7 +415,8 @@ def index_profile(
                     repo_id: int = repo["id"]
                     try:
                         counters = _index_repo(
-                            repo, writer, pg_conn=pg_conn, embedder=embedder, progress=progress
+                            repo, writer, pg_conn=pg_conn, embedder=embedder,
+                            progress=progress, full_reindex=full_reindex,
                         )
                         total_modules += counters["modules"]
                         total_views += counters["views"]
@@ -356,6 +458,7 @@ def index_profile(
                             pg_conn=pg_conn_local,
                             embedder=embedder,
                             progress=False,
+                            full_reindex=full_reindex,
                         )
                         update_repo_status(pg_conn_local, repo_id, "indexed")
                         _logger.info(
@@ -583,18 +686,25 @@ def index_core(
     }
 
 
-def index_all(pg_conn, embedder=None, progress: bool = False, max_workers: int = 1) -> dict:
+def index_all(
+    pg_conn,
+    embedder=None,
+    progress: bool = False,
+    max_workers: int = 1,
+    full_reindex: bool = False,
+) -> dict:
     """Index every profile registered in PostgreSQL.
 
     Continues after per-profile failures — failed profiles are listed in
     the returned summary under 'profiles_failed'.
 
     Args:
-        pg_conn:      psycopg2 connection (autocommit OK).
-        embedder:     Optional EmbedderClient for pgvector embeddings.
-        progress:     When True, show tqdm progress bar for module iteration.
-        max_workers:  Passed through to index_profile() for intra-profile
-                      parallel repo scanning.
+        pg_conn:       psycopg2 connection (autocommit OK).
+        embedder:      Optional EmbedderClient for pgvector embeddings.
+        progress:      When True, show tqdm progress bar for module iteration.
+        max_workers:   Passed through to index_profile() for intra-profile
+                       parallel repo scanning.
+        full_reindex:  When True, bypass incremental skip-unchanged + diff filter.
 
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
@@ -618,6 +728,7 @@ def index_all(pg_conn, embedder=None, progress: bool = False, max_workers: int =
                 embedder=embedder,
                 progress=progress,
                 max_workers=max_workers,
+                full_reindex=full_reindex,
             )
             agg_modules += summary["modules"]
             agg_views += summary["views"]
