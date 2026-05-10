@@ -6,7 +6,7 @@ import sys
 from typing import Annotated
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 _logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -112,6 +112,7 @@ async def index_repo(request: Request, repo_id: int):
         try:
             from urllib.parse import quote_plus
 
+            from src.db import job_registry
             from src.db.repo_registry import list_repos
             from src.indexer.pipeline import indexer_is_running
 
@@ -127,9 +128,11 @@ async def index_repo(request: Request, repo_id: int):
                         f"/repos?flash={quote_plus(flash)}",
                         status_code=303,
                     )
+                job_id = job_registry.create_job(conn, repo["profile_name"])
                 subprocess.Popen(
                     [sys.executable, "-m", "src.indexer", "index-repo",
-                     "--profile", repo["profile_name"]],
+                     "--profile", repo["profile_name"],
+                     "--job-id", str(job_id)],
                     start_new_session=True,
                 )
         except Exception as e:
@@ -137,3 +140,29 @@ async def index_repo(request: Request, repo_id: int):
         finally:
             conn.close()
     return RedirectResponse("/repos", status_code=303)
+
+
+@router.get("/repos/jobs/{job_id}/status")
+async def job_status(request: Request, job_id: int):
+    """Return JSON status of a single indexer job."""
+    from src.db import job_registry
+
+    conn = _get_conn()
+    if not conn:
+        return JSONResponse({"error": "database unavailable"}, status_code=503)
+    try:
+        job = job_registry.get_job(conn, job_id)
+    finally:
+        conn.close()
+    if job is None:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return JSONResponse({
+        "id": job["id"],
+        "profile_name": job["profile_name"],
+        "status": job["status"],
+        "pid": job["pid"],
+        "started_at": job["started_at"],
+        "finished_at": job["finished_at"],
+        "error_msg": job["error_msg"],
+        "created_at": job["created_at"],
+    })
