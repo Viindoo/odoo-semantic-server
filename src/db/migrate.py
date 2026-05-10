@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS repos (
     local_path      TEXT NOT NULL,
     status          TEXT DEFAULT 'pending',
     last_indexed_at TIMESTAMP,
+    head_sha        TEXT,
     error_msg       TEXT,
     created_at      TIMESTAMP DEFAULT NOW(),
     UNIQUE (url, branch)

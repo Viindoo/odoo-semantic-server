@@ -71,3 +71,22 @@ def update_repo_status(
         )
         if cur.rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
+
+
+def get_repo_head_sha(conn: PgConn, repo_id: int) -> str | None:
+    """Return head_sha for repo_id, or None if NULL or repo doesn't exist."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT head_sha FROM repos WHERE id = %s", (repo_id,))
+        row = cur.fetchone()
+        return row[0] if row is not None else None
+
+
+def update_repo_head_sha(conn: PgConn, repo_id: int, head_sha: str) -> None:
+    """Update head_sha and bump last_indexed_at."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE repos SET head_sha = %s, last_indexed_at = NOW() WHERE id = %s",
+            (head_sha, repo_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"repo id={repo_id} not found")

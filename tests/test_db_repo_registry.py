@@ -5,9 +5,11 @@ from src.db.migrate import run_migrations
 from src.db.repo_registry import (
     add_profile,
     add_repo,
+    get_repo_head_sha,
     get_repos_for_profile,
     list_profiles,
     list_repos,
+    update_repo_head_sha,
     update_repo_status,
 )
 
@@ -76,3 +78,33 @@ def test_get_repos_for_unknown_profile_returns_empty(migrated_pg):
 def test_update_repo_status_unknown_id_raises(migrated_pg):
     with pytest.raises(ValueError, match="not found"):
         update_repo_status(migrated_pg, repo_id=99999, status="indexed")
+
+
+def test_get_repo_head_sha_returns_none_when_unset(migrated_pg):
+    pid = add_profile(migrated_pg, "p1", "17.0")
+    rid = add_repo(migrated_pg, pid, "github.com/a/b", "17.0", "/tmp/a")
+    sha = get_repo_head_sha(migrated_pg, rid)
+    assert sha is None
+
+
+def test_update_and_get_repo_head_sha(migrated_pg):
+    pid = add_profile(migrated_pg, "p1", "17.0")
+    rid = add_repo(migrated_pg, pid, "github.com/a/b", "17.0", "/tmp/a")
+    update_repo_head_sha(migrated_pg, rid, "abc123def456")
+    sha = get_repo_head_sha(migrated_pg, rid)
+    assert sha == "abc123def456"
+
+
+def test_update_repo_head_sha_bumps_last_indexed_at(migrated_pg):
+    pid = add_profile(migrated_pg, "p1", "17.0")
+    rid = add_repo(migrated_pg, pid, "github.com/a/b", "17.0", "/tmp/a")
+    # Get initial last_indexed_at (should be NULL)
+    repos_before = list_repos(migrated_pg)
+    initial_indexed_at = repos_before[0]["last_indexed_at"]
+    assert initial_indexed_at is None
+    # Update head_sha
+    update_repo_head_sha(migrated_pg, rid, "abc123def456")
+    # Get updated last_indexed_at (should now be set)
+    repos_after = list_repos(migrated_pg)
+    updated_indexed_at = repos_after[0]["last_indexed_at"]
+    assert updated_indexed_at is not None
