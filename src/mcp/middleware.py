@@ -54,11 +54,6 @@ def _check_rate_limit(api_key_id: int, limit_rpm: int = 120) -> tuple[bool, int]
 # Strong references to background tasks prevent GC-before-completion (B3).
 _BG_TASKS: set[asyncio.Task] = set()
 
-# Serialise all psycopg2 calls that run inside asyncio.to_thread (B2).
-# psycopg2 connections are not thread-safe; this lock ensures only one
-# thread uses _pg_conn at a time. Acceptable for <30 concurrent users.
-_PG_LOCK = threading.Lock()
-
 # Paths that bypass auth entirely
 _PUBLIC_PATHS = frozenset({"/health"})
 _PUBLIC_PATH_PREFIXES = frozenset({"/install"})
@@ -133,11 +128,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         hit, key_id = _cache_get(raw_key)
         if not hit:
             from src.db.auth_registry import verify_api_key
-            from src.mcp.server import _get_pg_conn
+            from src.mcp.server import _checkout_pg
 
             def _do_verify():
-                with _PG_LOCK:
-                    return verify_api_key(_get_pg_conn(), raw_key)
+                with _checkout_pg() as conn:
+                    return verify_api_key(conn, raw_key)
 
             key_id = await asyncio.to_thread(_do_verify)
             _cache_set(raw_key, key_id)
@@ -173,13 +168,13 @@ async def _log_usage_async(key_id: int, request: Request, ms: int) -> None:
     """Log tool usage asynchronously — best-effort, never raises."""
     try:
         from src.db.auth_registry import log_usage
-        from src.mcp.server import _get_pg_conn
+        from src.mcp.server import _checkout_pg
 
         tool = request.headers.get("X-Tool-Name", "unknown")
 
         def _do_log():
-            with _PG_LOCK:
-                log_usage(_get_pg_conn(), key_id, tool, ms)
+            with _checkout_pg() as conn:
+                log_usage(conn, key_id, tool, ms)
 
         await asyncio.to_thread(_do_log)
     except Exception:

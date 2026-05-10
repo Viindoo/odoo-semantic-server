@@ -150,11 +150,13 @@ class TestAuthMiddlewareUnit:
         app.add_middleware(AuthMiddleware)
 
         # Patch verify_api_key to return None (invalid key)
+        from contextlib import contextmanager
+
         import src.db.auth_registry as ar
         import src.mcp.server as srv
 
         monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: None)
-        monkeypatch.setattr(srv, "_get_pg_conn", lambda: object())
+        monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -178,11 +180,13 @@ class TestAuthMiddlewareUnit:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
+        from contextlib import contextmanager
+
         import src.db.auth_registry as ar
         import src.mcp.server as srv
 
         monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: 1)
-        monkeypatch.setattr(srv, "_get_pg_conn", lambda: object())
+        monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
         monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None)
 
         async with httpx.AsyncClient(
@@ -208,6 +212,8 @@ class TestAuthMiddlewareUnit:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
+        from contextlib import contextmanager
+
         import src.db.auth_registry as ar
         import src.mcp.server as srv
 
@@ -218,7 +224,7 @@ class TestAuthMiddlewareUnit:
             return 1
 
         monkeypatch.setattr(ar, "verify_api_key", counting_verify)
-        monkeypatch.setattr(srv, "_get_pg_conn", lambda: object())
+        monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
         monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None)
 
         async with httpx.AsyncClient(

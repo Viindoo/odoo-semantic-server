@@ -9,6 +9,7 @@ the two tests that actually insert/read rows.  The 401 and 422 tests use
 mocks and run without a database.
 """
 import unittest.mock as mock
+from contextlib import contextmanager
 
 import httpx
 import pytest
@@ -21,6 +22,18 @@ pytestmark = pytest.mark.postgres
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _checkout_pg_yielding(conn):
+    """Return a contextmanager callable that always yields *conn*.
+
+    Used to patch ``src.mcp.server._checkout_pg`` with a context manager that
+    yields a specific (test) connection instead of drawing from the real pool.
+    """
+    @contextmanager
+    def _cm():
+        yield conn
+    return _cm
 
 
 def _build_mcp_app():
@@ -120,13 +133,13 @@ async def test_feedback_post_with_valid_key_returns_200(pg_auth_conn):
 
     app = _build_mcp_app()
 
-    # Patch _get_pg_conn used by AuthMiddleware (key verification).
+    # Patch _checkout_pg used by AuthMiddleware (key verification).
     # Patch _get_conn used by feedback route (row insertion).
     #
     # The feedback route calls conn.close() in its finally block — use
     # _NoCloseConn wrapper so it doesn't close the shared test connection.
     with (
-        mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn),
+        mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)),
         mock.patch(
             "src.web_ui.routes.feedback._get_conn",
             return_value=_NoCloseConn(pg_auth_conn),
@@ -184,7 +197,7 @@ async def test_feedback_post_invalid_rating_returns_422(pg_auth_conn):
 
     app = _build_mcp_app()
 
-    with mock.patch("src.mcp.server._get_pg_conn", return_value=pg_auth_conn):
+    with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
