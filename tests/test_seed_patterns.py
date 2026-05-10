@@ -1,12 +1,29 @@
 """Tests for src/data/patterns.json + src/indexer/seed_patterns.py CLI."""
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from src.indexer.seed_patterns import _load_patterns
+from src.indexer.seed_patterns import (
+    _compute_patterns_sha256,
+    _load_patterns,
+)
+from src.indexer.writer_neo4j import Neo4jWriter
+from tests.conftest import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+
+pytestmark = pytest.mark.neo4j
 
 PATTERNS_PATH = Path(__file__).resolve().parent.parent / "src" / "data" / "patterns.json"
+
+
+def _get_neo4j_writer_for_test() -> Neo4jWriter:
+    """Helper: create Neo4jWriter from config for tests."""
+    # Tests need to use NEO4J_TEST_* env vars which conftest sets up.
+    uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
+    user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
+    password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
+    return Neo4jWriter(uri, user, password)
 
 
 def test_patterns_json_valid_and_non_empty():
@@ -133,3 +150,184 @@ def test_patterns_each_language_has_entries(language):
     data = json.loads(PATTERNS_PATH.read_text(encoding="utf-8"))
     matches = [p for p in data if p["language"] == language]
     assert matches, f"No patterns for language={language!r}"
+
+
+# ============================================================================
+# SHA256 Hash-Gating Tests (M6 W2-6)
+# ============================================================================
+
+def test_compute_patterns_sha256():
+    """_compute_patterns_sha256 returns consistent hex digest."""
+    sha1 = _compute_patterns_sha256(PATTERNS_PATH)
+    sha2 = _compute_patterns_sha256(PATTERNS_PATH)
+    assert sha1 == sha2
+    assert len(sha1) == 64  # SHA256 hex is 64 chars
+
+
+def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
+    """After first seed, _SeedMeta sentinel exists with sha256."""
+    from src.indexer.seed_patterns import main
+
+    # Set Neo4j config from test environment
+    neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
+    neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
+    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
+    monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
+    monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    # Create a minimal patterns.json for testing
+    sample = [
+        {
+            "pattern_id": "test-pat",
+            "intent_keywords": ["test"],
+            "file_ref": "f:1",
+            "snippet_text": "test snippet",
+            "gotchas": ["gotcha"],
+            "odoo_version_min": "99.0",
+            "language": "python",
+        },
+    ]
+    patterns_file = tmp_path / "patterns.json"
+    patterns_file.write_text(json.dumps(sample))
+
+    # Run seed once
+    argv = ["--patterns-file", str(patterns_file), "--no-embed"]
+    result = main(argv)
+    assert result == 0
+
+    # Check sentinel exists
+    writer = _get_neo4j_writer_for_test()
+    try:
+        with writer.driver.session() as session:
+            result = session.run(
+                "MATCH (s:_SeedMeta {key: 'patterns'}) RETURN s.sha256 AS sha LIMIT 1"
+            ).single()
+            assert result is not None, "_SeedMeta sentinel not found"
+            stored_sha = result["sha"]
+            expected_sha = _compute_patterns_sha256(patterns_file)
+            assert stored_sha == expected_sha
+    finally:
+        writer.close()
+
+
+def test_second_seed_no_change_skips(clean_neo4j, tmp_path, caplog, monkeypatch):
+    """Second seed with unchanged patterns.json skips reseed."""
+    from src.indexer.seed_patterns import main
+
+    # Set Neo4j config from test environment
+    neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
+    neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
+    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
+    monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
+    monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    sample = [
+        {
+            "pattern_id": "test-pat",
+            "intent_keywords": ["test"],
+            "file_ref": "f:1",
+            "snippet_text": "test snippet",
+            "gotchas": ["gotcha"],
+            "odoo_version_min": "99.0",
+            "language": "python",
+        },
+    ]
+    patterns_file = tmp_path / "patterns.json"
+    patterns_file.write_text(json.dumps(sample))
+
+    # First seed
+    argv = ["--patterns-file", str(patterns_file), "--no-embed"]
+    result = main(argv)
+    assert result == 0
+
+    # Second seed — should skip
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        result = main(argv)
+    assert result == 0
+    assert "skipping reseed" in caplog.text
+
+
+def test_second_seed_after_modification_reseeds(clean_neo4j, tmp_path, monkeypatch):
+    """After modifying patterns.json, second seed proceeds."""
+    from src.indexer.seed_patterns import main
+
+    # Set Neo4j config from test environment
+    neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
+    neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
+    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
+    monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
+    monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    sample = [
+        {
+            "pattern_id": "test-pat",
+            "intent_keywords": ["test"],
+            "file_ref": "f:1",
+            "snippet_text": "test snippet",
+            "gotchas": ["gotcha"],
+            "odoo_version_min": "99.0",
+            "language": "python",
+        },
+    ]
+    patterns_file = tmp_path / "patterns.json"
+    patterns_file.write_text(json.dumps(sample))
+
+    # First seed
+    argv = ["--patterns-file", str(patterns_file), "--no-embed"]
+    result = main(argv)
+    assert result == 0
+    sha_before = _compute_patterns_sha256(patterns_file)
+
+    # Modify patterns.json
+    sample[0]["snippet_text"] = "modified snippet"
+    patterns_file.write_text(json.dumps(sample))
+    sha_after = _compute_patterns_sha256(patterns_file)
+    assert sha_before != sha_after
+
+    # Second seed — should proceed
+    result = main(argv)
+    assert result == 0
+
+
+def test_force_bypasses_sentinel(clean_neo4j, tmp_path, caplog, monkeypatch):
+    """--force flag bypasses sentinel, forces reseed."""
+    from src.indexer.seed_patterns import main
+
+    # Set Neo4j config from test environment
+    neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
+    neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
+    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
+    monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
+    monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    sample = [
+        {
+            "pattern_id": "test-pat",
+            "intent_keywords": ["test"],
+            "file_ref": "f:1",
+            "snippet_text": "test snippet",
+            "gotchas": ["gotcha"],
+            "odoo_version_min": "99.0",
+            "language": "python",
+        },
+    ]
+    patterns_file = tmp_path / "patterns.json"
+    patterns_file.write_text(json.dumps(sample))
+
+    # First seed
+    argv = ["--patterns-file", str(patterns_file), "--no-embed"]
+    result = main(argv)
+    assert result == 0
+
+    # Second seed with --force should not log "skipping reseed"
+    caplog.clear()
+    argv_force = ["--patterns-file", str(patterns_file), "--no-embed", "--force"]
+    with caplog.at_level("INFO"):
+        result = main(argv_force)
+    assert result == 0
+    assert "skipping reseed" not in caplog.text
