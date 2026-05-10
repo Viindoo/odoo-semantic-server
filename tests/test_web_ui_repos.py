@@ -276,6 +276,184 @@ class TestReposPage:
         mock_popen.assert_called_once()
 
 
+class TestSshCloneFlow:
+    """W4-4: SSH URL detection → cloner Popen + clone-status polling endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_ssh_keys(self, migrated_pg):
+        """Delete ssh_key_pairs rows before and after each test to avoid cross-test leakage."""
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM ssh_key_pairs")
+        yield
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM ssh_key_pairs")
+
+    @pytest.mark.asyncio
+    async def test_post_ssh_url_with_ssh_key_id_spawns_cloner(self, migrated_pg):
+        """SSH URL + ssh_key_id → repo inserted, Popen called with src.cloner --repo-id."""
+        from src.db.auth_registry import save_ssh_key
+        from src.db.repo_registry import add_profile, list_repos
+
+        add_profile(migrated_pg, name="ssh_profile", odoo_version="17.0")
+        key_id = save_ssh_key(
+            migrated_pg, "deploy-key", "ssh-ed25519 AAAA…", "enc_privkey"
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    "/repos/repos",
+                    data={
+                        "profile": "ssh_profile",
+                        "url": "git@github.com:org/repo.git",
+                        "branch": "main",
+                        "ssh_key_id": str(key_id),
+                    },
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "flash=" in location, "redirect must carry flash query param"
+
+        # Popen called with src.cloner --repo-id <N>
+        mock_popen.assert_called_once()
+        argv = mock_popen.call_args[0][0]
+        assert argv[1:3] == ["-m", "src.cloner"]
+        assert "--repo-id" in argv
+        repo_id_str = argv[argv.index("--repo-id") + 1]
+        assert repo_id_str.isdigit()
+
+        # Repo row has ssh_key_id set
+        repos = list_repos(migrated_pg)
+        assert len(repos) == 1
+        repo = repos[0]
+        assert repo["ssh_key_id"] == key_id
+        assert repo["clone_status"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_post_ssh_url_without_ssh_key_id_returns_error(self, migrated_pg):
+        """SSH URL with no ssh_key_id → 400, no Popen, no repo row."""
+        from src.db.repo_registry import add_profile, list_repos
+
+        add_profile(migrated_pg, name="ssh_nokey_profile", odoo_version="17.0")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    "/repos/repos",
+                    data={
+                        "profile": "ssh_nokey_profile",
+                        "url": "git@github.com:org/repo.git",
+                        "branch": "main",
+                        # ssh_key_id intentionally omitted
+                    },
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 400
+        assert "SSH" in resp.text or "ssh" in resp.text.lower()
+        mock_popen.assert_not_called()
+        repos = list_repos(migrated_pg)
+        assert len(repos) == 0
+
+    @pytest.mark.asyncio
+    async def test_post_https_url_no_cloner_spawn(self, migrated_pg):
+        """HTTPS URL → legacy flow: no Popen, ssh_key_id=NULL."""
+        from src.db.repo_registry import add_profile, list_repos
+
+        add_profile(migrated_pg, name="https_profile", odoo_version="17.0")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    "/repos/repos",
+                    data={
+                        "profile": "https_profile",
+                        "url": "https://github.com/odoo/odoo",
+                        "branch": "17.0",
+                        "local_path": "/tmp/odoo_https",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/repos"
+        mock_popen.assert_not_called()
+        repos = list_repos(migrated_pg)
+        assert len(repos) == 1
+        assert repos[0]["ssh_key_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_ssh_keys_list_returns_array(self, migrated_pg):
+        """GET /repos/ssh-keys-list → JSON array with id + name keys."""
+        from src.db.auth_registry import save_ssh_key
+
+        save_ssh_key(migrated_pg, "key-alpha", "ssh-ed25519 AAAA1", "enc1")
+        save_ssh_key(migrated_pg, "key-beta", "ssh-ed25519 AAAA2", "enc2")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos/ssh-keys-list")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+        for entry in data:
+            assert "id" in entry
+            assert "name" in entry
+        names = {e["name"] for e in data}
+        assert names == {"key-alpha", "key-beta"}
+
+    @pytest.mark.asyncio
+    async def test_get_clone_status_returns_current(self, migrated_pg):
+        """GET /repos/repos/{id}/clone-status → JSON with clone_status + error_msg."""
+        from src.db.repo_registry import add_profile, add_repo, set_clone_status
+
+        pid = add_profile(migrated_pg, name="clone_profile", odoo_version="17.0")
+        rid = add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="git@github.com:org/repo.git",
+            branch="main",
+            local_path="/tmp/clone_test",
+            ssh_key_id=None,
+            clone_status="manual",
+        )
+        set_clone_status(migrated_pg, rid, "pending")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get(f"/repos/repos/{rid}/clone-status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == rid
+        assert data["clone_status"] == "pending"
+        assert data["error_msg"] is None
+
+
 class TestJobIntegration:
     """WI-F3: job record creation + GET /repos/jobs/{id}/status endpoint."""
 

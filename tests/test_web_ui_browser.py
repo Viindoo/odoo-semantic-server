@@ -162,6 +162,39 @@ class TestReposPage:
         assert page.locator("button:has-text('Index')").is_visible()
 
 
+class TestReposPageSshUx:
+    """W4-4: SSH URL → SSH key dropdown shown; HTTPS → local_path shown."""
+
+    def test_repo_form_ssh_url_shows_ssh_key_dropdown(self, web_ui_server, clean_browser, page):
+        """Paste SSH URL → SSH key dropdown appears, local_path field hidden.
+        Switch back to HTTPS → dropdown hidden, local_path visible again.
+        """
+        # Need a profile first so the form renders
+        page.goto(f"{web_ui_server}/repos")
+        page.fill("input[name='name']", "ux-test-profile")
+        page.fill("input[name='version']", "17.0")
+        page.click("button:has-text('Add Profile')")
+        page.wait_for_load_state("load")
+
+        # Initial state: local_path visible, ssh-key-field hidden
+        assert page.locator("#local-path-field").is_visible()
+        assert not page.locator("#ssh-key-field").is_visible()
+
+        # Type SSH URL → ssh-key-field should appear, local_path hidden
+        page.fill("#repo-url-input", "git@github.com:org/repo.git")
+        page.wait_for_function("document.getElementById('ssh-key-field').style.display !== 'none'")
+        assert page.locator("#ssh-key-field").is_visible()
+        assert not page.locator("#local-path-field").is_visible()
+
+        # Switch back to HTTPS → local_path visible again, ssh-key hidden
+        page.fill("#repo-url-input", "https://github.com/odoo/odoo")
+        page.wait_for_function(
+            "document.getElementById('local-path-field').style.display !== 'none'"
+        )
+        assert page.locator("#local-path-field").is_visible()
+        assert not page.locator("#ssh-key-field").is_visible()
+
+
 class TestSshKeysPage:
     def test_empty_state(self, web_ui_server, clean_browser, page):
         page.goto(f"{web_ui_server}/ssh-keys")
