@@ -18,6 +18,7 @@ class ModuleInfo:
     version_raw: str = ""
     edition: str = "community"
     viindoo_equivalent_qname: str | None = None
+    commit_sha: str | None = None
 
 
 @dataclass
