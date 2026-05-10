@@ -6,9 +6,12 @@ Usage:
     python -m src.manager add-repo --profile NAME --url URL --branch BRANCH --local-path PATH
     python -m src.manager list
     python -m src.manager create-api-key NAME
+    python -m src.manager apply-preset PRESET [--repo-base-dir DIR] [--repo-map URL=PATH ...]
+        [--dry-run]
 """
 
 import argparse
+import os
 import re
 import sys
 import textwrap
@@ -19,6 +22,7 @@ import psycopg2
 from src import config
 from src.db import auth_registry, repo_registry
 from src.db._types import PgConn
+from src.indexer.version_presets import list_presets, load_preset
 
 # Profile name: alphanumeric + underscore, 1-50 chars (matches database TEXT but
 # enforces shell-safe + readable convention).
@@ -127,6 +131,61 @@ def _cmd_create_api_key(args, conn: PgConn) -> int:
     return 0
 
 
+def _resolve_local_path(url: str, branch: str, base_dir: str, repo_map: dict[str, str]) -> str:
+    """Resolve local path for a repo URL.
+
+    Resolution order:
+    1. Explicit mapping from --repo-map URL=PATH.
+    2. Derived: base_dir / stem_branch (e.g. ~/git/odoo_17.0).
+    """
+    if url in repo_map:
+        return repo_map[url]
+    stem = Path(url).stem.removesuffix(".git")
+    derived = os.path.join(base_dir, f"{stem}_{branch}")
+    return derived
+
+
+def _cmd_apply_preset_write(
+    conn: PgConn,
+    *,
+    profile_name: str,
+    odoo_version: str,
+    description: str,
+    resolved_repos: list[dict],
+) -> int:
+    """Write pre-validated preset data to DB. Called after path validation succeeds."""
+    try:
+        pid = repo_registry.add_profile(
+            conn, name=profile_name, odoo_version=odoo_version, description=description
+        )
+    except ValueError as e:
+        print(f"✗ {e}. Use a different name or remove the existing profile first.", file=sys.stderr)
+        return 2
+
+    for r in resolved_repos:
+        try:
+            repo_registry.add_repo(
+                conn,
+                profile_id=pid,
+                url=r["url"],
+                branch=r["branch"],
+                local_path=r["local_path"],
+            )
+        except psycopg2.errors.UniqueViolation:
+            print(
+                f"✗ Repo {r['url']}@{r['branch']} already registered under another profile.",
+                file=sys.stderr,
+            )
+            return 2
+
+    n = len(resolved_repos)
+    print(
+        f"✓ Profile {profile_name} registered with {n} repo{'s' if n != 1 else ''}. "
+        f"Run 'python -m src.indexer index-repo --profile {profile_name}' to index."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.manager")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -177,7 +236,114 @@ def main(argv: list[str] | None = None) -> int:
     p_key = sub.add_parser("create-api-key", help="Create a new API key for MCP access")
     p_key.add_argument("name", help="Descriptive name for this key (e.g. 'claude-code-laptop')")
 
+    p_preset = sub.add_parser(
+        "apply-preset",
+        help="Register a bundled preset of profile + repos in one command",
+        epilog=textwrap.dedent(f"""
+            Available presets: {", ".join(list_presets())}
+
+            Examples:
+              # Auto-derive local paths from ~/git (must exist):
+              python -m src.manager apply-preset viindoo-17.0
+
+              # Override base directory:
+              python -m src.manager apply-preset viindoo-17.0 --repo-base-dir /data/repos
+
+              # Explicit per-repo path mapping:
+              python -m src.manager apply-preset viindoo-17.0 \\
+                  --repo-map https://github.com/odoo/odoo=/mnt/odoo17 \\
+                  --repo-map https://github.com/Viindoo/acme_addons=/mnt/viindoo17
+
+              # Preview without writing to DB:
+              python -m src.manager apply-preset viindoo-17.0 --dry-run
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_preset.add_argument("name", help=f"Preset name. Available: {', '.join(list_presets())}")
+    p_preset.add_argument(
+        "--repo-base-dir",
+        dest="repo_base_dir",
+        default=None,
+        help="Base directory for derived local paths (default: ~/git)",
+    )
+    p_preset.add_argument(
+        "--repo-map",
+        action="append",
+        metavar="URL=PATH",
+        dest="repo_map",
+        help="Explicit local path for a repo URL. Repeat for multiple repos.",
+    )
+    p_preset.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print planned operations without writing to DB",
+    )
+
     args = parser.parse_args(argv)
+
+    # apply-preset: validate preset name + local paths BEFORE opening DB connection.
+    # This gives clean errors (missing path, bad preset name) without needing PG_DSN.
+    if args.cmd == "apply-preset":
+        try:
+            preset = load_preset(args.name)
+        except KeyError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
+
+        repo_map: dict[str, str] = {}
+        for mapping in args.repo_map or []:
+            if "=" not in mapping:
+                print(
+                    f"✗ Invalid --repo-map value: {mapping!r}. Expected format: URL=PATH",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            url_part, path_part = mapping.split("=", 1)
+            repo_map[url_part.strip()] = path_part.strip()
+
+        base_dir = os.path.expanduser(args.repo_base_dir or "~/git")
+        resolved_repos: list[dict] = []
+        for repo in preset["repos"]:
+            url = repo["url"]
+            branch = repo["branch"]
+            local_path = _resolve_local_path(url, branch, base_dir, repo_map)
+            if not Path(local_path).is_dir():
+                print(
+                    f"✗ Local path {local_path} does not exist for repo {url}@{branch}. "
+                    f"Clone it first or pass --repo-map {url}=<path>.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            resolved_repos.append({"url": url, "branch": branch, "local_path": local_path})
+
+        profile_name = preset["profile_name"]
+        if args.dry_run:
+            print(f"[dry-run] Profile: {profile_name}  odoo_version={preset['odoo_version']}")
+            print(f"[dry-run] Description: {preset['description']}")
+            print("[dry-run] Repos:")
+            for r in resolved_repos:
+                print(f"[dry-run]   {r['url']}@{r['branch']} → {r['local_path']}")
+            print(
+                f"[dry-run] Run 'python -m src.indexer index-repo"
+                f" --profile {profile_name}' to index."
+            )
+            sys.exit(0)
+
+        # Non-dry-run: open DB and write
+        conn = _open_conn()
+        try:
+            rc = _cmd_apply_preset_write(
+                conn,
+                profile_name=profile_name,
+                odoo_version=preset["odoo_version"],
+                description=preset["description"],
+                resolved_repos=resolved_repos,
+            )
+        finally:
+            conn.close()
+        return rc
+
     conn = _open_conn()
     try:
         return {
