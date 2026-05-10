@@ -325,6 +325,10 @@ def _parse_class(
                 ast.get_source_segment(source, node)
                 if source else None
             )
+            try:
+                sig = ast.unparse(node.args)
+            except (AttributeError, ValueError):
+                sig = None
             ck, ss, rr = _classify_method_convention(node.name)
             methods_list.append(MethodInfo(
                 name=node.name,
@@ -335,6 +339,7 @@ def _parse_class(
                 convention_kind=ck,
                 super_safety=ss,
                 return_required=rr,
+                signature=sig,
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)

@@ -54,6 +54,9 @@ class MethodInfo:
     convention_kind: str = "private"
     super_safety: str = "usually"
     return_required: bool = False
+    # M6 W3-7 — function argument signature string (e.g. "self, vals_list").
+    # Captured via ast.unparse(node.args) in parser_python (era2 only; None for era1).
+    signature: str | None = None
 
 
 @dataclass

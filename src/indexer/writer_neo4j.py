@@ -141,12 +141,14 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                     mth.decorators = $decorators,
                     mth.convention_kind = $ck,
                     mth.super_safety = $ss,
-                    mth.return_required = $rr
+                    mth.return_required = $rr,
+                    mth.signature = $sig
                 MERGE (mth)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
                  decorators=mth.decorators,
-                 ck=mth.convention_kind, ss=mth.super_safety, rr=mth.return_required)
+                 ck=mth.convention_kind, ss=mth.super_safety, rr=mth.return_required,
+                 sig=mth.signature)
 
             # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
             # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
