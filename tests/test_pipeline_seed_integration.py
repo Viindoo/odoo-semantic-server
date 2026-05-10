@@ -46,7 +46,7 @@ def _make_minimal_patterns_json(tmp_path: Path) -> Path:
             "intent_keywords": ["test"],
             "file_ref": "f:1",
             "snippet_text": "# test snippet",
-            "gotchas": ["a gotcha"],
+            "gotchas": ["gotcha one", "gotcha two", "gotcha three"],
             "odoo_version_min": TEST_VERSION,
             "language": "python",
         }
