@@ -2,6 +2,9 @@
 
 Tài liệu này dành cho developer muốn contribute hoặc phát triển thêm tính năng.
 
+> 📖 **Bạn là end-user muốn kết nối AI tool (Claude Code, Codex, Gemini…) vào MCP server?**
+> Xem [docs/client-setup.md](docs/client-setup.md) thay vì tài liệu này.
+
 ---
 
 ## Yêu Cầu Môi Trường
