@@ -187,14 +187,14 @@
 - [x] `src/web_ui/templates/repos.html`: flash warning banner (amber style)
 - [x] `tests/test_web_ui_repos.py`: 2 unit tests dedup (blocked + ok path)
 
-**Section F — Job Tracking (P2 — chưa implement):**
-- [ ] `src/db/migrate.py`: table `indexer_jobs` (id, profile_name, status, started_at, finished_at, error_msg, pid, created_at) + indexes
-- [ ] `src/db/job_registry.py`: CRUD — `create_job()`, `update_job()`, `get_last_job()`, `list_running_jobs()`
-- [ ] `src/indexer/__main__.py`: thêm `--job-id INT` arg → update job status start/success/error
-- [ ] `src/web_ui/routes/repos.py`: `index_repo()` tạo job record + truyền `--job-id` vào subprocess
-- [ ] `GET /repos/jobs/{job_id}/status` route: JSON `{status, pid, error_msg}`
-- [ ] `src/web_ui/templates/repos.html`: status badge + JS polling 5s nếu running/queued
-- [ ] `tests/test_job_registry.py`: unit tests CRUD
+**Section F — Job Tracking (P2 — Complete):**
+- [x] `src/db/migrate.py`: table `indexer_jobs` (id, profile_name, status, started_at, finished_at, error_msg, pid, created_at) + indexes
+- [x] `src/db/job_registry.py`: CRUD — `create_job()`, `update_job()`, `get_last_job()`, `list_running_jobs()`, `get_job()`
+- [x] `src/indexer/__main__.py`: thêm `--job-id INT` arg → update job status start/success/error
+- [x] `src/web_ui/routes/repos.py`: `index_repo()` tạo job record + truyền `--job-id` vào subprocess
+- [x] `GET /repos/jobs/{job_id}/status` route: JSON `{id, profile_name, status, pid, started_at, finished_at, error_msg, created_at}`
+- [x] `src/web_ui/templates/repos.html`: status badge + JS polling 5s nếu running/queued
+- [x] `tests/test_job_registry.py`: unit tests CRUD (15 tests)
 
 > **Lý do tách M5.5:** items polish không block M5 ship; deferred items cần auth layer M5 trước. Pattern theo M2.5 precedent (milestone phụ giữa product milestones).
 
@@ -217,14 +217,14 @@
 - [ ] **ThreadPoolExecutor parallel repo scan (P3):** `src/indexer/pipeline.py` `index_profile()` thêm `max_workers: int = 1` param. Khi `> 1`: wrap `_index_repo()` bằng `ThreadPoolExecutor` — mỗi thread cần PG connection riêng.
 - [ ] **PostgreSQL connection pool (P3) — proper fix cho H1:** `src/mcp/server.py` + `src/mcp/middleware.py` — thay singleton `_pg_conn` + `_PG_LOCK` bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`. Workaround tạm thời (_PG_LOCK bao quanh cursor trong tool handlers) đã ship trong fix/pre-launch-critical.
 
-**Section G — Pre-launch audit deferred (2026-05-09):**
-- [ ] **M3 — Feedback API trên MCP server (P2):** `POST /api/feedback` hiện chỉ expose trên Web UI port 8003 (localhost-only). Remote end-user dùng MCP port 8002 không thể submit feedback. Fix: mount `feedback.router` trực tiếp vào ASGI app của MCP server, bỏ qua loopback guard (đã có X-API-Key auth).
-- [ ] **M4 — Qwen3Embedder default model name (P3):** `src/indexer/embedder.py:59` default `model="qwen3-embedding:4b"` khác với config default `qwen3-embedding-q5km`. Sửa class default thành `"qwen3-embedding-q5km"` cho nhất quán với README và `odoo-semantic.conf.example`.
-- [ ] **M5 — Password lộ trong process list khi pg_dump (P2):** `src/cli.py:38` — `subprocess.run(["pg_dump", dsn, ...])` expose password trong `/proc/<pid>/cmdline`. Fix: parse DSN → set `PGPASSWORD` env var, truyền host/port/user/dbname riêng thay vì DSN string.
-- [ ] **L1 — health endpoint dùng private FastMCP attr (P3):** `src/mcp/health.py:34` — `mcp._tool_manager._tools` là private internal API. Nếu FastMCP update, health trả `mcp_tools: -1` thay vì error rõ ràng. Tìm public API thay thế hoặc wrap trong try/except với fallback mô tả rõ hơn.
-- [ ] **L3 — No `maxlength` trên Web UI form inputs (P3):** `src/web_ui/templates/api_keys.html` + `repos.html` + `ssh_keys.html` — thêm `maxlength="200"` cho text inputs để tránh cực trị.
-- [ ] **L4 — Cache dict không có lock (P3):** `src/mcp/middleware.py` — `_KEY_CACHE` và `_CACHE_TS` được read/write từ multiple threads mà không lock. Thêm `_cache_lock = threading.Lock()` bao quanh toàn bộ cache operations.
-- [ ] **L6 — `embeddings: 0` không giải thích lý do (P3):** `src/indexer/__main__.py` — khi `embedder=None` (không config), in thêm dòng "Embeddings skipped — EMBEDDER_URL not configured. Use --no-embed to suppress." vào stdout cùng summary.
+**Section G — Pre-launch audit deferred (audited 2026-05-09 → shipped 2026-05-10):**
+- [x] **M3 — Feedback API trên MCP server (P2):** `feedback.router` được mount vào ASGI app của MCP server (port 8002) qua FastAPI sub-app + `app.mount("")`. Remote end-user nay submit được feedback. Auth X-API-Key middleware bao trùm — không cần loopback guard riêng.
+- [x] **M4 — Qwen3Embedder default model name (P3):** Default `model="qwen3-embedding-q5km"` đã align với `odoo-semantic.conf.example` + README (đã đúng từ trước; xác nhận trong M5.5 G).
+- [x] **M5 — Password lộ trong process list khi pg_dump (P2):** `src/cli.py` parse DSN, set `PGPASSWORD` env var, truyền `--host/--port/--username/--dbname` riêng. Password không còn trong `/proc/<pid>/cmdline`.
+- [x] **L1 — health endpoint dùng private FastMCP attr (P3):** `src/mcp/health.py` chuyển sang public `mcp.get_tools()` (FastMCP 2.3+) với fallback try/except → `-1` + log warning.
+- [x] **L3 — `maxlength="200"` trên Web UI form inputs (P3):** 8 text-input/textarea trong `api_keys.html` + `repos.html` + `ssh_keys.html`.
+- [x] **L4 — Thread-safe key cache (P3):** `src/mcp/middleware.py` thêm module-level `threading.Lock()` bao quanh tất cả `_KEY_CACHE`/`_CACHE_TS` access (4 hàm `_cache_*`).
+- [x] **L6 — `embeddings: 0` không giải thích lý do (P3):** `src/indexer/__main__.py` in dòng "Embeddings skipped — EMBEDDER_URL not configured. Use --no-embed to suppress this notice." khi embedder=None.
 
 ---
 
