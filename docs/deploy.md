@@ -562,7 +562,7 @@ Request thiếu key hoặc key không active → `401 Unauthorized`. Không có 
 ```
 
 **Phân phát key cho user:**
-- Gửi raw key qua kênh bảo mật (Bitwarden, 1Password — không qua email plain text)
+- Gửi raw key qua kênh bảo mật (Bitwarden, 1Password — không qua email plain text) cùng URL `https://<your-domain>:9999/install/` — user dán key vào trang đó để nhận snippet đúng cho từng AI tool (không cần copy-paste từ docs)
 - Mỗi user/team nên có key riêng để revoke độc lập nếu cần
 - Deactivate key: Web UI → Deactivate, hoặc CLI: `UPDATE api_keys SET active=false WHERE name='<name>';`
 
