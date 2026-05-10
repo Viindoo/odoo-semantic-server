@@ -692,7 +692,6 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
   - incremental.py: git commit hash tracking
   - Multi-version: index song song nhiều versions
   - version_presets.py: preset "viindoo-17.0"
-  - OpenUpgrade support: migration path awareness
 ```
 
 ---
