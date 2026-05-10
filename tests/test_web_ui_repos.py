@@ -417,3 +417,170 @@ class TestJobIntegration:
         assert resp.status_code == 404
         data = resp.json()
         assert data["error"] == "job not found"
+
+
+class TestStatusBadgeTemplate:
+    """WI-F4: status badge + 5s polling on repos.html."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_jobs(self, migrated_pg):
+        """Delete indexer_jobs rows before and after each test in this class."""
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM indexer_jobs")
+        yield
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM indexer_jobs")
+
+    @pytest.mark.asyncio
+    async def test_repos_page_renders_status_badge_when_job_exists(self, migrated_pg):
+        """repos.html renders badge with data-job-id when last_job exists."""
+        from src.db import job_registry
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="badge_profile", odoo_version="17.0")
+        add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_badge",
+        )
+        # Create a job for the profile
+        job_id = job_registry.create_job(migrated_pg, "badge_profile")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos")
+
+        assert resp.status_code == 200
+        assert f'data-job-id="{job_id}"' in resp.text
+        assert 'data-job-status="queued"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_repos_page_no_badge_when_no_job(self, migrated_pg):
+        """repos.html shows '—' when no job exists for profile."""
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="no_job_profile", odoo_version="17.0")
+        add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_no_job",
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos")
+
+        assert resp.status_code == 200
+        # Should have the "Last Job" column header
+        assert "Last Job" in resp.text
+        # Should show '—' for no job (rendered as muted span)
+        assert "color:#9ca3af" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_repos_page_badge_shows_running_status(self, migrated_pg):
+        """repos.html renders running badge when job status is running."""
+        from datetime import datetime
+
+        from src.db import job_registry
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="running_profile", odoo_version="17.0")
+        add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_running",
+        )
+        # Create a job and update to running status
+        job_id = job_registry.create_job(migrated_pg, "running_profile")
+        job_registry.update_job(
+            migrated_pg,
+            job_id,
+            status="running",
+            pid=12345,
+            started_at=datetime.now(),
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos")
+
+        assert resp.status_code == 200
+        assert f'data-job-id="{job_id}"' in resp.text
+        assert 'data-job-status="running"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_repos_page_badge_shows_error_status(self, migrated_pg):
+        """repos.html renders error badge with tooltip when job status is error."""
+        from datetime import datetime
+
+        from src.db import job_registry
+        from src.db.repo_registry import add_profile, add_repo
+
+        pid = add_profile(migrated_pg, name="error_profile", odoo_version="17.0")
+        add_repo(
+            migrated_pg,
+            profile_id=pid,
+            url="file://local",
+            branch="17.0",
+            local_path="/tmp/odoo_error",
+        )
+        # Create a job with error
+        job_id = job_registry.create_job(migrated_pg, "error_profile")
+        job_registry.update_job(
+            migrated_pg,
+            job_id,
+            status="error",
+            error_msg="Sample indexing error",
+            finished_at=datetime.now(),
+        )
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos")
+
+        assert resp.status_code == 200
+        assert f'data-job-id="{job_id}"' in resp.text
+        assert 'data-job-status="error"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_repos_page_javascript_in_response(self, migrated_pg):
+        """repos.html includes polling JavaScript with POLL_MS = 5000."""
+        from src.db.repo_registry import add_profile
+
+        add_profile(migrated_pg, name="js_test", odoo_version="17.0")
+
+        app = create_app()
+        with mock.patch(
+            "src.web_ui.routes.repos._get_conn",
+            _make_conn_factory(migrated_pg),
+        ):
+            async with _async_client(app) as client:
+                resp = await client.get("/repos")
+
+        assert resp.status_code == 200
+        assert "POLL_MS = 5000" in resp.text
+        assert "renderBadge" in resp.text
+        assert "setInterval(pollCells, POLL_MS)" in resp.text
+        assert "/repos/jobs/" in resp.text  # polling endpoint path
