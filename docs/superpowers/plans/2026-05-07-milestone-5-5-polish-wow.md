@@ -80,7 +80,7 @@ subprocess fire-and-forget không có dedup → advisory lock contention trong c
 
 Effort actual: ~1h. No new deps. No schema change. 354 tests pass.
 
-### Section F — Job Tracking (P2 — to implement)
+### Section F — Job Tracking (P2 — Shipped 2026-05-10)
 
 Sau P1 dedup: user biết indexer đang chạy nhưng không biết tiến độ / kết quả.
 P2 thêm `indexer_jobs` table để track status end-to-end.
@@ -114,6 +114,29 @@ CREATE INDEX IF NOT EXISTS idx_indexer_jobs_status ON indexer_jobs (status);
 KHÔNG dùng lại connection của parent Web UI process.
 
 Effort estimate: ~3h. 1 new DB table (add-only per ADR-0001). No new pypi deps.
+
+**Shipped notes (2026-05-10):**
+- Schema landed nguyên text trên + thêm `CHECK (status IN ('queued','running','done','error'))` + thêm `idx_indexer_jobs_created` (created_at DESC) cho query "last job".
+- Composite key cho MERGE/UPDATE: `id` (SERIAL PK) — không cần composite vì mỗi job 1 row.
+- `update_job()` truyền partial kwargs (status/pid/started_at/finished_at/error_msg), build dynamic SQL SET clause; raise `ValueError` nếu `cur.rowcount == 0`.
+- `error_msg` truncated 1000 chars trước khi store (tránh blow up khi traceback dài).
+- Job tracking failures (vd row deleted) **KHÔNG** block indexing — `try/except` swallow + indexing tiếp tục.
+- Status badge dùng vanilla JS (`setInterval` 5000ms), tự stop polling khi status ∈ {done, error}.
+- Tests: 15 unit (job_registry CRUD) + 4 integration (Web UI route) + 5 template render = 24 new tests.
+
+### Section G — Pre-launch audit deferred (Shipped 2026-05-10, audited 2026-05-09)
+
+7 audit items deferred từ pre-launch review, landed cùng đợt với Section F:
+
+- **M3** — `feedback.router` mounted lên ASGI app của MCP server qua FastAPI sub-app + `app.mount("")`. Auth X-API-Key middleware bao trùm — không cần loopback guard riêng. Remote end-user (port 8002) submit feedback OK.
+- **M4** — `Qwen3Embedder` default model: confirmed already `"qwen3-embedding-q5km"` (đúng từ trước; chỉ cần test guard).
+- **M5** — `src/cli.py` `backup`/`restore` parse DSN, set `PGPASSWORD` env, truyền `--host/--port/--username/--dbname` riêng. `ps auxww` không còn lộ password.
+- **L1** — `src/mcp/health.py` chuyển sang public `mcp.get_tools()` (FastMCP 2.3+) với fallback try/except → `-1` + log warning, KHÔNG raise.
+- **L3** — `maxlength="200"` trên 8 text inputs/textareas trong api_keys/repos/ssh_keys templates.
+- **L4** — `src/mcp/middleware.py` thêm module-level `threading.Lock()` bao quanh `_KEY_CACHE` + `_CACHE_TS` access (4 hàm `_cache_*`). Concurrency test: 50 threads simultaneous get/set, no exception.
+- **L6** — `src/indexer/__main__.py` in dòng "Embeddings skipped — EMBEDDER_URL not configured. Use --no-embed to suppress this notice." khi embedder=None.
+
+Tests added: 3 (G1 feedback) + 9 (G2 DSN parsing + subprocess) + 2 (G3 embedder + skip msg) + 7 (G4 cache concurrency + health fallback) = 21 new tests.
 
 ---
 

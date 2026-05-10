@@ -293,7 +293,10 @@ sudo -u odoo-semantic -H bash -c '
 
 Output: `✓ Migrations applied to postgresql://...`
 
-Lệnh idempotent — chạy lại không có hại.
+Lệnh idempotent — chạy lại không có hại. Tạo các tables:
+`profiles`, `repos`, `embeddings` (cần `pgvector`), `api_keys`, `ssh_key_pairs`,
+`usage_log`, `pattern_feedback`, **`indexer_jobs`** (M5.5 — track lifecycle của
+indexer subprocess; populated bởi `index-repo --job-id N` + Web UI status badge).
 
 ### 3.4 Đăng ký repos + index lần đầu
 
@@ -851,6 +854,46 @@ location /admin/ {
 ```
 
 ⚠️ **KHÔNG expose Web UI trực tiếp ra internet** — không có authentication.
+
+### Indexer Job Status (M5.5 F)
+
+Khi admin click "Index" trên `/repos`, Web UI:
+
+1. Tạo row trong `indexer_jobs` (`status='queued'`, `profile_name`, `created_at`).
+2. Spawn `python -m src.indexer index-repo --profile X --job-id N` (fire-and-forget).
+3. Subprocess update `status='running'` + `pid` + `started_at` ngay khi bắt đầu.
+4. Khi xong: `status='done'` + `finished_at`. Nếu fail: `status='error'` + `error_msg` (truncated 1000 chars) + `finished_at`.
+
+Status badge trên `/repos` page poll `GET /repos/jobs/{job_id}/status` mỗi 5s khi
+status ∈ `{queued, running}`; tự dừng khi reach `{done, error}`. Vanilla JS, không
+dependency frontend.
+
+**Endpoint JSON shape:**
+```json
+{
+  "id": 42, "profile_name": "viindoo_17", "status": "running",
+  "pid": 12345, "started_at": "2026-05-10 10:00:00+00:00",
+  "finished_at": null, "error_msg": null,
+  "created_at": "2026-05-10 09:59:58+00:00"
+}
+```
+
+**Operational queries** (psql):
+
+```sql
+-- Jobs đang chạy:
+SELECT id, profile_name, pid, started_at FROM indexer_jobs WHERE status='running';
+
+-- 10 job gần nhất:
+SELECT id, profile_name, status, started_at, finished_at, error_msg
+FROM indexer_jobs ORDER BY created_at DESC LIMIT 10;
+
+-- Cleanup jobs cũ (nếu cần):
+DELETE FROM indexer_jobs WHERE created_at < now() - INTERVAL '30 days';
+```
+
+`indexer_jobs` không tự cleanup — nếu trở thành lớn, schedule cron `DELETE` hoặc
+add migration trong M6.
 
 ---
 
