@@ -35,7 +35,10 @@ _CORE_FILES: tuple[str, ...] = (
 
 # Class-name heuristics for `kind` classification.
 _FIELD_BASE_NAMES = {"Field"}
-_EXCEPTION_BASE_NAMES = {"Exception", "Warning", "BaseException"}
+# Direct stdlib + Odoo's primary user-facing base. The hierarchy is shallow in
+# practice (one indirection through UserError); deeper trees would need a
+# recursive AST climb, deferred per ADR-0002.
+_EXCEPTION_BASE_NAMES = {"Exception", "Warning", "BaseException", "UserError"}
 _ORM_BASE_NAMES = {"BaseModel", "Model", "TransientModel", "AbstractModel"}
 _CURSOR_HINT_FILES = {"odoo.sql_db"}  # methods inside any class in this module = cursor_method
 
@@ -196,16 +199,74 @@ def _extract_from_source(
     return symbols
 
 
+def _version_prefix(version: str) -> str:
+    """Return framework directory prefix for a given Odoo version.
+
+    v8/v9 use ``openerp/`` (the pre-rename era); v10+ use ``odoo/``.
+    """
+    major = int(version.split(".")[0])
+    return "openerp/" if major <= 9 else "odoo/"
+
+
+def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> list[Path]:
+    """Map an allow-list logical path to one or more real file paths for `version`.
+
+    Handles:
+    - v8/v9: ``odoo/`` prefix is substituted to ``openerp/`` before file lookup.
+      v8/v9 do not have the v19 package-dir split, so once the prefix is swapped
+      the normal ``is_file()`` check passes directly.  Allow-list paths that do
+      not exist in a given v8 source tree (e.g. ``openerp/tools/query.py``) cause
+      an empty list to be returned and are silently skipped by the caller.
+    - v19+: ``odoo/fields.py``, ``odoo/models.py``, and ``odoo/api.py`` became
+      package directories that re-export from ``odoo/orm/*.py`` split files.
+
+    Returns:
+        List of real file paths to parse.  Empty list if no equivalent files exist.
+    """
+    # --- v8/v9: substitute openerp/ prefix BEFORE all other checks -----------
+    prefix_old = "odoo/"
+    prefix_new = _version_prefix(version)
+    if prefix_new != prefix_old and logical_path.startswith(prefix_old):
+        logical_path = prefix_new + logical_path[len(prefix_old):]
+
+    candidate = odoo_root / logical_path
+    if candidate.is_file():
+        return [candidate]
+
+    # v19+ — odoo/{fields,models,api}.py became package directories.
+    # (Only reached when prefix_new == "odoo/", i.e. v10+.)
+    if logical_path == "odoo/fields.py":
+        orm_dir = odoo_root / "odoo" / "orm"
+        if orm_dir.is_dir():
+            return sorted(p for p in orm_dir.glob("fields*.py") if p.is_file())
+    elif logical_path == "odoo/models.py":
+        candidates = [
+            odoo_root / "odoo" / "orm" / "models.py",
+            odoo_root / "odoo" / "orm" / "models_transient.py",
+        ]
+        return [p for p in candidates if p.is_file()]
+    elif logical_path == "odoo/api.py":
+        candidates = [
+            odoo_root / "odoo" / "orm" / "decorators.py",
+            odoo_root / "odoo" / "orm" / "environments.py",
+        ]
+        return [p for p in candidates if p.is_file()]
+
+    return []
+
+
 def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbolInfo]:
     """Extract CoreSymbol from the 8 allow-list files. Missing files are silently skipped.
 
     Args:
-        odoo_source_root: Path to the Odoo upstream checkout root (parent of `odoo/`).
-        odoo_version:     Version label for all extracted symbols (e.g. "18.0").
+        odoo_source_root: Path to the Odoo upstream checkout root (parent of ``odoo/``).
+        odoo_version:     Version label for all extracted symbols (e.g. ``"18.0"``).
 
     Returns:
         Flat list of CoreSymbolInfo. Order: file order in `_CORE_FILES`, then
         document order within each file (top-level def/class, then class methods).
+        For v19+ split-file paths, files within a logical entry are iterated in
+        sorted order so output is deterministic.
     """
     root = Path(odoo_source_root)
     if not root.is_dir():
@@ -213,16 +274,15 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
 
     out: list[CoreSymbolInfo] = []
     for relpath in _CORE_FILES:
-        full = root / relpath
-        if not full.is_file():
-            continue
-        try:
-            source = full.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
+        resolved = _resolve_core_paths(root, relpath, odoo_version)
         # "odoo/tools/safe_eval.py" → module_qname "odoo.tools.safe_eval"
         module_qname = relpath.removesuffix(".py").replace("/", ".")
-        out.extend(_extract_from_source(
-            source, module_qname, odoo_version, file_path=str(full),
-        ))
+        for full in resolved:
+            try:
+                source = full.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            out.extend(_extract_from_source(
+                source, module_qname, odoo_version, file_path=str(full),
+            ))
     return out

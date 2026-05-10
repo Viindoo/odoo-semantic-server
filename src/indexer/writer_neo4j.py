@@ -42,31 +42,43 @@ def _write_parse_result(tx, result: ParseResult) -> None:
         tx.run("""
             MERGE (mod:Module {name: $module_name, odoo_version: $v})
             MERGE (m:Model {name: $name, module: $module_name, odoo_version: $v})
-            SET m.is_abstract = $is_abstract,
-                m.is_transient = $is_transient
+            ON CREATE SET m.is_transient = $is_transient,
+                          m.is_abstract = $is_abstract,
+                          m.had_explicit_name = $had_explicit_name,
+                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list)
+            ON MATCH  SET m.is_abstract = $is_abstract,
+                          m.is_transient = $is_transient,
+                          m.had_explicit_name = $had_explicit_name,
+                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list)
             MERGE (m)-[:DEFINED_IN]->(mod)
         """, name=model.name, v=model.odoo_version,
              module_name=model.module,
              is_abstract=model.is_abstract,
-             is_transient=model.is_transient)
+             is_transient=model.is_transient,
+             had_explicit_name=model.had_explicit_name,
+             inherit_list=model.inherit)
 
-        for parent_name in model.inherit:
+        for idx, parent_name in enumerate(model.inherit):
             if parent_name == model.name:
                 tx.run("""
                     MATCH (ext:Model {name: $name, module: $mod, odoo_version: $v})
                     MATCH (tip:Model {name: $name, odoo_version: $v})
                     WHERE tip.module <> $mod
                       AND NOT (:Model {name: $name, odoo_version: $v})-[:INHERITS]->(tip)
-                    MERGE (ext)-[:INHERITS]->(tip)
-                """, name=model.name, mod=model.module, v=model.odoo_version)
+                    MERGE (ext)-[r:INHERITS]->(tip)
+                    SET r.order = $order
+                """, name=model.name, mod=model.module, v=model.odoo_version,
+                     order=idx)
             else:
                 rec = tx.run("""
                     MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
                     MATCH (parent:Model {name: $parent_name, odoo_version: $v})
-                    MERGE (m)-[:INHERITS]->(parent)
+                    MERGE (m)-[r:INHERITS]->(parent)
+                    SET r.order = $order
                     RETURN 1 AS ok
                 """, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, parent_name=parent_name).single()
+                     v=model.odoo_version, parent_name=parent_name,
+                     order=idx).single()
                 if rec is None:
                     _logger.warning(
                         "unresolved INHERITS: %s → %s (version %s) — parent model not indexed",
@@ -77,9 +89,11 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                         MERGE (placeholder:Model {name: $parent_name,
                                                   module: '__unresolved__', odoo_version: $v})
                         ON CREATE SET placeholder.unresolved = true
-                        MERGE (m)-[:INHERITS {unresolved: true}]->(placeholder)
+                        MERGE (m)-[r:INHERITS {unresolved: true}]->(placeholder)
+                        SET r.order = $order
                     """, model_name=model.name, mod=model.module,
-                         v=model.odoo_version, parent_name=parent_name)
+                         v=model.odoo_version, parent_name=parent_name,
+                         order=idx)
 
         for delegated_model, via_field in model.inherits.items():
             rec = tx.run("""

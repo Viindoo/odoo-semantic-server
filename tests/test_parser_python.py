@@ -631,6 +631,71 @@ def test_extract_columns_balanced_brace_in_string_works():
     assert "'name': 'char'" in result
 
 
+# --- had_explicit_name tracking (WI-3) ----------------------------------------
+
+
+def test_had_explicit_name_true_when_name_declared(tmp_path, sale_module):
+    """_name = 'foo' in class body → had_explicit_name == True."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models
+
+        class Foo(models.Model):
+            _name = 'foo'
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].had_explicit_name is True
+
+
+def test_had_explicit_name_false_when_only_inherit(tmp_path, sale_module):
+    """_inherit = 'foo' without _name → had_explicit_name == False (name auto-derived)."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class FooExt(models.Model):
+            _inherit = 'foo'
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].had_explicit_name is False
+    assert result[0].name == "foo"  # auto-derived from inherit[0]
+
+
+def test_had_explicit_name_true_when_redeclare(tmp_path, sale_module):
+    """Both _name = 'foo' and _inherit = 'foo' → had_explicit_name == True."""
+    f = write_py(tmp_path, "redeclare.py", """
+        from odoo import models
+
+        class FooRedeclare(models.Model):
+            _name = 'foo'
+            _inherit = 'foo'
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].had_explicit_name is True
+    assert result[0].name == "foo"
+
+
+def test_had_explicit_name_era1_text_path(tmp_path):
+    """Era1 text-regex path (_name = 'foo' in v8 class body) → had_explicit_name == True."""
+    v8_module = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    # Python 2 print statement forces era1 fallback
+    bad = tmp_path / "era1_model.py"
+    bad.write_text(
+        "print 'hello'\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'foo'\n"
+        "    _columns = {'x': fields.char('X')}\n"
+    )
+    result = parse_file(str(bad), v8_module)
+    assert len(result) == 1
+    assert result[0].had_explicit_name is True
+    assert result[0].name == "foo"
+
+
 def test_extract_columns_falls_back_on_python2_syntax():
     """Python 2 mid-file syntax (`print x`) makes Python 3 tokenize raise
     TokenError / IndentationError / SyntaxError. Parser MUST fall through to
@@ -654,4 +719,132 @@ def test_extract_columns_falls_back_on_python2_syntax():
     result = _extract_columns_block(body)
     assert "'name': 'char'" in result, (
         f"Expected fallback to extract _columns block, got: {result!r}"
+    )
+
+
+# --- Era1 _columns.update({...}) tests (WI-4) ---------------------------------
+
+
+def test_era1_columns_update_extracts_fields(tmp_path):
+    """_columns = {...} AND _columns.update({...}) → all fields merged (WI-4)."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class CashBoxIn(osv.osv):\n"
+        "    _name = 'cash.box.in'\n"
+        "    _columns = {\n"
+        "        'a': fields.char('Alpha'),\n"
+        "    }\n"
+        "    _columns.update({\n"
+        "        'b': fields.text('Beta'),\n"
+        "        'c': fields.integer('Gamma'),\n"
+        "    })\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    field_names = {fld.name for fld in result[0].fields}
+    assert "a" in field_names, "Field 'a' from initial _columns must be present"
+    assert "b" in field_names, "Field 'b' from _columns.update must be present"
+    assert "c" in field_names, "Field 'c' from _columns.update must be present"
+
+
+def test_era1_columns_update_only_no_initial_dict(tmp_path):
+    """_columns.update({...}) with NO prior _columns = {...} → fields still extracted."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model2.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class MyModel(osv.osv):\n"
+        "    _name = 'my.model'\n"
+        "    _columns.update({\n"
+        "        'x': fields.boolean('Flag'),\n"
+        "    })\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    field_names = {fld.name for fld in result[0].fields}
+    assert "x" in field_names, "Field 'x' from _columns.update must be extracted"
+
+
+def test_era1_columns_update_multiline_dict(tmp_path):
+    """_columns.update with dict spread across many lines → all fields extracted."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model3.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class BigModel(osv.osv):\n"
+        "    _name = 'big.model'\n"
+        "    _columns.update({\n"
+        "        # first field\n"
+        "        'ref':\n"
+        "            fields.char(\n"
+        "                'Reference',\n"
+        "                size=64,\n"
+        "            ),\n"
+        "        # second field\n"
+        "        'note':\n"
+        "            fields.text(\n"
+        "                'Note',\n"
+        "            ),\n"
+        "        'amount':\n"
+        "            fields.float(\n"
+        "                'Amount',\n"
+        "            ),\n"
+        "    })\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    field_names = {fld.name for fld in result[0].fields}
+    assert "ref" in field_names, "Field 'ref' from multiline update dict must be extracted"
+    assert "note" in field_names, "Field 'note' from multiline update dict must be extracted"
+    assert "amount" in field_names, "Field 'amount' from multiline update dict must be extracted"
+
+
+def test_era1_columns_copy_detected_no_field_nodes(tmp_path):
+    """_columns = ParentCls._columns.copy() line detected but NOT extracted.
+
+    Parent fields come via INHERITS; copy() is Python-level convenience.
+    Followed by _columns.update({...}) to add child-specific fields (like WI-4).
+    Assert: only 'foo' field present (from update), NOT any from copy().
+    """
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "copy_model.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class CashBox(osv.osv):\n"
+        "    _name = 'cash.box'\n"
+        "    _columns = {\n"
+        "        'parent_field': fields.char('Parent Field'),\n"
+        "    }\n\n"
+        "class CashBoxIn(CashBox):\n"
+        "    _name = 'cash.box.in'\n"
+        "    _columns = CashBox._columns.copy()\n"
+        "    _columns.update({\n"
+        "        'foo': fields.char('Foo'),\n"
+        "    })\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 2, "Should extract both CashBox and CashBoxIn"
+
+    # CashBoxIn should have ONLY 'foo' from update, NOT 'parent_field' from copy()
+    cash_box_in = next((m for m in result if m.name == "cash.box.in"), None)
+    assert cash_box_in is not None, "CashBoxIn model must be present"
+    field_names = {fld.name for fld in cash_box_in.fields}
+    assert "foo" in field_names, "Field 'foo' from _columns.update must be present"
+    assert "parent_field" not in field_names, (
+        "Field 'parent_field' should NOT be extracted from copy() — "
+        "parent fields come via INHERITS path"
     )

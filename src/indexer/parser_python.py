@@ -250,6 +250,7 @@ def _parse_class(
     fields_list: list[FieldInfo] = []
     methods_list: list[MethodInfo] = []
     has_columns_dict = False  # era1 marker — promotes class to model
+    had_explicit_name = False  # set True when _name = "..." literal found
 
     for node in cls_node.body:
         if isinstance(node, ast.Assign):
@@ -259,6 +260,8 @@ def _parse_class(
                 attr = target.id
                 if attr == '_name':
                     name = _extract_string(node.value)
+                    if name is not None:
+                        had_explicit_name = True
                 elif attr == '_inherit':
                     inherit = _extract_inherit(node.value)
                 elif attr == '_inherits':
@@ -350,6 +353,7 @@ def _parse_class(
         inherits=inherits,
         fields=fields_list,
         methods=methods_list,
+        had_explicit_name=had_explicit_name,
     )
 
 
@@ -374,6 +378,11 @@ _RE_INHERIT_LIST = re.compile(
     r"^[ \t]*_inherit\s*=\s*\[([^\]]*)\]", re.MULTILINE | re.DOTALL,
 )
 _RE_COLUMNS_HEAD = re.compile(r"^[ \t]*_columns\s*=\s*\{", re.MULTILINE)
+_RE_COLUMNS_UPDATE = re.compile(r"_columns\.update\s*\(\s*\{", re.MULTILINE)
+# Era1 WI-5: Detect `_columns = X._columns.copy()` — parent fields come via
+# INHERITS; copying via copy() is a Python-level convenience that doesn't change
+# the model relationship. Do NOT extract fields from this line.
+_RE_COLUMNS_COPY = re.compile(r"_columns\s*=\s*(\w+)\._columns\.copy\s*\(\s*\)")
 _RE_COLUMN_ENTRY = re.compile(
     r"['\"](\w+)['\"]\s*:\s*fields\.(\w+)\s*\(",
 )
@@ -387,6 +396,57 @@ _RE_ERA1_METHOD = re.compile(
 
 def _slice_class_body(source: str, start_pos: int, next_pos: int | None) -> str:
     return source[start_pos:next_pos] if next_pos else source[start_pos:]
+
+
+def _extract_balanced_braces(text: str, start_pos: int) -> str:
+    """Extract the content of a balanced `{...}` block starting at `start_pos`.
+
+    `start_pos` must point to the character RIGHT AFTER the opening `{` in `text`.
+    Returns the substring from `start_pos` up to (not including) the matching
+    closing `}`, or '' if the block is not properly closed.
+
+    Uses the same tokenizer-aware approach as `_extract_columns_block` to handle
+    braces inside string literals correctly, with a naive char-scan fallback for
+    Python 2 syntax that causes tokenize to fail.
+    """
+    fragment = text[start_pos:]
+
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(fragment).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        # Fallback: naive char scan
+        depth = 1
+        i = 0
+        while i < len(fragment) and depth > 0:
+            ch = fragment[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return fragment[:i]
+            i += 1
+        return ""
+
+    lines = fragment.splitlines(keepends=True)
+    line_starts: list[int] = [0]
+    for ln in lines:
+        line_starts.append(line_starts[-1] + len(ln))
+
+    def tok_start_offset(tok) -> int:
+        row, col = tok.start
+        return line_starts[row - 1] + col
+
+    depth = 1
+    for tok in tokens:
+        if tok.type == tokenize.OP:
+            if tok.string == "{":
+                depth += 1
+            elif tok.string == "}":
+                depth -= 1
+                if depth == 0:
+                    return fragment[:tok_start_offset(tok)]
+    return ""
 
 
 def _extract_columns_block(body: str) -> str:
@@ -475,6 +535,7 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
 
         name_match = _RE_NAME_ASSIGN.search(body)
         name = name_match.group(1) if name_match else None
+        had_explicit_name = name is not None  # True when _name = "..." regex matched
 
         inherit: list[str] = []
         if (m := _RE_INHERIT_STR.search(body)):
@@ -485,6 +546,7 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
 
         if not name and inherit:
             name = inherit[0]
+            # had_explicit_name stays False — name was auto-derived from _inherit
 
         # Fields from _columns dict
         cols_block = _extract_columns_block(body)
@@ -500,6 +562,30 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
                     related=None, compute=None,
                     stored=True, required=False,
                 ))
+
+        # Fields from _columns.update({...}) calls — may appear with or without
+        # a prior `_columns = {...}` assignment (WI-4).
+        for upd_match in _RE_COLUMNS_UPDATE.finditer(body):
+            # upd_match.end() points to char right after the opening '{'
+            upd_block = _extract_balanced_braces(body, upd_match.end())
+            for fm in _RE_COLUMN_ENTRY.finditer(upd_block):
+                field_name = fm.group(1)
+                ttype = fm.group(2).lower()
+                if ttype not in FIELD_TYPES_LEGACY:
+                    continue
+                fields_list.append(FieldInfo(
+                    name=field_name, ttype=ttype,
+                    related=None, compute=None,
+                    stored=True, required=False,
+                ))
+
+        # Detect `_columns = X._columns.copy()` pattern (WI-5).
+        # Parent fields already represented via INHERITS; copying via copy() is
+        # Python-level convenience. Do NOT extract fields — they're duplicates.
+        for copy_match in _RE_COLUMNS_COPY.finditer(body):
+            # copy_match.group(1) would be the parent class name (e.g. 'ParentCls')
+            # We detect and skip — no field extraction from this line.
+            pass
 
         if not name:
             continue
@@ -528,6 +614,7 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
             inherits={},
             fields=fields_list,
             methods=methods_list,
+            had_explicit_name=had_explicit_name,
         ))
     return models
 
