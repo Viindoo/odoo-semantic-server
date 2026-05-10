@@ -23,7 +23,7 @@
     <form method="post" action="/api-keys" style="display:flex;gap:0.5rem;align-items:flex-end">
         <div>
             <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Key Name *</label>
-            <input type="text" name="name" placeholder="e.g. claude-code-laptop" required
+            <input type="text" name="name" placeholder="e.g. claude-code-laptop" maxlength="200" required
                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:240px">
         </div>
         <button type="submit" class="btn btn-primary">Create</button>
