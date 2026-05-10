@@ -92,6 +92,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "Use periodically to clean up stale Module nodes from rename/move."
         ),
     )
+    sub_repo.add_argument(
+        "--profile-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of profiles to index in parallel (default 1, sequential). "
+            "Per-profile advisory lock ensures safety across workers. "
+            "Only effective with --all."
+        ),
+    )
 
     # --- index-core subcommand (new in WI-F1) ------------------------------
     sub_core = subparsers.add_parser(
@@ -179,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
         max_workers = getattr(args, "max_workers", 1)
+        profile_workers = getattr(args, "profile_workers", 1)
         try:
             if job_id is not None:
                 try:
@@ -194,8 +205,12 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 if args.all:
                     summary = index_all(
-                        pg, embedder=embedder, progress=verbose,
-                        max_workers=max_workers, full_reindex=full_reindex,
+                        pg,
+                        embedder=embedder,
+                        progress=verbose,
+                        max_workers=max_workers,
+                        full_reindex=full_reindex,
+                        profile_workers=profile_workers,
                     )
                 else:
                     summary = index_profile(

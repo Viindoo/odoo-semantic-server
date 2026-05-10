@@ -742,7 +742,9 @@ def index_all(
     embedder=None,
     progress: bool = False,
     max_workers: int = 1,
+    *,
     full_reindex: bool = False,
+    profile_workers: int = 1,
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
@@ -750,12 +752,21 @@ def index_all(
     the returned summary under 'profiles_failed'.
 
     Args:
-        pg_conn:       psycopg2 connection (autocommit OK).
-        embedder:      Optional EmbedderClient for pgvector embeddings.
-        progress:      When True, show tqdm progress bar for module iteration.
-        max_workers:   Passed through to index_profile() for intra-profile
-                       parallel repo scanning.
-        full_reindex:  When True, bypass incremental skip-unchanged + diff filter.
+        pg_conn:         psycopg2 connection (autocommit OK).
+        embedder:        Optional EmbedderClient for pgvector embeddings.
+        progress:        When True, show tqdm progress bar for module iteration.
+                         Automatically disabled per-profile when profile_workers > 1
+                         (tqdm bars would interleave).
+        max_workers:     Passed through to index_profile() for intra-profile
+                         parallel repo scanning.
+        full_reindex:    When True, bypass incremental skip-unchanged + diff filter
+                         (W2-4). Forwarded to each index_profile() call.
+        profile_workers: Number of profiles to index in parallel. Default 1
+                         (sequential, unchanged behaviour). When > 1, profiles
+                         are indexed concurrently via ThreadPoolExecutor. Each
+                         worker opens its own psycopg2 connection (psycopg2
+                         connections are NOT thread-safe). Per-profile advisory
+                         lock (Wave 1 P1) ensures no collision across workers.
 
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
@@ -770,27 +781,84 @@ def index_all(
     profiles_ok = 0
     profiles_failed: list[str] = []
 
-    for profile in profiles:
-        name = profile["name"]
-        try:
-            summary = index_profile(
-                pg_conn,
-                profile_name=name,
-                embedder=embedder,
-                progress=progress,
-                max_workers=max_workers,
-                full_reindex=full_reindex,
+    if profile_workers <= 1:
+        # --- Sequential path (original behaviour) ----------------------------
+        for profile in profiles:
+            name = profile["name"]
+            try:
+                summary = index_profile(
+                    pg_conn,
+                    profile_name=name,
+                    embedder=embedder,
+                    progress=progress,
+                    max_workers=max_workers,
+                    full_reindex=full_reindex,
+                )
+                agg_modules += summary["modules"]
+                agg_views += summary["views"]
+                agg_qweb += summary["qweb"]
+                agg_embeddings += summary.get("embeddings", 0)
+                agg_js_patches += summary.get("js_patches", 0)
+                agg_owl_comps += summary.get("owl_comps", 0)
+                profiles_ok += 1
+            except Exception:
+                _logger.exception("index_all: profile %r failed — skipping", name)
+                profiles_failed.append(name)
+    else:
+        # --- Parallel path (ThreadPoolExecutor across profiles) --------------
+        if progress:
+            print(
+                f"[index_all] progress bar disabled when profile_workers={profile_workers} "
+                f"(parallel mode — tqdm bars would interleave)"
             )
-            agg_modules += summary["modules"]
-            agg_views += summary["views"]
-            agg_qweb += summary["qweb"]
-            agg_embeddings += summary.get("embeddings", 0)
-            agg_js_patches += summary.get("js_patches", 0)
-            agg_owl_comps += summary.get("owl_comps", 0)
-            profiles_ok += 1
-        except Exception:
-            _logger.exception("index_all: profile %r failed — skipping", name)
-            profiles_failed.append(name)
+
+        profile_names = [p["name"] for p in profiles]
+        first_exc: Exception | None = None
+
+        def _run_one_profile(profile_name: str) -> dict:
+            """Per-profile worker: own pg_conn, own advisory lock."""
+            pg_conn_thread = open_production_pg()
+            try:
+                return index_profile(
+                    pg_conn_thread,
+                    profile_name=profile_name,
+                    embedder=embedder,
+                    progress=False,  # avoid tqdm collision
+                    max_workers=max_workers,
+                    full_reindex=full_reindex,
+                )
+            finally:
+                pg_conn_thread.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=profile_workers) as executor:
+            future_to_name = {
+                executor.submit(_run_one_profile, name): name
+                for name in profile_names
+            }
+            for future in concurrent.futures.as_completed(future_to_name):
+                name = future_to_name[future]
+                exc = future.exception()
+                if exc is not None:
+                    _logger.exception(
+                        "index_all: profile %r failed — will re-raise after all complete",
+                        name,
+                        exc_info=exc,
+                    )
+                    profiles_failed.append(name)
+                    if first_exc is None:
+                        first_exc = exc
+                else:
+                    summary = future.result()
+                    agg_modules += summary["modules"]
+                    agg_views += summary["views"]
+                    agg_qweb += summary["qweb"]
+                    agg_embeddings += summary.get("embeddings", 0)
+                    agg_js_patches += summary.get("js_patches", 0)
+                    agg_owl_comps += summary.get("owl_comps", 0)
+                    profiles_ok += 1
+
+        if first_exc is not None:
+            raise first_exc
 
     return {
         "profiles_ok": profiles_ok,
