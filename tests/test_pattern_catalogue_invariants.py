@@ -1,22 +1,21 @@
-"""Recall smoke: verify suggest_pattern returns expected patterns for known intents.
+"""Pattern catalogue invariants: data-shape, presence, and pipeline non-crash guards.
 
 Uses FakeEmbedder for deterministic embeddings (no Ollama required).
 
-NOTE on FakeEmbedder semantics:
+IMPORTANT — FakeEmbedder limitation:
 FakeEmbedder generates random-but-stable unit vectors seeded by content hash — all
 different texts map to different vectors, but cosine similarity is essentially random
 (no real semantic signal).  As a result, recall assertions on SEMANTIC matching
-(e.g. "does 'compute method with depends' return the compute-field pattern?") are not
-meaningful with FakeEmbedder.
+(e.g. "does 'compute method with depends' return the compute-field pattern?") are NOT
+meaningful with FakeEmbedder and are not tested here.
 
-This test instead validates DATA-SHAPE and CATALOGUE-PRESENCE invariants:
-1. suggest_pattern returns a valid formatted response (not an error string).
-2. After seeding, at least one top-5 result exists in the catalogue.
-3. The catalogue contains ALL expected new W3-3 pattern IDs (anti-truncation guard).
-4. Parametrized queries return non-empty results (pipeline smoke, not semantic recall).
-
-Semantic recall (does the right pattern surface for a given intent?) requires a real
-Ollama embedding model and is gated on an integration environment.
+This module validates STRUCTURAL INVARIANTS only:
+1. Catalogue presence: expected pattern IDs exist in patterns.json (anti-truncation guard).
+2. Catalogue shape: ≥80 entries, ≥3 gotchas per W3-3 entry.
+3. Pipeline non-crash: suggest_pattern runs end-to-end and returns a formatted header.
+   (This is NOT a semantic recall test — FakeEmbedder cannot validate which pattern
+   surfaces for a given intent. Real recall benchmark requires Ollama and is gated on
+   M7 integration environment.)
 """
 import json
 import os
@@ -224,14 +223,15 @@ def _seeded_w3_patterns(clean_pg_embeddings, clean_neo4j):
         ("domain OR operator pipe prefix domain_force", "xml"),
     ],
 )
-def test_suggest_pattern_returns_valid_response(
+def test_suggest_pattern_pipeline_shape(
     intent, language, _seeded_w3_patterns
 ):
-    """suggest_pattern returns a header line (not an error) for known W3-3 intents.
+    """suggest_pattern pipeline non-crash: returns a formatted header for W3-3 intents.
 
     NOTE: FakeEmbedder produces random vectors — the TOP result may NOT be the
-    semantically correct pattern.  This test only checks that the pipeline runs
-    end-to-end and returns a properly formatted response, not semantic accuracy.
+    semantically correct pattern. This test only checks that the pipeline runs
+    end-to-end and returns a properly formatted response. It is NOT a semantic
+    recall test. Real recall validation requires Ollama and is deferred to M7.
     """
     pg, neo4j_driver = _seeded_w3_patterns
     from src.indexer.embedder import FakeEmbedder

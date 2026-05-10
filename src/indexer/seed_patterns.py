@@ -14,6 +14,7 @@ Per ADR-0003: PatternExample = Neo4j node (composite key pattern_id) + reuse
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import logging
@@ -40,18 +41,16 @@ _PATTERNS_SCHEMA_FILE = (
     Path(__file__).resolve().parent.parent / "data" / "patterns.schema.json"
 )
 
-# Module-level cached validator — built once on first call to _load_patterns.
-_patterns_validator = None
-
-
+@functools.lru_cache(maxsize=1)
 def _get_patterns_validator():
-    """Return a cached Draft202012Validator for patterns.schema.json."""
-    global _patterns_validator
-    if _patterns_validator is None:
-        from jsonschema import Draft202012Validator
-        schema = json.loads(_PATTERNS_SCHEMA_FILE.read_text(encoding="utf-8"))
-        _patterns_validator = Draft202012Validator(schema)
-    return _patterns_validator
+    """Return a cached Draft202012Validator for patterns.schema.json.
+
+    lru_cache makes construction thread-safe and lazy — safe under
+    --profile-workers parallel indexing (M6 W2-8).
+    """
+    from jsonschema import Draft202012Validator
+    schema = json.loads(_PATTERNS_SCHEMA_FILE.read_text(encoding="utf-8"))
+    return Draft202012Validator(schema)
 
 
 def _compute_patterns_sha256(json_path: Path) -> str:
