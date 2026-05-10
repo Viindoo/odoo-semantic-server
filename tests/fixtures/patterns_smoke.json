@@ -5,8 +5,9 @@
     "file_ref": "fixtures/smoke/sale_order.py:1",
     "snippet_text": "@api.depends('partner_id.country_id')\ndef _compute_x(self):\n    for r in self:\n        r.x = r.partner_id.country_id.name",
     "gotchas": [
-      "Missing Many2one root in @api.depends path",
-      "Don't add depends on related= field"
+      "Missing Many2one root in @api.depends path silently breaks recompute when relation changes",
+      "Don't add depends on related= field — the dotted path on the related origin is what triggers",
+      "Stored compute on Many2one chain re-fires on every parent write — keep dependency path minimal"
     ],
     "odoo_version_min": "99.0",
     "language": "python",
@@ -18,8 +19,9 @@
     "file_ref": "fixtures/smoke/sale_order.py:50",
     "snippet_text": "def action_confirm(self):\n    res = super().action_confirm()\n    return res",
     "gotchas": [
-      "Missing return — super result lost",
-      "Old-style super(ClassName, self) anti-pattern"
+      "Missing return — super result lost, breaks chained action callers",
+      "Old-style super(ClassName, self) anti-pattern in v13+ (use bare super())",
+      "action_confirm runs in caller's environment — sudo() inside loses tracking context"
     ],
     "odoo_version_min": "99.0",
     "language": "python",
@@ -31,8 +33,9 @@
     "file_ref": "fixtures/smoke/sale_views.xml:1",
     "snippet_text": "<xpath expr=\"//field[@name='partner_id']\" position=\"after\">\n    <field name=\"x_custom\"/>\n</xpath>",
     "gotchas": [
-      "position='replace' breaks downstream extensions",
-      "Specific xpath expr avoids ambiguous match"
+      "position='replace' breaks downstream extensions silently",
+      "Specific xpath expr avoids ambiguous match across multi-field views",
+      "Inserting after a hidden field places node in DOM but invisible — verify with attrs={'invisible': '...'}"
     ],
     "odoo_version_min": "99.0",
     "language": "xml",
@@ -44,8 +47,9 @@
     "file_ref": "fixtures/smoke/widget.js:1",
     "snippet_text": "patch(MyWidget.prototype, {\n    setup() {\n        super.setup();\n    }\n});",
     "gotchas": [
-      "Don't use Class.include() in v17+ — use patch()",
-      "Always call super.setup() inside patched setup"
+      "Don't use Class.include() in v17+ — use patch() from @web/core/utils/patch",
+      "Always call super.setup() inside patched setup or hooks won't register",
+      "patch() applies at module load — patches are NOT idempotent across hot-reload, restart browser"
     ],
     "odoo_version_min": "99.0",
     "language": "js",
