@@ -204,31 +204,31 @@
 
 - [ ] **Auto-clone qua SSH khi user add repo (moved from M5):** detect SSH URL trong Web UI → auto-clone via Ed25519 private key + `GIT_SSH_COMMAND` + `tempfile.mkstemp(mode=0o600)` → set `local_path` automatically; companion: host fingerprint management UI (`StrictHostKeyChecking=accept-new` policy)
 - [ ] `src/indexer/incremental.py`: git commit hash tracking, skip unchanged modules
-- [ ] Multi-version: index song song nhiều versions
+- [ ] Multi-version: index song song nhiều versions (foundation `--max-workers` đã ship trong Wave 1 P3)
 - [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"
-- [ ] OpenUpgrade support: migration path awareness across versions
 - [ ] **Pattern catalogue maintenance (M4.6 defer):**
     - [ ] Auto-reseed `seed_patterns.py` integrate vào indexer run thay vì one-shot CLI manual (per M4.6 plan §Defer M6)
     - [ ] Seed expansion từ ~50 → ~200 patterns + community contribution path (PR template + `src/data/patterns.json` review checklist)
     - [ ] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch)
 - [ ] **EE_CONFUSION auto-detect (M4.6 defer):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Vẫn keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
 - [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 defer):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name (per M4.6 plan §Defer M6).
-- [ ] **Per-profile advisory locks (P3):** `src/indexer/pipeline.py` — thay `_LOCK_ID` global constant bằng `_profile_lock_id(profile_name: str) -> int` (hash `f"odoo-semantic-{profile_name}"`). Cập nhật `indexer_is_running()` nhận thêm `profile_name` param. Hai profile khác nhau có thể index song song không block nhau.
-- [ ] **ThreadPoolExecutor parallel repo scan (P3):** `src/indexer/pipeline.py` `index_profile()` thêm `max_workers: int = 1` param. Khi `> 1`: wrap `_index_repo()` bằng `ThreadPoolExecutor` — mỗi thread cần PG connection riêng.
-- [ ] **PostgreSQL connection pool (P3) — proper fix cho H1:** `src/mcp/server.py` + `src/mcp/middleware.py` — thay singleton `_pg_conn` + `_PG_LOCK` bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`. Workaround tạm thời (_PG_LOCK bao quanh cursor trong tool handlers) đã ship trong fix/pre-launch-critical.
+- [x] **Per-profile advisory locks (P3 — Wave 1):** `src/indexer/pipeline.py` — `_LOCK_ID` global constant thay bằng `_profile_lock_id(profile_name)` hash. `indexer_is_running()` nhận thêm `profile_name` param. Hai profile khác nhau index song song không block nhau. Tests cập nhật + 2 test mới (`test_different_profiles_dont_block`, `test_same_profile_blocks`).
+- [x] **ThreadPoolExecutor parallel repo scan (P3 — Wave 1):** `src/indexer/pipeline.py` `index_profile()` + `index_all()` thêm `max_workers: int = 1` param. Khi `> 1`: `ThreadPoolExecutor` mỗi worker thread tự `open_production_pg()` cho PG conn riêng (Neo4jWriter share-safe per per-method session). CLI `--max-workers` arg trong `src/indexer/__main__.py`.
+- [x] **PostgreSQL connection pool (P3 — Wave 1) — proper fix cho H1:** `src/mcp/server.py` + `src/mcp/middleware.py` + `src/mcp/health.py` — singleton `_pg_conn` + `_PG_LOCK` thay bằng `psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10)`. `_checkout_pg()` context manager registers pgvector per-checkout (idempotent). `_PG_LOCK` xoá hoàn toàn khỏi codebase.
 
-**Section H — Environment harness (P2 — single source of truth, Odoo-style):**
+**Section H — Environment harness (P2 — Wave 1 shipped 2026-05-10):**
 
-Mục tiêu: runtime + tests + CI + Docker compose cùng đọc 1 nguồn version pinning. Tránh drift kiểu `.env.example` ghi `neo4j:5.26.25` nhưng `ci.yml` hardcode khác (đã có precedent — xem CLAUDE.md "Image Versions — Nguồn Sự Thật").
+Mục tiêu: runtime + tests + CI + Docker compose cùng đọc 1 nguồn version pinning. Tránh drift kiểu `.env.example` ghi `neo4j:5.26.25` nhưng `nightly-smoke.yml` hardcode khác.
 
-- [ ] **Single source of truth cho env versions (Odoo-style):** centralize `[tool.versions]` trong `pyproject.toml` HOẶC `versions.toml` riêng. Runtime (`src/config.py` reader), `tests/conftest.py` (testcontainers), `ci.yml` (services), và `docker-compose.yml` cùng tham chiếu. Hiện `pyproject.toml` chỉ pin `requires-python = ">=3.12"`; Neo4j/PostgreSQL versions phân tán nhiều nơi.
-- [ ] **Lock min Neo4j version tại runtime:** `src/mcp/server.py` startup gọi `driver.execute_query("CALL dbms.components()")`, parse version, fail-fast nếu < `5.x` (chốt minor cụ thể). Bỏ qua nếu CI=true (service container đã pinned).
-- [ ] **Lock min PostgreSQL version tại runtime:** `src/db/migrate.py` đầu `run_migrations()` chạy `SELECT current_setting('server_version_num')::int`, fail-fast nếu < `160000` (PG 16). Cần pgvector ≥ 0.8 — check `SELECT extversion FROM pg_extension WHERE extname='vector'`.
-- [ ] **Python 3.12 compliance enforcement:**
-    - Bỏ `try/except ImportError` quanh `psycopg2.extensions` trong `src/cli.py:14-17` (psycopg2-binary là mandatory dep — guard dead code, post-M5.5 audit).
-    - Đổi `datetime.now()` → `datetime.now(tz=timezone.utc)` tại `tests/test_web_ui_repos.py:514, 552` (khớp prod code + cột `TIMESTAMPTZ` — post-M5.5 audit).
-    - `CONTRIBUTING.md`: thêm Python style section — cấm `from __future__ import annotations`, `typing.Dict/List/Optional/Union[]`, `sys.version_info` guards. Enforce ruff rules `UP` (pyupgrade) với target `py312`.
-- [ ] **Type alias PEP 695 cho `conn` parameter:** `src/db/job_registry.py` + `auth_registry.py` + `repo_registry.py` thêm `type PgConn = psycopg2.extensions.connection` (3.12 native) thay vì để hint trống.
+- [x] **Single source of truth cho env versions (Odoo-style — Wave 1):** `.env.example` declare cả `NEO4J_IMAGE` và `PG_IMAGE`. `docker-compose.yml` đọc qua `${PG_IMAGE:-...}` slot. `nightly-smoke.yml` có comment header note nghĩa vụ sync manually (architectural constraint GitHub Actions service containers parse-time). Anti-drift guard `tests/test_env_versions_sync.py` regex parse `.env.example` + assert workflow chứa cùng image strings. CLAUDE.md "Image Versions — Nguồn Sự Thật" mở rộng cover cả PG.
+- [x] **Lock min Neo4j version tại runtime (Wave 1):** `src/mcp/server.py _get_driver()` gọi `CALL dbms.components()` lần đầu lifetime, fail-fast nếu major < 5. Skip nếu `os.getenv("CI") == "true"` (CI service container đã pinned). Module-level `_version_checked` flag tránh re-query.
+- [x] **Lock min PostgreSQL + pgvector version (Wave 1):** `src/db/migrate.py run_migrations()` đầu function chạy `SELECT current_setting('server_version_num')::int`, fail-fast nếu < `160000` (PG 16). `_ensure_extension()` thêm `SELECT extversion FROM pg_extension WHERE extname='vector'`, fail-fast nếu < 0.8.
+- [x] **Python 3.12 compliance enforcement (Wave 1):**
+    - `src/cli.py`: `try/except ImportError` quanh `psycopg2.extensions` xoá (psycopg2-binary mandatory).
+    - `tests/test_web_ui_repos.py`: `datetime.now()` → `datetime.now(tz=UTC)` tại 2 call sites.
+    - `pyproject.toml [tool.ruff.lint] select`: thêm `"UP"` rule. 13 UP violations existing auto-fixed (≤ 20 threshold): `Optional[X]` → `X | None`, `timezone.utc` → `UTC`, unused imports cleaned.
+    - `CONTRIBUTING.md`: section "Python 3.12 Code Style" mới — cấm `from __future__ import annotations`, `typing.Dict/List/Optional/Union[]`, `sys.version_info` guards.
+- [x] **Type alias PEP 695 cho `conn` parameter (Wave 1):** `src/db/_types.py` mới định nghĩa `type PgConn = psycopg2.extensions.connection` (PEP 695 native 3.12). 22 functions trong `src/db/{job,auth,repo}_registry.py` + `migrate.py` + `src/manager/__main__.py` annotate `conn: PgConn`.
 
 **Section G — Pre-launch audit deferred (audited 2026-05-09 → shipped 2026-05-10):**
 - [x] **M3 — Feedback API trên MCP server (P2):** `feedback.router` được mount vào ASGI app của MCP server (port 8002) qua FastAPI sub-app + `app.mount("")`. Remote end-user nay submit được feedback. Auth X-API-Key middleware bao trùm — không cần loopback guard riêng.
