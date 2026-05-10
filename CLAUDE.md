@@ -381,6 +381,22 @@ python -m src.indexer index-repo --all --profile-workers 3 --max-workers 2
 
 3 profiles parallel (Wave 2 W2-8), each profile sử dụng 2 repo-workers nội bộ (Wave 1 P3). Per-profile Postgres advisory lock (Wave 1 P1) đảm bảo safe. Each profile-worker thread **phải tự open pg_conn** (psycopg2 thread-safety). `progress=False` forced khi `profile_workers > 1` (avoid tqdm bar collision).
 
+## SSH Auto-Clone (M6 Wave 4)
+
+Web UI `POST /repos/{id}/clone` auto-clone SSH repos using FERNET-decrypted key (M5 ADR-0004). Policy details in `docs/adr/0008`.
+
+**URL detection:** regex `^git@|^ssh://` for SSH; HTTPS manual (out of scope M6).
+
+**Key delivery:** `GIT_SSH_COMMAND` env var, NOT `-i` flag — prevents leak in `/proc/<pid>/cmdline`.
+
+**Tempfile invariant:** `mkstemp(mode=0o600, prefix='osm-ssh-')` + `try/finally os.unlink()` — cleanup on success/failure/exception. SIGKILL leak accepted (system tmpdir cleanup on reboot).
+
+**Known_hosts:** project-local `~/.local/share/odoo-semantic-mcp/known_hosts` (NEVER system `~/.ssh/`), multi-tenant safe. Policy: `StrictHostKeyChecking=accept-new` auto-persists fingerprints.
+
+**Full clone** (no `--depth=1`) — ADR-0007 incremental indexer needs full git history. Trade-off: 3–10 min per large repo; handled via background subprocess.
+
+**Lifecycle:** `clone_status` column (manual/pending/cloned/error) + UI poll every 5s. Cloner subprocess updates DB on complete. Schema delta: `repos.ssh_key_id` FK + `repos.clone_status` enum.
+
 ## Tài Liệu Liên Quan
 
 | File | Đọc khi nào |
@@ -392,4 +408,4 @@ python -m src.indexer index-repo --all --profile-workers 3 --max-workers 2
 | `docs/adr/` | Architecture Decision Records — đọc trước khi đụng schema/policy |
 | `CONTRIBUTING.md` | Setup dev, chạy tests, workflow commit |
 
-**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6) · `0004` Defined-in ranking heuristic (M5.5) · `0005` core coverage version paths (M5.5) · `0006` environment harness (M6 Wave 1) · `0007` incremental indexer (M6 Wave 2 — head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel).
+**ADR đã có:** `0001` schema evolution (PostgreSQL no ALTER until M6) · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version, M4.5) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings, M4.6) · `0004` Defined-in ranking heuristic (M5.5) · `0005` core coverage version paths (M5.5) · `0006` environment harness (M6 Wave 1) · `0007` incremental indexer (M6 Wave 2 — head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel) · `0008` SSH auto-clone (M6 Wave 4 — URL detection, key delivery via env, tempfile safety, project-local known_hosts, full clone for incremental support, background lifecycle).
