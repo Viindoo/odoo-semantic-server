@@ -197,6 +197,21 @@ def list_feedback(conn: PgConn, pattern_node_id: str) -> list[dict]:
         ]
 
 
+def get_ssh_key_by_id(conn: PgConn, key_id: int) -> dict | None:
+    """Return ssh_key_pairs row (including private_key_encrypted) or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, name, public_key, private_key_encrypted, key_version, created_at "
+            "FROM ssh_key_pairs WHERE id = %s",
+            (key_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols, row))
+
+
 def save_ssh_key(
     conn: PgConn, name: str, public_key: str, private_key_encrypted: str, key_version: int = 1
 ) -> int:

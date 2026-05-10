@@ -135,3 +135,29 @@ def get_repos_by_clone_status(
             (profile_name, status),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def get_repo_by_id(conn: PgConn, repo_id: int) -> dict | None:
+    """Return a single repo row joined with its profile, or None if not found."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT r.*, p.name AS profile_name, p.odoo_version
+            FROM repos r LEFT JOIN profiles p ON r.profile_id = p.id
+            WHERE r.id = %s
+            """,
+            (repo_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+
+def update_repo_local_path(conn: PgConn, repo_id: int, local_path: str) -> None:
+    """Update local_path for a repo and bump last_indexed_at."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE repos SET local_path = %s, last_indexed_at = NOW() WHERE id = %s",
+            (local_path, repo_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"repo id={repo_id} not found")
