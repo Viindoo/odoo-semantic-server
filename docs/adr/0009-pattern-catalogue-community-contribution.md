@@ -20,7 +20,7 @@ Community PRs to `src/data/patterns.json` MUST pass the following checks (enforc
 5. **Gotchas specificity** — ≥3 gotchas per entry. Specific = concrete API reference (e.g. `@api.depends()`), edge case (e.g. "trailing slash in XPath"), or version skew (e.g. "v17-only"). Generic boilerplate (e.g. "always test your code") rejected.
 6. **NO Odoo Enterprise references** — `snippet_text` and `gotchas` MUST NOT mention:
    - Enterprise-only module paths (`enterprise/`, `account_accountant`, `web_studio`, `knowledge`, `pos_restaurant`, etc.)
-   - EE license markers (`OEEL-1`, `LGPL-3-OCA`, etc.)
+   - EE license markers (`OEEL-1` — Odoo Enterprise Edition License)
    - Enterprise-specific features (Studio, Database Cleaning, Valuation Methods, etc.)
    - Proprietary Viindoo addons (viin_* modules not in public CE ecosystem)
 7. **`core_symbol_names` qualified resolution** — any `core_symbol_names` (e.g. `odoo.api.depends`, `odoo.fields.Char`) SHOULD resolve when Odoo CE is indexed. CI performs soft-fail check (warns if symbol not found, does not block PR).
@@ -65,4 +65,4 @@ Community PRs to `src/data/patterns.json` MUST pass the following checks (enforc
 - `src/data/patterns.json` — catalogue source (54 entries as of M6 Wave 2)
 - `src/data/patterns.schema.json` — JSON schema (M6 Wave 3 W3-2)
 - `.github/PULL_REQUEST_TEMPLATE/patterns.md` — PR template (M6 Wave 3 W3-1)
-- M6 Wave 3 plan: `docs/superpowers/plans/2026-05-10-milestone-6-wave-3-catalogue-ecosystem.md`
+- M6 Wave 3 progress: see `TASKS.md` M6 Wave 3 section

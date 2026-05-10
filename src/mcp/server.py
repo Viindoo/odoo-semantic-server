@@ -1845,6 +1845,13 @@ def _diff_method_across_versions(
         presence_label = "both versions present"
     elif from_data and not to_data:
         presence_label = f"deleted in {to_version} (not found)"
+    elif not from_data and not to_data:
+        presence_label = (
+            f"absent in both {from_version} and {to_version}"
+            " (model/method may not be indexed)"
+        )
+        lines.append(f"├─ Status:           {presence_label}")
+        return "\n".join(lines)
     else:
         presence_label = f"added in {to_version} (not in {from_version})"
     lines.append(f"├─ Status:           {presence_label}")

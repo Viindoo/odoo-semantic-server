@@ -12,7 +12,7 @@ Brief summary of the pattern entry you're adding (1–2 sentences). What does th
 - [ ] **≥3 specific gotchas** — each gotcha mentions concrete API (e.g., `@api.depends()`) or concrete edge case (e.g., "trailing slash in XPath expression")
 - [ ] **NO Odoo Enterprise references**:
   - [ ] No enterprise-only module paths (`enterprise/`, `account_accountant`, `web_studio`, `knowledge`, `pos_restaurant`, etc.)
-  - [ ] No EE license markers (`OEEL-1`, `LGPL-3-OCA`, etc.)
+  - [ ] No EE license markers (`OEEL-1` — Odoo Enterprise Edition License)
   - [ ] No proprietary Viindoo addons (viin_* not in public CE)
   - [ ] No EE-specific features (Studio, Database Cleaning, Valuation Methods, etc.)
 - [ ] **`core_symbol_names` (if used)** — qualified names like `odoo.api.depends`, `odoo.fields.Char` (CI will warn if not found in CE index)

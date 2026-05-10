@@ -722,6 +722,79 @@ def test_find_override_point_output_contract(pattern_snapshot_db):
     assert any(ln.startswith(("├─", "└─")) for ln in out.splitlines())
 
 
+def test_find_override_point_diff_output_contract(pattern_snapshot_db, neo4j_driver):
+    """find_override_point cross-version diff mode: header + all section headers + tree connectors.
+
+    Seeds a second version (92.0) alongside the existing 93.0 data, then calls
+    diff mode. Guards against output-format drift in _diff_method_across_versions.
+    """
+    import os as _os
+
+    from src.indexer.models import MethodInfo, ModelInfo, ModuleInfo, ParseResult
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    _DIFF_VERSION = "92.0"  # to_version (older)
+    from_version = pattern_snapshot_db  # "93.0"
+
+    writer = Neo4jWriter(
+        uri=_os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=_os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=_os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_DIFF_VERSION)
+
+    mod = ModuleInfo(
+        name="sale", odoo_version=_DIFF_VERSION, repo="odoo",
+        path="/odoo/addons/sale", depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=_DIFF_VERSION,
+        methods=[
+            MethodInfo(
+                name="action_confirm", has_super_call=True,
+                decorators=["api.multi"],
+                convention_kind="action", super_safety="always",
+                return_required=True,
+            ),
+        ],
+    )
+    writer.write_results([ParseResult(module=mod, models=[model])])
+    writer.close()
+
+    from src.mcp.server import _find_override_point
+    out = _find_override_point(
+        "sale.order", "action_confirm",
+        odoo_version=from_version,
+        to_version=_DIFF_VERSION,
+        _driver=neo4j_driver,
+    )
+
+    # Header
+    assert "Method version diff (" in out
+    assert from_version in out
+    assert "→" in out
+    assert _DIFF_VERSION in out
+
+    # All section headers present
+    for section in ["Status:", "Decorator changes:", "Convention:", "Signature:", "Super safety:"]:
+        assert section in out, f"Missing section {section!r} in diff output"
+
+    # Tree connectors
+    assert any(ln.startswith(("├─", "└─")) for ln in out.splitlines())
+
+    # No None leak
+    assert "[None]" not in out
+    assert "(None)" not in out
+
+    # Both versions present → status says "both"
+    assert "both" in out
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_DIFF_VERSION)
+
+
 @pytest.mark.postgres
 def test_suggest_pattern_output_contract(pattern_snapshot_db, clean_pg_embeddings):
     """suggest_pattern header + tree connectors + no None leak.
