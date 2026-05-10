@@ -18,6 +18,7 @@ import psycopg2
 
 from src import config
 from src.db import auth_registry, repo_registry
+from src.db._types import PgConn
 
 # Profile name: alphanumeric + underscore, 1-50 chars (matches database TEXT but
 # enforces shell-safe + readable convention).
@@ -27,7 +28,7 @@ _PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
 _VERSION_RE = re.compile(r"^\d{1,2}\.\d+$")
 
 
-def _open_conn() -> psycopg2.extensions.connection:
+def _open_conn() -> PgConn:
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
     if not dsn:
         print(
@@ -47,7 +48,7 @@ def _open_conn() -> psycopg2.extensions.connection:
     return conn
 
 
-def _cmd_add_profile(args, conn) -> int:
+def _cmd_add_profile(args, conn: PgConn) -> int:
     if not _PROFILE_NAME_RE.match(args.name):
         print(
             f"✗ Profile name '{args.name}' invalid. "
@@ -76,7 +77,7 @@ def _cmd_add_profile(args, conn) -> int:
     return 0
 
 
-def _cmd_add_repo(args, conn) -> int:
+def _cmd_add_repo(args, conn: PgConn) -> int:
     profiles = [p for p in repo_registry.list_profiles(conn) if p["name"] == args.profile]
     if not profiles:
         print(f"✗ Profile '{args.profile}' not found. Run add-profile first.", file=sys.stderr)
@@ -98,7 +99,7 @@ def _cmd_add_repo(args, conn) -> int:
     return 0
 
 
-def _cmd_list(_args, conn) -> int:
+def _cmd_list(_args, conn: PgConn) -> int:
     profiles = repo_registry.list_profiles(conn)
     if not profiles:
         print("(no profiles yet — run: python -m src.manager add-profile <name> --version <ver>)")
@@ -114,7 +115,7 @@ def _cmd_list(_args, conn) -> int:
     return 0
 
 
-def _cmd_create_api_key(args, conn) -> int:
+def _cmd_create_api_key(args, conn: PgConn) -> int:
     if not args.name:
         print("✗ Name is required.", file=sys.stderr)
         return 1

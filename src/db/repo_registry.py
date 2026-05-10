@@ -4,8 +4,10 @@ import psycopg2
 import psycopg2.errors
 from psycopg2.extras import RealDictCursor
 
+from src.db._types import PgConn
 
-def add_profile(conn, name: str, odoo_version: str, description: str = "") -> int:
+
+def add_profile(conn: PgConn, name: str, odoo_version: str, description: str = "") -> int:
     """Insert a new profile. Raises ValueError if name already exists."""
     with conn.cursor() as cur:
         try:
@@ -19,14 +21,14 @@ def add_profile(conn, name: str, odoo_version: str, description: str = "") -> in
             raise ValueError(f"Profile '{name}' already exists") from e
 
 
-def list_profiles(conn) -> list[dict]:
+def list_profiles(conn: PgConn) -> list[dict]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM profiles ORDER BY id")
         return [dict(r) for r in cur.fetchall()]
 
 
 def add_repo(
-    conn, profile_id: int, url: str, branch: str, local_path: str
+    conn: PgConn, profile_id: int, url: str, branch: str, local_path: str
 ) -> int:
     with conn.cursor() as cur:
         cur.execute(
@@ -37,7 +39,7 @@ def add_repo(
         return cur.fetchone()[0]
 
 
-def list_repos(conn) -> list[dict]:
+def list_repos(conn: PgConn) -> list[dict]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT r.*, p.name AS profile_name, p.odoo_version
@@ -47,7 +49,7 @@ def list_repos(conn) -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def get_repos_for_profile(conn, profile_name: str) -> list[dict]:
+def get_repos_for_profile(conn: PgConn, profile_name: str) -> list[dict]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT r.*, p.odoo_version
@@ -58,7 +60,7 @@ def get_repos_for_profile(conn, profile_name: str) -> list[dict]:
 
 
 def update_repo_status(
-    conn, repo_id: int, status: str, error_msg: str | None = None
+    conn: PgConn, repo_id: int, status: str, error_msg: str | None = None
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(

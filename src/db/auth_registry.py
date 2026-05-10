@@ -2,8 +2,10 @@
 import hashlib
 import secrets
 
+from src.db._types import PgConn
 
-def create_api_key(conn, name: str) -> tuple[str, str, int]:
+
+def create_api_key(conn: PgConn, name: str) -> tuple[str, str, int]:
     """Create API key. Return (raw_key, key_prefix, id). raw_key shown once.
 
     Args:
@@ -28,7 +30,7 @@ def create_api_key(conn, name: str) -> tuple[str, str, int]:
     return raw, key_prefix, row[0]
 
 
-def verify_api_key(conn, raw_key: str) -> int | None:
+def verify_api_key(conn: PgConn, raw_key: str) -> int | None:
     """Return api_key_id if active + valid. Update last_used_at. Return None if invalid.
 
     Args:
@@ -59,7 +61,7 @@ def verify_api_key(conn, raw_key: str) -> int | None:
     return key_id
 
 
-def list_api_keys(conn) -> list[dict]:
+def list_api_keys(conn: PgConn) -> list[dict]:
     """List all API keys (without key_hash for security).
 
     Args:
@@ -77,7 +79,7 @@ def list_api_keys(conn) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def deactivate_api_key(conn, key_id: int) -> None:
+def deactivate_api_key(conn: PgConn, key_id: int) -> None:
     """Deactivate an API key by id.
 
     Args:
@@ -90,7 +92,7 @@ def deactivate_api_key(conn, key_id: int) -> None:
         conn.commit()
 
 
-def log_usage(conn, api_key_id: int | None, tool_name: str, response_ms: int) -> None:
+def log_usage(conn: PgConn, api_key_id: int | None, tool_name: str, response_ms: int) -> None:
     """Log tool usage. Fire-and-forget — caller wraps in asyncio.create_task where needed.
 
     Args:
@@ -114,7 +116,7 @@ def log_usage(conn, api_key_id: int | None, tool_name: str, response_ms: int) ->
         pass  # best-effort
 
 
-def list_ssh_keys(conn) -> list[dict]:
+def list_ssh_keys(conn: PgConn) -> list[dict]:
     """List SSH key pairs (without private key for security).
 
     Args:
@@ -132,7 +134,7 @@ def list_ssh_keys(conn) -> list[dict]:
 
 
 def create_feedback(
-    conn,
+    conn: PgConn,
     *,
     pattern_node_id: str,
     api_key_id: int | None,
@@ -164,7 +166,7 @@ def create_feedback(
         return row[0]
 
 
-def list_feedback(conn, pattern_node_id: str) -> list[dict]:
+def list_feedback(conn: PgConn, pattern_node_id: str) -> list[dict]:
     """Return all feedback entries for a given pattern node, newest first.
 
     Args:
@@ -196,7 +198,7 @@ def list_feedback(conn, pattern_node_id: str) -> list[dict]:
 
 
 def save_ssh_key(
-    conn, name: str, public_key: str, private_key_encrypted: str, key_version: int = 1
+    conn: PgConn, name: str, public_key: str, private_key_encrypted: str, key_version: int = 1
 ) -> int:
     """Save SSH key pair. Return id.
 
