@@ -126,8 +126,25 @@ CREATE TABLE IF NOT EXISTS pattern_feedback (
 CREATE INDEX IF NOT EXISTS idx_pattern_feedback_node ON pattern_feedback (pattern_node_id);
 """
 
+_INDEXER_JOBS_SQL = """
+CREATE TABLE IF NOT EXISTS indexer_jobs (
+    id           SERIAL PRIMARY KEY,
+    profile_name TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued','running','done','error')),
+    pid          INTEGER,
+    started_at   TIMESTAMPTZ,
+    finished_at  TIMESTAMPTZ,
+    error_msg    TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_indexer_jobs_profile ON indexer_jobs(profile_name);
+CREATE INDEX IF NOT EXISTS ix_indexer_jobs_status  ON indexer_jobs(status);
+CREATE INDEX IF NOT EXISTS ix_indexer_jobs_created ON indexer_jobs(created_at DESC);
+"""
+
 # Public alias — tests and callers that import SCHEMA_SQL get the full DDL string
-SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL + _FEEDBACK_SQL
+SCHEMA_SQL = _BASE_SQL + _EMBEDDINGS_SQL + _AUTH_SQL + _FEEDBACK_SQL + _INDEXER_JOBS_SQL
 
 
 def _vector_extension_available(conn) -> bool:
@@ -185,6 +202,11 @@ def run_migrations(conn) -> None:
 
     with conn.cursor() as cur:
         cur.execute(_FEEDBACK_SQL)
+    if not conn.autocommit:
+        conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(_INDEXER_JOBS_SQL)
     if not conn.autocommit:
         conn.commit()
 
