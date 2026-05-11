@@ -1,7 +1,7 @@
 """
-Systemd template guard — unit tests (no Docker needed).
+Systemd service file guard — unit tests (no Docker needed).
 
-Asserts that every EnvironmentFile directive in systemd service templates uses
+Asserts that every EnvironmentFile directive in systemd service files uses
 the optional-file syntax (``EnvironmentFile=-/path``) so that a missing .env
 file does not cause systemd to fail the unit with ``Result: resources`` and
 trigger an infinite restart loop.
@@ -11,23 +11,27 @@ and continues running.  Requiring the .env file at the systemd level defeats
 that graceful handling — 1146 restart loops were observed in production when
 the file was absent on a fresh deployment.
 
+Note: the ``systemd/`` directory with ``%i``/``%h`` instance-unit templates was
+removed.  Those specifiers are only valid for *instance* units
+(``foo@bar.service``), but ``install.sh --systemd`` deploys them as *regular*
+units, causing ``systemd-analyze verify`` to report
+``Invalid user/group name or numeric ID``.  All unit files are now under
+``docs/deploy/`` (Variant A — production canonical).
+
 Reference: systemd.exec(5) — prefix ``-`` means "ignore if file missing".
 """
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 
-# Directories that contain service unit files or templates shipped in the repo.
-# Only repo-tracked files are tested; /etc/systemd/ is managed by the operator.
+# Only docs/deploy/ is canonical now; systemd/ (Variant B) has been removed.
 SERVICE_FILE_PATTERNS = [
     "docs/deploy/*.service",
-    "systemd/*.service",
-    "systemd/*.service.template",
 ]
 
 
 def _collect_service_files():
-    """Return all .service / .service.template files tracked in the repo."""
+    """Return all .service files tracked in the repo."""
     found = []
     for pattern in SERVICE_FILE_PATTERNS:
         found.extend(sorted(REPO_ROOT.glob(pattern)))
@@ -43,7 +47,7 @@ def test_environment_file_is_optional_in_all_templates():
     """
     service_files = _collect_service_files()
     assert service_files, (
-        "No .service or .service.template files found under docs/deploy/ or systemd/."
+        "No .service files found under docs/deploy/."
         " Check SERVICE_FILE_PATTERNS in this test if the directory layout changed."
     )
 
@@ -71,10 +75,9 @@ def test_environment_file_is_optional_in_all_templates():
 
 
 def test_service_files_are_present():
-    """Sanity check: the expected template files exist and are non-empty."""
+    """Sanity check: the expected canonical service files exist and are non-empty."""
     expected = [
-        REPO_ROOT / "systemd" / "odoo-semantic-mcp.service.template",
-        REPO_ROOT / "systemd" / "odoo-semantic-webui.service.template",
+        REPO_ROOT / "docs" / "deploy" / "odoo-semantic-mcp.service",
         REPO_ROOT / "docs" / "deploy" / "odoo-semantic-webui.service",
     ]
     for path in expected:
