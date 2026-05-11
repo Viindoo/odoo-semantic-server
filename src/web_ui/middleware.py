@@ -13,6 +13,7 @@ Exempt paths (no auth required):
     /health         Health probe (if present on this port)
 """
 
+import os
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -52,6 +53,8 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
     """Redirect unauthenticated requests to /login (except exempt paths)."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        if os.environ.get("WEBUI_AUTH_DISABLED") == "1":
+            return await call_next(request)
         if _is_exempt(request.url.path):
             return await call_next(request)
 

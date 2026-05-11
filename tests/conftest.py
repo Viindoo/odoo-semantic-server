@@ -52,6 +52,21 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_marker)
 
 
+@pytest.fixture(autouse=True)
+def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
+    """Disable the W16 auth middleware for tests that pre-date session auth.
+
+    test_web_ui_auth.py and test_web_ui_browser.py exercise the real auth flow
+    end-to-end and must NOT bypass.  Everything else (test_web_ui_repos.py,
+    test_web_ui_api_keys.py, etc.) was written before auth existed and asserts
+    on 200 responses — they need the bypass.
+    """
+    fname = request.node.fspath.basename
+    if fname in {"test_web_ui_auth.py", "test_web_ui_browser.py"}:
+        return
+    monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
+
+
 @pytest.fixture(scope="session")
 def neo4j_driver():
     """

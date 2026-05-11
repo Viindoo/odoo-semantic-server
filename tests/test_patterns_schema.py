@@ -36,20 +36,37 @@ def test_pattern_ids_kebab_case():
 
 def test_no_enterprise_references():
     """No Odoo Enterprise references in snippet_text or gotchas."""
+    import re
+
     from src.data.ee_modules import EE_CONFUSION
 
-    # Base forbidden strings
-    forbidden = ["enterprise/", "OEEL-1", "OEEL "]
+    # Substring-match strings (always literal — no false-positive risk).
+    forbidden_substrings = ["enterprise/", "OEEL-1", "OEEL "]
 
-    # Add all 16 EE module keys
-    forbidden.extend(EE_CONFUSION.keys())
-
-    # Add all non-None Viindoo equivalents (values)
-    forbidden.extend(v for v in EE_CONFUSION.values() if v is not None)
+    # Word-boundary needles: module-name tokens that would false-match as
+    # substrings (e.g. 'sign' inside 'signature', 'hr' inside 'href').
+    forbidden_words = list(EE_CONFUSION.keys())
+    forbidden_words.extend(v for v in EE_CONFUSION.values() if v is not None)
 
     for p in _load_patterns_list():
         haystack = p.get("snippet_text", "") + " " + " ".join(p.get("gotchas", []))
-        for needle in forbidden:
+        for needle in forbidden_substrings:
             assert needle not in haystack, (
                 f"Pattern {p['pattern_id']!r} contains forbidden reference {needle!r}"
+            )
+        for needle in forbidden_words:
+            # Match only as a module reference, not as an English word.
+            # Forms: `import <m>`, `from <m>`, `addons/<m>`, `addons.<m>`,
+            #        `'<m>'`, `"<m>"`, `'<m>.`, `"<m>.`
+            esc = re.escape(needle)
+            module_ref_re = (
+                rf"\bimport\s+{esc}\b"
+                rf"|\bfrom\s+{esc}[\s.]"
+                rf"|addons/{esc}\b"
+                rf"|addons\.{esc}\b"
+                rf"|['\"]{esc}['\"]"
+                rf"|['\"]{esc}\."
+            )
+            assert not re.search(module_ref_re, haystack), (
+                f"Pattern {p['pattern_id']!r} contains forbidden module reference {needle!r}"
             )
