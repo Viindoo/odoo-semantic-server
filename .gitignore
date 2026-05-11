@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 .serena/
 odoo-semantic.conf
+.env
