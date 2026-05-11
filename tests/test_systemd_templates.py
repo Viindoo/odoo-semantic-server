@@ -20,6 +20,9 @@ units, causing ``systemd-analyze verify`` to report
 
 Reference: systemd.exec(5) — prefix ``-`` means "ignore if file missing".
 """
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -83,3 +86,73 @@ def test_service_files_are_present():
     for path in expected:
         assert path.exists(), f"Expected service file not found: {path}"
         assert path.stat().st_size > 0, f"Service file is empty: {path}"
+
+
+# ---------------------------------------------------------------------------
+# systemd-analyze verify regression test
+# ---------------------------------------------------------------------------
+
+# Fatal markers emitted by systemd-analyze when a unit has syntax or specifier
+# errors (e.g. %i/%h in a regular unit).  These strings appear on stderr and
+# indicate the unit *will not start* — they are distinct from non-fatal
+# warnings about missing binaries or users which are expected on CI runners.
+_FATAL_MARKERS = (
+    "Unit configuration has fatal error",
+    "has a bad unit file setting",
+    "Invalid user/group name or numeric ID",
+)
+
+
+def test_service_files_pass_systemd_analyze_verify():
+    """Service files in docs/deploy/ must have no fatal systemd syntax errors.
+
+    Uses ``systemd-analyze verify`` to catch specifier bugs (e.g. ``%i``/``%h``
+    in a regular unit) and other fatal configuration mistakes.  The test is
+    skipped automatically when ``systemd-analyze`` is not available (e.g. macOS
+    or minimal CI containers).
+
+    Exit-code semantics: ``systemd-analyze verify`` exits non-zero when the
+    target binary is missing or the user does not exist on the runner — those
+    are expected on CI and are *not* treated as failures here.  Only the fatal
+    marker strings in stderr indicate a real unit-file bug.
+    """
+    if not shutil.which("systemd-analyze"):
+        import pytest
+
+        pytest.skip("systemd-analyze not available on this runner")
+
+    service_files = _collect_service_files()
+    assert service_files, "No .service files found under docs/deploy/."
+
+    fatal_findings = []
+    for service_file in service_files:
+        # Copy to an isolated temp dir so systemd-analyze does not pick up
+        # stale files from /tmp/ or other locations via transitive dependency
+        # resolution (it scans the directory of the verified file for peers).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_copy = Path(tmpdir) / service_file.name
+            tmp_copy.write_text(service_file.read_text())
+
+            result = subprocess.run(
+                ["systemd-analyze", "verify", str(tmp_copy)],
+                capture_output=True,
+                text=True,
+            )
+            combined = result.stdout + result.stderr
+            for marker in _FATAL_MARKERS:
+                if marker in combined:
+                    fatal_findings.append(
+                        f"  {service_file.relative_to(REPO_ROOT)}: "
+                        f"systemd-analyze reports fatal error — {marker!r}\n"
+                        f"  Full output:\n"
+                        + "\n".join(f"    {ln}" for ln in combined.splitlines())
+                    )
+                    break  # one report per file is enough
+
+    assert not fatal_findings, (
+        "systemd-analyze verify found fatal errors in service files:\n\n"
+        + "\n\n".join(fatal_findings)
+        + "\n\n"
+        "Common causes: %i/%h specifiers in a regular (non-instance) unit, "
+        "malformed section headers, or unknown directives."
+    )
