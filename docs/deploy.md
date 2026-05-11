@@ -209,18 +209,32 @@ ports:
 
 **Split-tier:** đổi thành `"0.0.0.0:7687:7687"` + chặn firewall — xem [§8](#8-split-tier-migration).
 
-### 2.4 Backup thủ công (đến M5)
+### 2.4 Backup thủ công
 
 ```bash
-# Neo4j — dump database
-docker compose exec neo4j \
-    neo4j-admin database dump neo4j --to-path=/data/backups
+# Tạo thư mục backup local nếu chưa có:
+mkdir -p ~/backups
 
-# PostgreSQL
+# Neo4j — dump database vào container, rồi copy ra host:
+docker compose exec neo4j sh -c 'mkdir -p /data/backups && neo4j-admin database dump neo4j --to-path=/data/backups'
+docker cp odoo-semantic-mcp-neo4j-1:/data/backups/neo4j.dump ~/backups/neo4j-$(date +%F).dump
+
+# PostgreSQL — dump toàn bộ DB ra file SQL:
 docker compose exec postgres \
     pg_dump -U odoo_semantic odoo_semantic \
     > ~/backups/odoo_semantic_$(date +%Y%m%d).sql
 ```
+
+**Restore Neo4j** (khi cần phục hồi từ dump):
+
+```bash
+# Copy dump vào container trước:
+docker cp ~/backups/neo4j-<DATE>.dump odoo-semantic-mcp-neo4j-1:/data/backups/
+# Load (service phải stopped hoặc database offline):
+docker compose exec neo4j neo4j-admin database load neo4j --from-path=/data/backups --overwrite-destination=true
+```
+
+> Xem `docs/deploy/disaster-recovery.md` để biết RTO estimate + restore order đầy đủ.
 
 ---
 
@@ -423,12 +437,12 @@ Output: `INFO seed_patterns: Neo4j: wrote 54 PatternExample nodes` +
 
 > User `odoo-semantic` đã tạo ở §1.1.
 
-Repo ship 2 unit file ở `docs/deploy/`:
+Repo ship 2 unit file ở **`docs/deploy/`** (canonical path — không có file nào ở `systemd/`):
 
 | File | Service | Bind | Cần |
 |------|---------|------|-----|
-| `odoo-semantic-mcp.service` | MCP server (port 8002) | `127.0.0.1` qua proxy tier | INI config |
-| `odoo-semantic-webui.service` | Web UI admin (port 8003) | `127.0.0.1` LAN-only | INI config + `webui.env` (FERNET_KEY) |
+| `docs/deploy/odoo-semantic-mcp.service` | MCP server (port 8002) | `127.0.0.1` qua proxy tier | INI config |
+| `docs/deploy/odoo-semantic-webui.service` | Web UI admin (port 8003) | `127.0.0.1` LAN-only | INI config + `webui.env` (FERNET_KEY) |
 
 Cài MCP unit:
 
@@ -583,6 +597,55 @@ Cài đặt quan trọng trong `location /mcp` — bắt buộc cho SSE streamin
 ```nginx
 proxy_buffering    off;     # bắt buộc cho SSE — MCP dùng Server-Sent Events
 proxy_read_timeout 3600s;   # MCP sessions có thể dài
+```
+
+**Security headers (thêm vào server block):**
+
+```nginx
+# HSTS — buộc HTTPS cho 1 năm (chỉ dùng sau khi certbot đã verify TLS hoạt động)
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+# Chống clickjacking + MIME sniffing + referrer leak:
+add_header X-Frame-Options           "DENY"             always;
+add_header X-Content-Type-Options    "nosniff"          always;
+add_header Referrer-Policy           "no-referrer"      always;
+```
+
+**Port 9999 variant** (dành cho public Viindoo instance — expose thêm cổng khác TLS):
+
+```nginx
+server {
+    listen 9999 ssl http2;
+    server_name semantic.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/semantic.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/semantic.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options           "DENY"             always;
+    add_header X-Content-Type-Options    "nosniff"          always;
+    add_header Referrer-Policy           "no-referrer"      always;
+
+    location /mcp {
+        proxy_pass         http://127.0.0.1:8002/mcp;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_buffering    off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /install/ {
+        proxy_pass http://127.0.0.1:8002/install/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}
 ```
 
 Xem `docs/deploy/nginx.conf.example` để biết config đầy đủ, bao gồm các option auth.
@@ -767,9 +830,18 @@ Trước khi expose public internet:
 - [ ] Neo4j và PG ports bind `127.0.0.1` (kiểm tra `docker compose ps` — cột Ports)
 - [ ] MCP server bind `127.0.0.1` (kiểm tra `odoo-semantic.conf [server] host`)
 - [ ] TLS cert valid + auto-renewing (certbot timer: `systemctl status certbot.timer` hoặc Caddy auto)
-- [ ] Auth option đã chọn (IP allowlist / Basic Auth)
+- [ ] **HSTS verify** — sau khi TLS aktif: `curl -I https://<domain>/health | grep Strict-Transport` → header hien thi
+- [ ] **Web UI port 8003 không reachable từ external** — kiểm tra từ host ngoài: `curl --connect-timeout 5 http://<PUBLIC_IP>:8003/` → connection refused hoặc timeout
+- [ ] `rate_limit_rpm` đã cấu hình trong `odoo-semantic.conf` (xem `[auth]` section) — ngăn DoS per API key
+- [ ] **`webui.env` backed up riêng** (không cùng file với main backup SQL) — chứa FERNET_KEY, mất là không recover SSH keys
+- [ ] **FERNET_KEY lưu trong secrets manager** (Bitwarden, 1Password, Vault), không chỉ để trên disk plain
+- [ ] **Docker daemon không expose TCP socket** — `sudo ss -tlnp | grep 2375` phải trống; daemon chỉ Unix socket `/var/run/docker.sock`
+- [ ] **X-API-Key auth active** — `curl https://<domain>/mcp` không có header → HTTP 401 (không bypass được)
+- [ ] Auth option đã chọn (IP allowlist / Basic Auth / X-API-Key)
 - [ ] Service user `odoo-semantic` là non-login (`shell=/usr/sbin/nologin`)
-- [ ] Backup đã được test (restore thử ít nhất 1 lần)
+- [ ] Backup đã được test (restore thử ít nhất 1 lần — xem `docs/deploy/disaster-recovery.md`)
+- [ ] Logrotate đã cài cho `/var/log/odoo-semantic-reindex.log` (xem §Log Rotation)
+- [ ] Web UI session auth — xem ADR-0011 khi available (M7 backlog)
 
 ---
 
@@ -1026,18 +1098,52 @@ psql -h localhost -U odoo_semantic odoo_semantic < backup_2026XXXX.sql
 Nếu cần đổi FERNET_KEY (vd: key bị lộ):
 
 ```bash
-python -m src.cli rotate-fernet \
-  --old-key <FERNET_KEY_cũ> \
-  --new-key <FERNET_KEY_mới>
+# 1. Re-encrypt tất cả SSH private key rows trong DB:
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet \
+      --old-key <FERNET_KEY_cũ> \
+      --new-key <FERNET_KEY_mới>
+'
+
+# 2. Cập nhật FERNET_KEY trong production env file:
+sudo tee /etc/odoo-semantic/webui.env > /dev/null <<EOF
+FERNET_KEY=<FERNET_KEY_mới>
+EOF
+sudo chmod 600 /etc/odoo-semantic/webui.env
+sudo chown odoo-semantic:odoo-semantic /etc/odoo-semantic/webui.env
+
+# 3. Restart Web UI để load key mới:
+sudo systemctl restart odoo-semantic-webui
+sudo systemctl status odoo-semantic-webui   # verify running
 ```
 
-Cập nhật `FERNET_KEY` trong `.env` sau khi rotate xong.
+> **Quan trọng:** bước 1 phải hoàn tất trước bước 2. Nếu restart trước khi re-encrypt xong → Web UI dùng key mới nhưng DB còn key cũ → không decrypt được SSH keys.
 
 Manual backup via `python -m src.cli backup` shipped in M5.5; automated S3 upload not on roadmap.
 
 ---
 
-## 14. SSH Auto-Clone (M6 Wave 4)
+## 14. Log Rotation
+
+Cron job `§3.6` ghi vào `/var/log/odoo-semantic-reindex.log` — không giới hạn kích thước mặc định. Cài logrotate để tránh file phình to:
+
+```bash
+sudo cp /opt/odoo-semantic-mcp/docs/deploy/logrotate.d/odoo-semantic \
+        /etc/logrotate.d/odoo-semantic
+```
+
+File `docs/deploy/logrotate.d/odoo-semantic` đã có sẵn trong repo với config: weekly, 4 tuần lưu, compress, missingok, notifempty. Log file mới được tạo với quyền `640` owner `odoo-semantic:odoo-semantic`.
+
+Verify logrotate hoạt động:
+
+```bash
+sudo logrotate --debug /etc/logrotate.d/odoo-semantic
+```
+
+---
+
+## 15. SSH Auto-Clone (M6 Wave 4)
 
 Web UI can auto-clone private Odoo repos via SSH instead of requiring manual `git clone + --local-path`.
 

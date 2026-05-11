@@ -1,0 +1,8 @@
+/var/log/odoo-semantic-reindex.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 640 odoo-semantic odoo-semantic
+}
