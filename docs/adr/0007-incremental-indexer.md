@@ -123,4 +123,26 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
   `src/db/repo_registry.py::get_repo_ids_by_local_path_basenames` +
   post-write hook in `src/indexer/pipeline.py::_index_repo`.
   Tests: `tests/test_cross_repo_dep_propagation.py`.
+
+  **W14 trade-off notes (M7 closeout):**
+
+  1. *Over-eager re-index* — `pipeline._index_repo` resets ALL downstream repos
+     whenever any module changes, even if the change was cosmetic (whitespace,
+     comment).  Content-level delta detection (diff Module node properties before
+     and after write) would reduce unnecessary re-indexes but adds complexity.
+     Over-eager reset is the safe default: graph consistency is guaranteed at the
+     cost of extra re-index work.  M8 may add Module-node delta detection.
+
+  2. *Basename collision* — `get_repo_ids_by_local_path_basenames` extracts the
+     directory basename from `local_path` using a `regexp_replace` and matches it
+     against the `Module.repo` Neo4j property (which also stores only the basename).
+     Two repos whose checkout directories share the same final component (e.g.
+     `/srv/odoo` and `/home/a/odoo` both have basename `odoo`) will BOTH be reset
+     when either is the dependent target.  This is over-eager but safe (extra
+     re-index, no data loss).  A proper fix would store the full `local_path` in
+     `Module.repo` instead of only the basename — that is a schema change deferred
+     to M8 (requires reindex of all repos after migration).  A log WARNING is emitted
+     when `reset_head_sha` is called for more than 1 repo matching the same basename
+     (see pipeline.py cross-repo dep propagation block).
+
 - Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this — future tuning may add explicit metrics.

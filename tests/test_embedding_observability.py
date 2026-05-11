@@ -181,3 +181,43 @@ def test_reindex_skip_does_not_re_embed(
         f"Second run on unchanged HEAD must not call embed(). "
         f"Got delta={delta} (count went {count_after_first} → {count_after_second})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: call_count is thread-safe under concurrent embed() calls
+# ---------------------------------------------------------------------------
+
+def test_embedder_call_count_thread_safe():
+    """call_count must be exactly N*M when N threads each call embed() M times.
+
+    Uses FakeEmbedder (no Docker needed) — validates the threading.Lock inside
+    embed() prevents lost updates under concurrent access.
+    """
+    import threading
+
+    N_THREADS = 8
+    CALLS_PER_THREAD = 50
+
+    embedder = FakeEmbedder(dim=16)
+
+    errors: list[Exception] = []
+
+    def _worker():
+        try:
+            for _ in range(CALLS_PER_THREAD):
+                embedder.embed(["x"])
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(N_THREADS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Thread(s) raised exceptions: {errors}"
+    expected = N_THREADS * CALLS_PER_THREAD
+    assert embedder.call_count == expected, (
+        f"Expected call_count == {expected} after {N_THREADS} threads × {CALLS_PER_THREAD} calls; "
+        f"got {embedder.call_count} (lost {expected - embedder.call_count} updates)"
+    )

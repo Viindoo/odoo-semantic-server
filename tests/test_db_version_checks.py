@@ -25,6 +25,7 @@ class TestPostgreSQLVersionCheck:
         # (we only want to verify it doesn't raise on version check)
         with patch("src.db.migrate._ensure_extension") as mock_ensure, \
              patch("src.db.migrate._run_yoyo"), \
+             patch("src.db.migrate._conn_to_uri", return_value="postgresql://mock/db"), \
              patch("builtins.print"):
             mock_ensure.return_value = False
             # Should not raise RuntimeError about PostgreSQL version
@@ -63,6 +64,7 @@ class TestPostgreSQLVersionCheck:
 
         with patch("src.db.migrate._ensure_extension") as mock_ensure, \
              patch("src.db.migrate._run_yoyo"), \
+             patch("src.db.migrate._conn_to_uri", return_value="postgresql://mock/db"), \
              patch("builtins.print"):
             mock_ensure.return_value = False
             try:

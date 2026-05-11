@@ -286,6 +286,48 @@ class TestSessionExpiry:
         assert resp_expired.status_code == 302
         assert "/login" in resp_expired.headers.get("location", "")
 
+    @pytest.mark.asyncio
+    async def test_session_invalid_when_session_at_in_future(self):
+        """Finding #14 (MED): session_at in future (negative age) must be rejected.
+
+        Tampered or clock-skewed session_at far in the future would satisfy
+        `age < SESSION_TTL_SECONDS` since age is large-negative. _session_valid
+        must require 0 <= age < SESSION_TTL_SECONDS.
+        """
+        import httpx
+
+        app = _make_app(seed_users={"admin": "pw"})
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="https://test",
+                follow_redirects=False,
+            ) as client:
+                # Log in to get a valid session
+                await client.post(
+                    "/login",
+                    data={"username": "admin", "password": "pw", "next": "/"},
+                )
+                # Confirm accessible
+                resp_valid = await client.get("/")
+                assert resp_valid.status_code == 200
+
+                # Simulate clock going BACK (session_at appears to be in the future)
+                # age = time.time() - session_at < 0
+                past_time = time.time() - 10000  # current time looks 10000s ago
+                with unittest.mock.patch("src.web_ui.middleware.time") as mock_time:
+                    mock_time.time.return_value = past_time
+                    resp_future = await client.get("/")
+        finally:
+            _restore_patches(app)
+
+        # session_at in future → age < 0 → must reject (302 to /login)
+        assert resp_future.status_code == 302, (
+            f"Expected 302 when session_at is in the future (age < 0); "
+            f"got {resp_future.status_code}"
+        )
+        assert "/login" in resp_future.headers.get("location", "")
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for auth helpers
@@ -307,3 +349,145 @@ class TestAuthHelpers:
     def test_verify_malformed_hash_returns_false(self):
         # Should not raise
         assert verify_password("pw", "not-a-bcrypt-hash") is False
+
+
+# ---------------------------------------------------------------------------
+# Regression test — dashboard _count_embeddings rollback on missing table
+# ---------------------------------------------------------------------------
+
+class TestLoginRateLimit:
+    """Finding #17 (MED): POST /login returns 429 after too many failed attempts from same IP."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_returns_429_after_threshold(self):
+        """After 5 consecutive failed logins from 127.0.0.1, next attempt → 429."""
+        import httpx
+
+        import src.web_ui.routes.login as login_mod  # noqa: I001
+
+        # Reset the module-level failure dict so tests don't interfere
+        login_mod._LOGIN_FAILURES.clear()
+
+        app = _make_app(seed_users={"admin": "correct"})
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="https://test",
+                follow_redirects=False,
+            ) as client:
+                # 5 failed logins — should each 302 (not rate-limited yet)
+                for i in range(5):
+                    resp = await client.post(
+                        "/login",
+                        data={"username": "admin", "password": "WRONG", "next": "/"},
+                    )
+                    assert resp.status_code == 302, (
+                        f"Attempt {i+1}: expected 302, got {resp.status_code}"
+                    )
+
+                # 6th attempt — should be 429
+                resp_limited = await client.post(
+                    "/login",
+                    data={"username": "admin", "password": "WRONG", "next": "/"},
+                )
+        finally:
+            login_mod._LOGIN_FAILURES.clear()
+            _restore_patches(app)
+
+        assert resp_limited.status_code == 429, (
+            f"Expected 429 after 5 failed attempts; got {resp_limited.status_code}"
+        )
+        body = resp_limited.json()
+        assert "Too many" in body.get("error", ""), f"Expected rate limit message; got: {body}"
+
+    @pytest.mark.asyncio
+    async def test_successful_login_clears_failure_counter(self):
+        """Successful login resets the failure counter so subsequent failures start fresh."""
+        import httpx
+
+        import src.web_ui.routes.login as login_mod  # noqa: I001
+
+        login_mod._LOGIN_FAILURES.clear()
+
+        app = _make_app(seed_users={"admin": "correct"})
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="https://test",
+                follow_redirects=False,
+            ) as client:
+                # 4 failed attempts (just under threshold)
+                for _ in range(4):
+                    await client.post(
+                        "/login",
+                        data={"username": "admin", "password": "WRONG", "next": "/"},
+                    )
+
+                # Successful login — must clear counter
+                resp_ok = await client.post(
+                    "/login",
+                    data={"username": "admin", "password": "correct", "next": "/"},
+                )
+                assert resp_ok.status_code == 302
+
+                # Now fail 4 more times — should still be under threshold (counter cleared)
+                for i in range(4):
+                    resp = await client.post(
+                        "/login",
+                        data={"username": "admin", "password": "WRONG", "next": "/"},
+                    )
+                    assert resp.status_code == 302, (
+                        f"Post-success attempt {i+1}: expected 302 not 429 "
+                        f"(counter should have been cleared); got {resp.status_code}"
+                    )
+        finally:
+            login_mod._LOGIN_FAILURES.clear()
+            _restore_patches(app)
+
+
+class TestDashboardCountEmbeddingsRollback:
+    """Finding #4 (HIGH): dashboard.py must rollback aborted tx when embeddings
+    table is absent, so subsequent queries on the same connection are not poisoned.
+    """
+
+    def test_count_embeddings_handles_missing_table(self):
+        """_count_embeddings returns None (not raise) when embeddings table absent.
+
+        The conn must still be usable after the call (tx rollback happened).
+        """
+        from src.web_ui.routes.dashboard import _count_embeddings
+
+        # Build a minimal fake connection that raises ProgrammingError on execute
+        # (simulating "table does not exist") and records whether rollback was called.
+        class _FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def execute(self, _sql):
+                import psycopg2
+                raise psycopg2.ProgrammingError("relation \"embeddings\" does not exist")
+
+        rollback_called = []
+
+        class _FakeConn2:
+            autocommit = False
+
+            def cursor(self):
+                return _FakeCursor()
+
+            def rollback(self):
+                rollback_called.append(True)
+
+        conn = _FakeConn2()
+        result = _count_embeddings(conn)
+
+        # Must return None (not raise)
+        assert result is None, f"Expected None when embeddings table absent; got {result}"
+        # Must have called rollback to un-poison the connection
+        assert rollback_called, (
+            "_count_embeddings must call conn.rollback() after ProgrammingError "
+            "to prevent aborted-tx from poisoning subsequent queries"
+        )

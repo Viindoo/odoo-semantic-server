@@ -428,6 +428,19 @@ def _index_repo(
                 dep_repo_ids = get_repo_ids_by_local_path_basenames(
                     pg_conn, dep_repo_basenames,
                 )
+                # Warn if more IDs than basenames: two repos share a basename
+                # (e.g. /srv/odoo and /home/a/odoo both have basename 'odoo').
+                # Both get reset — over-eager but safe. See ADR-0007 W14 note.
+                if len(dep_repo_ids) > len(dep_repo_basenames):
+                    _logger.warning(
+                        "Cross-repo dep propagation: basename collision detected — "
+                        "%d repo IDs returned for %d basenames (%s). "
+                        "All matching repos will be reset (safe, over-eager). "
+                        "See ADR-0007 W14 for fix path.",
+                        len(dep_repo_ids),
+                        len(dep_repo_basenames),
+                        ", ".join(sorted(dep_repo_basenames)),
+                    )
                 if dep_repo_ids:
                     n_reset = reset_head_sha(pg_conn, dep_repo_ids)
                     _logger.info(

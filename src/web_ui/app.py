@@ -1,6 +1,7 @@
 # src/web_ui/app.py
 """FastAPI Web UI application — admin interface, port 8003, localhost-only."""
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -52,12 +53,15 @@ def create_app() -> FastAPI:
     # Middle: session cookie parsing
     from src.web_ui.auth import get_session_secret
 
+    # WEBUI_SECURE_COOKIE=1 (default) → Secure flag; set to 0 for local dev over plain HTTP.
+    # WARNING: setting to 0 in production allows session hijacking over plain HTTP.
+    https_only = os.environ.get("WEBUI_SECURE_COOKIE", "1") == "1"
     app.add_middleware(
         SessionMiddleware,
         secret_key=get_session_secret(),
         session_cookie="osm_session",
         same_site="strict",
-        https_only=True,
+        https_only=https_only,
         max_age=None,  # Session cookie (browser-close expiry); TTL enforced by session_at
     )
 

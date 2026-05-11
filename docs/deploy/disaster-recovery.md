@@ -200,4 +200,38 @@ rsync -avz ~/backups/ <new-host>:~/backups/
 
 ---
 
+## Post-Restore Behaviour
+
+**Automatic graph consistency via head_sha mismatches (M7 W14).**
+
+Sau khi restore, `repos.head_sha` trong PostgreSQL có thể không khớp với Neo4j graph
+(ví dụ: Neo4j dump từ tuần trước, PG dump từ hôm qua — head_sha in PG refers to a
+commit that graph reflects, but Neo4j has older state).
+
+**Đây là intentional safety behaviour:** bất kỳ mismatch nào giữa PG `head_sha` và
+Neo4j graph state sẽ trigger full reindex on next indexer run:
+
+- Nếu `head_sha` trong PG khớp với current git HEAD → incremental skip → graph unchanged (stale Neo4j state persists).
+- Nếu `head_sha` NULL (sau `reset_head_sha`) → full reindex → graph rebuilt from source.
+
+**Recommended post-restore procedure:**
+
+```bash
+# Option A: Trust restored Neo4j dump + PG — no action needed if both from same backup window.
+# Option B: Force full Neo4j graph rebuild from source (safest, slower):
+python -m src.indexer index-repo --all --full
+# → Ignores head_sha entirely, re-scans all modules, rebuilds all graph nodes/edges.
+
+# Option C: Reset all head_sha to force re-index next scheduled run:
+python -m src.db.migrate  # ensure schema up to date
+psql -U odoo_semantic -c "UPDATE repos SET head_sha = NULL;"
+# → Next cron run does full reindex per-repo automatically.
+```
+
+**Cross-repo propagation:** W14 dep-tracking also reset dependent repos' head_sha
+during reindex. After restore, this propagation re-runs correctly on the next
+incremental cycle — graph consistency is guaranteed across repos.
+
+---
+
 *Xem thêm: [docs/deploy.md §2.4](../deploy.md#24-backup-thủ-công) · [docs/deploy/pre-launch-checklist.md §5](pre-launch-checklist.md#5-backup--recovery)*

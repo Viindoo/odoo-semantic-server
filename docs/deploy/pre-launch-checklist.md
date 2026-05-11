@@ -128,7 +128,25 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 
 ---
 
-## 10. Pre-Launch Sign-Off
+## 10. Web UI Session Auth (M7 W16)
+
+**Xác nhận session-based auth hoạt động đúng trước khi mở Web UI (port 8003).**
+
+- [ ] `create-webui-user` đã chạy — ít nhất 1 admin user tồn tại:
+  `python -m src.manager list-webui-users` → thấy ít nhất 1 user
+  - *Tạo user: `python -m src.manager create-webui-user admin` (prompt mật khẩu)*
+- [ ] Unauthenticated GET `/repos` → 302 redirect đến `/login`:
+  `curl -I http://127.0.0.1:8003/repos` → `Location: /login`
+- [ ] POST `/login` với sai mật khẩu → flash error (không grant session):
+  `curl -c /tmp/test.jar -b /tmp/test.jar -d 'username=admin&password=WRONG&next=/' http://127.0.0.1:8003/login -L -s | grep error`
+  → phải thấy error indicator trong redirect URL
+- [ ] GET `/logout` clears session → tiếp theo request tới `/` → 302 `/login`
+- [ ] `WEBUI_SESSION_SECRET` đã set trong `webui.env` (không dùng auto-generated ephemeral secret):
+  `sudo grep WEBUI_SESSION_SECRET /etc/odoo-semantic/webui.env` → non-empty value
+
+---
+
+## 11. Pre-Launch Sign-Off
 
 Admin điền vào bảng sau trước khi phân phát API key cho team:
 
@@ -143,8 +161,9 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 | Install Page (§7) | | | |
 | Systemd Services (§8) | | | |
 | Indexer Cron (§9) | | | |
+| Web UI Session Auth (§10) | | | |
 
-**Khi tất cả 10 mục `[x]` → deploy ready. Phân phát key + URL.**
+**Khi tất cả 11 mục `[x]` → deploy ready. Phân phát key + URL.**
 
 ---
 

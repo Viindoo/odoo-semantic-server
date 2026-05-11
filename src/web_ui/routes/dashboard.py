@@ -36,6 +36,13 @@ def _count_embeddings(conn) -> int | None:
             row = cur.fetchone()
             return row[0] if row else 0
     except Exception:
+        # Roll back the aborted transaction so subsequent queries on the same
+        # connection are not poisoned (e.g. when pgvector is absent → table
+        # doesn't exist → ProgrammingError → conn enters aborted-tx state).
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return None
 
 

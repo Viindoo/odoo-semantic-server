@@ -260,6 +260,52 @@ class TestGetRepoIdsByBasename:
         result = get_repo_ids_by_local_path_basenames(pg_conn, [])
         assert result == []
 
+    def test_basename_collision_resets_both(self, pg_conn):
+        """Two repos with same basename (e.g. /srv/odoo and /home/a/odoo) both get returned.
+
+        Trade-off documented in ADR-0007 W14 note: get_repo_ids_by_local_path_basenames
+        uses a regex that strips the leading path, so two repos whose local_path share
+        the same final component are BOTH returned and BOTH get head_sha reset.
+        This is the safe default (over-eager reset); the fix would require storing
+        full local_path in the Module.repo property instead of just the basename.
+        """
+        from src.db.migrate import run_migrations
+        from src.db.repo_registry import (
+            add_profile,
+            add_repo,
+            get_repo_ids_by_local_path_basenames,
+        )
+
+        run_migrations(pg_conn)
+
+        profile_id = add_profile(pg_conn, "_collision_test_profile", TEST_VERSION)
+        id_a = add_repo(
+            pg_conn, profile_id,
+            url="file://collision-a",
+            branch=TEST_VERSION,
+            local_path="/srv/odoo",
+        )
+        id_b = add_repo(
+            pg_conn, profile_id,
+            url="file://collision-b",
+            branch=TEST_VERSION,
+            local_path="/home/a/odoo",
+        )
+
+        # Both have basename "odoo" → both should be returned (collision behaviour)
+        result = get_repo_ids_by_local_path_basenames(pg_conn, ["odoo"])
+        assert id_a in result, (
+            f"Expected id_a ({id_a}) in collision result; got: {result}"
+        )
+        assert id_b in result, (
+            f"Expected id_b ({id_b}) in collision result; got: {result}"
+        )
+
+        # Cleanup
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM repos WHERE id = ANY(%s)", ([id_a, id_b],))
+            cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: _index_repo propagation via mock
