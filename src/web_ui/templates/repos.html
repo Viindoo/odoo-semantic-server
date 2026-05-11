@@ -85,6 +85,29 @@
     {% endif %}
 </div>
 
+<!-- Bulk Operations -->
+{% if profiles %}
+<div class="card" style="margin-bottom:1rem">
+    <h2>Bulk Operations</h2>
+    <form method="post" action="/repos/index-all" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end">
+        <label title="--no-embed"><input type="checkbox" name="no_embed" value="on">no-embed</label>
+        <label title="--full"><input type="checkbox" name="full" value="on">full</label>
+        <label title="--max-workers (per-profile thread count)">
+            <input type="number" name="max_workers" value="1" min="1" max="8" style="width:4em"> max-workers
+        </label>
+        <label title="--profile-workers (parallel profile count, only with --all)">
+            <input type="number" name="profile_workers" value="1" min="1" max="4" style="width:4em"> profile-workers
+        </label>
+        <button type="submit" class="btn btn-primary">Index All Profiles</button>
+    </form>
+    {% if all_job_id %}
+    <p style="margin-top:0.5rem;font-size:0.9rem">Current bulk job:
+        <span data-job-id="{{ all_job_id }}" data-job-status="{{ all_job_status }}"></span>
+    </p>
+    {% endif %}
+</div>
+{% endif %}
+
 <!-- Profiles List -->
 {% if profiles %}
 {% for p in profiles %}

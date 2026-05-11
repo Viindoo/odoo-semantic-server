@@ -34,6 +34,8 @@ async def repos_page(request: Request):
     flash = request.query_params.get("flash")
     profiles = []
     error = None
+    all_job_id = None
+    all_job_status = None
     conn = _get_conn()
     if conn:
         try:
@@ -46,6 +48,12 @@ async def repos_page(request: Request):
                 for repo in repos:
                     repo["last_job"] = job_registry.get_last_job(conn, p["name"])
                 profiles.append({**p, "repos": repos})
+
+            # Fetch most recent bulk "all" job for top-of-page badge
+            all_job = job_registry.get_last_job(conn, "all")
+            if all_job:
+                all_job_id = all_job["id"]
+                all_job_status = all_job["status"]
         except Exception as e:
             error = str(e)
         finally:
@@ -54,7 +62,15 @@ async def repos_page(request: Request):
         error = "Cannot connect to PostgreSQL. Check PG_DSN configuration."
 
     return templates.TemplateResponse(
-        request, "repos.html", {"profiles": profiles, "error": error, "flash": flash}
+        request,
+        "repos.html",
+        {
+            "profiles": profiles,
+            "error": error,
+            "flash": flash,
+            "all_job_id": all_job_id,
+            "all_job_status": all_job_status,
+        },
     )
 
 
@@ -566,6 +582,85 @@ async def reset_embed(request: Request, repo_id: int):
             "/repos?flash=" + quote_plus(f"Reset embed failed: {e}"),
             status_code=303,
         )
+    finally:
+        conn.close()
+
+
+@router.post("/repos/index-all", response_class=RedirectResponse)
+async def index_all(
+    request: Request,
+    no_embed: Annotated[str, Form()] = "",
+    full: Annotated[str, Form()] = "",
+    max_workers: Annotated[str, Form()] = "1",
+    profile_workers: Annotated[str, Form()] = "1",
+):
+    """Trigger bulk index-repo --all for every registered profile.
+
+    Accepts optional form fields:
+    - no_embed: if truthy, appends --no-embed
+    - full: if truthy, appends --full
+    - max_workers: integer 1-8 (per-profile thread count)
+    - profile_workers: integer 1-4 (parallel profile count)
+    """
+    from urllib.parse import quote_plus
+
+    # Validate max_workers ∈ [1, 8]
+    try:
+        max_workers_int = int(max_workers)
+    except (ValueError, TypeError):
+        flash = f"Invalid max_workers '{max_workers}': must be an integer between 1 and 8."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+    if not (1 <= max_workers_int <= 8):
+        flash = f"max_workers must be between 1 and 8 (got {max_workers_int})."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+    # Validate profile_workers ∈ [1, 4]
+    try:
+        profile_workers_int = int(profile_workers)
+    except (ValueError, TypeError):
+        flash = f"Invalid profile_workers '{profile_workers}': must be an integer between 1 and 4."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+    if not (1 <= profile_workers_int <= 4):
+        flash = f"profile_workers must be between 1 and 4 (got {profile_workers_int})."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+    conn = _get_conn()
+    if not conn:
+        flash = "Cannot connect to database."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+    try:
+        from src.db.repo_registry import list_profiles
+        from src.indexer.pipeline import indexer_is_running
+        from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
+
+        # Guard: reject if any profile has a running indexer job
+        all_profiles = list_profiles(conn)
+        blocked = [p["name"] for p in all_profiles if indexer_is_running(conn, p["name"])]
+        if blocked:
+            names = ", ".join(blocked)
+            flash = f"Cannot start index-all: indexer running for: {names}"
+            return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+        # Build argv
+        argv = ["index-repo", "--all"]
+        if no_embed:
+            argv += ["--no-embed"]
+        if full:
+            argv += ["--full"]
+        if max_workers_int != 1:
+            argv += ["--max-workers", str(max_workers_int)]
+        if profile_workers_int != 1:
+            argv += ["--profile-workers", str(profile_workers_int)]
+
+        job_id = spawn_indexer_subcommand(conn, argv, job_label="all")
+        flash = f"Index all started (job {job_id})"
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+    except Exception as e:
+        _logger.warning("index-all trigger failed: %s", e)
+        flash = f"index-all failed: {e}"
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
     finally:
         conn.close()
 
