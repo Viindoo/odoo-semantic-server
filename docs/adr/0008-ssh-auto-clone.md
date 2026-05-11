@@ -30,16 +30,18 @@ GIT_SSH_COMMAND="ssh -i <tmp_key> -o StrictHostKeyChecking=accept-new -o UserKno
 Key decryption stores the plaintext in a secure tempfile:
 
 ```python
-fd, tmp_key = tempfile.mkstemp(mode=0o600, prefix='osm-ssh-')
+fd, tmp_key = tempfile.mkstemp(prefix='osm-ssh-', suffix='.key')
 try:
-    with os.fdopen(fd, 'wb') as f:
-        f.write(decrypted_key_bytes)
-    # clone via GIT_SSH_COMMAND pointing to tmp_key
+    os.fchmod(fd, 0o600)  # belt-and-suspenders
+    os.write(fd, decrypted_key_bytes)
+    if not decrypted_key_bytes.endswith(b"\n"):
+        os.write(fd, b"\n")
 finally:
-    os.unlink(tmp_key)
+    os.close(fd)
+# clone via GIT_SSH_COMMAND pointing to tmp_key
 ```
 
-**Mode 0o600:** atomic (set at creation), no race window between create and chmod.  
+**Mode 0o600:** set via `fchmod()` after create, ensures secure permissions before key is written.    
 **try/finally:** cleanup runs on success, failure, and mid-clone exception (e.g., network error, auth failure).  
 **SIGKILL leak:** if orchestrator kills the process mid-finally, tempfile remains. Accepted trade-off (best-effort; system tmpdir cleanup on reboot handles it).
 
@@ -66,18 +68,18 @@ No `--depth=1` shallow clone. **Rationale:** ADR-0007 incremental indexer (M6 Wa
 
 ### D6 — Background clone via subprocess + `clone_status` lifecycle
 
-Mirror M5.5 `indexer_jobs` pattern. Web UI `POST /repos/{id}/clone` spawns async task:
+Mirror M5.5 `indexer_jobs` pattern. Web UI `POST /repos/repos` form submission spawns async cloner:
 
 ```
-User action: POST /repos/{id}/clone
+User action: POST /repos/repos (with ssh_key_id=<N>)
 ↓
-Web UI updates repos.clone_status ← "pending"
+Web UI redirects to /repos (returns status=303)
 ↓
 Spawn subprocess: python -m src.cloner --repo-id N
 ↓
 Cloner fetches key, spawns git, updates repos.clone_status ← "cloned" or "error"
 ↓
-Web UI polls /repos/repos/{id}/clone-status every 5s
+Web UI polls GET /repos/repos/{id}/clone-status every 5s (JSON endpoint)
 ```
 
 Cloner process:

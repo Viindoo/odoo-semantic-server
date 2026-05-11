@@ -912,8 +912,7 @@ FROM indexer_jobs ORDER BY created_at DESC LIMIT 10;
 DELETE FROM indexer_jobs WHERE created_at < now() - INTERVAL '30 days';
 ```
 
-`indexer_jobs` không tự cleanup — nếu trở thành lớn, schedule cron `DELETE` hoặc
-add migration trong M6.
+`indexer_jobs` không tự cleanup — nếu trở thành lớn, schedule cron `DELETE`. M6 used idempotent `ALTER TABLE IF NOT EXISTS` for additive schema changes; formal migration tool deferred (see ADR-0001 revision).
 
 ---
 
@@ -995,4 +994,51 @@ python -m src.cli rotate-fernet \
 
 Cập nhật `FERNET_KEY` trong `.env` sau khi rotate xong.
 
-⚠️ **M6 sẽ thêm**: automated backup script + S3 upload.
+Manual backup via `python -m src.cli backup` shipped in M5.5; automated S3 upload not on roadmap.
+
+---
+
+## 14. SSH Auto-Clone (M6 Wave 4)
+
+Web UI can auto-clone private Odoo repos via SSH instead of requiring manual `git clone + --local-path`.
+
+### Deploy Key Setup
+
+1. **Generate keypair (admin does once):**
+   ```bash
+   # Paste this SSH URL into the registry form:
+   ssh-keygen -t ed25519 -f /tmp/osm-deploy -N "" -C "odoo-semantic-mcp"
+   cat /tmp/osm-deploy.pub  # Add to GitHub Deploy Keys → repo settings
+   cat /tmp/osm-deploy      # Web UI: SSH Keys form → create new key
+   ```
+
+2. **Web UI UI flow:**
+   - Admin: open Web UI, go to "SSH Keys" section
+   - Click "Generate new keypair" or "Import existing"
+   - Save private key (encrypted via FERNET_KEY)
+
+3. **Register repo with SSH URL:**
+   - Admin: go to "Repositories" section
+   - Click "Add repository"
+   - **URL:** `git@github.com:org/repo.git` or `ssh://git@host/path/repo.git`
+   - **SSH Key:** select from dropdown
+   - Click "Clone"
+   - Web UI polls clone status (`clone_status` column); once done → `local_path` auto-set
+
+### Project-Local `known_hosts`
+
+Host key verification writes to:
+```
+~/.local/share/odoo-semantic-mcp/known_hosts
+```
+
+**Policy:** `-o StrictHostKeyChecking=accept-new` persists fingerprints on first connection. Admin can inspect/clear if MITM suspected:
+```bash
+cat ~/.local/share/odoo-semantic-mcp/known_hosts
+```
+
+**Design:** project-local (not system `~/.ssh/known_hosts`) ensures multi-tenant safety and no conflicts with user's personal SSH setup (per ADR-0008 D4).
+
+### Full Clone (No `--depth=1`)
+
+SSH auto-clone uses `git clone --branch <branch> --single-branch <url>` (full history). **Why:** M6 Wave 2 incremental indexer requires full git history to compute `git diff old..new` between commits. Shallow clone would force full reindex on every change, defeating the incremental benefit. Trade-off: large Odoo repos take 3–10 minutes to clone. Handled via background job + Web UI polling (async/await pattern).

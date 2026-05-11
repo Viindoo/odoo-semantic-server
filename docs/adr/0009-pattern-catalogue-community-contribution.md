@@ -62,7 +62,7 @@ Community PRs to `src/data/patterns.json` MUST pass the following checks (enforc
 
 - ADR-0003: PatternExample Storage (Neo4j node + embeddings table, module/method enrichment, language filter)
 - ADR-0007: Incremental Indexer (auto-reseed sentinel, _SeedMeta label, idempotent seed)
-- `src/data/patterns.json` — catalogue source (54 entries as of M6 Wave 2)
+- `src/data/patterns.json` — catalogue source (see TASKS.md for current count; minimum enforced by `len(patterns) >= 80` test assertion)
 - `src/data/patterns.schema.json` — JSON schema (M6 Wave 3 W3-2)
 - `.github/PULL_REQUEST_TEMPLATE/patterns.md` — PR template (M6 Wave 3 W3-1)
 - M6 Wave 3 progress: see `TASKS.md` M6 Wave 3 section
