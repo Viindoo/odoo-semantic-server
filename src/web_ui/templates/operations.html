@@ -80,13 +80,133 @@
     </form>
 </div>
 
-<div class="card">
+<div class="card" id="apply-preset">
     <h2>Apply Preset</h2>
-    <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1rem;">
-        Apply a version preset to automatically create profiles and attach repos.
-        Use dry-run to preview changes before applying.
+    <p class="help" style="color: #64748b; font-size: 0.9rem; margin-bottom: 1rem;">
+        Applies a bundled preset — creates a profile and attaches its repos in one command.
+        Use <strong>Dry run</strong> (default) to preview what will be created before committing.
     </p>
-    <!-- W8 will fill -->
-    <p style="color: #94a3b8; font-size: 0.85rem; font-style: italic;">Form coming in W8.</p>
+
+    {% if apply_preset_error %}
+    <div class="alert">{{ apply_preset_error }}</div>
+    {% endif %}
+
+    {% if apply_preset_preview %}
+    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:1rem;margin-bottom:1.25rem">
+        <strong style="color:#166534">Dry-run preview</strong>
+        <pre style="margin:0.5rem 0 1rem;font-size:0.85rem;white-space:pre-wrap;word-break:break-all">{{ apply_preset_preview }}</pre>
+        <p style="margin:0 0 0.75rem;font-size:0.9rem;color:#166534">
+            Review the plan above. Click <strong>Apply for real</strong> to create the profile and repos.
+        </p>
+        <form method="post" action="/operations/apply-preset" style="display:inline">
+            <input type="hidden" name="name" value="{{ apply_preset_name }}">
+            <input type="hidden" name="repo_base_dir" value="{{ apply_preset_repo_base_dir }}">
+            {% for url, path in (apply_preset_repo_map_pairs or []) %}
+            <input type="hidden" name="repo_map_urls" value="{{ url }}">
+            <input type="hidden" name="repo_map_paths" value="{{ path }}">
+            {% endfor %}
+            {# dry_run intentionally omitted (unchecked = real apply) #}
+            <button type="submit" class="btn btn-primary" style="background:#16a34a;border-color:#15803d">
+                Apply for real
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/operations/apply-preset" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-start">
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Preset *</label>
+            <select name="name" required
+                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;min-width:220px">
+                {% for key, preset in presets.items() %}
+                <option value="{{ key }}" {% if apply_preset_name == key %}selected{% endif %}>
+                    {{ key }} — {{ preset.get('description', '') }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Repo base dir (optional)</label>
+            <input type="text" name="repo_base_dir"
+                   value="{{ apply_preset_repo_base_dir or '' }}"
+                   placeholder="~/git"
+                   maxlength="500"
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:220px">
+        </div>
+
+        <div style="width:100%">
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.4rem">
+                Repo map overrides
+                <span style="color:#94a3b8;font-weight:normal">(optional — override individual repo URL → local path)</span>
+            </label>
+            <div id="repo-map-rows" style="display:flex;flex-direction:column;gap:0.4rem">
+                <!-- Seed with existing pairs (error re-render) -->
+                {% for url, path in (apply_preset_repo_map_pairs or []) %}
+                <div class="repo-map-row" style="display:flex;gap:0.4rem;align-items:center">
+                    <input type="text" name="repo_map_urls" value="{{ url }}"
+                           placeholder="https://github.com/org/repo"
+                           maxlength="500"
+                           style="padding:0.3rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.85rem;width:310px">
+                    <span style="color:#94a3b8">→</span>
+                    <input type="text" name="repo_map_paths" value="{{ path }}"
+                           placeholder="/home/user/git/repo"
+                           maxlength="500"
+                           style="padding:0.3rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.85rem;width:260px">
+                    <button type="button" onclick="this.closest('.repo-map-row').remove()"
+                            style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;padding:0 0.25rem"
+                            title="Remove row">✕</button>
+                </div>
+                {% endfor %}
+                <!-- Hidden template row (cloned by JS) -->
+                <div id="repo-map-template" class="repo-map-row" style="display:none">
+                    <input type="text" name="repo_map_urls" value=""
+                           placeholder="https://github.com/org/repo"
+                           maxlength="500"
+                           style="padding:0.3rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.85rem;width:310px">
+                    <span style="color:#94a3b8">→</span>
+                    <input type="text" name="repo_map_paths" value=""
+                           placeholder="/home/user/git/repo"
+                           maxlength="500"
+                           style="padding:0.3rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.85rem;width:260px">
+                    <button type="button" onclick="this.closest('.repo-map-row').remove()"
+                            style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;padding:0 0.25rem"
+                            title="Remove row">✕</button>
+                </div>
+            </div>
+            <a href="#" id="add-repo-map-row"
+               style="font-size:0.85rem;color:#2563eb;text-decoration:none;display:inline-block;margin-top:0.4rem">
+                + Add another mapping
+            </a>
+        </div>
+
+        <div style="width:100%;display:flex;align-items:center;gap:1rem">
+            <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.9rem;cursor:pointer">
+                <input type="checkbox" name="dry_run" value="on"
+                       {% if apply_preset_dry_run is not false %}checked{% endif %}>
+                <span>Dry run (preview without changes)</span>
+            </label>
+            <button type="submit" class="btn btn-primary">Apply preset</button>
+        </div>
+    </form>
 </div>
+
+<script>
+(function () {
+    var addBtn = document.getElementById('add-repo-map-row');
+    var container = document.getElementById('repo-map-rows');
+    var template = document.getElementById('repo-map-template');
+    if (!addBtn || !container || !template) return;
+
+    addBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var clone = template.cloneNode(true);
+        clone.removeAttribute('id');
+        clone.style.display = 'flex';
+        // Clear values in the cloned inputs
+        clone.querySelectorAll('input').forEach(function (inp) { inp.value = ''; });
+        container.appendChild(clone);
+    });
+})();
+</script>
 {% endblock %}
