@@ -1,8 +1,9 @@
-# Dev topology for osm.
+# Dev topology for osm: Postgres (with pgvector) + the MCP server.
 #
-# Tailscale sidecar block below is commented out. Enable when you have a
-# reusable Tailscale auth key in .env (TS_AUTHKEY) and want db + mcp
-# reachable only over your tailnet rather than 0.0.0.0.
+# This is the Docker path for local dev / a quick self-host. To run the
+# server directly on a Linux box and let teammates connect over SSH (the
+# dev-machine-as-server model — no Docker), see scripts/server-setup.sh
+# and scripts/onboard.sh.
 
 services:
   db:
@@ -20,11 +21,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-    # When Tailscale sidecar is enabled, remove `ports` above and
-    # uncomment the next two lines so db rides the tailscale netns:
-    # network_mode: "service:tailscale"
-    # depends_on:
-    #   - tailscale
 
   mcp:
     build:
@@ -36,37 +32,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # When Tailscale sidecar is enabled:
-    # network_mode: "service:tailscale"
-
-  # ------------------------------------------------------------------
-  # Tailscale sidecar (disabled by default).
-  #
-  # Steps to enable:
-  #   1. Generate a reusable auth key in the Tailscale admin panel
-  #      (personal tailnet is fine for solo dev).
-  #   2. Put the key in .env as TS_AUTHKEY=tskey-auth-...
-  #   3. Uncomment the whole `tailscale:` service block below.
-  #   4. Switch `db` and `mcp` to `network_mode: "service:tailscale"`
-  #      (see commented hints above) and drop their `ports` mappings.
-  #   5. `docker compose up -d tailscale db mcp`.
-  #
-  # tailscale:
-  #   image: tailscale/tailscale:latest
-  #   hostname: osm-host
-  #   environment:
-  #     TS_AUTHKEY: ${TS_AUTHKEY}
-  #     TS_EXTRA_ARGS: "--ssh"
-  #     TS_STATE_DIR: /var/lib/tailscale
-  #   volumes:
-  #     - tailscale_state:/var/lib/tailscale
-  #     - /dev/net/tun:/dev/net/tun
-  #   cap_add:
-  #     - NET_ADMIN
-  #     - NET_RAW
-  #   restart: unless-stopped
-  # ------------------------------------------------------------------
 
 volumes:
   db_data:
-  # tailscale_state:

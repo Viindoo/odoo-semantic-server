@@ -42,14 +42,13 @@ The script creates `.venv/` and installs runtime + dev extras (pytest, mypy, ruf
 
 ```bash
 cp .env.example .env
-# edit .env → change POSTGRES_PASSWORD; leave TS_AUTHKEY empty for now
+# edit .env → change POSTGRES_PASSWORD
 ```
 
 Keys that matter on a dev box:
 
 - `DATABASE_URL` — the indexer + server read this
 - `OSM_TENANT` — `public` for shared Odoo CE, any other schema for a customer tenant
-- `TS_AUTHKEY` — Tailscale sidecar auth key (leave empty until you enable the sidecar in `docker-compose.yml`)
 
 ### 3. Start Postgres
 
@@ -97,7 +96,7 @@ Two transports:
 # stdio (what AI clients use by default)
 uv run python -m osm.server
 
-# HTTP (dev debugging only; bind to loopback or Tailscale)
+# HTTP (dev debugging only; bind to loopback)
 uv run python -m osm.server --http --host 127.0.0.1 --port 8765
 ```
 
@@ -144,3 +143,5 @@ uv run python -m tests.accept.runner --tenant public --iterations 10
 ## What next
 
 Run the server, point your MCP client at it, start indexing. Open issues on the repo for bugs or feature requests.
+
+To run this box as a **shared server** that teammates connect to over SSH (the dev-machine-as-server model — Postgres + the indexed Odoo CE DBs + a restricted SSH user with a forced command), use `scripts/server-setup.sh`; teammates wire it into their `.mcp.json` with `scripts/onboard.sh`.

@@ -75,6 +75,8 @@ uv run python -m osm.server            # FastMCP on stdio
 
 Target production experience (self-host): `docker compose up -d`, point the indexer at your addons, connect your AI client over MCP (stdio or HTTP on `:8765`).
 
+**Shared server, no Docker.** To run osm directly on a Linux box and let a team connect over SSH: `scripts/server-setup.sh` provisions it (Postgres + pgvector, the indexed Odoo CE databases, a restricted SSH user pinned to a forced command — no shell, no daemon), and each teammate runs `scripts/onboard.sh --host <host> --port <port> --ver 18` to add the `.mcp.json` entry. A client connection is just `ssh osm@<host> <ver>` running the stdio server for that Odoo version.
+
 ## Repository layout
 
 ```text
@@ -95,7 +97,8 @@ Target production experience (self-host): `docker compose up -d`, point the inde
 │       ├── errors.py          #     400 / 404 / 409 mapping
 │       └── handlers/          #     one file per tool
 ├── migrations/                # SQL migrations (idempotent, schema-neutral)
-├── scripts/                   # Operator CLIs: bootstrap, migrate, create_tenant, index
+├── scripts/                   # Operator/deploy CLIs: bootstrap, migrate, create_tenant, index,
+│                              #   server-setup, osm-stdio, osm-authorize, onboard
 ├── tests/
 │   ├── indexer/               #   Unit + integration for the indexer pipeline
 │   ├── server/                #   Handler unit + golden tests
@@ -103,7 +106,7 @@ Target production experience (self-host): `docker compose up -d`, point the inde
 │   ├── accept/                #   End-to-end benchmark suite + live-Odoo dump
 │   └── fixtures/              #   Frozen Odoo CE subset + hand-crafted edge cases
 ├── docker/                    # Dockerfile.server + Dockerfile.indexer
-├── docker-compose.yml         # Dev topology (Postgres + MCP + optional Tailscale)
+├── docker-compose.yml         # Dev topology: Postgres + MCP (the Docker path)
 └── .github/workflows/         # CI
 ```
 
