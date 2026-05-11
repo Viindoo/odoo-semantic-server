@@ -1042,3 +1042,80 @@ cat ~/.local/share/odoo-semantic-mcp/known_hosts
 ### Full Clone (No `--depth=1`)
 
 SSH auto-clone uses `git clone --branch <branch> --single-branch <url>` (full history). **Why:** M6 Wave 2 incremental indexer requires full git history to compute `git diff old..new` between commits. Shallow clone would force full reindex on every change, defeating the incremental benefit. Trade-off: large Odoo repos take 3–10 minutes to clone. Handled via background job + Web UI polling (async/await pattern).
+
+---
+
+## 11. Recall Benchmark Setup
+
+The M3 `find_examples` tool uses cosine similarity + Neo4j centrality rerank.
+Two test tracks verify ranking quality:
+
+### 11.1 Mock recall (regular CI — no Ollama)
+
+`tests/test_find_examples_recall_mock.py` runs in every CI push (marked
+`postgres + neo4j`).  It uses a `ClusterEmbedder` that assigns deterministic
+cluster-aware vectors: snippets in the same semantic cluster (tax logic, PDF
+report, email confirmation) land near each other in embedding space, while a
+query for cluster A gets the exact cluster-A anchor vector.
+
+This test catches regressions in the ranking pipeline (cosine query in
+pgvector, centrality rerank coefficient, `_find_examples` output parsing)
+without requiring Ollama.
+
+```bash
+# Run locally (needs Neo4j + PostgreSQL via testcontainers or docker compose):
+pytest tests/test_find_examples_recall_mock.py -v
+```
+
+### 11.2 Nightly Ollama-gated recall (real embeddings)
+
+`tests/test_find_examples_recall.py` (marker: `ollama`) runs the 100-query
+stratified benchmark (50 VN + 50 EN) against a live Ollama instance with
+`qwen3-embedding-q5km` and real indexed data.
+
+**Thresholds:**
+
+| Language | recall@5 threshold |
+|----------|--------------------|
+| Vietnamese (VN) | ≥ 0.75 (38/50 queries must hit) |
+| English (EN) | ≥ 0.80 (40/50 queries must hit) |
+| Gap (EN − VN) | ≤ 0.05 |
+
+The thresholds reflect observed quality with `qwen3-embedding-q5km` on
+Viindoo 17.0 data (M3 implementation).  If EN recall drops below 0.80
+after a model swap or data change, investigate embedding instruction drift
+(see `src/embedding/instructions.py`).
+
+**GitHub Actions nightly job (`recall-benchmark`):**
+
+The `.github/workflows/nightly-smoke.yml` job `recall-benchmark` is
+**skipped** unless the repository secret `OLLAMA_URL` is set.  To enable:
+
+1. Add repository secret `OLLAMA_URL` → URL of an Ollama instance reachable
+   from GitHub Actions runners (e.g. a self-hosted runner with Ollama, or a
+   cloud endpoint with `OLLAMA_HOST=0.0.0.0:11434`).
+2. Optionally add `OLLAMA_MODEL` secret (default: `qwen3-embedding-q5km`).
+3. Ensure the Ollama instance has the model pre-pulled:
+   ```bash
+   ollama pull qwen3-embedding-q5km
+   ```
+4. The job requires indexed Viindoo 17.0 data (or any profile with 17.0
+   modules for the eval queries to be meaningful).
+
+**Run locally:**
+
+```bash
+# Start services
+docker compose up -d
+python -m src.db.migrate
+
+# Index Viindoo 17.0 with embeddings (once):
+python -m src.indexer index-repo --profile viindoo_17
+
+# Run the benchmark:
+OLLAMA_URL=http://localhost:11434 \
+pytest tests/test_find_examples_recall.py -m ollama -v
+```
+
+The test auto-skips if Ollama is not reachable — no manual `--skip` flag
+needed.
