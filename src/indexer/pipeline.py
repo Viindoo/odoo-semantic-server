@@ -288,6 +288,7 @@ def _index_repo(
     total_embeddings = 0
     total_js_patches = 0
     total_owl_comps = 0
+    total_embed_calls = 0
 
     # Pre-flight: check whether embedding is possible (once, not per module).
     embed_enabled = pg_conn is not None and embedder is not None
@@ -347,8 +348,11 @@ def _index_repo(
             if embed_enabled and version != "unknown":
                 js_chunks = parser_js.parse_module(info)
                 chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
-                write_module_embeddings(pg_conn, mod_name, version, chunks, embedder)
+                embed_calls = write_module_embeddings(
+                    pg_conn, mod_name, version, chunks, embedder
+                )
                 total_embeddings += len(chunks)
+                total_embed_calls += embed_calls
 
     writer.write_results(py_results)
     writer.write_view_results(view_results)
@@ -377,6 +381,14 @@ def _index_repo(
                 repo.get("url", local_path), odoo_version,
             )
     # === End Module GC ===
+
+    # Observability summary log (M7 C5) — one line per repo, readable by admins.
+    _logger.info(
+        "Indexer run: %d modules, %d embed calls, %d rows written",
+        total_modules,
+        total_embed_calls,
+        total_embeddings,
+    )
 
     # === On full success (W2-4): advance head_sha AFTER all writes ===
     # Must be the last statement — any exception above prevents this,
@@ -431,6 +443,7 @@ def _index_repo(
         "views": total_views,
         "qweb": total_qweb,
         "embeddings": total_embeddings,
+        "embed_calls": total_embed_calls,
         "js_patches": total_js_patches,
         "owl_comps": total_owl_comps,
     }

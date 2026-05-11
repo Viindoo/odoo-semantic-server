@@ -7,6 +7,7 @@ Qwen3Embedder  — Ollama HTTP client for Qwen3-Embedding-4B Q5_K_M.
 import json
 import math
 import random
+import threading
 import urllib.request
 from typing import Protocol, runtime_checkable
 
@@ -31,11 +32,17 @@ class FakeEmbedder:
     Uses a seeded RNG so the same text always gets the same vector within a
     test session (seed is global, not per-text, which is intentional — tests
     only need non-zero distinct-ish vectors, not true semantic similarity).
+
+    call_count is incremented on each successful embed() call (thread-safe).
+    Mirror of Qwen3Embedder shape — lets tests assert observability invariants
+    without a real Ollama instance.
     """
 
     def __init__(self, dim: int = 1024, seed: int = 42):
         self._dim = dim
         self._seed = seed
+        self._lock = threading.Lock()
+        self.call_count: int = 0
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         rng = random.Random(self._seed)
@@ -43,6 +50,8 @@ class FakeEmbedder:
         for _ in texts:
             vec = [rng.gauss(0, 1) for _ in range(self._dim)]
             result.append(_normalize(vec))
+        with self._lock:
+            self.call_count += 1
         return result
 
 
@@ -74,14 +83,21 @@ class Qwen3Embedder:
         self._dim = dim
         self._retries = retries
         self._auth_token = auth_token
+        self._lock = threading.Lock()
+        self.call_count: int = 0
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if len(texts) > self._MAX_BATCH:
             out: list[list[float]] = []
             for i in range(0, len(texts), self._MAX_BATCH):
                 out.extend(self._embed_one(texts[i : i + self._MAX_BATCH]))
+            with self._lock:
+                self.call_count += 1
             return out
-        return self._embed_one(texts)
+        result = self._embed_one(texts)
+        with self._lock:
+            self.call_count += 1
+        return result
 
     def _embed_one(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self._model, "input": texts}).encode()

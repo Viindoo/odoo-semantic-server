@@ -23,6 +23,22 @@ def _get_db_conn():
         return None
 
 
+def _count_embeddings(conn) -> int | None:
+    """Return total row count from the embeddings table, or None on any error.
+
+    Handles the case where pgvector is absent (table doesn't exist yet) or
+    the connection is unavailable — returns None so the template can show
+    'N/A' instead of crashing the dashboard.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM embeddings")
+            row = cur.fetchone()
+            return row[0] if row else 0
+    except Exception:
+        return None
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Render dashboard with profiles + repos overview."""
@@ -31,6 +47,7 @@ async def dashboard(request: Request):
     profiles = []
     api_key_count = 0
     ssh_key_count = 0
+    embeddings_total: int | None = None
     error = None
 
     conn = _get_db_conn()
@@ -45,6 +62,7 @@ async def dashboard(request: Request):
                 profiles.append({**p, "repos": repos})
             api_key_count = len(list_api_keys(conn))
             ssh_key_count = len(list_ssh_keys(conn))
+            embeddings_total = _count_embeddings(conn)
         except Exception as e:
             error = str(e)
         finally:
@@ -59,6 +77,7 @@ async def dashboard(request: Request):
             "profiles": profiles,
             "api_key_count": api_key_count,
             "ssh_key_count": ssh_key_count,
+            "embeddings_total": embeddings_total,
             "error": error,
         },
     )
