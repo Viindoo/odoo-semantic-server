@@ -122,7 +122,12 @@
             </td>
             <td style="font-size:0.8rem;color:#64748b">{{ r.last_indexed_at or "—" }}</td>
             <td>
-                <form method="post" action="/repos/repos/{{ r.id }}/index">
+                <form method="post" action="/repos/repos/{{ r.id }}/index"
+                      style="display:flex;gap:0.25rem;flex-wrap:wrap;align-items:center;font-size:0.8rem">
+                    <label title="--no-embed"><input type="checkbox" name="no_embed" value="on">embed-skip</label>
+                    <label title="--full"><input type="checkbox" name="full" value="on">full</label>
+                    <label title="--gc (tip: pair with full)"><input type="checkbox" name="gc" value="on">gc</label>
+                    <label title="--max-workers N"><input type="number" name="max_workers" value="1" min="1" max="8" style="width:3em">w</label>
                     <button type="submit" class="btn btn-primary" style="font-size:0.8rem">Index</button>
                 </form>
             </td>
