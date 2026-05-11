@@ -14,6 +14,14 @@ NEO4J_USER = os.getenv("NEO4J_TEST_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_TEST_PASSWORD", "password")
 TEST_VERSION = "99.0"  # dedicated test version — avoids conflict with real data
 
+# Production helpers (e.g. pipeline._neo4j_creds) read NEO4J_* env, not
+# NEO4J_TEST_*. Mirror the test names → prod names so any prod helper used by
+# tests resolves to the test Neo4j. setdefault preserves an explicit override
+# from the surrounding shell / CI workflow.
+os.environ.setdefault("NEO4J_URI", NEO4J_URI)
+os.environ.setdefault("NEO4J_USER", NEO4J_USER)
+os.environ.setdefault("NEO4J_PASSWORD", NEO4J_PASSWORD)
+
 # Canonical version defined in .env.example (NEO4J_IMAGE=...).
 # CI loads .env.example before running tests; local dev copies .env.example → .env.
 _NEO4J_IMAGE = os.getenv("NEO4J_IMAGE", "neo4j:5.26.25")
@@ -130,6 +138,13 @@ def neo4j_driver():
         os.environ["NEO4J_TEST_URI"] = bolt_url
         os.environ["NEO4J_TEST_USER"] = "neo4j"
         os.environ["NEO4J_TEST_PASSWORD"] = "password"
+        # Also export NEO4J_* (prod names) so production helpers like
+        # `pipeline._neo4j_creds()` resolve to the test container during pytest.
+        # Production code intentionally does NOT consult NEO4J_TEST_* to prevent
+        # test env from leaking into a production process (web_ui subprocess bug).
+        os.environ["NEO4J_URI"] = bolt_url
+        os.environ["NEO4J_USER"] = "neo4j"
+        os.environ["NEO4J_PASSWORD"] = "password"
     except Exception as e:
         tc_error = e
         if container is not None:

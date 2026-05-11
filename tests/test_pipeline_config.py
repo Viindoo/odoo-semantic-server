@@ -59,28 +59,6 @@ def test_neo4j_creds_env_overrides_config(tmp_path, monkeypatch):
     assert password == "envpass"
 
 
-def test_neo4j_creds_test_env_beats_prod_env(monkeypatch):
-    """NEO4J_TEST_* env vars take priority over NEO4J_* env vars."""
-    import src.config as config_mod
-
-    monkeypatch.delenv("ODOO_SEMANTIC_CONF", raising=False)
-    monkeypatch.setenv("NEO4J_TEST_URI", "bolt://test.example.com:7687")
-    monkeypatch.setenv("NEO4J_TEST_USER", "testuser")
-    monkeypatch.setenv("NEO4J_TEST_PASSWORD", "testpass")
-    monkeypatch.setenv("NEO4J_URI", "bolt://prod.example.com:7687")
-    monkeypatch.setenv("NEO4J_USER", "produser")
-    monkeypatch.setenv("NEO4J_PASSWORD", "prodpass")
-    config_mod._conf = None
-
-    import src.indexer.pipeline as pipeline_mod
-    importlib.reload(pipeline_mod)
-
-    uri, user, password = pipeline_mod._neo4j_creds()
-    assert uri == "bolt://test.example.com:7687"
-    assert user == "testuser"
-    assert password == "testpass"
-
-
 def test_neo4j_creds_fallback_defaults(tmp_path, monkeypatch):
     """_neo4j_creds() raises when no env / no config supplies a password.
 

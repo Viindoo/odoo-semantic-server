@@ -13,7 +13,6 @@ Public API:
 import concurrent.futures
 import hashlib
 import logging
-import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -92,27 +91,23 @@ def indexer_is_running(pg_conn, profile_name: str) -> bool:
 def _neo4j_creds() -> tuple[str, str, str]:
     """Return (uri, user, password) — single source of truth for Neo4j connection.
 
-    Priority: NEO4J_TEST_* env (tests) → NEO4J_* env (Docker/CI) →
-              [database]/neo4j_* in config file → hardcoded fallback (none for password).
+    Priority: NEO4J_* env (Docker/CI/systemd) → [database]/neo4j_* in config
+              file → hardcoded fallback (no fallback for password).
+
+    NEO4J_TEST_* env vars are deliberately NOT consulted: those belong to
+    test fixtures (testcontainers / CI service container) and must never
+    influence production code paths. When tests need this helper to point
+    at a test Neo4j, conftest.py exports both NEO4J_TEST_* and NEO4J_*.
     """
-    uri = (
-        os.getenv("NEO4J_TEST_URI")
-        or config.from_env_or_ini(
-            "NEO4J_URI", "database", "neo4j_uri",
-            fallback="bolt://localhost:7687",
-        )
+    uri = config.from_env_or_ini(
+        "NEO4J_URI", "database", "neo4j_uri",
+        fallback="bolt://localhost:7687",
     )
-    user = (
-        os.getenv("NEO4J_TEST_USER")
-        or config.from_env_or_ini(
-            "NEO4J_USER", "database", "neo4j_user", fallback="neo4j",
-        )
+    user = config.from_env_or_ini(
+        "NEO4J_USER", "database", "neo4j_user", fallback="neo4j",
     )
-    password = (
-        os.getenv("NEO4J_TEST_PASSWORD")
-        or config.from_env_or_ini(
-            "NEO4J_PASSWORD", "database", "neo4j_password", fallback=None,
-        )
+    password = config.from_env_or_ini(
+        "NEO4J_PASSWORD", "database", "neo4j_password", fallback=None,
     )
     if not password:
         raise RuntimeError(
