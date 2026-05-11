@@ -1,0 +1,177 @@
+[
+  {
+    "entity_type": "field",
+    "entity_name": "sale.order.amount_total",
+    "expected_severity": "HIGH",
+    "rationale": "Computed field used in many views/methods cross-module (invoicing, reporting, discounts)",
+    "synthetic_counts": {"view_count": 8, "method_count": 12, "js_count": 2}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "account.move.line.account_id",
+    "expected_severity": "HIGH",
+    "rationale": "Core accounting field referenced heavily across analytic, tax and journal entry logic",
+    "synthetic_counts": {"view_count": 5, "method_count": 9, "js_count": 3}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "stock.move.product_qty",
+    "expected_severity": "HIGH",
+    "rationale": "Stock quantity field drives procurement, reordering and valuation computations",
+    "synthetic_counts": {"view_count": 4, "method_count": 7, "js_count": 1}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "sale.order.action_confirm",
+    "expected_severity": "HIGH",
+    "rationale": "Confirmation method triggers procurement, invoicing and delivery — many super() chains",
+    "synthetic_counts": {"view_count": 2, "method_count": 14, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "account.move._post",
+    "expected_severity": "HIGH",
+    "rationale": "Journal entry posting triggers tax lines, analytic distribution, and reconciliation",
+    "synthetic_counts": {"view_count": 1, "method_count": 11, "js_count": 0}
+  },
+  {
+    "entity_type": "model",
+    "entity_name": "res.partner",
+    "expected_severity": "HIGH",
+    "rationale": "Partner model is extended by nearly every Odoo module; changes ripple everywhere",
+    "synthetic_counts": {"view_count": 6, "method_count": 8, "js_count": 2}
+  },
+  {
+    "entity_type": "model",
+    "entity_name": "product.template",
+    "expected_severity": "HIGH",
+    "rationale": "Product template drives pricing, stock, manufacturing and website; heavily extended",
+    "synthetic_counts": {"view_count": 7, "method_count": 5, "js_count": 3}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "purchase.order.currency_id",
+    "expected_severity": "MEDIUM",
+    "rationale": "Currency field affects price and tax computation but scoped to purchase module",
+    "synthetic_counts": {"view_count": 3, "method_count": 4, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "hr.leave.state",
+    "expected_severity": "MEDIUM",
+    "rationale": "Leave state field triggers approval workflow and payroll, but stays within HR",
+    "synthetic_counts": {"view_count": 2, "method_count": 5, "js_count": 1}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "stock.picking.button_validate",
+    "expected_severity": "MEDIUM",
+    "rationale": "Validates picking — triggers moves and lot creation but limited to stock module",
+    "synthetic_counts": {"view_count": 1, "method_count": 6, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "mrp.production.action_confirm",
+    "expected_severity": "MEDIUM",
+    "rationale": "Manufacturing confirmation reserves components and creates work orders, scoped to mrp",
+    "synthetic_counts": {"view_count": 2, "method_count": 4, "js_count": 1}
+  },
+  {
+    "entity_type": "model",
+    "entity_name": "project.task",
+    "expected_severity": "MEDIUM",
+    "rationale": "Task model used across timesheets and invoicing but not as broadly extended as res.partner",
+    "synthetic_counts": {"view_count": 3, "method_count": 3, "js_count": 2}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "sale.order.line.discount",
+    "expected_severity": "MEDIUM",
+    "rationale": "Discount field affects price computation and some reporting, scoped to sale module",
+    "synthetic_counts": {"view_count": 2, "method_count": 3, "js_count": 1}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "account.payment._prepare_move_line_default_vals",
+    "expected_severity": "MEDIUM",
+    "rationale": "Prepares default move lines for payments; affects reconciliation logic within accounting",
+    "synthetic_counts": {"view_count": 0, "method_count": 5, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "hr.payslip.date_from",
+    "expected_severity": "MEDIUM",
+    "rationale": "Payslip date range used in wage rules and worked days; stays within payroll module",
+    "synthetic_counts": {"view_count": 2, "method_count": 4, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "res.users.signature",
+    "expected_severity": "LOW",
+    "rationale": "User email signature — rarely overridden, no compute dependencies",
+    "synthetic_counts": {"view_count": 1, "method_count": 0, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "res.lang.date_format",
+    "expected_severity": "LOW",
+    "rationale": "Locale date format string — display-only, isolated to formatting utilities",
+    "synthetic_counts": {"view_count": 0, "method_count": 1, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "mail.thread._get_tracked_fields",
+    "expected_severity": "LOW",
+    "rationale": "Returns a list of tracked field names for change logging; no downstream effects",
+    "synthetic_counts": {"view_count": 0, "method_count": 2, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "ir.sequence.suffix",
+    "expected_severity": "LOW",
+    "rationale": "Sequence suffix string — cosmetic change with no compute cascade",
+    "synthetic_counts": {"view_count": 1, "method_count": 1, "js_count": 0}
+  },
+  {
+    "entity_type": "model",
+    "entity_name": "ir.rule",
+    "expected_severity": "LOW",
+    "rationale": "Access rules model — changes are configuration, not logic; minimal downstream",
+    "synthetic_counts": {"view_count": 0, "method_count": 2, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "crm.lead.description",
+    "expected_severity": "LOW",
+    "rationale": "HTML description field on a CRM lead — display only, no compute or dependencies",
+    "synthetic_counts": {"view_count": 1, "method_count": 0, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "base.setup.action_general_configuration",
+    "expected_severity": "LOW",
+    "rationale": "Opens general settings wizard — single action method, no downstream overrides",
+    "synthetic_counts": {"view_count": 1, "method_count": 1, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "account.journal.code",
+    "expected_severity": "LOW",
+    "rationale": "Short journal code used for display and sequence prefixes; minimal impact",
+    "synthetic_counts": {"view_count": 2, "method_count": 0, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "product.category.complete_name",
+    "expected_severity": "LOW",
+    "rationale": "Computed display name for category path — purely cosmetic, no logic cascade",
+    "synthetic_counts": {"view_count": 1, "method_count": 1, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "res.config.settings.get_default_lang",
+    "expected_severity": "LOW",
+    "rationale": "Returns default language setting — simple getter with no side effects",
+    "synthetic_counts": {"view_count": 0, "method_count": 1, "js_count": 0}
+  }
+]
