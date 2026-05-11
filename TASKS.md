@@ -322,6 +322,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
+| Web UI Session Auth (M7 W16) | | | |
 | Full sign-off | | | Phân phát key sau khi ký |
 
 ---
