@@ -2,12 +2,16 @@
 """Operations page — long-running indexer commands with background job tracking."""
 import logging
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+
+from src.indexer.version_presets import PRESETS
 
 _logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,7 +43,7 @@ async def operations_page(request: Request):
     return templates.TemplateResponse(
         request,
         "operations.html",
-        {"flash": flash},
+        {"flash": flash, "presets": PRESETS},
     )
 
 
@@ -69,7 +73,7 @@ async def post_index_core(
         return templates.TemplateResponse(
             request,
             "operations.html",
-            {"flash": None, "index_core_error": error},
+            {"flash": None, "index_core_error": error, "presets": PRESETS},
             status_code=400,
         )
 
@@ -133,7 +137,7 @@ async def post_seed_patterns(
         return templates.TemplateResponse(
             request,
             "operations.html",
-            {"flash": None, "seed_patterns_error": error},
+            {"flash": None, "seed_patterns_error": error, "presets": PRESETS},
             status_code=400,
         )
 
@@ -167,4 +171,132 @@ async def post_seed_patterns(
     else:
         flash = quote_plus("Seeding pattern catalogue (job tracking unavailable)")
 
+    return RedirectResponse(f"/operations?flash={flash}", status_code=303)
+
+
+@router.post("/operations/apply-preset", response_class=HTMLResponse)
+async def post_apply_preset(
+    request: Request,
+    name: Annotated[str, Form()],
+    repo_base_dir: Annotated[str, Form()] = "",
+    repo_map_urls: Annotated[list[str] | None, Form()] = None,
+    repo_map_paths: Annotated[list[str] | None, Form()] = None,
+    dry_run: Annotated[str, Form()] = "",
+):
+    """Validate inputs, run apply-preset synchronously (fast ~seconds), render result."""
+    templates = request.app.state.templates
+
+    # --- Validation ---
+    error: str | None = None
+
+    _urls_raw = repo_map_urls or []
+    _paths_raw = repo_map_paths or []
+
+    if name not in PRESETS:
+        available = ", ".join(sorted(PRESETS.keys()))
+        error = f"Unknown preset {name!r}. Available: {available}"
+    elif repo_base_dir.strip() and not Path(repo_base_dir.strip()).is_dir():
+        error = (
+            f"repo_base_dir does not exist or is not a directory: {repo_base_dir.strip()}"
+        )
+    elif len(_urls_raw) != len(_paths_raw):
+        # Lists must be same length (browser always submits paired inputs)
+        error = (
+            "repo_map_urls and repo_map_paths must have the same"
+            " number of entries"
+        )
+
+    if error:
+        return templates.TemplateResponse(
+            request,
+            "operations.html",
+            {
+                "flash": None,
+                "apply_preset_error": error,
+                "presets": PRESETS,
+                # Pre-fill form fields on error
+                "apply_preset_name": name,
+                "apply_preset_repo_base_dir": repo_base_dir,
+                "apply_preset_dry_run": bool(dry_run),
+            },
+            status_code=400,
+        )
+
+    # --- Build argv ---
+    argv = ["-m", "src.manager", "apply-preset", name]
+    if repo_base_dir.strip():
+        argv += ["--repo-base-dir", repo_base_dir.strip()]
+
+    repo_map_pairs = [
+        (u.strip(), p.strip())
+        for u, p in zip(_urls_raw, _paths_raw)
+        if u.strip() and p.strip()
+    ]
+    for url, path in repo_map_pairs:
+        argv += ["--repo-map", f"{url}={path}"]
+
+    if dry_run:
+        argv.append("--dry-run")
+
+    # --- Run synchronously (apply-preset is fast: ~seconds) ---
+    try:
+        result = subprocess.run(
+            [sys.executable, *argv],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return templates.TemplateResponse(
+            request,
+            "operations.html",
+            {
+                "flash": None,
+                "apply_preset_error": "apply-preset timed out after 60 seconds",
+                "presets": PRESETS,
+                "apply_preset_name": name,
+                "apply_preset_repo_base_dir": repo_base_dir,
+                "apply_preset_dry_run": bool(dry_run),
+            },
+            status_code=500,
+        )
+
+    if result.returncode != 0:
+        stderr_text = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+        return templates.TemplateResponse(
+            request,
+            "operations.html",
+            {
+                "flash": None,
+                "apply_preset_error": (
+                    f"apply-preset failed (exit {result.returncode}): {stderr_text}"
+                ),
+                "presets": PRESETS,
+                "apply_preset_name": name,
+                "apply_preset_repo_base_dir": repo_base_dir,
+                "apply_preset_dry_run": bool(dry_run),
+            },
+            status_code=400,
+        )
+
+    if dry_run:
+        # Show preview output; let admin submit again without dry_run
+        return templates.TemplateResponse(
+            request,
+            "operations.html",
+            {
+                "flash": None,
+                "apply_preset_preview": result.stdout,
+                "presets": PRESETS,
+                # Pre-fill the "Apply for real" form with same params (dry_run unchecked)
+                "apply_preset_name": name,
+                "apply_preset_repo_base_dir": repo_base_dir,
+                "apply_preset_repo_map_pairs": repo_map_pairs,
+                "apply_preset_dry_run": False,
+            },
+            status_code=200,
+        )
+
+    # Non-dry-run success → redirect with flash
+    flash = quote_plus(f"Preset '{name}' applied successfully")
     return RedirectResponse(f"/operations?flash={flash}", status_code=303)
