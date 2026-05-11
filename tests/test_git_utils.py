@@ -50,6 +50,22 @@ def test_default_clone_dir_format(tmp_path, monkeypatch):
     assert p2.name == "some-addon"
 
 
+@pytest.mark.parametrize(
+    "url,expected_slug",
+    [
+        ("git@github.com:odoo/odoo.git?token=abc", "odoo"),
+        ("https://example.com/Viin/some-addon.git#readme", "some-addon"),
+        ("ssh://git@host/path/repo.git?ref=main", "repo"),
+        ("git@host:org/repo", "repo"),  # no .git, no query — regression guard
+        ("git@github.com:org/repo.git#fragment", "repo"),  # fragment without query
+    ],
+)
+def test_default_clone_dir_strips_query_and_fragment(tmp_path, monkeypatch, url, expected_slug):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    p = default_clone_dir("p", url)
+    assert p.name == expected_slug, f"URL={url} → got {p.name}, expected {expected_slug}"
+
+
 def test_clone_repo_ssh_writes_tmp_then_cleans(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     target = tmp_path / "out"

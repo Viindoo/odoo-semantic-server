@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 _SSH_URL_RE = re.compile(r"^(git@|ssh://)")
 
@@ -35,11 +36,22 @@ def default_clone_dir(profile_name: str, url: str) -> Path:
     Format: <base>/<profile>/<repo_slug>/
     Where repo_slug = stem of URL path with .git stripped (e.g. 'odoo' from 'odoo/odoo.git').
     """
-    # Derive slug
+    # Parse URL to strip query and fragment
+    cleaned = url.strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme:
+        # https://, ssh://, file:// etc. — urlparse strips query/fragment
+        path = parsed.path
+    else:
+        # SCP-style SSH (git@host:org/repo.git) — urlparse returns empty scheme
+        # Manually strip query and fragment
+        path = cleaned.split("?", 1)[0].split("#", 1)[0]
+
+    # Derive slug from cleaned path
     # SSH: git@github.com:org/repo.git → 'repo'
     # ssh://git@host/path/repo.git → 'repo'
     # https://...: same logic
-    name = url.rstrip("/").split("/")[-1].split(":")[-1]
+    name = path.rstrip("/").split("/")[-1].split(":")[-1]
     slug = name[:-4] if name.endswith(".git") else name
     if not slug:
         slug = "repo"
