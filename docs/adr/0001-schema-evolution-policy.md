@@ -3,6 +3,28 @@
 **Date:** 2026-05-06  
 **Status:** Accepted  
 
+---
+
+> **REVISION — M7 W15 (2026-05-11):** `yoyo-migrations` adopted. Baseline migration =
+> `migrations/0001_initial.sql`. All future schema changes must be expressed as numbered
+> `.sql` files in `migrations/`. The legacy inline `SCHEMA_SQL` constant in
+> `src/db/migrate.py` is retained as a read-only alias for callers that import it
+> directly (tests), but it is no longer the execution path.
+>
+> **Baseline safety for existing databases:** `src/db/migrate.py::_run_yoyo()` detects
+> whether the schema was previously bootstrapped (sentinel: `api_keys` table exists).
+> If the schema exists but `0001_initial` has not been recorded in yoyo's
+> `_yoyo_migration` table, `backend.mark_migrations([initial])` is called to register
+> the baseline as applied without re-executing DDL — preventing destructive re-runs on
+> production databases that have live data in e.g. `api_keys`.
+>
+> **yoyo version pin:** `yoyo-migrations>=9,<10` (9.0.0 at adoption).
+> Migration table: `_yoyo_migration` (yoyo default).
+
+---
+
+
+
 ## Context
 
 PostgreSQL schema trong `src/db/migrate.py` hiện dùng approach đơn giản: single-string SQL `SCHEMA_SQL` với `CREATE TABLE IF NOT EXISTS` — idempotent, đủ cho M2.5 (add 2 tables mới). M5 sẽ thêm 3 tables mới (`ssh_key_pairs`, `api_keys`, `user_profile_access`) — vẫn OK với approach hiện tại. Nhưng M6 incremental indexing cần ALTER TABLE `repos` (thêm column `last_indexed_commit_sha`) — `CREATE IF NOT EXISTS` không đủ để quản lý schema changes.
@@ -41,7 +63,13 @@ PostgreSQL schema trong `src/db/migrate.py` hiện dùng approach đơn giản: 
 
 ## Revision History
 
-**Revision 2026-05-11:** M6 Wave 1+2+3+4 implemented additive schema changes via idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patterns (e.g. `repos.head_sha` Wave 2, `repos.ssh_key_id`/`clone_status`/`clone_error_msg` Wave 4). The original plan to adopt yoyo-migrations during M6 was deferred. Rationale:
+**Revision 2026-05-11 (M6 Wave 1–4):** M6 Wave 1+2+3+4 implemented additive schema changes via idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patterns (e.g. `repos.head_sha` Wave 2, `repos.ssh_key_id`/`clone_status`/`clone_error_msg` Wave 4). The original plan to adopt yoyo-migrations during M6 was deferred. Rationale:
 - Idempotent ALTER suffices for purely additive changes through M6.
 - Adding migration framework introduces operational complexity (state table, downgrade tooling) without immediate benefit since no non-additive change was needed.
 - Re-evaluate when first non-additive schema change is needed (e.g. column rename, type change, or constraint tightening), likely M7+. Track in M7 backlog as "Migration tool adoption".
+
+**Revision 2026-05-11 (M7 W15):** yoyo-migrations adopted. See REVISION block at top of document for full details. Key decisions:
+- All prior inline `SCHEMA_SQL` consolidated into `migrations/0001_initial.sql` (all `IF NOT EXISTS` DDL — safe baseline re-apply).
+- `migrations/0002_*.sql` naming convention for future changes.
+- Baseline detection via `api_keys` table sentinel + `mark_migrations()` prevents destructive re-run on pre-existing production data.
+- `SCHEMA_SQL` alias retained in `src/db/migrate.py` for backward compatibility with test imports.

@@ -23,17 +23,18 @@ class TestPostgreSQLVersionCheck:
 
         # Mock the rest of the function to prevent further execution
         # (we only want to verify it doesn't raise on version check)
-        with patch("src.db.migrate._ensure_extension") as mock_ensure:
-            with patch("builtins.print"):
-                mock_ensure.return_value = False
-                # Should not raise RuntimeError about PostgreSQL version
-                try:
-                    run_migrations(mock_conn)
-                except RuntimeError as e:
-                    # Only fail if it's the PostgreSQL version error
-                    if "PostgreSQL 16+ required" in str(e):
-                        pytest.fail(f"Should accept PostgreSQL 16.5, got: {e}")
-                    # Other errors are acceptable (we mocked just enough)
+        with patch("src.db.migrate._ensure_extension") as mock_ensure, \
+             patch("src.db.migrate._run_yoyo"), \
+             patch("builtins.print"):
+            mock_ensure.return_value = False
+            # Should not raise RuntimeError about PostgreSQL version
+            try:
+                run_migrations(mock_conn)
+            except RuntimeError as e:
+                # Only fail if it's the PostgreSQL version error
+                if "PostgreSQL 16+ required" in str(e):
+                    pytest.fail(f"Should accept PostgreSQL 16.5, got: {e}")
+                # Other errors are acceptable (we mocked just enough)
 
     def test_pg_15_raises(self):
         """PostgreSQL 15 raises RuntimeError."""
@@ -60,14 +61,15 @@ class TestPostgreSQLVersionCheck:
         # Mock version check returns PG 17.0
         mock_cursor.fetchone.return_value = (170000,)
 
-        with patch("src.db.migrate._ensure_extension") as mock_ensure:
-            with patch("builtins.print"):
-                mock_ensure.return_value = False
-                try:
-                    run_migrations(mock_conn)
-                except RuntimeError as e:
-                    if "PostgreSQL 16+ required" in str(e):
-                        pytest.fail(f"Should accept PostgreSQL 17.0, got: {e}")
+        with patch("src.db.migrate._ensure_extension") as mock_ensure, \
+             patch("src.db.migrate._run_yoyo"), \
+             patch("builtins.print"):
+            mock_ensure.return_value = False
+            try:
+                run_migrations(mock_conn)
+            except RuntimeError as e:
+                if "PostgreSQL 16+ required" in str(e):
+                    pytest.fail(f"Should accept PostgreSQL 17.0, got: {e}")
 
 
 class TestPgvectorVersionCheck:

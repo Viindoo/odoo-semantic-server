@@ -1,17 +1,45 @@
 # src/db/migrate.py
-"""PostgreSQL schema bootstrap.
+"""PostgreSQL schema bootstrap via yoyo-migrations.
 
 Usage:
     python -m src.db.migrate
+
+Migration files live in  <repo_root>/migrations/  and are numbered sequentially:
+    0001_initial.sql   — full baseline schema (all tables up to M6 Wave 4)
+    0002_*.sql         — future additive/ALTER changes go here
+
+Baseline safety for existing databases
+---------------------------------------
+On a database already bootstrapped by the legacy SCHEMA_SQL approach, the
+schema objects already exist but yoyo's internal _yoyo_migration table does
+not.  Without intervention yoyo would attempt to re-apply 0001_initial.sql,
+which would silently no-op for most CREATE TABLE IF NOT EXISTS statements but
+would *fail* on the ALTER TABLE ADD COLUMN IF NOT EXISTS for embeddings'
+unique-constraint upgrade (the DO $$ block is not fully idempotent against an
+already-migrated constraint).
+
+Baseline strategy: before applying, we detect whether the schema already
+exists via a sentinel query (SELECT 1 FROM api_keys LIMIT 1).  If the schema
+is present but 0001_initial has not been recorded as applied, we call
+backend.mark_migrations([initial_migration]) to register it as applied
+without re-executing it.  Subsequent numbered migrations are then applied
+normally.
+
+ADR-0001 Revision: adopted in M7 W15.  Baseline = migrations/0001_initial.sql.
 """
 
 import sys
+from pathlib import Path
 
 import psycopg2
-import psycopg2.errors
 
 from src import config
 from src.db._types import PgConn
+
+# ---------------------------------------------------------------------------
+# Legacy constants — kept for callers that import SCHEMA_SQL directly
+# (e.g. test_db_migrate.py::test_schema_sql_alias_includes_w4_columns).
+# ---------------------------------------------------------------------------
 
 _EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector;"
 
@@ -169,6 +197,12 @@ SCHEMA_SQL = (
     + _INDEXER_JOBS_SQL
 )
 
+# ---------------------------------------------------------------------------
+# Helpers (used by conftest fixtures and tests directly)
+# ---------------------------------------------------------------------------
+
+_MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
+
 
 def _vector_extension_available(conn: PgConn) -> bool:
     """True if pgvector extension is installed (regardless of who created it)."""
@@ -224,14 +258,55 @@ def _ensure_extension(conn: PgConn) -> bool:
         return False
 
 
+def _schema_already_exists(conn: PgConn) -> bool:
+    """Return True if the schema was previously bootstrapped by the legacy SCHEMA_SQL approach.
+
+    Detection criteria (both must be true):
+    1. yoyo's internal _yoyo_migration table does NOT yet exist (i.e. yoyo has never run).
+    2. The api_keys table DOES exist (sentinel for the full M2.5–M6 schema).
+
+    This combination means: "bootstrapped by legacy migrate.py, yoyo never ran before".
+    If _yoyo_migration already exists (yoyo has run at least once), we defer entirely
+    to yoyo's own state tracking — no need for the baseline mark.
+    """
+    with conn.cursor() as cur:
+        # Check if yoyo's internal table already exists.
+        cur.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = '_yoyo_migration' LIMIT 1"
+        )
+        yoyo_table_exists = cur.fetchone() is not None
+
+    if yoyo_table_exists:
+        # yoyo has run before; trust its state.  No baseline marking needed.
+        return False
+
+    # yoyo never ran: check for the api_keys sentinel.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'api_keys' LIMIT 1"
+        )
+        return cur.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# run_migrations — psycopg2-connection entry point (used by tests / conftest)
+# ---------------------------------------------------------------------------
+
 def run_migrations(conn: PgConn) -> None:
     """Execute schema DDL on an open psycopg2 connection.
 
-    Profiles and repos tables are always created.
-    Embeddings table requires pgvector extension — skipped with a warning if not available.
+    Profiles and repos tables are always created (via yoyo migrations/0001_initial.sql).
+    Embeddings table requires pgvector extension — attempted first via _ensure_extension();
+    skipped with a warning if not available (superuser privilege required for extension).
     Auth tables (api_keys, ssh_key_pairs, usage_log) are always created.
 
     Raises RuntimeError if PostgreSQL version < 16 or pgvector < 0.8.
+
+    This function delegates to yoyo-migrations for the main schema and handles
+    pgvector/embeddings separately because CREATE EXTENSION requires superuser
+    privileges that yoyo cannot gracefully skip.
     """
     # Check PostgreSQL version is >= 16
     with conn.cursor() as cur:
@@ -243,11 +318,8 @@ def run_migrations(conn: PgConn) -> None:
                 f"Update docker-compose.yml PG_IMAGE and re-run."
             )
 
-    with conn.cursor() as cur:
-        cur.execute(_BASE_SQL)
-    if not conn.autocommit:
-        conn.commit()
-
+    # pgvector / embeddings: handled separately before yoyo because CREATE EXTENSION
+    # requires superuser and cannot be inside a transaction (yoyo would wrap it).
     if _ensure_extension(conn):
         with conn.cursor() as cur:
             cur.execute(_EMBEDDINGS_SQL)
@@ -261,27 +333,103 @@ def run_migrations(conn: PgConn) -> None:
             file=sys.stderr,
         )
 
-    with conn.cursor() as cur:
-        cur.execute(_AUTH_SQL)
-    if not conn.autocommit:
-        conn.commit()
+    # Reconstruct a URI yoyo can use from the psycopg2 connection's info attributes.
+    # Must use _conn_to_uri (not _dsn_to_uri) because conn.dsn masks the password as 'xxx'.
+    uri = _conn_to_uri(conn)
+    _run_yoyo(uri, existing_conn=conn)
 
-    # M6 Wave 4: link repos.ssh_key_id → ssh_key_pairs (must run after _AUTH_SQL).
-    with conn.cursor() as cur:
-        cur.execute(_REPOS_SSH_LINK_SQL)
-    if not conn.autocommit:
-        conn.commit()
 
-    with conn.cursor() as cur:
-        cur.execute(_FEEDBACK_SQL)
-    if not conn.autocommit:
-        conn.commit()
+def _dsn_to_uri(dsn: str) -> str:
+    """Convert a psycopg2-style DSN keyword string to a postgresql:// URI.
 
-    with conn.cursor() as cur:
-        cur.execute(_INDEXER_JOBS_SQL)
-    if not conn.autocommit:
-        conn.commit()
+    Handles both URI form (already has '://') and keyword=value form.
+    Note: psycopg2 masks passwords in conn.dsn as 'xxx'; prefer _conn_to_uri()
+    when a live connection object is available.
+    """
+    if "://" in dsn:
+        return dsn
+    # Parse keyword=value pairs
+    params: dict[str, str] = {}
+    for token in dsn.split():
+        if "=" in token:
+            k, _, v = token.partition("=")
+            params[k.strip()] = v.strip().strip("'")
+    user = params.get("user", "")
+    password = params.get("password", "")
+    host = params.get("host", "localhost")
+    port = params.get("port", "5432")
+    dbname = params.get("dbname", "")
+    if password:
+        return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+    return f"postgresql://{user}@{host}:{port}/{dbname}"
 
+
+def _conn_to_uri(conn: PgConn) -> str:
+    """Reconstruct a postgresql:// URI from an open psycopg2 connection.
+
+    Uses conn.info to get the real (unmasked) password, which conn.dsn masks
+    as 'xxx'. This is required to pass a valid URI to yoyo's get_backend().
+    """
+    info = conn.info
+    user = info.user or ""
+    password = info.password or ""
+    host = info.host or "localhost"
+    port = info.port or 5432
+    dbname = info.dbname or ""
+    if password:
+        return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+    return f"postgresql://{user}@{host}:{port}/{dbname}"
+
+
+def _run_yoyo(dsn_uri: str, existing_conn: PgConn | None = None) -> None:
+    """Apply pending yoyo migrations from _MIGRATIONS_DIR against dsn_uri.
+
+    Baseline safety: if the schema already exists (detected via existing_conn
+    or a fresh probe connection) but 0001_initial has not been recorded, mark
+    it applied before running to_apply().
+
+    existing_conn is used only for the schema-existence probe; yoyo manages
+    its own connection internally.
+    """
+    from yoyo import get_backend, read_migrations
+
+    migrations = read_migrations(str(_MIGRATIONS_DIR))
+    backend = get_backend(dsn_uri)
+
+    try:
+        # Detect legacy-bootstrapped database that predates yoyo adoption.
+        if existing_conn is not None:
+            schema_present = _schema_already_exists(existing_conn)
+        else:
+            # Open a probe connection to check schema existence.
+            import psycopg2 as _psycopg2
+            try:
+                probe = _psycopg2.connect(dsn_uri)
+                probe.autocommit = True
+                schema_present = _schema_already_exists(probe)
+                probe.close()
+            except Exception:
+                schema_present = False
+
+        if schema_present:
+            # Mark 0001_initial as applied without re-executing it.
+            # Uses backend.to_apply(migrations) — pass full MigrationList so yoyo
+            # can compute hashes correctly; then filter by id.
+            pending_ids = {m.id for m in backend.to_apply(migrations)}
+            if "0001_initial" in pending_ids:
+                # Schema exists but 0001_initial not yet recorded — legacy baseline.
+                initial = [m for m in migrations if m.id == "0001_initial"]
+                backend.mark_migrations(initial)
+
+        pending = backend.to_apply(migrations)
+        backend.apply_migrations(pending)
+    finally:
+        backend.connection.close()
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
@@ -299,7 +447,32 @@ def main() -> int:
         print(f"✗ Cannot connect to PostgreSQL ({safe_dsn}): {e}", file=sys.stderr)
         return 1
     try:
-        run_migrations(conn)
+        conn.autocommit = True
+        # PostgreSQL version check
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_setting('server_version_num')::int")
+            ver = cur.fetchone()[0]
+            if ver < 160000:
+                print(
+                    f"✗ PostgreSQL 16+ required (found server_version_num={ver}). "
+                    f"Update docker-compose.yml PG_IMAGE and re-run.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        # pgvector / embeddings handled before yoyo (needs superuser; not transactional).
+        if _ensure_extension(conn):
+            with conn.cursor() as cur:
+                cur.execute(_EMBEDDINGS_SQL)
+                cur.execute(_EMBEDDINGS_UPGRADE_SQL)
+        else:
+            print(
+                "⚠ pgvector extension not available — embeddings table skipped.\n"
+                "  Run as superuser: CREATE EXTENSION vector; then re-run migrations.",
+                file=sys.stderr,
+            )
+
+        _run_yoyo(dsn, existing_conn=conn)
         print(f"✓ Migrations applied to {safe_dsn}")
     finally:
         conn.close()

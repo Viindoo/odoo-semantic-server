@@ -236,14 +236,40 @@ def pg_conn():
 
 @pytest.fixture
 def clean_pg(pg_conn):
-    """Drop test tables before and after each test (idempotent)."""
-    with pg_conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS repos CASCADE")
-        cur.execute("DROP TABLE IF EXISTS profiles CASCADE")
+    """Drop test schema tables + yoyo state before and after each test (idempotent).
+
+    yoyo tracks applied migrations in _yoyo_migration.  Leaving this table
+    intact between tests causes run_migrations() to report '0 pending' while
+    the schema tables (dropped earlier) are absent — producing confusing test
+    failures.  Both the schema tables and yoyo internal tables are therefore
+    dropped together to guarantee a truly clean starting state.
+
+    Drop order respects FK constraints: dependent tables before referenced ones.
+    """
+    _all_tables = [
+        # yoyo internal (must go first — no FKs referencing schema tables)
+        "_yoyo_log",
+        "_yoyo_migration",
+        "_yoyo_version",
+        # schema tables in FK-safe order
+        "pattern_feedback",
+        "indexer_jobs",
+        "usage_log",
+        "repos",
+        "api_keys",
+        "ssh_key_pairs",
+        "embeddings",
+        "profiles",
+    ]
+
+    def _wipe(conn):
+        for tbl in _all_tables:
+            with conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
+
+    _wipe(pg_conn)
     yield pg_conn
-    with pg_conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS repos CASCADE")
-        cur.execute("DROP TABLE IF EXISTS profiles CASCADE")
+    _wipe(pg_conn)
 
 
 PG_EMBED_VERSION = "99.0"  # dedicated test version for embeddings tests

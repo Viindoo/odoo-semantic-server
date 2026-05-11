@@ -1,7 +1,12 @@
 """Integration tests for src.db.migrate — requires PostgreSQL."""
 import pytest
 
-from src.db.migrate import _vector_extension_available, run_migrations
+from src.db.migrate import (
+    _MIGRATIONS_DIR,
+    _conn_to_uri,
+    _vector_extension_available,
+    run_migrations,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -163,3 +168,71 @@ def test_schema_sql_alias_includes_w4_columns():
     assert "ssh_key_id" in SCHEMA_SQL
     assert "clone_status" in SCHEMA_SQL
     assert "clone_error_msg" in SCHEMA_SQL
+
+
+# ---------------------------------------------------------------------------
+# yoyo-specific tests (M7 W15)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_idempotent_zero_pending_on_second_run(clean_pg):
+    """Second run of yoyo must report 0 migrations pending (all already applied).
+
+    Verifies that yoyo's internal state table correctly tracks applied migrations
+    so that re-running migrate is a no-op rather than re-executing DDL.
+    """
+    from yoyo import get_backend, read_migrations
+
+    uri = _conn_to_uri(clean_pg)
+
+    # First run — applies 0001_initial and records it in _yoyo_migration.
+    run_migrations(clean_pg)
+
+    # Second run — to_apply() must return an empty list.
+    migrations = read_migrations(str(_MIGRATIONS_DIR))
+    backend = get_backend(uri)
+    try:
+        pending = list(backend.to_apply(migrations))
+    finally:
+        backend.connection.close()
+
+    assert pending == [], (
+        f"Expected 0 pending migrations after second run, got: {[m.id for m in pending]}"
+    )
+
+
+def test_migrate_preserves_existing_data(clean_pg):
+    """Migrate against a database with live data must not destroy rows.
+
+    Simulates the production-safety scenario: api_keys row exists before
+    migration runs (legacy bootstrap), and must survive the yoyo baseline
+    marking + subsequent apply.
+    """
+    # Bootstrap schema directly so api_keys table exists without yoyo records.
+    run_migrations(clean_pg)
+
+    # Insert sentinel row.
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO api_keys (name, key_hash, key_prefix) "
+            "VALUES ('test-key', 'sha256hash', 'osm_test') RETURNING id"
+        )
+        sentinel_id = cur.fetchone()[0]
+
+    # Drop all yoyo internal tables to simulate a legacy database (schema present,
+    # no migration records) — forces baseline-detection code path.
+    with clean_pg.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS _yoyo_migration CASCADE")
+        cur.execute("DROP TABLE IF EXISTS _yoyo_log CASCADE")
+        cur.execute("DROP TABLE IF EXISTS _yoyo_version CASCADE")
+
+    # Run migrate again — should mark baseline, apply 0 new migrations, preserve data.
+    run_migrations(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute("SELECT id FROM api_keys WHERE id = %s", (sentinel_id,))
+        row = cur.fetchone()
+
+    assert row is not None, (
+        f"api_keys row id={sentinel_id} was destroyed by migrate — production-safety failure"
+    )
