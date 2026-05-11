@@ -198,21 +198,21 @@
 
 > **Lý do tách M5.5:** items polish không block M5 ship; deferred items cần auth layer M5 trước. Pattern theo M2.5 precedent (milestone phụ giữa product milestones).
 
-## Milestone 6 — "Scale Wow" (Ongoing)
+## Milestone 6 — "Scale Wow" (Shipped 2026-05-11)
 **Intent:** Hỗ trợ toàn bộ ecosystem Viindoo, multi-version, incremental updates.  
 **Outcome:** Re-index chỉ mất vài giây. Index đồng thời 16.0 + 17.0 + 18.0.
 
 **Backlog top-level (deferred — see Wave 3 / Wave 4 / M7 grouping below):**
 
-*Wave 3 (next, ~10 WIs):*
-- [ ] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"
-- [ ] **Pattern catalogue maintenance (M4.6 defer) — remaining sub-items:**
-    - [ ] Seed expansion từ ~50 → ~200 patterns + community contribution path (PR template + `src/data/patterns.json` review checklist)
-    - [ ] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch)
-- [ ] **EE_CONFUSION auto-detect (M4.6 defer):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
+*Wave 3 (shipped 2026-05-10, ~10 WIs):*
+- [x] `src/indexer/version_presets.py`: preset "viindoo-17.0", "viindoo-18.0"
+- [x] **Pattern catalogue maintenance (M4.6 defer) — remaining sub-items:**
+    - [x] Seed expansion từ ~50 → ~200 patterns + community contribution path (PR template + `src/data/patterns.json` review checklist)
+    - [x] `find_override_point` cross-version diff — surface pattern thay đổi giữa v17 vs v18 (vd `_compute_*` rename, decorator switch)
+- [x] **EE_CONFUSION auto-detect (M4.6 defer):** thay hardcode `src/data/ee_modules.py` 16-entry dict bằng auto-detect từ manifest `license = 'OEEL-1'` + path scan upstream Odoo CE repo (per M4.6 plan §Risk & Mitigation). Keep hardcode dict làm fallback cho khi indexer chưa scan upstream.
 
-*Wave 4 (~5 WIs):*
-- [ ] **Auto-clone qua SSH khi user add repo (moved from M5):** detect SSH URL trong Web UI → auto-clone via Ed25519 private key + `GIT_SSH_COMMAND` + `tempfile.mkstemp(mode=0o600)` → set `local_path` automatically; companion: host fingerprint management UI (`StrictHostKeyChecking=accept-new` policy). Khảo sát 2026-05-10 confirm M5 SSH-key infra (FERNET, ssh_key_pairs table, generate Ed25519, list/CRUD) đầy đủ; chỉ thiếu bridge → add-repo flow (URL detection regex + clone helper + form selector + known_hosts UI optional).
+*Wave 4 (shipped 2026-05-10, ~5 WIs):*
+- [x] **Auto-clone qua SSH khi user add repo (moved from M5):** detect SSH URL trong Web UI → auto-clone via Ed25519 private key + `GIT_SSH_COMMAND` + `tempfile.mkstemp(mode=0o600)` → set `local_path` automatically; companion: host fingerprint management UI (`StrictHostKeyChecking=accept-new` policy). Khảo sát 2026-05-10 confirm M5 SSH-key infra (FERNET, ssh_key_pairs table, generate Ed25519, list/CRUD) đầy đủ; chỉ thiếu bridge → add-repo flow (URL detection regex + clone helper + form selector + known_hosts UI optional).
 
 *Defer M7 (xem Milestone 7 section below):*
 - → 214 `viindoo_equivalent_qname` auto-populate (graph traversal heuristic)
@@ -224,6 +224,11 @@
 - [x] Wave 2 Chain A (5 WIs): Incremental indexer — `repos.head_sha` + `Module.last_commit_sha` + `incremental.py` git diff helpers + `pipeline._index_repo` skip-unchanged + force-push fallback + `--full` flag. ADR-0007 records 7 design decisions.
 - [x] Wave 2 Chain B (2 WIs): Auto-reseed pattern catalogue — `_SeedMeta` Neo4j sha256 sentinel + `seed_patterns.run()` public callable + auto-call at end of `index_profile()` + `--force` bypass.
 - [x] Wave 2 Chain C (1 WI): `index_all --profile-workers` ThreadPoolExecutor wraps profile loop — closes M6 thesis "Index đồng thời 16.0 + 17.0 + 18.0".
+- [x] Wave 3 Chain A: Pattern catalogue community contribution — ADR-0009 + jsonschema + PR template + 29 new patterns (total ~50→79 entries).
+- [x] Wave 3 Chain B: EE_CONFUSION manifest-license auto-detect + indexed-first lookup in `check_module_exists` tool.
+- [x] Wave 3 Chain C: `version_presets.py` + `apply-preset` admin CLI — quick-start Odoo 17.0 + 18.0 + 19.0 multi-version profiles.
+- [x] Wave 3 Chain D: `find_override_point` cross-version diff — new `Method.signature` Neo4j property enables pattern change detection v17 vs v18.
+- [x] Wave 4 Diamond DAG: SSH auto-clone (`src/git_utils.py` + `src/cloner` + `repos.ssh_key_id`/`clone_status`/`clone_error_msg` + Web UI form UX) — user adds SSH URL, system auto-clones to temp dir, sets `local_path` transparently.
 
 **Section H — Environment harness (P2 — Wave 1 shipped 2026-05-10):**
 
@@ -268,6 +273,17 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **Carry-over từ M6 (defer M7 confirmed):**
 - [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 → M6 → M7):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name. **Investigation 2026-05-10 (Wave 2 planning) recommend defer M7:** graph traversal cannot replace curated 1-to-1 mapping; hardcode dict 8 entries actually correct + low-maintenance. Reconsider when Viindoo addons indexed in shared profile + feature-tag heuristic available (e.g. manifest `category` + `summary` keyword overlap).
+
+**Review-deferred items (LOW findings from M6 Opus review — fix in M7):**
+- [ ] **Rerank coefficients tuning (`src/mcp/server.py:489`):** needs Vietnamese + English eval dataset to calibrate `dependents_map` weight vs `in_chain_set` boost. V0 heuristic is conservative placeholder — M7 measure recall/precision on held-out queries.
+- [ ] **`_compute_risk` thresholds recalibration (`src/mcp/server.py:683`):** needs held-out incident dataset to validate `total >= 10` HIGH / `4-9` MEDIUM / `< 4` LOW buckets. Current thresholds are qualitative against Odoo 17 + Viindoo; M7 quantitative validation.
+- [ ] **USES_CORE_SYMBOL V0→V1 expansion (`src/indexer/parser_python.py:36`):** V0 scope = deprecated/removed only (5 symbols). Expand to cover "signature changed" + "moved module" APIs per ADR-0002 §3. Current false-positive rate acceptable for MVP.
+- [ ] **Qualified-name symbol resolution (`src/indexer/parser_python.py:67-68`):** full import-chain tracking to eliminate short-name collisions. Today qualified_name heuristic (ENDS WITH) catches most cases; M7 implement proper scope resolver.
+- [ ] **Clone-status poll cap (`src/web_ui/templates/repos.html` `pollCloneCells`):** stuck-pending repos poll forever (5s tick). Add max-tick stop + "Polling timed out, check server logs" message. UX improvement.
+- [ ] **`_NULL_HINT` repr format cleanup (`src/mcp/server.py` `_diff_method_across_versions` output):** internal sentinel bleeding into API output. Format as actual string value or comment.
+- [ ] **`default_clone_dir` URL query-string handling (`src/git_utils.py`):** strip query/fragment via `urlparse` to avoid invalid SSH URL. Edge case when user manually adds SSH URL with query params.
+- [ ] **W3-2 EE-reference test list expansion (`tests/test_patterns_schema.py`):** current EE_CONFUSION needle list has ~5 entries; expand to all 16 dict keys + `viin_*` prefix patterns. Better coverage.
+- [ ] **Migration tool adoption:** yoyo-migrations or alembic — defer until first non-additive schema change needed (ADR-0001 revision recorded M6 W5).
 
 **Spawned từ ADR-0007 §"Out of scope" (M6 Wave 2):**
 - [ ] **Module rename garbage collection (ADR-0007 §D5):** thay vì recommend periodic `--full`, add explicit `--gc` flag chạy "DETACH DELETE Module nodes whose path no longer exists in current scan". Risk-gated (only if scanner found modules cho repo X) để tránh accidental delete khi scan fail. Replaces D5's "stale orphans accepted" stance with explicit cleanup pass.

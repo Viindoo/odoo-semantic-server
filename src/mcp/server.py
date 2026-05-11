@@ -486,7 +486,7 @@ def _find_examples(
 
     # Neo4j centrality rerank + optional context_module boost.
     # Two UNWIND batch queries replace the previous N+1 per-chunk loop.
-    # Coefficients are v0 placeholders — tune at M6 with held-out eval set.
+    # Coefficients are v0 placeholders — tune at M7 with held-out eval set.
     module_names = list({c["module"] for c in raw})
     with driver.session() as session:
         dep_rows = session.run(
@@ -680,12 +680,12 @@ def find_examples(
 
 
 def _compute_risk(view_count: int, method_count: int, js_count: int) -> str:
-    """Risk threshold v0 — tunable at M6.
+    """Risk threshold v0 — tunable at M7 with held-out dataset.
 
     HIGH >= 10 affected entities, MEDIUM 4-9, LOW < 4.
     # Thresholds calibrated qualitatively against Odoo 17 + Viindoo addons typical fan-out:
     # <4 changes = isolated, 4-9 = module-scope review needed, ≥10 = cross-module impact
-    # requiring full regression. M6 will recalibrate against held-out eval set.
+    # requiring full regression. M7 will recalibrate against held-out eval set.
     """
     total = view_count + method_count + js_count
     if total >= 10:
