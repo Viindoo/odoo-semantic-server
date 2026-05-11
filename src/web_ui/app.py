@@ -87,4 +87,8 @@ def create_app() -> FastAPI:
 
     app.include_router(feedback.router)
 
+    from src.web_ui.routes import operations
+
+    app.include_router(operations.router)
+
     return app

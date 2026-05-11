@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Operations — Odoo Semantic MCP Admin{% endblock %}
+
+{% block content %}
+<h1>Operations</h1>
+
+<p style="color: #64748b; margin-bottom: 1.5rem;">
+    Operations page — long-running indexer commands with background job tracking.
+    Status badges update every 5s.
+</p>
+
+{% if flash %}
+<div class="alert" style="background: #dcfce7; color: #166534;">{{ flash }}</div>
+{% endif %}
+
+<div class="card">
+    <h2>Index Odoo Core Specs</h2>
+    <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1rem;">
+        Index CoreSymbol/LintRule/CLI specs for one Odoo version. Requires Odoo source checkout on server.
+    </p>
+    <!-- W5 will fill -->
+    <p style="color: #94a3b8; font-size: 0.85rem; font-style: italic;">Form coming in W5.</p>
+</div>
+
+<div class="card">
+    <h2>Seed Pattern Catalogue</h2>
+    <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1rem;">
+        Reseed PatternExample catalogue. Auto-runs after each <code>index-repo</code> (hash-gated).
+        Use <code>force</code> to bypass sentinel after DB restore.
+    </p>
+    <!-- W6 will fill -->
+    <p style="color: #94a3b8; font-size: 0.85rem; font-style: italic;">Button coming in W6.</p>
+</div>
+
+<div class="card">
+    <h2>Apply Preset</h2>
+    <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1rem;">
+        Apply a version preset to automatically create profiles and attach repos.
+        Use dry-run to preview changes before applying.
+    </p>
+    <!-- W8 will fill -->
+    <p style="color: #94a3b8; font-size: 0.85rem; font-style: italic;">Form coming in W8.</p>
+</div>
+{% endblock %}
