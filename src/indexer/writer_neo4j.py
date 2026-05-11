@@ -659,6 +659,36 @@ class Neo4jWriter:
             for batch in _chunked(patterns, 200):
                 session.execute_write(_write_pattern_examples_batch, batch)
 
+    def gc_stale_modules(
+        self, repo: str, odoo_version: str, live_paths: set[str],
+    ) -> int:
+        """Delete Module nodes for this repo+version whose 'path' is not in live_paths.
+
+        Returns count deleted. Uses DETACH DELETE so all edges (DEFINED_IN,
+        DEPENDS_ON, etc.) are removed along with the stale node.
+
+        Args:
+            repo:         m.repo value (repo root dir name, e.g. 'odoo_17.0').
+            odoo_version: Odoo version label, e.g. '17.0'.
+            live_paths:   Absolute path strings returned by the scanner for this
+                          repo in this run. Modules NOT in this set are stale.
+
+        Risk gate (enforced by caller): only called when len(live_paths) >= 1.
+        """
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (m:Module {repo: $repo, odoo_version: $version})
+                WHERE NOT m.path IN $live_paths
+                DETACH DELETE m
+                RETURN count(m) AS n
+                """,
+                repo=repo,
+                version=odoo_version,
+                live_paths=list(live_paths),
+            ).single()
+        return row["n"] if row is not None else 0
+
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,
     ) -> None:
