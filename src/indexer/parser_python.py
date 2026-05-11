@@ -33,7 +33,7 @@ MODEL_BASE_CLASSES = {
 # Hot list of deprecated/removed Odoo core API symbols. When user code calls
 # any of these (via `self.X()` or direct `X(...)`), parser records the ref so
 # writer_neo4j can MERGE a USES_CORE_SYMBOL edge to the matching CoreSymbol.
-# V0 stays small to keep noise low; M6 expands per audit data + ADR-0002 §3.
+# V0 stays small to keep noise low; M7 expands per ADR-0002 §3 (TASKS.md).
 _DEPRECATED_API_SYMBOLS = frozenset({
     "name_get",         # removed v18 (use display_name)
     "name_search",      # signature changed v17 → v18
@@ -64,9 +64,9 @@ def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
            local helper named identically) → false-positive. The writer WHERE clause
            `qualified_name ENDS WITH '.' + $ref` narrows the match but cannot eliminate
            all false positives from short-name collisions.
-    Full symbol-resolution (qualified_name from import chain tracking) is deferred to
-    M6. V0 provides actionable signal with acceptable false-positive rate for
-    deprecated/removed APIs.
+    Full symbol-resolution (qualified_name from import chain tracking) is deferred
+    to M7 (TASKS.md). V0 provides actionable signal with acceptable false-positive
+    rate for deprecated/removed APIs.
     """
     refs: list[str] = []
     seen: set[str] = set()

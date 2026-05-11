@@ -38,3 +38,10 @@ PostgreSQL schema trong `src/db/migrate.py` hiện dùng approach đơn giản: 
 1. **SQLAlchemy Alembic ngay từ M2.5** — overkill hiện tại, overhead setup. Reject.
 2. **Flyway / Liquibase** — Java/overhead. Reject (team Python).
 3. **Raw SQL + manual version tracking** — M6 easy refactor từ SCHEMA_SQL thành tool. Accept (picked).
+
+## Revision History
+
+**Revision 2026-05-11:** M6 Wave 1+2+3+4 implemented additive schema changes via idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patterns (e.g. `repos.head_sha` Wave 2, `repos.ssh_key_id`/`clone_status`/`clone_error_msg` Wave 4). The original plan to adopt yoyo-migrations during M6 was deferred. Rationale:
+- Idempotent ALTER suffices for purely additive changes through M6.
+- Adding migration framework introduces operational complexity (state table, downgrade tooling) without immediate benefit since no non-additive change was needed.
+- Re-evaluate when first non-additive schema change is needed (e.g. column rename, type change, or constraint tightening), likely M7+. Track in M7 backlog as "Migration tool adoption".
