@@ -682,17 +682,19 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
 
 ---
 
-### Milestone 6 — "Scale Wow" (Ongoing)
+### Milestone 6 — "Scale Wow" (Complete)
 
 **Intent:** Hỗ trợ toàn bộ ecosystem Viindoo, multi-version, incremental.
 
 **Outcome:** Index đồng thời 16.0 + 17.0 + 18.0. Re-index chỉ mất vài giây thay vì vài giờ.
 
-```
-  - incremental.py: git commit hash tracking
-  - Multi-version: index song song nhiều versions
-  - version_presets.py: preset "viindoo-17.0"
-```
+**Wave 1 (shipped 2026-05-05):** Environment harness — `.env.example` single source of truth, runtime version checks (Neo4j ≥ 5.x, PostgreSQL ≥ 16, pgvector ≥ 0.8), Python 3.12 enforcement, PEP 695 `PgConn` type alias (ADR-0006). P3 polish: per-profile advisory locks, PG `SimpleConnectionPool`, `--max-workers` parallel scan.
+
+**Wave 2 (shipped 2026-05-08):** Incremental indexer thesis — `repos.head_sha` + `Module.last_commit_sha` tracking (ADR-0007), git diff filter to skip unchanged repos, `--full` flag for monthly cleanup, force-push fallback (auto-triggers full reindex). Auto-reseed pattern catalogue via `_SeedMeta` sha256 sentinel + `--force` bypass, wired into `index_profile()`. Cross-profile parallel `--profile-workers` with ThreadPoolExecutor.
+
+**Wave 3 (shipped 2026-05-09):** Version presets (`version_presets.py` "viindoo-17.0" shorthand), pattern catalogue community contribution PR template + 80 curated patterns (ADR-0009), `find_override_point` cross-version diff, EE confusion auto-detect via manifest license field. Indexer tooling: `--verbose`/tqdm progress, snapshot anti-drift, backup/restore CLI, FERNET rotation, JSON logging, rate limiting, pattern feedback.
+
+**Wave 4 (shipped 2026-05-10):** SSH auto-clone infrastructure — `git_utils.py` (ADR-0008) detects SSH URLs, decrypts stored Ed25519 keys, spawns `git clone` via `GIT_SSH_COMMAND` (key NEVER in argv), project-local known_hosts, full clone support (NOT `--depth=1`) for incremental indexer compat, tempfile 0o600 + try/finally cleanup. `cloner/` subprocess orchestrator + Web UI async UI (`POST /repos/{id}/clone`, polling lifecycle).
 
 ---
 
@@ -726,13 +728,26 @@ odoo-semantic-mcp/
 │   │   ├── embedder.py             -- tạo embeddings
 │   │   ├── writer_neo4j.py         -- ghi graph vào Neo4j
 │   │   ├── writer_pgvector.py      -- ghi vectors vào pgvector
-│   │   └── incremental.py          -- (planned M6) git hash tracking
+│   │   ├── incremental.py          -- git hash tracking + force-push fallback (M6 W2)
+│   │   ├── diff_engine.py          -- git diff filtering for changed modules (M6 W2)
+│   │   ├── seed_patterns.py        -- auto-reseed pattern catalogue + sentinel (M6 W2)
+│   │   ├── parser_cli.py           -- parse Odoo CLI spec (M4.5)
+│   │   ├── parser_lint_rules.py    -- parse Odoo lint rules (M4.5)
+│   │   ├── parser_odoo_core.py     -- parse Odoo core API symbols (M4.5)
+│   │   └── version_presets.py      -- version preset configs (M6 W3)
+│   ├── cloner/                     -- SSH auto-clone subprocess orchestrator (M6 W4)
+│   │   └── __main__.py             -- spawn from web_ui, decrypt key, git clone
 │   ├── mcp/
-│   │   └── server.py               -- MCP server + 5 tools (M4: +impact_analysis)
-│   ├── web_ui/                     -- (planned M5) dashboard + API key mgmt
+│   │   └── server.py               -- MCP server + 14 tools (M4.6 completion)
+│   ├── web_ui/                     -- dashboard + API key mgmt + SSH UI (M5 + M6 W4)
 │   │   ├── app.py                  -- FastAPI app
 │   │   └── templates/              -- Jinja2 templates
-│   └── auth.py                     -- (planned M5) API key middleware
+│   ├── auth.py                     -- API key middleware (M5)
+│   ├── git_utils.py                -- SSH URL detection + clone_repo (M6 W4)
+│   └── db/
+│       ├── models.py               -- SQLAlchemy tables (repos, ssh_key_pairs, indexer_jobs, etc.)
+│       ├── postgres.py             -- PgConn type alias, advisory locks (M6 W1)
+│       └── _types.py               -- domain types (PgConn, etc.)
 └── tests/
 ```
 
