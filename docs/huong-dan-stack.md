@@ -77,7 +77,7 @@ After=network.target docker.service
 [Service]
 User=<APP_USER>
 WorkingDirectory=/home/<APP_USER>/odoo-semantic-mcp
-EnvironmentFile=/home/<APP_USER>/odoo-semantic-mcp/.env
+EnvironmentFile=-/home/<APP_USER>/odoo-semantic-mcp/.env
 ExecStart=/home/<APP_USER>/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 Restart=on-failure
 RestartSec=5s
