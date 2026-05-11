@@ -42,6 +42,32 @@ async def _get_mcp_tool_count() -> int:
     return -1
 
 
+async def _get_embeddings_total() -> int | None:
+    """Count total rows in the embeddings table.
+
+    Returns:
+        int:  Row count on success.
+        None: When pgvector is absent, connection fails, or table doesn't exist.
+
+    Defensive pattern mirrors the pg_status check in health_handler — any
+    exception produces None rather than propagating (keeps /health always live).
+    """
+    from src.mcp.server import _checkout_pg
+
+    try:
+        def _count() -> int:
+            with _checkout_pg() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM embeddings")
+                    row = cur.fetchone()
+                    return row[0] if row else 0
+
+        return await asyncio.to_thread(_count)
+    except Exception as e:
+        logger.debug("embeddings_total unavailable: %s", e)
+        return None
+
+
 async def health_handler(request: Request) -> JSONResponse:
     """Check health of Neo4j and PostgreSQL connections, return status + version."""
     from src.mcp.server import _checkout_pg, _get_driver
@@ -65,6 +91,7 @@ async def health_handler(request: Request) -> JSONResponse:
         pg_status = f"error:{str(e)[:100]}"
 
     tool_count = await _get_mcp_tool_count()
+    embeddings_total = await _get_embeddings_total()
 
     both_ok = neo4j_status == "ok" and pg_status == "ok"
     one_ok = neo4j_status == "ok" or pg_status == "ok"
@@ -82,5 +109,6 @@ async def health_handler(request: Request) -> JSONResponse:
         "postgres": pg_status,
         "version": version,
         "mcp_tools": tool_count,
+        "embeddings_total": embeddings_total,
     }
     return JSONResponse(body, status_code=http_code)

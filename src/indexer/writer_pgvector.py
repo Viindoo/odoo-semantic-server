@@ -160,10 +160,15 @@ def write_module_embeddings(
     version: str,
     chunks: list[EmbeddingChunk],
     embedder: EmbedderClient,
-) -> None:
-    """Delete-then-insert embeddings for (module, version) atomically."""
+) -> int:
+    """Delete-then-insert embeddings for (module, version) atomically.
+
+    Returns the number of embed() calls made to the embedder during this
+    write (0 when chunks is empty, 1 for a normal module batch). Callers
+    use this to aggregate embed_calls for the run-level observability log.
+    """
     if not chunks:
-        return
+        return 0
     register_vector(conn)
     # Dedup by the ux_embeddings_chunk unique key — make_module_chunks can emit
     # the same (chunk_type, entity_name, file_path, chunk_idx) twice for one
@@ -176,7 +181,16 @@ def write_module_embeddings(
         seen[(c.chunk_type, c.entity_name, c.file_path, c.chunk_idx)] = c
     chunks = list(seen.values())
     texts = [c.content for c in chunks]
+    count_before = getattr(embedder, "call_count", None)
     vecs = embedder.embed(texts)
+    count_after = getattr(embedder, "call_count", None)
+    # Determine how many embed() calls happened. For Qwen3Embedder large batches
+    # (>_MAX_BATCH) embed() makes multiple sub-calls but the public embed() is
+    # counted as 1 call overall (call_count incremented once per embed() call).
+    if count_before is not None and count_after is not None:
+        embed_calls = count_after - count_before
+    else:
+        embed_calls = 1  # embedder without call_count tracking — assume 1
     saved_autocommit = conn.autocommit
     conn.autocommit = False
     try:
@@ -192,3 +206,4 @@ def write_module_embeddings(
         raise
     finally:
         conn.autocommit = saved_autocommit
+    return embed_calls

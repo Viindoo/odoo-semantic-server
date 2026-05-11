@@ -24,6 +24,10 @@
         <div class="number">{{ ssh_key_count }}</div>
         <div class="label">SSH Keys</div>
     </div>
+    <div class="stat">
+        <div class="number">{{ embeddings_total if embeddings_total is not none else 'N/A' }}</div>
+        <div class="label">Embeddings</div>
+    </div>
 </div>
 
 {% if profiles %}
