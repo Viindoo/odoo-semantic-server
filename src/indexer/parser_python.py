@@ -29,17 +29,42 @@ MODEL_BASE_CLASSES = {
     'osv', 'osv_memory', 'Model_memory', 'AbstractModel_memory',
 }
 
-# --- M4.5 WI6: USES_CORE_SYMBOL V0 scope -----------------------------------
-# Hot list of deprecated/removed Odoo core API symbols. When user code calls
-# any of these (via `self.X()` or direct `X(...)`), parser records the ref so
-# writer_neo4j can MERGE a USES_CORE_SYMBOL edge to the matching CoreSymbol.
-# V0 stays small to keep noise low; M7 expands per ADR-0002 §3 (TASKS.md).
+# --- M7 final-D: USES_CORE_SYMBOL V1 scope (expanded from V0 per ADR-0002 §3) ---
+# Hot list of Odoo core API symbols whose usage warrants migration attention.
+# When user code calls any of these (via `self.X()` or direct `X(...)`), parser
+# records the ref so writer_neo4j can MERGE a USES_CORE_SYMBOL edge to the
+# matching CoreSymbol.
+#
+# V1 covers 3 categories per ADR-0002 §3:
+#   - Removed: symbol gone in newer version (no in-place replacement)
+#   - Signature-changed: kwarg added/removed/reordered breaking caller
+#   - Moved-module / renamed-attribute: qualified_name path or option name changed
+#
+# False-positive suppression: _collect_module_local_defs() drops refs when user
+# code defines a local symbol with the same short name in the same file (V0.5
+# scope-resolver, M7 W13). V1 entries are covered by the same mechanism.
+#
+# Numbers in trailing comment = first-affected Odoo major version.
+# Cap at 15 entries to keep false-positive surface manageable (ADR-0002 §3).
 _DEPRECATED_API_SYMBOLS = frozenset({
-    "name_get",         # removed v18 (use display_name)
-    "name_search",      # signature changed v17 → v18
-    "read_group",       # deprecated v19 (use _read_group / formatted_read_group)
-    "group_operator",   # field option renamed → aggregator v18
-    "safe_eval",        # signature change v19
+    # --- Removed (no in-place replacement, full rewrite required) ---
+    "name_get",          # 18: removed → use display_name computed field
+    "oldname",           # 15: field option removed → use rename + migration script
+    # --- Signature-changed (kwarg/semantics breaking caller) ---
+    "name_search",       # 18: operator + count semantics changed
+    "safe_eval",         # 19: signature change in odoo.tools
+    "fields_get",        # 18: 'attributes' kwarg semantics changed
+    "_search",           # 18: keyword-only args + access_rights_uid removed
+    "read_group",        # 19: deprecated → _read_group / formatted_read_group
+    "default_get",       # 17: fields_list arg semantics clarified + changed
+    # --- Renamed field option / attribute (declaration-site or attribute access) ---
+    "group_operator",    # 18: field option → aggregator
+    "track_visibility",  # 17: field option → tracking
+    # --- Moved module / changed qualified path ---
+    "float_compare",     # 19: odoo.tools.float_utils → odoo.tools (re-exported)
+    "float_round",       # 19: same module move as float_compare
+    "get_modules",       # 18: odoo.modules.get_modules path changed
+    "html_escape",       # 17: markupsafe.escape preferred over odoo.tools.html_escape
 })
 
 

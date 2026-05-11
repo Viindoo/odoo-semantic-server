@@ -433,6 +433,79 @@ def test_method_info_default_core_symbol_refs_is_empty():
     assert m.core_symbol_refs == []
 
 
+# --- USES_CORE_SYMBOL V1 detection (M7 final-D) ------------------------------
+
+
+def test_detect_fields_get_sig_change(tmp_path, sale_module):
+    """`self.fields_get(['name'], attributes=['string'])` → core_symbol_refs has 'fields_get'."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class X(models.Model):
+            _inherit = 'sale.order'
+
+            def foo(self):
+                return self.fields_get(['name'], attributes=['string'])
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    assert "fields_get" in foo.core_symbol_refs
+
+
+def test_detect_float_compare_moved_module(tmp_path, sale_module):
+    """`from odoo.tools.float_utils import float_compare; float_compare(...)` → ref captured."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+        from odoo.tools.float_utils import float_compare
+
+        class X(models.Model):
+            _name = 'x'
+
+            def foo(self):
+                return float_compare(1.0, 2.0, precision_digits=2)
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    assert "float_compare" in foo.core_symbol_refs
+
+
+def test_detect_search_sig_change(tmp_path, sale_module):
+    """`self._search(domain, access_rights_uid=uid)` → core_symbol_refs has '_search'."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class X(models.Model):
+            _inherit = 'sale.order'
+
+            def bar(self):
+                return self._search([('state', '=', 'draft')], access_rights_uid=1)
+    """)
+    result = parse_file(f, sale_module)
+    bar = next(m for m in result[0].methods if m.name == "bar")
+    assert "_search" in bar.core_symbol_refs
+
+
+def test_v1_local_def_suppresses_emission(tmp_path, sale_module):
+    """Top-level `def fields_get(...)` in same file must suppress USES_CORE_SYMBOL."""
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        def fields_get(*a, **kw):  # local helper, not Odoo ORM
+            return {}
+
+        class X(models.Model):
+            _name = 'x'
+
+            def foo(self):
+                return fields_get()
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    assert "fields_get" not in foo.core_symbol_refs, (
+        "Local top-level def fields_get must suppress USES_CORE_SYMBOL emission"
+    )
+
+
 # --- Method convention classification (M4.6 WI2) ---------------------------
 
 
