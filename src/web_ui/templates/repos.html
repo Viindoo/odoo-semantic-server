@@ -207,10 +207,23 @@
   }
 
   function pollCloneCells() {
+    const MAX_TICKS = 72;  // 72 * 5s = 360s = 6 min
     document.querySelectorAll('[data-clone-id]').forEach(cell => {
       const repoId = cell.getAttribute('data-clone-id');
       const status = cell.getAttribute('data-clone-status');
       if (status === 'cloned' || status === 'error' || status === 'manual') return;
+
+      // Increment poll tick count
+      let ticks = parseInt(cell.getAttribute('data-poll-ticks') || '0', 10);
+      ticks += 1;
+      cell.setAttribute('data-poll-ticks', ticks);
+
+      // Check if max polls exceeded
+      if (ticks >= MAX_TICKS) {
+        cell.innerHTML = '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:4px;font-size:0.75rem;cursor:help" title="Clone process may be stuck — check server logs">⚠️ Polling timed out</span>';
+        return;
+      }
+
       fetch(`/repos/repos/${repoId}/clone-status`)
         .then(r => r.ok ? r.json() : null)
         .then(data => {

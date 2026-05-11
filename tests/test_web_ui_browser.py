@@ -238,3 +238,4 @@ class TestSshKeysPage:
         page.wait_for_load_state("load")
 
         assert "to-delete-key" not in page.content()
+
