@@ -1782,6 +1782,11 @@ def test_module_merge_key_excludes_last_commit_sha(writer, neo4j_driver):
     Regression guard: if last_commit_sha moves into MERGE key, writes with
     different commit_sha would create duplicate Module nodes instead of
     re-MERGing the same node.
+
+    NOTE: differing commit_sha values (e.g. 'aaa...' vs 'bbb...') is load-bearing —
+    if both writes used the SAME commit_sha, this test would silently pass even if
+    last_commit_sha was accidentally moved into the MERGE key. The differing values
+    force the regression path to be exercised.
     """
     # Write first time with commit_sha="aaa..."
     result1 = make_parse_result("store_model", "store.config",
