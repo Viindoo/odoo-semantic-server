@@ -102,6 +102,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "Only effective with --all."
         ),
     )
+    sub_repo.add_argument(
+        "--gc",
+        action="store_true",
+        default=False,
+        help=(
+            "Garbage-collect stale Module nodes after scanning each repo. "
+            "Compares Module nodes in Neo4j vs scanner output and DETACH DELETEs "
+            "modules that no longer exist on disk (e.g. after a rename or removal). "
+            "Risk-gated: only runs when scanner found ≥1 module to prevent data loss "
+            "when scanner fails silently. Recommended for monthly runs or after "
+            "module directory renames. See ADR-0007 §D5."
+        ),
+    )
 
     # --- index-core subcommand (new in WI-F1) ------------------------------
     sub_core = subparsers.add_parser(
@@ -186,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         verbose = getattr(args, "verbose", False)
         job_id = getattr(args, "job_id", None)
         full_reindex = getattr(args, "full", False)
+        gc = getattr(args, "gc", False)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
         max_workers = getattr(args, "max_workers", 1)
@@ -211,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_workers=max_workers,
                         full_reindex=full_reindex,
                         profile_workers=profile_workers,
+                        gc=gc,
                     )
                 else:
                     summary = index_profile(
@@ -220,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
                         progress=verbose,
                         max_workers=max_workers,
                         full_reindex=full_reindex,
+                        gc=gc,
                     )
                 print(f"Done: {summary}")
                 if embedder is None:

@@ -45,19 +45,32 @@ The CLI flag `--full` bypasses the skip-unchanged check + the diff filter — fo
 
 `--full` does NOT reset head_sha to NULL — at the end of a successful `--full` run, head_sha advances to current HEAD just like an incremental run. Operationally, `--full` is "re-write what we have, then continue normally."
 
-### D5 — Module rename: stale Neo4j nodes accepted; cleanup deferred
+### D5 — Module rename: explicit `--gc` flag available (M7 C4)
 
 When `addons/stock` is renamed to `addons/inventory`, `git diff --name-only` shows both paths as changed. The scanner finds the new `addons/inventory` module → Module node MERGEd; the old `addons/stock` directory no longer exists → no scanner pass → its Module node remains in Neo4j as a stale orphan.
 
-Wave 2 chooses to **document and recommend periodic `--full` runs** (recommend monthly) rather than implement an explicit cleanup pass. Reasons:
+**M7 C4 delivers the `--gc` flag** (`python -m src.indexer index-repo --gc`) that explicitly cleans up stale Module nodes:
 
-- Auto-cleanup is risky (a missed scan due to filesystem permissions could DELETE legitimate Module nodes).
-- Renames are rare in real Odoo codebases; stale orphans are query-time noise, not correctness failures.
-- `--full` bypasses the diff-filter and re-MERGEs every scanned module, but the pipeline is MERGE-only — no DELETE statement on Module/Field/Method nodes. Stale orphans from prior renames are NOT removed. Periodic `--full` is useful to re-index modules whose content changed without git history advancing (e.g. dependency override regen), but it does NOT clean stale module names.
+```
+python -m src.indexer index-repo --profile viindoo_17 --gc
+python -m src.indexer index-repo --all --gc
+```
 
-Stale cleanup requires the deferred `--gc` flag tracked in M7 backlog (`TASKS.md`).
+Implementation (`gc_stale_modules` in `writer_neo4j.py`):
+```cypher
+MATCH (m:Module {repo: $repo, odoo_version: $version})
+WHERE NOT m.path IN $live_paths
+DETACH DELETE m
+RETURN count(m) AS n
+```
 
-Future Wave (M7 candidate): explicit "garbage collect Module nodes whose path no longer exists in current scan" pass, gated by a `--gc` flag.
+DETACH DELETE removes the Module node plus all incident edges (DEFINED_IN, DEPENDS_ON, etc.). Model/Field/Method nodes that were DEFINED_IN the stale module are NOT deleted by this query — they remain as orphan domain nodes. This is intentional: orphan domain nodes are inert (no DEFINED_IN edge to follow) and will be overwritten if the module re-appears. A future pass may clean these too, but the current scope is Module-level GC only.
+
+**Risk gate:** `--gc` only executes when the scanner returned ≥1 module for the repo+version. If the scanner returns 0 modules (filesystem permission error, empty repo, git error), GC is skipped with a WARNING log line. This prevents accidentally wiping all Module nodes when the scanner fails silently.
+
+**Rename caveat:** when a module dir is renamed (e.g. `addons/stock` → `addons/inventory`), both the old and new path appear in `git diff --name-only`. The scanner re-indexes the new path; `--gc` then detects the old path as absent from `live_paths` and DETACH DELETEs its Module node. Net result: one GC pass cleanly removes the stale orphan.
+
+**Recommendation:** run `--gc` monthly or after any module directory rename. `--full --gc` together is the safest cleanup (forces full re-scan of all modules + removes stale ones).
 
 ### D6 — Auto-reseed gated via `_SeedMeta` Neo4j sentinel + sha256
 
@@ -81,10 +94,11 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 ## Implementation references
 
 - `src/indexer/incremental.py` — D2/D3 helpers (get_repo_head, is_ancestor, compute_changed_module_paths, filter_modules_by_changed)
-- `src/indexer/pipeline.py::_index_repo` — D1/D2/D3/D4 wiring
+- `src/indexer/pipeline.py::_index_repo` — D1/D2/D3/D4/D5 wiring
 - `src/indexer/seed_patterns.py::_get_stored_patterns_sha` / `_set_stored_patterns_sha` — D6/D7
 - `src/indexer/scanner.py::get_module_commit_sha` — D1 per-module sha source
 - `src/indexer/writer_neo4j.py` Module MERGE SET — D1 last_commit_sha persistence
+- `src/indexer/writer_neo4j.py::Neo4jWriter.gc_stale_modules` — D5 GC implementation
 - `src/db/migrate.py` — D1 head_sha column ALTER (per ADR-0001 M6 schema window)
 
 ## Tests
@@ -93,6 +107,7 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 - `tests/test_pipeline_incremental.py` — D3 partial-failure + D4 --full + skip-unchanged + diff filter
 - `tests/test_seed_patterns.py` — D6 sentinel hash gating + D7 label
 - `tests/test_pipeline_seed_integration.py` — D6 wired into index_profile
+- `tests/test_indexer_gc.py` — D5 GC flag: delete renamed module, risk gate, default-off
 
 ## Out of scope (recorded for future ADRs)
 
