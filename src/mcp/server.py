@@ -707,27 +707,27 @@ def _impact_analysis(
             f"Invalid entity_type '{entity_type}'. Use: field, method, model."
         )
 
+    # ------------------------------------------------------------------ #
+    # Parse entity_name per entity_type — validate before touching DB    #
+    # ------------------------------------------------------------------ #
+    if entity_type in ("field", "method"):
+        if "." not in entity_name:
+            return (
+                f"Entity '{entity_name}' not found. "
+                f"Expected format: '<model>.<{entity_type}>' "
+                f"(e.g. 'sale.order.amount_total' for a field)."
+            )
+        # Split on LAST dot: model has dots, field/method does not
+        last_dot = entity_name.rfind(".")
+        model_name = entity_name[:last_dot]
+        member_name = entity_name[last_dot + 1:]
+    else:
+        # entity_type == "model"
+        model_name = entity_name
+        member_name = None
+
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
-
-        # ------------------------------------------------------------------ #
-        # Parse entity_name per entity_type                                   #
-        # ------------------------------------------------------------------ #
-        if entity_type in ("field", "method"):
-            if "." not in entity_name:
-                return (
-                    f"Entity '{entity_name}' not found in Odoo {odoo_version}. "
-                    f"Expected format: '<model>.<{entity_type}>' "
-                    f"(e.g. 'sale.order.amount_total' for a field)."
-                )
-            # Split on LAST dot: model has dots, field/method does not
-            last_dot = entity_name.rfind(".")
-            model_name = entity_name[:last_dot]
-            member_name = entity_name[last_dot + 1:]
-        else:
-            # entity_type == "model"
-            model_name = entity_name
-            member_name = None
 
         # ------------------------------------------------------------------ #
         # Query 1: verify entity exists                                        #
