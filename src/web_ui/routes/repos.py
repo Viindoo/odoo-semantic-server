@@ -437,16 +437,41 @@ async def clone_status(request: Request, repo_id: int):
 
 
 @router.post("/repos/repos/{repo_id}/index", response_class=RedirectResponse)
-async def index_repo(request: Request, repo_id: int):
-    """Trigger indexer for a specific repo's profile (non-blocking subprocess)."""
+async def index_repo(
+    request: Request,
+    repo_id: int,
+    no_embed: Annotated[str, Form()] = "",
+    full: Annotated[str, Form()] = "",
+    gc: Annotated[str, Form()] = "",
+    max_workers: Annotated[str, Form()] = "1",
+):
+    """Trigger indexer for a specific repo's profile (non-blocking subprocess).
+
+    Accepts optional form fields:
+    - no_embed: if truthy, appends --no-embed
+    - full: if truthy, appends --full
+    - gc: if truthy, appends --gc
+    - max_workers: integer 1-8, appends --max-workers N when != 1
+    """
+    from urllib.parse import quote_plus
+
+    # Validate max_workers before acquiring a DB connection
+    try:
+        max_workers_int = int(max_workers)
+    except (ValueError, TypeError):
+        flash = f"Invalid max_workers value '{max_workers}': must be an integer between 1 and 8."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+    if not (1 <= max_workers_int <= 8):
+        flash = f"max_workers must be between 1 and 8 (got {max_workers_int})."
+        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
     conn = _get_conn()
     if conn:
         try:
-            from urllib.parse import quote_plus
-
-            from src.db import job_registry
             from src.db.repo_registry import list_repos
             from src.indexer.pipeline import indexer_is_running
+            from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
             repos = list_repos(conn)
             repo = next((r for r in repos if r["id"] == repo_id), None)
@@ -460,13 +485,18 @@ async def index_repo(request: Request, repo_id: int):
                         f"/repos?flash={quote_plus(flash)}",
                         status_code=303,
                     )
-                job_id = job_registry.create_job(conn, repo["profile_name"])
-                subprocess.Popen(
-                    [sys.executable, "-m", "src.indexer", "index-repo",
-                     "--profile", repo["profile_name"],
-                     "--job-id", str(job_id)],
-                    start_new_session=True,
-                )
+
+                argv = ["index-repo", "--profile", repo["profile_name"]]
+                if no_embed:
+                    argv += ["--no-embed"]
+                if full:
+                    argv += ["--full"]
+                if gc:
+                    argv += ["--gc"]
+                if max_workers_int != 1:
+                    argv += ["--max-workers", str(max_workers_int)]
+
+                spawn_indexer_subcommand(conn, argv, job_label=repo["profile_name"])
         except Exception as e:
             _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
         finally:
