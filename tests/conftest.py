@@ -62,7 +62,9 @@ def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
     on 200 responses — they need the bypass.
     """
     fname = request.node.fspath.basename
-    if fname in {"test_web_ui_auth.py", "test_web_ui_browser.py"}:
+    # Only test_web_ui_auth.py exercises real auth flow end-to-end.
+    # Browser tests pre-date W16 and test UI flows on the assumption pages render.
+    if fname == "test_web_ui_auth.py":
         return
     monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
 
