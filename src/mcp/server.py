@@ -1886,16 +1886,16 @@ def _diff_method_across_versions(
     to_sig_str = to_sig if to_sig is not None else _NULL_HINT
     if from_sig is None or to_sig is None:
         lines.append(
-            f"├─ Signature:         {from_version}={from_sig_str!r}"
-            f" → {to_version}={to_sig_str!r}"
+            f"├─ Signature:         {from_version}={from_sig_str}"
+            f" → {to_version}={to_sig_str}"
         )
     elif from_sig != to_sig:
         lines.append(
-            f"├─ Signature:         {from_version}={from_sig!r}"
-            f" → {to_version}={to_sig!r}"
+            f"├─ Signature:         {from_version}={from_sig}"
+            f" → {to_version}={to_sig}"
         )
     else:
-        lines.append(f"├─ Signature:         unchanged ({from_sig!r})")
+        lines.append(f"├─ Signature:         unchanged ({from_sig})")
 
     # Super safety
     from_ss = from_data["super_safety"] if from_data else "?"

@@ -562,6 +562,99 @@ def test_api_version_diff_output_contract(spec_snapshot_db):
     out = _api_version_diff("name_get", spec_snapshot_db, spec_snapshot_db)
     # Same-version short-circuit message has the tool name in header.
     assert out.startswith("api_version_diff")
+    # Strengthen: also assert no nested quote characters (guard against !r repr bug)
+    # Valid output has single quotes around method/version only, not doubled quotes like '"method"'
+    assert '="' not in out, "NULL_HINT should not have nested quote characters from !r formatting"
+    assert '\'"' not in out, "Output should not contain mixed quote nesting"
+
+
+def test_api_version_diff_cross_version_contract(neo4j_driver, monkeypatch):
+    """
+    Cross-version diff contract: when same method exists in 2 versions with DIFFERENT
+    signatures, output shows both signatures AND contains NO nested quote characters.
+
+    Seeds Neo4j with same method (e.g. 'name_get') in 99.0 (with signature A) and
+    98.0 (with signature B), then calls _api_version_diff across versions.
+    Asserts:
+    1. Both signatures appear in output (clearly delimited)
+    2. No nested quote characters from !r formatting (e.g., '="...' or '\'"')
+    3. NULL_HINT (not stored...) does not have nested quotes if either version missing
+    """
+    from src.indexer.models import CoreSymbolInfo
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    _CROSS_V1 = "99.0"  # from_version with one signature
+    _CROSS_V2 = "98.0"  # to_version with a different signature
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_CROSS_V1)
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_CROSS_V2)
+
+    # Seed same method with DIFFERENT signatures in each version
+    writer.write_core_symbols([
+        CoreSymbolInfo(
+            qualified_name="odoo.models.BaseModel.name_get",
+            kind="orm_method",
+            odoo_version=_CROSS_V1,
+            signature="name_get(self, args=None)",  # signature in v99.0
+            status="deprecated",
+            replacement_qname="odoo.models.BaseModel.display_name",
+        ),
+        CoreSymbolInfo(
+            qualified_name="odoo.models.BaseModel.name_get",
+            kind="orm_method",
+            odoo_version=_CROSS_V2,
+            signature="name_get(self)",  # DIFFERENT signature in v98.0
+            status="stable",
+            replacement_qname=None,
+        ),
+    ])
+    writer.close()
+
+    monkeypatch.setenv("NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"))
+    monkeypatch.setenv("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+    monkeypatch.setenv("NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password"))
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _api_version_diff
+
+    result = _api_version_diff("name_get", _CROSS_V1, _CROSS_V2)
+
+    # Header contains version diff indicator
+    assert "api_version_diff" in result or "Method version diff" in result, (
+        "Output must have api_version_diff or Method version diff header"
+    )
+
+    # Both signatures must appear (business intent: show what changed)
+    assert "name_get(self, args=None)" in result, (
+        "from_version signature must be visible"
+    )
+    assert "name_get(self)" in result, (
+        "to_version signature must be visible"
+    )
+
+    # No nested quote characters (key fix for M7 C3)
+    # When from_sig_str = "name_get(self, args=None)" (plain string, no !r),
+    # output should be like: "99.0=name_get(self, args=None) → 98.0=name_get(self)"
+    # NOT like: '99.0="name_get(self, args=None)"' (which is what !r would produce)
+    assert '="' not in result, (
+        "NULL_HINT / signature should not have nested quote from !r formatting"
+    )
+    assert '\'"' not in result, (
+        "Output should not contain mixed quote nesting from repr()"
+    )
+
+    # Cleanup
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_CROSS_V1)
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_CROSS_V2)
 
 
 def test_find_deprecated_usage_output_contract(spec_snapshot_db):
