@@ -27,6 +27,16 @@ Venv nằm tại `~/.venv/odoo-semantic-mcp` — không bao giờ tạo `.venv/`
 
 **Ship Wow Product:** Output MCP tool phải có cấu trúc cây rõ ràng, AI client đọc được ngay không cần parse thêm.
 
+## Agent Rules — Bắt Buộc
+
+**Read trước khi Edit/Write:** Phải dùng Read tool đọc file trong session hiện tại trước khi dùng Edit hoặc Write. Không dựa vào memory session trước — file có thể đã thay đổi.
+
+**Search trước khi tạo mới:** Trước khi thêm function/class/constant/section mới → grep codebase confirm chưa có implementation tương tự. Duplicate implementation = source of truth conflict.
+
+**Confirm trước khi xóa:** Xóa file, function, hoặc test nằm ngoài scope task được giao → confirm với user trước. Không "cleanup" ngoài phạm vi.
+
+**Edit > Write:** Dùng Edit để sửa file có sẵn. Chỉ dùng Write khi tạo file mới hoàn toàn — Write overwrite toàn bộ không có warning.
+
 ## Pipeline — Không Cross-Import Ngang Hàng
 
 ```
@@ -98,15 +108,7 @@ ORDER BY rank_key DESC
 
 Đặc biệt áp dụng cho ranking heuristic trong `resolve_*` (xem `docs/adr/0004`).
 
-**Python-side version compare** (cùng nguyên tắc):
-
-```python
-# ĐÚNG — numeric tuple compare:
-sorted(versions, key=lambda v: tuple(int(p) for p in v.split('.')), reverse=True)
-
-# SAI — string compare ("9.0" > "17.0" → False vì lexicographic):
-sorted(versions, reverse=True)
-```
+Nguyên tắc numeric compare tương tự áp dụng cho Python-side — xem `_latest_version()` trong section v8/v9 bên dưới.
 
 ## v8/v9 Enablement (M4.5 Phase 0)
 
@@ -401,7 +403,6 @@ Web UI `POST /repos/{id}/clone` auto-clone SSH repos using FERNET-decrypted key 
 
 | File | Đọc khi nào |
 |------|-------------|
-| `README.md` | Tổng quan dự án, onboard user, system requirements, trạng thái milestone |
 | `TASKS.md` | Trước khi bắt đầu task mới — xem milestone nào đang active |
 | `docs/thiet-ke-kien-truc.md` | Cần hiểu schema Neo4j, pipeline, MCP tool spec |
 | `docs/huong-dan-stack.md` | Cần hiểu sâu stack: Neo4j patterns, AST gotchas, FastMCP tips |
