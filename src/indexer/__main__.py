@@ -238,10 +238,12 @@ def main(argv: list[str] | None = None) -> int:
                         gc=gc,
                     )
                 print(f"Done: {summary}")
-                if embedder is None:
+                if args.no_embed:
+                    print("Embeddings skipped (--no-embed).", file=sys.stdout)
+                elif embedder is None:
                     print(
                         "Embeddings skipped — EMBEDDER_URL not configured. "
-                        "Use --no-embed to suppress this notice.",
+                        "Set [embedder] url in odoo-semantic.conf to enable.",
                         file=sys.stdout,
                     )
                 if job_id is not None:
