@@ -18,7 +18,9 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from src import config
@@ -313,6 +315,27 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
         conn.close()
 
 
+def _open_pg_for_job_tracking() -> object | None:
+    """Open a psycopg2 connection for job_registry updates.
+
+    Returns None (silently) when PG_DSN is not configured — job tracking
+    is best-effort and must never block the seeding work.
+    """
+    try:
+        import psycopg2
+
+        from src import config
+
+        dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
+        if not dsn:
+            return None
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        return conn
+    except Exception:
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s",
@@ -336,68 +359,137 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true",
         help="Bypass sha256 gating, force reseed even if patterns.json unchanged.",
     )
+    parser.add_argument(
+        "--job-id",
+        type=int,
+        default=None,
+        help="indexer_jobs row to update (queued→running→done/error).",
+    )
     args = parser.parse_args(argv)
 
-    patterns_file = Path(args.patterns_file)
-    if not patterns_file.exists():
-        _logger.error("patterns file not found: %s", patterns_file)
-        return 2
+    job_id: int | None = args.job_id
+    pg = None
+    if job_id is not None:
+        pg = _open_pg_for_job_tracking()
 
-    # Compute sha256 of patterns.json for change detection.
-    current_sha = _compute_patterns_sha256(patterns_file)
-
-    # Check sentinel gating (unless --force).
-    if not args.force:
-        writer = _get_neo4j_writer()
-        if writer:
+    def _mark_running():
+        if job_id is not None and pg is not None:
             try:
-                stored_sha = _get_stored_patterns_sha(writer.driver)
-                if current_sha == stored_sha:
-                    _logger.info(
-                        "Patterns unchanged (sha=%s) — skipping reseed",
-                        current_sha[:8],
-                    )
-                    return 0
-            finally:
-                writer.close()
+                from src.db import job_registry
+                job_registry.update_job(
+                    pg, job_id,
+                    status="running",
+                    pid=os.getpid(),
+                    started_at=datetime.now(UTC),
+                )
+            except Exception:
+                pass
 
-    patterns = _load_patterns(patterns_file, args.version)
-    if not patterns:
-        _logger.warning(
-            "No patterns matched filter (version=%s). Nothing to seed.",
-            args.version or "<any>",
-        )
-        return 0
+    def _mark_done(note: str | None = None):
+        if job_id is not None and pg is not None:
+            try:
+                from src.db import job_registry
+                kwargs: dict = {
+                    "status": "done",
+                    "finished_at": datetime.now(UTC),
+                }
+                if note:
+                    kwargs["error_msg"] = note
+                job_registry.update_job(pg, job_id, **kwargs)
+            except Exception:
+                pass
 
-    _logger.info("Loaded %d patterns from %s", len(patterns), patterns_file)
+    def _mark_error(msg: str):
+        if job_id is not None and pg is not None:
+            try:
+                from src.db import job_registry
+                job_registry.update_job(
+                    pg, job_id,
+                    status="error",
+                    finished_at=datetime.now(UTC),
+                    error_msg=msg[:1000],
+                )
+            except Exception:
+                pass
 
-    _write_neo4j(patterns)
-    _logger.info("Neo4j: wrote %d PatternExample nodes", len(patterns))
+    try:
+        _mark_running()
 
-    if args.no_embed:
-        _logger.info("Skipping pgvector embed step (--no-embed)")
-        # Still update sentinel even if no embed (only Neo4j written).
+        patterns_file = Path(args.patterns_file)
+        if not patterns_file.exists():
+            _logger.error("patterns file not found: %s", patterns_file)
+            _mark_error(f"patterns file not found: {patterns_file}")
+            return 2
+
+        # Compute sha256 of patterns.json for change detection.
+        current_sha = _compute_patterns_sha256(patterns_file)
+
+        # Check sentinel gating (unless --force).
+        if not args.force:
+            writer = _get_neo4j_writer()
+            if writer:
+                try:
+                    stored_sha = _get_stored_patterns_sha(writer.driver)
+                    if current_sha == stored_sha:
+                        _logger.info(
+                            "Patterns unchanged (sha=%s) — skipping reseed",
+                            current_sha[:8],
+                        )
+                        _mark_done(note="skipped: hash unchanged")
+                        return 0
+                finally:
+                    writer.close()
+
+        patterns = _load_patterns(patterns_file, args.version)
+        if not patterns:
+            _logger.warning(
+                "No patterns matched filter (version=%s). Nothing to seed.",
+                args.version or "<any>",
+            )
+            _mark_done()
+            return 0
+
+        _logger.info("Loaded %d patterns from %s", len(patterns), patterns_file)
+
+        _write_neo4j(patterns)
+        _logger.info("Neo4j: wrote %d PatternExample nodes", len(patterns))
+
+        if args.no_embed:
+            _logger.info("Skipping pgvector embed step (--no-embed)")
+            # Still update sentinel even if no embed (only Neo4j written).
+            writer = _get_neo4j_writer()
+            if writer:
+                try:
+                    _set_stored_patterns_sha(writer.driver, current_sha)
+                finally:
+                    writer.close()
+            _mark_done()
+            return 0
+
+        chunks = make_pattern_chunks(patterns)
+        _write_pgvector(chunks)
+        _logger.info("pgvector: wrote %d embedding chunks", len(chunks))
+
+        # After successful seed, update sentinel.
         writer = _get_neo4j_writer()
         if writer:
             try:
                 _set_stored_patterns_sha(writer.driver, current_sha)
             finally:
                 writer.close()
+
+        _mark_done()
         return 0
 
-    chunks = make_pattern_chunks(patterns)
-    _write_pgvector(chunks)
-    _logger.info("pgvector: wrote %d embedding chunks", len(chunks))
-
-    # After successful seed, update sentinel.
-    writer = _get_neo4j_writer()
-    if writer:
-        try:
-            _set_stored_patterns_sha(writer.driver, current_sha)
-        finally:
-            writer.close()
-
-    return 0
+    except Exception as exc:
+        _mark_error(str(exc))
+        raise
+    finally:
+        if pg is not None:
+            try:
+                pg.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":  # pragma: no cover

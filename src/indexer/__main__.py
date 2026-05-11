@@ -155,6 +155,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true",
         help="Bypass sha256 gating, force reseed even if patterns.json unchanged.",
     )
+    sub_seed.add_argument(
+        "--job-id",
+        type=int,
+        default=None,
+        help="(Optional) indexer_jobs.id to update lifecycle status during run.",
+    )
 
     return parser
 
@@ -286,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
             argv_seed.extend(["--patterns-file", args.patterns_file])
         if args.force:
             argv_seed.append("--force")
+        if getattr(args, "job_id", None) is not None:
+            argv_seed.extend(["--job-id", str(args.job_id)])
         return seed_patterns_module.main(argv_seed)
 
     return 0
