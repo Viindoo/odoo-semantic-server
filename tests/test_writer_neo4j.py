@@ -1775,3 +1775,42 @@ def test_re_merge_updates_last_commit_sha(writer, neo4j_driver):
         ).single()
     assert rec["sha"] == "newsha1111111111111111"
 
+
+def test_module_merge_key_excludes_last_commit_sha(writer, neo4j_driver):
+    """ADR-0001 invariant: last_commit_sha is mutable, not part of MERGE key.
+
+    Regression guard: if last_commit_sha moves into MERGE key, writes with
+    different commit_sha would create duplicate Module nodes instead of
+    re-MERGing the same node.
+    """
+    # Write first time with commit_sha="aaa..."
+    result1 = make_parse_result("store_model", "store.config",
+                                commit_sha="aaaaaaaaaaaaaaaaaaaa")
+    writer.write_results([result1])
+
+    # Write second time for SAME (name, odoo_version) but different commit_sha="bbb..."
+    result2 = make_parse_result("store_model", "store.config",
+                                commit_sha="bbbbbbbbbbbbbbbbbbbb")
+    writer.write_results([result2])
+
+    # After both writes: exactly 1 Module node should exist (idempotent MERGE key)
+    with neo4j_driver.session() as session:
+        count_rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN count(m) AS c",
+            n="store_model", v=TEST_VERSION
+        ).single()
+    assert count_rec["c"] == 1, (
+        f"ADR-0001 violation: expected 1 Module node, got {count_rec['c']}. "
+        "last_commit_sha must not be in MERGE key."
+    )
+
+    # Verify latest value wins (second write's commit_sha)
+    with neo4j_driver.session() as session:
+        sha_rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.last_commit_sha AS sha",
+            n="store_model", v=TEST_VERSION
+        ).single()
+    assert sha_rec["sha"] == "bbbbbbbbbbbbbbbbbbbb", (
+        f"Expected latest commit_sha 'bbbbbbbbbbbbbbbbbbbb', got {sha_rec['sha']}"
+    )
+

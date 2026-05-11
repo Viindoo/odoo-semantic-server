@@ -1,10 +1,12 @@
 # tests/test_version_presets.py
 """Unit tests for src/indexer/version_presets.py and apply-preset CLI."""
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from src.db.migrate import run_migrations
 from src.indexer.version_presets import list_presets, load_preset
 
 
@@ -118,3 +120,75 @@ def test_apply_preset_dry_run_no_db_writes():
     assert "python -m src.indexer" in result.stdout, (
         f"Expected indexer run hint in stdout: {result.stdout!r}"
     )
+
+
+def test_apply_preset_profile_name_collision(clean_pg):
+    """apply-preset must fail cleanly when profile with same name already exists.
+
+    Regression guard: after a partial failure (profile created but repo registration
+    failed), re-running apply-preset should not produce a Python traceback.
+    """
+    from tests.conftest import PG_TEST_DSN
+
+    # Ensure schema exists before subprocess runs
+    run_migrations(clean_pg)
+
+    # Get PG DSN — either from os.environ (if fixture set it) or from conftest default
+    pg_dsn = os.environ.get("PG_DSN", PG_TEST_DSN)
+
+    with tempfile.TemporaryDirectory() as td:
+        # Create the derived paths for viindoo-17.0
+        base = Path(td)
+        (base / "odoo_17.0").mkdir()
+        (base / "tvtmaaddons_17.0").mkdir()
+
+        # Subprocess env: pass PG_DSN so apply-preset can access DB
+        env = os.environ.copy()
+        env["PG_DSN"] = pg_dsn
+
+        # Run apply-preset once successfully
+        result1 = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "src.manager",
+                "apply-preset",
+                "viindoo-17.0",
+                "--repo-base-dir",
+                td,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result1.returncode == 0, (
+            f"First apply-preset run failed: {result1.stdout!r} {result1.stderr!r}"
+        )
+
+        # Second run with same preset should fail (profile already created)
+        result2 = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "src.manager",
+                "apply-preset",
+                "viindoo-17.0",
+                "--repo-base-dir",
+                td,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result2.returncode != 0, "Expected non-zero exit on duplicate profile name"
+        combined = result2.stdout + result2.stderr
+        # Error message must be clean (no traceback), mentioning the duplicate
+        assert "Traceback" not in combined, (
+            f"Expected clean error, got Python traceback: {combined!r}"
+        )
+        assert (
+            "viindoo17" in combined or "already" in combined or "exists" in combined
+        ), (
+            f"Expected error to mention profile name or collision. Got: {combined!r}"
+        )

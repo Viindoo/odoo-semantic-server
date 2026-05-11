@@ -558,6 +558,30 @@ def test_detect_edition_oeel1_returns_enterprise():
     )
 
 
+def test_detect_edition_viindoo_prefix_wins_over_oeel1():
+    from src.indexer.parser_python import _detect_module_edition
+
+    """Rule order: Viindoo > Enterprise > OCA > CE path > custom.
+
+    Viindoo prefix wins, even if license claims OEEL-1. This guards against
+    Viindoo internal addons that may use any license string but are authored
+    by Viindoo (path/name prefix indicates authorship).
+    """
+    # viin_ prefix should return 'viindoo', NOT 'enterprise' despite OEEL-1 license
+    assert (
+        _detect_module_edition(
+            {"license": "OEEL-1"}, "viin_test_module", "/any/path"
+        ) == "viindoo"
+    ), "viin_ prefix must win over OEEL-1 license"
+
+    # Same for to_ prefix
+    assert (
+        _detect_module_edition(
+            {"license": "OEEL-1"}, "to_crm", "/any/path"
+        ) == "viindoo"
+    ), "to_ prefix must win over OEEL-1 license"
+
+
 def test_detect_edition_oca():
     from src.indexer.parser_python import _detect_module_edition
     assert _detect_module_edition({"license": "OCA-AGPL-3"}, "x", "/path") == "oca"
