@@ -363,6 +363,22 @@ def _dsn_to_uri(dsn: str) -> str:
         return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     return f"postgresql://{user}@{host}:{port}/{dbname}"
 
+    # M7 W16: Web UI session auth — webui_users table.
+    # Added as a separate block (NOT in SCHEMA_SQL) per W15/W16 coordination:
+    # W15 manages yoyo migration files; W16 wires via migrations/9000_webui_users.sql.
+    # run_migrations() also executes it so tests have the table without needing yoyo.
+    _WEBUI_USERS_SQL = """
+CREATE TABLE IF NOT EXISTS webui_users (
+    username      VARCHAR(64)  PRIMARY KEY,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at    TIMESTAMP    DEFAULT NOW()
+);
+"""
+    with conn.cursor() as cur:
+        cur.execute(_WEBUI_USERS_SQL)
+    if not conn.autocommit:
+        conn.commit()
+
 
 def _conn_to_uri(conn: PgConn) -> str:
     """Reconstruct a postgresql:// URI from an open psycopg2 connection.

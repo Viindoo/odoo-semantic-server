@@ -8,9 +8,11 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "authlib>=1.6.5,<1.7.0",  # 1.7.0 adds AuthlibDeprecationWarning (jose→joserfc migration)
+    "bcrypt>=4.0",             # M7 W16 — Web UI password hashing (cost=12)
     "cryptography>=42",
     "fastapi>=0.115,<1.0",
     "fastmcp>=2.3,<3.0",
+    "itsdangerous>=2.1",       # M7 W16 — Starlette SessionMiddleware cookie signing
     "jinja2>=3.1,<4.0",
     "jsonschema>=4.21",
     "neo4j>=5.0,<6.0",
