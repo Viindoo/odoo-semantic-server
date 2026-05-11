@@ -790,6 +790,18 @@ def index_all(
                 f"(parallel mode — tqdm bars would interleave)"
             )
 
+        # Pre-create Neo4j indexes once to avoid EquivalentSchemaRuleAlreadyExists
+        # race when parallel workers simultaneously call setup_indexes() in their
+        # sessions. The CREATE INDEX IF NOT EXISTS guards are not enough to prevent
+        # concurrent creation races; pre-running setup_indexes() once is the correct
+        # workaround (W1-4, re-applied M7 C1).
+        uri, user, password = _neo4j_creds()
+        _pre_writer = Neo4jWriter(uri, user, password)
+        try:
+            _pre_writer.setup_indexes()
+        finally:
+            _pre_writer.close()
+
         profile_names = [p["name"] for p in profiles]
         first_exc: Exception | None = None
 
