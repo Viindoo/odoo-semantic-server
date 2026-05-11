@@ -187,13 +187,10 @@ class TestSmokeSshKeyGen:
         """Ed25519 keypair generation works with valid FERNET_KEY."""
         from cryptography.fernet import Fernet
 
+        from src.web_ui.routes.ssh_keys import generate_ed25519_keypair
+
         key = Fernet.generate_key().decode()
         monkeypatch.setenv("FERNET_KEY", key)
-
-        try:
-            from src.web_ui.routes.ssh_keys import generate_ed25519_keypair
-        except ImportError:
-            pytest.skip("SSH keys module not yet implemented (M5 feature)")
 
         pub, enc = generate_ed25519_keypair()
         assert pub.startswith("ssh-ed25519 "), (
@@ -205,12 +202,9 @@ class TestSmokeSshKeyGen:
 
     def test_generate_keypair_without_fernet_raises(self, monkeypatch):
         """Missing FERNET_KEY → RuntimeError with clear message."""
-        monkeypatch.delenv("FERNET_KEY", raising=False)
+        from src.web_ui.routes.ssh_keys import generate_ed25519_keypair
 
-        try:
-            from src.web_ui.routes.ssh_keys import generate_ed25519_keypair
-        except ImportError:
-            pytest.skip("SSH keys module not yet implemented (M5 feature)")
+        monkeypatch.delenv("FERNET_KEY", raising=False)
 
         with pytest.raises(
             RuntimeError,
