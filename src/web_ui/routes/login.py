@@ -7,12 +7,44 @@ from typing import Annotated
 from urllib.parse import unquote_plus
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from src.web_ui.auth import verify_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Per-IP login rate limiting (M7 Opus review finding #17)
+# ---------------------------------------------------------------------------
+# Module-level dict: {ip: [timestamps of recent failed login attempts]}
+# Evict entries older than _RATE_WINDOW_SECONDS on each access.
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_RATE_WINDOW_SECONDS = 60.0
+_RATE_MAX_FAILURES = 5
+
+
+def _record_failure(ip: str) -> None:
+    """Record a failed login attempt for *ip* and evict old entries."""
+    now = time.time()
+    failures = _LOGIN_FAILURES.get(ip, [])
+    failures = [t for t in failures if now - t < _RATE_WINDOW_SECONDS]
+    failures.append(now)
+    _LOGIN_FAILURES[ip] = failures
+
+
+def _clear_failures(ip: str) -> None:
+    """Clear recorded failures for *ip* after a successful login."""
+    _LOGIN_FAILURES.pop(ip, None)
+
+
+def _is_rate_limited(ip: str) -> bool:
+    """Return True if *ip* has ≥ _RATE_MAX_FAILURES failures in the last window."""
+    now = time.time()
+    failures = _LOGIN_FAILURES.get(ip, [])
+    recent = [t for t in failures if now - t < _RATE_WINDOW_SECONDS]
+    _LOGIN_FAILURES[ip] = recent
+    return len(recent) >= _RATE_MAX_FAILURES
 
 
 def _get_conn():
@@ -71,6 +103,15 @@ async def login_post(
     """Verify credentials, set session, redirect."""
     from urllib.parse import quote_plus
 
+    # Per-IP rate limiting: reject after too many consecutive failures.
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_rate_limited(client_ip):
+        logger.warning("Login rate-limited for IP %s", client_ip)
+        return JSONResponse(
+            {"error": "Too many failed login attempts; wait 60s"},
+            status_code=429,
+        )
+
     # Validate redirect target (only allow relative paths)
     safe_next = "/"
     if next and next.startswith("/") and not next.startswith("//"):
@@ -91,14 +132,16 @@ async def login_post(
         conn.close()
 
     if pw_hash is None or not verify_password(password, pw_hash):
-        logger.warning("Failed login attempt for user %r", username)
+        logger.warning("Failed login attempt for user %r (IP: %s)", username, client_ip)
+        _record_failure(client_ip)
         error_url = f"/login?error=invalid_credentials&next={quote_plus(safe_next)}"
         return RedirectResponse(error_url, status_code=302)
 
-    # Credentials OK — set session
+    # Credentials OK — clear failure counter + set session
+    _clear_failures(client_ip)
     request.session["username"] = username.strip()
     request.session["session_at"] = time.time()
-    logger.info("Successful login for user %r", username)
+    logger.info("Successful login for user %r (IP: %s)", username, client_ip)
     return RedirectResponse(safe_next, status_code=302)
 
 

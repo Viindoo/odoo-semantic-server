@@ -345,7 +345,12 @@ def _dsn_to_uri(dsn: str) -> str:
     Handles both URI form (already has '://') and keyword=value form.
     Note: psycopg2 masks passwords in conn.dsn as 'xxx'; prefer _conn_to_uri()
     when a live connection object is available.
+
+    User + password are URL-encoded so secrets containing `@:/?#` (common in
+    strong passwords) don't break URI parsing.
     """
+    from urllib.parse import quote_plus
+
     if "://" in dsn:
         return dsn
     # Parse keyword=value pairs
@@ -360,8 +365,8 @@ def _dsn_to_uri(dsn: str) -> str:
     port = params.get("port", "5432")
     dbname = params.get("dbname", "")
     if password:
-        return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-    return f"postgresql://{user}@{host}:{port}/{dbname}"
+        return f"postgresql://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{dbname}"
+    return f"postgresql://{quote_plus(user)}@{host}:{port}/{dbname}"
 
 
 def _conn_to_uri(conn: PgConn) -> str:
@@ -369,7 +374,12 @@ def _conn_to_uri(conn: PgConn) -> str:
 
     Uses conn.info to get the real (unmasked) password, which conn.dsn masks
     as 'xxx'. This is required to pass a valid URI to yoyo's get_backend().
+
+    User + password are URL-encoded so secrets containing `@:/?#` don't break
+    URI parsing (e.g. yoyo's get_backend would misinterpret host/port).
     """
+    from urllib.parse import quote_plus
+
     info = conn.info
     user = info.user or ""
     password = info.password or ""
@@ -377,8 +387,8 @@ def _conn_to_uri(conn: PgConn) -> str:
     port = info.port or 5432
     dbname = info.dbname or ""
     if password:
-        return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-    return f"postgresql://{user}@{host}:{port}/{dbname}"
+        return f"postgresql://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{dbname}"
+    return f"postgresql://{quote_plus(user)}@{host}:{port}/{dbname}"
 
 
 def _run_yoyo(dsn_uri: str, existing_conn: PgConn | None = None) -> None:
@@ -390,41 +400,84 @@ def _run_yoyo(dsn_uri: str, existing_conn: PgConn | None = None) -> None:
 
     existing_conn is used only for the schema-existence probe; yoyo manages
     its own connection internally.
+
+    Advisory lock: pg_try_advisory_lock(0x05DA0E05) is acquired on a dedicated
+    lock connection before the baseline-detection + apply phase to serialize
+    concurrent migrate calls (e.g., two processes starting simultaneously on a
+    fresh deploy).  The constant 0x05DA0E05 encodes "ODA005" (odoo schema 005).
     """
+    import psycopg2 as _psycopg2
     from yoyo import get_backend, read_migrations
 
-    migrations = read_migrations(str(_MIGRATIONS_DIR))
-    backend = get_backend(dsn_uri)
+    # --- Acquire advisory lock ---
+    # Use existing_conn if possible; otherwise open a dedicated lock connection.
+    # The lock is held for the entire migrate duration and released on close.
+    _lock_conn_owned = False
+    lock_conn = existing_conn
+    if lock_conn is None:
+        try:
+            lock_conn = _psycopg2.connect(dsn_uri)
+            lock_conn.autocommit = True
+            _lock_conn_owned = True
+        except Exception:
+            lock_conn = None
+
+    _MIGRATE_ADVISORY_LOCK = 0x05DA0E05  # "ODA005" — odoo schema 005
+
+    lock_acquired = False
+    if lock_conn is not None:
+        try:
+            with lock_conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_lock(%s)", (_MIGRATE_ADVISORY_LOCK,))
+            lock_acquired = True
+        except Exception:
+            pass  # Advisory lock unavailable; proceed without serialization
 
     try:
-        # Detect legacy-bootstrapped database that predates yoyo adoption.
-        if existing_conn is not None:
-            schema_present = _schema_already_exists(existing_conn)
-        else:
-            # Open a probe connection to check schema existence.
-            import psycopg2 as _psycopg2
-            try:
-                probe = _psycopg2.connect(dsn_uri)
-                probe.autocommit = True
-                schema_present = _schema_already_exists(probe)
-                probe.close()
-            except Exception:
-                schema_present = False
+        migrations = read_migrations(str(_MIGRATIONS_DIR))
+        backend = get_backend(dsn_uri)
 
-        if schema_present:
-            # Mark 0001_initial as applied without re-executing it.
-            # Uses backend.to_apply(migrations) — pass full MigrationList so yoyo
-            # can compute hashes correctly; then filter by id.
-            pending_ids = {m.id for m in backend.to_apply(migrations)}
-            if "0001_initial" in pending_ids:
-                # Schema exists but 0001_initial not yet recorded — legacy baseline.
-                initial = [m for m in migrations if m.id == "0001_initial"]
-                backend.mark_migrations(initial)
+        try:
+            # Detect legacy-bootstrapped database that predates yoyo adoption.
+            if existing_conn is not None:
+                schema_present = _schema_already_exists(existing_conn)
+            else:
+                # Open a probe connection to check schema existence.
+                try:
+                    probe = _psycopg2.connect(dsn_uri)
+                    probe.autocommit = True
+                    schema_present = _schema_already_exists(probe)
+                    probe.close()
+                except Exception:
+                    schema_present = False
 
-        pending = backend.to_apply(migrations)
-        backend.apply_migrations(pending)
+            if schema_present:
+                # Mark 0001_initial as applied without re-executing it.
+                # Uses backend.to_apply(migrations) — pass full MigrationList so yoyo
+                # can compute hashes correctly; then filter by id.
+                pending_ids = {m.id for m in backend.to_apply(migrations)}
+                if "0001_initial" in pending_ids:
+                    # Schema exists but 0001_initial not yet recorded — legacy baseline.
+                    initial = [m for m in migrations if m.id == "0001_initial"]
+                    backend.mark_migrations(initial)
+
+            pending = backend.to_apply(migrations)
+            backend.apply_migrations(pending)
+        finally:
+            backend.connection.close()
     finally:
-        backend.connection.close()
+        # Release advisory lock and close lock connection if we opened it.
+        if lock_acquired and lock_conn is not None:
+            try:
+                with lock_conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATE_ADVISORY_LOCK,))
+            except Exception:
+                pass
+        if _lock_conn_owned and lock_conn is not None:
+            try:
+                lock_conn.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

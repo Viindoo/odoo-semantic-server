@@ -289,17 +289,17 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [ ] **Rerank coefficients tuning (`src/mcp/server.py:489`):** needs Vietnamese + English eval dataset to calibrate `dependents_map` weight vs `in_chain_set` boost. V0 heuristic is conservative placeholder — M7 measure recall/precision on held-out queries.
 - [ ] **`_compute_risk` thresholds recalibration (`src/mcp/server.py:683`):** needs held-out incident dataset to validate `total >= 10` HIGH / `4-9` MEDIUM / `< 4` LOW buckets. Current thresholds are qualitative against Odoo 17 + Viindoo; M7 quantitative validation.
 - [ ] **USES_CORE_SYMBOL V0→V1 expansion (`src/indexer/parser_python.py:36`):** V0 scope = deprecated/removed only (5 symbols). Expand to cover "signature changed" + "moved module" APIs per ADR-0002 §3. Current false-positive rate acceptable for MVP.
-- [ ] **Qualified-name symbol resolution (`src/indexer/parser_python.py:67-68`):** full import-chain tracking to eliminate short-name collisions. Today qualified_name heuristic (ENDS WITH) catches most cases; M7 implement proper scope resolver.
-- [ ] **Clone-status poll cap (`src/web_ui/templates/repos.html` `pollCloneCells`):** stuck-pending repos poll forever (5s tick). Add max-tick stop + "Polling timed out, check server logs" message. UX improvement.
+- [x] **Qualified-name symbol resolution (`src/indexer/parser_python.py:67-68`):** full import-chain tracking to eliminate short-name collisions. Today qualified_name heuristic (ENDS WITH) catches most cases; M7 implement proper scope resolver. (M7 W13)
+- [x] **Clone-status poll cap (`src/web_ui/templates/repos.html` `pollCloneCells`):** stuck-pending repos poll forever (5s tick). Add max-tick stop + "Polling timed out, check server logs" message. UX improvement. (M7 C2)
 - [ ] **`_NULL_HINT` repr format cleanup (`src/mcp/server.py` `_diff_method_across_versions` output):** internal sentinel bleeding into API output. Format as actual string value or comment.
 - [ ] **`default_clone_dir` URL query-string handling (`src/git_utils.py`):** strip query/fragment via `urlparse` to avoid invalid SSH URL. Edge case when user manually adds SSH URL with query params.
 - [ ] **W3-2 EE-reference test list expansion (`tests/test_patterns_schema.py`):** current EE_CONFUSION needle list has ~5 entries; expand to all 16 dict keys + `viin_*` prefix patterns. Better coverage.
-- [ ] **Migration tool adoption:** yoyo-migrations or alembic — defer until first non-additive schema change needed (ADR-0001 revision recorded M6 W5).
+- [x] **Migration tool adoption:** yoyo-migrations adopted — `src/db/migrate.py` now uses yoyo with baseline detection for legacy deploys + advisory lock for concurrent safety. (M7 W15)
 
 **Spawned từ ADR-0007 §"Out of scope" (M6 Wave 2):**
-- [ ] **Module rename garbage collection (ADR-0007 §D5):** thay vì recommend periodic `--full`, add explicit `--gc` flag chạy "DETACH DELETE Module nodes whose path no longer exists in current scan". Risk-gated (only if scanner found modules cho repo X) để tránh accidental delete khi scan fail. Replaces D5's "stale orphans accepted" stance with explicit cleanup pass.
-- [ ] **Cross-repo dependency change tracking (ADR-0007 §Out of scope):** today mỗi repo's diff được tính độc lập. Nếu repo A's module depend on repo B's module B vừa thay đổi, dependency graph rebuild của A là implicit on next full reindex. M7 explicit: detect inter-repo edge changes + propagate re-index trigger (e.g. via Neo4j relationship watching).
-- [ ] **Embedding cost observability (ADR-0007 §Out of scope):** today per-module embedding incremental implicit qua `delete_embeddings_for_module`. M7 add explicit metrics — Ollama API call count per indexer run, vector store delta size, surface trong MCP `/health` hoặc admin Web UI dashboard.
+- [x] **Module rename garbage collection (ADR-0007 §D5):** `--gc` flag added — DETACH DELETE Module nodes whose path no longer exists in current scan. Risk-gated (only if scanner found ≥1 module). (M7 C4)
+- [x] **Cross-repo dependency change tracking (ADR-0007 §Out of scope):** incremental run on repo A propagates head_sha reset to repos whose modules DEPENDS_ON A's changed modules. Implementation in `cross_repo.py` + `repo_registry.py::reset_head_sha`. (M7 W14)
+- [x] **Embedding cost observability (ADR-0007 §Out of scope):** `FakeEmbedder.call_count` + `Qwen3Embedder.call_count` (thread-safe via Lock), surfaced in `/health` embedding_calls field + dashboard. (M7 C5)
 
 > **Lý do định danh "Lifecycle Wow":** items đa dạng nhưng chung chủ đề "track sự thay đổi theo thời gian" — repo rename hygiene (GC), inter-repo dependency drift, ecosystem correlation (Viindoo↔EE auto-curation), production cost observability.
 >

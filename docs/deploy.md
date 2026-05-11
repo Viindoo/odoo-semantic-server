@@ -517,6 +517,16 @@ sudo -u odoo-semantic -H bash -c '
 tiếp qua CLI ngoài Web UI, không cần session — có thể chạy ngay cả khi Web UI
 chưa start.
 
+**Local dev over plain HTTP:** nếu Web UI không qua TLS (e.g. `http://localhost:8003`),
+session cookie sẽ bị rejected vì `Secure` flag mặc định. Set `WEBUI_SECURE_COOKIE=0`
+trong webui.env **chỉ cho dev local**:
+
+```
+WEBUI_SECURE_COOKIE=0    # local dev only — KHÔNG set trong production
+```
+
+⚠️ Đừng bao giờ set `WEBUI_SECURE_COOKIE=0` trong production — cho phép session hijacking qua plain HTTP.
+
 Xem logs:
 
 ```bash
@@ -841,7 +851,7 @@ Trước khi expose public internet:
 - [ ] Service user `odoo-semantic` là non-login (`shell=/usr/sbin/nologin`)
 - [ ] Backup đã được test (restore thử ít nhất 1 lần — xem `docs/deploy/disaster-recovery.md`)
 - [ ] Logrotate đã cài cho `/var/log/odoo-semantic-reindex.log` (xem §Log Rotation)
-- [ ] Web UI session auth — xem ADR-0011 khi available (M7 backlog)
+- [ ] Web UI session-auth enabled — first admin created via `create-webui-user`, verify unauth GET /repos → 302 /login (xem ADR-0011 + §3.5b)
 
 ---
 

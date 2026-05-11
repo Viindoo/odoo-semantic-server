@@ -236,3 +236,41 @@ def test_migrate_preserves_existing_data(clean_pg):
     assert row is not None, (
         f"api_keys row id={sentinel_id} was destroyed by migrate — production-safety failure"
     )
+
+
+def test_migrate_fresh_db_creates_all_tables(clean_pg):
+    """W15: run_migrations on empty schema must create all tables from 0001_initial.sql.
+
+    Uses clean_pg (pre-wiped schema), runs migrate once, then asserts every
+    non-embeddings table defined in 0001_initial.sql exists in information_schema.
+    Embeddings table is conditional on pgvector — excluded from this assertion.
+    """
+    run_migrations(clean_pg)
+
+    # Tables defined in 0001_initial.sql (excluding embeddings which requires pgvector).
+    expected_tables = {
+        "profiles",
+        "repos",
+        "api_keys",
+        "ssh_key_pairs",
+        "usage_log",
+        "pattern_feedback",
+        "indexer_jobs",
+    }
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+            """
+        )
+        found = {row[0] for row in cur.fetchall()}
+
+    missing = expected_tables - found
+    assert not missing, (
+        f"Fresh migrate is missing expected tables: {sorted(missing)}. "
+        f"Found: {sorted(found)}"
+    )

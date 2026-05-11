@@ -46,14 +46,23 @@ def _session_valid(request: Request) -> bool:
         age = time.time() - float(session_at)
     except (TypeError, ValueError):
         return False
-    return age < SESSION_TTL_SECONDS
+    # Require non-negative age: a future session_at (age < 0) is invalid.
+    # This closes the edge case where a tampered or clock-skewed session_at
+    # in the far future would satisfy `age < SESSION_TTL_SECONDS` indefinitely.
+    return 0 <= age < SESSION_TTL_SECONDS
 
 
 class AuthRequiredMiddleware(BaseHTTPMiddleware):
     """Redirect unauthenticated requests to /login (except exempt paths)."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if os.environ.get("WEBUI_AUTH_DISABLED") == "1":
+        # Test-only bypass: BOTH env vars must be set so a misconfigured
+        # production deployment (or copy-pasted .env) cannot accidentally
+        # disable auth. PYTEST_CURRENT_TEST is set by pytest itself.
+        if (
+            os.environ.get("WEBUI_AUTH_DISABLED") == "1"
+            and os.environ.get("PYTEST_CURRENT_TEST")
+        ):
             return await call_next(request)
         if _is_exempt(request.url.path):
             return await call_next(request)

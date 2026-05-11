@@ -242,3 +242,76 @@ class TestGcDisabledNoOp:
         assert _module_exists(driver, "live_mod"), (
             "live_mod must still be present after indexing"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 4 (C4 finding #13): gc does NOT delete modules from other repos
+# ---------------------------------------------------------------------------
+
+class TestGcDoesNotDeleteOtherRepoModules:
+    """gc_stale_modules must be scoped to the repo being GC'd.
+
+    Note: Module composite key is (name, odoo_version) — two repos with the
+    SAME module name at the SAME version share one Neo4j node. Tests use
+    distinct module names per repo to properly isolate the scoping behavior.
+    """
+
+    def test_gc_does_not_delete_other_repo_modules(self, clean_neo4j):
+        """GC for repo_a must NOT delete Module nodes belonging to repo_b.
+
+        repo_a has 'gc_blast_mod_a' at path /repo_a/addons/gc_blast_mod_a.
+        repo_b has 'gc_blast_mod_b' at path /repo_b/addons/gc_blast_mod_b.
+        GC on repo_a with no live_paths deletes only repo_a's module.
+        """
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        # Create distinct Module nodes for two different repos
+        with driver.session() as session:
+            session.run(
+                """
+                MERGE (m:Module {name: $name, odoo_version: $v})
+                SET m.repo = $repo, m.path = $path
+                """,
+                name="gc_blast_mod_a", v=TEST_VERSION,
+                repo="repo_a_gc_blast",
+                path="/repo_a/addons/gc_blast_mod_a",
+            )
+            session.run(
+                """
+                MERGE (m:Module {name: $name, odoo_version: $v})
+                SET m.repo = $repo, m.path = $path
+                """,
+                name="gc_blast_mod_b", v=TEST_VERSION,
+                repo="repo_b_gc_blast",
+                path="/repo_b/addons/gc_blast_mod_b",
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            # Run GC for repo_a with empty live_paths (all of repo_a's modules removed)
+            deleted = writer.gc_stale_modules("repo_a_gc_blast", TEST_VERSION, live_paths=set())
+        finally:
+            writer.close()
+
+        # repo_a's gc_blast_mod_a should be deleted (not in live_paths for repo_a)
+        with driver.session() as session:
+            row_a = session.run(
+                "MATCH (m:Module {name: $name, odoo_version: $v}) RETURN count(m) AS n",
+                name="gc_blast_mod_a", v=TEST_VERSION,
+            ).single()
+            row_b = session.run(
+                "MATCH (m:Module {name: $name, odoo_version: $v}) RETURN count(m) AS n",
+                name="gc_blast_mod_b", v=TEST_VERSION,
+            ).single()
+
+        assert deleted == 1, f"Expected 1 deleted from repo_a, got {deleted}"
+        assert row_a["n"] == 0, "repo_a Module{gc_blast_mod_a} should be deleted by GC"
+        assert row_b["n"] == 1, (
+            "repo_b Module{gc_blast_mod_b} must NOT be deleted — GC is scoped to repo_a only"
+        )
