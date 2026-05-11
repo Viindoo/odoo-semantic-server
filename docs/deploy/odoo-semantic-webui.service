@@ -20,7 +20,7 @@ Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
 # FERNET_KEY (cần cho SSH key encrypt/decrypt) đọc từ env var.
 # Đặt trong file riêng — KHÔNG commit vào git, mode 600, owner odoo-semantic.
 # Chỉ Web UI cần file này; MCP server không decrypt SSH key tại runtime.
-EnvironmentFile=/etc/odoo-semantic/webui.env
+EnvironmentFile=-/etc/odoo-semantic/webui.env
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
 Restart=on-failure
 RestartSec=5
