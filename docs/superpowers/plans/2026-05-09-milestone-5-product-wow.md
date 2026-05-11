@@ -395,8 +395,8 @@ Remove `AUTH_DISABLED` (không còn dùng).
 
 **Files touched:**
 - NEW: `install.sh`
-- NEW: `systemd/odoo-semantic-mcp.service.template`
-- NEW: `systemd/odoo-semantic-webui.service.template`
+- NEW: `systemd/odoo-semantic-mcp.service.template`  <!-- [Note: PR #45 moved templates to docs/deploy/ as canonical .service files] -->
+- NEW: `systemd/odoo-semantic-webui.service.template`  <!-- [Note: PR #45 moved templates to docs/deploy/ as canonical .service files] -->
 
 **Task:** Bash script:
 1. Check python3 >= 3.12
