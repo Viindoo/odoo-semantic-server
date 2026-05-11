@@ -229,7 +229,11 @@ class TestDeleteRepoHappyPath:
 
     @pytest.mark.asyncio
     async def test_delete_repo_cleans_embeddings_scoped(self, migrated_pg, clean_neo4j):
-        """Delete repo_A → its embeddings gone; repo_B embeddings intact."""
+        """Delete repo_A → its embeddings gone; repo_B embeddings intact.
+
+        Seeds real Neo4j Module nodes so _collect_module_names_for_repos resolves
+        the correct Odoo module names (not the repo basenames — that was the bug).
+        """
         from src.db.repo_registry import add_profile, add_repo
 
         basename_a = f"emb_repo_a_{TEST_VERSION}"
@@ -249,6 +253,11 @@ class TestDeleteRepoHappyPath:
             local_path=f"/tmp/{basename_b}",
         )
 
+        # Seed Neo4j Module nodes so the cleanup helper resolves real module names
+        driver = clean_neo4j
+        _seed_neo4j_module(driver, basename_a, module_a, TEST_VERSION)
+        _seed_neo4j_module(driver, basename_b, module_b, TEST_VERSION)
+
         _seed_embeddings(migrated_pg, module_a, TEST_VERSION)
         _seed_embeddings(migrated_pg, module_b, TEST_VERSION)
 
@@ -259,9 +268,6 @@ class TestDeleteRepoHappyPath:
         with mock.patch(
             "src.web_ui.routes.repos._get_conn",
             _make_conn_factory(migrated_pg),
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_neo4j_for_repos",
-            return_value=(0, 0),
         ):
             async with _async_client(app) as client:
                 await client.post(
@@ -355,9 +361,6 @@ class TestDeleteRepoMultiProfileSameVersion:
         with mock.patch(
             "src.web_ui.routes.repos._get_conn",
             _make_conn_factory(migrated_pg),
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_embeddings_for_repos",
-            return_value=0,
         ):
             async with _async_client(app) as client:
                 await client.post(
