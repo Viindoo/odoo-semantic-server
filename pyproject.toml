@@ -21,6 +21,7 @@ dependencies = [
     "tree-sitter>=0.21",
     "tree-sitter-javascript>=0.21",
     "uvicorn>=0.29",
+    "yoyo-migrations>=9,<10",
 ]
 
 [project.optional-dependencies]
