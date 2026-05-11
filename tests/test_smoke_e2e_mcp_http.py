@@ -20,6 +20,8 @@ from src.indexer.models import (
     ModuleInfo,
     ParseResult,
     ViewInfo,
+    ViewParseResult,
+    XPathInfo,
 )
 from src.indexer.writer_neo4j import Neo4jWriter
 from src.mcp.server import mcp
@@ -76,13 +78,13 @@ def seeded_neo4j_http(neo4j_driver):
     )
     account_view = ViewInfo(
         xmlid="account.view_move_tree",
+        name="account.view_move_tree",
         module="account",
         odoo_version=TEST_VERSION,
         model="account.move",
-        type="tree",
+        view_type="tree",
         mode="primary",
-        xpaths_exprs=None,
-        xpaths_positions=None,
+        inherit_xmlid=None,
     )
 
     # Extended module: viin_account extends account.move + adds view inheritance
@@ -99,26 +101,25 @@ def seeded_neo4j_http(neo4j_driver):
     )
     viin_account_view = ViewInfo(
         xmlid="viin_account.view_move_tree_custom",
+        name="viin_account.view_move_tree_custom",
         module="viin_account",
         odoo_version=TEST_VERSION,
         model="account.move",
-        type="tree",
+        view_type="tree",
         mode="extension",
-        xpaths_exprs=["//field[@name='date']"],
-        xpaths_positions=["inside"],
+        inherit_xmlid="account.view_move_tree",
+        xpaths=[XPathInfo(expr="//field[@name='date']", position="inside")],
     )
 
     writer.write_results([
         ParseResult(module=base_mod, models=[base_model]),
         ParseResult(module=ext_mod, models=[ext_model]),
-        ParseResult(
-            module=account_mod, models=[account_model], views=[account_view]
-        ),
-        ParseResult(
-            module=viin_account_mod,
-            models=[viin_account_model],
-            views=[viin_account_view],
-        ),
+        ParseResult(module=account_mod, models=[account_model]),
+        ParseResult(module=viin_account_mod, models=[viin_account_model]),
+    ])
+    writer.write_view_results([
+        ViewParseResult(module=account_mod, views=[account_view]),
+        ViewParseResult(module=viin_account_mod, views=[viin_account_view]),
     ])
     writer.close()
     yield
