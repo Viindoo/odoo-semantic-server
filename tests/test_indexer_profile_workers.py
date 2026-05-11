@@ -197,7 +197,7 @@ class TestProfileFailureDoesNotBlockOthers:
 class TestProfileWorkersFullReindex:
     """Cross-impact W2-4 ↔ W2-8: full_reindex propagates through parallel path."""
 
-    def test_full_reindex_passes_through_parallel_workers(self, mock_pg_conn):
+    def test_full_reindex_passes_through_parallel_workers(self, mock_pg_conn, mock_writer):
         profiles = [_make_profile("p1"), _make_profile("p2")]
         seen_full_reindex: list[bool] = []
 
@@ -210,6 +210,8 @@ class TestProfileWorkersFullReindex:
         with (
             patch("src.indexer.pipeline.list_profiles", return_value=profiles),
             patch("src.indexer.pipeline.index_profile", side_effect=fake_index_profile),
+            patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
+            patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline.open_production_pg", side_effect=_make_thread_pg),
         ):
             from src.indexer.pipeline import index_all
@@ -385,20 +387,6 @@ def test_two_profiles_neo4j_isolation_at_version_boundary(
         conn = psycopg2.connect(PG_TEST_DSN)
         conn.autocommit = True
         return conn
-
-    # Pre-create Neo4j indexes once to avoid EquivalentSchemaRuleAlreadyExists
-    # race when two profile workers simultaneously call setup_indexes().
-    # The IF NOT EXISTS guard in Cypher does not prevent concurrent creation;
-    # pre-running setup_indexes once is the correct workaround.
-    from src.indexer.pipeline import _neo4j_creds
-    from src.indexer.writer_neo4j import Neo4jWriter
-
-    uri, user, password = _neo4j_creds()
-    _pre_writer = Neo4jWriter(uri, user, password)
-    try:
-        _pre_writer.setup_indexes()
-    finally:
-        _pre_writer.close()
 
     from src.indexer.pipeline import index_all
 
