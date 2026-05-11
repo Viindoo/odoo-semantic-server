@@ -240,9 +240,18 @@ def seeded_clusters(clean_pg_embeddings, clean_neo4j):
 # ---------------------------------------------------------------------------
 
 def _cluster_of_entity(entity_name: str, text_to_cluster: dict[str, str]) -> str | None:
-    """Return cluster label for a result entity by matching against indexed snippets."""
+    """Return cluster label for a result entity by matching against indexed snippets.
+
+    The result entity_name typically arrives prefixed with `[module] ` from
+    _find_examples output (e.g. `[tax_module] sale.order: _get_tax_country`).
+    _entity_name() strips that prefix from snippet_text — strip the same way
+    from the incoming entity_name before comparing.
+    """
+    # Strip leading `[module] ` if present
+    stripped = entity_name.split("] ", 1)[-1] if entity_name.startswith("[") else entity_name
+    stripped = stripped.strip()
     for text, cluster in text_to_cluster.items():
-        if _entity_name(text) == entity_name:
+        if _entity_name(text) == stripped:
             return cluster
     return None
 
