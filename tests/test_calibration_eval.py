@@ -97,28 +97,36 @@ def test_rerank_coefficient_grid(live_connections):
     total = len(all_queries)
 
     def measure_recall(log_c: float, chain_b: float) -> float:
-        """Measure recall@5 for the given coefficients."""
+        """Measure recall@5 for the given coefficients.
+
+        Uses try/finally to guarantee constant restoration even if
+        srv._find_examples raises mid-sweep — otherwise tuned coefficients
+        leak into subsequent test runs in the same module session.
+        """
+        orig_log = orig_chain = None
         if has_constants:
             orig_log = srv._RERANK_LOG_COEFF  # type: ignore[attr-defined]
             orig_chain = srv._RERANK_CHAIN_BOOST  # type: ignore[attr-defined]
             srv._RERANK_LOG_COEFF = log_c  # type: ignore[attr-defined]
             srv._RERANK_CHAIN_BOOST = chain_b  # type: ignore[attr-defined]
-        hits: list[bool] = []
-        for query, expected_entity, _ in all_queries:
-            result = srv._find_examples(
-                query,
-                odoo_version="auto",
-                limit=5,
-                _driver=driver,
-                _pg_conn=pg,
-                _embedder=embedder,
-            )
-            entity_names = _extract_entities(result)
-            hits.append(_recall_at_k(entity_names, expected_entity))
-        if has_constants:
-            srv._RERANK_LOG_COEFF = orig_log  # type: ignore[attr-defined]
-            srv._RERANK_CHAIN_BOOST = orig_chain  # type: ignore[attr-defined]
-        return sum(hits) / total if total else 0.0
+        try:
+            hits: list[bool] = []
+            for query, expected_entity, _ in all_queries:
+                result = srv._find_examples(
+                    query,
+                    odoo_version="auto",
+                    limit=5,
+                    _driver=driver,
+                    _pg_conn=pg,
+                    _embedder=embedder,
+                )
+                entity_names = _extract_entities(result)
+                hits.append(_recall_at_k(entity_names, expected_entity))
+            return sum(hits) / total if total else 0.0
+        finally:
+            if has_constants:
+                srv._RERANK_LOG_COEFF = orig_log  # type: ignore[attr-defined]
+                srv._RERANK_CHAIN_BOOST = orig_chain  # type: ignore[attr-defined]
 
     # Measure baseline first
     baseline_recall = measure_recall(*BASELINE)

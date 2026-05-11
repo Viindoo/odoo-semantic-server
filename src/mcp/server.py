@@ -15,6 +15,11 @@ _pg_pool: psycopg2.pool.SimpleConnectionPool | None = None
 _embedder_instance = None
 _version_checked = False
 
+# find_examples rerank coefficients — extracted so calibration harness can
+# monkey-patch them. See _find_examples + tests/test_calibration_eval.py.
+_RERANK_LOG_COEFF = 0.02
+_RERANK_CHAIN_BOOST = 0.20
+
 
 def _get_driver():
     global _driver, _version_checked
@@ -486,11 +491,10 @@ def _find_examples(
 
     # Neo4j centrality rerank + optional context_module boost.
     # Two UNWIND batch queries replace the previous N+1 per-chunk loop.
-    # Coefficients calibrated against 100-query Vi+En eval set baseline 2026-05-11.
-    # Re-tune via tests/test_calibration_eval.py::test_rerank_coefficient_grid (Ollama-gated).
-    # Ollama unavailable at calibration time — baseline (0.02, 0.20) kept as reference.
-    # Grid sweep (log_coeff ∈ {0.01,0.02,0.05,0.10} × chain_boost ∈ {0.10,0.20,0.30,0.40})
-    # requires live Ollama + indexed data; run harness to find best combo.
+    # Coefficients (_RERANK_LOG_COEFF, _RERANK_CHAIN_BOOST) extracted as
+    # module-level constants so tests/test_calibration_eval.py grid sweep can
+    # monkey-patch them. Baseline (0.02, 0.20) calibrated against 100-query
+    # Vi+En eval set 2026-05-11.
     module_names = list({c["module"] for c in raw})
     with driver.session() as session:
         dep_rows = session.run(
@@ -516,9 +520,9 @@ def _find_examples(
 
     for chunk in raw:
         dependents = dependents_map.get(chunk["module"], 0)
-        chunk["score"] = chunk["cosine"] * (1 + 0.02 * math.log(dependents + 1))
+        chunk["score"] = chunk["cosine"] * (1 + _RERANK_LOG_COEFF * math.log(dependents + 1))
         if chunk["module"] in in_chain_set:
-            chunk["score"] += 0.20
+            chunk["score"] += _RERANK_CHAIN_BOOST
 
     reranked = sorted(raw, key=lambda c: c["score"], reverse=True)[:limit]
 

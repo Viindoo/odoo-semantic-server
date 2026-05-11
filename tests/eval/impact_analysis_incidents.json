@@ -173,5 +173,33 @@
     "expected_severity": "LOW",
     "rationale": "Returns default language setting — simple getter with no side effects",
     "synthetic_counts": {"view_count": 0, "method_count": 1, "js_count": 0}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "res.partner.comment",
+    "expected_severity": "LOW",
+    "rationale": "Boundary case at total=3 (top of LOW bucket). Free-text note shown in 2 views and 1 mail report — fan-out small but non-trivial",
+    "synthetic_counts": {"view_count": 2, "method_count": 1, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "stock.picking.action_done",
+    "expected_severity": "MEDIUM",
+    "rationale": "Boundary case at total=4 (bottom of MEDIUM bucket). Triggers stock-move processing; touched by 3 inheriting modules + 1 view button",
+    "synthetic_counts": {"view_count": 1, "method_count": 3, "js_count": 0}
+  },
+  {
+    "entity_type": "method",
+    "entity_name": "account.move._post",
+    "expected_severity": "MEDIUM",
+    "rationale": "Boundary case at total=9 (top of MEDIUM bucket). Invoice posting hook with 6 super() chains, 2 view triggers and 1 JS handler — module-scope review",
+    "synthetic_counts": {"view_count": 2, "method_count": 6, "js_count": 1}
+  },
+  {
+    "entity_type": "field",
+    "entity_name": "product.template.list_price",
+    "expected_severity": "HIGH",
+    "rationale": "Boundary case at total=10 (bottom of HIGH bucket). Pricing field with 4 view bindings, 5 onchange/compute methods and 1 JS price formatter — cross-module impact",
+    "synthetic_counts": {"view_count": 4, "method_count": 5, "js_count": 1}
   }
 ]

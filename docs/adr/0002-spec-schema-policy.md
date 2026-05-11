@@ -42,6 +42,7 @@ Cần policy rõ ràng cho composite key, version-range representation (per-vers
    - Edge: `(:Method|:Field)-[:USES_CORE_SYMBOL]->(:CoreSymbol)` — bind từ user code reference → Odoo core API
    - V0 scope hẹp giảm noise — full bind (mọi API call) defer M6 sau khi có data validate set.
    - Nếu CoreSymbol target không tồn tại → silent skip (không tạo placeholder, tránh ghost node giống pattern `:INHERITS {unresolved}` đã có).
+   - **Update M7 final-closeout 2026-05-11:** V0 set (5 entries) expanded to V1 (14 entries, capped to bound false-positive surface). V1 covers 3 categories: removed (no in-place replacement), signature-changed (kwarg breaking), renamed-option / moved-module. False-positive suppression via `_collect_module_local_defs` scope-resolver (M7 W13) covers V1 entries identically. See `src/indexer/parser_python.py:_DEPRECATED_API_SYMBOLS` for current curated list.
 
 4. **Static spec data v8-v16: empty placeholder JSON.**
    - File: `src/indexer/spec_data/lint_rules_<version>.json`, `cli_flags_<version>.json`
