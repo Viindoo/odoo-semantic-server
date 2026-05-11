@@ -159,7 +159,7 @@ class TestReposPage:
         page.click("button:has-text('Add Repo')")
         page.wait_for_load_state("load")
 
-        assert page.locator("button:has-text('Index')").is_visible()
+        assert page.get_by_role("button", name="Index", exact=True).is_visible()
 
 
 class TestReposPageSshUx:

@@ -155,8 +155,10 @@ async def delete_profile(request: Request, profile_id: int):
         conn.close()
 
     # Neo4j + pgvector cleanup (outside PG conn — Neo4j driver manages its own connections)
+    # Collect module names FIRST (while Module nodes still exist in Neo4j)
+    module_names_by_version = _collect_module_names_for_repos(repo_cleanup_pairs)
     total_modules, total_children = _delete_neo4j_for_repos(repo_cleanup_pairs)
-    total_embeddings = _delete_embeddings_for_repos(repo_cleanup_pairs)
+    total_embeddings = _delete_embeddings_for_repos(repo_cleanup_pairs, module_names_by_version)
 
     flash = (
         f"Profile '{profile_name}' deleted "
@@ -214,43 +216,103 @@ def _delete_neo4j_for_repos(repo_cleanup_pairs: list[dict]) -> tuple[int, int]:
     return total_modules, total_children
 
 
-def _delete_embeddings_for_repos(repo_cleanup_pairs: list[dict]) -> int:
-    """Delete pgvector embeddings rows for each (basename, version) repo pair.
+def _collect_module_names_for_repos(
+    repo_cleanup_pairs: list[dict],
+) -> dict[str, list[str]]:
+    """Query Neo4j for Odoo module names belonging to each (basename, version) pair.
 
-    Uses basename as the module name: in Odoo, the module name equals the checkout
-    directory name (basename). This is exact for single-module repos. Multi-module
-    repos (uncommon) may leave orphan rows — covered by future `--gc` pass.
-
-    Returns total embeddings rows deleted.
+    Returns a dict mapping version → list of module names.
+    Must be called BEFORE _delete_neo4j_for_repos so the Module nodes still exist.
     """
-    import psycopg2
-
-    from src import config
-
-    total = 0
-    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
-    if not dsn:
-        return 0
-
+    by_version: dict[str, list[str]] = {}
     for pair in repo_cleanup_pairs:
         version = pair["version"]
         basename = pair["basename"]
         try:
-            pg_conn = psycopg2.connect(dsn)
-            pg_conn.autocommit = True
+            writer = _get_neo4j_writer()
+            if writer is None:
+                _logger.warning(
+                    "Neo4j unavailable — cannot resolve module names for repo %s v%s",
+                    basename,
+                    version,
+                )
+                continue
+            try:
+                with writer.driver.session() as session:
+                    result = session.run(
+                        "MATCH (m:Module {repo: $repo, odoo_version: $v}) "
+                        "RETURN m.name AS module_name",
+                        repo=basename,
+                        v=version,
+                    )
+                    names = [row["module_name"] for row in result]
+            finally:
+                writer.close()
+            by_version.setdefault(version, []).extend(names)
+        except Exception as e:
+            _logger.warning(
+                "Failed to collect module names for repo %s v%s: %s", basename, version, e
+            )
+    return by_version
+
+
+def _delete_embeddings_for_repos(
+    repo_cleanup_pairs: list[dict],
+    module_names_by_version: dict[str, list[str]] | None = None,
+) -> int:
+    """Delete pgvector embeddings for each (basename, version) repo pair.
+
+    Resolves the correct Odoo module names from ``module_names_by_version`` (a dict
+    produced by ``_collect_module_names_for_repos`` called BEFORE the Neo4j delete).
+    The embeddings table stores Odoo module names (e.g. ``sale``, ``account``), NOT
+    repo basenames — using basenames was a production bug that made every DELETE a
+    no-op.
+
+    If ``module_names_by_version`` is None or empty for a version, the DELETE is a
+    correct no-op (repo was never indexed → no embeddings to clean).
+
+    Returns total embeddings rows deleted.
+    """
+    if module_names_by_version is None:
+        module_names_by_version = {}
+
+    total = 0
+
+    # Collect all versions we need to clean (deduplicated)
+    versions_seen: set[str] = {pair["version"] for pair in repo_cleanup_pairs}
+    if not any(module_names_by_version.get(v) for v in versions_seen):
+        return 0  # nothing to delete
+
+    pg_conn = _get_conn()
+    if pg_conn is None:
+        _logger.warning("PG connection unavailable — skipping embeddings cleanup")
+        return 0
+
+    try:
+        for version in versions_seen:
+            module_list = module_names_by_version.get(version, [])
+            if not module_list:
+                continue  # repo never indexed → no embeddings to delete
             try:
                 with pg_conn.cursor() as cur:
                     cur.execute(
-                        "DELETE FROM embeddings WHERE odoo_version = %s AND module = %s",
-                        (version, basename),
+                        "DELETE FROM embeddings "
+                        "WHERE odoo_version = %s AND module = ANY(%s)",
+                        (version, module_list),
                     )
                     total += cur.rowcount
-            finally:
-                pg_conn.close()
-        except Exception as e:
-            _logger.warning(
-                "pgvector cleanup failed for repo %s version %s: %s", basename, version, e
-            )
+            except Exception as e:
+                _logger.warning(
+                    "pgvector cleanup failed for version %s modules %s: %s",
+                    version,
+                    module_list,
+                    e,
+                )
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
 
     return total
 
@@ -416,8 +478,10 @@ async def delete_repo(request: Request, repo_id: int):
 
     # Neo4j + pgvector cleanup (outside PG conn)
     cleanup_pairs = [{"basename": basename, "version": odoo_version}]
+    # Collect module names FIRST (while Module nodes still exist in Neo4j)
+    module_names_by_version = _collect_module_names_for_repos(cleanup_pairs)
     total_modules, total_children = _delete_neo4j_for_repos(cleanup_pairs)
-    total_embeddings = _delete_embeddings_for_repos(cleanup_pairs)
+    total_embeddings = _delete_embeddings_for_repos(cleanup_pairs, module_names_by_version)
 
     flash = (
         f"Repo '{basename}' deleted "

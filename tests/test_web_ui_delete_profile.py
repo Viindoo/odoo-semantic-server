@@ -174,6 +174,9 @@ class TestDeleteProfileHappyPath:
             "src.web_ui.routes.repos._get_conn",
             _make_conn_factory(migrated_pg),
         ), mock.patch(
+            "src.web_ui.routes.repos._collect_module_names_for_repos",
+            return_value={},
+        ), mock.patch(
             "src.web_ui.routes.repos._delete_neo4j_for_repos",
             return_value=(0, 0),
         ), mock.patch(
@@ -201,7 +204,8 @@ class TestDeleteProfileHappyPath:
 
     @pytest.mark.asyncio
     async def test_delete_profile_cleans_neo4j(self, migrated_pg, clean_neo4j):
-        """POST delete → Neo4j Module nodes for profile repos are removed."""
+        """POST delete → Neo4j Module nodes for profile repos are removed,
+        and any indexed embeddings for those modules are also cleaned up."""
         from src.db.repo_registry import add_profile, add_repo
 
         repo_a_basename = f"test_repo_a_{TEST_VERSION}"
@@ -225,6 +229,10 @@ class TestDeleteProfileHappyPath:
         _seed_neo4j_module(driver, repo_a_basename, module_a, TEST_VERSION)
         _seed_neo4j_module(driver, repo_b_basename, module_b, TEST_VERSION)
 
+        # Seed real embeddings so the cleanup path can be exercised end-to-end
+        _seed_embeddings(migrated_pg, module_a, TEST_VERSION)
+        _seed_embeddings(migrated_pg, module_b, TEST_VERSION)
+
         assert _count_neo4j_modules(driver, repo_a_basename, TEST_VERSION) == 1
         assert _count_neo4j_modules(driver, repo_b_basename, TEST_VERSION) == 1
 
@@ -232,9 +240,6 @@ class TestDeleteProfileHappyPath:
         with mock.patch(
             "src.web_ui.routes.repos._get_conn",
             _make_conn_factory(migrated_pg),
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_embeddings_for_repos",
-            return_value=0,
         ):
             async with _async_client(app) as client:
                 await client.post(
@@ -244,6 +249,10 @@ class TestDeleteProfileHappyPath:
 
         assert _count_neo4j_modules(driver, repo_a_basename, TEST_VERSION) == 0
         assert _count_neo4j_modules(driver, repo_b_basename, TEST_VERSION) == 0
+
+        # Embeddings for both modules must be gone
+        assert _count_embeddings(migrated_pg, module_a, TEST_VERSION) in (0, -1)
+        assert _count_embeddings(migrated_pg, module_b, TEST_VERSION) in (0, -1)
 
     @pytest.mark.asyncio
     async def test_delete_profile_flash_contains_counts(self, migrated_pg, clean_neo4j):
@@ -261,6 +270,9 @@ class TestDeleteProfileHappyPath:
         with mock.patch(
             "src.web_ui.routes.repos._get_conn",
             _make_conn_factory(migrated_pg),
+        ), mock.patch(
+            "src.web_ui.routes.repos._collect_module_names_for_repos",
+            return_value={},
         ), mock.patch(
             "src.web_ui.routes.repos._delete_neo4j_for_repos",
             return_value=(2, 10),
