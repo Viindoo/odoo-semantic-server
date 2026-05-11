@@ -43,8 +43,86 @@ _DEPRECATED_API_SYMBOLS = frozenset({
 })
 
 
-def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
-    """Walk a method body and return deprecated-API call names found.
+def _build_import_scope_map(tree: ast.Module) -> dict[str, str]:
+    """Build a short-name → qualified-name map from top-level import statements.
+
+    Walks only `tree.body` (top-level statements per AST Parsing Gotcha in CLAUDE.md)
+    to avoid false matches from imports inside function bodies.
+
+    Examples of what is captured:
+      `import odoo`                       → {'odoo': 'odoo'}
+      `import odoo as o`                  → {'o': 'odoo'}
+      `from odoo import models`           → {'models': 'odoo.models'}
+      `from odoo.tools import safe_eval`  → {'safe_eval': 'odoo.tools.safe_eval'}
+      `from odoo.tools import safe_eval as se` → {'se': 'odoo.tools.safe_eval'}
+
+    Only top-level `import` / `from … import` statements are processed.
+    Era1 (v8/v9) text-regex path does NOT call this function — it has no AST.
+    """
+    scope: dict[str, str] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                local = alias.asname if alias.asname else alias.name
+                scope[local] = alias.name
+        elif isinstance(stmt, ast.ImportFrom):
+            module = stmt.module or ""
+            for alias in stmt.names:
+                local = alias.asname if alias.asname else alias.name
+                qualified = f"{module}.{alias.name}" if module else alias.name
+                scope[local] = qualified
+    return scope
+
+
+def _collect_module_local_defs(tree: ast.Module) -> set[str]:
+    """Collect names defined at module level (top-level `def` and `class` names).
+
+    Used by V0.5 filter: a bare call to `name_get(...)` where `name_get` is
+    defined as a top-level function in the same file is clearly NOT a call to
+    the Odoo ORM method — drop the ref.
+
+    Only inspects `tree.body` (no nested walk) to avoid spurious matches from
+    inner functions and class methods.
+    """
+    local: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            local.add(stmt.name)
+        elif isinstance(stmt, ast.ClassDef):
+            local.add(stmt.name)
+    return local
+
+
+def _is_odoo_qualified(name: str, scope_map: dict[str, str]) -> bool:
+    """Return True if `name` resolves to an `odoo.*` qualified name via scope_map."""
+    resolved = scope_map.get(name)
+    return resolved is not None and (
+        resolved == "odoo" or resolved.startswith("odoo.")
+    )
+
+
+def _obj_is_odoo_alias(obj_node: ast.expr, scope_map: dict[str, str]) -> bool:
+    """Return True if `obj_node` (the object in `obj.method()`) is a known odoo alias.
+
+    Handles:
+      - `Name` node: bare name like `o` where scope says `o → odoo` or `o → odoo.*`
+      - `Attribute` node: chained like `odoo.models` where root is `odoo`
+    """
+    if isinstance(obj_node, ast.Name):
+        return _is_odoo_qualified(obj_node.id, scope_map)
+    if isinstance(obj_node, ast.Attribute):
+        # Recursively check the root of the chain
+        return _obj_is_odoo_alias(obj_node.value, scope_map)
+    return False
+
+
+def _extract_core_symbol_refs(
+    fn_node: ast.FunctionDef,
+    scope_map: dict[str, str] | None = None,
+    local_defs: set[str] | None = None,
+    class_is_model: bool = False,
+) -> list[str]:
+    """Walk a method body and return deprecated-API call names found (V0.5).
 
     Detection scope:
       - Attribute calls: `self.name_get()`, `self.<chain>.name_get()` → record 'name_get'
@@ -53,35 +131,123 @@ def _extract_core_symbol_refs(fn_node: ast.FunctionDef) -> list[str]:
     Only names in `_DEPRECATED_API_SYMBOLS` are surfaced. Order is insertion;
     duplicates are deduplicated to keep the list short.
 
-    V0 false-positive scope (per ADR-0002 §3):
-    - This function emits *candidate* refs — short names like 'name_get' or 'safe_eval'.
-    - The writer side (writer_neo4j.py write_results) creates USES_CORE_SYMBOL edges
-      ONLY when a matching CoreSymbol exists in the DB with status IN ('deprecated',
-      'removed'). This means:
-        1. If CoreSymbol not indexed → silent skip (no ghost node).
-        2. If CoreSymbol exists but status='stable' → skip (V0 scope, noise reduction).
-        3. Method named 'name_get' that is NOT calling the Odoo ORM method (e.g. a
-           local helper named identically) → false-positive. The writer WHERE clause
-           `qualified_name ENDS WITH '.' + $ref` narrows the match but cannot eliminate
-           all false positives from short-name collisions.
-    Full symbol-resolution (qualified_name from import chain tracking) is deferred
-    to M7 (TASKS.md). V0 provides actionable signal with acceptable false-positive
-    rate for deprecated/removed APIs.
+    V0.5 qualified-name filter (M7 W13):
+    When `scope_map` and `local_defs` are provided, each candidate ref is evaluated:
+
+    KEEP if any of:
+      (a) The bare name resolves to an `odoo.*` qualified name via scope_map.
+      (b) The call is `<obj>.<name>()` where `<obj>` is a known odoo-qualified alias.
+      (c) The call is `super().<name>()` inside a class that subclasses models.Model
+          (ambiguous — conservative posture keeps it).
+      (d) Scope is unknown: bare call with NO matching import AND NO local def in same
+          file → V0 fallback (keep) for safety.
+
+    DROP if:
+      - Bare call `name(...)` where `name` is defined as a top-level function/class in
+        the same file (local shadowing — clearly not the Odoo ORM method).
+      - Attribute call `<obj>.<name>()` where `<obj>` is a known non-odoo alias.
+
+    Era1 (v8/v9) text-regex path: scope_map is None → V0 behavior unchanged.
+    Documented limitation: Era1 has no import scope info (CLAUDE.md v8/v9 section).
     """
+    if scope_map is None:
+        scope_map = {}
+    if local_defs is None:
+        local_defs = set()
+
     refs: list[str] = []
     seen: set[str] = set()
+
     for node in ast.walk(fn_node):
         if not isinstance(node, ast.Call):
             continue
-        target = None
+
+        target: str | None = None
+        call_kind: str = "unknown"  # 'bare', 'attr', 'super_attr'
+
         if isinstance(node.func, ast.Attribute):
             target = node.func.attr
+            obj = node.func.value
+            # Detect super().<name>() pattern
+            if (
+                isinstance(obj, ast.Call)
+                and isinstance(obj.func, ast.Name)
+                and obj.func.id == "super"
+            ):
+                call_kind = "super_attr"
+            else:
+                call_kind = "attr"
         elif isinstance(node.func, ast.Name):
             target = node.func.id
-        if target and target in _DEPRECATED_API_SYMBOLS and target not in seen:
+            call_kind = "bare"
+
+        if not target or target not in _DEPRECATED_API_SYMBOLS or target in seen:
+            continue
+
+        # --- V0.5 filter ---
+        keep = _should_keep_ref(
+            target=target,
+            call_kind=call_kind,
+            node=node,
+            scope_map=scope_map,
+            local_defs=local_defs,
+            class_is_model=class_is_model,
+        )
+        if keep:
             seen.add(target)
             refs.append(target)
+
     return refs
+
+
+def _should_keep_ref(
+    target: str,
+    call_kind: str,
+    node: ast.Call,
+    scope_map: dict[str, str],
+    local_defs: set[str],
+    class_is_model: bool,
+) -> bool:
+    """Apply V0.5 keep/drop rules for a single candidate ref.
+
+    Returns True (keep) or False (drop).
+    """
+    if call_kind == "super_attr":
+        # Rule (c): super().<name>() inside a models.Model subclass → ambiguous, keep.
+        # Outside model context (class_is_model=False) → still keep (conservative).
+        return True
+
+    if call_kind == "attr":
+        obj = node.func.value  # type: ignore[union-attr]
+        # Rule (b): obj is known odoo-qualified alias → keep.
+        if _obj_is_odoo_alias(obj, scope_map):
+            return True
+        # obj is a known non-odoo name → drop only if we CAN identify it clearly.
+        # If obj is `self` or unknown → keep (V0 fallback).
+        if isinstance(obj, ast.Name):
+            obj_name = obj.id
+            if obj_name == "self":
+                # self.<name>() — standard Odoo call pattern, keep.
+                return True
+            # If we know obj_name from scope → check if odoo
+            if obj_name in scope_map:
+                return _is_odoo_qualified(obj_name, scope_map)
+            # obj_name not in scope → could be a local variable, keep (conservative).
+            return True
+        # Chained attribute `a.b.name()` — walk to root
+        if isinstance(obj, ast.Attribute):
+            return _obj_is_odoo_alias(obj, scope_map) or True  # conservative keep
+        return True  # other expression types → keep
+
+    # call_kind == "bare" (direct call)
+    # Rule (a): name resolves to odoo.* via import → keep.
+    if _is_odoo_qualified(target, scope_map):
+        return True
+    # Rule (local shadow): name defined as local top-level def/class → DROP.
+    if target in local_defs:
+        return False
+    # Rule (d): name not in scope AND no local def → V0 fallback, keep.
+    return True
 
 
 # --- M4.6 WI2: Method convention classification ----------------------------
@@ -241,7 +407,11 @@ def _extract_columns_dict_fields(dict_node: ast.Dict) -> list[FieldInfo]:
 
 
 def _parse_class(
-    cls_node: ast.ClassDef, module_info: ModuleInfo, source: str = ""
+    cls_node: ast.ClassDef,
+    module_info: ModuleInfo,
+    source: str = "",
+    scope_map: dict[str, str] | None = None,
+    local_defs: set[str] | None = None,
 ) -> ModelInfo | None:
     base_names = _get_base_class_names(cls_node)
     is_model_class = bool(base_names & MODEL_BASE_CLASSES)
@@ -335,7 +505,12 @@ def _parse_class(
                 has_super_call=_has_super_call(node),
                 decorators=decorators,
                 source_code=method_src,
-                core_symbol_refs=_extract_core_symbol_refs(node),
+                core_symbol_refs=_extract_core_symbol_refs(
+                    node,
+                    scope_map=scope_map,
+                    local_defs=local_defs,
+                    class_is_model=is_model_class,
+                ),
                 convention_kind=ck,
                 super_safety=ss,
                 return_required=rr,
@@ -367,12 +542,22 @@ def _parse_class(
 
 
 def _parse_era2_ast(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
-    """Modern AST parser (v10+ and v8/v9 when source happens to be Py3-compatible)."""
+    """Modern AST parser (v10+ and v8/v9 when source happens to be Py3-compatible).
+
+    Builds a per-file import scope map and module-level local def set once, then
+    passes them into each _parse_class call so that _extract_core_symbol_refs (V0.5)
+    can filter false-positive USES_CORE_SYMBOL refs caused by local name collisions.
+    """
     tree = ast.parse(source)
+    scope_map = _build_import_scope_map(tree)
+    local_defs = _collect_module_local_defs(tree)
     models = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
-            model = _parse_class(node, module_info, source=source)
+            model = _parse_class(
+                node, module_info, source=source,
+                scope_map=scope_map, local_defs=local_defs,
+            )
             if model:
                 models.append(model)
     return models
