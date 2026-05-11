@@ -56,6 +56,11 @@ check_python() {
 }
 
 install_systemd() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "⚠ systemctl not found — skipping systemd unit installation (likely running in container or non-Linux host)"
+        return 0
+    fi
+
     local deploy_dir="$SCRIPT_DIR/docs/deploy"
     local target_dir="/etc/systemd/system"
 
@@ -181,6 +186,12 @@ main() {
     if [[ -f "$SCRIPT_DIR/.env.example" && ! -f "$CONFIG_DIR/.env" ]]; then
         cp "$SCRIPT_DIR/.env.example" "$CONFIG_DIR/.env"
         echo "✓ Copied .env.example → $CONFIG_DIR/.env (edit to fill in passwords)"
+    fi
+    # Also ensure a repo-local .env exists so systemd dev units (EnvironmentFile=-$SCRIPT_DIR/.env)
+    # and docker compose both find the file in the expected location.
+    if [[ -f "$SCRIPT_DIR/.env.example" && ! -f "$SCRIPT_DIR/.env" ]]; then
+        cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+        echo "✓ Copied .env.example → $SCRIPT_DIR/.env (repo-local, for docker compose + dev systemd units)"
     fi
     if [[ -f "$SCRIPT_DIR/odoo-semantic.conf.example" && ! -f "$CONFIG_DIR/odoo-semantic.conf" ]]; then
         cp "$SCRIPT_DIR/odoo-semantic.conf.example" "$CONFIG_DIR/odoo-semantic.conf"
