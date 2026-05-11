@@ -437,7 +437,27 @@ Output: `INFO seed_patterns: Neo4j: wrote 54 PatternExample nodes` +
 
 > User `odoo-semantic` đã tạo ở §1.1.
 
-Repo ship 2 unit file ở **`docs/deploy/`** (canonical path — không có file nào ở `systemd/`):
+Repo ship 2 unit file ở **`docs/deploy/`** (canonical path — không có file nào ở `systemd/`).
+
+`install.sh --systemd` tự động cài đặt và điều chỉnh đường dẫn theo ngữ cảnh:
+
+- **Chạy với sudo (production):** giữ `User=odoo-semantic` và paths `/opt/odoo-semantic-mcp`.
+- **Chạy không sudo (dev workstation):** tự thay `User=<current-user>`, `WorkingDirectory=<cwd>`,
+  venv `~/.venv/odoo-semantic-mcp`, và `EnvironmentFile=-<cwd>/.env`.
+  File đã điều chỉnh được lưu vào `/tmp/` để review trước khi copy thủ công.
+
+```bash
+# Production (cần sudo):
+sudo bash install.sh --systemd
+
+# Dev workstation (single user, không cần tạo user odoo-semantic):
+bash install.sh --systemd
+# → in summary + lưu file vào /tmp/; copy thủ công nếu cần quyền root:
+#   sudo cp /tmp/odoo-semantic-*.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+```
+
+Nếu bạn muốn cài thủ công:
 
 | File | Service | Bind | Cần |
 |------|---------|------|-----|
