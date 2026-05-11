@@ -455,6 +455,7 @@ sudo install -o odoo-semantic -g odoo-semantic -m 600 /dev/null \
     /etc/odoo-semantic/webui.env
 sudo tee /etc/odoo-semantic/webui.env > /dev/null <<EOF
 FERNET_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
+WEBUI_SESSION_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 EOF
 
 sudo systemctl enable --now odoo-semantic-webui
@@ -463,6 +464,44 @@ sudo systemctl status odoo-semantic-webui
 
 ⚠️ **Backup `webui.env` an toàn (vd password manager).** Nếu mất
 FERNET_KEY → mọi SSH private key đã lưu trong DB không giải mã được.
+Nếu mất WEBUI_SESSION_SECRET → mọi session đang đăng nhập bị invalidate (vô hại nhưng gây đăng xuất đột ngột).
+
+### 3.5b Web UI auth setup (M7 W16 — bắt buộc trước khi start Web UI)
+
+Web UI (port 8003) yêu cầu đăng nhập với username + password (bcrypt cost=12,
+session cookie TTL=8h). Admin phải tạo ít nhất 1 user **trước** khi mở trình duyệt,
+nếu không mọi request bị redirect đến `/login` và không có cách đăng nhập.
+
+**Bước 1 — Tạo user đầu tiên (chạy 1 lần):**
+
+```bash
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+        -m src.manager create-webui-user admin
+'
+# → Prompt: "Password for 'admin':" (nhập + xác nhận)
+# → Output: "✓ Web UI user 'admin' created."
+```
+
+**Bước 2 — Set WEBUI_SESSION_SECRET trong webui.env** (xem lệnh tạo file ở trên).
+Nếu bỏ qua, server sẽ log warning và dùng secret ngẫu nhiên per-restart (session
+mất khi restart — acceptable cho dev, không acceptable cho production).
+
+**Recovery — bị lockout:**
+
+```bash
+sudo -u odoo-semantic -H bash -c '
+    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+        -m src.manager create-webui-user admin --reset
+'
+# → Prompt mật khẩu mới, ghi đè hash cũ trong DB.
+```
+
+**Bootstrap trên deploy mới (không bị lockout):** `create-webui-user` chạy trực
+tiếp qua CLI ngoài Web UI, không cần session — có thể chạy ngay cả khi Web UI
+chưa start.
 
 Xem logs:
 

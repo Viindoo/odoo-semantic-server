@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import getpass
 import os
 import re
 import sys
@@ -131,6 +132,69 @@ def _cmd_create_api_key(args, conn: PgConn) -> int:
     return 0
 
 
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_@.\-]{1,64}$")
+
+
+def _cmd_create_webui_user(args, conn: PgConn) -> int:
+    """Create or reset a Web UI admin user.
+
+    Prompts for password interactively (getpass). Uses bcrypt cost=12.
+    --reset allows overwriting an existing user's password.
+    """
+    from src.web_ui.auth import hash_password
+
+    username = args.username.strip()
+    if not _USERNAME_RE.match(username):
+        print(
+            f"✗ Username '{username}' invalid. "
+            "Allowed: 1-64 chars, alphanumeric + _ @ . -",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        pw1 = getpass.getpass(f"Password for '{username}': ")
+        pw2 = getpass.getpass("Confirm password: ")
+    except (KeyboardInterrupt, EOFError):
+        print("\n✗ Aborted.", file=sys.stderr)
+        return 1
+
+    if pw1 != pw2:
+        print("✗ Passwords do not match.", file=sys.stderr)
+        return 1
+    if not pw1:
+        print("✗ Password must not be empty.", file=sys.stderr)
+        return 1
+
+    pw_hash = hash_password(pw1)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM webui_users WHERE username = %s", (username,))
+        exists = cur.fetchone() is not None
+
+    if exists and not args.reset:
+        print(
+            f"✗ User '{username}' already exists. Use --reset to overwrite password.",
+            file=sys.stderr,
+        )
+        return 2
+
+    with conn.cursor() as cur:
+        if exists:
+            cur.execute(
+                "UPDATE webui_users SET password_hash = %s WHERE username = %s",
+                (pw_hash, username),
+            )
+            print(f"✓ Password reset for '{username}'.")
+        else:
+            cur.execute(
+                "INSERT INTO webui_users (username, password_hash) VALUES (%s, %s)",
+                (username, pw_hash),
+            )
+            print(f"✓ Web UI user '{username}' created.")
+    return 0
+
+
 def _resolve_local_path(url: str, branch: str, base_dir: str, repo_map: dict[str, str]) -> str:
     """Resolve local path for a repo URL.
 
@@ -235,6 +299,23 @@ def main(argv: list[str] | None = None) -> int:
 
     p_key = sub.add_parser("create-api-key", help="Create a new API key for MCP access")
     p_key.add_argument("name", help="Descriptive name for this key (e.g. 'claude-code-laptop')")
+
+    p_wuser = sub.add_parser(
+        "create-webui-user",
+        help="Create or reset a Web UI admin user (prompts for password)",
+        epilog=textwrap.dedent("""
+            Examples:
+              python -m src.manager create-webui-user admin
+              python -m src.manager create-webui-user admin --reset
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_wuser.add_argument("username", help="Username (1-64 chars, alphanumeric + _ @ . -)")
+    p_wuser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Allow overwriting an existing user's password (for recovery)",
+    )
 
     p_preset = sub.add_parser(
         "apply-preset",
@@ -351,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
             "add-repo": _cmd_add_repo,
             "list": _cmd_list,
             "create-api-key": _cmd_create_api_key,
+            "create-webui-user": _cmd_create_webui_user,
         }[args.cmd](args, conn)
     finally:
         conn.close()
