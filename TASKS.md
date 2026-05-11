@@ -381,6 +381,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
   - [ ] `feat/m8-landing-content` — docs pages + pricing placeholder + waitlist (1 day).
 - [ ] **Stream C — nginx integration** (1 PR): `feat/m8-nginx-integration` — `location /` static + `location /admin/` proxy + deploy.md fix + Makefile targets. Gate trên cả A và B merged (1-2h).
 - [ ] **CI** (1 PR): `feat/m8-ci-landing` — `.github/workflows/landing-build.yml` với Lighthouse perf gate (1-2h).
+- [x] **Stream X — Web UI ↔ CLI parity** (1 PR): `feat/m8-webui-cli-parity` — 9 WIs (W0 foundation + W1 delete profile + W2 delete repo + W3 index options + W4 reset embed + W7 index all + W5 index core + W6 seed patterns + W8 apply preset). 8 routes/forms mới, browser tests cho mỗi WI, scoped Neo4j cleanup, FK cascade + cross-store delete. Resolved high-severity gap: `--no-embed` rồi muốn re-embed không bị skip nhờ button "Re-embed" (reset head_sha=NULL).
 
 **Acceptance criteria** (xem master plan §10): public URL 200 + Lighthouse ≥ 80/95/95 + noscript fallback + admin login flow + nginx -t pass + ADR-0012/0013 committed.
 
@@ -391,6 +392,24 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - M12 "Multi-tenant Wow" — Neo4j namespacing, cross-tenant isolation.
 
 **Khi nào start M8 execution:** sau khi M7 đã merge xong PR #46 (đã shipped 2026-05-11) + operator hoàn thành deployment fix-ups (PR #45, #48 — done). Stream A có thể start ngay; Stream B cần thêm 1 Sonnet check để xác nhận Astro/React Flow version pins còn current.
+
+---
+
+## Milestone 9 — "Auth Wow"
+
+**Status:** Planning (chưa start).
+
+**Intent:** Public signup, OAuth, multi-user admin, + self-serve account operations còn thiếu sau M8 Stream X.
+
+**Items planned:**
+- [ ] OAuth integration (Google/GitHub)
+- [ ] Public signup flow + email verification
+- [ ] Tenant API key issuance per user
+- [ ] Self-serve webui user management (create/reset/delete users qua Web UI — hiện CLI-only `manager create-webui-user`)
+- [ ] Backup/Restore Web UI (download backup dump + restore upload — hiện CLI-only `src.cli backup/restore`; security review trước khi expose, đặc biệt restore upload)
+- [ ] FERNET key rotation Web UI flow (UX cho `src.cli rotate-fernet` — chỉ expose sau khi có 2FA + audit log; tránh leak old key qua HTTP)
+- [ ] CLI delete-profile / delete-repo subcommands trong `src/manager/__main__.py` (parity ngược: UI-first đã có sau M8 Stream X, bổ sung CLI cho automation/scripting)
+- [ ] DB migrate trigger UI (read-only display current migration version; trigger giữ ở deploy script)
 
 ---
 
