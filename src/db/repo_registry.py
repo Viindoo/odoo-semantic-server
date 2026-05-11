@@ -1,5 +1,7 @@
 # src/db/repo_registry.py
 """CRUD for profiles + repos in PostgreSQL."""
+from pathlib import Path
+
 import psycopg2
 import psycopg2.errors
 from psycopg2.extras import RealDictCursor
@@ -208,6 +210,92 @@ def reset_head_sha(conn: PgConn, repo_ids: list[int]) -> int:
             (repo_ids,),
         )
         return cur.rowcount
+
+
+def delete_profile(conn: PgConn, profile_id: int) -> dict:
+    """Delete profile by ID. PG CASCADE removes child repos automatically.
+
+    Computes the list of repos BEFORE delete so the caller can pass
+    (repo_basename, odoo_version) pairs to Neo4j + pgvector cleanup.
+
+    Returns dict with:
+        repos: list of {repo_basename, odoo_version, module_paths} for caller
+               to pass to Neo4j + pgvector cleanup.
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT r.local_path, p.odoo_version
+            FROM repos r
+            JOIN profiles p ON r.profile_id = p.id
+            WHERE r.profile_id = %s
+            """,
+            (profile_id,),
+        )
+        repo_rows = [dict(r) for r in cur.fetchall()]
+
+    repos = [
+        {
+            "repo_basename": Path(r["local_path"]).name,
+            "odoo_version": r["odoo_version"],
+            "module_paths": [],
+        }
+        for r in repo_rows
+    ]
+
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
+        if cur.rowcount == 0:
+            raise ValueError(f"profile id={profile_id} not found")
+
+    return {"repos": repos}
+
+
+def delete_repo(conn: PgConn, repo_id: int) -> dict:
+    """Delete repo by ID. Returns {repo_basename, odoo_version} for Neo4j cleanup.
+
+    Looks up repo info BEFORE deleting so the caller can clean up Neo4j
+    and pgvector data scoped to this repo.
+
+    Raises ValueError if repo not found.
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT r.local_path, p.odoo_version
+            FROM repos r
+            JOIN profiles p ON r.profile_id = p.id
+            WHERE r.id = %s
+            """,
+            (repo_id,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        raise ValueError(f"repo id={repo_id} not found")
+
+    repo_basename = Path(row["local_path"]).name
+    odoo_version = row["odoo_version"]
+
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM repos WHERE id = %s", (repo_id,))
+
+    return {"repo_basename": repo_basename, "odoo_version": odoo_version}
+
+
+def reset_repo_head_sha(conn: PgConn, repo_id: int) -> None:
+    """Set repos.head_sha = NULL to force full re-index on next run.
+
+    Used by the Web UI "Reset embed state" button (M8 W4) so that
+    a repo previously indexed with --no-embed can be re-indexed
+    with embeddings on the next run.
+
+    Raises ValueError if repo not found.
+    """
+    with conn.cursor() as cur:
+        cur.execute("UPDATE repos SET head_sha = NULL WHERE id = %s", (repo_id,))
+        if cur.rowcount == 0:
+            raise ValueError(f"repo id={repo_id} not found")
 
 
 def update_repo_local_path(conn: PgConn, repo_id: int, local_path: str) -> None:

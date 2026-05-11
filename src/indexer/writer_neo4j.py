@@ -659,6 +659,68 @@ class Neo4jWriter:
             for batch in _chunked(patterns, 200):
                 session.execute_write(_write_pattern_examples_batch, batch)
 
+    def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
+        """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.
+
+        Child nodes (Model/Field/Method/View/QWebTmpl/JSPatch/OWLComp) are
+        scoped by (module_name, odoo_version) — they're deleted ONLY if their
+        Module parent is being deleted in this call, to avoid orphan cleanup of
+        nodes that belong to other repos in the same version.
+
+        Returns: {"modules": N, "children": M} counts.
+        """
+        with self.driver.session() as session:
+            # Step 1: collect module names being deleted
+            module_names_row = session.run(
+                """
+                MATCH (m:Module {repo: $repo, odoo_version: $version})
+                RETURN collect(m.name) AS names
+                """,
+                repo=repo_basename,
+                version=odoo_version,
+            ).single()
+
+            if module_names_row is None or not module_names_row["names"]:
+                return {"modules": 0, "children": 0}
+
+            module_names = module_names_row["names"]
+
+            # Step 2: delete child nodes scoped to those module names
+            # Use separate MATCH per label (Neo4j 5.x label OR in WHERE is valid
+            # but collecting across labels requires UNION approach for count accuracy;
+            # here we use a single MATCH with label filter via WHERE + IN for module names).
+            children_row = session.run(
+                """
+                MATCH (child)
+                WHERE child.module IN $names AND child.odoo_version = $version
+                  AND (child:Model OR child:Field OR child:Method OR child:View
+                       OR child:QWebTmpl OR child:JSPatch OR child:OWLComp)
+                WITH collect(child) AS children
+                UNWIND children AS c
+                DETACH DELETE c
+                RETURN count(c) AS cc
+                """,
+                names=module_names,
+                version=odoo_version,
+            ).single()
+            children_deleted = children_row["cc"] if children_row is not None else 0
+
+            # Step 3: delete the Module nodes themselves
+            modules_row = session.run(
+                """
+                MATCH (m:Module {repo: $repo, odoo_version: $version})
+                WITH collect(m) AS mods
+                UNWIND mods AS m
+                DETACH DELETE m
+                RETURN count(m) AS mc
+                """,
+                repo=repo_basename,
+                version=odoo_version,
+            ).single()
+            modules_deleted = modules_row["mc"] if modules_row is not None else 0
+
+        return {"modules": modules_deleted, "children": children_deleted}
+
     def gc_stale_modules(
         self, repo: str, odoo_version: str, live_paths: set[str],
     ) -> int:
