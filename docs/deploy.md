@@ -534,6 +534,23 @@ sudo journalctl -u odoo-semantic-mcp -f
 sudo journalctl -u odoo-semantic-webui -f
 ```
 
+#### Upgrading from earlier versions
+
+Nếu bạn đã copy unit file thủ công vào `/etc/systemd/system/` trước phiên bản này,
+kiểm tra xem `EnvironmentFile=` có dấu `-` prefix chưa:
+
+```bash
+grep EnvironmentFile /etc/systemd/system/odoo-semantic-webui.service
+# Phải thấy:  EnvironmentFile=-/etc/odoo-semantic/webui.env
+# Nếu thiếu -: sửa thủ công rồi reload
+sudo sed -i 's|EnvironmentFile=\([^-]\)|EnvironmentFile=-\1|' \
+    /etc/systemd/system/odoo-semantic-webui.service
+sudo systemctl daemon-reload
+```
+
+Lý do: thiếu dấu `-` khiến systemd fail unit khi `.env` vắng mặt (vd fresh deploy chưa tạo file),
+gây vòng lặp restart vô hạn (`Result: resources`). Với `-` systemd bỏ qua nếu file không tồn tại.
+
 ### 3.6 Re-index định kỳ (cron, M6 Wave 2 incremental ready)
 
 ```bash
@@ -971,7 +988,7 @@ sudo systemctl status odoo-semantic-webui
 ```
 
 Service file ship sẵn ở `docs/deploy/odoo-semantic-webui.service` —
-có `EnvironmentFile=/etc/odoo-semantic/webui.env` để load FERNET_KEY
+có `EnvironmentFile=-/etc/odoo-semantic/webui.env` để load FERNET_KEY
 (cần cho SSH key encrypt/decrypt). Setup webui.env xem §3.5.
 
 **Foreground / dev** — chạy trực tiếp (đảm bảo `FERNET_KEY` trong env):
