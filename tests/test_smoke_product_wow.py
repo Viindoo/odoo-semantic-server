@@ -5,11 +5,29 @@ Smoke tier: fast per-PR tests that verify M5 features are wired up correctly.
 Requires: Neo4j running (pytest.mark.smoke + pytest.mark.neo4j)
 Auth tests use mock — no real API key DB needed.
 """
+import contextlib
 import unittest.mock as mock
 
+import httpx
 import pytest
+from asgi_lifespan import LifespanManager
+
+from src.mcp.server import mcp
 
 pytestmark = [pytest.mark.smoke, pytest.mark.neo4j]
+
+
+@contextlib.asynccontextmanager
+async def _mcp_http_client():
+    """ASGI client for the MCP HTTP transport (stateless + JSON; see test_smoke_e2e_mcp_http)."""
+    app = mcp.http_app(stateless_http=True, json_response=True)
+    async with LifespanManager(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Accept": "application/json, text/event-stream"},
+        ) as client:
+            yield client
 
 
 # ---------------------------------------------------------------------------
@@ -20,16 +38,9 @@ class TestSmokeHealth:
     @pytest.mark.asyncio
     async def test_health_endpoint_schema(self):
         """GET /health returns JSON with all required schema fields."""
-        import httpx
 
-        from src.mcp.server import mcp
 
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
 
         assert resp.status_code in (200, 503), (
@@ -43,16 +54,9 @@ class TestSmokeHealth:
     @pytest.mark.asyncio
     async def test_mcp_tools_count_positive(self):
         """mcp_tools in /health is a positive integer or -1 (not hardcoded 14)."""
-        import httpx
 
-        from src.mcp.server import mcp
 
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
 
         body = resp.json()
@@ -68,16 +72,9 @@ class TestSmokeHealth:
     @pytest.mark.asyncio
     async def test_health_version_not_unknown(self):
         """Version field is not 'unknown' (package should be installed)."""
-        import httpx
 
-        from src.mcp.server import mcp
 
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
 
         body = resp.json()

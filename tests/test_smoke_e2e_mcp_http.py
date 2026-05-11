@@ -8,10 +8,12 @@ Tests:
 - resolve_view returns XPath chain with module names
 - impact_analysis returns affected modules list
 """
+import contextlib
 import os
 
 import httpx
 import pytest
+from asgi_lifespan import LifespanManager
 
 from src.indexer.models import (
     FieldInfo,
@@ -28,6 +30,25 @@ from src.mcp.server import mcp
 from tests.conftest import TEST_VERSION
 
 pytestmark = pytest.mark.neo4j
+
+
+@contextlib.asynccontextmanager
+async def _mcp_http_client():
+    """ASGI client for the MCP HTTP transport.
+
+    Uses stateless_http + json_response so callers can `resp.json()` directly
+    without an init/session handshake and without parsing SSE frames. The MCP
+    spec requires `Accept: application/json, text/event-stream`, so we set it
+    by default for all requests through this client.
+    """
+    app = mcp.http_app(stateless_http=True, json_response=True)
+    async with LifespanManager(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Accept": "application/json, text/event-stream"},
+        ) as client:
+            yield client
 
 
 @pytest.fixture(scope="module")
@@ -131,11 +152,6 @@ class TestMCPHTTPResolveModel:
     @pytest.mark.asyncio
     async def test_resolve_model_tree_format(self, seeded_neo4j_http):
         """resolve_model via HTTP returns tree format with module names + tree chars."""
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
         # JSON-RPC 2.0 request to call tools/call
         request_body = {
             "jsonrpc": "2.0",
@@ -150,7 +166,7 @@ class TestMCPHTTPResolveModel:
             },
         }
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.post("/mcp", json=request_body)
 
         assert resp.status_code == 200, f"Unexpected status: {resp.status_code}"
@@ -160,11 +176,13 @@ class TestMCPHTTPResolveModel:
         assert "result" in body, f"No result in response: {body}"
         result = body["result"]
 
-        # Result should be content array with text
-        assert isinstance(result, list) and len(result) > 0, (
-            f"Result should be non-empty content array, got: {result}"
+        # MCP CallToolResult wraps the content array in a dict; fall back to
+        # raw list shape for older FastMCP versions.
+        content_list = result["content"] if isinstance(result, dict) else result
+        assert isinstance(content_list, list) and len(content_list) > 0, (
+            f"Result should contain non-empty content list, got: {result}"
         )
-        content = result[0]
+        content = content_list[0]
         assert "text" in content, f"No text in content: {content}"
         text = content["text"]
 
@@ -182,11 +200,6 @@ class TestMCPHTTPResolveModel:
     @pytest.mark.asyncio
     async def test_resolve_model_shows_inheritance(self, seeded_neo4j_http):
         """resolve_model shows Extended by section with extending module."""
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
@@ -200,13 +213,14 @@ class TestMCPHTTPResolveModel:
             },
         }
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.post("/mcp", json=request_body)
 
         assert resp.status_code == 200
         body = resp.json()
         result = body["result"]
-        content = result[0]
+        content_list = result["content"] if isinstance(result, dict) else result
+        content = content_list[0]
         text = content["text"]
 
         # Should show "Extended by" section
@@ -220,11 +234,6 @@ class TestMCPHTTPResolveView:
     @pytest.mark.asyncio
     async def test_resolve_view_xpath_chain(self, seeded_neo4j_http):
         """resolve_view via HTTP returns XPath override chain with module names."""
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
@@ -238,7 +247,7 @@ class TestMCPHTTPResolveView:
             },
         }
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.post("/mcp", json=request_body)
 
         assert resp.status_code == 200, f"Unexpected status: {resp.status_code}"
@@ -246,10 +255,11 @@ class TestMCPHTTPResolveView:
 
         assert "result" in body, f"No result in response: {body}"
         result = body["result"]
-        assert isinstance(result, list) and len(result) > 0, (
-            f"Result should be non-empty content array, got: {result}"
+        content_list = result["content"] if isinstance(result, dict) else result
+        assert isinstance(content_list, list) and len(content_list) > 0, (
+            f"Result should contain non-empty content list, got: {result}"
         )
-        content = result[0]
+        content = content_list[0]
         assert "text" in content, f"No text in content: {content}"
         text = content["text"]
 
@@ -264,11 +274,6 @@ class TestMCPHTTPResolveView:
     @pytest.mark.asyncio
     async def test_resolve_view_extensions(self, seeded_neo4j_http):
         """resolve_view shows extended-by section when view is inherited."""
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
@@ -282,13 +287,14 @@ class TestMCPHTTPResolveView:
             },
         }
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.post("/mcp", json=request_body)
 
         assert resp.status_code == 200
         body = resp.json()
         result = body["result"]
-        content = result[0]
+        content_list = result["content"] if isinstance(result, dict) else result
+        content = content_list[0]
         text = content["text"]
 
         # Check if extended-by section shows (may be "Extended by" or similar)
@@ -306,11 +312,6 @@ class TestMCPHTTPImpactAnalysis:
     @pytest.mark.asyncio
     async def test_impact_analysis_field(self, seeded_neo4j_http):
         """impact_analysis via HTTP returns affected modules for a field."""
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
@@ -325,7 +326,7 @@ class TestMCPHTTPImpactAnalysis:
             },
         }
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.post("/mcp", json=request_body)
 
         assert resp.status_code == 200, f"Unexpected status: {resp.status_code}"
@@ -333,10 +334,11 @@ class TestMCPHTTPImpactAnalysis:
 
         assert "result" in body, f"No result in response: {body}"
         result = body["result"]
-        assert isinstance(result, list) and len(result) > 0, (
-            f"Result should be non-empty content array, got: {result}"
+        content_list = result["content"] if isinstance(result, dict) else result
+        assert isinstance(content_list, list) and len(content_list) > 0, (
+            f"Result should contain non-empty content list, got: {result}"
         )
-        content = result[0]
+        content = content_list[0]
         assert "text" in content, f"No text in content: {content}"
         text = content["text"]
 
@@ -353,11 +355,6 @@ class TestMCPHTTPImpactAnalysis:
     @pytest.mark.asyncio
     async def test_impact_analysis_model(self, seeded_neo4j_http):
         """impact_analysis via HTTP works for model entity_type."""
-        try:
-            app = mcp.streamable_http_app()
-        except Exception:
-            pytest.skip("Cannot get ASGI app from FastMCP")
-
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
@@ -372,7 +369,7 @@ class TestMCPHTTPImpactAnalysis:
             },
         }
 
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.post("/mcp", json=request_body)
 
         assert resp.status_code == 200, f"Unexpected status: {resp.status_code}"
@@ -380,10 +377,11 @@ class TestMCPHTTPImpactAnalysis:
 
         assert "result" in body, f"No result in response: {body}"
         result = body["result"]
-        assert isinstance(result, list) and len(result) > 0, (
-            f"Result should be non-empty content array, got: {result}"
+        content_list = result["content"] if isinstance(result, dict) else result
+        assert isinstance(content_list, list) and len(content_list) > 0, (
+            f"Result should contain non-empty content list, got: {result}"
         )
-        content = result[0]
+        content = content_list[0]
         assert "text" in content, f"No text in content: {content}"
         text = content["text"]
 

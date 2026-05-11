@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.db.migrate import run_migrations
 from src.indexer.version_presets import list_presets, load_preset
 
@@ -122,6 +124,7 @@ def test_apply_preset_dry_run_no_db_writes():
     )
 
 
+@pytest.mark.postgres
 def test_apply_preset_profile_name_collision(clean_pg):
     """apply-preset must fail cleanly when profile with same name already exists.
 
