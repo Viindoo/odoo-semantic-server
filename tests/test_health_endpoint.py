@@ -1,28 +1,35 @@
 """Tests for /health endpoint."""
+import contextlib
+
+import httpx
 import pytest
+from asgi_lifespan import LifespanManager
+
+from src.mcp.server import mcp
 
 pytestmark = [pytest.mark.neo4j, pytest.mark.postgres]
 
 
+@contextlib.asynccontextmanager
+async def _mcp_http_client():
+    """ASGI client for the MCP HTTP transport (stateless + JSON; see test_smoke_e2e_mcp_http)."""
+    app = mcp.http_app(stateless_http=True, json_response=True)
+    async with LifespanManager(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Accept": "application/json, text/event-stream"},
+        ) as client:
+            yield client
+
+
 class TestHealthEndpoint:
-    def _get_asgi_app(self):
-        """Get ASGI app from FastMCP instance."""
-        from src.mcp.server import mcp
-        try:
-            return mcp.streamable_http_app()
-        except Exception:
-            try:
-                return mcp._app
-            except Exception:
-                pytest.skip("Cannot get ASGI app from FastMCP")
 
     @pytest.mark.asyncio
     async def test_returns_required_keys(self):
         """Health response must contain all required keys."""
-        import httpx
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         assert resp.status_code in (200, 503)
         body = resp.json()
@@ -32,10 +39,8 @@ class TestHealthEndpoint:
     @pytest.mark.asyncio
     async def test_both_ok_returns_200(self):
         """When both Neo4j and PostgreSQL are OK, return 200 with status='ok'."""
-        import httpx
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
         if body["neo4j"] == "ok" and body["postgres"] == "ok":
@@ -45,7 +50,6 @@ class TestHealthEndpoint:
     @pytest.mark.asyncio
     async def test_neo4j_down_returns_degraded_or_error(self, monkeypatch):
         """When Neo4j fails, status should not be 'ok'."""
-        import httpx
 
         from src.mcp import server as server_mod
 
@@ -58,8 +62,7 @@ class TestHealthEndpoint:
 
         monkeypatch.setattr(server_mod, "_get_driver", mock_broken_driver)
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
         assert body["status"] != "ok"
@@ -69,8 +72,6 @@ class TestHealthEndpoint:
     async def test_postgres_down_returns_degraded(self, monkeypatch):
         """When PostgreSQL fails, status should not be 'ok'."""
         from contextlib import contextmanager
-
-        import httpx
 
         from src.mcp import server as server_mod
 
@@ -86,8 +87,7 @@ class TestHealthEndpoint:
 
         monkeypatch.setattr(server_mod, "_checkout_pg", mock_broken_checkout)
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
         assert body["status"] != "ok"
@@ -96,10 +96,8 @@ class TestHealthEndpoint:
     @pytest.mark.asyncio
     async def test_mcp_tools_count_is_positive_int(self):
         """MCP tools count should be a positive integer (not hardcoded to 14)."""
-        import httpx
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
         assert isinstance(body["mcp_tools"], int)
@@ -108,39 +106,30 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_mcp_tools_handles_missing_get_tools(self, monkeypatch):
-        """When get_tools unavailable, fallback to _tool_manager._tools gracefully."""
-        import httpx
-
-        from src.mcp import health as health_mod
+        """When get_tools raises, fallback to _tool_manager._tools gracefully."""
         from src.mcp.server import mcp
 
-        # Monkeypatch _get_mcp_tool_count to simulate broken get_tools
-        async def mock_get_count_fallback():
-            """Simulate scenario where get_tools fails but _tool_manager._tools works."""
-            # Temporarily remove get_tools to test fallback
-            original_get_tools = getattr(mcp, "get_tools", None)
-            try:
-                if hasattr(mcp, "get_tools"):
-                    delattr(mcp, "get_tools")
-                # Now try our function — should fallback to _tool_manager
-                return await health_mod._get_mcp_tool_count()
-            finally:
-                if original_get_tools:
-                    mcp.get_tools = original_get_tools
+        # Override get_tools to raise — exercises the except branch in
+        # _get_mcp_tool_count which then falls back to mcp._tool_manager._tools.
+        # (delattr on a class-bound method fails with AttributeError, so we
+        # shadow it with a raising callable instead.)
+        async def broken_get_tools():
+            raise RuntimeError("simulated get_tools failure")
 
-        monkeypatch.setattr(health_mod, "_get_mcp_tool_count", mock_get_count_fallback)
+        monkeypatch.setattr(mcp, "get_tools", broken_get_tools, raising=False)
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
-        # Should return int (either positive count or -1 on complete failure)
+        # Fallback should produce a positive count from _tool_manager._tools.
         assert isinstance(body["mcp_tools"], int)
+        assert body["mcp_tools"] > 0, (
+            f"Expected fallback to return positive count, got {body['mcp_tools']}"
+        )
 
     @pytest.mark.asyncio
     async def test_mcp_tools_returns_minus_one_on_complete_failure(self, monkeypatch):
         """When all introspection methods fail, return -1 without raising."""
-        import httpx
 
         from src.mcp import server as server_mod
 
@@ -154,8 +143,7 @@ class TestHealthEndpoint:
 
         monkeypatch.setattr(server_mod, "mcp", mock_broken_mcp())
 
-        app = self._get_asgi_app()
-        async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
         # Should return -1 (introspection failed) and HTTP 200/503 (not 500)

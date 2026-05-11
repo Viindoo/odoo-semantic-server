@@ -21,7 +21,9 @@ def writer(neo4j_driver):
     uri = os.environ["NEO4J_URI"]
     user = os.environ["NEO4J_USER"]
     password = os.environ["NEO4J_PASSWORD"]
-    return Neo4jWriter(uri, user, password)
+    w = Neo4jWriter(uri, user, password)
+    yield w
+    w.close()
 
 
 def _seed_repo(driver, repo_basename: str, odoo_version: str) -> None:
