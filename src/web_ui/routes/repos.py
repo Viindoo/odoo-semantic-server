@@ -348,6 +348,69 @@ async def ssh_keys_list(request: Request):
     return JSONResponse([{"id": k["id"], "name": k["name"]} for k in keys])
 
 
+@router.post("/repos/repos/{repo_id}/delete", response_class=RedirectResponse)
+async def delete_repo(request: Request, repo_id: int):
+    """Delete a single repo, then clean Neo4j + pgvector scoped to that repo."""
+    from pathlib import Path
+    from urllib.parse import quote_plus
+
+    conn = _get_conn()
+    if not conn:
+        return RedirectResponse(
+            "/repos?flash=" + quote_plus("Cannot connect to database."),
+            status_code=303,
+        )
+
+    try:
+        from src.db.repo_registry import delete_repo as _delete_repo
+        from src.db.repo_registry import get_repo_by_id
+        from src.indexer.pipeline import indexer_is_running
+
+        # Lookup repo + profile info; 404-style redirect if missing
+        repo = get_repo_by_id(conn, repo_id)
+        if repo is None:
+            return RedirectResponse(
+                "/repos?flash=" + quote_plus("Repo not found."),
+                status_code=303,
+            )
+
+        profile_name = repo["profile_name"]
+        odoo_version = repo["odoo_version"]
+        basename = Path(repo["local_path"]).name
+
+        # Guard: reject if indexer is running for the containing profile
+        if indexer_is_running(conn, profile_name):
+            flash = f"Cannot delete: indexer running for profile {profile_name}"
+            return RedirectResponse(
+                f"/repos?flash={quote_plus(flash)}",
+                status_code=303,
+            )
+
+        # PG delete (snapshot already done above)
+        _delete_repo(conn, repo_id)
+
+    except Exception as e:
+        _logger.warning("Delete repo %s failed: %s", repo_id, e)
+        return RedirectResponse(
+            "/repos?flash=" + quote_plus(f"Delete failed: {e}"),
+            status_code=303,
+        )
+    finally:
+        conn.close()
+
+    # Neo4j + pgvector cleanup (outside PG conn)
+    cleanup_pairs = [{"basename": basename, "version": odoo_version}]
+    total_modules, total_children = _delete_neo4j_for_repos(cleanup_pairs)
+    total_embeddings = _delete_embeddings_for_repos(cleanup_pairs)
+
+    flash = (
+        f"Repo '{basename}' deleted "
+        f"({total_modules} Neo4j modules, {total_children} child nodes, "
+        f"{total_embeddings} embeddings)"
+    )
+    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+
+
 @router.get("/repos/repos/{repo_id}/clone-status")
 async def clone_status(request: Request, repo_id: int):
     """Return JSON clone_status for a single repo (used by badge polling)."""
