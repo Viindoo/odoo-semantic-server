@@ -137,7 +137,7 @@
 - [x] `pyproject.toml`: thêm `jinja2`, `python-multipart`, `cryptography>=42`; httpx dev dep
 - [x] `docker-compose.yml`: named volumes + `restart: unless-stopped`
 - [x] `Dockerfile`: app container (python:3.12-slim + postgresql-client + git)
-- [x] `install.sh` + `systemd/` templates: non-Docker installation path
+- [x] `install.sh` + `docs/deploy/` service files: non-Docker installation path
 
 **Wave 2 — Backend Core:**
 - [x] `src/auth.py` + `src/mcp/middleware.py`: AuthMiddleware — LRU cache 5 min + `asyncio.to_thread` DB + `asyncio.create_task` log, **không có AUTH_DISABLED bypass** (Sonnet)
