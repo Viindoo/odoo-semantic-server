@@ -153,14 +153,10 @@ class TestFindExamplesOutputSchema:
     pytestmark = [pytest.mark.neo4j, pytest.mark.postgres]
 
     @pytest.fixture(autouse=True)
-    def _seed(self, request, neo4j_driver):
+    def _seed(self, request, neo4j_driver, pg_conn):
         from src.db.migrate import _vector_extension_available
-        # Check if pg_conn fixture is available (reachable)
-        pg_conn_fixture = (
-            request.getfixturevalue("pg_conn") if "pg_conn" in request.fixturenames else None
-        )
-        if pg_conn_fixture is None:
-            pytest.skip("PostgreSQL not reachable")
+        # pg_conn fixture self-skips if Postgres is unreachable.
+        pg_conn_fixture = pg_conn
         if not _vector_extension_available(pg_conn_fixture):
             pytest.skip("pgvector extension not installed")
 
