@@ -36,7 +36,17 @@ def test_pattern_ids_kebab_case():
 
 def test_no_enterprise_references():
     """No Odoo Enterprise references in snippet_text or gotchas."""
-    forbidden = ["enterprise/", "OEEL-1", "OEEL ", "account_accountant", "web_studio"]
+    from src.data.ee_modules import EE_CONFUSION
+
+    # Base forbidden strings
+    forbidden = ["enterprise/", "OEEL-1", "OEEL "]
+
+    # Add all 16 EE module keys
+    forbidden.extend(EE_CONFUSION.keys())
+
+    # Add all non-None Viindoo equivalents (values)
+    forbidden.extend(v for v in EE_CONFUSION.values() if v is not None)
+
     for p in _load_patterns_list():
         haystack = p.get("snippet_text", "") + " " + " ".join(p.get("gotchas", []))
         for needle in forbidden:
