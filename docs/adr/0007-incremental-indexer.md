@@ -53,7 +53,9 @@ Wave 2 chooses to **document and recommend periodic `--full` runs** (recommend m
 
 - Auto-cleanup is risky (a missed scan due to filesystem permissions could DELETE legitimate Module nodes).
 - Renames are rare in real Odoo codebases; stale orphans are query-time noise, not correctness failures.
-- `--full` rebuilds from a clean slate (existing pipeline DELETEs by module name + odoo_version on full reindex).
+- `--full` bypasses the diff-filter and re-MERGEs every scanned module, but the pipeline is MERGE-only — no DELETE statement on Module/Field/Method nodes. Stale orphans from prior renames are NOT removed. Periodic `--full` is useful to re-index modules whose content changed without git history advancing (e.g. dependency override regen), but it does NOT clean stale module names.
+
+Stale cleanup requires the deferred `--gc` flag tracked in M7 backlog (`TASKS.md`).
 
 Future Wave (M7 candidate): explicit "garbage collect Module nodes whose path no longer exists in current scan" pass, gated by a `--gc` flag.
 

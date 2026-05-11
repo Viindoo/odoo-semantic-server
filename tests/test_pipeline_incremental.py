@@ -361,6 +361,12 @@ def test_module_rename_leaves_stale_neo4j_node(
     summary2 = index_profile(clean_pg, profile_name=prof_name)
     assert summary2["modules"] >= 1, "Second run must index mod_bar"
 
+    # Guard: confirm incremental diff-filter ran (not the unchanged-skip path).
+    # repos_skipped == 0 because the rename advanced the head_sha, triggering re-index.
+    assert summary2.get("repos_skipped", 0) == 0, (
+        f"expected diff-filter path, got summary2={summary2}"
+    )
+
     # mod_bar must be indexed (new path picked up by scanner)
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (
         "mod_bar Module node must exist after incremental run following rename"
