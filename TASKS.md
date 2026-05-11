@@ -305,6 +305,44 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 >
 > **Khi nào start M7:** sau khi M6 Wave 3 + Wave 4 đóng. Trước khi start, re-evaluate priority ranking — Viindoo addon indexing maturity + embedding cost pain points + cross-repo dependency surface area.
 
+## Milestone 8 — "Public Wow"
+
+**Status:** Planning (plan-only 2026-05-11) — không có code change.
+
+**Intent:** Mở production host `odoo-semantic.viindoo.com:9999` cho anonymous public traffic với landing site đẹp + Web UI admin truy cập từ Internet. Đặt nền cho SaaS productization (M9-M11 monthly subscription).
+
+**Outcome:** Visitor xem được animated graph hero trong 5s đầu tại `/`; admin login được từ ngoài LAN qua `/admin/`; `/mcp` /install /health không đổi.
+
+**Plans liên quan:**
+- [`docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md`](docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md) — Master plan (3 streams, 7 PRs, ~3-4 working days).
+- [`docs/superpowers/plans/2026-05-11-webui-admin-prefix.md`](docs/superpowers/plans/2026-05-11-webui-admin-prefix.md) — Stream A detailed plan (Web UI under `/admin/`, FastAPI `root_path` refactor).
+
+**Decisions locked 2026-05-11:**
+- Hard-code `/admin` prefix (no env var); cookie path try `/admin` fallback `/`.
+- Astro for static site generator (adds Node 20+ + npm to repo).
+- React Flow + cinematic mode cho hero animation (~100kB, marketer-editable, a11y baked in).
+- Baked snapshot JSON cho graph data (`scripts/dump_graph_snippet.py`).
+
+**Streams + sub-PRs (planned, not yet opened):**
+- [ ] **Stream A — Web UI prefix** (1 PR): `feat/m8-admin-prefix` — ~20 files, +450/-130 LOC, 4-6h. Includes ADR-0012.
+- [ ] **Stream B — Landing site** (4 PRs):
+  - [ ] `feat/m8-landing-scaffold` — Astro setup, basic index.astro, package.json, lockfile (3-4h).
+  - [ ] `feat/m8-graph-snapshot` — `scripts/dump_graph_snippet.py` + baked JSON committed (2-3h).
+  - [ ] `feat/m8-hero-animation` — React Flow GraphAnimation.tsx + cinematic frames + content reuse từ docs/ (1-2 days).
+  - [ ] `feat/m8-landing-content` — docs pages + pricing placeholder + waitlist (1 day).
+- [ ] **Stream C — nginx integration** (1 PR): `feat/m8-nginx-integration` — `location /` static + `location /admin/` proxy + deploy.md fix + Makefile targets. Gate trên cả A và B merged (1-2h).
+- [ ] **CI** (1 PR): `feat/m8-ci-landing` — `.github/workflows/landing-build.yml` với Lighthouse perf gate (1-2h).
+
+**Acceptance criteria** (xem master plan §10): public URL 200 + Lighthouse ≥ 80/95/95 + noscript fallback + admin login flow + nginx -t pass + ADR-0012/0013 committed.
+
+**SaaS roadmap implications** (defer):
+- M9 "Auth Wow" — public signup, OAuth, tenant API keys.
+- M10 "Billing Wow" — Stripe, plan tiers, usage metering.
+- M11 "Dashboard Wow" — authenticated `/dashboard` reuse React Flow component cho "my graph" view.
+- M12 "Multi-tenant Wow" — Neo4j namespacing, cross-tenant isolation.
+
+**Khi nào start M8 execution:** sau khi M7 đã merge xong PR #46 (đã shipped 2026-05-11) + operator hoàn thành deployment fix-ups (PR #45, #48 — done). Stream A có thể start ngay; Stream B cần thêm 1 Sonnet check để xác nhận Astro/React Flow version pins còn current.
+
 ---
 
 ## Pre-launch Signoff
