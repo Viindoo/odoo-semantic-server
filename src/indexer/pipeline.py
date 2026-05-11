@@ -155,6 +155,7 @@ def _index_repo(
     embedder=None,
     progress: bool = False,
     full_reindex: bool = False,
+    gc: bool = False,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
@@ -224,6 +225,17 @@ def _index_repo(
     registry = build_registry([(local_path, odoo_version)])
     # registry: {odoo_version: {module_name: ModuleInfo}}
     modules_by_version = registry  # alias for clarity
+
+    # Collect live_paths (all module paths found on disk) BEFORE incremental filter.
+    # GC compares these against Neo4j Module nodes to detect stale (renamed/removed) modules.
+    # Must use the FULL scan (not the incremental-filtered subset) so GC sees ALL live dirs.
+    live_paths: set[str] = {
+        info.path
+        for mods in registry.values()
+        for info in mods.values()
+    }
+    # Repo dir name (m.repo in Neo4j) — derived the same way registry.py does it.
+    repo_root_name: str = Path(local_path).name
 
     # === Incremental filter (W2-4) ===
     if last_head and current_head and not full_reindex:
@@ -342,6 +354,30 @@ def _index_repo(
     writer.write_view_results(view_results)
     writer.write_js_graph_results(js_graph_results)
 
+    # === Module GC (M7 C4): delete stale Module nodes after successful writes ===
+    # Risk gate: only run when scanner found ≥1 module to avoid data loss when
+    # scanner fails silently (e.g. filesystem permission error, empty repo).
+    if gc:
+        if len(live_paths) >= 1:
+            gc_deleted = writer.gc_stale_modules(repo_root_name, odoo_version, live_paths)
+            if gc_deleted > 0:
+                _logger.info(
+                    "Module GC: deleted %d stale Module nodes for repo %s version %s",
+                    gc_deleted, repo_root_name, odoo_version,
+                )
+            else:
+                _logger.info(
+                    "Module GC: no stale Module nodes found for repo %s version %s",
+                    repo_root_name, odoo_version,
+                )
+        else:
+            _logger.warning(
+                "Module GC requested but scanner returned 0 modules — "
+                "skipping to avoid data loss (repo %s version %s)",
+                repo.get("url", local_path), odoo_version,
+            )
+    # === End Module GC ===
+
     # === On full success (W2-4): advance head_sha AFTER all writes ===
     # Must be the last statement — any exception above prevents this,
     # preserving last_head so next run retries the same diff (or full reindex).
@@ -367,6 +403,7 @@ def index_profile(
     progress: bool = False,
     max_workers: int = 1,
     full_reindex: bool = False,
+    gc: bool = False,
 ) -> dict:
     """Index all repos belonging to *profile_name*.
 
@@ -385,6 +422,11 @@ def index_profile(
         full_reindex:  When True, bypass incremental skip-unchanged + diff filter
                        and force a full reindex for all repos. Use periodically
                        to clean up stale Neo4j Module nodes from rename/move.
+        gc:            When True, after a full scan of each repo, compare Module
+                       nodes in Neo4j vs scanner output and DETACH DELETE stale
+                       nodes (modules that no longer exist on disk). Risk-gated:
+                       only runs when scanner found ≥1 module. Recommended for
+                       monthly runs or after module renames. See ADR-0007 §D5.
 
     Returns:
         Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
@@ -422,7 +464,7 @@ def index_profile(
                     try:
                         counters = _index_repo(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
-                            progress=progress, full_reindex=full_reindex,
+                            progress=progress, full_reindex=full_reindex, gc=gc,
                         )
                         total_modules += counters["modules"]
                         total_views += counters["views"]
@@ -465,6 +507,7 @@ def index_profile(
                             embedder=embedder,
                             progress=False,
                             full_reindex=full_reindex,
+                            gc=gc,
                         )
                         update_repo_status(pg_conn_local, repo_id, "indexed")
                         _logger.info(
@@ -723,6 +766,7 @@ def index_all(
     *,
     full_reindex: bool = False,
     profile_workers: int = 1,
+    gc: bool = False,
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
@@ -745,6 +789,8 @@ def index_all(
                          worker opens its own psycopg2 connection (psycopg2
                          connections are NOT thread-safe). Per-profile advisory
                          lock (Wave 1 P1) ensures no collision across workers.
+        gc:              When True, run Module GC for each repo (see index_profile
+                         and ADR-0007 §D5). Forwarded to each index_profile() call.
 
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
@@ -771,6 +817,7 @@ def index_all(
                     progress=progress,
                     max_workers=max_workers,
                     full_reindex=full_reindex,
+                    gc=gc,
                 )
                 agg_modules += summary["modules"]
                 agg_views += summary["views"]
@@ -816,6 +863,7 @@ def index_all(
                     progress=False,  # avoid tqdm collision
                     max_workers=max_workers,
                     full_reindex=full_reindex,
+                    gc=gc,
                 )
             finally:
                 pg_conn_thread.close()
