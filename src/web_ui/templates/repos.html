@@ -99,7 +99,7 @@
     {% if p.repos %}
     <table>
         <thead>
-            <tr><th>Local Path</th><th>Branch</th><th>Clone</th><th>Status</th><th>Last Job</th><th>Last Indexed</th><th></th><th></th></tr>
+            <tr><th>Local Path</th><th>Branch</th><th>Clone</th><th>Status</th><th>Last Job</th><th>Last Indexed</th><th></th><th>Re-embed</th><th></th></tr>
         </thead>
         <tbody>
         {% for r in p.repos %}
@@ -130,6 +130,14 @@
                     <label title="--max-workers N"><input type="number" name="max_workers" value="1" min="1" max="8" style="width:3em">w</label>
                     <button type="submit" class="btn btn-primary" style="font-size:0.8rem">Index</button>
                 </form>
+            </td>
+            <td>
+                {% if r.head_sha %}
+                <form method="post" action="/repos/repos/{{ r.id }}/reset-embed" style="display:inline"
+                      onsubmit="return confirm('Reset embed state and re-index repo {{ r.url }}? This wipes head_sha and triggers a fresh full scan with embeddings.');">
+                    <button type="submit" title="Reset embed state and re-index" style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1">🔄</button>
+                </form>
+                {% endif %}
             </td>
             <td>
                 <form method="post" action="/repos/repos/{{ r.id }}/delete" style="display:inline"

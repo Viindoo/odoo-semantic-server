@@ -504,6 +504,72 @@ async def index_repo(
     return RedirectResponse("/repos", status_code=303)
 
 
+@router.post("/repos/repos/{repo_id}/reset-embed", response_class=RedirectResponse)
+async def reset_embed(request: Request, repo_id: int):
+    """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile.
+
+    This fixes the HIGH-severity gap where `index-repo --no-embed` advanced head_sha,
+    causing subsequent incremental runs to skip permanently — embeddings never written.
+    Setting head_sha=NULL forces a full re-scan on the next run (bypasses incremental skip).
+    No --no-embed, no --full flags: head_sha=NULL alone triggers full embed pass.
+    """
+    from urllib.parse import quote_plus
+
+    conn = _get_conn()
+    if not conn:
+        return RedirectResponse(
+            "/repos?flash=" + quote_plus("Cannot connect to database."),
+            status_code=303,
+        )
+
+    try:
+        from src.db.repo_registry import get_repo_by_id, reset_repo_head_sha
+        from src.indexer.pipeline import indexer_is_running
+        from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
+
+        repo = get_repo_by_id(conn, repo_id)
+        if repo is None:
+            return RedirectResponse(
+                "/repos?flash=" + quote_plus("Repo not found."),
+                status_code=404,
+            )
+
+        profile_name = repo["profile_name"]
+
+        # Guard: reject if indexer is already running for this profile
+        if indexer_is_running(conn, profile_name):
+            flash = (
+                f"Cannot reset embed state: indexer already running for profile "
+                f"{profile_name}. Wait for it to finish."
+            )
+            return RedirectResponse(
+                f"/repos?flash={quote_plus(flash)}",
+                status_code=303,
+            )
+
+        # Wipe head_sha → forces full re-scan (bypasses incremental skip)
+        reset_repo_head_sha(conn, repo_id)
+
+        # Spawn index-repo without --no-embed / --full
+        argv = ["index-repo", "--profile", profile_name]
+        job_id = spawn_indexer_subcommand(conn, argv, job_label=profile_name)
+
+        flash = f"Re-embedding started for '{profile_name}' (job {job_id})"
+        return RedirectResponse(
+            f"/repos?flash={quote_plus(flash)}",
+            status_code=303,
+        )
+
+    except Exception as e:
+        _logger.warning("Reset embed for repo %s failed: %s", repo_id, e)
+        return RedirectResponse(
+            "/repos?flash=" + quote_plus(f"Reset embed failed: {e}"),
+            status_code=303,
+        )
+    finally:
+        conn.close()
+
+
 @router.get("/repos/jobs/{job_id}/status")
 async def job_status(request: Request, job_id: int):
     """Return JSON status of a single indexer job."""
