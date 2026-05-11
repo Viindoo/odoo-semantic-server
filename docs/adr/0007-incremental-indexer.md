@@ -112,5 +112,15 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 ## Out of scope (recorded for future ADRs)
 
 - Module rename garbage collection (D5 deferred to M7).
-- Cross-repo dependency change tracking (currently each repo's diff is computed independently; if repo A's module depends on repo B's module that changed, the dependency graph rebuild is implicit on next full reindex).
+- ~~Cross-repo dependency change tracking~~ **Closed in M7 W14** — when an
+  incremental run on repo A reports `changed_module_names`, `find_dependent_repos`
+  queries Neo4j for Modules in other repos that have `DEPENDS_ON` edges into
+  those changed modules, then `reset_head_sha` NULLs their `repos.head_sha` in
+  PostgreSQL.  The next indexer run on those repos sees NULL → skips the
+  unchanged-check → full reindex.  Implementation:
+  `src/indexer/cross_repo.py::find_dependent_repos` +
+  `src/db/repo_registry.py::reset_head_sha` +
+  `src/db/repo_registry.py::get_repo_ids_by_local_path_basenames` +
+  post-write hook in `src/indexer/pipeline.py::_index_repo`.
+  Tests: `tests/test_cross_repo_dep_propagation.py`.
 - Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this — future tuning may add explicit metrics.

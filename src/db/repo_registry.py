@@ -157,6 +157,59 @@ def get_repo_by_id(conn: PgConn, repo_id: int) -> dict | None:
         return dict(row) if row is not None else None
 
 
+def get_repo_ids_by_local_path_basenames(
+    conn: PgConn, basenames: list[str]
+) -> list[int]:
+    """Return repo IDs whose local_path basename matches any entry in *basenames*.
+
+    The Neo4j Module.repo property equals ``Path(local_path).name`` (the
+    directory basename of the checkout).  This function maps those basename
+    strings back to PostgreSQL ``repos.id`` values so that ``reset_head_sha``
+    can null them out.
+
+    Uses ``regexp_replace`` to extract the basename server-side — avoids
+    fetching all rows into Python and doing the split there.
+
+    Returns:
+        List of repo IDs (may be shorter than basenames if some are not in DB).
+    """
+    if not basenames:
+        return []
+    with conn.cursor() as cur:
+        # regexp_replace strips everything up to and including the last '/'.
+        # E.g. '/home/user/git/odoo_17.0' → 'odoo_17.0'.
+        cur.execute(
+            """
+            SELECT id
+            FROM repos
+            WHERE regexp_replace(local_path, '^.*/', '') = ANY(%s)
+            """,
+            (basenames,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def reset_head_sha(conn: PgConn, repo_ids: list[int]) -> int:
+    """Bulk-reset head_sha to NULL for given repo IDs.
+
+    Forces those repos to be fully re-indexed on the next indexer run.
+    Used by cross-repo dependency propagation (M7 W14): when upstream modules
+    change, downstream repos' head_sha is NULLed so they are not skipped.
+
+    Returns:
+        Number of rows updated (may be less than len(repo_ids) if some IDs
+        do not exist in the table).
+    """
+    if not repo_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE repos SET head_sha = NULL WHERE id = ANY(%s)",
+            (repo_ids,),
+        )
+        return cur.rowcount
+
+
 def update_repo_local_path(conn: PgConn, repo_id: int, local_path: str) -> None:
     """Update local_path for a repo after a successful clone.
 

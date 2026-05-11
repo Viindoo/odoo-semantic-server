@@ -385,6 +385,47 @@ def _index_repo(
         _repo_registry.update_repo_head_sha(pg_conn, repo["id"], current_head)
     # =====================================================================
 
+    # === Cross-repo dep propagation (M7 W14) ===
+    # Only on incremental runs (diff-based): collect the changed module names,
+    # query Neo4j for modules in OTHER repos that DEPENDS_ON those modules, and
+    # NULL their repos.head_sha so they are re-indexed on the next run.
+    # Full reindex skips this — it already re-evaluates everything.
+    _is_incremental = (
+        last_head is not None
+        and current_head is not None
+        and not full_reindex
+    )
+    if _is_incremental and pg_conn is not None:
+        changed_module_names: set[str] = {
+            mod_name
+            for mods in modules_by_version.values()
+            for mod_name in mods
+        }
+        if changed_module_names:
+            from src.db.repo_registry import (
+                get_repo_ids_by_local_path_basenames,
+                reset_head_sha,
+            )
+            from src.indexer.cross_repo import find_dependent_repos
+            dep_repo_basenames = find_dependent_repos(
+                writer.driver, odoo_version, changed_module_names,
+            )
+            # Exclude the repo we just indexed (its head_sha was just updated).
+            dep_repo_basenames = [b for b in dep_repo_basenames if b != repo_root_name]
+            if dep_repo_basenames:
+                dep_repo_ids = get_repo_ids_by_local_path_basenames(
+                    pg_conn, dep_repo_basenames,
+                )
+                if dep_repo_ids:
+                    n_reset = reset_head_sha(pg_conn, dep_repo_ids)
+                    _logger.info(
+                        "Cross-repo dep propagation: reset head_sha on %d dependent repo(s) "
+                        "(changed modules: %s)",
+                        n_reset,
+                        ", ".join(sorted(changed_module_names)),
+                    )
+    # === End cross-repo dep propagation ===
+
     return {
         "modules": total_modules,
         "views": total_views,
