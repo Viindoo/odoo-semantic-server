@@ -271,6 +271,16 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 **Intent:** Track ecosystem evolution — multi-repo dependency change ripples, auto-curation of Viindoo↔EE mapping, observability of embedding costs, hygiene cleanup beyond M6 incremental thesis.
 **Outcome:** AI client trả lời được "đổi file Y trong repo A làm vỡ những gì trong repo B", "module EE Z có Viindoo equivalent nào auto-detected"; admin có metrics về embedding cost + auto-cleanup tools.
 
+**D1 — Go-live docs overhaul (shipped 2026-05-11):**
+- [x] `docs/deploy.md`: §2.4 Neo4j backup/restore commands (working docker cp pattern) + §4.1 port 9999 variant + HSTS + security headers + §3.5 service file path unified (canonical `docs/deploy/`) + §7 security checklist expanded (HSTS, port isolation, rate_limit_rpm, webui.env, FERNET secrets, Docker TCP, session auth) + §13 FERNET rotation fixed (path + `systemctl restart`) + §14 Log Rotation section new
+- [x] `docs/deploy/nginx.conf.example`: remove stale "M5 chưa implement" comment; Option C (X-API-Key) promoted primary; port 9999 block + HSTS + security headers added
+- [x] `odoo-semantic.conf.example`: `[auth]` section với `rate_limit_rpm = 120` + comment
+- [x] `docs/deploy/logrotate.d/odoo-semantic`: new logrotate config (weekly, rotate 4, compress)
+- [x] `docs/deploy/pre-launch-checklist.md`: new — bilingual, 10 verification sections, 14 MCP tool sign-off table
+- [x] `docs/deploy/disaster-recovery.md`: new — bilingual, backup frequency, restore order, step-by-step commands, validation queries, RTO estimate
+- [x] `TASKS.md`: M7 D1 closed + Pre-launch signoff row added
+- [x] `README.md`: link 2 new docs in Tài Liệu table
+
 **Carry-over từ M6 (defer M7 confirmed):**
 - [ ] **`viindoo_equivalent_qname` auto-populate (M4.6 → M6 → M7):** thay hardcode mapping bằng Neo4j graph traversal — query Module nodes có `name LIKE 'viin_%'` HOẶC `'to_%'` + match feature tags vs EE module name. **Investigation 2026-05-10 (Wave 2 planning) recommend defer M7:** graph traversal cannot replace curated 1-to-1 mapping; hardcode dict 8 entries actually correct + low-maintenance. Reconsider when Viindoo addons indexed in shared profile + feature-tag heuristic available (e.g. manifest `category` + `summary` keyword overlap).
 
@@ -297,6 +307,25 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 ---
 
+## Pre-launch Signoff
+
+Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 14 MCP tool sign-off table.
+
+| Mục | Admin | Ngày | Ghi chú |
+|-----|-------|------|---------|
+| Infrastructure & TLS | | | |
+| Auth & Rate Limiting | | | |
+| Port Isolation | | | |
+| Logrotate | | | |
+| Backup & Recovery | | | |
+| MCP Tool Sign-Off (14 tools) | | | |
+| Install Page | | | |
+| Systemd Services | | | |
+| Indexer Cron | | | |
+| Full sign-off | | | Phân phát key sau khi ký |
+
+---
+
 ## Điều Hướng Tài Liệu
 
 | | File | Nội dung |
@@ -304,3 +333,5 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 | ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
 | ↓ | [`docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 — bắt đầu ở đây |
+| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 14 MCP tool verify |
+| → | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook — backup frequency, restore order, RTO |

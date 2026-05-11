@@ -46,17 +46,23 @@ dim = 1024
 # (e.g. Caddy/nginx with Authorization: Bearer check). Leave unset for
 # loopback / VPC-firewall-only setups. Env override: EMBEDDER_AUTH_TOKEN
 
-# [auth] — M5+ auth settings
-# Secrets được lưu trong .env, KHÔNG trong file conf này.
+[auth]
+# Per-key rate limit (requests per minute, sliding window).
+# 0 = unlimited (không nên dùng trên production).
+# Xem docs/deploy.md §10 + src/auth.py rate_limit_rpm usage.
+rate_limit_rpm = 120
+
+# --- Chú thích auth/secrets ---
+# Secrets được lưu trong webui.env + /etc/odoo-semantic/, KHÔNG commit vào repo.
 #
 # API key: tạo bằng `python -m src.manager create-api-key <name>`
 #   → raw key chỉ show một lần, được hash SHA-256 trong DB api_keys table
 #   → client gửi header: X-API-Key: osm_xxxx...
 #
 # SSH key (private): được encrypt bằng Fernet symmetric encryption.
-#   Cần set FERNET_KEY trong .env:
+#   Cần set FERNET_KEY trong /etc/odoo-semantic/webui.env:
 #   $ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-#   → Thêm vào .env: FERNET_KEY=<output>
+#   → Thêm vào webui.env: FERNET_KEY=<output>
 #   → Private key được lưu encrypted trong DB ssh_key_pairs table
 #
-# Xem docs/deploy.md §10–§12 để biết cách setup + quản lý.
+# Xem docs/deploy.md §10–§13 để biết cách setup + quản lý.
