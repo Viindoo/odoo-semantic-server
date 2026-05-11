@@ -22,7 +22,10 @@ What this script does:
   4. Creates config directory $CONFIG_DIR
   5. Copies .env.example and odoo-semantic.conf.example if not present
   6. Prints FERNET_KEY generation instructions
-  --systemd:  Copies systemd templates and prints enable instructions
+  --systemd:  Installs systemd service files from docs/deploy/.
+              Run as root for production paths (User=odoo-semantic,
+              /opt/odoo-semantic-mcp).  Run as a regular user for dev
+              workstation paths (auto-substituted to current user + cwd).
 EOF
 }
 
@@ -53,26 +56,78 @@ check_python() {
 }
 
 install_systemd() {
-    local systemd_dir="$SCRIPT_DIR/systemd"
+    local deploy_dir="$SCRIPT_DIR/docs/deploy"
     local target_dir="/etc/systemd/system"
 
-    if [[ ! -d "$systemd_dir" ]]; then
-        echo "✗ systemd templates not found at $systemd_dir" >&2
+    if [[ ! -d "$deploy_dir" ]]; then
+        echo "✗ Service files not found at $deploy_dir" >&2
         exit 1
     fi
 
+    # Detect run context: root → keep production paths; non-root → substitute for
+    # the current user's dev workstation layout.
+    local is_root=false
+    [[ "$(id -u)" -eq 0 ]] && is_root=true
+
+    local effective_user effective_workdir effective_venv effective_envfile
+    if $is_root; then
+        # Production: keep the canonical paths that ship in docs/deploy/
+        effective_user="odoo-semantic"
+        effective_workdir="/opt/odoo-semantic-mcp"
+        effective_venv="/home/odoo-semantic/.venv/odoo-semantic-mcp"
+        effective_envfile="/etc/odoo-semantic/webui.env"
+    else
+        # Dev workstation: substitute current user's paths
+        effective_user="$(id -un)"
+        effective_workdir="$SCRIPT_DIR"
+        effective_venv="$HOME/.venv/odoo-semantic-mcp"
+        effective_envfile="$SCRIPT_DIR/.env"
+    fi
+
     echo ""
-    echo "Systemd service templates:"
-    echo "  Copy and customize before enabling:"
+    echo "=== Systemd service install ==="
+    if $is_root; then
+        echo "  Mode: production (running as root)"
+        echo "  User: $effective_user"
+        echo "  WorkingDirectory: $effective_workdir"
+    else
+        echo "  Mode: dev workstation (running as $effective_user)"
+        echo "  Paths auto-adjusted to current user layout"
+        echo "  User: $effective_user"
+        echo "  WorkingDirectory: $effective_workdir"
+        echo ""
+        echo "  ⚠  Writing to /etc/systemd/system requires sudo."
+        echo "     Re-run this script with sudo if the copy step fails,"
+        echo "     or copy manually and reload:"
+        echo "     sudo cp /tmp/odoo-semantic-*.service /etc/systemd/system/"
+        echo "     sudo systemctl daemon-reload"
+    fi
     echo ""
-    for tmpl in "$systemd_dir"/*.service.template; do
+
+    for svc_file in "$deploy_dir"/*.service; do
         local svc_name
-        svc_name=$(basename "$tmpl" .template)
-        echo "  sudo cp $tmpl $target_dir/$svc_name"
-        echo "  sudo nano $target_dir/$svc_name  # edit User and paths as needed"
+        svc_name=$(basename "$svc_file")
+        local tmp_file="/tmp/$svc_name"
+
+        # Apply substitutions (sed -E for portability)
+        sed \
+            -e "s|User=odoo-semantic|User=$effective_user|g" \
+            -e "s|WorkingDirectory=/opt/odoo-semantic-mcp|WorkingDirectory=$effective_workdir|g" \
+            -e "s|/home/odoo-semantic/\.venv/odoo-semantic-mcp|$effective_venv|g" \
+            -e "s|EnvironmentFile=-/etc/odoo-semantic/webui\.env|EnvironmentFile=-$effective_envfile|g" \
+            "$svc_file" > "$tmp_file"
+
+        echo "  Prepared: $tmp_file"
+        if [[ -w "$target_dir" ]]; then
+            cp "$tmp_file" "$target_dir/$svc_name"
+            echo "  ✓ Installed: $target_dir/$svc_name"
+        else
+            echo "    (cannot write to $target_dir — copy manually or re-run with sudo)"
+        fi
     done
+
     echo ""
-    echo "Then enable:"
+    echo "Enable and start:"
     echo "  sudo systemctl daemon-reload"
     echo "  sudo systemctl enable --now odoo-semantic-mcp.service"
     echo "  sudo systemctl enable --now odoo-semantic-webui.service"
