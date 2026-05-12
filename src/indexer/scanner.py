@@ -3,6 +3,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from src.constants import TIMEOUT_GIT_SCAN
+
 
 def get_git_branch(repo_path: str) -> str | None:
     """Return the current git branch of a repo path. Returns None if not a git repo."""
@@ -31,7 +33,7 @@ def get_module_commit_sha(repo_path: Path, module_relpath: Path) -> str | None:
             ["git", "-C", str(repo_path), "log", "-1", "--format=%H", "--", str(module_relpath)],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=TIMEOUT_GIT_SCAN,
         )
         sha = result.stdout.strip()
         if result.returncode != 0 or not sha:

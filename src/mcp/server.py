@@ -9,6 +9,35 @@ from fastmcp import FastMCP
 from neo4j import GraphDatabase
 from starlette.requests import Request
 
+from src.constants import (
+    CODE_PREVIEW_MAX_CHARS,
+    DEFAULT_EMBEDDER_MODEL,
+    EDITION_PRIORITY,
+    EDITION_PRIORITY_ELSE,
+    FIND_EXAMPLES_ANN_LIMIT,
+    IMPACT_RISK_HIGH_THRESHOLD,
+    IMPACT_RISK_MED_THRESHOLD,
+    PG_POOL_MAX_CONN,
+    PG_POOL_MIN_CONN,
+    REL_DEPENDS_ON,
+    REL_INHERITS,
+    REL_INHERITS_VIEW,
+    REL_TARGETS_MODEL,
+    REL_USES_CORE_SYMBOL,
+    SNIPPET_PREVIEW_MAX_LINES,
+    VALID_CHUNK_TYPES,
+)
+
+
+def _edition_rank_cypher(node_alias: str = "mod") -> str:
+    """Build Cypher CASE expression for edition priority from EDITION_PRIORITY."""
+    cases = " ".join(
+        f"WHEN '{ed}' THEN {rank}"
+        for ed, rank in sorted(EDITION_PRIORITY.items(), key=lambda x: x[1])
+    )
+    return f"CASE {node_alias}.edition {cases} ELSE {EDITION_PRIORITY_ELSE} END AS edition_rank"
+
+
 mcp = FastMCP("odoo-semantic")
 _driver = None
 _pg_pool: psycopg2.pool.SimpleConnectionPool | None = None
@@ -75,7 +104,13 @@ def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
                 "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
                 "in [database] section of odoo-semantic.conf."
             )
-        _pg_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10, dsn=dsn)
+        pg_pool_max = int(config.from_env_or_ini(
+            "PG_POOL_MAX", "database", "pg_pool_max",
+            fallback=str(PG_POOL_MAX_CONN),
+        ))
+        _pg_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=PG_POOL_MIN_CONN, maxconn=pg_pool_max, dsn=dsn
+        )
     return _pg_pool
 
 
@@ -109,7 +144,7 @@ def _get_embedder():
         )
         model = config.from_env_or_ini(
             "EMBEDDER_MODEL", "embedder", "model",
-            fallback="qwen3-embedding-q5km",
+            fallback=DEFAULT_EMBEDDER_MODEL,
         )
         dim_str = config.from_env_or_ini(
             "EMBEDDER_DIM", "embedder", "dim", fallback="1024",
@@ -176,20 +211,15 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         # T4 edition    : community < enterprise < viindoo < oca < custom.
         # T5 mod_name   : alphabetical tiebreak — eliminates arbitrary order.
         layers = session.run(
-            """
-            MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
+            f"""
+            MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
             WITH m, mod,
                  CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
-                 COUNT {
-                     (:Field {model: $name, module: m.module, odoo_version: $v})
-                 } AS field_count,
-                 COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents,
-                 CASE mod.edition
-                      WHEN 'community'  THEN 0
-                      WHEN 'enterprise' THEN 1
-                      WHEN 'viindoo'    THEN 2
-                      WHEN 'oca'        THEN 3
-                      ELSE 4 END AS edition_rank,
+                 COUNT {{
+                     (:Field {{model: $name, module: m.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN m.module AS module_name, mod.repo AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
@@ -209,8 +239,8 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         # each one resolves to a separate (parent_name, module) pair. Without
         # collapsing here the rendered list shows duplicates like
         # "mail.thread, mail.thread, mail.thread, ..." (M5 install audit).
-        parents = session.run("""
-            MATCH (:Model {name: $name, odoo_version: $v})-[r:INHERITS]->(p:Model)
+        parents = session.run(f"""
+            MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
             WHERE p.name <> $name
               AND NOT coalesce(r.unresolved, false)
             RETURN DISTINCT p.name AS pname
@@ -251,23 +281,18 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
         odoo_version = _resolve_version(odoo_version, session)
 
         # 5-tier ranking via m_node proxy — see docs/adr/0004
-        records = session.run("""
-            MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
-            OPTIONAL MATCH (mod:Module {name: f.module, odoo_version: $v})
-            OPTIONAL MATCH (m_node:Model {name: $mn, module: f.module, odoo_version: $v})
+        records = session.run(f"""
+            MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
+            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
+            OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
             WITH f, mod, m_node,
                  CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
                       AS is_def_rank,
-                 COUNT {
-                     (:Field {model: $mn, module: f.module, odoo_version: $v})
-                 } AS field_count,
-                 COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents,
-                 CASE mod.edition
-                      WHEN 'community'  THEN 0
-                      WHEN 'enterprise' THEN 1
-                      WHEN 'viindoo'    THEN 2
-                      WHEN 'oca'        THEN 3
-                      ELSE 4 END AS edition_rank,
+                 COUNT {{
+                     (:Field {{model: $mn, module: f.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN f, f.module AS module_name, mod.repo AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
@@ -302,23 +327,18 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
         odoo_version = _resolve_version(odoo_version, session)
 
         # 5-tier ranking via m_node proxy — see docs/adr/0004
-        records = session.run("""
-            MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
-            OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
-            OPTIONAL MATCH (m_node:Model {name: $model, module: mth.module, odoo_version: $v})
+        records = session.run(f"""
+            MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
+            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
+            OPTIONAL MATCH (m_node:Model {{name: $model, module: mth.module, odoo_version: $v}})
             WITH mth, mod, m_node,
                  CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
                       AS is_def_rank,
-                 COUNT {
-                     (:Field {model: $model, module: mth.module, odoo_version: $v})
-                 } AS field_count,
-                 COUNT { ()-[:DEPENDS_ON]->(mod) } AS dependents,
-                 CASE mod.edition
-                      WHEN 'community'  THEN 0
-                      WHEN 'enterprise' THEN 1
-                      WHEN 'viindoo'    THEN 2
-                      WHEN 'oca'        THEN 3
-                      ELSE 4 END AS edition_rank,
+                 COUNT {{
+                     (:Field {{model: $model, module: mth.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN mth, mth.module AS module_name, mod.repo AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
@@ -362,16 +382,16 @@ def _resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
         if not view_rec:
             return f"View '{xmlid}' not found in Odoo {odoo_version}."
 
-        parent_rec = session.run("""
-            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
-                  -[r:INHERITS_VIEW]->(parent:View {odoo_version: $ver})
+        parent_rec = session.run(f"""
+            MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
+                  -[r:{REL_INHERITS_VIEW}]->(parent:View {{odoo_version: $ver}})
             WHERE NOT coalesce(r.unresolved, false)
             RETURN parent.xmlid AS parent_xmlid
         """, xmlid=xmlid, ver=odoo_version).single()
 
-        extensions = session.run("""
-            MATCH (ext:View {odoo_version: $ver})-[:INHERITS_VIEW]->
-                  (v:View {xmlid: $xmlid, odoo_version: $ver})
+        extensions = session.run(f"""
+            MATCH (ext:View {{odoo_version: $ver}})-[:{REL_INHERITS_VIEW}]->
+                  (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             WHERE NOT coalesce(ext.unresolved, false)
             OPTIONAL MATCH (ext)-[:DEFINED_IN]->(mod:Module)
             RETURN ext.xmlid AS ext_xmlid,
@@ -456,8 +476,7 @@ def _find_examples(
             "Found 0 results\n"
         )
 
-    VALID_TYPES = {"method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3"}
-    selected_types = [t for t in (chunk_types or []) if t in VALID_TYPES]
+    selected_types = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
 
     # Use injected connection (test path) or check out from pool (production).
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
@@ -470,16 +489,18 @@ def _find_examples(
                                chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                         FROM embeddings
                         WHERE odoo_version = %s AND chunk_type IN ({placeholders})
-                        ORDER BY vec <=> %s::vector LIMIT 20""",
-                    [query_vec, odoo_version] + selected_types + [query_vec],
+                        ORDER BY vec <=> %s::vector LIMIT %s""",
+                    [query_vec, odoo_version]
+                    + selected_types
+                    + [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)],
                 )
             else:
                 cur.execute(
                     """SELECT chunk_type, module, entity_name, model_name, file_path,
                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                        FROM embeddings WHERE odoo_version = %s
-                       ORDER BY vec <=> %s::vector LIMIT 20""",
-                    [query_vec, odoo_version, query_vec],
+                       ORDER BY vec <=> %s::vector LIMIT %s""",
+                    [query_vec, odoo_version, query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)],
                 )
             raw = [
                 dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
@@ -498,11 +519,11 @@ def _find_examples(
     module_names = list({c["module"] for c in raw})
     with driver.session() as session:
         dep_rows = session.run(
-            "UNWIND $names AS name"
-            " MATCH (m:Module {name: name, odoo_version: $v})"
-            " WITH m, name"
-            " OPTIONAL MATCH (dep)-[:DEPENDS_ON]->(m)"
-            " RETURN name, count(dep) AS dependents",
+            f"UNWIND $names AS name"
+            f" MATCH (m:Module {{name: name, odoo_version: $v}})"
+            f" WITH m, name"
+            f" OPTIONAL MATCH (dep)-[:{REL_DEPENDS_ON}]->(m)"
+            f" RETURN name, count(dep) AS dependents",
             names=module_names, v=odoo_version,
         ).data()
         dependents_map = {r["name"]: r["dependents"] for r in dep_rows}
@@ -743,9 +764,9 @@ def _compute_risk(view_count: int, method_count: int, js_count: int) -> str:
     >=10 = cross-module impact requiring full regression.
     """
     total = view_count + method_count + js_count
-    if total >= 10:
+    if total >= IMPACT_RISK_HIGH_THRESHOLD:
         return "HIGH"
-    if total >= 4:
+    if total >= IMPACT_RISK_MED_THRESHOLD:
         return "MEDIUM"
     return "LOW"
 
@@ -823,8 +844,8 @@ def _impact_analysis(
         # ------------------------------------------------------------------ #
         # Query 2: views targeting model (DISTINCT to avoid TARGETS_MODEL fan-out)
         # ------------------------------------------------------------------ #
-        views = session.run("""
-            MATCH (m:Model {name: $mn, odoo_version: $v})<-[:TARGETS_MODEL]-(view:View)
+        views = session.run(f"""
+            MATCH (m:Model {{name: $mn, odoo_version: $v}})<-[:{REL_TARGETS_MODEL}]-(view:View)
             RETURN DISTINCT view.xmlid AS xmlid, view.module AS module
             ORDER BY view.module, view.xmlid
         """, mn=model_name, v=odoo_version).data()
@@ -867,9 +888,9 @@ def _impact_analysis(
         # ------------------------------------------------------------------ #
         # Query 5: dependent modules of all modules defining this model       #
         # ------------------------------------------------------------------ #
-        dep_modules = session.run("""
-            MATCH (m:Model {name: $mn, odoo_version: $v})-[:DEFINED_IN]->(defmod:Module)
-                  <-[:DEPENDS_ON]-(depmod:Module)
+        dep_modules = session.run(f"""
+            MATCH (m:Model {{name: $mn, odoo_version: $v}})-[:DEFINED_IN]->(defmod:Module)
+                  <-[:{REL_DEPENDS_ON}]-(depmod:Module)
             RETURN DISTINCT depmod.name AS dep_name
             ORDER BY depmod.name
         """, mn=model_name, v=odoo_version).data()
@@ -1202,8 +1223,8 @@ def _find_deprecated_usage(
     """Quét user code dùng CoreSymbol có status deprecated/removed."""
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
-        cypher = """
-            MATCH (mth:Method {odoo_version: $v})-[:USES_CORE_SYMBOL]->(cs:CoreSymbol)
+        cypher = f"""
+            MATCH (mth:Method {{odoo_version: $v}})-[:{REL_USES_CORE_SYMBOL}]->(cs:CoreSymbol)
             WHERE cs.status IN ['deprecated', 'removed']
         """
         params: dict = {"v": odoo_version}
@@ -1228,7 +1249,7 @@ def _format_lint_check(
     violations: list[dict], version: str, code: str, language: str = "python",
 ) -> str:
     header = f"lint_check(Odoo {version}, language={language}) — {len(violations)} violations"
-    code_preview = (code or "")[:60].replace("\n", " ")
+    code_preview = (code or "")[:CODE_PREVIEW_MAX_CHARS].replace("\n", " ")
     lines = [_LINT_V0_BANNER, header, f"├─ Code: {code_preview!r}"]
     if not violations:
         lines.append("└─ no violations")
@@ -1750,10 +1771,11 @@ def _format_suggest_pattern(
         snippet_lines = (rec.get("sn") or "").splitlines()
         if snippet_lines:
             lines.append(f"{prefix}├─ Snippet:")
-            for sl in snippet_lines[:5]:
+            for sl in snippet_lines[:SNIPPET_PREVIEW_MAX_LINES]:
                 lines.append(f"{prefix}│    {sl}")
-            if len(snippet_lines) > 5:
-                lines.append(f"{prefix}│    ... ({len(snippet_lines) - 5} more lines)")
+            if len(snippet_lines) > SNIPPET_PREVIEW_MAX_LINES:
+                extra = len(snippet_lines) - SNIPPET_PREVIEW_MAX_LINES
+                lines.append(f"{prefix}│    ... ({extra} more lines)")
         gotchas = rec.get("g") or []
         if gotchas:
             lines.append(f"{prefix}└─ Gotchas:")

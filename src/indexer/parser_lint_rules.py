@@ -21,6 +21,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from src.constants import LINT_RULES_MIN_MAJOR
+
 from .models import LintRuleInfo
 
 # --- pylint-odoo source parsing --------------------------------------------
@@ -145,7 +147,7 @@ def _version_has_test_lint(odoo_version: str) -> bool:
         major = int(odoo_version.split(".")[0])
     except (ValueError, IndexError, AttributeError):
         return False
-    return major >= 17
+    return major >= LINT_RULES_MIN_MAJOR
 
 
 _SPEC_DATA_DIR_DEFAULT = Path(__file__).parent / "spec_data"

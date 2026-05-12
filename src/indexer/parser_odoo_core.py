@@ -19,6 +19,8 @@ Private helpers:
 import ast
 from pathlib import Path
 
+from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
+
 from .models import CoreSymbolInfo
 
 # --- Allow-list (ADR-0002 §6) -----------------------------------------------
@@ -205,7 +207,7 @@ def _version_prefix(version: str) -> str:
     v8/v9 use ``openerp/`` (the pre-rename era); v10+ use ``odoo/``.
     """
     major = int(version.split(".")[0])
-    return "openerp/" if major <= 9 else "odoo/"
+    return "openerp/" if major <= ODOO_NAMESPACE_LEGACY_MAX_MAJOR else "odoo/"
 
 
 def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> list[Path]:

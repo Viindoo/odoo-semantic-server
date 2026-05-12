@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src import config
+from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.indexer.models import PatternExample
 from src.indexer.writer_neo4j import Neo4jWriter
 from src.indexer.writer_pgvector import (
@@ -280,7 +281,7 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
     )
     embedder_model = config.from_env_or_ini(
         "EMBEDDER_MODEL", "embedder", "model",
-        fallback="qwen3-embedding-q5km",
+        fallback=DEFAULT_EMBEDDER_MODEL,
     )
     embedder_dim = int(config.from_env_or_ini(
         "EMBEDDER_DIM", "embedder", "dim", fallback="1024",
