@@ -13,8 +13,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.db import job_registry
 from src.db.migrate import run_migrations
+from src.db.pg import job_store
 from src.indexer import seed_patterns as sp_mod
 
 pytestmark = pytest.mark.postgres
@@ -110,7 +110,7 @@ class TestJobLifecycleWithPg:
             cur.execute("DELETE FROM indexer_jobs")
 
     def _create_queued_job(self, pg, label: str = "patterns") -> int:
-        return job_registry.create_job(pg, label)
+        return job_store().create_job(label)
 
     def _stub_neo4j(self, monkeypatch):
         """Stub out Neo4j so test doesn't need a running Neo4j instance."""
@@ -138,7 +138,7 @@ class TestJobLifecycleWithPg:
         )
 
         job_id = self._create_queued_job(migrated_pg)
-        initial = job_registry.get_job(migrated_pg, job_id)
+        initial = job_store().get_job(job_id)
         assert initial["status"] == "queued"
 
         rc = sp_mod.main([
@@ -149,7 +149,7 @@ class TestJobLifecycleWithPg:
         ])
         assert rc == 0
 
-        final = job_registry.get_job(migrated_pg, job_id)
+        final = job_store().get_job(job_id)
         assert final["status"] == "done", f"Expected done, got: {final['status']}"
         assert final["pid"] is not None
         assert final["started_at"] is not None
@@ -172,7 +172,7 @@ class TestJobLifecycleWithPg:
             "--job-id", str(job_id),
         ])
 
-        row = job_registry.get_job(migrated_pg, job_id)
+        row = job_store().get_job(job_id)
         assert row["pid"] == os.getpid()
 
     def test_job_error_on_missing_patterns_file(
@@ -190,7 +190,7 @@ class TestJobLifecycleWithPg:
         ])
         assert rc == 2
 
-        row = job_registry.get_job(migrated_pg, job_id)
+        row = job_store().get_job(job_id)
         assert row["status"] == "error"
         assert row["error_msg"] is not None
         assert "not found" in row["error_msg"].lower()
@@ -218,7 +218,7 @@ class TestJobLifecycleWithPg:
         ])
         assert rc == 0
 
-        row = job_registry.get_job(migrated_pg, job_id)
+        row = job_store().get_job(job_id)
         assert row["status"] == "done", f"Expected done after skip, got: {row['status']}"
 
     def test_no_job_id_does_not_open_pg(
@@ -266,6 +266,6 @@ class TestJobLifecycleWithPg:
                 "--job-id", str(job_id),
             ])
 
-        row = job_registry.get_job(migrated_pg, job_id)
+        row = job_store().get_job(job_id)
         assert row["status"] == "error"
         assert "neo4j exploded" in row["error_msg"]

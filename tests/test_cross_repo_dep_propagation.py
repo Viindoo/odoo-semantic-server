@@ -143,29 +143,23 @@ class TestResetHeadSha:
     def test_nulls_head_sha_for_given_ids(self, pg_conn):
         """reset_head_sha(conn, [id]) sets head_sha to NULL."""
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_head_sha,
-            reset_head_sha,
-            update_repo_head_sha,
-        )
+        from src.db.pg import repo_store
 
         run_migrations(pg_conn)
 
-        profile_id = add_profile(pg_conn, "_reset_test_profile", TEST_VERSION)
-        repo_id = add_repo(
-            pg_conn, profile_id,
+        profile_id = repo_store().add_profile("_reset_test_profile", TEST_VERSION)
+        repo_id = repo_store().add_repo(
+            profile_id,
             url="file://reset-test",
             branch=TEST_VERSION,
             local_path="/tmp/reset_test_repo_a",
         )
         # Set head_sha to something non-null
-        update_repo_head_sha(pg_conn, repo_id, "deadbeef01")
+        repo_store().update_repo_head_sha(repo_id, "deadbeef01")
 
-        n = reset_head_sha(pg_conn, [repo_id])
+        n = repo_store().reset_head_sha([repo_id])
         assert n == 1, f"Expected 1 row updated, got {n}"
-        assert get_repo_head_sha(pg_conn, repo_id) is None, (
+        assert repo_store().get_repo_head_sha(repo_id) is None, (
             "head_sha should be NULL after reset_head_sha"
         )
 
@@ -176,44 +170,38 @@ class TestResetHeadSha:
 
     def test_empty_list_returns_zero(self, pg_conn):
         """reset_head_sha with empty list is a no-op returning 0."""
-        from src.db.repo_registry import reset_head_sha
+        from src.db.pg import repo_store
 
-        n = reset_head_sha(pg_conn, [])
+        n = repo_store().reset_head_sha([])
         assert n == 0
 
     def test_bulk_reset_multiple_repos(self, pg_conn):
         """reset_head_sha resets multiple repos in one UPDATE."""
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_head_sha,
-            reset_head_sha,
-            update_repo_head_sha,
-        )
+        from src.db.pg import repo_store
 
         run_migrations(pg_conn)
 
-        profile_id = add_profile(pg_conn, "_bulk_reset_profile", TEST_VERSION)
-        id_b = add_repo(
-            pg_conn, profile_id,
+        profile_id = repo_store().add_profile("_bulk_reset_profile", TEST_VERSION)
+        id_b = repo_store().add_repo(
+            profile_id,
             url="file://bulk-b",
             branch=TEST_VERSION,
             local_path="/tmp/bulk_test_repo_b",
         )
-        id_c = add_repo(
-            pg_conn, profile_id,
+        id_c = repo_store().add_repo(
+            profile_id,
             url="file://bulk-c",
             branch=TEST_VERSION,
             local_path="/tmp/bulk_test_repo_c",
         )
-        update_repo_head_sha(pg_conn, id_b, "aaaa1111")
-        update_repo_head_sha(pg_conn, id_c, "bbbb2222")
+        repo_store().update_repo_head_sha(id_b, "aaaa1111")
+        repo_store().update_repo_head_sha(id_c, "bbbb2222")
 
-        n = reset_head_sha(pg_conn, [id_b, id_c])
+        n = repo_store().reset_head_sha([id_b, id_c])
         assert n == 2, f"Expected 2 rows updated, got {n}"
-        assert get_repo_head_sha(pg_conn, id_b) is None
-        assert get_repo_head_sha(pg_conn, id_c) is None
+        assert repo_store().get_repo_head_sha(id_b) is None
+        assert repo_store().get_repo_head_sha(id_c) is None
 
         # Cleanup
         with pg_conn.cursor() as cur:
@@ -227,23 +215,19 @@ class TestGetRepoIdsByBasename:
     def test_maps_basename_to_id(self, pg_conn):
         """Given a basename matching local_path, returns the correct repo ID."""
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_ids_by_local_path_basenames,
-        )
+        from src.db.pg import repo_store
 
         run_migrations(pg_conn)
 
-        profile_id = add_profile(pg_conn, "_basename_test_profile", TEST_VERSION)
-        repo_id = add_repo(
-            pg_conn, profile_id,
+        profile_id = repo_store().add_profile("_basename_test_profile", TEST_VERSION)
+        repo_id = repo_store().add_repo(
+            profile_id,
             url="file://basename-test",
             branch=TEST_VERSION,
             local_path="/home/user/git/odoo_17.0",
         )
 
-        result = get_repo_ids_by_local_path_basenames(pg_conn, ["odoo_17.0"])
+        result = repo_store().get_repo_ids_by_local_path_basenames(["odoo_17.0"])
         assert repo_id in result, (
             f"Expected repo_id {repo_id} in result; got: {result}"
         )
@@ -255,9 +239,9 @@ class TestGetRepoIdsByBasename:
 
     def test_empty_list_returns_empty(self, pg_conn):
         """Empty basenames list → empty result without query error."""
-        from src.db.repo_registry import get_repo_ids_by_local_path_basenames
+        from src.db.pg import repo_store
 
-        result = get_repo_ids_by_local_path_basenames(pg_conn, [])
+        result = repo_store().get_repo_ids_by_local_path_basenames([])
         assert result == []
 
     def test_basename_collision_resets_both(self, pg_conn):
@@ -270,30 +254,26 @@ class TestGetRepoIdsByBasename:
         full local_path in the Module.repo property instead of just the basename.
         """
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_ids_by_local_path_basenames,
-        )
+        from src.db.pg import repo_store
 
         run_migrations(pg_conn)
 
-        profile_id = add_profile(pg_conn, "_collision_test_profile", TEST_VERSION)
-        id_a = add_repo(
-            pg_conn, profile_id,
+        profile_id = repo_store().add_profile("_collision_test_profile", TEST_VERSION)
+        id_a = repo_store().add_repo(
+            profile_id,
             url="file://collision-a",
             branch=TEST_VERSION,
             local_path="/srv/odoo",
         )
-        id_b = add_repo(
-            pg_conn, profile_id,
+        id_b = repo_store().add_repo(
+            profile_id,
             url="file://collision-b",
             branch=TEST_VERSION,
             local_path="/home/a/odoo",
         )
 
         # Both have basename "odoo" → both should be returned (collision behaviour)
-        result = get_repo_ids_by_local_path_basenames(pg_conn, ["odoo"])
+        result = repo_store().get_repo_ids_by_local_path_basenames(["odoo"])
         assert id_a in result, (
             f"Expected id_a ({id_a}) in collision result; got: {result}"
         )
@@ -353,12 +333,7 @@ class TestDepPropagationEndToEnd:
         Assert: repo_b.head_sha is NULL; repo_a.head_sha stays at new value.
         """
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_head_sha,
-            update_repo_head_sha,
-        )
+        from src.db.pg import repo_store
         from src.indexer.pipeline import _index_repo
 
         driver = clean_neo4j
@@ -369,26 +344,26 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "mymod", repo="repo_b_dir", depends_on="base")
 
         # Seed PG: two repos with head_sha set
-        profile_id = add_profile(pg_conn, "_e2e_prop_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_prop_profile", TEST_VERSION)
         repo_a_path = str(tmp_path / "repo_a_dir")
         repo_b_path = str(tmp_path / "repo_b_dir")
         (tmp_path / "repo_a_dir").mkdir()
         (tmp_path / "repo_b_dir").mkdir()
 
-        repo_a_id = add_repo(
-            pg_conn, profile_id,
+        repo_a_id = repo_store().add_repo(
+            profile_id,
             url="file://a",
             branch=TEST_VERSION,
             local_path=repo_a_path,
         )
-        repo_b_id = add_repo(
-            pg_conn, profile_id,
+        repo_b_id = repo_store().add_repo(
+            profile_id,
             url="file://b",
             branch=TEST_VERSION,
             local_path=repo_b_path,
         )
-        update_repo_head_sha(pg_conn, repo_a_id, "deadbeef")
-        update_repo_head_sha(pg_conn, repo_b_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_a_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_b_id, "deadbeef")
 
         # Module info for 'base' (the changed module in repo_a)
         base_info = self._make_module_info("base", repo_a_path + "/base", "repo_a_dir")
@@ -429,13 +404,13 @@ class TestDepPropagationEndToEnd:
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
 
         # repo_b head_sha should be NULL (propagation reset it)
-        repo_b_sha = get_repo_head_sha(pg_conn, repo_b_id)
+        repo_b_sha = repo_store().get_repo_head_sha(repo_b_id)
         assert repo_b_sha is None, (
             f"repo_b head_sha should be NULL after propagation; got: {repo_b_sha}"
         )
 
         # repo_a head_sha should be updated to new_head (not reset)
-        repo_a_sha = get_repo_head_sha(pg_conn, repo_a_id)
+        repo_a_sha = repo_store().get_repo_head_sha(repo_a_id)
         assert repo_a_sha == new_head, (
             f"repo_a head_sha should be {new_head!r}; got: {repo_a_sha}"
         )
@@ -450,12 +425,7 @@ class TestDepPropagationEndToEnd:
     ):
         """Repo C's module has no DEPENDS_ON to base → C's head_sha is unchanged."""
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_head_sha,
-            update_repo_head_sha,
-        )
+        from src.db.pg import repo_store
         from src.indexer.pipeline import _index_repo
 
         driver = clean_neo4j
@@ -465,26 +435,26 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "base", repo="repo_a_dir2", depends_on=None)
         _create_module_with_dep(driver, "unrelated", repo="repo_c_dir", depends_on=None)
 
-        profile_id = add_profile(pg_conn, "_e2e_skip_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_skip_profile", TEST_VERSION)
         repo_a_path = str(tmp_path / "repo_a_dir2")
         repo_c_path = str(tmp_path / "repo_c_dir")
         (tmp_path / "repo_a_dir2").mkdir()
         (tmp_path / "repo_c_dir").mkdir()
 
-        repo_a_id = add_repo(
-            pg_conn, profile_id,
+        repo_a_id = repo_store().add_repo(
+            profile_id,
             url="file://a2",
             branch=TEST_VERSION,
             local_path=repo_a_path,
         )
-        repo_c_id = add_repo(
-            pg_conn, profile_id,
+        repo_c_id = repo_store().add_repo(
+            profile_id,
             url="file://c",
             branch=TEST_VERSION,
             local_path=repo_c_path,
         )
-        update_repo_head_sha(pg_conn, repo_a_id, "deadbeef")
-        update_repo_head_sha(pg_conn, repo_c_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_a_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_c_id, "deadbeef")
 
         base_info = self._make_module_info("base", repo_a_path + "/base", "repo_a_dir2")
         fake_registry = {TEST_VERSION: {"base": base_info}}
@@ -523,7 +493,7 @@ class TestDepPropagationEndToEnd:
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
 
         # repo_c must NOT be reset — it has no dependency on base
-        repo_c_sha = get_repo_head_sha(pg_conn, repo_c_id)
+        repo_c_sha = repo_store().get_repo_head_sha(repo_c_id)
         assert repo_c_sha == "deadbeef", (
             f"repo_c head_sha should remain 'deadbeef'; got: {repo_c_sha}"
         )
@@ -541,12 +511,7 @@ class TestDepPropagationEndToEnd:
         end up with the new head_sha, NOT NULL.
         """
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_head_sha,
-            update_repo_head_sha,
-        )
+        from src.db.pg import repo_store
         from src.indexer.pipeline import _index_repo
 
         driver = clean_neo4j
@@ -556,17 +521,17 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "base", repo="repo_a_dir3", depends_on=None)
         _create_module_with_dep(driver, "sale", repo="repo_a_dir3", depends_on="base")
 
-        profile_id = add_profile(pg_conn, "_e2e_self_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_self_profile", TEST_VERSION)
         repo_a_path = str(tmp_path / "repo_a_dir3")
         (tmp_path / "repo_a_dir3").mkdir()
 
-        repo_a_id = add_repo(
-            pg_conn, profile_id,
+        repo_a_id = repo_store().add_repo(
+            profile_id,
             url="file://a3",
             branch=TEST_VERSION,
             local_path=repo_a_path,
         )
-        update_repo_head_sha(pg_conn, repo_a_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_a_id, "deadbeef")
 
         base_info = self._make_module_info("base", repo_a_path + "/base", "repo_a_dir3")
         fake_registry = {TEST_VERSION: {"base": base_info}}
@@ -605,7 +570,7 @@ class TestDepPropagationEndToEnd:
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
 
         # repo_a must NOT be reset — it was the one we just indexed
-        repo_a_sha = get_repo_head_sha(pg_conn, repo_a_id)
+        repo_a_sha = repo_store().get_repo_head_sha(repo_a_id)
         assert repo_a_sha == new_head, (
             f"repo_a head_sha should be {new_head!r} (not reset); got: {repo_a_sha}"
         )
@@ -620,12 +585,7 @@ class TestDepPropagationEndToEnd:
     ):
         """full_reindex=True skips cross-repo propagation (no head_sha reset)."""
         from src.db.migrate import run_migrations
-        from src.db.repo_registry import (
-            add_profile,
-            add_repo,
-            get_repo_head_sha,
-            update_repo_head_sha,
-        )
+        from src.db.pg import repo_store
         from src.indexer.pipeline import _index_repo
 
         driver = clean_neo4j
@@ -634,26 +594,26 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "base", repo="repo_a_dir4", depends_on=None)
         _create_module_with_dep(driver, "mymod", repo="repo_b_dir4", depends_on="base")
 
-        profile_id = add_profile(pg_conn, "_e2e_full_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_full_profile", TEST_VERSION)
         repo_a_path = str(tmp_path / "repo_a_dir4")
         repo_b_path = str(tmp_path / "repo_b_dir4")
         (tmp_path / "repo_a_dir4").mkdir()
         (tmp_path / "repo_b_dir4").mkdir()
 
-        repo_a_id = add_repo(
-            pg_conn, profile_id,
+        repo_a_id = repo_store().add_repo(
+            profile_id,
             url="file://a4",
             branch=TEST_VERSION,
             local_path=repo_a_path,
         )
-        repo_b_id = add_repo(
-            pg_conn, profile_id,
+        repo_b_id = repo_store().add_repo(
+            profile_id,
             url="file://b4",
             branch=TEST_VERSION,
             local_path=repo_b_path,
         )
-        update_repo_head_sha(pg_conn, repo_a_id, "deadbeef")
-        update_repo_head_sha(pg_conn, repo_b_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_a_id, "deadbeef")
+        repo_store().update_repo_head_sha(repo_b_id, "deadbeef")
 
         base_info = self._make_module_info("base", repo_a_path + "/base", "repo_a_dir4")
         fake_registry = {TEST_VERSION: {"base": base_info}}
@@ -680,7 +640,7 @@ class TestDepPropagationEndToEnd:
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=True)
 
         # repo_b head_sha must remain unchanged (full reindex skips propagation)
-        repo_b_sha = get_repo_head_sha(pg_conn, repo_b_id)
+        repo_b_sha = repo_store().get_repo_head_sha(repo_b_id)
         assert repo_b_sha == "deadbeef", (
             f"repo_b head_sha should remain 'deadbeef' after full reindex; got: {repo_b_sha}"
         )

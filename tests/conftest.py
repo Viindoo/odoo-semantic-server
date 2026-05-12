@@ -262,7 +262,12 @@ def pg_conn():
     except Exception as e:
         pytest.skip(f"PostgreSQL not reachable at {PG_TEST_DSN}: {e}")
     conn.autocommit = True
+    # Initialize centralized pool so store accessors (auth_store, repo_store, etc.) work in tests
+    from src.db.pg import init_pool
+    init_pool(PG_TEST_DSN, min_conn=1, max_conn=3)
     yield conn
+    from src.db.pg import get_pool
+    get_pool().close()
     conn.close()
 
 

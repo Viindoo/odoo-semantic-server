@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.db.migrate import run_migrations
-from src.db.repo_registry import add_profile, add_repo
+from src.db.pg import repo_store
 from src.indexer.pipeline import index_profile
 from tests.conftest import TEST_VERSION, make_git_repo, make_manifest
 
@@ -45,8 +45,8 @@ def test_pipeline_writes_models_views_qweb_to_neo4j(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_test", branch=TEST_VERSION)
     _seed_module(repo, "demo_mod")
-    pid = add_profile(clean_pg, name="test_prof", odoo_version=TEST_VERSION)
-    add_repo(clean_pg, profile_id=pid, url="local/test", branch=TEST_VERSION,
+    pid = repo_store().add_profile(name="test_prof", odoo_version=TEST_VERSION)
+    repo_store().add_repo(profile_id=pid, url="local/test", branch=TEST_VERSION,
              local_path=str(repo))
 
     summary = index_profile(clean_pg, profile_name="test_prof")
@@ -78,8 +78,8 @@ def test_pipeline_marks_repo_indexed_on_success(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_ok", branch=TEST_VERSION)
     _seed_module(repo, "ok_mod")
-    pid = add_profile(clean_pg, "test_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/ok", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("test_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/ok", TEST_VERSION, str(repo))
 
     index_profile(clean_pg, profile_name="test_prof")
 
@@ -98,8 +98,8 @@ def test_pipeline_index_all_iterates_every_profile(
     for prof in ("p_a", "p_b"):
         repo = make_git_repo(tmp_path / f"repo_{prof}", branch=TEST_VERSION)
         _seed_module(repo, f"mod_{prof}")
-        pid = add_profile(clean_pg, prof, TEST_VERSION)
-        add_repo(clean_pg, pid, f"local/{prof}", TEST_VERSION, str(repo))
+        pid = repo_store().add_profile(prof, TEST_VERSION)
+        repo_store().add_repo(pid, f"local/{prof}", TEST_VERSION, str(repo))
 
     summary = index_all(clean_pg)
     assert summary["profiles_ok"] == 2
@@ -114,12 +114,12 @@ def test_index_all_continues_after_profile_failure(pg_conn, clean_pg, neo4j_driv
     run_migrations(clean_pg)
 
     # Profile 1: bad path — triggers FileNotFoundError from _index_repo()
-    pid1 = add_profile(clean_pg, name="bad_prof", odoo_version=TEST_VERSION, description="")
-    add_repo(clean_pg, profile_id=pid1, url="x", branch="b",
+    pid1 = repo_store().add_profile(name="bad_prof", odoo_version=TEST_VERSION, description="")
+    repo_store().add_repo(profile_id=pid1, url="x", branch="b",
              local_path="/nonexistent/__bad__/path")
 
     # Profile 2: no repos — returns {modules:0} without error
-    add_profile(clean_pg, name="empty_prof", odoo_version=TEST_VERSION, description="")
+    repo_store().add_profile(name="empty_prof", odoo_version=TEST_VERSION, description="")
 
     summary = index_all(clean_pg)
 
@@ -135,17 +135,16 @@ def test_index_repo_raises_for_missing_path(
     """_index_repo raises FileNotFoundError when local_path does not exist."""
     import os
 
-    from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
     from src.indexer.pipeline import _index_repo
     from src.indexer.writer_neo4j import Neo4jWriter
 
     run_migrations(clean_pg)
-    pid = add_profile(clean_pg, name="test_path_val", odoo_version=TEST_VERSION,
+    pid = repo_store().add_profile(name="test_path_val", odoo_version=TEST_VERSION,
                       description="")
-    add_repo(clean_pg, profile_id=pid, url="x", branch="b",
+    repo_store().add_repo(profile_id=pid, url="x", branch="b",
              local_path="/nonexistent/__does_not_exist__/path")
 
-    repos = get_repos_for_profile(clean_pg, "test_path_val")
+    repos = repo_store().get_repos_for_profile("test_path_val")
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
@@ -172,7 +171,7 @@ def test_pipeline_writes_embeddings_when_embedder_provided(
     from pgvector.psycopg2 import register_vector
 
     from src.db.migrate import _vector_extension_available, run_migrations
-    from src.db.repo_registry import add_profile, add_repo
+    from src.db.pg import repo_store as _repo_store
     from src.indexer.embedder import FakeEmbedder
     from src.indexer.pipeline import index_profile
     from tests.conftest import PG_EMBED_VERSION
@@ -207,8 +206,8 @@ def test_pipeline_writes_embeddings_when_embedder_provided(
             "        self.write({'state': 'confirmed'})\n"
         )
 
-        pid = add_profile(pg_conn, "embed_test_prof", PG_EMBED_VERSION)
-        add_repo(pg_conn, pid, "local/embed", PG_EMBED_VERSION, str(repo_path))
+        pid = _repo_store().add_profile("embed_test_prof", PG_EMBED_VERSION)
+        _repo_store().add_repo(pid, "local/embed", PG_EMBED_VERSION, str(repo_path))
 
         summary = index_profile(
             pg_conn,
@@ -240,7 +239,6 @@ def test_index_repo_returns_js_graph_counters(
     """_index_repo must return js_patches and owl_comps counters when parsing JS files."""
     import os
 
-    from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
     from src.indexer.pipeline import _index_repo
     from src.indexer.writer_neo4j import Neo4jWriter
 
@@ -260,9 +258,9 @@ def test_index_repo_returns_js_graph_counters(
         }
     """).strip())
 
-    pid = add_profile(clean_pg, "js_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/js", TEST_VERSION, str(repo))
-    repos = get_repos_for_profile(clean_pg, "js_prof")
+    pid = repo_store().add_profile("js_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/js", TEST_VERSION, str(repo))
+    repos = repo_store().get_repos_for_profile("js_prof")
 
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
@@ -307,8 +305,8 @@ def test_index_profile_aggregates_js_counters(
         }
     """).strip())
 
-    pid = add_profile(clean_pg, "agg_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/agg", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("agg_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/agg", TEST_VERSION, str(repo))
 
     summary = index_profile(clean_pg, profile_name="agg_prof")
 

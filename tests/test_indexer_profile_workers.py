@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.db.migrate import run_migrations
-from src.db.repo_registry import add_profile, add_repo
+from src.db.pg import repo_store
 
 pytestmark = [pytest.mark.postgres, pytest.mark.neo4j]
 
@@ -372,11 +372,11 @@ def test_two_profiles_neo4j_isolation_at_version_boundary(
     )
 
     # --- Register profiles + repos in Postgres ---
-    pid99 = add_profile(clean_pg, "test_iso_99", TEST_VERSION)
-    add_repo(clean_pg, pid99, "file://local99", TEST_VERSION, str(repo99))
+    pid99 = repo_store().add_profile("test_iso_99", TEST_VERSION)
+    repo_store().add_repo(pid99, "file://local99", TEST_VERSION, str(repo99))
 
-    pid98 = add_profile(clean_pg, "test_iso_98", TEST_VERSION_ALT)
-    add_repo(clean_pg, pid98, "file://local98", TEST_VERSION_ALT, str(repo98))
+    pid98 = repo_store().add_profile("test_iso_98", TEST_VERSION_ALT)
+    repo_store().add_repo(pid98, "file://local98", TEST_VERSION_ALT, str(repo98))
 
     # --- Run index_all with profile_workers=2 (parallel) ---
     # The parallel path spawns worker threads that call open_production_pg() to

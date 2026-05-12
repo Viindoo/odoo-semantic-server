@@ -127,9 +127,8 @@ class _NoCloseConn:
 @pytest.mark.asyncio
 async def test_feedback_post_with_valid_key_returns_200(pg_auth_conn):
     """POST /api/feedback with valid X-API-Key → 200 and row created in DB."""
-    from src.db.auth_registry import create_api_key, list_feedback
-
-    raw, _, key_id = create_api_key(pg_auth_conn, "test-mcp-feedback")
+    from src.db.pg import auth_store
+    raw, _, key_id = auth_store().create_api_key("test-mcp-feedback")
 
     app = _build_mcp_app()
 
@@ -164,7 +163,7 @@ async def test_feedback_post_with_valid_key_returns_200(pg_auth_conn):
     assert isinstance(body["id"], int)
 
     # Verify the row was persisted
-    rows = list_feedback(pg_auth_conn, "python__write-read-before-super")
+    rows = auth_store().list_feedback("python__write-read-before-super")
     assert any(r["id"] == body["id"] for r in rows), "Feedback row not found in DB"
 
 
@@ -191,9 +190,9 @@ async def test_feedback_post_invalid_rating_returns_422(pg_auth_conn):
     The request passes auth (valid API key, mocked DB) but is rejected by the
     route handler because 'neutral' is not an accepted rating value.
     """
-    from src.db.auth_registry import create_api_key
+    from src.db.pg import auth_store
 
-    raw, _, _key_id = create_api_key(pg_auth_conn, "test-mcp-feedback-422")
+    raw, _, _key_id = auth_store().create_api_key("test-mcp-feedback-422")
 
     app = _build_mcp_app()
 

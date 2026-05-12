@@ -21,14 +21,8 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from src.auth import hash_key
-from src.db.auth_registry import (
-    create_api_key,
-    deactivate_api_key,
-    list_api_keys,
-    log_usage,
-    verify_api_key,
-)
 from src.db.migrate import run_migrations
+from src.db.pg import auth_store
 from src.indexer.pipeline import _indexer_lock, _profile_lock_id
 from src.mcp.middleware import (
     _CACHE_TS,
@@ -102,45 +96,45 @@ class TestAuthEndToEndCycle:
 
     def test_create_verify_cycle(self, pg_auth_conn):
         """Create key via DB → verify with correct raw key → returns key_id."""
-        raw, prefix, key_id = create_api_key(pg_auth_conn, "e2e-cycle-test")
+        raw, prefix, key_id = auth_store().create_api_key("e2e-cycle-test")
 
         # Verify the raw key
-        assert verify_api_key(pg_auth_conn, raw) == key_id
+        assert auth_store().verify_api_key(raw) == key_id
 
         # Verify the prefix is correct
         assert raw[:8] == prefix
 
     def test_verify_wrong_key_returns_none(self, pg_auth_conn):
         """Attempt to verify a non-existent key → returns None."""
-        create_api_key(pg_auth_conn, "existing-key")
-        result = verify_api_key(pg_auth_conn, "osm_completely_wrong")
+        auth_store().create_api_key("existing-key")
+        result = auth_store().verify_api_key("osm_completely_wrong")
         assert result is None
 
     def test_deactivate_then_verify_fails(self, pg_auth_conn):
         """Create key → deactivate → verify returns None."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "deactivate-test")
-        assert verify_api_key(pg_auth_conn, raw) == key_id
+        raw, _, key_id = auth_store().create_api_key("deactivate-test")
+        assert auth_store().verify_api_key(raw) == key_id
 
-        deactivate_api_key(pg_auth_conn, key_id)
-        assert verify_api_key(pg_auth_conn, raw) is None
+        auth_store().deactivate_api_key(key_id)
+        assert auth_store().verify_api_key(raw) is None
 
     def test_list_api_keys_after_state_changes(self, pg_auth_conn):
         """List reflects active/inactive state."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "list-state-test")
-        keys = list_api_keys(pg_auth_conn)
+        raw, _, key_id = auth_store().create_api_key("list-state-test")
+        keys = auth_store().list_api_keys()
         found = next((k for k in keys if k["id"] == key_id), None)
         assert found is not None
         assert found["active"] is True
 
-        deactivate_api_key(pg_auth_conn, key_id)
-        keys = list_api_keys(pg_auth_conn)
+        auth_store().deactivate_api_key(key_id)
+        keys = auth_store().list_api_keys()
         found = next((k for k in keys if k["id"] == key_id), None)
         assert found is not None
         assert found["active"] is False
 
     def test_verify_updates_last_used_at(self, pg_auth_conn):
         """Calling verify_api_key updates last_used_at timestamp."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "last-used-test")
+        raw, _, key_id = auth_store().create_api_key("last-used-test")
 
         # Get initial last_used_at (should be NULL)
         with pg_auth_conn.cursor() as cur:
@@ -149,7 +143,7 @@ class TestAuthEndToEndCycle:
         assert initial is None
 
         # Verify the key
-        verify_api_key(pg_auth_conn, raw)
+        auth_store().verify_api_key(raw)
 
         # Check that last_used_at is now set
         with pg_auth_conn.cursor() as cur:
@@ -159,11 +153,11 @@ class TestAuthEndToEndCycle:
 
     def test_log_usage_records_tool_usage(self, pg_auth_conn):
         """log_usage records tool name and response time."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "log-usage-test")
+        raw, _, key_id = auth_store().create_api_key("log-usage-test")
 
         # Log multiple tool invocations
-        log_usage(pg_auth_conn, key_id, "resolve_model", 45)
-        log_usage(pg_auth_conn, key_id, "resolve_field", 78)
+        auth_store().log_usage(key_id, "resolve_model", 45)
+        auth_store().log_usage(key_id, "resolve_field", 78)
 
         # Verify both are recorded
         with pg_auth_conn.cursor() as cur:
@@ -178,7 +172,7 @@ class TestAuthEndToEndCycle:
 
     def test_log_usage_with_none_key_id(self, pg_auth_conn):
         """log_usage works with None api_key_id (anonymous usage)."""
-        log_usage(pg_auth_conn, None, "resolve_method", 32)
+        auth_store().log_usage(None, "resolve_method", 32)
 
         with pg_auth_conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM usage_log WHERE api_key_id IS NULL")
@@ -231,7 +225,7 @@ class TestCacheTTLExpiration:
 
     def test_deactivate_then_cache_expires_to_fresh_verify(self, pg_auth_conn):
         """After deactivation + cache TTL expired → fresh verify returns None."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "cache-ttl-test")
+        raw, _, key_id = auth_store().create_api_key("cache-ttl-test")
 
         # Prime cache with valid key_id
         _cache_set(raw, key_id)
@@ -240,7 +234,7 @@ class TestCacheTTLExpiration:
         assert cached_id == key_id
 
         # Deactivate in DB
-        deactivate_api_key(pg_auth_conn, key_id)
+        auth_store().deactivate_api_key(key_id)
 
         # Cache still returns the value
         hit, cached_id = _cache_get(raw)
@@ -251,17 +245,17 @@ class TestCacheTTLExpiration:
         _CACHE_TS[hash_key(raw)] = time.monotonic() - _CACHE_TTL - 1
 
         # Fresh DB verify should return None (because key is now inactive)
-        result = verify_api_key(pg_auth_conn, raw)
+        result = auth_store().verify_api_key(raw)
         assert result is None
 
     def test_deactivate_invalidates_cache_immediately(self, pg_auth_conn):
         """B1: calling _cache_invalidate_by_key_id after deactivate removes cache entry."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "b1-immediate")
+        raw, _, key_id = auth_store().create_api_key("b1-immediate")
         _cache_set(raw, key_id)
         hit, cached_id = _cache_get(raw)
         assert hit is True and cached_id == key_id
 
-        deactivate_api_key(pg_auth_conn, key_id)
+        auth_store().deactivate_api_key(key_id)
         _cache_invalidate_by_key_id(key_id)  # simulates deactivate route
 
         hit, _ = _cache_get(raw)
@@ -277,7 +271,7 @@ class TestCacheTTLExpiration:
         from starlette.responses import PlainTextResponse
         from starlette.routing import Route
 
-        raw, _, key_id = create_api_key(pg_auth_conn, "b1-e2e")
+        raw, _, key_id = auth_store().create_api_key("b1-e2e")
 
         async def dummy(request):
             return PlainTextResponse("ok")
@@ -294,7 +288,7 @@ class TestCacheTTLExpiration:
         assert r1.status_code == 200
 
         # Deactivate + invalidate cache immediately
-        deactivate_api_key(pg_auth_conn, key_id)
+        auth_store().deactivate_api_key(key_id)
         _cache_invalidate_by_key_id(key_id)
 
         # Next request: cache miss → fresh DB verify → inactive → 401
@@ -315,7 +309,7 @@ class TestCacheTTLExpiration:
         from starlette.responses import PlainTextResponse
         from starlette.routing import Route
 
-        raw, _, key_id = create_api_key(pg_auth_conn, "b3-bg-task")
+        raw, _, key_id = auth_store().create_api_key("b3-bg-task")
         _cache_set(raw, key_id)  # prime cache so no DB verify needed
 
         async def dummy(request):
@@ -411,7 +405,7 @@ class TestAuthMiddlewareKeyVerification:
     @pytest.mark.asyncio
     async def test_valid_key_returns_200(self, pg_auth_conn):
         """Valid X-API-Key → 200 and request.state.api_key_id is set."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "middleware-valid-test")
+        raw, _, key_id = auth_store().create_api_key("middleware-valid-test")
 
         captured_state = {}
 
@@ -433,7 +427,7 @@ class TestAuthMiddlewareKeyVerification:
     @pytest.mark.asyncio
     async def test_cache_hit_skips_db_lookup(self, pg_auth_conn):
         """Second request with same key uses cache — DB not called twice."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "cache-hit-test")
+        raw, _, key_id = auth_store().create_api_key("cache-hit-test")
 
         call_count = {"n": 0}
         original_verify = __import__(
@@ -465,7 +459,7 @@ class TestAuthMiddlewareKeyVerification:
     @pytest.mark.asyncio
     async def test_deactivated_key_rejected_after_cache_expire(self, pg_auth_conn):
         """Deactivated key cached → after TTL expires → fresh lookup returns 401."""
-        raw, _, key_id = create_api_key(pg_auth_conn, "deactivate-cache-test")
+        raw, _, key_id = auth_store().create_api_key("deactivate-cache-test")
 
         # Prime cache
         _cache_set(raw, key_id)
@@ -485,7 +479,7 @@ class TestAuthMiddlewareKeyVerification:
         assert resp1.status_code == 200
 
         # Deactivate the key in DB
-        deactivate_api_key(pg_auth_conn, key_id)
+        auth_store().deactivate_api_key(key_id)
 
         # Expire cache manually (use hash as cache key — I2)
         _CACHE_TS[hash_key(raw)] = time.monotonic() - _CACHE_TTL - 1
@@ -576,37 +570,37 @@ class TestSecurityHashComparison:
 
     def test_verify_fails_on_different_hash_same_prefix(self, pg_auth_conn):
         """Key with same prefix but different hash should fail verification."""
-        raw, prefix, key_id = create_api_key(pg_auth_conn, "hash-security-test")
+        raw, prefix, key_id = auth_store().create_api_key("hash-security-test")
 
         # Construct a fake key with same prefix but different content
         fake_key = prefix + "X" * len(raw[8:])
 
-        result = verify_api_key(pg_auth_conn, fake_key)
+        result = auth_store().verify_api_key(fake_key)
         assert result is None
 
     def test_verify_fails_on_single_char_difference(self, pg_auth_conn):
         """Single character difference in key should fail."""
-        raw, _, _ = create_api_key(pg_auth_conn, "single-char-test")
+        raw, _, _ = auth_store().create_api_key("single-char-test")
 
         # Change last character
         modified_key = raw[:-1] + ("A" if raw[-1] != "A" else "B")
 
-        result = verify_api_key(pg_auth_conn, modified_key)
+        result = auth_store().verify_api_key(modified_key)
         assert result is None
 
     def test_verify_empty_string_returns_none(self, pg_auth_conn):
         """Empty key string should return None."""
-        result = verify_api_key(pg_auth_conn, "")
+        result = auth_store().verify_api_key("")
         assert result is None
 
     def test_multiple_keys_no_collision(self, pg_auth_conn):
         """Multiple created keys should have distinct hashes."""
-        raw1, _, id1 = create_api_key(pg_auth_conn, "key1")
-        raw2, _, id2 = create_api_key(pg_auth_conn, "key2")
+        raw1, _, id1 = auth_store().create_api_key("key1")
+        raw2, _, id2 = auth_store().create_api_key("key2")
 
         assert raw1 != raw2
-        assert verify_api_key(pg_auth_conn, raw1) == id1
-        assert verify_api_key(pg_auth_conn, raw2) == id2
+        assert auth_store().verify_api_key(raw1) == id1
+        assert auth_store().verify_api_key(raw2) == id2
         # Cross-verify should fail
-        assert verify_api_key(pg_auth_conn, raw1) != id2
-        assert verify_api_key(pg_auth_conn, raw2) != id1
+        assert auth_store().verify_api_key(raw1) != id2
+        assert auth_store().verify_api_key(raw2) != id1

@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from src.db.migrate import run_migrations
-from src.db.repo_registry import add_profile, add_repo
+from src.db.pg import repo_store
 from src.indexer.pipeline import index_profile
 from tests.conftest import TEST_VERSION, make_manifest
 
@@ -89,8 +89,8 @@ def test_first_run_full_reindex_sets_head_sha(
     _seed_module(repo, "mod_alpha")
     expected_sha = _get_head(repo)
 
-    pid = add_profile(clean_pg, "prof1", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("prof1", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # Sanity: head_sha is NULL before first run
     with clean_pg.cursor() as cur:
@@ -128,8 +128,8 @@ def test_second_run_unchanged_skips(
     repo = _make_git_repo_with_commit(tmp_path / "repo2", branch=TEST_VERSION)
     _seed_module(repo, "mod_beta")
 
-    pid = add_profile(clean_pg, "prof2", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("prof2", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run — establishes head_sha
     index_profile(clean_pg, profile_name="prof2")
@@ -171,8 +171,8 @@ def test_second_run_one_module_changed(
     _seed_module(repo, "mod_unchanged")
     _seed_module(repo, "mod_changed")
 
-    pid = add_profile(clean_pg, "prof3", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("prof3", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run
     summary1 = index_profile(clean_pg, profile_name="prof3")
@@ -219,8 +219,8 @@ def test_force_push_falls_back_to_full(
     repo = _make_git_repo_with_commit(tmp_path / "repo4", branch=TEST_VERSION)
     _seed_module(repo, "mod_gamma")
 
-    pid = add_profile(clean_pg, "prof4", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("prof4", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run
     index_profile(clean_pg, profile_name="prof4")
@@ -267,8 +267,8 @@ def test_full_flag_bypasses_skip(
     repo = _make_git_repo_with_commit(tmp_path / "repo5", branch=TEST_VERSION)
     _seed_module(repo, "mod_delta")
 
-    pid = add_profile(clean_pg, "prof5", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("prof5", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run
     index_profile(clean_pg, profile_name="prof5")
@@ -318,8 +318,8 @@ def _setup_rename_repo(tmp_path: Path, profile_suffix: str, pg_conn):
     _seed_module(repo, "mod_foo")
 
     prof_name = f"prof_rename_{profile_suffix}"
-    pid = add_profile(pg_conn, prof_name, TEST_VERSION)
-    add_repo(pg_conn, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile(prof_name, TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run — establishes mod_foo Module node in Neo4j
     summary1 = index_profile(pg_conn, profile_name=prof_name)
@@ -423,8 +423,8 @@ def test_partial_failure_preserves_head_sha(
     repo = _make_git_repo_with_commit(tmp_path / "repo6", branch=TEST_VERSION)
     _seed_module(repo, "mod_epsilon")
 
-    pid = add_profile(clean_pg, "prof6", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("prof6", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run succeeds → records head_sha
     index_profile(clean_pg, profile_name="prof6")

@@ -140,16 +140,16 @@ class TestDeleteRepoHappyPath:
     @pytest.mark.asyncio
     async def test_delete_repo_removes_pg_row_leaves_sibling(self, migrated_pg, clean_neo4j):
         """POST delete repo_A → repo_A gone from PG; sibling repo_B intact."""
-        from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="parity_test_99", odoo_version=TEST_VERSION)
-        rid_a = add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="parity_test_99", odoo_version=TEST_VERSION)
+        rid_a = repo_store().add_repo(
+            profile_id=pid,
             url="file://local/repo_a", branch=TEST_VERSION,
             local_path=f"/tmp/repo_a_{TEST_VERSION}",
         )
-        rid_b = add_repo(
-            migrated_pg, profile_id=pid,
+        rid_b = repo_store().add_repo(
+            profile_id=pid,
             url="file://local/repo_b", branch=TEST_VERSION,
             local_path=f"/tmp/repo_b_{TEST_VERSION}",
         )
@@ -176,7 +176,7 @@ class TestDeleteRepoHappyPath:
         assert "flash=" in location
         assert "deleted" in location.lower()
 
-        repos = get_repos_for_profile(migrated_pg, "parity_test_99")
+        repos = repo_store().get_repos_for_profile("parity_test_99")
         repo_ids = [r["id"] for r in repos]
         assert rid_a not in repo_ids
         assert rid_b in repo_ids
@@ -184,21 +184,21 @@ class TestDeleteRepoHappyPath:
     @pytest.mark.asyncio
     async def test_delete_repo_cleans_neo4j_scoped(self, migrated_pg, clean_neo4j):
         """Delete repo_A → its Neo4j Module + children gone; repo_B Module intact."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
         basename_a = f"neo4j_repo_a_{TEST_VERSION}"
         basename_b = f"neo4j_repo_b_{TEST_VERSION}"
         module_a = f"module_{basename_a}"
         module_b = f"module_{basename_b}"
 
-        pid = add_profile(migrated_pg, name="neo4j_scope_99", odoo_version=TEST_VERSION)
-        rid_a = add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="neo4j_scope_99", odoo_version=TEST_VERSION)
+        rid_a = repo_store().add_repo(
+            profile_id=pid,
             url="file://local/neo4j_a", branch=TEST_VERSION,
             local_path=f"/tmp/{basename_a}",
         )
-        add_repo(
-            migrated_pg, profile_id=pid,
+        repo_store().add_repo(
+            profile_id=pid,
             url="file://local/neo4j_b", branch=TEST_VERSION,
             local_path=f"/tmp/{basename_b}",
         )
@@ -234,21 +234,21 @@ class TestDeleteRepoHappyPath:
         Seeds real Neo4j Module nodes so _collect_module_names_for_repos resolves
         the correct Odoo module names (not the repo basenames — that was the bug).
         """
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
         basename_a = f"emb_repo_a_{TEST_VERSION}"
         basename_b = f"emb_repo_b_{TEST_VERSION}"
         module_a = f"module_{basename_a}"
         module_b = f"module_{basename_b}"
 
-        pid = add_profile(migrated_pg, name="emb_scope_99", odoo_version=TEST_VERSION)
-        rid_a = add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="emb_scope_99", odoo_version=TEST_VERSION)
+        rid_a = repo_store().add_repo(
+            profile_id=pid,
             url="file://local/emb_a", branch=TEST_VERSION,
             local_path=f"/tmp/{basename_a}",
         )
-        add_repo(
-            migrated_pg, profile_id=pid,
+        repo_store().add_repo(
+            profile_id=pid,
             url="file://local/emb_b", branch=TEST_VERSION,
             local_path=f"/tmp/{basename_b}",
         )
@@ -286,11 +286,11 @@ class TestDeleteRepoHappyPath:
     @pytest.mark.asyncio
     async def test_delete_repo_flash_contains_basename(self, migrated_pg, clean_neo4j):
         """Flash message must mention the repo basename."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="flash_repo_99", odoo_version=TEST_VERSION)
-        rid = add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="flash_repo_99", odoo_version=TEST_VERSION)
+        rid = repo_store().add_repo(
+            profile_id=pid,
             url="file://local/flash_repo", branch=TEST_VERSION,
             local_path="/tmp/my_flash_repo_99",
         )
@@ -329,23 +329,23 @@ class TestDeleteRepoMultiProfileSameVersion:
 
         This proves scoping is by (basename, version) not version-wide.
         """
-        from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
+        from src.db.pg import repo_store
 
-        pid1 = add_profile(migrated_pg, name="profile1_multitest_99", odoo_version=TEST_VERSION)
-        pid2 = add_profile(migrated_pg, name="profile2_multitest_99", odoo_version=TEST_VERSION)
+        pid1 = repo_store().add_profile(name="profile1_multitest_99", odoo_version=TEST_VERSION)
+        pid2 = repo_store().add_profile(name="profile2_multitest_99", odoo_version=TEST_VERSION)
 
         basename_1 = f"repo_prof1_{TEST_VERSION}"
         basename_2 = f"repo_prof2_{TEST_VERSION}"
         module_1 = f"module_{basename_1}"
         module_2 = f"module_{basename_2}"
 
-        rid1 = add_repo(
-            migrated_pg, profile_id=pid1,
+        rid1 = repo_store().add_repo(
+            profile_id=pid1,
             url="file://local/prof1_repo", branch=TEST_VERSION,
             local_path=f"/tmp/{basename_1}",
         )
-        add_repo(
-            migrated_pg, profile_id=pid2,
+        repo_store().add_repo(
+            profile_id=pid2,
             url="file://local/prof2_repo", branch=TEST_VERSION,
             local_path=f"/tmp/{basename_2}",
         )
@@ -369,11 +369,11 @@ class TestDeleteRepoMultiProfileSameVersion:
                 )
 
         # profile_1 repo gone from PG
-        repos_p1 = get_repos_for_profile(migrated_pg, "profile1_multitest_99")
+        repos_p1 = repo_store().get_repos_for_profile("profile1_multitest_99")
         assert not any(r["id"] == rid1 for r in repos_p1)
 
         # profile_2 repo still present
-        repos_p2 = get_repos_for_profile(migrated_pg, "profile2_multitest_99")
+        repos_p2 = repo_store().get_repos_for_profile("profile2_multitest_99")
         assert len(repos_p2) == 1
 
         # Neo4j: profile_1 module gone; profile_2 module intact
@@ -389,11 +389,11 @@ class TestDeleteRepoGuard:
     @pytest.mark.asyncio
     async def test_blocks_when_indexer_running(self, migrated_pg, clean_neo4j):
         """Guard: indexer running for profile → 303 with flash, repo NOT deleted."""
-        from src.db.repo_registry import add_profile, add_repo, get_repos_for_profile
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="guarded_repo_99", odoo_version=TEST_VERSION)
-        rid = add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="guarded_repo_99", odoo_version=TEST_VERSION)
+        rid = repo_store().add_repo(
+            profile_id=pid,
             url="file://local/guarded_repo", branch=TEST_VERSION,
             local_path="/tmp/guarded_repo_99",
         )
@@ -418,7 +418,7 @@ class TestDeleteRepoGuard:
         assert "indexer" in location.lower() or "running" in location.lower()
 
         # Repo must still exist
-        repos = get_repos_for_profile(migrated_pg, "guarded_repo_99")
+        repos = repo_store().get_repos_for_profile("guarded_repo_99")
         assert any(r["id"] == rid for r in repos)
 
     @pytest.mark.asyncio
