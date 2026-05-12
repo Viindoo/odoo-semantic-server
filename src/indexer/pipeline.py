@@ -30,6 +30,7 @@ from src.db.repo_registry import (
 from src.indexer import incremental as _incremental
 from src.indexer import parser_js, parser_python, parser_qweb, parser_xml
 from src.indexer.models import ViewParseResult
+from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry
 from src.indexer.resolver import topological_sort
 from src.indexer.writer_neo4j import Neo4jWriter
@@ -146,7 +147,7 @@ def open_production_pg():
 
 def _index_repo(
     repo: dict,
-    writer: Neo4jWriter,
+    writer: IndexWriterProtocol,
     pg_conn=None,
     embedder=None,
     progress: bool = False,
@@ -683,7 +684,7 @@ def index_profile(
 # ---------------------------------------------------------------------------
 
 def _find_previous_indexed_version(
-    current_version: str, writer: Neo4jWriter,
+    current_version: str, writer: IndexWriterProtocol,
 ) -> str | None:
     """Return the latest indexed CoreSymbol version strictly less than current_version.
 
@@ -749,7 +750,7 @@ def _read_spec_curate_status(
 def index_core(
     source_root: str,
     odoo_version: str,
-    writer: Neo4jWriter,
+    writer: IndexWriterProtocol,
     *,
     static_data_dir: str | None = None,
 ) -> dict:
