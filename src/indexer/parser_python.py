@@ -5,6 +5,8 @@ import re
 import tokenize
 from pathlib import Path
 
+from src.constants import LEGACY_ERA_MAX_MAJOR
+
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 
 # v10+ class-level field declarations: name = fields.Char(...)
@@ -358,7 +360,7 @@ def _detect_era(odoo_version: str) -> str:
         major = int(odoo_version.split(".")[0])
     except (ValueError, IndexError, AttributeError):
         return "era2"
-    return "era1" if major <= 9 else "era2"
+    return "era1" if major <= LEGACY_ERA_MAX_MAJOR else "era2"
 
 
 def _extract_string(node: ast.expr) -> str | None:
