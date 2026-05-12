@@ -116,10 +116,10 @@ class TestApiKeysPage:
         """POST /api-keys/{id}/deactivate should redirect to /api-keys."""
         import httpx
 
-        from src.db.auth_registry import create_api_key
+        from src.db.pg import auth_store
 
         # Create a key
-        _, _, key_id = create_api_key(pg_conn, "to-deactivate")
+        _, _, key_id = auth_store().create_api_key("to-deactivate")
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_app), base_url="http://test"
@@ -136,10 +136,10 @@ class TestApiKeysPage:
         """After deactivating, the key should appear as inactive."""
         import httpx
 
-        from src.db.auth_registry import create_api_key
+        from src.db.pg import auth_store
 
         # Create a key
-        _, _, key_id = create_api_key(pg_conn, "deactivate-test")
+        _, _, key_id = auth_store().create_api_key("deactivate-test")
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_app), base_url="http://test"
@@ -187,10 +187,10 @@ class TestApiKeyDeactivateInvariants:
         """B1: POST /api-keys/{id}/deactivate must call _cache_invalidate_by_key_id."""
         import httpx
 
-        from src.db.auth_registry import create_api_key
+        from src.db.pg import auth_store
         from src.mcp.middleware import _cache_get, _cache_set
 
-        raw, _, key_id = create_api_key(pg_conn, "deactivate-b1-test")
+        raw, _, key_id = auth_store().create_api_key("deactivate-b1-test")
         _cache_set(raw, key_id)
         hit, _ = _cache_get(raw)
         assert hit  # cache primed

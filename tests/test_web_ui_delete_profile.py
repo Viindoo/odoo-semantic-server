@@ -151,18 +151,16 @@ class TestDeleteProfileHappyPath:
     @pytest.mark.asyncio
     async def test_delete_profile_removes_pg_rows(self, migrated_pg, clean_neo4j):
         """POST /repos/profiles/{id}/delete → profile + repos gone from PG."""
-        from src.db.repo_registry import add_profile, add_repo, list_profiles
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="victim_99", odoo_version=TEST_VERSION)
-        add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="victim_99", odoo_version=TEST_VERSION)
+        repo_store().add_repo(
             profile_id=pid,
             url="file://local/repo_a",
             branch=TEST_VERSION,
             local_path=f"/tmp/test_repo_a_{TEST_VERSION}",
         )
-        add_repo(
-            migrated_pg,
+        repo_store().add_repo(
             profile_id=pid,
             url="file://local/repo_b",
             branch=TEST_VERSION,
@@ -195,7 +193,7 @@ class TestDeleteProfileHappyPath:
         assert "deleted" in location.lower()
 
         # Profile and repos must be gone
-        remaining = list_profiles(migrated_pg)
+        remaining = repo_store().list_profiles()
         assert not any(p["id"] == pid for p in remaining)
 
         with migrated_pg.cursor() as cur:
@@ -206,21 +204,21 @@ class TestDeleteProfileHappyPath:
     async def test_delete_profile_cleans_neo4j(self, migrated_pg, clean_neo4j):
         """POST delete → Neo4j Module nodes for profile repos are removed,
         and any indexed embeddings for those modules are also cleaned up."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
         repo_a_basename = f"test_repo_a_{TEST_VERSION}"
         repo_b_basename = f"test_repo_b_{TEST_VERSION}"
         module_a = f"module_{repo_a_basename}"
         module_b = f"module_{repo_b_basename}"
 
-        pid = add_profile(migrated_pg, name="neo4j_victim_99", odoo_version=TEST_VERSION)
-        add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="neo4j_victim_99", odoo_version=TEST_VERSION)
+        repo_store().add_repo(
+            profile_id=pid,
             url="file://local/neo4j_a", branch=TEST_VERSION,
             local_path=f"/tmp/{repo_a_basename}",
         )
-        add_repo(
-            migrated_pg, profile_id=pid,
+        repo_store().add_repo(
+            profile_id=pid,
             url="file://local/neo4j_b", branch=TEST_VERSION,
             local_path=f"/tmp/{repo_b_basename}",
         )
@@ -257,11 +255,11 @@ class TestDeleteProfileHappyPath:
     @pytest.mark.asyncio
     async def test_delete_profile_flash_contains_counts(self, migrated_pg, clean_neo4j):
         """Flash message mentions profile name and repo count."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="flash_test_99", odoo_version=TEST_VERSION)
-        add_repo(
-            migrated_pg, profile_id=pid,
+        pid = repo_store().add_profile(name="flash_test_99", odoo_version=TEST_VERSION)
+        repo_store().add_repo(
+            profile_id=pid,
             url="file://local/flash_repo", branch=TEST_VERSION,
             local_path="/tmp/flash_repo_99",
         )
@@ -294,9 +292,9 @@ class TestDeleteProfileGuard:
     @pytest.mark.asyncio
     async def test_blocks_when_indexer_running(self, migrated_pg, clean_neo4j):
         """Guard: indexer running for profile → 303 with flash, profile NOT deleted."""
-        from src.db.repo_registry import add_profile, list_profiles
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="guarded_99", odoo_version=TEST_VERSION)
+        pid = repo_store().add_profile(name="guarded_99", odoo_version=TEST_VERSION)
 
         app = create_app()
         with mock.patch(
@@ -318,7 +316,7 @@ class TestDeleteProfileGuard:
         assert "indexer" in location.lower() or "running" in location.lower()
 
         # Profile must still exist
-        remaining = list_profiles(migrated_pg)
+        remaining = repo_store().list_profiles()
         assert any(p["id"] == pid for p in remaining)
 
     @pytest.mark.asyncio

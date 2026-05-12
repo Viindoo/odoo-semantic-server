@@ -96,7 +96,7 @@ class TestReposPage:
 
     @pytest.mark.asyncio
     async def test_create_profile_persists(self, migrated_pg):
-        from src.db.repo_registry import list_profiles
+        from src.db.pg import repo_store
 
         app = create_app()
         with mock.patch(
@@ -109,7 +109,7 @@ class TestReposPage:
                     data={"name": "viindoo17", "version": "17.0", "description": "test"},
                     follow_redirects=False,
                 )
-        profiles = list_profiles(migrated_pg)
+        profiles = repo_store().list_profiles()
         assert len(profiles) == 1
         assert profiles[0]["name"] == "viindoo17"
         assert profiles[0]["odoo_version"] == "17.0"
@@ -133,10 +133,10 @@ class TestReposPage:
 
     @pytest.mark.asyncio
     async def test_add_repo_redirects(self, migrated_pg):
-        from src.db.repo_registry import add_profile
+        from src.db.pg import repo_store
 
         # Pre-create profile directly via ORM to isolate POST /repos/repos behaviour
-        add_profile(migrated_pg, name="p1", odoo_version="17.0")
+        repo_store().add_profile(name="p1", odoo_version="17.0")
 
         app = create_app()
         with mock.patch(
@@ -159,11 +159,10 @@ class TestReposPage:
 
     @pytest.mark.asyncio
     async def test_index_repo_redirects(self, migrated_pg):
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="p1", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="p1", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -187,11 +186,10 @@ class TestReposPage:
     @pytest.mark.asyncio
     async def test_index_repo_uses_profile_name_not_all(self, migrated_pg):
         """I4: index button must dispatch --profile <name>, not --all."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="myprofile", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="myprofile", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -216,11 +214,10 @@ class TestReposPage:
     @pytest.mark.asyncio
     async def test_index_repo_dedup_blocked(self, migrated_pg):
         """M5.5 Section E: when indexer is running, redirect with flash, Popen NOT called."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="p_dedup", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="p_dedup", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -248,11 +245,10 @@ class TestReposPage:
     @pytest.mark.asyncio
     async def test_index_repo_dedup_ok_spawns_popen(self, migrated_pg):
         """M5.5 Section E: when indexer not running, Popen called once (dedup pass)."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="p_free", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="p_free", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -291,12 +287,11 @@ class TestSshCloneFlow:
     @pytest.mark.asyncio
     async def test_post_ssh_url_with_ssh_key_id_spawns_cloner(self, migrated_pg):
         """SSH URL + ssh_key_id → repo inserted, Popen called with src.cloner --repo-id."""
-        from src.db.auth_registry import save_ssh_key
-        from src.db.repo_registry import add_profile, list_repos
+        from src.db.pg import auth_store, repo_store
 
-        add_profile(migrated_pg, name="ssh_profile", odoo_version="17.0")
-        key_id = save_ssh_key(
-            migrated_pg, "deploy-key", "ssh-ed25519 AAAA…", "enc_privkey"
+        repo_store().add_profile(name="ssh_profile", odoo_version="17.0")
+        key_id = auth_store().save_ssh_key(
+            "deploy-key", "ssh-ed25519 AAAA…", "enc_privkey"
         )
 
         app = create_app()
@@ -329,7 +324,7 @@ class TestSshCloneFlow:
         assert repo_id_str.isdigit()
 
         # Repo row has ssh_key_id set
-        repos = list_repos(migrated_pg)
+        repos = repo_store().list_repos()
         assert len(repos) == 1
         repo = repos[0]
         assert repo["ssh_key_id"] == key_id
@@ -338,9 +333,9 @@ class TestSshCloneFlow:
     @pytest.mark.asyncio
     async def test_post_ssh_url_without_ssh_key_id_returns_error(self, migrated_pg):
         """SSH URL with no ssh_key_id → 400, no Popen, no repo row."""
-        from src.db.repo_registry import add_profile, list_repos
+        from src.db.pg import repo_store
 
-        add_profile(migrated_pg, name="ssh_nokey_profile", odoo_version="17.0")
+        repo_store().add_profile(name="ssh_nokey_profile", odoo_version="17.0")
 
         app = create_app()
         with mock.patch(
@@ -362,15 +357,15 @@ class TestSshCloneFlow:
         assert resp.status_code == 400
         assert "SSH" in resp.text or "ssh" in resp.text.lower()
         mock_popen.assert_not_called()
-        repos = list_repos(migrated_pg)
+        repos = repo_store().list_repos()
         assert len(repos) == 0
 
     @pytest.mark.asyncio
     async def test_post_https_url_no_cloner_spawn(self, migrated_pg):
         """HTTPS URL → legacy flow: no Popen, ssh_key_id=NULL."""
-        from src.db.repo_registry import add_profile, list_repos
+        from src.db.pg import repo_store
 
-        add_profile(migrated_pg, name="https_profile", odoo_version="17.0")
+        repo_store().add_profile(name="https_profile", odoo_version="17.0")
 
         app = create_app()
         with mock.patch(
@@ -392,17 +387,17 @@ class TestSshCloneFlow:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/repos"
         mock_popen.assert_not_called()
-        repos = list_repos(migrated_pg)
+        repos = repo_store().list_repos()
         assert len(repos) == 1
         assert repos[0]["ssh_key_id"] is None
 
     @pytest.mark.asyncio
     async def test_get_ssh_keys_list_returns_array(self, migrated_pg):
         """GET /repos/ssh-keys-list → JSON array with id + name keys."""
-        from src.db.auth_registry import save_ssh_key
+        from src.db.pg import auth_store
 
-        save_ssh_key(migrated_pg, "key-alpha", "ssh-ed25519 AAAA1", "enc1")
-        save_ssh_key(migrated_pg, "key-beta", "ssh-ed25519 AAAA2", "enc2")
+        auth_store().save_ssh_key("key-alpha", "ssh-ed25519 AAAA1", "enc1")
+        auth_store().save_ssh_key("key-beta", "ssh-ed25519 AAAA2", "enc2")
 
         app = create_app()
         with mock.patch(
@@ -425,9 +420,9 @@ class TestSshCloneFlow:
     @pytest.mark.asyncio
     async def test_post_ssh_url_non_numeric_key_id_returns_400(self, migrated_pg):
         """SSH URL with non-numeric ssh_key_id → 400, no Popen (Fix 6)."""
-        from src.db.repo_registry import add_profile, list_repos
+        from src.db.pg import repo_store
 
-        add_profile(migrated_pg, name="ssh_abc_profile", odoo_version="17.0")
+        repo_store().add_profile(name="ssh_abc_profile", odoo_version="17.0")
 
         app = create_app()
         with mock.patch(
@@ -448,17 +443,16 @@ class TestSshCloneFlow:
 
         assert resp.status_code == 400
         mock_popen.assert_not_called()
-        repos = list_repos(migrated_pg)
+        repos = repo_store().list_repos()
         assert len(repos) == 0
 
     @pytest.mark.asyncio
     async def test_get_clone_status_returns_current(self, migrated_pg):
         """GET /repos/repos/{id}/clone-status → JSON with clone_status + error_msg."""
-        from src.db.repo_registry import add_profile, add_repo, set_clone_status
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="clone_profile", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="clone_profile", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="git@github.com:org/repo.git",
             branch="main",
@@ -466,7 +460,7 @@ class TestSshCloneFlow:
             ssh_key_id=None,
             clone_status="manual",
         )
-        set_clone_status(migrated_pg, rid, "pending")
+        repo_store().set_clone_status(rid, "pending")
 
         app = create_app()
         with mock.patch(
@@ -498,11 +492,10 @@ class TestJobIntegration:
     @pytest.mark.asyncio
     async def test_index_repo_creates_job_and_passes_job_id(self, migrated_pg):
         """POST /repos/repos/{id}/index → job created, --job-id in argv."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="p_job", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="p_job", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -551,11 +544,10 @@ class TestJobIntegration:
     @pytest.mark.asyncio
     async def test_index_repo_dedup_blocks_no_job_created(self, migrated_pg):
         """Khi indexer_is_running True → KHÔNG tạo job, KHÔNG Popen, flash redirect."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="p_dedup2", odoo_version="17.0")
-        rid = add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="p_dedup2", odoo_version="17.0")
+        rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -588,9 +580,9 @@ class TestJobIntegration:
     @pytest.mark.asyncio
     async def test_get_job_status_existing(self, migrated_pg):
         """GET /repos/jobs/{id}/status with existing job → 200 + correct JSON shape."""
-        from src.db import job_registry
+        from src.db.pg import job_store
 
-        job_id = job_registry.create_job(migrated_pg, "p_status")
+        job_id = job_store().create_job("p_status")
 
         app = create_app()
         with mock.patch(
@@ -642,19 +634,17 @@ class TestStatusBadgeTemplate:
     @pytest.mark.asyncio
     async def test_repos_page_renders_status_badge_when_job_exists(self, migrated_pg):
         """repos.html renders badge with data-job-id when last_job exists."""
-        from src.db import job_registry
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import job_store, repo_store
 
-        pid = add_profile(migrated_pg, name="badge_profile", odoo_version="17.0")
-        add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="badge_profile", odoo_version="17.0")
+        repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
             local_path="/tmp/odoo_badge",
         )
         # Create a job for the profile
-        job_id = job_registry.create_job(migrated_pg, "badge_profile")
+        job_id = job_store().create_job("badge_profile")
 
         app = create_app()
         with mock.patch(
@@ -671,11 +661,10 @@ class TestStatusBadgeTemplate:
     @pytest.mark.asyncio
     async def test_repos_page_no_badge_when_no_job(self, migrated_pg):
         """repos.html shows '—' when no job exists for profile."""
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import repo_store
 
-        pid = add_profile(migrated_pg, name="no_job_profile", odoo_version="17.0")
-        add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="no_job_profile", odoo_version="17.0")
+        repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
@@ -701,21 +690,18 @@ class TestStatusBadgeTemplate:
         """repos.html renders running badge when job status is running."""
         from datetime import datetime
 
-        from src.db import job_registry
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import job_store, repo_store
 
-        pid = add_profile(migrated_pg, name="running_profile", odoo_version="17.0")
-        add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="running_profile", odoo_version="17.0")
+        repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
             local_path="/tmp/odoo_running",
         )
         # Create a job and update to running status
-        job_id = job_registry.create_job(migrated_pg, "running_profile")
-        job_registry.update_job(
-            migrated_pg,
+        job_id = job_store().create_job("running_profile")
+        job_store().update_job(
             job_id,
             status="running",
             pid=12345,
@@ -739,21 +725,18 @@ class TestStatusBadgeTemplate:
         """repos.html renders error badge with tooltip when job status is error."""
         from datetime import datetime
 
-        from src.db import job_registry
-        from src.db.repo_registry import add_profile, add_repo
+        from src.db.pg import job_store, repo_store
 
-        pid = add_profile(migrated_pg, name="error_profile", odoo_version="17.0")
-        add_repo(
-            migrated_pg,
+        pid = repo_store().add_profile(name="error_profile", odoo_version="17.0")
+        repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
             local_path="/tmp/odoo_error",
         )
         # Create a job with error
-        job_id = job_registry.create_job(migrated_pg, "error_profile")
-        job_registry.update_job(
-            migrated_pg,
+        job_id = job_store().create_job("error_profile")
+        job_store().update_job(
             job_id,
             status="error",
             error_msg="Sample indexing error",
@@ -775,9 +758,9 @@ class TestStatusBadgeTemplate:
     @pytest.mark.asyncio
     async def test_repos_page_javascript_in_response(self, migrated_pg):
         """repos.html includes polling JavaScript with POLL_MS = 5000."""
-        from src.db.repo_registry import add_profile
+        from src.db.pg import repo_store
 
-        add_profile(migrated_pg, name="js_test", odoo_version="17.0")
+        repo_store().add_profile(name="js_test", odoo_version="17.0")
 
         app = create_app()
         with mock.patch(

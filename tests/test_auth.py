@@ -155,7 +155,7 @@ class TestAuthMiddlewareUnit:
         import src.db.auth_registry as ar
         import src.mcp.server as srv
 
-        monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: None)
+        monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: None, raising=False)
         monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
 
         async with httpx.AsyncClient(
@@ -185,9 +185,9 @@ class TestAuthMiddlewareUnit:
         import src.db.auth_registry as ar
         import src.mcp.server as srv
 
-        monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: 1)
+        monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: 1, raising=False)
         monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
-        monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None)
+        monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None, raising=False)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -223,9 +223,9 @@ class TestAuthMiddlewareUnit:
             call_count["n"] += 1
             return 1
 
-        monkeypatch.setattr(ar, "verify_api_key", counting_verify)
+        monkeypatch.setattr(ar, "verify_api_key", counting_verify, raising=False)
         monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
-        monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None)
+        monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None, raising=False)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

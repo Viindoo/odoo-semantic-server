@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.db.migrate import run_migrations
-from src.db.repo_registry import add_profile, add_repo
+from src.db.pg import repo_store
 from src.indexer.pipeline import index_profile
 from src.mcp.server import _resolve_model
 from tests.conftest import TEST_VERSION
@@ -109,8 +109,7 @@ def test_full_admin_flow_register_index_query(
     repo_path = _build_minimal_addon_repo(tmp_path)
 
     # --- Step 2: Register profile (version=TEST_VERSION = "99.0") ---
-    profile_id = add_profile(
-        clean_pg,
+    profile_id = repo_store().add_profile(
         name=_SMOKE_PROFILE,
         odoo_version=TEST_VERSION,
         description="Smoke test profile",
@@ -118,8 +117,7 @@ def test_full_admin_flow_register_index_query(
     assert isinstance(profile_id, int) and profile_id > 0
 
     # --- Step 3: Register repo ---
-    repo_id = add_repo(
-        clean_pg,
+    repo_id = repo_store().add_repo(
         profile_id=profile_id,
         url=f"file://{repo_path}",
         branch="master",
