@@ -3,8 +3,6 @@ import math
 import os
 from contextlib import contextmanager, nullcontext
 
-import psycopg2
-import psycopg2.pool
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
 from starlette.requests import Request
@@ -40,7 +38,6 @@ def _edition_rank_cypher(node_alias: str = "mod") -> str:
 
 mcp = FastMCP("odoo-semantic")
 _driver = None
-_pg_pool: psycopg2.pool.SimpleConnectionPool | None = None
 _embedder_instance = None
 _version_checked = False
 
@@ -91,14 +88,14 @@ def _get_driver():
     return _driver
 
 
-def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
-    """Return (creating on first call) the module-level connection pool."""
-    global _pg_pool
-    if _pg_pool is None:
+def _ensure_pg() -> None:
+    """Initialize centralized PG pool on first call. No-op if already initialized."""
+    from src.db.pg import get_pool, init_pool
+    try:
+        get_pool()
+    except RuntimeError:
         from src import config
-        dsn = config.from_env_or_ini(
-            "PG_DSN", "database", "pg_dsn", fallback=None,
-        )
+        dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
         if not dsn:
             raise RuntimeError(
                 "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
@@ -108,29 +105,16 @@ def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
             "PG_POOL_MAX", "database", "pg_pool_max",
             fallback=str(PG_POOL_MAX_CONN),
         ))
-        _pg_pool = psycopg2.pool.SimpleConnectionPool(
-            minconn=PG_POOL_MIN_CONN, maxconn=pg_pool_max, dsn=dsn
-        )
-    return _pg_pool
+        init_pool(dsn, min_conn=PG_POOL_MIN_CONN, max_conn=pg_pool_max)
 
 
 @contextmanager
 def _checkout_pg():
-    """Check out a pooled PG connection, register pgvector, return on exit.
-
-    pgvector registration is idempotent — safe to call on every checkout.
-    This ensures any connection (including newly grown pool slots) works for
-    ``::vector`` casts without a separate eager-registration step.
-    """
-    from pgvector.psycopg2 import register_vector
-
-    pool = _get_pool()
-    conn = pool.getconn()
-    try:
-        register_vector(conn)
+    """Check out a pooled PG connection with pgvector registered."""
+    _ensure_pg()
+    from src.db.pg import get_pool
+    with get_pool().checkout_vec() as conn:
         yield conn
-    finally:
-        pool.putconn(conn)
 
 
 def _get_embedder():
