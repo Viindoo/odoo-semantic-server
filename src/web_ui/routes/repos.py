@@ -1,6 +1,7 @@
 # src/web_ui/routes/repos.py
 """Profiles & Repos management routes."""
 import logging
+import os
 import subprocess
 import sys
 from typing import Annotated
@@ -10,6 +11,17 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 _logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Return True if process pid is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists, different UID — assume alive
 
 
 def _get_conn():
@@ -731,7 +743,11 @@ async def index_all(
 
 @router.get("/repos/jobs/{job_id}/status")
 async def job_status(request: Request, job_id: int):
-    """Return JSON status of a single indexer job."""
+    """Return JSON status of a single indexer job.
+
+    Includes ``is_alive`` field: True/False when status='running' and a PID is recorded,
+    None otherwise. A False value indicates a stuck job (process not found).
+    """
     from src.db import job_registry
 
     conn = _get_conn()
@@ -743,6 +759,12 @@ async def job_status(request: Request, job_id: int):
         conn.close()
     if job is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
+
+    pid = job.get("pid")
+    is_alive: bool | None = None
+    if pid is not None and job.get("status") == "running":
+        is_alive = _is_pid_alive(pid)
+
     return JSONResponse({
         "id": job["id"],
         "profile_name": job["profile_name"],
@@ -752,4 +774,43 @@ async def job_status(request: Request, job_id: int):
         "finished_at": job["finished_at"],
         "error_msg": job["error_msg"],
         "created_at": job["created_at"],
+        "is_alive": is_alive,
     })
+
+
+@router.post("/repos/jobs/{job_id}/reset", response_class=RedirectResponse)
+async def reset_stuck_job(request: Request, job_id: int):
+    """Force-mark a stuck running job as error when its PID is dead."""
+    import datetime as _dt
+    from urllib.parse import quote_plus
+
+    conn = _get_conn()
+    if conn:
+        try:
+            from src.db import job_registry
+
+            job = job_registry.get_job(conn, job_id)
+            if job is None:
+                flash = f"Job {job_id} not found."
+            elif job["status"] != "running":
+                flash = f"Job {job_id} is not in 'running' state (current: {job['status']})."
+            else:
+                pid = job.get("pid")
+                if pid is not None and _is_pid_alive(pid):
+                    flash = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
+                else:
+                    job_registry.update_job(
+                        conn, job_id,
+                        status="error",
+                        finished_at=_dt.datetime.now(_dt.UTC),
+                        error_msg="Reset by admin (process not found)",
+                    )
+                    flash = f"Job {job_id} has been reset to error state."
+        except Exception as e:
+            flash = f"Reset failed: {e}"
+            _logger.warning("Reset job %d failed: %s", job_id, e)
+        finally:
+            conn.close()
+    else:
+        flash = "Database connection unavailable."
+    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)

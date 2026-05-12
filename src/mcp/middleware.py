@@ -1,5 +1,6 @@
 """API key authentication middleware for MCP server."""
 import asyncio
+import logging
 import threading
 import time
 from collections import deque
@@ -9,6 +10,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.auth import hash_key as _hash_key
+
+_logger = logging.getLogger(__name__)
 
 # In-memory cache: hash(raw_key) -> (api_key_id | None, timestamp)
 # Keys stored as SHA-256 hashes — never plaintext in RAM (I2).
@@ -171,6 +174,7 @@ async def _log_usage_async(key_id: int, request: Request, ms: int) -> None:
         from src.mcp.server import _checkout_pg
 
         tool = request.headers.get("X-Tool-Name", "unknown")
+        _logger.info("mcp_tool tool=%s key_id=%s ms=%d", tool, key_id, ms)
 
         def _do_log():
             with _checkout_pg() as conn:
