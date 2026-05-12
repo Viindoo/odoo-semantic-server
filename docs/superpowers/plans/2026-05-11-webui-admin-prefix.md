@@ -2,7 +2,7 @@
 
 **Status:** plan-only, not yet implemented
 **Created:** 2026-05-11
-**Author/operator:** davidtran.hp (orchestrated by Claude Code session)
+**Author/operator:** Viindoo team (orchestrated by Claude Code session)
 **Related ADRs:** ADR-0011 (Web UI session auth, M7 W16); new ADR-0012 to be written as part of this work.
 
 ---

@@ -1,0 +1,20 @@
+# Allowlist for known-safe patterns in CI and local dev config
+[allowlist]
+  description = "CI-only ephemeral passwords and local dev examples"
+
+  [[allowlist.rules]]
+    id = "ci-ephemeral-password"
+    description = "Hardcoded 'password' in CI workflows — throwaway containers only"
+    paths = [
+      '''.github/workflows/ci\.yml''',
+      '''.github/workflows/nightly-smoke\.yml''',
+      '''Makefile''',
+    ]
+
+  [[allowlist.rules]]
+    id = "doc-example-password"
+    description = "Example passwords in docs — clearly labeled as examples"
+    paths = [
+      '''docs/.*\.md''',
+      '''\.env\.example''',
+    ]
