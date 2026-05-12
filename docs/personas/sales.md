@@ -1,5 +1,7 @@
 # Odoo Semantic — Sales Guide
 
+> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:setup` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
+
 Turn objections into answered questions in seconds. Verify Odoo capabilities on the spot, pull real code examples as proof, and never get caught off-guard by a "does Odoo do X?" during a demo.
 
 ---

@@ -401,3 +401,48 @@ Mọi quyết định kiến trúc lớn — schema policy, storage pattern, par
 2. Status `Draft` → David review → `Accepted` (hoặc `Rejected` + lý do).
 3. Reference ADR ID trong commit message + plan file + code comment khi implement.
 4. ADR là immutable history — không xoá ADR. Nếu thay thế → mark `Status: Superseded by ADR-XXXX` thay vì delete.
+
+---
+
+## Plugin Development
+
+The Claude Code plugin lives at `dist/odoo-semantic-plugin/`. It follows the [Claude Code plugin spec](https://code.claude.com/docs/en/plugins-reference).
+
+### Plugin structure
+
+```
+dist/odoo-semantic-plugin/
+├── .claude-plugin/
+│   └── plugin.json          # Plugin manifest: userConfig, skills/agents/commands refs, mcpServers
+├── .mcp.json                 # MCP server config: HTTP transport, ${user_config.*} interpolation
+├── skills/                   # 11 SKILL.md files (one per persona skill)
+├── agents/                   # odoo-router.md (Haiku) + odoo-upgrade-planner.md (Sonnet)
+├── commands/                 # odoo-setup.md (/odoo-semantic:setup)
+└── README.md
+```
+
+### API key handling
+
+Sensitive values (API key) use `userConfig` in `plugin.json` with `"sensitive": true`. This stores the value in the system keychain (not `settings.json`) and makes it available in `.mcp.json` via `${user_config.api_key}`. **Never hardcode keys in plugin files.**
+
+### Adding a new skill
+
+1. Create `dist/odoo-semantic-plugin/skills/<skill-name>/SKILL.md`
+2. Follow the SKILL.md format: frontmatter with `persona`, `triggers`, `tools_used` + instructions + output format
+3. Add a routing case to `tests/test_skill_disambiguation.py`
+4. Run `pytest tests/test_skill_disambiguation.py` — ensure ≥80% accuracy holds
+5. Update `dist/odoo-semantic-plugin/README.md` skills table
+
+### Validating the plugin
+
+```bash
+# Requires Claude Code CLI installed
+claude plugin validate dist/odoo-semantic-plugin/
+
+# Unit tests (no server needed)
+~/.venv/odoo-semantic-mcp/bin/python -m pytest tests/test_skill_disambiguation.py tests/test_mcp_tool_descriptions.py -v
+```
+
+### Publishing
+
+See [docs/deploy/plugin-release.md](docs/deploy/plugin-release.md) for the full release + SHA-pinning workflow.
