@@ -2187,4 +2187,5 @@ if __name__ == "__main__":
         port=_mcp_port(),
         timeout_graceful_shutdown=0,
         lifespan="on",
+        access_log=True,
     )

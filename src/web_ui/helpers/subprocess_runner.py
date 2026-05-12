@@ -6,6 +6,8 @@ subprocess with --job-id, return job_id for status polling.
 """
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from src.db import job_registry
 
@@ -18,6 +20,8 @@ def spawn_indexer_subcommand(
     """Create an indexer_jobs row, spawn detached subprocess, return job_id.
 
     Spawns `python -m src.indexer <argv> --job-id N` as a detached process.
+    Subprocess stdout+stderr are redirected to /tmp/osm-job-{job_id}.log so
+    indexer output is not silently lost.
 
     Args:
         conn: open psycopg2 connection
@@ -32,5 +36,16 @@ def spawn_indexer_subcommand(
     """
     job_id = job_registry.create_job(conn, job_label)
     argv = [sys.executable, "-m", "src.indexer", *subcommand_argv, "--job-id", str(job_id)]
-    subprocess.Popen(argv, start_new_session=True)
+
+    # Capture subprocess output to /tmp/osm-job-{job_id}.log
+    log_path = Path(tempfile.gettempdir()) / f"osm-job-{job_id}.log"
+    log_file = open(log_path, "w")  # noqa: SIM115 — fd must stay open for subprocess lifetime
+    subprocess.Popen(
+        argv,
+        start_new_session=True,
+        stdout=log_file,
+        stderr=log_file,
+    )
+    # log_file fd is inherited by subprocess; GC closes the parent-side fd handle.
+    # The subprocess keeps the file open until it exits.
     return job_id

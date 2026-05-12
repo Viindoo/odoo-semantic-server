@@ -141,6 +141,12 @@
             <td data-job-id="{% if r.last_job %}{{ r.last_job.id }}{% endif %}" data-job-status="{% if r.last_job %}{{ r.last_job.status }}{% endif %}">
                 {% if r.last_job is none %}
                     <span style="color:#9ca3af">—</span>
+                {% elif r.last_job.status == 'running' %}
+                    <form method="post" action="/repos/jobs/{{ r.last_job.id }}/reset"
+                          style="display:inline"
+                          onsubmit="return confirm('Force-reset job {{ r.last_job.id }}? Only use if process is dead.')">
+                        <button type="submit" class="btn btn-sm btn-outline-warning ms-1" title="Reset stuck job" style="font-size:0.75rem;padding:1px 6px">↺ Reset</button>
+                    </form>
                 {% endif %}
             </td>
             <td style="font-size:0.8rem;color:#64748b">{{ r.last_indexed_at or "—" }}</td>
@@ -201,6 +207,13 @@
     return `<span style="background:${c.bg};color:${c.fg};padding:2px 8px;border-radius:4px;font-size:0.75rem"${tooltip}>${c.text}</span>`;
   }
 
+  function renderStuckBadge(jobId) {
+    return `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:0.75rem" title="Process not found — use Reset button">⚠️ stuck</span>`
+         + `<form method="post" action="/repos/jobs/${jobId}/reset" style="display:inline;margin-left:0.25rem"`
+         + ` onsubmit="return confirm('Force-reset job ${jobId}? Only use if process is dead.')">`
+         + `<button type="submit" class="btn btn-sm btn-outline-warning" title="Reset stuck job" style="font-size:0.75rem;padding:1px 6px">↺ Reset</button></form>`;
+  }
+
   function pollCells() {
     document.querySelectorAll('[data-job-id]').forEach(cell => {
       const jobId = cell.getAttribute('data-job-id');
@@ -212,7 +225,11 @@
         .then(job => {
           if (!job) return;
           cell.setAttribute('data-job-status', job.status);
-          cell.innerHTML = renderBadge(job);
+          if (job.status === 'running' && job.is_alive === false) {
+            cell.innerHTML = renderStuckBadge(jobId);
+          } else {
+            cell.innerHTML = renderBadge(job);
+          }
         })
         .catch(() => {});
     });
@@ -227,7 +244,11 @@
         .then(r => r.ok ? r.json() : null)
         .then(job => {
           if (!job) return;
-          cell.innerHTML = renderBadge(job);
+          if (job.status === 'running' && job.is_alive === false) {
+            cell.innerHTML = renderStuckBadge(jobId);
+          } else {
+            cell.innerHTML = renderBadge(job);
+          }
         })
         .catch(() => {});
     }
