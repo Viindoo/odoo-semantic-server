@@ -1,6 +1,7 @@
 # src/mcp/server.py
 import math
 import os
+import threading
 from contextlib import contextmanager, nullcontext
 
 from fastmcp import FastMCP
@@ -40,6 +41,7 @@ mcp = FastMCP("odoo-semantic")
 _driver = None
 _embedder_instance = None
 _version_checked = False
+_init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
 
 # find_examples rerank coefficients — extracted so calibration harness can
 # monkey-patch them. See _find_examples + tests/test_calibration_eval.py.
@@ -49,7 +51,11 @@ _RERANK_CHAIN_BOOST = 0.20
 
 def _get_driver():
     global _driver, _version_checked
-    if _driver is None:
+    if _driver is not None:  # fast path — no lock overhead on hot calls
+        return _driver
+    with _init_lock:
+        if _driver is not None:  # re-check after acquiring lock
+            return _driver
         from src import config
         # Resolution order per from_env_or_ini: env var → INI → fallback
         uri = config.from_env_or_ini(
@@ -69,7 +75,8 @@ def _get_driver():
             )
         _driver = GraphDatabase.driver(uri, auth=(user, password))
 
-        # Version check: fail-fast if Neo4j < 5.x (unless in CI with pinned image)
+        # Version check: fail-fast if Neo4j < 5.x (unless in CI with pinned image).
+        # _version_checked is protected by _init_lock here — no separate flag needed.
         if not _version_checked and os.getenv("CI") != "true":
             with _driver.session() as _s:
                 _row = _s.run(
@@ -84,7 +91,6 @@ def _get_driver():
                             f"Update docker-compose.yml NEO4J_IMAGE and re-run."
                         )
             _version_checked = True
-
     return _driver
 
 
@@ -119,7 +125,11 @@ def _checkout_pg():
 
 def _get_embedder():
     global _embedder_instance
-    if _embedder_instance is None:
+    if _embedder_instance is not None:  # fast path — no lock overhead on hot calls
+        return _embedder_instance
+    with _init_lock:
+        if _embedder_instance is not None:  # re-check after acquiring lock
+            return _embedder_instance
         from src import config
         from src.indexer.embedder import Qwen3Embedder
         url = config.from_env_or_ini(

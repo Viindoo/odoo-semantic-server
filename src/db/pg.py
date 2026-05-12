@@ -14,6 +14,7 @@ Anywhere else::
     with pool.checkout() as conn:
         row = pool.fetch_one(conn, "SELECT id FROM profiles WHERE name = %s", (name,))
 """
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -145,32 +146,42 @@ def get_pool() -> PgPool:
 _auth_store: "AuthStore | None" = None
 _repo_store: "RepoStore | None" = None
 _job_store: "JobStore | None" = None
+_store_lock = threading.Lock()  # guards auth_store / repo_store / job_store lazy init
 
 
 def auth_store() -> "AuthStore":
     """Return module-level AuthStore singleton (lazy init after init_pool)."""
     global _auth_store
-    if _auth_store is None:
-        from src.db.auth_registry import AuthStore  # noqa: PLC0415
-        _auth_store = AuthStore(get_pool())
+    if _auth_store is not None:  # fast path — no lock overhead on hot calls
+        return _auth_store
+    with _store_lock:
+        if _auth_store is None:  # re-check after acquiring lock
+            from src.db.auth_registry import AuthStore  # noqa: PLC0415
+            _auth_store = AuthStore(get_pool())
     return _auth_store
 
 
 def repo_store() -> "RepoStore":
     """Return module-level RepoStore singleton (lazy init after init_pool)."""
     global _repo_store
-    if _repo_store is None:
-        from src.db.repo_registry import RepoStore  # noqa: PLC0415
-        _repo_store = RepoStore(get_pool())
+    if _repo_store is not None:
+        return _repo_store
+    with _store_lock:
+        if _repo_store is None:
+            from src.db.repo_registry import RepoStore  # noqa: PLC0415
+            _repo_store = RepoStore(get_pool())
     return _repo_store
 
 
 def job_store() -> "JobStore":
     """Return module-level JobStore singleton (lazy init after init_pool)."""
     global _job_store
-    if _job_store is None:
-        from src.db.job_registry import JobStore  # noqa: PLC0415
-        _job_store = JobStore(get_pool())
+    if _job_store is not None:
+        return _job_store
+    with _store_lock:
+        if _job_store is None:
+            from src.db.job_registry import JobStore  # noqa: PLC0415
+            _job_store = JobStore(get_pool())
     return _job_store
 
 
