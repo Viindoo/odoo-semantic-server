@@ -6,7 +6,7 @@ All Neo4j/PostgreSQL I/O is mocked — no live services needed.
 """
 import threading
 import time
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -79,9 +79,11 @@ class TestMaxWorkers1Sequential:
             call_order.append(repo["id"])
             return _fake_counters()
 
+        mock_store = MagicMock()
+        mock_store.get_repos_for_profile.return_value = repos
+
         with (
-            patch("src.indexer.pipeline.get_repos_for_profile", return_value=repos),
-            patch("src.indexer.pipeline.update_repo_status"),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", side_effect=fake_index_repo),
@@ -140,9 +142,11 @@ class TestMaxWorkers2Concurrent:
             m.cursor.return_value.__exit__ = MagicMock(return_value=False)
             return m
 
+        mock_store = MagicMock()
+        mock_store.get_repos_for_profile.return_value = repos
+
         with (
-            patch("src.indexer.pipeline.get_repos_for_profile", return_value=repos),
-            patch("src.indexer.pipeline.update_repo_status"),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", side_effect=fake_index_repo_v2),
@@ -172,9 +176,11 @@ class TestMaxWorkers2OneRepo:
             m.cursor.return_value.__exit__ = MagicMock(return_value=False)
             return m
 
+        mock_store = MagicMock()
+        mock_store.get_repos_for_profile.return_value = repos
+
         with (
-            patch("src.indexer.pipeline.get_repos_for_profile", return_value=repos),
-            patch("src.indexer.pipeline.update_repo_status") as mock_update,
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", return_value=_fake_counters(5)),
@@ -184,7 +190,7 @@ class TestMaxWorkers2OneRepo:
             result = index_profile(mock_pg_conn, profile_name="test", max_workers=2)
 
         assert result["modules"] == 5
-        mock_update.assert_called_once_with(ANY, 42, "indexed")
+        mock_store.update_repo_status.assert_called_once_with(42, "indexed")
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +212,7 @@ class TestMaxWorkers2PartialFailure:
                 raise RuntimeError("simulated failure on repo 10")
             return _fake_counters(3)
 
-        def fake_update_repo_status(conn, repo_id, status, error_msg=None):
+        def fake_update_repo_status(repo_id, status, error_msg=None):
             update_calls.append((repo_id, status))
 
         def fake_open_pg():
@@ -215,9 +221,12 @@ class TestMaxWorkers2PartialFailure:
             m.cursor.return_value.__exit__ = MagicMock(return_value=False)
             return m
 
+        mock_store = MagicMock()
+        mock_store.get_repos_for_profile.return_value = repos
+        mock_store.update_repo_status.side_effect = fake_update_repo_status
+
         with (
-            patch("src.indexer.pipeline.get_repos_for_profile", return_value=repos),
-            patch("src.indexer.pipeline.update_repo_status", side_effect=fake_update_repo_status),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", side_effect=fake_index_repo),

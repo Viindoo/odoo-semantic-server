@@ -32,26 +32,56 @@ def _reset_pg_pool():
 
     Ensures tests are independent — each test starts with a fresh pool using
     PG_TEST_DSN from conftest.py (set via PG_TEST_DSN env var or default).
-    """
-    import src.mcp.server as srv
+    Pool is now managed in src.db.pg._pool (PgPool), not src.mcp.server._pg_pool.
 
-    # Tear down any pool left over from a previous test
-    if srv._pg_pool is not None:
-        try:
-            srv._pg_pool.closeall()
-        except Exception:
-            pass
-        srv._pg_pool = None
+    Saves and restores the session-scoped pool so other tests (e.g., seed_patterns
+    integration tests) that rely on the session pool are not broken after this file
+    runs.  Also resets store singletons that hold references to the old pool.
+    """
+    import src.db.pg as pg_mod
+
+    # Save the session-scoped pool (created by conftest pg_conn fixture).
+    _saved_pool = pg_mod._pool
+    _saved_auth = pg_mod._auth_store
+    _saved_repo = pg_mod._repo_store
+    _saved_job = pg_mod._job_store
+
+    # Detach session pool so this test gets a clean slate (do NOT close it —
+    # pg_conn session fixture owns its lifetime).
+    pg_mod._pool = None
+    pg_mod._auth_store = None
+    pg_mod._repo_store = None
+    pg_mod._job_store = None
+
+    # Initialize a fresh test-scoped pool so tests calling get_pool() directly
+    # (not via _checkout_pg / _ensure_pg) have a pool available.
+    import os
+
+    from src.db.pg import init_pool
+
+    test_dsn = os.getenv(
+        "PG_TEST_DSN",
+        "postgresql://odoo_semantic:password@127.0.0.1:5432/odoo_semantic",
+    )
+    try:
+        init_pool(test_dsn, min_conn=1, max_conn=5)
+    except Exception:
+        pass  # skip-worthy failures handled by _inject_pg_dsn / pg_conn fixtures
 
     yield
 
-    # Tear down the pool created by this test
-    if srv._pg_pool is not None:
+    # Tear down the pool created by this test (not the session pool).
+    if pg_mod._pool is not None and pg_mod._pool is not _saved_pool:
         try:
-            srv._pg_pool.closeall()
+            pg_mod._pool.close()
         except Exception:
             pass
-        srv._pg_pool = None
+
+    # Restore session-scoped pool and stores so subsequent tests are unaffected.
+    pg_mod._pool = _saved_pool
+    pg_mod._auth_store = _saved_auth
+    pg_mod._repo_store = _saved_repo
+    pg_mod._job_store = _saved_job
 
 
 @pytest.fixture(autouse=True)
@@ -92,9 +122,10 @@ def _inject_pg_dsn(monkeypatch, pg_conn):
 
 def test_pool_creates_and_recycles(pg_conn):
     """Sequential checkouts reuse the same physical connection (minconn=1)."""
-    from src.mcp.server import _checkout_pg, _get_pool
+    from src.db.pg import get_pool
+    from src.mcp.server import _checkout_pg
 
-    pool = _get_pool()
+    pool = get_pool()
     assert pool is not None
 
     backend_pids = []
@@ -172,15 +203,18 @@ def test_pool_max_blocks_or_raises_at_11():
     """
     import os
 
-    import src.mcp.server as srv
+    import src.db.pg as pg_mod
+    from src.db.pg import PgPool
 
     dsn = os.environ.get("PG_DSN")
     if not dsn:
         pytest.skip("PG_DSN not set — need live PG for pool exhaustion test")
 
-    # Build a small pool with maxconn=10 explicitly for this test
-    small_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=10, dsn=dsn)
-    srv._pg_pool = small_pool  # fixture's autouse reset will clean this up
+    # Build a small PgPool with maxconn=10 explicitly for this test.
+    # The _reset_pg_pool autouse fixture will close and reset it after the test.
+    small_pool_obj = PgPool(dsn, min_conn=1, max_conn=10)
+    pg_mod._pool = small_pool_obj  # fixture's autouse reset will clean this up
+    small_pool = small_pool_obj._pool  # underlying SimpleConnectionPool for direct getconn()
 
     held_events: list = []
     release_event = __import__("threading").Event()

@@ -266,8 +266,15 @@ def pg_conn():
     from src.db.pg import init_pool
     init_pool(PG_TEST_DSN, min_conn=1, max_conn=3)
     yield conn
-    from src.db.pg import get_pool
-    get_pool().close()
+    import src.db.pg as _pg_mod
+    try:
+        _pg_mod.get_pool().close()
+    except Exception:
+        pass
+    _pg_mod._pool = None
+    _pg_mod._auth_store = None
+    _pg_mod._repo_store = None
+    _pg_mod._job_store = None
     conn.close()
 
 

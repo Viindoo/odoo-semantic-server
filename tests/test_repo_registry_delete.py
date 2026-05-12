@@ -18,8 +18,12 @@ class TestDeleteProfile:
         conn = clean_pg
 
         profile_id = repo_store().add_profile("test_profile", "17.0")
-        repo_id_1 = repo_store().add_repo(profile_id, "https://example.com/r1", "17.0", "/tmp/repo1")
-        repo_id_2 = repo_store().add_repo(profile_id, "https://example.com/r2", "17.0", "/tmp/repo2")
+        repo_id_1 = repo_store().add_repo(
+            profile_id, "https://example.com/r1", "17.0", "/tmp/repo1"
+        )
+        repo_id_2 = repo_store().add_repo(
+            profile_id, "https://example.com/r2", "17.0", "/tmp/repo2"
+        )
 
         result = repo_store().delete_profile(profile_id)
 
@@ -84,8 +88,12 @@ class TestDeleteRepo:
         conn = clean_pg
 
         profile_id = repo_store().add_profile("multi_repo_prof", "17.0")
-        repo_id_a = repo_store().add_repo(profile_id, "https://example.com/a", "17.0", "/tmp/repo_a")
-        repo_id_b = repo_store().add_repo(profile_id, "https://example.com/b", "17.0", "/tmp/repo_b")
+        repo_id_a = repo_store().add_repo(
+            profile_id, "https://example.com/a", "17.0", "/tmp/repo_a"
+        )
+        repo_id_b = repo_store().add_repo(
+            profile_id, "https://example.com/b", "17.0", "/tmp/repo_b"
+        )
 
         repo_store().delete_repo(repo_id_a)
 
@@ -108,7 +116,9 @@ class TestResetRepoHeadSha:
         conn = clean_pg
 
         profile_id = repo_store().add_profile("sha_profile", "17.0")
-        repo_id = repo_store().add_repo(profile_id, "https://example.com/r", "17.0", "/tmp/sha_repo")
+        repo_id = repo_store().add_repo(
+            profile_id, "https://example.com/r", "17.0", "/tmp/sha_repo"
+        )
 
         # Set a non-null head_sha first
         repo_store().update_repo_head_sha(repo_id, "abc123def456")

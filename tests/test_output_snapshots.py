@@ -194,7 +194,7 @@ class TestFindExamplesOutputSchema:
                 "[snap_mod] ...continued...",
             ),
         ]
-        write_module_embeddings(pg_conn_fixture, "snap_mod", _SNAP_VERSION, chunks, embedder)
+        write_module_embeddings("snap_mod", _SNAP_VERSION, chunks, embedder)
 
         self._pg = pg_conn_fixture
         self._neo4j = neo4j_driver

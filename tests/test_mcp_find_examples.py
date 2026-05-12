@@ -33,8 +33,8 @@ def seeded(clean_pg_embeddings, clean_neo4j):
         "res.partner", "base/models/partner.py", 0,
         "[base] res.partner: name (char)\nname = fields.Char(...)",
     )]
-    write_module_embeddings(clean_pg_embeddings, "sale", TEST_VERSION, sale_chunks, embedder)
-    write_module_embeddings(clean_pg_embeddings, "base", TEST_VERSION, base_chunks, embedder)
+    write_module_embeddings("sale", TEST_VERSION, sale_chunks, embedder)
+    write_module_embeddings("base", TEST_VERSION, base_chunks, embedder)
 
     return clean_pg_embeddings, clean_neo4j
 
@@ -138,12 +138,8 @@ def test_find_examples_rerank_by_dependents(clean_pg_embeddings, clean_neo4j):
         "isolated_mod/models/m.py", 0, shared_content,
     )
     embedder = FakeEmbedder(dim=1024)
-    write_module_embeddings(
-        clean_pg_embeddings, "popular_mod", TEST_VERSION, [popular_chunk], embedder
-    )
-    write_module_embeddings(
-        clean_pg_embeddings, "isolated_mod", TEST_VERSION, [isolated_chunk], embedder
-    )
+    write_module_embeddings("popular_mod", TEST_VERSION, [popular_chunk], embedder)
+    write_module_embeddings("isolated_mod", TEST_VERSION, [isolated_chunk], embedder)
 
     result = _find_examples(
         "example action", odoo_version=TEST_VERSION, limit=5,

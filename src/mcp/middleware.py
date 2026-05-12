@@ -131,12 +131,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Check cache first to avoid DB round-trip per request
         hit, key_id = _cache_get(raw_key)
         if not hit:
-            from src.db.auth_registry import verify_api_key
-            from src.mcp.server import _checkout_pg
-
             def _do_verify():
-                with _checkout_pg() as conn:
-                    return verify_api_key(conn, raw_key)
+                from src.db.pg import auth_store
+                return auth_store().verify_api_key(raw_key)
 
             key_id = await asyncio.to_thread(_do_verify)
             _cache_set(raw_key, key_id)
@@ -171,16 +168,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 async def _log_usage_async(key_id: int, request: Request, ms: int) -> None:
     """Log tool usage asynchronously — best-effort, never raises."""
     try:
-        from src.db.auth_registry import log_usage
-        from src.mcp.server import _checkout_pg
+        from src.db.pg import auth_store
 
         tool = request.headers.get("X-Tool-Name", "unknown")
         _logger.info("mcp_tool tool=%s key_id=%s ms=%d", tool, key_id, ms)
-
-        def _do_log():
-            with _checkout_pg() as conn:
-                log_usage(conn, key_id, tool, ms)
-
-        await asyncio.to_thread(_do_log)
+        await asyncio.to_thread(lambda: auth_store().log_usage(key_id, tool, ms))
     except Exception:
         pass

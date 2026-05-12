@@ -56,11 +56,25 @@ _SSH_KEY_ROW = {
 }
 
 
-def _make_conn():
-    """Return an autocommit-style mock psycopg2 connection."""
-    conn = MagicMock()
-    conn.autocommit = True
-    return conn
+def _make_repo_store(**kwargs):
+    """Return a MagicMock RepoStore pre-configured with return values."""
+    store = MagicMock()
+    for attr, val in kwargs.items():
+        if callable(val):
+            getattr(store, attr).side_effect = val
+        else:
+            getattr(store, attr).return_value = val
+    return store
+
+
+def _make_auth_store(**kwargs):
+    store = MagicMock()
+    for attr, val in kwargs.items():
+        if callable(val):
+            getattr(store, attr).side_effect = val
+        else:
+            getattr(store, attr).return_value = val
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -68,10 +82,10 @@ def _make_conn():
 # ---------------------------------------------------------------------------
 
 def test_main_unknown_repo_returns_2():
-    conn = _make_conn()
+    repo_s = _make_repo_store(get_repo_by_id=None)
     with (
-        patch("src.cloner.__main__._open_conn", return_value=conn),
-        patch("src.cloner.__main__.get_repo_by_id", return_value=None),
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
     ):
         rc = main(["--repo-id", "99999"])
     assert rc == 2
@@ -82,25 +96,27 @@ def test_main_unknown_repo_returns_2():
 # ---------------------------------------------------------------------------
 
 def test_main_https_clone_success(tmp_path):
-    conn = _make_conn()
     statuses: list[tuple] = []
 
-    def fake_set_status(c, rid, status, error_msg=None):
+    def fake_set_status(rid, status, error_msg=None):
         statuses.append((status, error_msg))
 
+    repo_s = _make_repo_store(
+        get_repo_by_id=dict(_HTTPS_REPO),
+        set_clone_status=fake_set_status,
+    )
+
     with (
-        patch("src.cloner.__main__._open_conn", return_value=conn),
-        patch("src.cloner.__main__.get_repo_by_id", return_value=dict(_HTTPS_REPO)),
-        patch("src.cloner.__main__.set_clone_status", side_effect=fake_set_status),
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.cloner.__main__.clone_repo") as fake_clone,
-        patch("src.cloner.__main__.update_repo_local_path") as fake_update,
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
 
     assert rc == 0
     fake_clone.assert_called_once()
-    fake_update.assert_called_once_with(conn, 1, str(tmp_path / "cloned"))
+    repo_s.update_repo_local_path.assert_called_once_with(1, str(tmp_path / "cloned"))
     # Final status must be 'cloned'
     assert statuses[-1][0] == "cloned"
 
@@ -110,20 +126,20 @@ def test_main_https_clone_success(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_main_clone_failure_sets_error_status(tmp_path):
-    conn = _make_conn()
     statuses: list[tuple] = []
 
-    def fake_set_status(c, rid, status, error_msg=None):
+    def fake_set_status(rid, status, error_msg=None):
         statuses.append((status, error_msg))
 
+    repo_s = _make_repo_store(
+        get_repo_by_id=dict(_HTTPS_REPO),
+        set_clone_status=fake_set_status,
+    )
+
     with (
-        patch("src.cloner.__main__._open_conn", return_value=conn),
-        patch("src.cloner.__main__.get_repo_by_id", return_value=dict(_HTTPS_REPO)),
-        patch("src.cloner.__main__.set_clone_status", side_effect=fake_set_status),
-        patch(
-            "src.cloner.__main__.clone_repo",
-            side_effect=Exception("git: timeout"),
-        ),
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
+        patch("src.cloner.__main__.clone_repo", side_effect=Exception("git: timeout")),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
@@ -140,16 +156,19 @@ def test_main_clone_failure_sets_error_status(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_main_ssh_url_without_key_id_returns_2():
-    conn = _make_conn()
     statuses: list[tuple] = []
 
-    def fake_set_status(c, rid, status, error_msg=None):
+    def fake_set_status(rid, status, error_msg=None):
         statuses.append((status, error_msg))
 
+    repo_s = _make_repo_store(
+        get_repo_by_id=dict(_SSH_REPO_NO_KEY),
+        set_clone_status=fake_set_status,
+    )
+
     with (
-        patch("src.cloner.__main__._open_conn", return_value=conn),
-        patch("src.cloner.__main__.get_repo_by_id", return_value=dict(_SSH_REPO_NO_KEY)),
-        patch("src.cloner.__main__.set_clone_status", side_effect=fake_set_status),
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
     ):
         rc = main(["--repo-id", "3"])
 
@@ -164,14 +183,13 @@ def test_main_ssh_url_without_key_id_returns_2():
 # ---------------------------------------------------------------------------
 
 def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
-    conn = _make_conn()
+    repo_s = _make_repo_store(get_repo_by_id=dict(_SSH_REPO))
+    auth_s = _make_auth_store(get_ssh_key_by_id=dict(_SSH_KEY_ROW))
 
     with (
-        patch("src.cloner.__main__._open_conn", return_value=conn),
-        patch("src.cloner.__main__.get_repo_by_id", return_value=dict(_SSH_REPO)),
-        patch("src.cloner.__main__.get_ssh_key_by_id", return_value=dict(_SSH_KEY_ROW)),
-        patch("src.cloner.__main__.set_clone_status"),
-        patch("src.cloner.__main__.update_repo_local_path"),
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
+        patch("src.db.pg.auth_store", return_value=auth_s),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
         patch(
             "src.cloner.__main__.decrypt_private_key",
@@ -193,18 +211,20 @@ def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
 
 def test_main_lifecycle_status_transitions(tmp_path):
     """Verify status transitions: pending → cloned (no others)."""
-    conn = _make_conn()
     observed: list[str] = []
 
-    def fake_set_status(c, rid, status, error_msg=None):
+    def fake_set_status(rid, status, error_msg=None):
         observed.append(status)
 
+    repo_s = _make_repo_store(
+        get_repo_by_id=dict(_HTTPS_REPO),
+        set_clone_status=fake_set_status,
+    )
+
     with (
-        patch("src.cloner.__main__._open_conn", return_value=conn),
-        patch("src.cloner.__main__.get_repo_by_id", return_value=dict(_HTTPS_REPO)),
-        patch("src.cloner.__main__.set_clone_status", side_effect=fake_set_status),
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.cloner.__main__.clone_repo"),
-        patch("src.cloner.__main__.update_repo_local_path"),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
