@@ -356,60 +356,80 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 ## Milestone 8 — "Public Wow"
 
-**Status:** Planning (plan-only 2026-05-11) — không có code change.
+**Status:** Planning — revised 2026-05-12 (Astro unified decision). Không có code change.
 
-**Intent:** Mở production host `odoo-semantic.viindoo.com:9999` cho anonymous public traffic với landing site đẹp + Web UI admin truy cập từ Internet. Đặt nền cho SaaS productization (M9-M11 monthly subscription).
+**Intent:** Mở production host `odoo-semantic.viindoo.com:9999` cho anonymous public traffic với landing site + admin UI đầy đủ trên Astro unified. Jinja2 xóa hoàn toàn. Đặt nền cho M9 OAuth/signup.
 
-**Outcome:** Visitor xem được animated graph hero trong 5s đầu tại `/`; admin login được từ ngoài LAN qua `/admin/`; `/mcp` /install /health không đổi.
+**Outcome:**
+- `GET /` → Astro static landing + React Flow hero animation (5s auto-reveal).
+- `GET /admin/*` → Astro SSR admin UI (thay thế Jinja2 hoàn toàn; session-auth required).
+- `GET /api/*` → FastAPI pure JSON API (no templates).
+- `/mcp`, `/install`, `/health` không đổi.
+
+**Architecture target:**
+```
+nginx (port 9999, prod)
+├── /          → Astro server (port 4321): static landing
+├── /admin/*   → Astro server (port 4321): SSR admin UI (auth-gated)
+├── /api/*     → FastAPI (port 8003): JSON API only (no Jinja2)
+├── /mcp       → FastAPI (port 8002): MCP server (unchanged)
+└── /install/, /health  → FastAPI (port 8002): unchanged
+```
+
+Session flow: `/admin/*` → Astro middleware → `GET /api/auth/verify` (FastAPI) → 401 → redirect `/admin/login`.
 
 **Plans liên quan:**
-- [`docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md`](docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md) — Master plan (3 streams, 7 PRs, ~3-4 working days).
-- [`docs/superpowers/plans/2026-05-11-webui-admin-prefix.md`](docs/superpowers/plans/2026-05-11-webui-admin-prefix.md) — Stream A detailed plan (Web UI under `/admin/`, FastAPI `root_path` refactor).
+- [`docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md`](docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md) — Master plan revised (4 streams, ~7-10 working days).
+- ~~[`docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md`](docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md)~~ — Superseded (kiến trúc cũ: landing-only Astro, Jinja2 admin còn lại).
+- ~~[`docs/superpowers/plans/2026-05-11-webui-admin-prefix.md`](docs/superpowers/plans/2026-05-11-webui-admin-prefix.md)~~ — Superseded (FastAPI root_path refactor không cần nữa; admin prefix thuộc Astro routing).
 
-**Decisions locked 2026-05-11:**
-- Hard-code `/admin` prefix (no env var); cookie path try `/admin` fallback `/`.
-- Astro for static site generator (adds Node 20+ + npm to repo).
-- React Flow + cinematic mode cho hero animation (~100kB, marketer-editable, a11y baked in).
-- Baked snapshot JSON cho graph data (`scripts/dump_graph_snippet.py`).
+**Decisions locked:**
+- 2026-05-11: Astro + React Flow + baked JSON snapshot (`scripts/dump_graph_snippet.py`).
+- 2026-05-12: Astro `output: 'hybrid'` — unified cho cả landing (static) VÀ admin (SSR). FastAPI → pure JSON API (Jinja2 xóa). Tailwind CSS. `site/` dir (thay `landing/`).
 
 **Streams + sub-PRs (planned, not yet opened):**
-- [ ] **Stream A — Web UI prefix** (1 PR): `feat/m8-admin-prefix` — ~20 files, +450/-130 LOC, 4-6h. Includes ADR-0013.
-- [ ] **Stream B — Landing site** (4 PRs):
-  - [ ] `feat/m8-landing-scaffold` — Astro setup, basic index.astro, package.json, lockfile (3-4h).
-  - [ ] `feat/m8-graph-snapshot` — `scripts/dump_graph_snippet.py` + baked JSON committed (2-3h).
-  - [ ] `feat/m8-hero-animation` — React Flow GraphAnimation.tsx + cinematic frames + content reuse từ docs/ (1-2 days).
-  - [ ] `feat/m8-landing-content` — docs pages + pricing placeholder + waitlist (1 day).
-- [ ] **Stream C — nginx integration** (1 PR): `feat/m8-nginx-integration` — `location /` static + `location /admin/` proxy + deploy.md fix + Makefile targets. Gate trên cả A và B merged (1-2h).
-- [ ] **CI** (1 PR): `feat/m8-ci-landing` — `.github/workflows/landing-build.yml` với Lighthouse perf gate (1-2h).
-- [x] **Stream X — Web UI ↔ CLI parity** (1 PR): `feat/m8-webui-cli-parity` — 9 WIs (W0 foundation + W1 delete profile + W2 delete repo + W3 index options + W4 reset embed + W7 index all + W5 index core + W6 seed patterns + W8 apply preset). 8 routes/forms mới, browser tests cho mỗi WI, scoped Neo4j cleanup, FK cascade + cross-store delete. Resolved high-severity gap: `--no-embed` rồi muốn re-embed không bị skip nhờ button "Re-embed" (reset head_sha=NULL).
+- [ ] **Stream A — FastAPI pure JSON API** (1 PR, ~3-4h): `feat/m8-fastapi-json-api` — xóa `src/web_ui/templates/` + Jinja2 dep, convert 26 endpoints → `/api/*` JSON, thêm `/api/auth/{login,logout,verify}`. ADR-0013.
+- [ ] **Stream B — Astro hybrid full** (4-5 PRs, ~4-5 days):
+  - [ ] `feat/m8-astro-scaffold` — `site/` dir, `output: 'hybrid'`, Tailwind, pnpm, tsconfig (3-4h).
+  - [ ] `feat/m8-graph-snapshot` — `scripts/dump_graph_snippet.py` + baked JSON (2-3h).
+  - [ ] `feat/m8-admin-pages` — 7 admin pages Astro SSR + AdminLayout + Astro middleware auth (2-3 days).
+  - [ ] `feat/m8-hero-animation` — landing + React Flow GraphAnimation island + cinematic frames (1-2 days).
+  - [ ] `feat/m8-landing-content` — pricing placeholder + docs pages (1 day). ADR-0012.
+- [ ] **Stream C — nginx integration** (1 PR, ~1-2h): `feat/m8-nginx-integration` — `/` + `/admin/*` → Astro :4321; `/api/` → FastAPI :8003; mcp/install/health unchanged. Gate: A + B merged.
+- [ ] **Stream D — systemd + CI** (1 PR, ~4-6h): `feat/m8-astro-service` — `odoo-semantic-astro.service`, CI `setup-node` + `pnpm build` + `pnpm run check`, browser test URL update.
+- [x] **Stream X — Web UI ↔ CLI parity** (done): 9 WIs đã merge — delete profile/repo, index options, reset-embed, index-all, index-core, seed-patterns, apply-preset.
 
-**Acceptance criteria** (xem master plan §10): public URL 200 + Lighthouse ≥ 80/95/95 + noscript fallback + admin login flow + nginx -t pass + ADR-0013/0014 committed.
+**Acceptance criteria:** `GET /` 200 Lighthouse ≥80/95/95; `GET /admin/login` 200 (Astro SSR); `POST /api/auth/login` 200 JSON + set-cookie; unauthenticated `GET /admin/` → redirect `/admin/login`; Jinja2 không còn trong `pyproject.toml`; nginx -t pass; `make lint + test` + `pnpm run check` green; ADR-0012 + ADR-0013 committed.
 
-**SaaS roadmap implications** (defer):
-- M9 "Auth Wow" — public signup, OAuth, tenant API keys.
-- M10 "Billing Wow" — Stripe, plan tiers, usage metering.
-- M11 "Dashboard Wow" — authenticated `/dashboard` reuse React Flow component cho "my graph" view.
-- M12 "Multi-tenant Wow" — Neo4j namespacing, cross-tenant isolation.
+**SaaS roadmap:**
+- M9 "Auth Wow" — OAuth Google/GitHub, public signup, tenant API keys (zero migration debt).
+- M10 "Billing Wow" — Stripe, plan tiers.
+- M11 "Dashboard Wow" — `/dashboard` reuse React Flow từ M8 hero.
+- M12 "Multi-tenant Wow" — Neo4j namespacing.
 
-**Khi nào start M8 execution:** sau khi M7 đã merge xong PR #46 (đã shipped 2026-05-11) + operator hoàn thành deployment fix-ups (PR #45, #48 — done). Stream A có thể start ngay; Stream B cần thêm 1 Sonnet check để xác nhận Astro/React Flow version pins còn current.
+**Khi nào start:** M7 đã shipped (PR #46, 2026-05-11). Operator fix-ups done (PR #45, #48). Có thể start ngay. Stream A + Stream B scaffold có thể parallel (độc lập).
 
 ---
 
 ## Milestone 9 — "Auth Wow"
 
-**Status:** Planning (chưa start).
+**Status:** Planning (chưa start). M8 phải merge trước.
 
-**Intent:** Public signup, OAuth, multi-user admin, + self-serve account operations còn thiếu sau M8 Stream X.
+**Intent:** Public signup, OAuth, multi-user admin, self-serve account operations. Zero migration debt — Jinja2 đã xóa hết trong M8, M9 chỉ làm feature mới thuần túy trên Astro SSR + FastAPI JSON API.
+
+**OAuth libraries:** `arctic` + `oslo` trong Astro SSR middleware (compatible natively với Astro output: hybrid). FastAPI `/api/auth/oauth-token` cho token exchange.
 
 **Items planned:**
-- [ ] OAuth integration (Google/GitHub)
-- [ ] Public signup flow + email verification
-- [ ] Tenant API key issuance per user
-- [ ] Self-serve webui user management (create/reset/delete users qua Web UI — hiện CLI-only `manager create-webui-user`)
-- [ ] Backup/Restore Web UI (download backup dump + restore upload — hiện CLI-only `src.cli backup/restore`; security review trước khi expose, đặc biệt restore upload)
-- [ ] FERNET key rotation Web UI flow (UX cho `src.cli rotate-fernet` — chỉ expose sau khi có 2FA + audit log; tránh leak old key qua HTTP)
-- [ ] CLI delete-profile / delete-repo subcommands trong `src/manager/__main__.py` (parity ngược: UI-first đã có sau M8 Stream X, bổ sung CLI cho automation/scripting)
+- [ ] OAuth integration (Google/GitHub) — `arctic` + `oslo` trong Astro SSR; callback URL `/admin/auth/callback`
+- [ ] Public signup flow + email verification — `/signup` Astro page + FastAPI `/api/auth/register` + SMTP config
+- [ ] Tenant API key issuance per user (sau signup, user tự tạo từ dashboard)
+- [ ] Self-serve webui user management (list/deactivate/reset users qua Web UI — hiện CLI-only `manager create-webui-user`)
+- [ ] Backup/Restore Web UI (React component trong `operations.astro`, gọi `/api/operations/backup|restore` — security review trước khi expose)
+- [ ] FERNET key rotation Web UI (chỉ expose sau khi có 2FA + audit log; tránh leak qua HTTP)
+- [ ] CLI delete-profile / delete-repo subcommands trong `src/manager/__main__.py` (parity CLI cho automation)
 - [ ] DB migrate trigger UI (read-only display current migration version; trigger giữ ở deploy script)
+
+**Plan file:** [`docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md`](docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md)
 
 ---
 
