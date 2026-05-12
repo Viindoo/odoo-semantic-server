@@ -293,6 +293,25 @@ docker compose up -d                                   # start Neo4j + PostgreSQ
 
 ---
 
+## Persona Guides
+
+Different roles get the most value from different tools. Quick-start guides:
+
+| Persona | Primary Tools | Guide |
+|---------|--------------|-------|
+| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [→ CEO Guide](docs/personas/ceo.md) |
+| Developer | `resolve_model`, `find_override_point`, `suggest_pattern`, `lint_check` | [→ Dev Guide](docs/personas/dev.md) |
+| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [→ Consultant Guide](docs/personas/consultant.md) |
+| Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](docs/personas/marketer.md) |
+| Sales | `check_module_exists`, `find_examples`, `resolve_model` | [→ Sales Guide](docs/personas/sales.md) |
+
+> **Claude Code users:** Install the [Odoo Semantic plugin](dist/odoo-semantic-plugin/) for persona-specific slash commands.
+> **Gemini users:** See [Gem instructions](dist/gemini-gem-instructions.md).
+> **ChatGPT users:** See [Custom GPT instructions](dist/openai-gpt-instructions.md).
+> **Cursor users:** See [Cursor rules](dist/cursor-rules.md).
+
+---
+
 ## Trạng Thái Hiện Tại
 
 > Xem [`TASKS.md`](TASKS.md) để biết task nào đang làm và task nào tiếp theo.
