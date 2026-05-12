@@ -554,31 +554,48 @@ def _find_examples(
 
 @mcp.tool()
 def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
-    """Return full info for an Odoo model: inheritance chain, field summary, method summary.
+    """Return full inheritance chain, field count, and method count for an Odoo model.
+
+    TRIGGER when: "show inheritance chain of sale.order", "what fields does
+    account.move have", "which modules extend res.partner", "liệt kê các field
+    của model X", "module nào extend model Y", "where is sale.order defined",
+    "how many modules override res.partner"
+    PREFER over: asking LLM from training data — returns real indexed data, not
+    hallucinated fields or phantom modules
+    SKIP when: user wants detail on one specific field → use resolve_field;
+    user wants a method override chain → use resolve_method
 
     Args:
         model_name: Odoo dotted name, e.g. 'sale.order', 'res.partner'.
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed version.
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
 
     Returns:
-        Tree-formatted text. Use to discover which modules extend a model
-        before adding a new override.
+        Tree text: Defined in, Inherits from, Extended by, Fields count,
+        Methods count.
 
     Example:
         resolve_model("sale.order", "17.0")
-        →  sale.order (Odoo 17.0)
-           ├─ Base module: [odoo] sale
-           ├─ Extended by:
-           │   ├─ [viin_sale]
-           │   └─ [to_sale_custom]
-           ├─ Fields: 47   Methods: 23
+        → sale.order (Odoo 17.0)
+          ├─ Defined in: [odoo] sale
+          ├─ Extended by:
+          │   ├─ [odoo] viin_sale
+          │   └─ [odoo] to_sale_custom
+          ├─ Fields: 47
+          └─ Methods: 23
     """
     return _resolve_model(model_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
-    """Return field details: type, computed/related metadata, declaring module.
+    """Return type, compute/related metadata, and declaring modules for one field.
+
+    TRIGGER when: "what type is amount_total field", "is this field computed or
+    stored", "where is field X defined", "field X có related không", "kiểu dữ
+    liệu của field X là gì", "is partner_id required on sale.order"
+    PREFER over: resolve_model — more detail on one field; grep — gives semantic
+    context (compute method, related path, store flag) not just code location
+    SKIP when: user wants all fields of a model → use resolve_model
 
     Args:
         model_name: e.g. 'sale.order'.
@@ -586,24 +603,34 @@ def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") 
         odoo_version: e.g. '17.0'. Default 'auto'.
 
     Returns:
-        Tree-formatted text including all extension layers, compute method,
-        related path, store flag, source snippet. Use before changing a field
-        to discover all writers/readers across modules.
+        Tree text: Type, Computed, Stored, Required, Related, Declared in
+        (all modules that declare this field).
 
     Example:
         resolve_field("sale.order", "amount_total", "17.0")
         → sale.order.amount_total (Odoo 17.0)
-          Type: monetary | Computed: _compute_amounts | Stored: Yes
-          Defined in:
-          ├─ [odoo] sale          ← base
-          └─ [viin_sale]          ← override
+          ├─ Type:     monetary
+          ├─ Computed: Yes (_compute_amounts)
+          ├─ Stored:   Yes
+          ├─ Required: No
+          ├─ Related:  —
+          └─ Declared in:
+              └─ [odoo] sale
     """
     return _resolve_field(model_name, field_name, odoo_version)
 
 
 @mcp.tool()
 def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
-    """Return override chain of a method, ordered base→top.
+    """Return the full override chain of a method, ordered base to top.
+
+    TRIGGER when: "show override chain of action_confirm", "which modules
+    override write()", "where is method X defined", "method nào super() lên
+    model kia", "ai override method X", "does viin_sale call super on write"
+    PREFER over: grep — shows full override chain with super() linkage and
+    decorator info, not just code occurrences
+    SKIP when: user wants field overrides → use resolve_field; user wants
+    view overrides → use resolve_view
 
     Args:
         model_name: e.g. 'sale.order'.
@@ -611,16 +638,16 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
         odoo_version: e.g. '17.0'. Default 'auto'.
 
     Returns:
-        Override chain (base → topmost). Use before super()-overriding
-        to know which modules already extend the method and in what order.
+        Tree text: override chain ordered base→top, each entry shows module,
+        super() call status, and decorators.
 
     Example:
         resolve_method("sale.order", "action_confirm", "17.0")
-        → sale.order.action_confirm (Odoo 17.0)
-          Override chain (base → top):
-          1. [odoo] sale            (base, no super)
-          2. [viin_sale]            (calls super)
-          3. [to_sale_workflow]     (calls super)
+        → sale.order.action_confirm() (Odoo 17.0)
+          └─ Override chain (3):
+              ├─ [odoo] sale — ✗ no super() — decorators: —
+              ├─ [odoo] viin_sale — ✓ calls super() — decorators: —
+              └─ [odoo] to_sale_workflow — ✓ calls super() — decorators: —
     """
     return _resolve_method(model_name, method_name, odoo_version)
 
@@ -629,21 +656,31 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
 def resolve_view(xmlid: str, odoo_version: str = "auto") -> str:
     """Return view inheritance chain and XPath modifications from all extension modules.
 
+    TRIGGER when: "show xpath overrides for sale.order form", "which modules
+    modify view X", "what does the merged XML look like", "view bị override bởi
+    module nào", "XPath chain của view X", "is view Y patched by viin_sale"
+    PREFER over: searching XML files manually — aggregates cross-module XPath
+    overrides into one merged skeleton, ordered by application
+    SKIP when: user wants Python logic → use resolve_method; user wants field
+    info → use resolve_field
+
     Args:
         xmlid: External ID of the view, e.g. 'sale.view_order_form'.
         odoo_version: e.g. '17.0'. Default 'auto'.
 
     Returns:
-        View tree + XPath operations applied by each extending module.
-        Use before adding XPath override to avoid conflicts with existing patches.
+        Tree text: view type, model, defining module, parent view (if
+        extension), own XPath ops, and list of extending views per module.
 
     Example:
         resolve_view("sale.view_order_form", "17.0")
-        → sale.view_order_form (form view of sale.order, Odoo 17.0)
-          Base in [odoo] sale
-          Extensions (in apply order):
-          1. [viin_sale] adds 3 xpath ops (after, before, replace)
-          2. [to_sale_custom] adds 1 xpath op (after //field[@name='partner_id'])
+        → sale.view_order_form (Odoo 17.0)
+          ├─ Type:   form
+          ├─ Model:  sale.order
+          ├─ Module: [odoo] sale
+          └─ Extended by (2 modules):
+              ├─ viin_sale.view_order_form_custom → [odoo] viin_sale
+              └─ to_sale_custom.view_form_ext → [odoo] to_sale_custom
     """
     return _resolve_view(xmlid, odoo_version)
 
@@ -656,33 +693,36 @@ def find_examples(
     context_module: str | None = None,
     chunk_types: list[str] | None = None,
 ) -> str:
-    """Tìm code examples từ codebase Odoo theo mô tả ngôn ngữ tự nhiên (semantic search).
+    """Semantic search for real code examples from the indexed Odoo codebase.
 
-    Yêu cầu Ollama đang chạy với model `qwen3-embedding-q5km` (xem README §Tool dependencies).
+    Requires Ollama running with model `qwen3-embedding-q5km`.
+
+    TRIGGER when: "show me examples of wizard usage", "how is mail.thread used
+    in codebase", "give me code example for X pattern", "ví dụ code dùng X
+    trong codebase", "cách dùng X trong thực tế", "how to send email in Odoo"
+    PREFER over: LLM-generated examples — returns real indexed code, not
+    hallucinated patterns or outdated snippets from training data
+    SKIP when: user wants to know if a module exists → use check_module_exists;
+    user wants pattern guidance with gotchas → use suggest_pattern
 
     Args:
-        query: Mô tả tính năng cần tìm (VN hoặc EN).
-        odoo_version: Version Odoo (ví dụ "17.0"). Mặc định "auto" = version mới nhất được index.
-        limit: Số kết quả trả về (mặc định 5, tối đa 20).
-        context_module: Module đang làm việc. Kết quả từ các module mà module này depends on
-            được ưu tiên cao hơn (+0.20 score boost).
-        chunk_types: Lọc theo loại code. Giá trị hợp lệ: method, field, view, qweb,
-            js_era1, js_era2, js_era3. Mặc định: tất cả loại.
+        query: Feature description (EN or VN).
+        odoo_version: e.g. "17.0". Default "auto" = latest indexed.
+        limit: Number of results (default 5, max 20).
+        context_module: Boost results from modules this module depends on.
+        chunk_types: Filter by type: method, field, view, qweb, js_era1,
+            js_era2, js_era3. Default: all types.
 
     Returns:
-        Header + N kết quả ranked theo cosine + centrality + context boost.
-        Mỗi kết quả: score, type, module, entity, file path, content snippet.
+        Header + N results ranked by cosine + centrality + context boost.
+        Each result: score, type, module, entity, file path, content snippet.
 
     Example:
-        find_examples("xác nhận đơn bán và gửi email cho khách", "17.0", limit=3)
-        → find_examples: "xác nhận đơn bán và gửi email cho khách" (17.0)
+        find_examples("confirm sale order and send email", "17.0", limit=3)
+        → find_examples: "confirm sale order and send email" (17.0)
           Found 3 results
-          ─────────────
           #1 · score 0.82 · method · [sale] sale.order.action_confirm
              File: sale/models/sale_order.py
-             ┌────────
-             │ def action_confirm(self):
-             │     ...
     """
     return _find_examples(query, odoo_version, limit, context_module, chunk_types)
 
@@ -930,26 +970,33 @@ def impact_analysis(
     entity_name: str,
     odoo_version: str = "auto",
 ) -> str:
-    """List everything affected if you change <entity>. Risk-scored (LOW/MEDIUM/HIGH).
+    """List everything affected by changing an entity. Risk-scored LOW/MEDIUM/HIGH.
+
+    TRIGGER when: "what breaks if I change amount_total", "impact of modifying
+    field X", "dependencies of method Y", "thay đổi field X ảnh hưởng đến gì",
+    "rủi ro khi sửa method Y", "blast radius of removing field Z"
+    PREFER over: manual grep — traces transitive dependencies (views, methods,
+    JS patches, dependent modules) across all indexed repos automatically
+    SKIP when: user wants to see who extends a model → use resolve_model;
+    user wants deprecation warnings → use find_deprecated_usage
 
     Args:
         entity_type: One of 'field', 'method', 'model'.
-        entity_name: For field/method: '<model>.<name>' e.g. 'sale.order.amount_total'.
-                     For model: '<model>' e.g. 'sale.order'.
-        odoo_version: Version Odoo (e.g. '17.0'). Default 'auto' = latest indexed version.
+        entity_name: For field/method: '<model>.<name>' e.g.
+            'sale.order.amount_total'. For model: '<model>' e.g. 'sale.order'.
+        odoo_version: e.g. '17.0'. Default 'auto'.
 
     Returns:
-        Risk score + breakdown of affected views, methods, JS patches across modules.
-        Use BEFORE renaming/removing a field, signature-changing a method,
-        or restructuring a model to estimate blast radius.
+        Risk score (LOW/MEDIUM/HIGH) + breakdown of affected views, methods,
+        JS patches across modules. Use BEFORE renaming or removing entities.
 
     Example:
         impact_analysis("field", "sale.order.amount_total", "17.0")
-        → Impact of changing sale.order.amount_total (17.0): MEDIUM (7 entities)
-          ├─ Views modifying field: 3 ([odoo]sale, [viin_sale], [to_sale_custom])
-          ├─ Methods reading/writing: 4
-          ├─ JS patches binding: 0
-          └─ Recommendation: confirm with [viin_sale, to_sale_custom] owners.
+        → impact_analysis(field, sale.order.amount_total, 17.0)
+          ├─ Risk: MEDIUM (7 affected entities)
+          ├─ Views (3): ...
+          ├─ Methods (4): ...
+          └─ Dependent modules (2): viin_sale, to_sale_custom
     """
     return _impact_analysis(entity_type, entity_name, odoo_version)
 
@@ -1099,21 +1146,29 @@ def _api_version_diff(
 
 @mcp.tool()
 def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
-    """Look up an Odoo core API symbol by name, return its signature, status, replacement.
+    """Look up an Odoo core API symbol: signature, status, replacement.
+
+    TRIGGER when: "what does @api.depends do", "signature of fields.Many2one",
+    "how to use Environment.ref()", "api.model decorator dùng thế nào", "giải
+    thích BaseModel._inherit", "is name_get still valid in Odoo 18"
+    PREFER over: reading Odoo source manually — returns structured symbol data
+    with version context, status (stable/deprecated/removed), and replacement
+    SKIP when: user wants to compare across versions → use api_version_diff;
+    user wants to scan for deprecated usage → use find_deprecated_usage
 
     Args:
         name: Symbol name (full qualified or short, e.g. 'safe_eval' or
-              'odoo.tools.safe_eval.safe_eval').
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
+            'odoo.tools.safe_eval.safe_eval').
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
 
     Returns:
-        Tree-formatted text. Use this BEFORE writing code that calls Odoo
-        upstream API to verify the symbol exists at the target version and
-        learn its replacement if deprecated/removed.
+        Tree text: Kind, Status, Signature, Replacement (if any), Added in,
+        Deprecated, Removed in, Source file location.
 
     Example:
         lookup_core_api("name_get", "18.0")
         → odoo.models.BaseModel.name_get (Odoo 18.0)
+          ├─ Kind:        orm_method
           ├─ Status:      removed
           ├─ Signature:   name_get(self)
           └─ Replacement: odoo.models.BaseModel.display_name
@@ -1274,25 +1329,32 @@ def _lint_check(
 def find_deprecated_usage(
     odoo_version: str = "auto", kind: str | None = None,
 ) -> str:
-    """List indexed user methods that call deprecated/removed Odoo core APIs.
+    """Scan indexed code for methods that call deprecated or removed Odoo APIs.
+
+    TRIGGER when: "find deprecated API usage in my codebase", "which modules
+    use old-style _columns", "upgrade risk scan", "code nào dùng API cũ sắp bị
+    xóa", "kiểm tra deprecated usage trước khi upgrade", "what needs to change
+    before upgrading to Odoo 18"
+    PREFER over: manual search — cross-repo scan with version-aware deprecation
+    database, shows replacement for each hit
+    SKIP when: user wants full API reference for one symbol → use lookup_core_api;
+    user wants version-level diff → use api_version_diff
 
     Args:
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
+        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
         kind: Optional filter — restrict to one CoreSymbol.kind
-              (e.g. 'orm_method', 'function').
+            (e.g. 'orm_method', 'function').
 
     Returns:
-        Tree-formatted text grouped by module → model.method → core symbol →
-        replacement. Use BEFORE upgrading a Viindoo addon to a new Odoo
-        version to plan code changes.
+        Tree text grouped by module → model.method → deprecated symbol →
+        replacement. Use BEFORE upgrading to plan code changes.
 
     Example:
         find_deprecated_usage("18.0")
         → find_deprecated_usage(Odoo 18.0) — 12 hits
           ├─ [viin_sale] sale.order.legacy_label
-          │    ├─ uses: odoo.models.BaseModel.name_get (status=deprecated)
-          │    └─ replacement: odoo.models.BaseModel.display_name
-          └─ ...
+          │   ├─ uses: odoo.models.BaseModel.name_get (status=deprecated)
+          │   └─ replacement: odoo.models.BaseModel.display_name
     """
     return _find_deprecated_usage(odoo_version, kind=kind)
 
@@ -1301,7 +1363,15 @@ def find_deprecated_usage(
 def lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
-    """Quick lint check of a code snippet against indexed Odoo lint rules (V0).
+    """Check a code snippet against indexed Odoo-specific lint rules (V0 fuzzy).
+
+    TRIGGER when: "lint check this module", "OCA style violations in module X",
+    "check coding standards", "module X có vi phạm coding convention không",
+    "kiểm tra code quality", "does this code follow Odoo guidelines"
+    PREFER over: running ruff/pylint directly — applies Odoo-specific lint rules
+    from indexed LintRule catalogue, not generic Python linters
+    SKIP when: user wants deprecated API scan → use find_deprecated_usage;
+    user wants module existence check → use check_module_exists
 
     Args:
         code: Source code chunk to check.
@@ -1309,14 +1379,13 @@ def lint_check(
         language: 'python' | 'javascript' | 'xml'.
 
     Returns:
-        Tree-formatted text listing matched rules (rule_id, severity, message).
-        V0 matcher is substring-on-rule-message — fast but fuzzy. Use as a
-        first-pass screen, NOT as authoritative pylint/ruff/eslint output.
+        Tree text listing matched rule violations (rule_id, severity, message).
+        V0 matcher is fuzzy token-overlap — use as first-pass screen, not as
+        authoritative pylint/ruff/eslint output.
 
     Example:
-        lint_check("raise UserError('Hello %s' % name)", "19.0", "python")
-        → lint_check(Odoo 19.0, language=python) — 1 violations
-          ├─ Code: \"raise UserError('Hello %s' % name)\"
+        lint_check("raise UserError('Hello %s' % name)", "17.0", "python")
+        → lint_check(Odoo 17.0, language=python) — 1 violations
           └─ E8502 (error): Bad usage of _, _lt function...
     """
     return _lint_check(code, odoo_version, language)
@@ -1479,18 +1548,26 @@ def cli_help(
     flag: str | None = None,
     odoo_version: str = "auto",
 ) -> str:
-    """Look up odoo-bin subcommand or flag info: status, replacement, help text.
+    """Look up odoo-bin subcommand or flag: status, help text, replacement.
+
+    TRIGGER when: "how to run odoo-bin scaffold", "what CLI options does
+    odoo-bin have", "odoo-bin command for database update", "cách dùng
+    odoo-bin shell", "tham số nào để cài module mới", "is --longpolling-port
+    still valid in Odoo 18"
+    PREFER over: reading Odoo docs — returns version-specific CLI info from
+    indexed CLICommand catalogue, including deprecated flag replacements
+    SKIP when: user wants API reference → use lookup_core_api; user wants to
+    check module existence → use check_module_exists
 
     Args:
         command: Subcommand name (e.g. 'server', 'shell', 'scaffold').
-                 If None, list all known commands at this version.
-        flag: Optional flag name (e.g. '--http-port'). When set with command,
-              returns full flag details including replacement.
+            If None, lists all known commands at this version.
+        flag: Optional flag (e.g. '--http-port'). With command, returns full
+            flag details including replacement when deprecated.
         odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
 
     Returns:
-        Tree-formatted text. Use to verify a flag's status before scripting
-        an odoo-bin invocation, or to pick the replacement for a deprecated flag.
+        Tree text: flag status, type, default, help text, replacement.
 
     Example:
         cli_help("server", "--longpolling-port", "18.0")
@@ -1506,14 +1583,22 @@ def cli_help(
 def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     """Diff a single Odoo core API symbol between two indexed versions.
 
+    TRIGGER when: "what changed in Odoo 17 vs 16 API", "new decorators in
+    version 17", "breaking changes between versions", "API nào bị xóa từ v16
+    sang v17", "tính năng mới trong Odoo 17", "did name_get change from 17 to 18"
+    PREFER over: reading changelogs — structured diff of CoreSymbol additions,
+    removals, deprecations, and signature changes per version
+    SKIP when: user wants runtime deprecated usage → use find_deprecated_usage;
+    user wants full API reference for one version → use lookup_core_api
+
     Args:
         symbol: Symbol name (full qualified or short).
-        from_version: Older Odoo version, e.g. '17.0'.
-        to_version: Newer Odoo version, e.g. '19.0'.
+        from_version: Older Odoo version, e.g. '16.0'.
+        to_version: Newer Odoo version, e.g. '17.0'.
 
     Returns:
-        Tree-formatted text describing whether the symbol was added, removed,
-        replaced, or had its signature changed.
+        Tree text: added/removed/stable status, old and new signatures,
+        replacement symbol if applicable.
 
     Example:
         api_version_diff("name_get", "17.0", "18.0")
@@ -2008,43 +2093,51 @@ def suggest_pattern(
     language: str = "python",
     limit: int = 5,
 ) -> str:
-    """Recommend curated Odoo patterns from a natural-language intent.
+    """Recommend curated Odoo patterns with gotchas from a natural-language intent.
 
-    Patterns include canonical snippet + 3+ gotchas to avoid common bugs
-    (anti-patterns, version-specific renames, security pitfalls).
+    TRIGGER when: "best pattern for wizard in Odoo", "how to implement
+    multi-company in Odoo", "pattern for override without breaking upstream",
+    "cách tốt nhất để implement X", "design pattern cho Odoo module",
+    "what's the right way to add computed field"
+    PREFER over: LLM knowledge — returns curated patterns from indexed catalogue
+    with real code snippets and versioned gotchas, not hallucinated patterns
+    SKIP when: user wants existing code examples from codebase → use
+    find_examples; user wants method override chain → use find_override_point
 
     Args:
-        intent: NL description of what you're trying to do, e.g.
-                'computed field cross-model partner'.
-        odoo_version: '17.0' / '18.0' / 'auto' (latest indexed).
+        intent: NL description of intent, e.g. 'computed field cross-model
+            partner'.
+        odoo_version: '17.0' / '18.0' / 'auto'.
         language: 'python' | 'xml' | 'js' | 'all'. Default 'python'.
         limit: Max patterns to return (default 5).
 
     Returns:
-        Tree-formatted list of patterns ranked by cosine score, each with
-        snippet (first 5 lines), file ref, and gotchas list. Empty index =>
-        instruction to run `python -m src.indexer.seed_patterns`.
+        Tree list of patterns ranked by cosine score, each with snippet (first
+        5 lines), file ref, and gotchas. Empty index → instruction to seed.
 
     Example:
         suggest_pattern("override write to read old value", "17.0")
-        → suggest_pattern('override write to read old value', 17.0, language=python) — 1 matches
+        → suggest_pattern('override write to read old value', 17.0, ...) — 1 matches
           └─ #1 · score 0.81 · write-read-before-super
               ├─ Language: python (min v17.0)
-              ├─ File:     addons/account/models/account_move.py:2891
               └─ Gotchas:
-                   • Reading old values AFTER super().write() returns the new value
-                   • Always return the result of super().write()
+                   • Reading old values AFTER super().write() returns new value
     """
     return _suggest_pattern(intent, odoo_version, language, limit)
 
 
 @mcp.tool()
 def check_module_exists(name: str, odoo_version: str = "auto") -> str:
-    """Verify if a module name is indexed AND flag EE-confusion (Viindoo stack).
+    """Verify if a module is indexed and flag EE-confusion for Viindoo stack.
 
-    Used by AI tools BEFORE generating `depends=['<name>']` in __manifest__.py
-    to avoid hallucinating Odoo Enterprise modules (knowledge, helpdesk, sign,
-    etc.) that don't exist on Viindoo Community stack.
+    TRIGGER when: "does module sale_management exist in Odoo 17", "is
+    viin_sale available", "check if feature X is in standard Odoo", "module X
+    có trong OCA không", "Odoo 17 có tính năng X chưa", "is helpdesk an EE
+    module"
+    PREFER over: searching manually — instant cross-version, cross-repo module
+    existence check with Enterprise edition detection and Viindoo equivalent
+    SKIP when: user wants module field/method details → use resolve_model;
+    user wants code examples from a module → use find_examples
 
     Args:
         name: Module technical name (e.g. 'sale', 'helpdesk', 'viin_helpdesk').
@@ -2052,7 +2145,7 @@ def check_module_exists(name: str, odoo_version: str = "auto") -> str:
 
     Returns:
         Tree text: Indexed yes/no, edition, EE-confusion flag, Viindoo
-        equivalent (if any), and a WARNING when name is an EE-only module.
+        equivalent (if any), and WARNING when name is an EE-only module.
 
     Example:
         check_module_exists('helpdesk', '17.0')
@@ -2060,8 +2153,7 @@ def check_module_exists(name: str, odoo_version: str = "auto") -> str:
           ├─ Indexed:         No
           ├─ Is EE confusion: Yes
           ├─ Viindoo equiv:   viin_helpdesk
-          └─ ⚠ WARNING: this is an Odoo Enterprise module. Do NOT depend on it
-             in a Viindoo Community stack...
+          └─ ⚠ WARNING: this is an Odoo Enterprise module (legacy hardcoded dict).
     """
     return _check_module_exists(name, odoo_version)
 
@@ -2070,54 +2162,38 @@ def check_module_exists(name: str, odoo_version: str = "auto") -> str:
 def find_override_point(
     model: str, method: str, odoo_version: str = "auto", to_version: str = "",
 ) -> str:
-    """Show override chain of a method + super-call ratio + convention guidance.
+    """Show override chain + super-call convention + anti-patterns for a method.
 
-    Used BEFORE writing an override to know: (a) which modules already extend
-    the method, (b) whether super() call is required (action/crud) or
-    forbidden (compute/inverse), and (c) common anti-patterns to avoid.
-
-    When to_version is provided and differs from odoo_version, performs a
-    cross-version diff (decorator changes, signature changes, convention changes)
-    between odoo_version and to_version — useful when migrating addons.
+    TRIGGER when: "where should I override action_confirm in sale.order", "best
+    override point for partner creation", "how to extend method X without
+    breaking OCA", "override field X ở đâu là đúng", "điểm override phù hợp
+    cho method Y", "is super() required for write override"
+    PREFER over: resolve_method — gives recommended injection points with
+    super() safety guidance and anti-patterns, not just chain listing
+    SKIP when: user wants full override chain only → use resolve_method; user
+    wants design pattern guidance → use suggest_pattern
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
         method: Method name (e.g. 'action_confirm', '_compute_amount').
-        odoo_version: '17.0' / '18.0' / 'auto'. Acts as from_version in diff mode.
-        to_version: Optional. When set and different from odoo_version, activates
-                    cross-version diff mode (e.g. '18.0' to diff 17.0 → 18.0).
-                    Default '' = single-version mode (backward compatible).
+        odoo_version: '17.0' / '18.0' / 'auto'. From-version in diff mode.
+        to_version: Optional. When set, activates cross-version diff mode
+            (e.g. '18.0' to diff 17.0 → 18.0). Default '' = single-version.
 
     Returns:
-        Single-version mode: Tree text with convention_kind, super_safety,
-        return_required, super_ratio, full override chain, and anti-patterns.
+        Single-version: convention_kind, super_safety, return_required,
+        super_ratio, override chain, and anti-patterns.
+        Cross-version diff: presence, decorator changes, signature diff,
+        convention and super safety change.
 
-        Cross-version diff mode: Tree text with presence, decorator changes,
-        convention change, signature diff, super safety change.
-
-    Example (single-version):
+    Example:
         find_override_point('sale.order', 'action_confirm', '17.0')
         → find_override_point('sale.order', 'action_confirm', 17.0)
           ├─ Convention:      action
           ├─ Super safety:    always
           ├─ Return required: Yes
-          ├─ Super ratio:     7/7 (overrides calling super)
-          ├─ Override chain (7):
-          │   ├─ [odoo] sale (community) — ✗ super()
-          │   └─ [tvtmaaddons17] viin_sale (viindoo) — ✓ super()
-          └─ Anti-patterns (3):
-              ├─ Old-style super(ClassName, self) — use plain super() in Python 3
-              └─ ...
-
-    Example (cross-version diff):
-        find_override_point('sale.order', 'action_confirm', '17.0', to_version='18.0')
-        → Method version diff (sale.order.action_confirm: 17.0 → 18.0)
-          ├─ Status:           both versions present
-          ├─ Decorator changes:
-          │   ├─ Removed in 18.0: api.multi
-          ├─ Convention:        unchanged (action)
-          ├─ Signature:         17.0='self' → 18.0='self, *, ctx=None'
-          └─ Super safety:      unchanged (always)
+          ├─ Super ratio:     7/7
+          └─ Anti-patterns (3): ...
     """
     return _find_override_point(model, method, odoo_version, to_version=to_version)
 
