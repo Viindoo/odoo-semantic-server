@@ -12,6 +12,7 @@ Subcommands:
 import argparse
 import logging
 import os
+import signal
 import sys
 from datetime import UTC, datetime
 
@@ -210,6 +211,26 @@ def main(argv: list[str] | None = None) -> int:
         pg = open_production_pg()
         max_workers = getattr(args, "max_workers", 1)
         profile_workers = getattr(args, "profile_workers", 1)
+
+        _sigterm_state: dict = {"pg": pg, "job_id": job_id}
+
+        def _sigterm_handler(signum, frame):
+            _pg = _sigterm_state.get("pg")
+            _job_id = _sigterm_state.get("job_id")
+            if _job_id is not None and _pg is not None:
+                try:
+                    job_registry.update_job(
+                        _pg, _job_id,
+                        status="error",
+                        finished_at=datetime.now(UTC),
+                        error_msg="Process received SIGTERM",
+                    )
+                except Exception:
+                    pass
+            sys.exit(1)
+
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
         try:
             if job_id is not None:
                 try:
@@ -261,8 +282,9 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     except Exception:
                         pass
-            except Exception as e:
-                if job_id is not None:
+            except BaseException as e:
+                if job_id is not None and not isinstance(e, SystemExit):
+                    # Don't overwrite job status already set by SIGTERM handler
                     try:
                         job_registry.update_job(
                             pg, job_id,
