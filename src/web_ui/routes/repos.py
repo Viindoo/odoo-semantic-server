@@ -24,22 +24,6 @@ def _is_pid_alive(pid: int) -> bool:
         return True  # process exists, different UID — assume alive
 
 
-def _get_conn():
-    import psycopg2
-
-    from src import config
-
-    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
-    if not dsn:
-        return None
-    try:
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-        return conn
-    except Exception:
-        return None
-
-
 @router.get("/repos", response_class=HTMLResponse)
 async def repos_page(request: Request):
     templates = request.app.state.templates
@@ -48,30 +32,23 @@ async def repos_page(request: Request):
     error = None
     all_job_id = None
     all_job_status = None
-    conn = _get_conn()
-    if conn:
-        try:
-            from src.db import job_registry
-            from src.db.repo_registry import get_repos_for_profile, list_profiles
+    try:
+        from src.db.pg import job_store, repo_store
 
-            for p in list_profiles(conn):
-                repos = get_repos_for_profile(conn, p["name"])
-                # Attach last_job to each repo for status badge
-                for repo in repos:
-                    repo["last_job"] = job_registry.get_last_job(conn, p["name"])
-                profiles.append({**p, "repos": repos})
+        for p in repo_store().list_profiles():
+            repos = repo_store().get_repos_for_profile(p["name"])
+            # Attach last_job to each repo for status badge
+            for repo in repos:
+                repo["last_job"] = job_store().get_last_job(p["name"])
+            profiles.append({**p, "repos": repos})
 
-            # Fetch most recent bulk "all" job for top-of-page badge
-            all_job = job_registry.get_last_job(conn, "all")
-            if all_job:
-                all_job_id = all_job["id"]
-                all_job_status = all_job["status"]
-        except Exception as e:
-            error = str(e)
-        finally:
-            conn.close()
-    else:
-        error = "Cannot connect to PostgreSQL. Check PG_DSN configuration."
+        # Fetch most recent bulk "all" job for top-of-page badge
+        all_job = job_store().get_last_job("all")
+        if all_job:
+            all_job_id = all_job["id"]
+            all_job_status = all_job["status"]
+    except Exception as e:
+        error = str(e)
 
     return templates.TemplateResponse(
         request,
@@ -93,16 +70,12 @@ async def create_profile(
     version: Annotated[str, Form()],
     description: Annotated[str, Form()] = "",
 ):
-    conn = _get_conn()
-    if conn:
-        try:
-            from src.db.repo_registry import add_profile
+    try:
+        from src.db.pg import repo_store
 
-            add_profile(conn, name=name, odoo_version=version, description=description)
-        except Exception as e:
-            _logger.warning("Create profile failed: %s", e)
-        finally:
-            conn.close()
+        repo_store().add_profile(name=name, odoo_version=version, description=description)
+    except Exception as e:
+        _logger.warning("Create profile failed: %s", e)
     return RedirectResponse("/repos", status_code=303)
 
 
@@ -112,20 +85,12 @@ async def delete_profile(request: Request, profile_id: int):
     from pathlib import Path
     from urllib.parse import quote_plus
 
-    conn = _get_conn()
-    if not conn:
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus("Cannot connect to database."),
-            status_code=303,
-        )
-
     try:
-        from src.db.repo_registry import delete_profile as _delete_profile
-        from src.db.repo_registry import get_repos_for_profile, list_profiles
+        from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
 
         # Lookup profile name for flash message + job guard
-        profiles = list_profiles(conn)
+        profiles = repo_store().list_profiles()
         profile = next((p for p in profiles if p["id"] == profile_id), None)
         if profile is None:
             return RedirectResponse(
@@ -136,7 +101,9 @@ async def delete_profile(request: Request, profile_id: int):
         profile_name = profile["name"]
 
         # Guard: reject if indexer is running for this profile
-        if indexer_is_running(conn, profile_name):
+        with get_pool().checkout() as conn:
+            running = indexer_is_running(conn, profile_name)
+        if running:
             flash = f"Cannot delete: indexer running for profile {profile_name}"
             return RedirectResponse(
                 f"/repos?flash={quote_plus(flash)}",
@@ -144,7 +111,7 @@ async def delete_profile(request: Request, profile_id: int):
             )
 
         # Snapshot repos BEFORE PG delete (for Neo4j + pgvector cleanup)
-        repos = get_repos_for_profile(conn, profile_name)
+        repos = repo_store().get_repos_for_profile(profile_name)
         repo_cleanup_pairs = [
             {
                 "basename": Path(r["local_path"]).name,
@@ -154,7 +121,7 @@ async def delete_profile(request: Request, profile_id: int):
         ]
 
         # PG delete (CASCADE removes child repos automatically)
-        result = _delete_profile(conn, profile_id)
+        result = repo_store().delete_profile(profile_id)
         repo_count = len(result["repos"])
 
     except Exception as e:
@@ -163,8 +130,6 @@ async def delete_profile(request: Request, profile_id: int):
             "/repos?flash=" + quote_plus(f"Delete failed: {e}"),
             status_code=303,
         )
-    finally:
-        conn.close()
 
     # Neo4j + pgvector cleanup (outside PG conn — Neo4j driver manages its own connections)
     # Collect module names FIRST (while Module nodes still exist in Neo4j)
@@ -295,24 +260,22 @@ def _delete_embeddings_for_repos(
     if not any(module_names_by_version.get(v) for v in versions_seen):
         return 0  # nothing to delete
 
-    pg_conn = _get_conn()
-    if pg_conn is None:
-        _logger.warning("PG connection unavailable — skipping embeddings cleanup")
-        return 0
-
     try:
+        from src.db.pg import get_pool
+
         for version in versions_seen:
             module_list = module_names_by_version.get(version, [])
             if not module_list:
                 continue  # repo never indexed → no embeddings to delete
             try:
-                with pg_conn.cursor() as cur:
-                    cur.execute(
+                with get_pool().checkout() as conn:
+                    rowcount = get_pool().execute(
+                        conn,
                         "DELETE FROM embeddings "
                         "WHERE odoo_version = %s AND module = ANY(%s)",
                         (version, module_list),
                     )
-                    total += cur.rowcount
+                    total += rowcount
             except Exception as e:
                 _logger.warning(
                     "pgvector cleanup failed for version %s modules %s: %s",
@@ -320,11 +283,8 @@ def _delete_embeddings_for_repos(
                     module_list,
                     e,
                 )
-    finally:
-        try:
-            pg_conn.close()
-        except Exception:
-            pass
+    except Exception as e:
+        _logger.warning("PG connection unavailable — skipping embeddings cleanup: %s", e)
 
     return total
 
@@ -346,14 +306,12 @@ async def add_repo(
 
     if is_ssh_url(url):
         if not ssh_key_id or not ssh_key_id.strip().isdigit():
-            conn = _get_conn()
             profiles = []
-            if conn:
-                try:
-                    from src.db.repo_registry import list_profiles
-                    profiles = list_profiles(conn)
-                finally:
-                    conn.close()
+            try:
+                from src.db.pg import repo_store
+                profiles = repo_store().list_profiles()
+            except Exception:
+                pass
             return templates.TemplateResponse(
                 request,
                 "repos.html",
@@ -366,28 +324,22 @@ async def add_repo(
             )
         ssh_key_id_int = int(ssh_key_id.strip())
         repo_id: int | None = None
-        conn = _get_conn()
-        if conn:
-            try:
-                from src.db.repo_registry import add_repo as _add_repo
-                from src.db.repo_registry import list_profiles
+        try:
+            from src.db.pg import repo_store
 
-                profiles = [p for p in list_profiles(conn) if p["name"] == profile]
-                if profiles:
-                    target_dir = default_clone_dir(profile, url)
-                    repo_id = _add_repo(
-                        conn,
-                        profile_id=profiles[0]["id"],
-                        url=url,
-                        branch=branch,
-                        local_path=str(target_dir),
-                        ssh_key_id=ssh_key_id_int,
-                        clone_status="manual",
-                    )
-            except Exception as e:
-                _logger.warning("Add SSH repo failed: %s", e)
-            finally:
-                conn.close()
+            profiles_list = [p for p in repo_store().list_profiles() if p["name"] == profile]
+            if profiles_list:
+                target_dir = default_clone_dir(profile, url)
+                repo_id = repo_store().add_repo(
+                    profile_id=profiles_list[0]["id"],
+                    url=url,
+                    branch=branch,
+                    local_path=str(target_dir),
+                    ssh_key_id=ssh_key_id_int,
+                    clone_status="manual",
+                )
+        except Exception as e:
+            _logger.warning("Add SSH repo failed: %s", e)
 
         if repo_id is not None:
             subprocess.Popen(
@@ -399,42 +351,33 @@ async def add_repo(
         return RedirectResponse("/repos", status_code=303)
 
     # HTTPS / file:// / manual path — legacy behavior unchanged
-    conn = _get_conn()
-    if conn:
-        try:
-            from src.db.repo_registry import add_repo as _add_repo
-            from src.db.repo_registry import list_profiles
+    try:
+        from src.db.pg import repo_store
 
-            profiles = [p for p in list_profiles(conn) if p["name"] == profile]
-            if profiles:
-                _add_repo(
-                    conn,
-                    profile_id=profiles[0]["id"],
-                    url=url,
-                    branch=branch,
-                    local_path=local_path,
-                    ssh_key_id=None,
-                    clone_status="manual",
-                )
-        except Exception as e:
-            _logger.warning("Add repo failed: %s", e)
-        finally:
-            conn.close()
+        profiles_list = [p for p in repo_store().list_profiles() if p["name"] == profile]
+        if profiles_list:
+            repo_store().add_repo(
+                profile_id=profiles_list[0]["id"],
+                url=url,
+                branch=branch,
+                local_path=local_path,
+                ssh_key_id=None,
+                clone_status="manual",
+            )
+    except Exception as e:
+        _logger.warning("Add repo failed: %s", e)
     return RedirectResponse("/repos", status_code=303)
 
 
 @router.get("/repos/ssh-keys-list")
 async def ssh_keys_list(request: Request):
     """Return JSON array of SSH key pairs (id + name) for the add-repo form dropdown."""
-    conn = _get_conn()
-    if not conn:
-        return JSONResponse({"error": "database unavailable"}, status_code=503)
     try:
-        from src.db.auth_registry import list_ssh_keys
+        from src.db.pg import auth_store
 
-        keys = list_ssh_keys(conn)
-    finally:
-        conn.close()
+        keys = auth_store().list_ssh_keys()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
     return JSONResponse([{"id": k["id"], "name": k["name"]} for k in keys])
 
 
@@ -444,20 +387,12 @@ async def delete_repo(request: Request, repo_id: int):
     from pathlib import Path
     from urllib.parse import quote_plus
 
-    conn = _get_conn()
-    if not conn:
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus("Cannot connect to database."),
-            status_code=303,
-        )
-
     try:
-        from src.db.repo_registry import delete_repo as _delete_repo
-        from src.db.repo_registry import get_repo_by_id
+        from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
 
         # Lookup repo + profile info; 404-style redirect if missing
-        repo = get_repo_by_id(conn, repo_id)
+        repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
             return RedirectResponse(
                 "/repos?flash=" + quote_plus("Repo not found."),
@@ -469,7 +404,9 @@ async def delete_repo(request: Request, repo_id: int):
         basename = Path(repo["local_path"]).name
 
         # Guard: reject if indexer is running for the containing profile
-        if indexer_is_running(conn, profile_name):
+        with get_pool().checkout() as conn:
+            running = indexer_is_running(conn, profile_name)
+        if running:
             flash = f"Cannot delete: indexer running for profile {profile_name}"
             return RedirectResponse(
                 f"/repos?flash={quote_plus(flash)}",
@@ -477,7 +414,7 @@ async def delete_repo(request: Request, repo_id: int):
             )
 
         # PG delete (snapshot already done above)
-        _delete_repo(conn, repo_id)
+        repo_store().delete_repo(repo_id)
 
     except Exception as e:
         _logger.warning("Delete repo %s failed: %s", repo_id, e)
@@ -485,8 +422,6 @@ async def delete_repo(request: Request, repo_id: int):
             "/repos?flash=" + quote_plus(f"Delete failed: {e}"),
             status_code=303,
         )
-    finally:
-        conn.close()
 
     # Neo4j + pgvector cleanup (outside PG conn)
     cleanup_pairs = [{"basename": basename, "version": odoo_version}]
@@ -506,15 +441,12 @@ async def delete_repo(request: Request, repo_id: int):
 @router.get("/repos/repos/{repo_id}/clone-status")
 async def clone_status(request: Request, repo_id: int):
     """Return JSON clone_status for a single repo (used by badge polling)."""
-    conn = _get_conn()
-    if not conn:
-        return JSONResponse({"error": "database unavailable"}, status_code=503)
     try:
-        from src.db.repo_registry import get_repo_by_id
+        from src.db.pg import repo_store
 
-        repo = get_repo_by_id(conn, repo_id)
-    finally:
-        conn.close()
+        repo = repo_store().get_repo_by_id(repo_id)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
     if repo is None:
         return JSONResponse({"error": "repo not found"}, status_code=404)
     return JSONResponse({
@@ -558,41 +490,39 @@ async def index_repo(
         flash = f"max_workers must be between 1 and 8 (got {max_workers_int})."
         return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
 
-    conn = _get_conn()
-    if conn:
-        try:
-            from src.db.repo_registry import list_repos
-            from src.indexer.pipeline import indexer_is_running
-            from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
+    try:
+        from src.db.pg import get_pool, repo_store
+        from src.indexer.pipeline import indexer_is_running
+        from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
-            repos = list_repos(conn)
-            repo = next((r for r in repos if r["id"] == repo_id), None)
-            if repo and repo.get("profile_name"):
-                if indexer_is_running(conn, repo["profile_name"]):
-                    flash = (
-                        "Indexer already running for profile "
-                        f"{repo['profile_name']}. Wait for it to finish."
-                    )
-                    return RedirectResponse(
-                        f"/repos?flash={quote_plus(flash)}",
-                        status_code=303,
-                    )
+        repos = repo_store().list_repos()
+        repo = next((r for r in repos if r["id"] == repo_id), None)
+        if repo and repo.get("profile_name"):
+            with get_pool().checkout() as conn:
+                running = indexer_is_running(conn, repo["profile_name"])
+            if running:
+                flash = (
+                    "Indexer already running for profile "
+                    f"{repo['profile_name']}. Wait for it to finish."
+                )
+                return RedirectResponse(
+                    f"/repos?flash={quote_plus(flash)}",
+                    status_code=303,
+                )
 
-                argv = ["index-repo", "--profile", repo["profile_name"]]
-                if no_embed:
-                    argv += ["--no-embed"]
-                if full:
-                    argv += ["--full"]
-                if gc:
-                    argv += ["--gc"]
-                if max_workers_int != 1:
-                    argv += ["--max-workers", str(max_workers_int)]
+            argv = ["index-repo", "--profile", repo["profile_name"]]
+            if no_embed:
+                argv += ["--no-embed"]
+            if full:
+                argv += ["--full"]
+            if gc:
+                argv += ["--gc"]
+            if max_workers_int != 1:
+                argv += ["--max-workers", str(max_workers_int)]
 
-                spawn_indexer_subcommand(conn, argv, job_label=repo["profile_name"])
-        except Exception as e:
-            _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
-        finally:
-            conn.close()
+            spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
+    except Exception as e:
+        _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
     return RedirectResponse("/repos", status_code=303)
 
 
@@ -607,19 +537,12 @@ async def reset_embed(request: Request, repo_id: int):
     """
     from urllib.parse import quote_plus
 
-    conn = _get_conn()
-    if not conn:
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus("Cannot connect to database."),
-            status_code=303,
-        )
-
     try:
-        from src.db.repo_registry import get_repo_by_id, reset_repo_head_sha
+        from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
         from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
-        repo = get_repo_by_id(conn, repo_id)
+        repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
             return RedirectResponse(
                 "/repos?flash=" + quote_plus("Repo not found."),
@@ -629,7 +552,9 @@ async def reset_embed(request: Request, repo_id: int):
         profile_name = repo["profile_name"]
 
         # Guard: reject if indexer is already running for this profile
-        if indexer_is_running(conn, profile_name):
+        with get_pool().checkout() as conn:
+            running = indexer_is_running(conn, profile_name)
+        if running:
             flash = (
                 f"Cannot reset embed state: indexer already running for profile "
                 f"{profile_name}. Wait for it to finish."
@@ -640,11 +565,11 @@ async def reset_embed(request: Request, repo_id: int):
             )
 
         # Wipe head_sha → forces full re-scan (bypasses incremental skip)
-        reset_repo_head_sha(conn, repo_id)
+        repo_store().reset_repo_head_sha(repo_id)
 
         # Spawn index-repo without --no-embed / --full
         argv = ["index-repo", "--profile", profile_name]
-        job_id = spawn_indexer_subcommand(conn, argv, job_label=profile_name)
+        job_id = spawn_indexer_subcommand(argv, job_label=profile_name)
 
         flash = f"Re-embedding started for '{profile_name}' (job {job_id})"
         return RedirectResponse(
@@ -658,8 +583,6 @@ async def reset_embed(request: Request, repo_id: int):
             "/repos?flash=" + quote_plus(f"Reset embed failed: {e}"),
             status_code=303,
         )
-    finally:
-        conn.close()
 
 
 @router.post("/repos/index-all", response_class=RedirectResponse)
@@ -700,19 +623,16 @@ async def index_all(
         flash = f"profile_workers must be between 1 and 4 (got {profile_workers_int})."
         return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
 
-    conn = _get_conn()
-    if not conn:
-        flash = "Cannot connect to database."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
-
     try:
-        from src.db.repo_registry import list_profiles
+        from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
         from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
         # Guard: reject if any profile has a running indexer job
-        all_profiles = list_profiles(conn)
-        blocked = [p["name"] for p in all_profiles if indexer_is_running(conn, p["name"])]
+        all_profiles = repo_store().list_profiles()
+        blocked = []
+        with get_pool().checkout() as conn:
+            blocked = [p["name"] for p in all_profiles if indexer_is_running(conn, p["name"])]
         if blocked:
             names = ", ".join(blocked)
             flash = f"Cannot start index-all: indexer running for: {names}"
@@ -729,7 +649,7 @@ async def index_all(
         if profile_workers_int != 1:
             argv += ["--profile-workers", str(profile_workers_int)]
 
-        job_id = spawn_indexer_subcommand(conn, argv, job_label="all")
+        job_id = spawn_indexer_subcommand(argv, job_label="all")
         flash = f"Index all started (job {job_id})"
         return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
 
@@ -737,8 +657,6 @@ async def index_all(
         _logger.warning("index-all trigger failed: %s", e)
         flash = f"index-all failed: {e}"
         return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
-    finally:
-        conn.close()
 
 
 @router.get("/repos/jobs/{job_id}/status")
@@ -748,15 +666,12 @@ async def job_status(request: Request, job_id: int):
     Includes ``is_alive`` field: True/False when status='running' and a PID is recorded,
     None otherwise. A False value indicates a stuck job (process not found).
     """
-    from src.db import job_registry
-
-    conn = _get_conn()
-    if not conn:
-        return JSONResponse({"error": "database unavailable"}, status_code=503)
     try:
-        job = job_registry.get_job(conn, job_id)
-    finally:
-        conn.close()
+        from src.db.pg import job_store
+
+        job = job_store().get_job(job_id)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
     if job is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
 
@@ -784,33 +699,27 @@ async def reset_stuck_job(request: Request, job_id: int):
     import datetime as _dt
     from urllib.parse import quote_plus
 
-    conn = _get_conn()
-    if conn:
-        try:
-            from src.db import job_registry
+    try:
+        from src.db.pg import job_store
 
-            job = job_registry.get_job(conn, job_id)
-            if job is None:
-                flash = f"Job {job_id} not found."
-            elif job["status"] != "running":
-                flash = f"Job {job_id} is not in 'running' state (current: {job['status']})."
+        job = job_store().get_job(job_id)
+        if job is None:
+            flash = f"Job {job_id} not found."
+        elif job["status"] != "running":
+            flash = f"Job {job_id} is not in 'running' state (current: {job['status']})."
+        else:
+            pid = job.get("pid")
+            if pid is not None and _is_pid_alive(pid):
+                flash = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
             else:
-                pid = job.get("pid")
-                if pid is not None and _is_pid_alive(pid):
-                    flash = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
-                else:
-                    job_registry.update_job(
-                        conn, job_id,
-                        status="error",
-                        finished_at=_dt.datetime.now(_dt.UTC),
-                        error_msg="Reset by admin (process not found)",
-                    )
-                    flash = f"Job {job_id} has been reset to error state."
-        except Exception as e:
-            flash = f"Reset failed: {e}"
-            _logger.warning("Reset job %d failed: %s", job_id, e)
-        finally:
-            conn.close()
-    else:
-        flash = "Database connection unavailable."
+                job_store().update_job(
+                    job_id,
+                    status="error",
+                    finished_at=_dt.datetime.now(_dt.UTC),
+                    error_msg="Reset by admin (process not found)",
+                )
+                flash = f"Job {job_id} has been reset to error state."
+    except Exception as e:
+        flash = f"Reset failed: {e}"
+        _logger.warning("Reset job %d failed: %s", job_id, e)
     return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)

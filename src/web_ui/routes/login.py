@@ -47,31 +47,11 @@ def _is_rate_limited(ip: str) -> bool:
     return len(recent) >= _RATE_MAX_FAILURES
 
 
-def _get_conn():
-    import psycopg2
-
-    from src import config
-
-    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
-    if not dsn:
-        return None
-    try:
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-        return conn
-    except Exception:
-        return None
-
-
-def _lookup_user(conn, username: str) -> str | None:
+def _lookup_user(username: str) -> str | None:
     """Return password_hash for username, or None if not found."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT password_hash FROM webui_users WHERE username = %s",
-            (username,),
-        )
-        row = cur.fetchone()
-        return row[0] if row else None
+    from src.db.pg import auth_store
+
+    return auth_store().get_user_password_hash(username)
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -117,19 +97,11 @@ async def login_post(
     if next and next.startswith("/") and not next.startswith("//"):
         safe_next = unquote_plus(next)
 
-    conn = _get_conn()
-    if conn is None:
-        logger.error("Login: cannot connect to PostgreSQL")
-        error_url = f"/login?error=db_unavailable&next={quote_plus(safe_next)}"
-        return RedirectResponse(error_url, status_code=302)
-
     try:
-        pw_hash = _lookup_user(conn, username.strip())
+        pw_hash = _lookup_user(username.strip())
     except Exception as exc:
         logger.error("Login DB error: %s", exc)
         pw_hash = None
-    finally:
-        conn.close()
 
     if pw_hash is None or not verify_password(password, pw_hash):
         logger.warning("Failed login attempt for user %r (IP: %s)", username, client_ip)
