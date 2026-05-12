@@ -21,8 +21,7 @@ from pathlib import Path
 import psycopg2
 
 from src import config
-from src.db import auth_registry, repo_registry
-from src.db._types import PgConn
+from src.db.pg import auth_store, repo_store
 from src.indexer.version_presets import list_presets, load_preset
 
 # Profile name: alphanumeric + underscore, 1-50 chars (matches database TEXT but
@@ -33,7 +32,7 @@ _PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
 _VERSION_RE = re.compile(r"^\d{1,2}\.\d+$")
 
 
-def _open_conn() -> PgConn:
+def _open_conn():
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
     if not dsn:
         print(
@@ -50,10 +49,16 @@ def _open_conn() -> PgConn:
         print(f"✗ Cannot connect to PostgreSQL ({config.mask_dsn(dsn)}): {msg}", file=sys.stderr)
         sys.exit(1)
     conn.autocommit = True
+    # Also initialize centralized pool so store accessors work:
+    from src.db.pg import get_pool, init_pool
+    try:
+        get_pool()
+    except RuntimeError:
+        init_pool(dsn, min_conn=1, max_conn=3)
     return conn
 
 
-def _cmd_add_profile(args, conn: PgConn) -> int:
+def _cmd_add_profile(args, conn) -> int:
     if not _PROFILE_NAME_RE.match(args.name):
         print(
             f"✗ Profile name '{args.name}' invalid. "
@@ -69,8 +74,7 @@ def _cmd_add_profile(args, conn: PgConn) -> int:
         )
         return 1
     try:
-        pid = repo_registry.add_profile(
-            conn,
+        pid = repo_store().add_profile(
             name=args.name,
             odoo_version=args.version,
             description=args.description or "",
@@ -82,8 +86,8 @@ def _cmd_add_profile(args, conn: PgConn) -> int:
     return 0
 
 
-def _cmd_add_repo(args, conn: PgConn) -> int:
-    profiles = [p for p in repo_registry.list_profiles(conn) if p["name"] == args.profile]
+def _cmd_add_repo(args, conn) -> int:
+    profiles = [p for p in repo_store().list_profiles() if p["name"] == args.profile]
     if not profiles:
         print(f"✗ Profile '{args.profile}' not found. Run add-profile first.", file=sys.stderr)
         return 2
@@ -93,8 +97,7 @@ def _cmd_add_repo(args, conn: PgConn) -> int:
             file=sys.stderr,
         )
         return 1
-    rid = repo_registry.add_repo(
-        conn,
+    rid = repo_store().add_repo(
         profile_id=profiles[0]["id"],
         url=args.url,
         branch=args.branch,
@@ -104,14 +107,14 @@ def _cmd_add_repo(args, conn: PgConn) -> int:
     return 0
 
 
-def _cmd_list(_args, conn: PgConn) -> int:
-    profiles = repo_registry.list_profiles(conn)
+def _cmd_list(_args, conn) -> int:
+    profiles = repo_store().list_profiles()
     if not profiles:
         print("(no profiles yet — run: python -m src.manager add-profile <name> --version <ver>)")
         return 0
     for p in profiles:
         print(f"[{p['name']}] odoo_version={p['odoo_version']}")
-        repos = repo_registry.get_repos_for_profile(conn, profile_name=p["name"])
+        repos = repo_store().get_repos_for_profile(profile_name=p["name"])
         if not repos:
             print("    (no repos)")
             continue
@@ -120,11 +123,11 @@ def _cmd_list(_args, conn: PgConn) -> int:
     return 0
 
 
-def _cmd_create_api_key(args, conn: PgConn) -> int:
+def _cmd_create_api_key(args, conn) -> int:
     if not args.name:
         print("✗ Name is required.", file=sys.stderr)
         return 1
-    raw_key, key_prefix, key_id = auth_registry.create_api_key(conn, args.name)
+    raw_key, key_prefix, key_id = auth_store().create_api_key(args.name)
     print(f"API key: {raw_key}")
     print(f"Key ID:  {key_id}")
     print(f"Prefix:  {key_prefix}")
@@ -135,7 +138,7 @@ def _cmd_create_api_key(args, conn: PgConn) -> int:
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_@.\-]{1,64}$")
 
 
-def _cmd_create_webui_user(args, conn: PgConn) -> int:
+def _cmd_create_webui_user(args, conn) -> int:
     """Create or reset a Web UI admin user.
 
     Prompts for password interactively (getpass). Uses bcrypt cost=12.
@@ -168,30 +171,19 @@ def _cmd_create_webui_user(args, conn: PgConn) -> int:
 
     pw_hash = hash_password(pw1)
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM webui_users WHERE username = %s", (username,))
-        exists = cur.fetchone() is not None
-
-    if exists and not args.reset:
+    existing_hash = auth_store().get_user_password_hash(username)
+    if existing_hash is not None and not args.reset:
         print(
             f"✗ User '{username}' already exists. Use --reset to overwrite password.",
             file=sys.stderr,
         )
         return 2
 
-    with conn.cursor() as cur:
-        if exists:
-            cur.execute(
-                "UPDATE webui_users SET password_hash = %s WHERE username = %s",
-                (pw_hash, username),
-            )
-            print(f"✓ Password reset for '{username}'.")
-        else:
-            cur.execute(
-                "INSERT INTO webui_users (username, password_hash) VALUES (%s, %s)",
-                (username, pw_hash),
-            )
-            print(f"✓ Web UI user '{username}' created.")
+    auth_store().set_user_password(username, pw_hash)
+    if existing_hash is not None:
+        print(f"✓ Password reset for '{username}'.")
+    else:
+        print(f"✓ Web UI user '{username}' created.")
     return 0
 
 
@@ -210,7 +202,7 @@ def _resolve_local_path(url: str, branch: str, base_dir: str, repo_map: dict[str
 
 
 def _cmd_apply_preset_write(
-    conn: PgConn,
+    conn,
     *,
     profile_name: str,
     odoo_version: str,
@@ -219,8 +211,8 @@ def _cmd_apply_preset_write(
 ) -> int:
     """Write pre-validated preset data to DB. Called after path validation succeeds."""
     try:
-        pid = repo_registry.add_profile(
-            conn, name=profile_name, odoo_version=odoo_version, description=description
+        pid = repo_store().add_profile(
+            name=profile_name, odoo_version=odoo_version, description=description
         )
     except ValueError as e:
         print(f"✗ {e}. Use a different name or remove the existing profile first.", file=sys.stderr)
@@ -228,8 +220,7 @@ def _cmd_apply_preset_write(
 
     for r in resolved_repos:
         try:
-            repo_registry.add_repo(
-                conn,
+            repo_store().add_repo(
                 profile_id=pid,
                 url=r["url"],
                 branch=r["branch"],
