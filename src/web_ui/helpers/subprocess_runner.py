@@ -9,11 +9,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from src.db import job_registry
+from src.db.pg import job_store
 
 
 def spawn_indexer_subcommand(
-    conn,
     subcommand_argv: list[str],
     job_label: str,
 ) -> int:
@@ -24,7 +23,6 @@ def spawn_indexer_subcommand(
     indexer output is not silently lost.
 
     Args:
-        conn: open psycopg2 connection
         subcommand_argv: e.g. ["index-repo", "--profile", "viindoo17", "--full"]
                          The CLI subcommand + its flags (without --job-id, this helper appends it).
         job_label: stored in indexer_jobs.profile_name. Used as the label for status polling.
@@ -34,7 +32,7 @@ def spawn_indexer_subcommand(
     Returns:
         The new job_id (also passed as --job-id to the subprocess).
     """
-    job_id = job_registry.create_job(conn, job_label)
+    job_id = job_store().create_job(job_label)
     argv = [sys.executable, "-m", "src.indexer", *subcommand_argv, "--job-id", str(job_id)]
 
     # Capture subprocess output to /tmp/osm-job-{job_id}.log

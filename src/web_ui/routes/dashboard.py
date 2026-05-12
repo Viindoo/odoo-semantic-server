@@ -6,24 +6,7 @@ from fastapi.responses import HTMLResponse
 router = APIRouter()
 
 
-def _get_db_conn():
-    """Get PostgreSQL connection for Web UI queries."""
-    import psycopg2
-
-    from src import config
-
-    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
-    if not dsn:
-        return None
-    try:
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-        return conn
-    except Exception:
-        return None
-
-
-def _count_embeddings(conn) -> int | None:
+def _count_embeddings() -> int | None:
     """Return total row count from the embeddings table, or None on any error.
 
     Handles the case where pgvector is absent (table doesn't exist yet) or
@@ -31,18 +14,12 @@ def _count_embeddings(conn) -> int | None:
     'N/A' instead of crashing the dashboard.
     """
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM embeddings")
-            row = cur.fetchone()
-            return row[0] if row else 0
+        from src.db.pg import get_pool
+
+        with get_pool().checkout() as conn:
+            row = get_pool().fetch_one(conn, "SELECT COUNT(*) FROM embeddings")
+            return row["count"] if row else 0
     except Exception:
-        # Roll back the aborted transaction so subsequent queries on the same
-        # connection are not poisoned (e.g. when pgvector is absent → table
-        # doesn't exist → ProgrammingError → conn enters aborted-tx state).
-        try:
-            conn.rollback()
-        except Exception:
-            pass
         return None
 
 
@@ -57,25 +34,18 @@ async def dashboard(request: Request):
     embeddings_total: int | None = None
     error = None
 
-    conn = _get_db_conn()
-    if conn:
-        try:
-            from src.db.auth_registry import list_api_keys, list_ssh_keys
-            from src.db.repo_registry import get_repos_for_profile, list_profiles
+    try:
+        from src.db.pg import auth_store, repo_store
 
-            profiles_raw = list_profiles(conn)
-            for p in profiles_raw:
-                repos = get_repos_for_profile(conn, p["name"])
-                profiles.append({**p, "repos": repos})
-            api_key_count = len(list_api_keys(conn))
-            ssh_key_count = len(list_ssh_keys(conn))
-            embeddings_total = _count_embeddings(conn)
-        except Exception as e:
-            error = str(e)
-        finally:
-            conn.close()
-    else:
-        error = "Cannot connect to PostgreSQL. Check PG_DSN configuration."
+        profiles_raw = repo_store().list_profiles()
+        for p in profiles_raw:
+            repos = repo_store().get_repos_for_profile(p["name"])
+            profiles.append({**p, "repos": repos})
+        api_key_count = len(auth_store().list_api_keys())
+        ssh_key_count = len(auth_store().list_ssh_keys())
+        embeddings_total = _count_embeddings()
+    except Exception as e:
+        error = str(e)
 
     return templates.TemplateResponse(
         request,
