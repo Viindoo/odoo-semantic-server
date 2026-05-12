@@ -1,6 +1,15 @@
-# Milestone 8 — "Public Wow"
+# Milestone 8 — "Public Wow" ⚠️ SUPERSEDED
 
-**Status:** Planning (plan-only, no code yet)
+> **SUPERSEDED 2026-05-12** — Architecture revised to Astro unified (landing + admin) with FastAPI pure JSON API.
+> See authoritative plan: [`2026-05-12-milestone-8-astro-unified.md`](2026-05-12-milestone-8-astro-unified.md)
+>
+> This file is kept for historical reference only. Do NOT implement from this file.
+
+---
+
+# Milestone 8 — "Public Wow" (original 2026-05-11 plan — HISTORICAL)
+
+**Status:** Planning (plan-only, no code yet) — **SUPERSEDED**
 **Created:** 2026-05-11
 **Operator:** Viindoo team
 

@@ -1,6 +1,15 @@
-# Web UI under `/admin/` path prefix (plan)
+# Web UI under `/admin/` path prefix ⚠️ SUPERSEDED
 
-**Status:** plan-only, not yet implemented
+> **SUPERSEDED 2026-05-12** — FastAPI `root_path` refactor approach dropped. Admin prefix is now handled by Astro routing (Astro serves `/admin/*` via SSR). FastAPI becomes pure JSON API at `/api/*`.
+> See authoritative plan: [`2026-05-12-milestone-8-astro-unified.md`](2026-05-12-milestone-8-astro-unified.md) Stream A (FastAPI JSON API) + Stream B (Astro admin pages).
+>
+> This file is kept for historical reference only. Do NOT implement from this file.
+
+---
+
+# Web UI under `/admin/` path prefix (original 2026-05-11 plan — HISTORICAL)
+
+**Status:** plan-only, not yet implemented — **SUPERSEDED**
 **Created:** 2026-05-11
 **Author/operator:** Viindoo team (orchestrated by Claude Code session)
 **Related ADRs:** ADR-0011 (Web UI session auth, M7 W16); new ADR-0012 to be written as part of this work.
