@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Protocol
 
+from src.constants import LEGACY_ERA_MAX_MAJOR
+
 from .models import ModuleInfo
 from .parser_python import _detect_module_edition, _detect_viindoo_equivalent
 from .scanner import get_git_branch, get_module_commit_sha, is_odoo_version_branch
@@ -46,7 +48,7 @@ def get_manifest_finder(odoo_version: str) -> ManifestFinder:
         major = int(odoo_version.split(".")[0])
     except (ValueError, IndexError, AttributeError):
         return ModernManifestFinder()
-    return LegacyManifestFinder() if major <= 9 else ModernManifestFinder()
+    return LegacyManifestFinder() if major <= LEGACY_ERA_MAX_MAJOR else ModernManifestFinder()
 
 
 # --- Regex fallback for legacy __openerp__.py with Python 2 syntax ---------
