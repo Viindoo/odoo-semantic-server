@@ -211,6 +211,24 @@ jobs:
           print('v8 smoke PASS')
           "
 
+  check-ollama:
+    # Lightweight gate job: checks whether OLLAMA_URL secret is set and exposes
+    # an output `enabled` so downstream jobs can use `needs` context (secrets
+    # are NOT available in job-level `if:` expressions — only step-level).
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "$OLLAMA_URL" ]; then
+            echo "enabled=true" >> $GITHUB_OUTPUT
+          else
+            echo "enabled=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          OLLAMA_URL: ${{ secrets.OLLAMA_URL }}
+
   recall-benchmark:
     # Nightly Ollama-gated recall benchmark.
     # Skipped automatically when OLLAMA_URL secret is not set.
@@ -218,8 +236,9 @@ jobs:
     #
     # IMAGE VERSION NOTE: hardcoded below to match .env.example (NEO4J_IMAGE + PG_IMAGE).
     # Keep in sync when bumping .env.example — same rule as the smoke jobs above.
+    needs: check-ollama
+    if: needs.check-ollama.outputs.enabled == 'true'
     runs-on: ubuntu-latest
-    if: ${{ secrets.OLLAMA_URL != '' }}
     services:
       neo4j:
         image: neo4j:5.26.25
@@ -272,7 +291,7 @@ jobs:
           OLLAMA_MODEL: ${{ secrets.OLLAMA_MODEL }}
 
   report-failure:
-    needs: [smoke-real-odoo-17, smoke-real-odoo-8, recall-benchmark]
+    needs: [smoke-real-odoo-17, smoke-real-odoo-8, check-ollama, recall-benchmark]
     # Run when any needed job failed (ignore recall-benchmark when skipped).
     if: always() && (needs.smoke-real-odoo-17.result == 'failure' || needs.smoke-real-odoo-8.result == 'failure' || needs.recall-benchmark.result == 'failure')
     runs-on: ubuntu-latest
