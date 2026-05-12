@@ -213,7 +213,7 @@ install:
 
 ---
 
-## 6. Deployment Guide (E2E on 192.168.1.67)
+## 6. Deployment Guide (E2E on 192.168.x.x)
 
 The server already runs ollama+qwen. Port matrix — no conflicts:
 

@@ -5,3 +5,6 @@ __pycache__/
 .serena/
 odoo-semantic.conf
 .env
+
+# Claude Code local settings
+.claude/
