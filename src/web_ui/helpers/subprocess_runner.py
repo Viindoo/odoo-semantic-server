@@ -36,19 +36,18 @@ def spawn_indexer_subcommand(
     job_id = job_store().create_job(job_label)
     argv = [sys.executable, "-m", "src.indexer", *subcommand_argv, "--job-id", str(job_id)]
 
-    # Capture subprocess output to /tmp/osm-job-{job_id}.log
+    # Capture subprocess output to /tmp/osm-job-{job_id}.log.
+    # Popen dup2()s the fd into the child — parent can close its copy right after.
     log_path = Path(tempfile.gettempdir()) / f"osm-job-{job_id}.log"
-    log_file = open(log_path, "w")  # noqa: SIM115 — fd must stay open for subprocess lifetime
-    proc = subprocess.Popen(
-        argv,
-        start_new_session=True,
-        stdout=log_file,
-        stderr=log_file,
-    )
+    with open(log_path, "w") as log_file:
+        proc = subprocess.Popen(
+            argv,
+            start_new_session=True,
+            stdout=log_file,
+            stderr=log_file,
+        )
     # Reap the child when it exits so it doesn't linger as a zombie.
     # Without this, the web server (parent) never calls wait() and the process
     # stays in Z (zombie) state indefinitely after the indexer finishes.
     threading.Thread(target=proc.wait, daemon=True).start()
-    # log_file fd is inherited by subprocess; GC closes the parent-side fd handle.
-    # The subprocess keeps the file open until it exits.
     return job_id

@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from typing import Annotated
 
 from fastapi import APIRouter, Form, Request
@@ -342,10 +343,14 @@ async def add_repo(
             _logger.warning("Add SSH repo failed: %s", e)
 
         if repo_id is not None:
-            subprocess.Popen(
-                [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
-                start_new_session=True,
-            )
+            with open(f"/tmp/osm-clone-{repo_id}.log", "wb") as _clone_log:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
+                    start_new_session=True,
+                    stdout=_clone_log,
+                    stderr=_clone_log,
+                )
+            threading.Thread(target=proc.wait, daemon=True).start()
             flash = quote_plus("Clone started — refresh to see status")
             return RedirectResponse(f"/repos?flash={flash}", status_code=303)
         return RedirectResponse("/repos", status_code=303)
