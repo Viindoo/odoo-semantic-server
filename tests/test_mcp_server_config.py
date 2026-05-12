@@ -85,6 +85,7 @@ def test_get_driver_env_overrides_config(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(server_mod, "_driver", None)
+    monkeypatch.setattr(server_mod, "_version_checked", True)
 
     server_mod._get_driver()
 
