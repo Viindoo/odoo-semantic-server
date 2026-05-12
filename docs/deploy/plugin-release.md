@@ -4,10 +4,7 @@
 
 ## Overview
 
-The plugin source lives at `dist/odoo-semantic-plugin/` in this repo. Each release:
-1. Tags a git commit in `odoo-semantic-mcp`
-2. Creates a GitHub Release with a zip artifact
-3. Updates `Viindoo/claude-plugins` marketplace.json with the new SHA
+The plugin source lives at `dist/odoo-semantic-plugin/` in this repo. When plugin files change and merge to `master`, the SHA is automatically pinned in `Viindoo/claude-plugins` via the `pin-sha.yml` workflow — no manual step needed.
 
 ---
 
@@ -21,50 +18,69 @@ claude plugin validate dist/odoo-semantic-plugin/
 find dist/odoo-semantic-plugin/skills -name "SKILL.md" | wc -l
 # Should be 11
 
+# Run plugin structure test
+~/.venv/odoo-semantic-mcp/bin/python -m pytest tests/test_plugin_structure.py -v
+
 # Run disambiguation test
 ~/.venv/odoo-semantic-mcp/bin/python -m pytest tests/test_skill_disambiguation.py -v
 ```
 
 ---
 
-## Step 2 — Tag and create GitHub Release
+## Step 2 — Tag and create GitHub Release (optional)
+
+Tags are for release visibility only — they do not affect how users receive updates (SHA is the version identifier).
 
 ```bash
-# After PR merged to main:
-git pull origin main
-git tag v0.2.0 -m "M7.5 Persona Wow: TRIGGER docstrings + Claude Code plugin + cross-vendor adapters"
-git push origin v0.2.0
+# After PR merged to master:
+git pull origin master
+git tag v0.3.0 -m "<release notes>"
+git push origin v0.3.0
 
-# Create GitHub Release with plugin zip artifact
+# Create GitHub Release with plugin zip artifact (optional)
 cd dist
-zip -r odoo-semantic-plugin-v0.2.0.zip odoo-semantic-plugin/
-gh release create v0.2.0 \
-  --title "v0.2.0 — M7.5 Persona Wow" \
+zip -r odoo-semantic-plugin-v0.3.0.zip odoo-semantic-plugin/
+gh release create v0.3.0 \
+  --title "v0.3.0 — <milestone name>" \
   --notes "See CHANGELOG.md for details." \
-  odoo-semantic-plugin-v0.2.0.zip
+  odoo-semantic-plugin-v0.3.0.zip
 ```
 
 ---
 
-## Step 3 — Pin SHA in Viindoo/claude-plugins
+## Step 3 — SHA pin (automatic)
 
-After the release tag is pushed, pin the exact commit SHA in the marketplace:
+After your PR merges to `master`, the `pin-sha.yml` workflow triggers automatically if any file under `dist/odoo-semantic-plugin/` changed:
+
+1. Reads the merged commit SHA
+2. Opens a PR on `Viindoo/claude-plugins` updating `marketplace.json`
+3. Enables auto-merge — the PR merges once `validate` CI passes
+
+**You do not need to do anything.** Monitor the workflow run at:
+`Actions → Pin SHA in claude-plugins`
+
+If the workflow fails, fall back to the manual process below.
+
+---
+
+## Step 3 (fallback) — Manual SHA pin
 
 ```bash
-# Get the SHA of the release tag
-SHA=$(git rev-parse v0.2.0)
+# Get the SHA of the merge commit
+SHA=$(git rev-parse master)
 echo "SHA: $SHA"
 
 # Update viindoo/claude-plugins marketplace.json
 git clone https://github.com/Viindoo/claude-plugins.git /tmp/claude-plugins-update
 cd /tmp/claude-plugins-update
 
-# Edit .claude-plugin/marketplace.json — add sha field to odoo-semantic entry:
-# "sha": "<SHA from above>"
-# Then commit and push:
+# Edit .claude-plugin/marketplace.json — update sha field to $SHA
+# Then commit and push a PR:
+git checkout -b "pin/odoo-semantic-${SHA:0:7}"
 git add .claude-plugin/marketplace.json
-git commit -m "pin odoo-semantic to v0.2.0 ($SHA)"
-git push origin master
+git commit -m "pin odoo-semantic to ${SHA:0:7}"
+git push origin HEAD
+gh pr create --title "pin odoo-semantic to ${SHA:0:7}" --body "Manual pin."
 ```
 
 ---
@@ -85,6 +101,7 @@ gh run watch --repo Viindoo/claude-plugins
 When a new Viindoo project ships a Claude Code plugin:
 
 1. The plugin source lives in `<project-repo>/dist/<plugin-name>/` with `.claude-plugin/plugin.json`
+   - **Do not set `version` in `plugin.json`** — SHA is the version identifier
 2. Open a PR on `Viindoo/claude-plugins` adding an entry to `.claude-plugin/marketplace.json`:
 
 ```json
@@ -94,14 +111,14 @@ When a new Viindoo project ships a Claude Code plugin:
     "source": "git-subdir",
     "url": "https://github.com/Viindoo/<project-repo>.git",
     "path": "dist/<plugin-name>",
-    "ref": "main",
+    "ref": "master",
     "sha": "<exact-commit-sha-after-merge>"
   },
   "description": "One-line description"
 }
 ```
 
-3. After PR merges, nightly CI validates the source remains reachable.
+3. Set up `pin-sha.yml` in the new plugin repo following the template in [CONTRIBUTING.md](https://github.com/Viindoo/claude-plugins/blob/master/CONTRIBUTING.md)
 
 ---
 
