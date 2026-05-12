@@ -175,42 +175,32 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
     This variant accepts an external embedder object (unlike _write_pgvector which
     constructs one from config).
     """
-    import psycopg2
-    from pgvector.psycopg2 import register_vector
     from psycopg2.extras import execute_values
 
+    from src.db.pg import get_pool
     from src.indexer.writer_pgvector import _INSERT_SQL
-
-    dsn = config.from_env_or_ini(
-        "PG_DSN", "database", "pg_dsn", fallback=None,
-    )
-    if not dsn:
-        raise RuntimeError(
-            "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
-            "in [database] section of odoo-semantic.conf.",
-        )
 
     texts = [c.content for c in chunks]
     vecs = embedder.embed(texts)
 
-    conn = psycopg2.connect(dsn)
-    try:
-        register_vector(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM embeddings "
-                "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
-            )
-            execute_values(
-                cur, _INSERT_SQL,
-                [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
-            )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with get_pool().checkout_vec() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM embeddings "
+                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
+                )
+                execute_values(
+                    cur, _INSERT_SQL,
+                    [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = True  # restore for pool reuse
 
 
 def _write_neo4j(patterns: list[PatternExample]) -> None:
@@ -259,21 +249,11 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
 
     Replaces existing pattern_example rows for clean re-seed (idempotent).
     """
-    import psycopg2
-    from pgvector.psycopg2 import register_vector
     from psycopg2.extras import execute_values
 
+    from src.db.pg import get_pool
     from src.indexer.embedder import Qwen3Embedder
     from src.indexer.writer_pgvector import _INSERT_SQL
-
-    dsn = config.from_env_or_ini(
-        "PG_DSN", "database", "pg_dsn", fallback=None,
-    )
-    if not dsn:
-        raise RuntimeError(
-            "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
-            "in [database] section of odoo-semantic.conf.",
-        )
 
     embedder_url = config.from_env_or_ini(
         "EMBEDDER_URL", "embedder", "url",
@@ -296,43 +276,35 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
     texts = [c.content for c in chunks]
     vecs = embedder.embed(texts)
 
-    conn = psycopg2.connect(dsn)
-    try:
-        register_vector(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM embeddings "
-                "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
-            )
-            execute_values(
-                cur, _INSERT_SQL,
-                [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
-            )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with get_pool().checkout_vec() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM embeddings "
+                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
+                )
+                execute_values(
+                    cur, _INSERT_SQL,
+                    [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = True  # restore for pool reuse
 
 
-def _open_pg_for_job_tracking() -> object | None:
-    """Open a psycopg2 connection for job_registry updates.
+def _get_job_store() -> object | None:
+    """Return the JobStore singleton for job tracking updates.
 
-    Returns None (silently) when PG_DSN is not configured — job tracking
+    Returns None (silently) when the pool is not initialized — job tracking
     is best-effort and must never block the seeding work.
     """
     try:
-        import psycopg2
-
-        from src import config
-
-        dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
-        if not dsn:
-            return None
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-        return conn
+        from src.db.pg import job_store
+        return job_store()
     except Exception:
         return None
 
@@ -369,16 +341,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     job_id: int | None = args.job_id
-    pg = None
+    _js = None
     if job_id is not None:
-        pg = _open_pg_for_job_tracking()
+        _js = _get_job_store()
 
     def _mark_running():
-        if job_id is not None and pg is not None:
+        if job_id is not None and _js is not None:
             try:
-                from src.db import job_registry
-                job_registry.update_job(
-                    pg, job_id,
+                _js.update_job(
+                    job_id,
                     status="running",
                     pid=os.getpid(),
                     started_at=datetime.now(UTC),
@@ -387,25 +358,23 @@ def main(argv: list[str] | None = None) -> int:
                 pass
 
     def _mark_done(note: str | None = None):
-        if job_id is not None and pg is not None:
+        if job_id is not None and _js is not None:
             try:
-                from src.db import job_registry
                 kwargs: dict = {
                     "status": "done",
                     "finished_at": datetime.now(UTC),
                 }
                 if note:
                     kwargs["error_msg"] = note
-                job_registry.update_job(pg, job_id, **kwargs)
+                _js.update_job(job_id, **kwargs)
             except Exception:
                 pass
 
     def _mark_error(msg: str):
-        if job_id is not None and pg is not None:
+        if job_id is not None and _js is not None:
             try:
-                from src.db import job_registry
-                job_registry.update_job(
-                    pg, job_id,
+                _js.update_job(
+                    job_id,
                     status="error",
                     finished_at=datetime.now(UTC),
                     error_msg=msg[:1000],
@@ -485,12 +454,6 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         _mark_error(str(exc))
         raise
-    finally:
-        if pg is not None:
-            try:
-                pg.close()
-            except Exception:
-                pass
 
 
 if __name__ == "__main__":  # pragma: no cover
