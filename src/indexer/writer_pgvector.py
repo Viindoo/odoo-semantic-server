@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
 from .embedder import EmbedderClient
@@ -155,7 +154,6 @@ def make_pattern_chunks(patterns: list[PatternExample]) -> list[EmbeddingChunk]:
 
 
 def write_module_embeddings(
-    conn,
     module: str,
     version: str,
     chunks: list[EmbeddingChunk],
@@ -163,13 +161,13 @@ def write_module_embeddings(
 ) -> int:
     """Delete-then-insert embeddings for (module, version) atomically.
 
+    Obtains a pgvector-capable connection from the shared pool (get_pool().checkout_vec()).
     Returns the number of embed() calls made to the embedder during this
     write (0 when chunks is empty, 1 for a normal module batch). Callers
     use this to aggregate embed_calls for the run-level observability log.
     """
     if not chunks:
         return 0
-    register_vector(conn)
     # Dedup by the ux_embeddings_chunk unique key — make_module_chunks can emit
     # the same (chunk_type, entity_name, file_path, chunk_idx) twice for one
     # module (e.g. partial classes split across files). Postgres rejects a
@@ -191,19 +189,21 @@ def write_module_embeddings(
         embed_calls = count_after - count_before
     else:
         embed_calls = 1  # embedder without call_count tracking — assume 1
-    saved_autocommit = conn.autocommit
-    conn.autocommit = False
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM embeddings WHERE module = %s AND odoo_version = %s",
-                (module, version),
-            )
-            execute_values(cur, _INSERT_SQL, [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)])
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.autocommit = saved_autocommit
+    from src.db.pg import get_pool  # noqa: PLC0415
+    with get_pool().checkout_vec() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM embeddings WHERE module = %s AND odoo_version = %s",
+                    (module, version),
+                )
+                rows = [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)]
+                execute_values(cur, _INSERT_SQL, rows)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = True  # restore for pool reuse
     return embed_calls
