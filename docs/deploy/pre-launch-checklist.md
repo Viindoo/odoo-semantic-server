@@ -95,6 +95,26 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 
 > *Tools 7–11 cần `index-core` đã chạy. Tool 12–14 cần `seed_patterns` đã chạy. Tool 5 cần Ollama + re-index không `--no-embed`.*
 
+### Persona Skills (M7.5)
+
+Verify cross-vendor adapter files are accessible and persona skills are documented. These do not require server-side verification — check that files exist and links in README resolve.
+
+| Skill | Persona | Tools Used | Sign-off |
+|-------|---------|------------|---------|
+| `odoo-risk-overview` | CEO | `impact_analysis`, `find_deprecated_usage`, `check_module_exists` | `[ ]` |
+| `odoo-customization-inventory` | CEO | `resolve_model`, `check_module_exists` | `[ ]` |
+| `odoo-override-finder` | Developer | `find_override_point`, `resolve_method`, `suggest_pattern` | `[ ]` |
+| `odoo-deprecation-audit` | Developer | `find_deprecated_usage`, `api_version_diff`, `lookup_core_api` | `[ ]` |
+| `odoo-version-diff` | Developer/Marketer | `api_version_diff`, `lookup_core_api` | `[ ]` |
+| `odoo-feature-check` | Consultant | `check_module_exists`, `resolve_model`, `find_examples` | `[ ]` |
+| `odoo-gap-analysis` | Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | `[ ]` |
+| `odoo-feature-highlights` | Marketer | `api_version_diff`, `find_examples`, `resolve_model` | `[ ]` |
+| `odoo-addon-diff` | Marketer | `check_module_exists`, `resolve_model` | `[ ]` |
+| `odoo-capability-proof` | Sales | `find_examples`, `check_module_exists`, `resolve_model` | `[ ]` |
+| `odoo-objection-handler` | Sales | `check_module_exists`, `find_examples`, `suggest_pattern` | `[ ]` |
+
+> *Persona skill verification: confirm `dist/gemini-gem-instructions.md`, `dist/openai-gpt-instructions.md`, `dist/cursor-rules.md`, and `docs/personas/*.md` are present in the deployed repo. Spot-check one skill per persona using the sample questions in `docs/personas/`.*
+
 ---
 
 ## 7. Install Page
