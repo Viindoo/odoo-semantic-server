@@ -1,7 +1,9 @@
 # src/web_ui/app.py
 """FastAPI Web UI application — admin interface, port 8003, localhost-only."""
 
+import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -12,7 +14,37 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+_logger = logging.getLogger(__name__)
+
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    """FastAPI lifespan: startup cleanup for stale indexer jobs."""
+    try:
+        import psycopg2
+
+        from src import config
+        from src.db import job_registry
+
+        dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
+        if dsn:
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            try:
+                cleaned = job_registry.mark_dead_jobs(conn)
+                if cleaned:
+                    _logger.warning(
+                        "Startup cleanup: marked %d stale indexer job(s) as error", cleaned
+                    )
+            except Exception as exc:
+                _logger.warning("Startup job cleanup failed (non-fatal): %s", exc)
+            finally:
+                conn.close()
+    except Exception as exc:
+        _logger.warning("Startup job cleanup failed (non-fatal): %s", exc)
+    yield
 
 
 class _LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -32,6 +64,7 @@ def create_app() -> FastAPI:
         description="Admin interface for managing profiles, repos, API keys, and SSH keys.",
         docs_url=None,  # Disable OpenAPI docs in admin UI
         redoc_url=None,
+        lifespan=_lifespan,
     )
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

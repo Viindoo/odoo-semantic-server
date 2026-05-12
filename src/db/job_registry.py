@@ -140,3 +140,43 @@ def get_last_job(conn: PgConn, profile_name: str) -> dict | None:
         if result[key] is not None:
             result[key] = str(result[key])
     return result
+
+
+def mark_dead_jobs(conn: PgConn) -> int:
+    """Mark running/queued jobs whose PID is no longer alive as 'error'.
+
+    Called on Web UI startup to clean up jobs left over from crashed subprocesses.
+    Returns the number of jobs marked as error.
+    """
+    import os
+    from datetime import UTC, datetime
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT * FROM indexer_jobs"
+            " WHERE status IN ('running', 'queued') ORDER BY created_at ASC"
+        )
+        rows = cur.fetchall()
+
+    count = 0
+    for row in rows:
+        pid = row.get("pid")
+        if pid is None:
+            continue
+        try:
+            os.kill(pid, 0)
+            # Process exists — leave it alone
+        except ProcessLookupError:
+            # PID is dead
+            update_job(
+                conn,
+                row["id"],
+                status="error",
+                finished_at=datetime.now(UTC),
+                error_msg=f"Process died unexpectedly (PID {pid} not found at server startup)",
+            )
+            count += 1
+        except PermissionError:
+            # Process exists but different UID — leave it alone
+            pass
+    return count
