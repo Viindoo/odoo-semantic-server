@@ -43,9 +43,16 @@ class PgPool:
 
     @contextmanager
     def checkout(self) -> Generator[PgConn, None, None]:
-        """Checkout a connection from the pool. Auto-returns on context exit."""
+        """Checkout a connection from the pool. Auto-returns on context exit.
+
+        Rolls back any pending transaction and sets autocommit=True before
+        yielding so callers always receive a clean connection regardless of
+        what the previous checkout left behind.
+        """
         conn = self._pool.getconn()
         try:
+            conn.rollback()       # clear any pending transaction
+            conn.autocommit = True  # safe now; callers manage transactions explicitly
             yield conn
         finally:
             self._pool.putconn(conn)
@@ -55,6 +62,8 @@ class PgPool:
         """Checkout + register pgvector (register_vector). For embedding queries."""
         conn = self._pool.getconn()
         try:
+            conn.rollback()
+            conn.autocommit = True
             from pgvector.psycopg2 import register_vector
             register_vector(conn)
             yield conn

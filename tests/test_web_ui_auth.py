@@ -45,36 +45,27 @@ def _make_app(seed_users: dict[str, str] | None = None):
 
     app = create_app()
 
-    # Always patch _get_conn to avoid DB connections (even without seed_users).
+    # Patch _lookup_user to avoid needing a real PostgreSQL connection.
     import src.web_ui.routes.login as login_mod
 
-    orig_get_conn = login_mod._get_conn
     orig_lookup = login_mod._lookup_user
 
     hashes: dict[str, str] = {}
     if seed_users:
         hashes = {u: hash_password(p) for u, p in seed_users.items()}
 
-    def _fake_get_conn():
-        return _FakeConn()
-
-    def _fake_lookup(conn, username: str) -> str | None:
+    def _fake_lookup(username: str) -> str | None:
         return hashes.get(username)
 
-    app.state._login_patch_get_conn = (login_mod, "_get_conn", orig_get_conn)
     app.state._login_patch_lookup = (login_mod, "_lookup_user", orig_lookup)
 
-    login_mod._get_conn = _fake_get_conn
     login_mod._lookup_user = _fake_lookup
 
     return app
 
 
 def _restore_patches(app):
-    """Undo _get_conn / _lookup_user patches after a test."""
-    if hasattr(app.state, "_login_patch_get_conn"):
-        mod, attr, orig = app.state._login_patch_get_conn
-        setattr(mod, attr, orig)
+    """Undo _lookup_user patch after a test."""
     if hasattr(app.state, "_login_patch_lookup"):
         mod, attr, orig = app.state._login_patch_lookup
         setattr(mod, attr, orig)
@@ -453,12 +444,15 @@ class TestDashboardCountEmbeddingsRollback:
     def test_count_embeddings_handles_missing_table(self):
         """_count_embeddings returns None (not raise) when embeddings table absent.
 
-        The conn must still be usable after the call (tx rollback happened).
+        After refactoring, _count_embeddings() uses the centralized pool internally.
+        We mock get_pool() to inject a fake connection that raises ProgrammingError.
         """
+        import unittest.mock as mock
+
+        import psycopg2
+
         from src.web_ui.routes.dashboard import _count_embeddings
 
-        # Build a minimal fake connection that raises ProgrammingError on execute
-        # (simulating "table does not exist") and records whether rollback was called.
         class _FakeCursor:
             def __enter__(self):
                 return self
@@ -466,28 +460,32 @@ class TestDashboardCountEmbeddingsRollback:
             def __exit__(self, *args):
                 pass
 
-            def execute(self, _sql):
-                import psycopg2
+            def execute(self, _sql, _params=()):
                 raise psycopg2.ProgrammingError("relation \"embeddings\" does not exist")
 
-        rollback_called = []
-
-        class _FakeConn2:
+        class _FakeConn:
             autocommit = False
 
-            def cursor(self):
+            def cursor(self, **_kw):
                 return _FakeCursor()
 
             def rollback(self):
-                rollback_called.append(True)
+                pass
 
-        conn = _FakeConn2()
-        result = _count_embeddings(conn)
+        class _FakePool:
+            def checkout(self):
+                from contextlib import contextmanager
+                @contextmanager
+                def _ctx():
+                    yield _FakeConn()
+                return _ctx()
+
+            def fetch_one(self, conn, sql, params=()):
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+
+        with mock.patch("src.db.pg.get_pool", return_value=_FakePool()):
+            result = _count_embeddings()
 
         # Must return None (not raise)
         assert result is None, f"Expected None when embeddings table absent; got {result}"
-        # Must have called rollback to un-poison the connection
-        assert rollback_called, (
-            "_count_embeddings must call conn.rollback() after ProgrammingError "
-            "to prevent aborted-tx from poisoning subsequent queries"
-        )

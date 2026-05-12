@@ -70,10 +70,7 @@ class TestSeedPatternsRoute:
     async def test_valid_submission_no_version_redirects_with_flash(self, migrated_pg):
         """POST with force=on, no version → 303, flash contains 'patterns' and 'job'."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen"):
+        with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/seed-patterns",
@@ -90,10 +87,7 @@ class TestSeedPatternsRoute:
     async def test_valid_submission_no_version_creates_job_label_patterns(self, migrated_pg):
         """POST without version → indexer_jobs row with profile_name='patterns'."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen"):
+        with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/seed-patterns",
@@ -117,10 +111,7 @@ class TestSeedPatternsRoute:
     ):
         """POST with version=17.0 + force=on → job label 'patterns:17.0'."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen"):
+        with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/seed-patterns",
@@ -142,10 +133,7 @@ class TestSeedPatternsRoute:
     async def test_argv_contains_seed_patterns_and_force(self, migrated_pg):
         """Popen argv must include seed-patterns --force when force checkbox ticked."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/seed-patterns",
@@ -163,10 +151,7 @@ class TestSeedPatternsRoute:
     async def test_argv_with_version_and_no_embed(self, migrated_pg):
         """Popen argv includes --version + --no-embed when provided."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/seed-patterns",
@@ -183,10 +168,7 @@ class TestSeedPatternsRoute:
     async def test_argv_without_force_does_not_include_force(self, migrated_pg):
         """When force checkbox is NOT ticked, --force must NOT appear in argv."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/seed-patterns",
@@ -201,10 +183,7 @@ class TestSeedPatternsRoute:
     async def test_invalid_version_returns_400(self, migrated_pg):
         """POST with invalid version string → 400, error in body, no job row created."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/seed-patterns",
@@ -224,10 +203,7 @@ class TestSeedPatternsRoute:
     async def test_nonexistent_patterns_file_returns_400(self, migrated_pg):
         """POST with non-existent patterns_file → 400, error in body, no job row."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/seed-patterns",
@@ -253,10 +229,7 @@ class TestSeedPatternsRoute:
         pf.write_text("[]")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/seed-patterns",
@@ -273,10 +246,7 @@ class TestSeedPatternsRoute:
         """Multiple valid version strings (8.0, 17.0, 20.0) are accepted."""
         app = create_app()
         for ver in ("8.0", "17.0", "20.0"):
-            with mock.patch(
-                "src.web_ui.routes.operations._get_conn",
-                _make_conn_factory(migrated_pg),
-            ), mock.patch("subprocess.Popen"):
+            with mock.patch("subprocess.Popen"):
                 async with _async_client(app) as client:
                     resp = await client.post(
                         "/operations/seed-patterns",
@@ -295,12 +265,8 @@ class TestSeedPatternsGetPage:
     async def test_get_operations_renders_seed_patterns_form(self, migrated_pg):
         """GET /operations → 200, Seed Pattern Catalogue section present."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/operations")
+        async with _async_client(app) as client:
+            resp = await client.get("/operations")
 
         assert resp.status_code == 200
         assert "Seed Pattern Catalogue" in resp.text

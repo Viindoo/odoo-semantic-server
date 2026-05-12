@@ -109,10 +109,7 @@ class TestApplyPresetDryRun:
     async def test_dry_run_returns_200_with_preview(self, migrated_pg):
         """POST valid preset + dry_run=on → 200 OK; response body contains preview stdout."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()):
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()):
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -128,10 +125,7 @@ class TestApplyPresetDryRun:
     async def test_dry_run_no_db_changes(self, migrated_pg):
         """Dry-run POST must not create any profile or repo rows in DB."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()):
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()):
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -149,10 +143,7 @@ class TestApplyPresetDryRun:
     async def test_dry_run_response_contains_apply_for_real_form(self, migrated_pg):
         """Dry-run response must include a second form (Apply for real) without dry_run checked."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()):
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()):
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -166,10 +157,7 @@ class TestApplyPresetDryRun:
     async def test_dry_run_subprocess_argv_contains_dry_run_flag(self, migrated_pg):
         """subprocess.run argv must include --dry-run when dry_run checkbox is ticked."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -203,10 +191,7 @@ class TestApplyPresetRealApply:
     async def test_real_apply_redirects_303_with_flash(self, migrated_pg):
         """POST valid preset + dry_run="" → 303 redirect with flash containing preset name."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_real_apply_result()):
+        with mock.patch("subprocess.run", return_value=_fake_real_apply_result()):
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -223,10 +208,7 @@ class TestApplyPresetRealApply:
     async def test_real_apply_no_dry_run_flag_in_argv(self, migrated_pg):
         """subprocess.run argv must NOT contain --dry-run when dry_run is empty."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_real_apply_result()) as mock_run:
+        with mock.patch("subprocess.run", return_value=_fake_real_apply_result()) as mock_run:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -255,10 +237,7 @@ class TestApplyPresetInvalidName:
     async def test_invalid_preset_returns_400(self, migrated_pg):
         """POST with unknown preset name → 400 with error alert."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run") as mock_run:
+        with mock.patch("subprocess.run") as mock_run:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -274,10 +253,7 @@ class TestApplyPresetInvalidName:
     async def test_invalid_preset_no_db_changes(self, migrated_pg):
         """POST with unknown preset name → no profile or repo rows created."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run"):
+        with mock.patch("subprocess.run"):
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -309,10 +285,7 @@ class TestApplyPresetRepoMap:
     async def test_repo_map_pairs_in_argv(self, migrated_pg):
         """POST with repo_map_urls + repo_map_paths → argv contains --repo-map pairs."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -337,10 +310,7 @@ class TestApplyPresetRepoMap:
     async def test_mismatched_repo_map_lengths_returns_400(self, migrated_pg):
         """POST with more repo_map_urls than repo_map_paths → 400 error; no subprocess call."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run") as mock_run:
+        with mock.patch("subprocess.run") as mock_run:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -360,10 +330,7 @@ class TestApplyPresetRepoMap:
     async def test_repo_base_dir_in_argv(self, migrated_pg, tmp_path):
         """repo_base_dir provided and exists → --repo-base-dir in argv."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -383,10 +350,7 @@ class TestApplyPresetRepoMap:
     async def test_nonexistent_repo_base_dir_returns_400(self, migrated_pg):
         """repo_base_dir provided but does not exist → 400 error; no subprocess call."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run") as mock_run:
+        with mock.patch("subprocess.run") as mock_run:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -406,10 +370,7 @@ class TestApplyPresetRepoMap:
     async def test_subprocess_run_uses_sys_executable(self, migrated_pg):
         """subprocess.run must be called with sys.executable as the first element."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -424,10 +385,7 @@ class TestApplyPresetRepoMap:
     async def test_subprocess_run_timeout_60(self, migrated_pg):
         """subprocess.run must be called with timeout=60."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/apply-preset",
@@ -450,10 +408,7 @@ class TestApplyPresetRepoMap:
             stderr="✗ Local path /tmp/missing_repo does not exist",
         )
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.run", return_value=error_result):
+        with mock.patch("subprocess.run", return_value=error_result):
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/apply-preset",
@@ -472,12 +427,8 @@ class TestApplyPresetPageGet:
     async def test_get_operations_renders_apply_preset_form(self, migrated_pg):
         """GET /operations → 200, Apply Preset section with preset dropdown present."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/operations")
+        async with _async_client(app) as client:
+            resp = await client.get("/operations")
 
         assert resp.status_code == 200
         assert "Apply Preset" in resp.text
@@ -492,12 +443,8 @@ class TestApplyPresetPageGet:
     async def test_dry_run_checkbox_is_checked_by_default(self, migrated_pg):
         """GET /operations → dry_run checkbox must be checked by default (safety default)."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/operations")
+        async with _async_client(app) as client:
+            resp = await client.get("/operations")
 
         # The checkbox for dry_run should be checked by default
         assert 'name="dry_run"' in resp.text

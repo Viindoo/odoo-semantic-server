@@ -430,13 +430,15 @@ class TestAuthMiddlewareKeyVerification:
         raw, _, key_id = auth_store().create_api_key("cache-hit-test")
 
         call_count = {"n": 0}
-        original_verify = __import__(
-            "src.db.auth_registry", fromlist=["verify_api_key"]
-        ).verify_api_key
+        real_store = auth_store()
 
-        def counting_verify(conn, key):
+        def counting_verify(key):
             call_count["n"] += 1
-            return original_verify(conn, key)
+            return real_store.verify_api_key(key)
+
+        mock_store = mock.MagicMock()
+        mock_store.verify_api_key.side_effect = counting_verify
+        mock_store.log_usage = real_store.log_usage
 
         async def dummy(request):
             return PlainTextResponse("ok")
@@ -444,16 +446,14 @@ class TestAuthMiddlewareKeyVerification:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        with mock.patch(
-            "src.db.auth_registry.verify_api_key", side_effect=counting_verify
-        ), mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
+        with mock.patch("src.db.pg.auth_store", return_value=mock_store):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
                 await client.get("/mcp", headers={"X-API-Key": raw})
                 await client.get("/mcp", headers={"X-API-Key": raw})
 
-        # DB should have been called exactly once
+        # DB should have been called exactly once (second request was a cache hit)
         assert call_count["n"] == 1
 
     @pytest.mark.asyncio

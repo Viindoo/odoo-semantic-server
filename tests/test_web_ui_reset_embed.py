@@ -82,9 +82,6 @@ class TestResetEmbed:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -104,9 +101,6 @@ class TestResetEmbed:
         _, rid = _setup_profile_and_repo(migrated_pg, "re_profile_2", head_sha="deadbeef")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -128,9 +122,6 @@ class TestResetEmbed:
         _, rid = _setup_profile_and_repo(migrated_pg, "re_argv_profile", head_sha="sha123")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -169,9 +160,6 @@ class TestResetEmbed:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -194,9 +182,6 @@ class TestResetEmbed:
         _, rid = _setup_profile_and_repo(migrated_pg, "re_running_profile", head_sha="sha_before")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=True
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -219,9 +204,6 @@ class TestResetEmbed:
         """POST on non-existent repo_id → 404 redirect."""
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ):
             async with _async_client(app) as client:

@@ -169,9 +169,6 @@ class TestDeleteProfileHappyPath:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.routes.repos._collect_module_names_for_repos",
             return_value={},
         ), mock.patch(
@@ -235,15 +232,11 @@ class TestDeleteProfileHappyPath:
         assert _count_neo4j_modules(driver, repo_b_basename, TEST_VERSION) == 1
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                await client.post(
-                    f"/repos/profiles/{pid}/delete",
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            await client.post(
+                f"/repos/profiles/{pid}/delete",
+                follow_redirects=False,
+            )
 
         assert _count_neo4j_modules(driver, repo_a_basename, TEST_VERSION) == 0
         assert _count_neo4j_modules(driver, repo_b_basename, TEST_VERSION) == 0
@@ -266,9 +259,6 @@ class TestDeleteProfileHappyPath:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.routes.repos._collect_module_names_for_repos",
             return_value={},
         ), mock.patch(
@@ -298,9 +288,6 @@ class TestDeleteProfileGuard:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running",
             return_value=True,
         ):
@@ -323,15 +310,11 @@ class TestDeleteProfileGuard:
     async def test_redirects_with_flash_for_missing_profile(self, migrated_pg, clean_neo4j):
         """POST with non-existent profile_id → 303 with 'not found' flash."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.post(
-                    "/repos/profiles/999999/delete",
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/repos/profiles/999999/delete",
+                follow_redirects=False,
+            )
 
         assert resp.status_code == 303
         location = resp.headers["location"]
