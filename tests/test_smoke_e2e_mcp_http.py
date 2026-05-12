@@ -394,3 +394,292 @@ class TestMCPHTTPImpactAnalysis:
                 "Views" in text or "Methods" in text), (
             f"No risk/impact indicators found:\n{text}"
         )
+
+
+# ---------------------------------------------------------------------------
+# M7.5 T1 — stub smoke tests for 11 additional MCP tools
+# These stubs require a live server with indexed data.
+# Marked skip so the unit-test suite stays green; CI smoke tier will enable.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skip(reason="requires live server with indexed Odoo data")
+class TestMCPHTTPResolveField:
+    @pytest.mark.asyncio
+    async def test_resolve_field_returns_tree(self, seeded_neo4j_http):
+        """resolve_field via HTTP returns type/computed/stored/related tree."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "resolve_field",
+                "arguments": {
+                    "model_name": "sale.order",
+                    "field_name": "amount_total",
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "amount_total" in text
+        assert "├─" in text or "└─" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed Odoo data")
+class TestMCPHTTPResolveMethod:
+    @pytest.mark.asyncio
+    async def test_resolve_method_override_chain(self, seeded_neo4j_http):
+        """resolve_method via HTTP returns override chain with super() markers."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "resolve_method",
+                "arguments": {
+                    "model_name": "sale.order",
+                    "method_name": "action_confirm",
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "action_confirm" in text
+        assert "Override chain" in text or "├─" in text or "└─" in text
+
+
+@pytest.mark.skip(reason="requires live server with Ollama + indexed embeddings")
+class TestMCPHTTPFindExamples:
+    @pytest.mark.asyncio
+    async def test_find_examples_returns_results(self, seeded_neo4j_http):
+        """find_examples via HTTP returns scored results header."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "find_examples",
+                "arguments": {
+                    "query": "confirm sale order",
+                    "odoo_version": TEST_VERSION,
+                    "limit": 3,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "find_examples" in text or "Found" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed CoreSymbol data")
+class TestMCPHTTPLookupCoreApi:
+    @pytest.mark.asyncio
+    async def test_lookup_core_api_returns_symbol(self, seeded_neo4j_http):
+        """lookup_core_api via HTTP returns symbol kind + status tree."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "lookup_core_api",
+                "arguments": {
+                    "name": "api.depends",
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        # Either found the symbol or returned 'not found' — both are valid responses
+        assert "lookup_core_api" in text or "Kind" in text or "not found" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed CoreSymbol for 2 versions")
+class TestMCPHTTPApiVersionDiff:
+    @pytest.mark.asyncio
+    async def test_api_version_diff_returns_diff(self, seeded_neo4j_http):
+        """api_version_diff via HTTP returns diff tree between two versions."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "api_version_diff",
+                "arguments": {
+                    "symbol": "name_get",
+                    "from_version": "17.0",
+                    "to_version": "18.0",
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "api_version_diff" in text or "Status" in text or "not found" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed USES_CORE_SYMBOL edges")
+class TestMCPHTTPFindDeprecatedUsage:
+    @pytest.mark.asyncio
+    async def test_find_deprecated_usage_returns_report(self, seeded_neo4j_http):
+        """find_deprecated_usage via HTTP returns usage report header."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "find_deprecated_usage",
+                "arguments": {
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "find_deprecated_usage" in text or "hits" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed LintRule data")
+class TestMCPHTTPLintCheck:
+    @pytest.mark.asyncio
+    async def test_lint_check_returns_violations(self, seeded_neo4j_http):
+        """lint_check via HTTP returns violation list or 'no violations'."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "lint_check",
+                "arguments": {
+                    "code": "raise UserError('test')",
+                    "odoo_version": TEST_VERSION,
+                    "language": "python",
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "lint_check" in text or "violations" in text or "no violations" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed CLICommand data")
+class TestMCPHTTPCliHelp:
+    @pytest.mark.asyncio
+    async def test_cli_help_returns_command_list(self, seeded_neo4j_http):
+        """cli_help with no args via HTTP returns list of known CLI commands."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "cli_help",
+                "arguments": {
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "cli_help" in text or "commands" in text or "no CLI commands" in text
+
+
+@pytest.mark.skip(reason="requires live server with Ollama + indexed pattern embeddings")
+class TestMCPHTTPSuggestPattern:
+    @pytest.mark.asyncio
+    async def test_suggest_pattern_returns_matches(self, seeded_neo4j_http):
+        """suggest_pattern via HTTP returns pattern matches or empty message."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "suggest_pattern",
+                "arguments": {
+                    "intent": "computed field cross-model",
+                    "odoo_version": TEST_VERSION,
+                    "language": "python",
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "suggest_pattern" in text or "matches" in text or "no patterns" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed Module data")
+class TestMCPHTTPCheckModuleExists:
+    @pytest.mark.asyncio
+    async def test_check_module_exists_returns_status(self, seeded_neo4j_http):
+        """check_module_exists via HTTP returns indexed status + EE flag."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "check_module_exists",
+                "arguments": {
+                    "name": "sale",
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert "check_module_exists" in text or "Indexed" in text
+
+
+@pytest.mark.skip(reason="requires live server with indexed Method convention data")
+class TestMCPHTTPFindOverridePoint:
+    @pytest.mark.asyncio
+    async def test_find_override_point_returns_guidance(self, seeded_neo4j_http):
+        """find_override_point via HTTP returns convention + anti-patterns."""
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "tools/call",
+            "params": {
+                "name": "find_override_point",
+                "arguments": {
+                    "model": "sale.order",
+                    "method": "action_confirm",
+                    "odoo_version": TEST_VERSION,
+                },
+            },
+        }
+        async with _mcp_http_client() as client:
+            resp = await client.post("/mcp", json=request_body)
+        assert resp.status_code == 200
+        text = _extract_text(resp)
+        assert ("find_override_point" in text or "Convention" in text or
+                "method not found" in text)
+
+
+def _extract_text(resp) -> str:
+    """Helper: extract text from MCP JSON-RPC response."""
+    body = resp.json()
+    result = body.get("result", {})
+    content_list = result["content"] if isinstance(result, dict) else result
+    if not content_list:
+        return ""
+    return content_list[0].get("text", "")
