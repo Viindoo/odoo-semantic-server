@@ -7,7 +7,7 @@ COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
 .PHONY: help install test test-unit test-integration test-browser test-all \
-        neo4j-up neo4j-down neo4j-logs lint
+        neo4j-up neo4j-down neo4j-logs lint validate-plugin
 
 help:
 	@echo "Targets:"
@@ -83,3 +83,6 @@ neo4j-logs:
 
 lint:
 	$(VENV)/bin/ruff check src/ tests/
+
+validate-plugin:  ## Validate Claude Code plugin schema (requires claude CLI)
+	claude plugin validate dist/odoo-semantic-plugin/
