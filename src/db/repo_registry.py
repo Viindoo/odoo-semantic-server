@@ -2,312 +2,296 @@
 """CRUD for profiles + repos in PostgreSQL."""
 from pathlib import Path
 
-import psycopg2
 import psycopg2.errors
-from psycopg2.extras import RealDictCursor
 
-from src.db._types import PgConn
+from src.db.pg import PgPool
 
 
-def add_profile(conn: PgConn, name: str, odoo_version: str, description: str = "") -> int:
-    """Insert a new profile. Raises ValueError if name already exists."""
-    with conn.cursor() as cur:
+class RepoStore:
+    def __init__(self, pool: PgPool) -> None:
+        self._pool = pool
+
+    def add_profile(self, name: str, odoo_version: str, description: str = "") -> int:
+        """Insert a new profile. Raises ValueError if name already exists."""
         try:
-            cur.execute(
-                "INSERT INTO profiles (name, odoo_version, description) "
-                "VALUES (%s, %s, %s) RETURNING id",
-                (name, odoo_version, description),
-            )
-            return cur.fetchone()[0]
+            with self._pool.checkout() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO profiles (name, odoo_version, description) "
+                        "VALUES (%s, %s, %s) RETURNING id",
+                        (name, odoo_version, description),
+                    )
+                    row_id = cur.fetchone()[0]
+                conn.commit()
+            return row_id
         except psycopg2.errors.UniqueViolation as e:
             raise ValueError(f"Profile '{name}' already exists") from e
 
+    def list_profiles(self) -> list[dict]:
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(conn, "SELECT * FROM profiles ORDER BY id")
 
-def list_profiles(conn: PgConn) -> list[dict]:
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM profiles ORDER BY id")
-        return [dict(r) for r in cur.fetchall()]
+    def add_repo(
+        self,
+        profile_id: int,
+        url: str,
+        branch: str,
+        local_path: str,
+        *,
+        ssh_key_id: int | None = None,
+        clone_status: str = "manual",
+    ) -> int:
+        with self._pool.checkout() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO repos "
+                    "(profile_id, url, branch, local_path, ssh_key_id, clone_status) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    (profile_id, url, branch, local_path, ssh_key_id, clone_status),
+                )
+                row_id = cur.fetchone()[0]
+            conn.commit()
+        return row_id
 
+    def list_repos(self) -> list[dict]:
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(conn, """
+                SELECT r.*, p.name AS profile_name, p.odoo_version
+                FROM repos r LEFT JOIN profiles p ON r.profile_id = p.id
+                ORDER BY r.id
+            """)
 
-def add_repo(
-    conn: PgConn,
-    profile_id: int,
-    url: str,
-    branch: str,
-    local_path: str,
-    *,
-    ssh_key_id: int | None = None,
-    clone_status: str = "manual",
-) -> int:
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO repos (profile_id, url, branch, local_path, ssh_key_id, clone_status) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (profile_id, url, branch, local_path, ssh_key_id, clone_status),
-        )
-        return cur.fetchone()[0]
+    def get_repos_for_profile(self, profile_name: str) -> list[dict]:
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                """
+                SELECT r.*, p.odoo_version
+                FROM repos r JOIN profiles p ON r.profile_id = p.id
+                WHERE p.name = %s ORDER BY r.id
+                """,
+                (profile_name,),
+            )
 
-
-def list_repos(conn: PgConn) -> list[dict]:
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT r.*, p.name AS profile_name, p.odoo_version
-            FROM repos r LEFT JOIN profiles p ON r.profile_id = p.id
-            ORDER BY r.id
-        """)
-        return [dict(r) for r in cur.fetchall()]
-
-
-def get_repos_for_profile(conn: PgConn, profile_name: str) -> list[dict]:
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT r.*, p.odoo_version
-            FROM repos r JOIN profiles p ON r.profile_id = p.id
-            WHERE p.name = %s ORDER BY r.id
-        """, (profile_name,))
-        return [dict(r) for r in cur.fetchall()]
-
-
-def update_repo_status(
-    conn: PgConn, repo_id: int, status: str, error_msg: str | None = None
-) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE repos SET status = %s, error_msg = %s, "
-            "last_indexed_at = CASE WHEN %s = 'indexed' THEN NOW() ELSE last_indexed_at END "
-            "WHERE id = %s",
-            (status, error_msg, status, repo_id),
-        )
-        if cur.rowcount == 0:
+    def update_repo_status(
+        self, repo_id: int, status: str, error_msg: str | None = None
+    ) -> None:
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn,
+                "UPDATE repos SET status = %s, error_msg = %s, "
+                "last_indexed_at = CASE WHEN %s = 'indexed' THEN NOW() ELSE last_indexed_at END "
+                "WHERE id = %s",
+                (status, error_msg, status, repo_id),
+            )
+        if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
 
+    def get_repo_head_sha(self, repo_id: int) -> str | None:
+        """Return head_sha for repo_id, or None if NULL or repo doesn't exist."""
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn, "SELECT head_sha FROM repos WHERE id = %s", (repo_id,)
+            )
+        return row["head_sha"] if row is not None else None
 
-def get_repo_head_sha(conn: PgConn, repo_id: int) -> str | None:
-    """Return head_sha for repo_id, or None if NULL or repo doesn't exist."""
-    with conn.cursor() as cur:
-        cur.execute("SELECT head_sha FROM repos WHERE id = %s", (repo_id,))
-        row = cur.fetchone()
-        return row[0] if row is not None else None
-
-
-def update_repo_head_sha(conn: PgConn, repo_id: int, head_sha: str) -> None:
-    """Update head_sha and bump last_indexed_at."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE repos SET head_sha = %s, last_indexed_at = NOW() WHERE id = %s",
-            (head_sha, repo_id),
-        )
-        if cur.rowcount == 0:
+    def update_repo_head_sha(self, repo_id: int, head_sha: str) -> None:
+        """Update head_sha and bump last_indexed_at."""
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn,
+                "UPDATE repos SET head_sha = %s, last_indexed_at = NOW() WHERE id = %s",
+                (head_sha, repo_id),
+            )
+        if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
 
+    def set_clone_status(
+        self, repo_id: int, status: str, error_msg: str | None = None
+    ) -> None:
+        """Update clone_status and optionally clone_error_msg.
 
-def set_clone_status(
-    conn: PgConn, repo_id: int, status: str, error_msg: str | None = None
-) -> None:
-    """Update clone_status and optionally clone_error_msg.
+        Status enum: 'manual', 'pending', 'cloned', 'error'.
 
-    Status enum: 'manual', 'pending', 'cloned', 'error'.
+        Note: cloner errors are stored in `clone_error_msg` (NOT `error_msg`).
+        `error_msg` is reserved for indexer errors (written by `update_repo_status`).
+        Keeping them separate prevents the cloner success path from clearing a prior
+        indexer error and vice versa.
+        """
+        valid_statuses = ("manual", "pending", "cloned", "error")
+        if status not in valid_statuses:
+            raise ValueError(f"Invalid clone_status: {status}. Must be one of {valid_statuses}")
 
-    Note: cloner errors are stored in `clone_error_msg` (NOT `error_msg`).
-    `error_msg` is reserved for indexer errors (written by `update_repo_status`).
-    Keeping them separate prevents the cloner success path from clearing a prior
-    indexer error and vice versa.
-    """
-    valid_statuses = ("manual", "pending", "cloned", "error")
-    if status not in valid_statuses:
-        raise ValueError(f"Invalid clone_status: {status}. Must be one of {valid_statuses}")
-
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE repos SET clone_status = %s, clone_error_msg = %s WHERE id = %s",
-            (status, error_msg, repo_id),
-        )
-        if cur.rowcount == 0:
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn,
+                "UPDATE repos SET clone_status = %s, clone_error_msg = %s WHERE id = %s",
+                (status, error_msg, repo_id),
+            )
+        if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
 
+    def get_repos_by_clone_status(self, profile_name: str, status: str) -> list[dict]:
+        """Return all repos for a profile matching the given clone_status."""
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                """
+                SELECT r.*, p.odoo_version
+                FROM repos r
+                JOIN profiles p ON r.profile_id = p.id
+                WHERE p.name = %s AND r.clone_status = %s
+                ORDER BY r.id
+                """,
+                (profile_name, status),
+            )
 
-def get_repos_by_clone_status(
-    conn: PgConn, profile_name: str, status: str
-) -> list[dict]:
-    """Return all repos for a profile matching the given clone_status."""
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT r.*, p.odoo_version
-            FROM repos r
-            JOIN profiles p ON r.profile_id = p.id
-            WHERE p.name = %s AND r.clone_status = %s
-            ORDER BY r.id
-            """,
-            (profile_name, status),
-        )
-        return [dict(r) for r in cur.fetchall()]
+    def get_repo_by_id(self, repo_id: int) -> dict | None:
+        """Return a single repo row joined with its profile, or None if not found."""
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_one(
+                conn,
+                """
+                SELECT r.*, p.name AS profile_name, p.odoo_version
+                FROM repos r LEFT JOIN profiles p ON r.profile_id = p.id
+                WHERE r.id = %s
+                """,
+                (repo_id,),
+            )
 
+    def get_repo_ids_by_local_path_basenames(self, basenames: list[str]) -> list[int]:
+        """Return repo IDs whose local_path basename matches any entry in *basenames*.
 
-def get_repo_by_id(conn: PgConn, repo_id: int) -> dict | None:
-    """Return a single repo row joined with its profile, or None if not found."""
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT r.*, p.name AS profile_name, p.odoo_version
-            FROM repos r LEFT JOIN profiles p ON r.profile_id = p.id
-            WHERE r.id = %s
-            """,
-            (repo_id,),
-        )
-        row = cur.fetchone()
-        return dict(row) if row is not None else None
+        The Neo4j Module.repo property equals ``Path(local_path).name`` (the
+        directory basename of the checkout).  This function maps those basename
+        strings back to PostgreSQL ``repos.id`` values so that ``reset_head_sha``
+        can null them out.
 
+        Uses ``regexp_replace`` to extract the basename server-side — avoids
+        fetching all rows into Python and doing the split there.
 
-def get_repo_ids_by_local_path_basenames(
-    conn: PgConn, basenames: list[str]
-) -> list[int]:
-    """Return repo IDs whose local_path basename matches any entry in *basenames*.
+        Returns:
+            List of repo IDs (may be shorter than basenames if some are not in DB).
+        """
+        if not basenames:
+            return []
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                "SELECT id FROM repos WHERE regexp_replace(local_path, '^.*/', '') = ANY(%s)",
+                (basenames,),
+            )
+        return [r["id"] for r in rows]
 
-    The Neo4j Module.repo property equals ``Path(local_path).name`` (the
-    directory basename of the checkout).  This function maps those basename
-    strings back to PostgreSQL ``repos.id`` values so that ``reset_head_sha``
-    can null them out.
+    def reset_head_sha(self, repo_ids: list[int]) -> int:
+        """Bulk-reset head_sha to NULL for given repo IDs.
 
-    Uses ``regexp_replace`` to extract the basename server-side — avoids
-    fetching all rows into Python and doing the split there.
+        Forces those repos to be fully re-indexed on the next indexer run.
+        Used by cross-repo dependency propagation (M7 W14): when upstream modules
+        change, downstream repos' head_sha is NULLed so they are not skipped.
 
-    Returns:
-        List of repo IDs (may be shorter than basenames if some are not in DB).
-    """
-    if not basenames:
-        return []
-    with conn.cursor() as cur:
-        # regexp_replace strips everything up to and including the last '/'.
-        # E.g. '/home/user/git/odoo_17.0' → 'odoo_17.0'.
-        cur.execute(
-            """
-            SELECT id
-            FROM repos
-            WHERE regexp_replace(local_path, '^.*/', '') = ANY(%s)
-            """,
-            (basenames,),
-        )
-        return [row[0] for row in cur.fetchall()]
+        Returns:
+            Number of rows updated (may be less than len(repo_ids) if some IDs
+            do not exist in the table).
+        """
+        if not repo_ids:
+            return 0
+        with self._pool.checkout() as conn:
+            return self._pool.execute(
+                conn,
+                "UPDATE repos SET head_sha = NULL WHERE id = ANY(%s)",
+                (repo_ids,),
+            )
 
+    def delete_profile(self, profile_id: int) -> dict:
+        """Delete profile by ID. PG CASCADE removes child repos automatically.
 
-def reset_head_sha(conn: PgConn, repo_ids: list[int]) -> int:
-    """Bulk-reset head_sha to NULL for given repo IDs.
+        Computes the list of repos BEFORE delete so the caller can pass
+        (repo_basename, odoo_version) pairs to Neo4j + pgvector cleanup.
 
-    Forces those repos to be fully re-indexed on the next indexer run.
-    Used by cross-repo dependency propagation (M7 W14): when upstream modules
-    change, downstream repos' head_sha is NULLed so they are not skipped.
+        Returns dict with:
+            repos: list of {repo_basename, odoo_version, module_paths} for caller
+                   to pass to Neo4j + pgvector cleanup.
+        """
+        with self._pool.checkout() as conn:
+            repo_rows = self._pool.fetch_all(
+                conn,
+                """
+                SELECT r.local_path, p.odoo_version
+                FROM repos r
+                JOIN profiles p ON r.profile_id = p.id
+                WHERE r.profile_id = %s
+                """,
+                (profile_id,),
+            )
+            repos = [
+                {
+                    "repo_basename": Path(r["local_path"]).name,
+                    "odoo_version": r["odoo_version"],
+                    "module_paths": [],
+                }
+                for r in repo_rows
+            ]
+            rowcount = self._pool.execute(
+                conn, "DELETE FROM profiles WHERE id = %s", (profile_id,)
+            )
+            if rowcount == 0:
+                raise ValueError(f"profile id={profile_id} not found")
+        return {"repos": repos}
 
-    Returns:
-        Number of rows updated (may be less than len(repo_ids) if some IDs
-        do not exist in the table).
-    """
-    if not repo_ids:
-        return 0
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE repos SET head_sha = NULL WHERE id = ANY(%s)",
-            (repo_ids,),
-        )
-        return cur.rowcount
+    def delete_repo(self, repo_id: int) -> dict:
+        """Delete repo by ID. Returns {repo_basename, odoo_version} for Neo4j cleanup.
 
+        Looks up repo info BEFORE deleting so the caller can clean up Neo4j
+        and pgvector data scoped to this repo.
 
-def delete_profile(conn: PgConn, profile_id: int) -> dict:
-    """Delete profile by ID. PG CASCADE removes child repos automatically.
+        Raises ValueError if repo not found.
+        """
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                """
+                SELECT r.local_path, p.odoo_version
+                FROM repos r
+                JOIN profiles p ON r.profile_id = p.id
+                WHERE r.id = %s
+                """,
+                (repo_id,),
+            )
+            if row is None:
+                raise ValueError(f"repo id={repo_id} not found")
+            repo_basename = Path(row["local_path"]).name
+            odoo_version = row["odoo_version"]
+            self._pool.execute(conn, "DELETE FROM repos WHERE id = %s", (repo_id,))
+        return {"repo_basename": repo_basename, "odoo_version": odoo_version}
 
-    Computes the list of repos BEFORE delete so the caller can pass
-    (repo_basename, odoo_version) pairs to Neo4j + pgvector cleanup.
+    def reset_repo_head_sha(self, repo_id: int) -> None:
+        """Set repos.head_sha = NULL to force full re-index on next run.
 
-    Returns dict with:
-        repos: list of {repo_basename, odoo_version, module_paths} for caller
-               to pass to Neo4j + pgvector cleanup.
-    """
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT r.local_path, p.odoo_version
-            FROM repos r
-            JOIN profiles p ON r.profile_id = p.id
-            WHERE r.profile_id = %s
-            """,
-            (profile_id,),
-        )
-        repo_rows = [dict(r) for r in cur.fetchall()]
+        Used by the Web UI "Reset embed state" button (M8 W4) so that
+        a repo previously indexed with --no-embed can be re-indexed
+        with embeddings on the next run.
 
-    repos = [
-        {
-            "repo_basename": Path(r["local_path"]).name,
-            "odoo_version": r["odoo_version"],
-            "module_paths": [],
-        }
-        for r in repo_rows
-    ]
-
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
-        if cur.rowcount == 0:
-            raise ValueError(f"profile id={profile_id} not found")
-
-    return {"repos": repos}
-
-
-def delete_repo(conn: PgConn, repo_id: int) -> dict:
-    """Delete repo by ID. Returns {repo_basename, odoo_version} for Neo4j cleanup.
-
-    Looks up repo info BEFORE deleting so the caller can clean up Neo4j
-    and pgvector data scoped to this repo.
-
-    Raises ValueError if repo not found.
-    """
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT r.local_path, p.odoo_version
-            FROM repos r
-            JOIN profiles p ON r.profile_id = p.id
-            WHERE r.id = %s
-            """,
-            (repo_id,),
-        )
-        row = cur.fetchone()
-
-    if row is None:
-        raise ValueError(f"repo id={repo_id} not found")
-
-    repo_basename = Path(row["local_path"]).name
-    odoo_version = row["odoo_version"]
-
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM repos WHERE id = %s", (repo_id,))
-
-    return {"repo_basename": repo_basename, "odoo_version": odoo_version}
-
-
-def reset_repo_head_sha(conn: PgConn, repo_id: int) -> None:
-    """Set repos.head_sha = NULL to force full re-index on next run.
-
-    Used by the Web UI "Reset embed state" button (M8 W4) so that
-    a repo previously indexed with --no-embed can be re-indexed
-    with embeddings on the next run.
-
-    Raises ValueError if repo not found.
-    """
-    with conn.cursor() as cur:
-        cur.execute("UPDATE repos SET head_sha = NULL WHERE id = %s", (repo_id,))
-        if cur.rowcount == 0:
+        Raises ValueError if repo not found.
+        """
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn, "UPDATE repos SET head_sha = NULL WHERE id = %s", (repo_id,)
+            )
+        if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
 
+    def update_repo_local_path(self, repo_id: int, local_path: str) -> None:
+        """Update local_path for a repo after a successful clone.
 
-def update_repo_local_path(conn: PgConn, repo_id: int, local_path: str) -> None:
-    """Update local_path for a repo after a successful clone.
-
-    Does NOT touch last_indexed_at — cloning is not indexing. last_indexed_at
-    is bumped only by update_repo_head_sha (called at the end of a real index run).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE repos SET local_path = %s WHERE id = %s",
-            (local_path, repo_id),
-        )
-        if cur.rowcount == 0:
+        Does NOT touch last_indexed_at — cloning is not indexing. last_indexed_at
+        is bumped only by update_repo_head_sha (called at the end of a real index run).
+        """
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn,
+                "UPDATE repos SET local_path = %s WHERE id = %s",
+                (local_path, repo_id),
+            )
+        if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
