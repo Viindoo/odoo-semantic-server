@@ -23,25 +23,21 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 async def _lifespan(app):
     """FastAPI lifespan: startup cleanup for stale indexer jobs."""
     try:
-        import psycopg2
-
         from src import config
-        from src.db import job_registry
+        from src.constants import PG_POOL_MAX_CONN, PG_POOL_MIN_CONN
+        from src.db.pg import init_pool, job_store
 
         dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
         if dsn:
-            conn = psycopg2.connect(dsn)
-            conn.autocommit = True
+            init_pool(dsn, min_conn=PG_POOL_MIN_CONN, max_conn=PG_POOL_MAX_CONN)
             try:
-                cleaned = job_registry.mark_dead_jobs(conn)
+                cleaned = job_store().mark_dead_jobs()
                 if cleaned:
                     _logger.warning(
                         "Startup cleanup: marked %d stale indexer job(s) as error", cleaned
                     )
             except Exception as exc:
                 _logger.warning("Startup job cleanup failed (non-fatal): %s", exc)
-            finally:
-                conn.close()
     except Exception as exc:
         _logger.warning("Startup job cleanup failed (non-fatal): %s", exc)
     yield

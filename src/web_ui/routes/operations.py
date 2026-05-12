@@ -19,22 +19,6 @@ router = APIRouter()
 _VERSION_RE = re.compile(r"^\d{1,2}\.\d+$")
 
 
-def _get_conn():
-    import psycopg2
-
-    from src import config
-
-    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
-    if not dsn:
-        return None
-    try:
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-        return conn
-    except Exception:
-        return None
-
-
 @router.get("/operations", response_class=HTMLResponse)
 async def operations_page(request: Request):
     """Render operations shell page."""
@@ -78,21 +62,17 @@ async def post_index_core(
         )
 
     # --- Spawn subprocess ---
-    conn = _get_conn()
     job_id: int | None = None
-    if conn:
-        try:
-            from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
+    try:
+        from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
-            argv = ["index-core", "--source", source.strip(), "--version", version.strip()]
-            if static_data_dir.strip():
-                argv += ["--static-data-dir", static_data_dir.strip()]
-            job_label = f"core:{version.strip()}"
-            job_id = spawn_indexer_subcommand(conn, argv, job_label=job_label)
-        except Exception as exc:
-            _logger.warning("index-core spawn failed: %s", exc)
-        finally:
-            conn.close()
+        argv = ["index-core", "--source", source.strip(), "--version", version.strip()]
+        if static_data_dir.strip():
+            argv += ["--static-data-dir", static_data_dir.strip()]
+        job_label = f"core:{version.strip()}"
+        job_id = spawn_indexer_subcommand(argv, job_label=job_label)
+    except Exception as exc:
+        _logger.warning("index-core spawn failed: %s", exc)
 
     if job_id is not None:
         flash = quote_plus(
@@ -142,28 +122,24 @@ async def post_seed_patterns(
         )
 
     # --- Spawn subprocess ---
-    conn = _get_conn()
     job_id: int | None = None
-    if conn:
-        try:
-            from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
+    try:
+        from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
-            argv = ["seed-patterns"]
-            if version_stripped:
-                argv += ["--version", version_stripped]
-            if no_embed:
-                argv.append("--no-embed")
-            if force:
-                argv.append("--force")
-            if patterns_file_stripped:
-                argv += ["--patterns-file", patterns_file_stripped]
+        argv = ["seed-patterns"]
+        if version_stripped:
+            argv += ["--version", version_stripped]
+        if no_embed:
+            argv.append("--no-embed")
+        if force:
+            argv.append("--force")
+        if patterns_file_stripped:
+            argv += ["--patterns-file", patterns_file_stripped]
 
-            job_label = f"patterns:{version_stripped}" if version_stripped else "patterns"
-            job_id = spawn_indexer_subcommand(conn, argv, job_label=job_label)
-        except Exception as exc:
-            _logger.warning("seed-patterns spawn failed: %s", exc)
-        finally:
-            conn.close()
+        job_label = f"patterns:{version_stripped}" if version_stripped else "patterns"
+        job_id = spawn_indexer_subcommand(argv, job_label=job_label)
+    except Exception as exc:
+        _logger.warning("seed-patterns spawn failed: %s", exc)
 
     if job_id is not None:
         label = f"patterns:{version_stripped}" if version_stripped else "patterns"
