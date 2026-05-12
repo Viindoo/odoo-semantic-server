@@ -87,9 +87,6 @@ class TestIndexAllDefaults:
         _setup_profile(migrated_pg, "all_default_1")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -111,9 +108,6 @@ class TestIndexAllDefaults:
         _setup_profile(migrated_pg, "all_default_2")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -147,9 +141,6 @@ class TestIndexAllDefaults:
         _setup_profile(migrated_pg, "all_jobs_1")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -170,9 +161,6 @@ class TestIndexAllAllFlags:
         _setup_profile(migrated_pg, "all_flags_1")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -210,9 +198,6 @@ class TestIndexAllValidation:
         _setup_profile(migrated_pg, "all_val_1")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
         ) as mock_popen:
             async with _async_client(app) as client:
@@ -234,9 +219,6 @@ class TestIndexAllValidation:
         _setup_profile(migrated_pg, "all_val_2")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
         ) as mock_popen:
             async with _async_client(app) as client:
@@ -258,9 +240,6 @@ class TestIndexAllValidation:
         _setup_profile(migrated_pg, "all_val_3")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
         ) as mock_popen:
             async with _async_client(app) as client:
@@ -280,9 +259,6 @@ class TestIndexAllValidation:
         _setup_profile(migrated_pg, "all_val_4")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
         ) as mock_popen:
             async with _async_client(app) as client:
@@ -304,9 +280,6 @@ class TestIndexAllRunningGuard:
         _setup_profile(migrated_pg, "all_guard_profile")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=True
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -331,9 +304,6 @@ class TestIndexAllRunningGuard:
         # No profiles created — DB is empty (but migrated)
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"

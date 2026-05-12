@@ -57,40 +57,28 @@ class TestReposPage:
     @pytest.mark.asyncio
     async def test_get_repos_returns_200(self, migrated_pg):
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
         assert resp.status_code == 200
         assert "Repos" in resp.text
 
     @pytest.mark.asyncio
     async def test_get_repos_shows_add_profile_form(self, migrated_pg):
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
         assert "Add Profile" in resp.text
         assert "No profiles yet" in resp.text
 
     @pytest.mark.asyncio
     async def test_create_profile_redirects(self, migrated_pg):
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.post(
-                    "/repos/profiles",
-                    data={"name": "test_profile", "version": "17.0", "description": ""},
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/repos/profiles",
+                data={"name": "test_profile", "version": "17.0", "description": ""},
+                follow_redirects=False,
+            )
         assert resp.status_code == 303
         assert resp.headers["location"] == "/repos"
 
@@ -99,16 +87,12 @@ class TestReposPage:
         from src.db.pg import repo_store
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                await client.post(
-                    "/repos/profiles",
-                    data={"name": "viindoo17", "version": "17.0", "description": "test"},
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            await client.post(
+                "/repos/profiles",
+                data={"name": "viindoo17", "version": "17.0", "description": "test"},
+                follow_redirects=False,
+            )
         profiles = repo_store().list_profiles()
         assert len(profiles) == 1
         assert profiles[0]["name"] == "viindoo17"
@@ -117,17 +101,13 @@ class TestReposPage:
     @pytest.mark.asyncio
     async def test_get_repos_shows_profile_after_create(self, migrated_pg):
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                await client.post(
-                    "/repos/profiles",
-                    data={"name": "myprofile", "version": "16.0", "description": ""},
-                    follow_redirects=False,
-                )
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            await client.post(
+                "/repos/profiles",
+                data={"name": "myprofile", "version": "16.0", "description": ""},
+                follow_redirects=False,
+            )
+            resp = await client.get("/repos")
         assert "myprofile" in resp.text
         assert "16.0" in resp.text
 
@@ -139,21 +119,17 @@ class TestReposPage:
         repo_store().add_profile(name="p1", odoo_version="17.0")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.post(
-                    "/repos/repos",
-                    data={
-                        "profile": "p1",
-                        "url": "file://local",
-                        "branch": "17.0",
-                        "local_path": "/tmp/odoo_17",
-                    },
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/repos/repos",
+                data={
+                    "profile": "p1",
+                    "url": "file://local",
+                    "branch": "17.0",
+                    "local_path": "/tmp/odoo_17",
+                },
+                follow_redirects=False,
+            )
         assert resp.status_code == 303
         assert resp.headers["location"] == "/repos"
 
@@ -170,10 +146,7 @@ class TestReposPage:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     f"/repos/repos/{rid}/index",
@@ -197,10 +170,7 @@ class TestReposPage:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(f"/repos/repos/{rid}/index", follow_redirects=False)
 
@@ -226,9 +196,6 @@ class TestReposPage:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=True
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -257,9 +224,6 @@ class TestReposPage:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -295,10 +259,7 @@ class TestSshCloneFlow:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/repos/repos",
@@ -338,10 +299,7 @@ class TestSshCloneFlow:
         repo_store().add_profile(name="ssh_nokey_profile", odoo_version="17.0")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/repos/repos",
@@ -368,10 +326,7 @@ class TestSshCloneFlow:
         repo_store().add_profile(name="https_profile", odoo_version="17.0")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/repos/repos",
@@ -400,12 +355,8 @@ class TestSshCloneFlow:
         auth_store().save_ssh_key("key-beta", "ssh-ed25519 AAAA2", "enc2")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos/ssh-keys-list")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos/ssh-keys-list")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -425,10 +376,7 @@ class TestSshCloneFlow:
         repo_store().add_profile(name="ssh_abc_profile", odoo_version="17.0")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/repos/repos",
@@ -463,12 +411,8 @@ class TestSshCloneFlow:
         repo_store().set_clone_status(rid, "pending")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get(f"/repos/repos/{rid}/clone-status")
+        async with _async_client(app) as client:
+            resp = await client.get(f"/repos/repos/{rid}/clone-status")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -504,9 +448,6 @@ class TestJobIntegration:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -556,9 +497,6 @@ class TestJobIntegration:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=True
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -585,12 +523,8 @@ class TestJobIntegration:
         job_id = job_store().create_job("p_status")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get(f"/repos/jobs/{job_id}/status")
+        async with _async_client(app) as client:
+            resp = await client.get(f"/repos/jobs/{job_id}/status")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -607,12 +541,8 @@ class TestJobIntegration:
     async def test_get_job_status_missing(self, migrated_pg):
         """GET /repos/jobs/999999/status → 404."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos/jobs/999999/status")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos/jobs/999999/status")
 
         assert resp.status_code == 404
         data = resp.json()
@@ -647,12 +577,8 @@ class TestStatusBadgeTemplate:
         job_id = job_store().create_job("badge_profile")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
 
         assert resp.status_code == 200
         assert f'data-job-id="{job_id}"' in resp.text
@@ -672,12 +598,8 @@ class TestStatusBadgeTemplate:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
 
         assert resp.status_code == 200
         # Should have the "Last Job" column header
@@ -709,12 +631,8 @@ class TestStatusBadgeTemplate:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
 
         assert resp.status_code == 200
         assert f'data-job-id="{job_id}"' in resp.text
@@ -744,12 +662,8 @@ class TestStatusBadgeTemplate:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
 
         assert resp.status_code == 200
         assert f'data-job-id="{job_id}"' in resp.text
@@ -763,12 +677,8 @@ class TestStatusBadgeTemplate:
         repo_store().add_profile(name="js_test", odoo_version="17.0")
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/repos")
+        async with _async_client(app) as client:
+            resp = await client.get("/repos")
 
         assert resp.status_code == 200
         assert "POLL_MS = 5000" in resp.text

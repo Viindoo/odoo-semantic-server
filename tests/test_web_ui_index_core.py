@@ -68,10 +68,7 @@ class TestIndexCoreRoute:
     async def test_valid_submission_redirects_with_flash(self, migrated_pg, tmp_path):
         """POST valid source + version → 303, flash contains job id and version."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen"):
+        with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/index-core",
@@ -90,10 +87,7 @@ class TestIndexCoreRoute:
     async def test_valid_submission_creates_indexer_jobs_row(self, migrated_pg, tmp_path):
         """POST valid inputs → indexer_jobs row with profile_name='core:17.0' + status='queued'."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen"):
+        with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/index-core",
@@ -115,10 +109,7 @@ class TestIndexCoreRoute:
     async def test_valid_submission_argv_contains_index_core(self, migrated_pg, tmp_path):
         """Popen argv must include index-core --source X --version 17.0."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/index-core",
@@ -142,10 +133,7 @@ class TestIndexCoreRoute:
         static_dir.mkdir()
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/index-core",
@@ -165,10 +153,7 @@ class TestIndexCoreRoute:
     async def test_empty_static_data_dir_not_in_argv(self, migrated_pg, tmp_path):
         """Empty static_data_dir (default) → --static-data-dir NOT in argv."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
                     "/operations/index-core",
@@ -183,10 +168,7 @@ class TestIndexCoreRoute:
     async def test_invalid_version_returns_400(self, migrated_pg, tmp_path):
         """POST with invalid version string → 400, error in body, no job row created."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/index-core",
@@ -206,10 +188,7 @@ class TestIndexCoreRoute:
     async def test_invalid_version_blank_returns_400(self, migrated_pg, tmp_path):
         """Version '17' (no dot) → 400, no job row."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/index-core",
@@ -224,10 +203,7 @@ class TestIndexCoreRoute:
     async def test_nonexistent_source_path_returns_400(self, migrated_pg):
         """POST with non-existent source path → 400, error in body, no job row."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/index-core",
@@ -247,10 +223,7 @@ class TestIndexCoreRoute:
     async def test_nonexistent_static_data_dir_returns_400(self, migrated_pg, tmp_path):
         """Static data dir provided but does not exist → 400, no job row."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     "/operations/index-core",
@@ -274,10 +247,7 @@ class TestIndexCoreRoute:
         """Verify multiple valid version strings are accepted (8.0, 9.0, 17.0, 20.0)."""
         app = create_app()
         for ver in ("8.0", "9.0", "17.0", "20.0"):
-            with mock.patch(
-                "src.web_ui.routes.operations._get_conn",
-                _make_conn_factory(migrated_pg),
-            ), mock.patch("subprocess.Popen"):
+            with mock.patch("subprocess.Popen"):
                 async with _async_client(app) as client:
                     resp = await client.post(
                         "/operations/index-core",
@@ -297,12 +267,8 @@ class TestOperationsPageGet:
     async def test_get_operations_renders_form(self, migrated_pg):
         """GET /operations → 200, form action /operations/index-core present."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.operations._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.get("/operations")
+        async with _async_client(app) as client:
+            resp = await client.get("/operations")
 
         assert resp.status_code == 200
         assert "Index Odoo Core Specs" in resp.text

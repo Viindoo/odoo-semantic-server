@@ -190,7 +190,7 @@ def test_write_and_count_embeddings(clean_pg_embeddings):
         EmbeddingChunk("field", TEST_MODULE, TEST_VERSION, "sale.order.amount_total",
                        "sale.order", "/tmp/sale.py", 0, "amount_total = fields.Monetary()"),
     ]
-    write_module_embeddings(clean_pg_embeddings, TEST_MODULE, TEST_VERSION, chunks, embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, chunks, embedder)
 
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
@@ -205,11 +205,11 @@ def test_write_is_delete_before_insert(clean_pg_embeddings):
     embedder = FakeEmbedder(dim=1024)
     old_chunk = EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.old",
                                "sale.order", "/tmp/sale.py", 0, "def old(self): pass")
-    write_module_embeddings(clean_pg_embeddings, TEST_MODULE, TEST_VERSION, [old_chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [old_chunk], embedder)
 
     new_chunk = EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.new",
                                "sale.order", "/tmp/sale.py", 0, "def new(self): pass")
-    write_module_embeddings(clean_pg_embeddings, TEST_MODULE, TEST_VERSION, [new_chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [new_chunk], embedder)
 
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
@@ -228,7 +228,7 @@ def test_ann_query_returns_nearest_result(clean_pg_embeddings):
         "method", TEST_MODULE, TEST_VERSION, "sale.order.action_confirm",
         "sale.order", "/tmp/sale.py", 0, "def action_confirm(self): ...",
     )
-    write_module_embeddings(clean_pg_embeddings, TEST_MODULE, TEST_VERSION, [chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
 
     query_vec = embedder.embed(["confirm sale order"])[0]
     with clean_pg_embeddings.cursor() as cur:

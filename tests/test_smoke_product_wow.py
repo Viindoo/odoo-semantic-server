@@ -109,12 +109,9 @@ class TestSmokeAuth:
         app.add_middleware(AuthMiddleware)
 
         # Patch DB verify to always return None (invalid key)
-        from contextlib import contextmanager
-
-        import src.db.auth_registry as ar
-        import src.mcp.server as srv
-        with mock.patch.object(ar, "verify_api_key", return_value=None), \
-             mock.patch.object(srv, "_checkout_pg", contextmanager(lambda: iter([object()]))):
+        mock_auth = mock.MagicMock()
+        mock_auth.verify_api_key.return_value = None
+        with mock.patch("src.db.pg.auth_store", return_value=mock_auth):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.get("/mcp", headers={"X-API-Key": "osm_bad_key"})

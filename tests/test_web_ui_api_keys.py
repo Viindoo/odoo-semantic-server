@@ -21,24 +21,8 @@ def web_app(pg_conn, monkeypatch):
 
     app = create_app()
 
-    # Mock _get_conn at module level to use test pg_conn
-    from src.web_ui.routes import api_keys
-
-    def mock_get_conn():
-        """Return a new connection to test database."""
-        import psycopg2
-
-        # Reuse the PG_TEST_DSN from conftest
-        from tests.conftest import PG_TEST_DSN
-
-        try:
-            conn = psycopg2.connect(PG_TEST_DSN)
-            conn.autocommit = True
-            return conn
-        except Exception:
-            return None
-
-    monkeypatch.setattr(api_keys, "_get_conn", mock_get_conn)
+    # Pool is already initialized to test DB by pg_conn fixture (conftest.py).
+    # Routes use auth_store() which draws from the shared pool — no manual mock needed.
 
     yield app
 
@@ -211,14 +195,10 @@ class TestApiKeyDeactivateInvariants:
 
         import httpx
 
-        import src.web_ui.routes.api_keys as ak_mod
+        mock_store = mock.MagicMock()
+        mock_store.deactivate_api_key.side_effect = RuntimeError("db exploded")
 
-        with mock.patch.object(ak_mod, "_get_conn") as mock_conn_fn:
-            mock_conn = mock.MagicMock()
-            mock_conn.__bool__ = lambda s: True
-            mock_conn.cursor.side_effect = RuntimeError("db exploded")
-            mock_conn_fn.return_value = mock_conn
-
+        with mock.patch("src.db.pg.auth_store", return_value=mock_store):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=web_app), base_url="http://test"
             ) as client:

@@ -82,22 +82,6 @@ class TestArgparse:
 # but we mock Neo4j here and only exercise PG job_registry)
 # ---------------------------------------------------------------------------
 
-class _NoClosePg:
-    """Proxy that no-ops close() to keep test pg_conn alive."""
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    def close(self):
-        pass  # no-op: test owns the connection lifetime
-
-    def cursor(self, *args, **kwargs):
-        return self._conn.cursor(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-
 class TestJobLifecycleWithPg:
     """Verify job_registry transitions when seed_patterns.main() runs with --job-id."""
 
@@ -123,19 +107,11 @@ class TestJobLifecycleWithPg:
         monkeypatch.setattr(sp_mod, "_set_stored_patterns_sha", lambda driver, sha: None)
         return mock_writer
 
-    def _make_no_close_factory(self, pg):
-        """Return a factory that gives a no-close proxy for the test connection."""
-        wrapped = _NoClosePg(pg)
-        return lambda: wrapped
-
     def test_job_transitions_queued_to_running_to_done(
         self, migrated_pg, patterns_file, monkeypatch
     ):
         """Running seed_patterns.main() with --job-id transitions job to done."""
         self._stub_neo4j(monkeypatch)
-        monkeypatch.setattr(
-            sp_mod, "_open_pg_for_job_tracking", self._make_no_close_factory(migrated_pg)
-        )
 
         job_id = self._create_queued_job(migrated_pg)
         initial = job_store().get_job(job_id)
@@ -160,9 +136,6 @@ class TestJobLifecycleWithPg:
     ):
         """PID stored in the job row should equal os.getpid()."""
         self._stub_neo4j(monkeypatch)
-        monkeypatch.setattr(
-            sp_mod, "_open_pg_for_job_tracking", self._make_no_close_factory(migrated_pg)
-        )
 
         job_id = self._create_queued_job(migrated_pg)
         sp_mod.main([
@@ -179,10 +152,6 @@ class TestJobLifecycleWithPg:
         self, migrated_pg, monkeypatch
     ):
         """Non-existent patterns file → job status='error', error_msg populated."""
-        monkeypatch.setattr(
-            sp_mod, "_open_pg_for_job_tracking", self._make_no_close_factory(migrated_pg)
-        )
-
         job_id = self._create_queued_job(migrated_pg)
         rc = sp_mod.main([
             "--patterns-file", "/no/such/patterns.json",
@@ -206,9 +175,6 @@ class TestJobLifecycleWithPg:
         monkeypatch.setattr(
             sp_mod, "_get_stored_patterns_sha", lambda driver: current_sha
         )
-        monkeypatch.setattr(
-            sp_mod, "_open_pg_for_job_tracking", self._make_no_close_factory(migrated_pg)
-        )
 
         job_id = self._create_queued_job(migrated_pg)
         rc = sp_mod.main([
@@ -224,16 +190,16 @@ class TestJobLifecycleWithPg:
     def test_no_job_id_does_not_open_pg(
         self, patterns_file, monkeypatch
     ):
-        """When --job-id absent, _open_pg_for_job_tracking is never called."""
+        """When --job-id absent, _get_job_store is never called."""
         self._stub_neo4j(monkeypatch)
 
-        open_pg_calls = []
+        get_job_store_calls = []
 
-        def _spy_open_pg():
-            open_pg_calls.append(True)
+        def _spy_get_job_store():
+            get_job_store_calls.append(True)
             return MagicMock()
 
-        monkeypatch.setattr(sp_mod, "_open_pg_for_job_tracking", _spy_open_pg)
+        monkeypatch.setattr(sp_mod, "_get_job_store", _spy_get_job_store)
 
         rc = sp_mod.main([
             "--patterns-file", str(patterns_file),
@@ -242,16 +208,15 @@ class TestJobLifecycleWithPg:
             # no --job-id
         ])
         assert rc == 0
-        assert open_pg_calls == [], "pg should not be opened when --job-id not set"
+        assert get_job_store_calls == [], (
+            "_get_job_store should not be called when --job-id not set"
+        )
 
     def test_exception_in_seed_marks_error_and_reraises(
         self, migrated_pg, patterns_file, monkeypatch
     ):
         """Exception during _write_neo4j → job status='error', exception re-raised."""
         self._stub_neo4j(monkeypatch)
-        monkeypatch.setattr(
-            sp_mod, "_open_pg_for_job_tracking", self._make_no_close_factory(migrated_pg)
-        )
         monkeypatch.setattr(
             sp_mod, "_write_neo4j",
             lambda patterns: (_ for _ in ()).throw(RuntimeError("neo4j exploded"))

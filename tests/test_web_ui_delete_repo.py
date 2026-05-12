@@ -156,9 +156,6 @@ class TestDeleteRepoHappyPath:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.routes.repos._delete_neo4j_for_repos",
             return_value=(0, 0),
         ), mock.patch(
@@ -212,9 +209,6 @@ class TestDeleteRepoHappyPath:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.routes.repos._delete_embeddings_for_repos",
             return_value=0,
         ):
@@ -265,15 +259,11 @@ class TestDeleteRepoHappyPath:
         pre_b = _count_embeddings(migrated_pg, module_b, TEST_VERSION)
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                await client.post(
-                    f"/repos/repos/{rid_a}/delete",
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            await client.post(
+                f"/repos/repos/{rid_a}/delete",
+                follow_redirects=False,
+            )
 
         post_a = _count_embeddings(migrated_pg, module_a, TEST_VERSION)
         post_b = _count_embeddings(migrated_pg, module_b, TEST_VERSION)
@@ -297,9 +287,6 @@ class TestDeleteRepoHappyPath:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.web_ui.routes.repos._delete_neo4j_for_repos",
             return_value=(1, 3),
         ), mock.patch(
@@ -358,15 +345,11 @@ class TestDeleteRepoMultiProfileSameVersion:
         assert _count_neo4j_modules(driver, basename_2, TEST_VERSION) == 1
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                await client.post(
-                    f"/repos/repos/{rid1}/delete",
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            await client.post(
+                f"/repos/repos/{rid1}/delete",
+                follow_redirects=False,
+            )
 
         # profile_1 repo gone from PG
         repos_p1 = repo_store().get_repos_for_profile("profile1_multitest_99")
@@ -400,9 +383,6 @@ class TestDeleteRepoGuard:
 
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running",
             return_value=True,
         ):
@@ -425,15 +405,11 @@ class TestDeleteRepoGuard:
     async def test_redirects_with_flash_for_missing_repo(self, migrated_pg, clean_neo4j):
         """POST with non-existent repo_id → 303 with 'not found' flash."""
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ):
-            async with _async_client(app) as client:
-                resp = await client.post(
-                    "/repos/repos/999999/delete",
-                    follow_redirects=False,
-                )
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/repos/repos/999999/delete",
+                follow_redirects=False,
+            )
 
         assert resp.status_code == 303
         location = resp.headers["location"]

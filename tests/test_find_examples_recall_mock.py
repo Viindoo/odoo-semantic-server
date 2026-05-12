@@ -230,7 +230,7 @@ def seeded_clusters(clean_pg_embeddings, clean_neo4j):
         module_chunks.setdefault(mod, []).append(chunk)
 
     for mod, chunks in module_chunks.items():
-        write_module_embeddings(clean_pg_embeddings, mod, TEST_VERSION, chunks, embedder)
+        write_module_embeddings(mod, TEST_VERSION, chunks, embedder)
 
     return clean_pg_embeddings, clean_neo4j, text_to_cluster
 

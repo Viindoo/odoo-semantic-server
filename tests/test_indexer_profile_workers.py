@@ -90,7 +90,7 @@ class TestTwoProfilesParallel:
         repos_alpha = [_make_repo(1)]
         repos_beta = [_make_repo(2)]
 
-        def fake_get_repos(pg_conn, profile_name):
+        def fake_get_repos(profile_name):
             return repos_alpha if profile_name == "alpha" else repos_beta
 
         def fake_index_repo(
@@ -100,10 +100,12 @@ class TestTwoProfilesParallel:
             # repo id 1 → 3 modules, repo id 2 → 5 modules
             return _fake_counters(modules=3 if repo["id"] == 1 else 5)
 
+        mock_store = MagicMock()
+        mock_store.list_profiles.return_value = profiles
+        mock_store.get_repos_for_profile.side_effect = fake_get_repos
+
         with (
-            patch("src.indexer.pipeline.list_profiles", return_value=profiles),
-            patch("src.indexer.pipeline.get_repos_for_profile", side_effect=fake_get_repos),
-            patch("src.indexer.pipeline.update_repo_status"),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", side_effect=fake_index_repo),
@@ -127,10 +129,12 @@ class TestOneProfileWithProfileWorkers2:
         profiles = [_make_profile("solo")]
         repos = [_make_repo(10)]
 
+        mock_store = MagicMock()
+        mock_store.list_profiles.return_value = profiles
+        mock_store.get_repos_for_profile.return_value = repos
+
         with (
-            patch("src.indexer.pipeline.list_profiles", return_value=profiles),
-            patch("src.indexer.pipeline.get_repos_for_profile", return_value=repos),
-            patch("src.indexer.pipeline.update_repo_status"),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", return_value=_fake_counters(modules=7)),
@@ -157,7 +161,7 @@ class TestProfileFailureDoesNotBlockOthers:
 
         good_indexed = threading.Event()
 
-        def fake_get_repos(pg_conn, profile_name):
+        def fake_get_repos(profile_name):
             return repos_good if profile_name == "good" else repos_bad
 
         def fake_index_repo(
@@ -169,10 +173,12 @@ class TestProfileFailureDoesNotBlockOthers:
             good_indexed.set()
             return _fake_counters(modules=4)
 
+        mock_store = MagicMock()
+        mock_store.list_profiles.return_value = profiles
+        mock_store.get_repos_for_profile.side_effect = fake_get_repos
+
         with (
-            patch("src.indexer.pipeline.list_profiles", return_value=profiles),
-            patch("src.indexer.pipeline.get_repos_for_profile", side_effect=fake_get_repos),
-            patch("src.indexer.pipeline.update_repo_status"),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline._index_repo", side_effect=fake_index_repo),
@@ -210,8 +216,11 @@ class TestProfileWorkersFullReindex:
             seen_full_reindex.append(full_reindex)
             return _fake_counters(modules=1)
 
+        mock_store = MagicMock()
+        mock_store.list_profiles.return_value = profiles
+
         with (
-            patch("src.indexer.pipeline.list_profiles", return_value=profiles),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.index_profile", side_effect=fake_index_profile),
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
@@ -248,8 +257,11 @@ class TestSequentialFallback:
             call_order.append(profile_name)
             return _fake_counters(modules=2)
 
+        mock_store = MagicMock()
+        mock_store.list_profiles.return_value = profiles
+
         with (
-            patch("src.indexer.pipeline.list_profiles", return_value=profiles),
+            patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.index_profile", side_effect=fake_index_profile),
         ):
             from src.indexer.pipeline import index_all

@@ -72,9 +72,6 @@ class TestIndexOptionsFlags:
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_1")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -100,9 +97,6 @@ class TestIndexOptionsFlags:
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_2")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -126,9 +120,6 @@ class TestIndexOptionsFlags:
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_3")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -148,10 +139,7 @@ class TestIndexOptionsFlags:
         """POST with max_workers=9 → 303 with flash error, Popen NOT called."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_4")
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     f"/repos/repos/{rid}/index",
@@ -170,10 +158,7 @@ class TestIndexOptionsFlags:
         """POST with max_workers=abc → 303 with flash error, Popen NOT called."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_5")
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     f"/repos/repos/{rid}/index",
@@ -192,9 +177,6 @@ class TestIndexOptionsFlags:
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_6")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=True
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -216,9 +198,6 @@ class TestIndexOptionsFlags:
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_7")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch(
             "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
@@ -244,9 +223,6 @@ class TestIndexOptionsFlags:
         _, rid = _setup_profile_and_repo(migrated_pg, "mynamedprofile")
         app = create_app()
         with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
@@ -267,10 +243,7 @@ class TestIndexOptionsFlags:
         """POST with max_workers=0 → 303 flash error, Popen not called."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_8")
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._get_conn",
-            _make_conn_factory(migrated_pg),
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     f"/repos/repos/{rid}/index",

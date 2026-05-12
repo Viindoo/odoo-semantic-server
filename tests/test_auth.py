@@ -149,14 +149,14 @@ class TestAuthMiddlewareUnit:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        # Patch verify_api_key to return None (invalid key)
-        from contextlib import contextmanager
+        # Patch auth_store().verify_api_key to return None (invalid key)
+        from unittest.mock import MagicMock
 
-        import src.db.auth_registry as ar
-        import src.mcp.server as srv
+        import src.db.pg as pg_mod
 
-        monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: None, raising=False)
-        monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
+        mock_auth = MagicMock()
+        mock_auth.verify_api_key.return_value = None
+        monkeypatch.setattr(pg_mod, "auth_store", lambda: mock_auth)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -180,14 +180,13 @@ class TestAuthMiddlewareUnit:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        from contextlib import contextmanager
+        from unittest.mock import MagicMock
 
-        import src.db.auth_registry as ar
-        import src.mcp.server as srv
+        import src.db.pg as pg_mod
 
-        monkeypatch.setattr(ar, "verify_api_key", lambda conn, k: 1, raising=False)
-        monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
-        monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None, raising=False)
+        mock_auth = MagicMock()
+        mock_auth.verify_api_key.return_value = 1
+        monkeypatch.setattr(pg_mod, "auth_store", lambda: mock_auth)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -212,20 +211,19 @@ class TestAuthMiddlewareUnit:
         app = Starlette(routes=[Route("/mcp", dummy)])
         app.add_middleware(AuthMiddleware)
 
-        from contextlib import contextmanager
+        from unittest.mock import MagicMock
 
-        import src.db.auth_registry as ar
-        import src.mcp.server as srv
+        import src.db.pg as pg_mod
 
         call_count = {"n": 0}
 
-        def counting_verify(conn, k):
+        def counting_verify(key):
             call_count["n"] += 1
             return 1
 
-        monkeypatch.setattr(ar, "verify_api_key", counting_verify, raising=False)
-        monkeypatch.setattr(srv, "_checkout_pg", contextmanager(lambda: iter([object()])))
-        monkeypatch.setattr(ar, "log_usage", lambda *a, **kw: None, raising=False)
+        mock_auth = MagicMock()
+        mock_auth.verify_api_key.side_effect = counting_verify
+        monkeypatch.setattr(pg_mod, "auth_store", lambda: mock_auth)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

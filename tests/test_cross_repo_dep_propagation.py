@@ -375,13 +375,11 @@ class TestDepPropagationEndToEnd:
 
         repo_a = self._make_repo_dict(repo_a_id, repo_a_path)
 
-        old_head = "deadbeef"
         new_head = "cafebabe"
 
         with (
             patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
-            patch("src.indexer.pipeline._repo_registry.get_repo_head_sha", return_value=old_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
                 "src.indexer.pipeline._incremental.compute_changed_module_paths",
@@ -464,13 +462,11 @@ class TestDepPropagationEndToEnd:
 
         repo_a = self._make_repo_dict(repo_a_id, repo_a_path)
 
-        old_head = "deadbeef"
         new_head = "cafebabe"
 
         with (
             patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
-            patch("src.indexer.pipeline._repo_registry.get_repo_head_sha", return_value=old_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
                 "src.indexer.pipeline._incremental.compute_changed_module_paths",
@@ -541,13 +537,11 @@ class TestDepPropagationEndToEnd:
 
         repo_a = self._make_repo_dict(repo_a_id, repo_a_path)
 
-        old_head = "deadbeef"
         new_head = "cafebabe"
 
         with (
             patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
-            patch("src.indexer.pipeline._repo_registry.get_repo_head_sha", return_value=old_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
                 "src.indexer.pipeline._incremental.compute_changed_module_paths",
