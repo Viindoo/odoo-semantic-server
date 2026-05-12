@@ -17,7 +17,7 @@ from src.git_utils import (
     "url",
     [
         "git@github.com:Viindoo/odoo-semantic-mcp.git",
-        "git@gitlab.viindoo.com:viin/some-addon.git",
+        "git@gitlab.example.com:viin/some-addon.git",
         "ssh://git@host/path/repo.git",
         "ssh://git@example.com:2222/repo.git",
     ],

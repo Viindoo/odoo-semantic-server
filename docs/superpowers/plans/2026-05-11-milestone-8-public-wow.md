@@ -2,7 +2,7 @@
 
 **Status:** Planning (plan-only, no code yet)
 **Created:** 2026-05-11
-**Operator:** davidtran.hp
+**Operator:** Viindoo team
 
 ---
 
@@ -235,7 +235,7 @@ nginx longest-prefix matching guarantees `/mcp`, `/install`, `/admin/`, `/health
 
 Pre-deploy validation: `sudo nginx -t` before `systemctl reload nginx`.
 
-Create `/var/www/odoo-semantic-landing/` with owner `tran-ngoc-tuan:www-data` (or whatever nginx runs as) — verify with `ls -la /var/www/`.
+Create `/var/www/odoo-semantic-landing/` with owner `<user>:www-data` (or whatever nginx runs as) — verify with `ls -la /var/www/`.
 
 ---
 
