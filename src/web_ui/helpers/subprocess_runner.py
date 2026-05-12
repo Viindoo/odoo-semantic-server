@@ -7,6 +7,7 @@ subprocess with --job-id, return job_id for status polling.
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from src.db import job_registry
@@ -40,12 +41,16 @@ def spawn_indexer_subcommand(
     # Capture subprocess output to /tmp/osm-job-{job_id}.log
     log_path = Path(tempfile.gettempdir()) / f"osm-job-{job_id}.log"
     log_file = open(log_path, "w")  # noqa: SIM115 — fd must stay open for subprocess lifetime
-    subprocess.Popen(
+    proc = subprocess.Popen(
         argv,
         start_new_session=True,
         stdout=log_file,
         stderr=log_file,
     )
+    # Reap the child when it exits so it doesn't linger as a zombie.
+    # Without this, the web server (parent) never calls wait() and the process
+    # stays in Z (zombie) state indefinitely after the indexer finishes.
+    threading.Thread(target=proc.wait, daemon=True).start()
     # log_file fd is inherited by subprocess; GC closes the parent-side fd handle.
     # The subprocess keeps the file open until it exits.
     return job_id
