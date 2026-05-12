@@ -14,6 +14,7 @@ import concurrent.futures
 import hashlib
 import logging
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -521,13 +522,16 @@ def index_profile(
 
             if max_workers <= 1:
                 # --- Sequential path (original behaviour, unchanged) ----------
+                failed_repos: list[tuple[int, str]] = []
                 for repo in repos:
                     repo_id: int = repo["id"]
+                    _t0 = time.monotonic()
                     try:
                         counters = _index_repo(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
                             progress=progress, full_reindex=full_reindex, gc=gc,
                         )
+                        _elapsed = time.monotonic() - _t0
                         total_modules += counters["modules"]
                         total_views += counters["views"]
                         total_qweb += counters["qweb"]
@@ -536,9 +540,9 @@ def index_profile(
                         total_owl_comps += counters.get("owl_comps", 0)
                         update_repo_status(pg_conn, repo_id, "indexed")
                         _logger.info(
-                            "Indexed repo id=%d: %d modules, %d views, %d qweb, "
+                            "Indexed repo id=%d in %.1fs: %d modules, %d views, %d qweb, "
                             "%d embeddings, %d js_patches, %d owl_comps",
-                            repo_id,
+                            repo_id, _elapsed,
                             counters["modules"],
                             counters["views"],
                             counters["qweb"],
@@ -547,9 +551,17 @@ def index_profile(
                             counters.get("owl_comps", 0),
                         )
                     except Exception as e:
-                        _logger.exception("Failed to index repo id=%d", repo_id)
+                        _elapsed = time.monotonic() - _t0
+                        _logger.exception(
+                            "Failed to index repo id=%d after %.1fs — continuing",
+                            repo_id, _elapsed,
+                        )
                         update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
-                        raise  # re-raise so index_profile can propagate failure
+                        failed_repos.append((repo_id, str(e)[:200]))
+
+                if failed_repos:
+                    summary = "; ".join(f"id={rid}: {msg}" for rid, msg in failed_repos)
+                    raise RuntimeError(f"{len(failed_repos)} repo(s) failed: {summary}")
             else:
                 # --- Parallel path (ThreadPoolExecutor) ----------------------
                 if progress:
@@ -562,6 +574,7 @@ def index_profile(
                     """Per-repo worker: own pg_conn + shared writer."""
                     repo_id: int = repo["id"]
                     pg_conn_local = open_production_pg()
+                    _t0 = time.monotonic()
                     try:
                         counters = _index_repo(
                             repo, writer,
@@ -571,11 +584,12 @@ def index_profile(
                             full_reindex=full_reindex,
                             gc=gc,
                         )
+                        _elapsed = time.monotonic() - _t0
                         update_repo_status(pg_conn_local, repo_id, "indexed")
                         _logger.info(
-                            "Indexed repo id=%d: %d modules, %d views, %d qweb, "
+                            "Indexed repo id=%d in %.1fs: %d modules, %d views, %d qweb, "
                             "%d embeddings, %d js_patches, %d owl_comps",
-                            repo_id,
+                            repo_id, _elapsed,
                             counters["modules"],
                             counters["views"],
                             counters["qweb"],
@@ -585,7 +599,11 @@ def index_profile(
                         )
                         return counters
                     except Exception as e:
-                        _logger.exception("Failed to index repo id=%d", repo_id)
+                        _elapsed = time.monotonic() - _t0
+                        _logger.exception(
+                            "Failed to index repo id=%d after %.1fs — continuing",
+                            repo_id, _elapsed,
+                        )
                         try:
                             update_repo_status(
                                 pg_conn_local, repo_id, "error", error_msg=str(e)[:500]
@@ -601,7 +619,9 @@ def index_profile(
                 ) as executor:
                     futures = {executor.submit(_worker, repo): repo for repo in repos}
                     first_exc: BaseException | None = None
+                    failed_repo_ids: list[tuple[int, str]] = []
                     for future in concurrent.futures.as_completed(futures):
+                        repo_for_future = futures[future]
                         try:
                             counters = future.result()
                             total_modules += counters["modules"]
@@ -611,10 +631,16 @@ def index_profile(
                             total_js_patches += counters.get("js_patches", 0)
                             total_owl_comps += counters.get("owl_comps", 0)
                         except Exception as e:
+                            failed_repo_ids.append((repo_for_future["id"], str(e)[:200]))
                             if first_exc is None:
                                 first_exc = e
                     if first_exc is not None:
-                        raise first_exc
+                        summary = "; ".join(
+                            f"id={rid}: {msg}" for rid, msg in failed_repo_ids
+                        )
+                        raise RuntimeError(
+                            f"{len(failed_repo_ids)} repo(s) failed: {summary}"
+                        )
 
             # Auto-reseed pattern catalogue (W2-7).
             # Hash-gated via _SeedMeta sentinel (W2-6) — cheap when patterns.json unchanged.
