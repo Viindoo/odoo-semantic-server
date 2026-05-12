@@ -21,12 +21,7 @@ from pathlib import Path
 from neo4j import GraphDatabase
 
 from src import config
-from src.db import repo_registry as _repo_registry
-from src.db.repo_registry import (
-    get_repos_for_profile,
-    list_profiles,
-    update_repo_status,
-)
+from src.db.pg import repo_store
 from src.indexer import incremental as _incremental
 from src.indexer import parser_js, parser_python, parser_qweb, parser_xml
 from src.indexer.models import ViewParseResult
@@ -52,21 +47,16 @@ def _indexer_lock(pg_conn, profile_name: str):
     Each profile gets its own lock id, so parallel indexing of different profiles
     is allowed.
     """
+    from src.db.pg import advisory_lock
     lock_id = _profile_lock_id(profile_name)
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
-        acquired = cur.fetchone()[0]
-    if not acquired:
-        raise RuntimeError(
-            f"Indexer already running for profile {profile_name!r} "
-            f"(Postgres advisory lock {lock_id} held). "
-            "Wait for it to finish or restart PostgreSQL to release stale lock."
-        )
-    try:
+    with advisory_lock(pg_conn, lock_id) as acquired:
+        if not acquired:
+            raise RuntimeError(
+                f"Indexer already running for profile {profile_name!r} "
+                f"(Postgres advisory lock {lock_id} held). "
+                "Wait for it to finish or restart PostgreSQL to release stale lock."
+            )
         yield
-    finally:
-        with pg_conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
 
 
 def indexer_is_running(pg_conn, profile_name: str) -> bool:
@@ -77,12 +67,10 @@ def indexer_is_running(pg_conn, profile_name: str) -> bool:
     with the same lock id that _indexer_lock uses. Caller's connection must be
     autocommit (Web UI _get_conn already sets autocommit=True).
     """
+    from src.db.pg import advisory_lock
     lock_id = _profile_lock_id(profile_name)
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
-        acquired = cur.fetchone()[0]
-        if acquired:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+    with advisory_lock(pg_conn, lock_id) as acquired:
+        pass  # advisory_lock releases on exit if acquired
     return not acquired
 
 
@@ -126,8 +114,10 @@ def open_production_neo4j():
 
 
 def open_production_pg():
-    """Open a psycopg2 connection using config / env vars."""
+    """Open a psycopg2 connection + initialize centralized pool."""
     import psycopg2  # lazy import — not available in all envs at module load time
+
+    from src.db.pg import get_pool, init_pool
     dsn = config.from_env_or_ini(
         "PG_DSN", "database", "pg_dsn", fallback=None,
     )
@@ -136,6 +126,10 @@ def open_production_pg():
             "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
             "in [database] section of odoo-semantic.conf."
         )
+    try:
+        get_pool()
+    except RuntimeError:
+        init_pool(dsn, min_conn=1, max_conn=5)
     conn = psycopg2.connect(dsn)
     conn.autocommit = True
     return conn
@@ -187,7 +181,7 @@ def _index_repo(
         )
 
     if not full_reindex and pg_conn is not None:
-        last_head = _repo_registry.get_repo_head_sha(pg_conn, repo["id"])
+        last_head = repo_store().get_repo_head_sha(repo["id"])
 
         if current_head and last_head and current_head == last_head:
             _logger.info(
@@ -262,7 +256,7 @@ def _index_repo(
                 repo.get("url", local_path),
             )
             if current_head and pg_conn is not None:
-                _repo_registry.update_repo_head_sha(pg_conn, repo["id"], current_head)
+                repo_store().update_repo_head_sha(repo["id"], current_head)
             return {
                 "modules": 0,
                 "views": 0,
@@ -346,7 +340,7 @@ def _index_repo(
                 js_chunks = parser_js.parse_module(info)
                 chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
                 embed_calls = write_module_embeddings(
-                    pg_conn, mod_name, version, chunks, embedder
+                    mod_name, version, chunks, embedder
                 )
                 total_embeddings += len(chunks)
                 total_embed_calls += embed_calls
@@ -391,7 +385,7 @@ def _index_repo(
     # Must be the last statement — any exception above prevents this,
     # preserving last_head so next run retries the same diff (or full reindex).
     if current_head and pg_conn is not None:
-        _repo_registry.update_repo_head_sha(pg_conn, repo["id"], current_head)
+        repo_store().update_repo_head_sha(repo["id"], current_head)
     # =====================================================================
 
     # === Cross-repo dep propagation (M7 W14) ===
@@ -411,10 +405,6 @@ def _index_repo(
             for mod_name in mods
         }
         if changed_module_names:
-            from src.db.repo_registry import (
-                get_repo_ids_by_local_path_basenames,
-                reset_head_sha,
-            )
             from src.indexer.cross_repo import find_dependent_repos
             dep_repo_basenames = find_dependent_repos(
                 writer.driver, odoo_version, changed_module_names,
@@ -422,8 +412,8 @@ def _index_repo(
             # Exclude the repo we just indexed (its head_sha was just updated).
             dep_repo_basenames = [b for b in dep_repo_basenames if b != repo_root_name]
             if dep_repo_basenames:
-                dep_repo_ids = get_repo_ids_by_local_path_basenames(
-                    pg_conn, dep_repo_basenames,
+                dep_repo_ids = repo_store().get_repo_ids_by_local_path_basenames(
+                    dep_repo_basenames,
                 )
                 # Warn if more IDs than basenames: two repos share a basename
                 # (e.g. /srv/odoo and /home/a/odoo both have basename 'odoo').
@@ -439,7 +429,7 @@ def _index_repo(
                         ", ".join(sorted(dep_repo_basenames)),
                     )
                 if dep_repo_ids:
-                    n_reset = reset_head_sha(pg_conn, dep_repo_ids)
+                    n_reset = repo_store().reset_head_sha(dep_repo_ids)
                     _logger.info(
                         "Cross-repo dep propagation: reset head_sha on %d dependent repo(s) "
                         "(changed modules: %s)",
@@ -495,7 +485,7 @@ def index_profile(
     Returns:
         Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
     """
-    repos = get_repos_for_profile(pg_conn, profile_name)
+    repos = repo_store().get_repos_for_profile(profile_name)
     if not repos:
         _logger.warning("index_profile: no repos found for profile %r", profile_name)
         return {
@@ -539,7 +529,7 @@ def index_profile(
                         total_embeddings += counters.get("embeddings", 0)
                         total_js_patches += counters.get("js_patches", 0)
                         total_owl_comps += counters.get("owl_comps", 0)
-                        update_repo_status(pg_conn, repo_id, "indexed")
+                        repo_store().update_repo_status(repo_id, "indexed")
                         _logger.info(
                             "Indexed repo id=%d in %.1fs: %d modules, %d views, %d qweb, "
                             "%d embeddings, %d js_patches, %d owl_comps",
@@ -557,7 +547,7 @@ def index_profile(
                             "Failed to index repo id=%d after %.1fs — continuing",
                             repo_id, _elapsed,
                         )
-                        update_repo_status(pg_conn, repo_id, "error", error_msg=str(e)[:500])
+                        repo_store().update_repo_status(repo_id, "error", error_msg=str(e)[:500])
                         failed_repos.append((repo_id, str(e)[:200]))
 
                 if failed_repos:
@@ -586,7 +576,7 @@ def index_profile(
                             gc=gc,
                         )
                         _elapsed = time.monotonic() - _t0
-                        update_repo_status(pg_conn_local, repo_id, "indexed")
+                        repo_store().update_repo_status(repo_id, "indexed")
                         _logger.info(
                             "Indexed repo id=%d in %.1fs: %d modules, %d views, %d qweb, "
                             "%d embeddings, %d js_patches, %d owl_comps",
@@ -606,8 +596,8 @@ def index_profile(
                             repo_id, _elapsed,
                         )
                         try:
-                            update_repo_status(
-                                pg_conn_local, repo_id, "error", error_msg=str(e)[:500]
+                            repo_store().update_repo_status(
+                                repo_id, "error", error_msg=str(e)[:500]
                             )
                         except Exception:
                             pass
@@ -884,7 +874,7 @@ def index_all(
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
     """
-    profiles = list_profiles(pg_conn)
+    profiles = repo_store().list_profiles()
     agg_modules = 0
     agg_views = 0
     agg_qweb = 0
