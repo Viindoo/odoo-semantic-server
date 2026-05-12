@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.auth import hash_key as _hash_key
+from src.constants import DEFAULT_RATE_LIMIT_RPM
 
 _logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ _rate_buckets: dict[int, deque] = {}
 _rate_lock = threading.Lock()
 
 
-def _check_rate_limit(api_key_id: int, limit_rpm: int = 120) -> tuple[bool, int]:
+def _check_rate_limit(api_key_id: int, limit_rpm: int = DEFAULT_RATE_LIMIT_RPM) -> tuple[bool, int]:
     """Sliding-window rate limiter. Returns (allowed, remaining).
 
     Thread-safe: guarded by _rate_lock.
@@ -145,7 +146,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Rate limiting — applied after successful auth (WI-8)
         from src import config as _config
-        limit_rpm = int(_config.get("auth", "rate_limit_rpm", fallback="120"))
+        limit_rpm = int(_config.get("auth", "rate_limit_rpm", fallback=str(DEFAULT_RATE_LIMIT_RPM)))
         allowed, remaining = _check_rate_limit(key_id, limit_rpm)
         if not allowed:
             return Response(

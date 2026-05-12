@@ -6,6 +6,8 @@ import logging
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from src.constants import ERROR_MSG_MAX_CHARS
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,7 +79,7 @@ async def health_handler(request: Request) -> JSONResponse:
         # verify_connectivity is synchronous — run in thread to avoid blocking event loop
         await asyncio.to_thread(_get_driver().verify_connectivity)
     except Exception as e:
-        neo4j_status = f"error:{str(e)[:100]}"
+        neo4j_status = f"error:{str(e)[:ERROR_MSG_MAX_CHARS]}"
 
     pg_status = "ok"
     try:
@@ -88,7 +90,7 @@ async def health_handler(request: Request) -> JSONResponse:
 
         await asyncio.to_thread(_check_pg)
     except Exception as e:
-        pg_status = f"error:{str(e)[:100]}"
+        pg_status = f"error:{str(e)[:ERROR_MSG_MAX_CHARS]}"
 
     tool_count = await _get_mcp_tool_count()
     embeddings_total = await _get_embeddings_total()

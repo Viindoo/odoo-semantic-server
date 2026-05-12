@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+from src.constants import TIMEOUT_GIT_CLONE
+
 _SSH_URL_RE = re.compile(r"^(git@|ssh://)")
 
 
@@ -74,7 +76,7 @@ def clone_repo(
     target_dir: Path,
     *,
     private_key_pem: bytes | None,
-    timeout: int = 600,
+    timeout: int = TIMEOUT_GIT_CLONE,
 ) -> None:
     """Clone `url` at `branch` into `target_dir`.
 

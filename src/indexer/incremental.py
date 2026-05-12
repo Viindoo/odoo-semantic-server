@@ -24,6 +24,7 @@ import logging
 import subprocess
 from pathlib import Path
 
+from src.constants import TIMEOUT_GIT_DIFF
 from src.indexer.models import ModuleInfo
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def get_repo_head(repo_path: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=TIMEOUT_GIT_DIFF,
         )
         sha = result.stdout.strip()
         if result.returncode != 0 or not sha:
@@ -55,7 +56,7 @@ def is_ancestor(repo_path: Path, ancestor_sha: str, descendant_sha: str) -> bool
         result = subprocess.run(
             ["git", "-C", str(repo_path), "merge-base", "--is-ancestor",
              ancestor_sha, descendant_sha],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=TIMEOUT_GIT_DIFF,
         )
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
@@ -79,7 +80,7 @@ def compute_changed_module_paths(
         result = subprocess.run(
             ["git", "-C", str(repo_path), "diff", "--name-only",
              f"{old_sha}..{new_sha}"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=TIMEOUT_GIT_DIFF * 3,
         )
         if result.returncode != 0:
             return set()

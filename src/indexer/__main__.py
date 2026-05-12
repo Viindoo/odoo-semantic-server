@@ -17,6 +17,7 @@ import sys
 from datetime import UTC, datetime
 
 from src import config
+from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
 from src.indexer.pipeline import (
     index_all,
@@ -40,7 +41,7 @@ def _build_embedder():
         )
         return None
     from src.indexer.embedder import Qwen3Embedder
-    model = config.get("embedder", "model", fallback="qwen3-embedding-q5km")
+    model = config.get("embedder", "model", fallback=DEFAULT_EMBEDDER_MODEL)
     dim = int(config.get("embedder", "dim", fallback="1024"))
     auth_token = config.from_env_or_ini(
         "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,

@@ -11,6 +11,13 @@ import threading
 import urllib.request
 from typing import Protocol, runtime_checkable
 
+from src.constants import (
+    DEFAULT_EMBEDDER_DIM,
+    DEFAULT_EMBEDDER_MODEL,
+    EMBEDDER_MAX_BATCH,
+    TIMEOUT_EMBEDDER_REQUEST,
+)
+
 
 def _normalize(vec: list[float]) -> list[float]:
     norm = math.sqrt(sum(x * x for x in vec))
@@ -68,13 +75,13 @@ class Qwen3Embedder:
     # Cap per-request batch so a single big module doesn't push past either the
     # in-process timeout or any reverse proxy's `proxy_read_timeout` (typical 120s).
     # Empirical: ~22s per 100 texts on qwen3-embedding-q5km, so 50 stays well under.
-    _MAX_BATCH = 50
+    _MAX_BATCH = EMBEDDER_MAX_BATCH
 
     def __init__(
         self,
         url: str = "http://localhost:11434",
-        model: str = "qwen3-embedding-q5km",
-        dim: int = 1024,
+        model: str = DEFAULT_EMBEDDER_MODEL,
+        dim: int = DEFAULT_EMBEDDER_DIM,
         retries: int = 3,
         auth_token: str | None = None,
     ):
@@ -116,7 +123,7 @@ class Qwen3Embedder:
                 # Timeout sized for full-module batches: a 250-text batch on
                 # qwen3-embedding-q5km via Ollama runs ~60s; large core modules
                 # (account, sale, web) push past 90s. 60s would always retry-fail.
-                with urllib.request.urlopen(req, timeout=600) as resp:
+                with urllib.request.urlopen(req, timeout=TIMEOUT_EMBEDDER_REQUEST) as resp:
                     data = json.loads(resp.read())
                 return [_normalize(v[: self._dim]) for v in data["embeddings"]]
             except Exception as e:
