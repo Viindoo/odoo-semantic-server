@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_DB: odoo_semantic_mcp
+      POSTGRES_USER: mcp
+      POSTGRES_PASSWORD: mcp_dev_password_change_me

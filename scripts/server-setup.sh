@@ -297,6 +297,25 @@ info "=== Step 6: Server Python venv at ${OSM_VENV} ==="
 # Build the venv as the dev user (who has uv), then chown to osm.
 # The package is installed in editable mode so dev edits are picked up
 # without rebuilding the venv.
+#
+# Permission dance (Gap 1): useradd -m creates /home/<osm-user> as 0750
+# osm:osm.  The dev user cannot write there (not owner, not in group with
+# write, not world-writable).  We temporarily grant the dev user ownership
+# of /home/<osm-user> (owner:group stays dev:osm, mode stays 0750 — we only
+# touch the owner, not the mode, so no extra world-permissions are added).
+# A trap guarantees the restore even if uv fails mid-build: without it,
+# set -euo pipefail would exit early leaving /home/<osm-user> owned by the
+# dev user permanently, and the stat guard on re-run would skip the restore
+# entirely (seeing the dev user as already-owner) → osm can't read its own
+# ~/.ssh/authorized_keys / .pgpass → ForceCommand silently broken.
+DEV_USER="$(id -un)"
+
+# Trap: always restore $OSM_HOME to osm:osm on EXIT.  Both chown ops below are
+# idempotent so the happy path just gets two chowns instead of one.
+trap 'sudo chown -R "${OSM_USER}:${OSM_USER}" "$OSM_HOME" 2>/dev/null || true' EXIT
+
+sudo chown "${DEV_USER}:${OSM_USER}" "$OSM_HOME"
+
 if [[ ! -x "${OSM_VENV}/bin/python" ]]; then
   info "  Creating venv..."
   "$UV_BIN" venv "$OSM_VENV"
@@ -309,14 +328,53 @@ info "  Installing package (editable)..."
 "$UV_BIN" pip install -e "$REPO_PATH" --python "${OSM_VENV}/bin/python"
 ok "  Package installed (editable)"
 
+# Restore $OSM_HOME to osm:osm now (happy path).  The trap fires on EXIT too,
+# so this is defence-in-depth; the trap is cleared below after the venv chown.
+sudo chown "${OSM_USER}:${OSM_USER}" "$OSM_HOME"
+
 # Grant the osm user read+exec on the repo (it's OSS — not secret)
 # so it can import source modules via the editable install.
 chmod -R a+rX "$REPO_PATH"
 ok "  chmod a+rX $REPO_PATH"
 
+# Add a world-traversable (o+x) bit on every parent directory of REPO_PATH
+# up to / so the osm user can cd into the repo.  We intentionally add only
+# the execute (traversal) bit — NOT o+r — so home dirs remain non-listable
+# (non-listable = world cannot run ls there, but can cd through).
+# This is idempotent: chmod o+x is a no-op when the bit is already set.
+# We announce any directory where the bit was NOT already present so the
+# operator is aware — especially if /home/${DEV_USER} is hardened to 750/700.
+_dir="$(dirname "$(realpath "$REPO_PATH")")"
+while [[ "$_dir" != "/" ]]; do
+  # Check current o+x state before changing (stat: extract "others execute" bit).
+  if [[ "$(stat -c '%a' "$_dir")" =~ [1357]$ ]]; then
+    : # o+x already set — no-op, no announcement needed
+  else
+    info "  Adding o+x (traverse-only, NOT o+r) to: $_dir"
+    chmod o+x "$_dir" 2>/dev/null || sudo chmod o+x "$_dir"
+  fi
+  _dir="$(dirname "$_dir")"
+done
+ok "  World-traversable (o+x) bits verified on parent dirs of $REPO_PATH"
+
 # Transfer venv ownership to osm so osm can write .pth / __pycache__
 sudo chown -R "${OSM_USER}:${OSM_USER}" "$OSM_VENV"
 ok "  chown ${OSM_USER}:${OSM_USER} $OSM_VENV"
+
+# $OSM_HOME is now osm:osm and the venv is osm:osm — cancel the EXIT trap.
+trap - EXIT
+
+# Warn about Odoo source directories (Gap 2).
+# The indexer (scripts/index.py) is run as '${OSM_USER}', so all Odoo source
+# directories it reads must also be world-traversable (o+x on every parent)
+# AND world-readable+executable (a+rX on the addons trees themselves).
+# The script cannot know those paths in advance, so we emit a reminder.
+warn "Odoo source dirs: ensure each Odoo addons tree is world-rX AND every"
+warn "parent directory up to / has the traverse bit (o+x — NOT o+r).  Example:"
+warn "  sudo chmod o+x /home/${DEV_USER}"
+warn "  chmod -R a+rX ~/git/17.0/odoo/odoo/addons ~/git/17.0/odoo/addons"
+warn "If those dirs are under /home/${DEV_USER}/ the o+x on /home/${DEV_USER} above covers traversal."
+warn "Alternatively, run 'GRANT ${OSM_USER} TO ${DEV_USER}' in PostgreSQL and index as ${DEV_USER}."
 
 # ---------- step 7: run migrations as osm ----------
 info "=== Step 7: Run migrations (as ${OSM_USER}) ==="
@@ -386,14 +444,50 @@ info "Validating sshd config..."
 sudo sshd -t || die "sshd -t failed — check $SSHD_DROP before restarting"
 ok "sshd config valid"
 
-# Restart sshd (try both common service names)
-if sudo systemctl restart ssh 2>/dev/null; then
-  ok "ssh service restarted"
-elif sudo systemctl restart sshd 2>/dev/null; then
-  ok "sshd service restarted"
-else
-  warn "Could not restart ssh/sshd automatically; please run: sudo systemctl restart ssh"
+# Restart sshd — handle both classic and socket-activated (Ubuntu 22.10+/24.04).
+#
+# On socket-activated systems (Ubuntu 22.10+), sshd is managed by ssh.socket.
+# Port directives in sshd_config.d are honoured by the daemon config, but the
+# listening socket itself is created by ssh.socket; adding a new Port only takes
+# effect when ssh.socket is restarted (not just the ssh.service).  Restarting
+# only ssh.service restarts the daemon and picks up sshd_config changes (auth
+# rules, ForceCommand, etc.) but does NOT bind any new Port.
+#
+# Detection: if ssh.socket is an active unit, use it.  We always restart the
+# daemon service too so config changes (ForceCommand, Match block, etc.) are
+# applied immediately even when no new port was added.
+_SOCKET_ACTIVE=false
+if sudo systemctl is-active --quiet ssh.socket 2>/dev/null; then
+  _SOCKET_ACTIVE=true
 fi
+
+if [[ "$_SOCKET_ACTIVE" == true ]]; then
+  # Socket-activated path.  Restart ssh.socket first (rebinds all Port
+  # directives including the new one), then the daemon service.
+  if sudo systemctl restart ssh.socket 2>/dev/null; then
+    ok "ssh.socket restarted (socket-activated sshd — new Port binds here)"
+  else
+    warn "Could not restart ssh.socket; run: sudo systemctl restart ssh.socket"
+  fi
+  # Daemon restart failure is fatal: socket bound but daemon dead = SSH endpoint
+  # silently down.  The operator must fix this before continuing.
+  if sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null; then
+    ok "ssh daemon restarted"
+  else
+    die "ssh daemon restart failed — SSH endpoint may be down. Fix with: sudo systemctl restart ssh  Then re-run this script."
+  fi
+else
+  # Classic path: no ssh.socket, just restart the service.
+  if sudo systemctl restart ssh 2>/dev/null; then
+    ok "ssh service restarted"
+  elif sudo systemctl restart sshd 2>/dev/null; then
+    ok "sshd service restarted"
+  else
+    die "ssh/sshd restart failed — SSH endpoint may be down. Fix with: sudo systemctl restart ssh  Then re-run this script."
+  fi
+fi
+
+[[ -n "$EXTRA_SSH_PORT" ]] && info "Verify with: ss -tln | grep ':${EXTRA_SSH_PORT}'"
 
 # ---------- step 10: fail2ban ----------
 info "=== Step 10: fail2ban ==="

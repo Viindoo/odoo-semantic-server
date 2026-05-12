@@ -110,13 +110,24 @@ if [[ "$MODE" == "list" ]]; then
     warn "(no keys authorized)"
   else
     while IFS= read -r line; do
-      # Strip the command="…",restrict prefix to show type + comment
-      # A line looks like: command="...",restrict ssh-ed25519 AAAA… comment
-      # Or bare: ssh-ed25519 AAAA… comment
-      bare="${line#*restrict }"
-      type_field="$(awk '{print $1}' <<< "$bare")"
-      comment_field="$(awk '{print $3}' <<< "$bare")"
-      printf '  %s  %s\n' "$type_field" "${comment_field:-(no comment)}"
+      # Find the key-type token (first field starting with ssh-/ecdsa-/sk-).
+      # Lines written by this script look like:
+      #   command="/usr/local/bin/osm-stdio",restrict ssh-ed25519 AAAA… comment
+      # Bare lines (no options prefix) look like:
+      #   ssh-ed25519 AAAA… comment
+      # Use awk to locate the type token, then extract blob and comment.
+      read -r type_field comment_field <<< "$(awk '{
+        type = ""; comment = ""
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^(ssh-|ecdsa-|sk-)/) {
+            type = $i
+            for (j = i+2; j <= NF; j++) comment = comment (comment=="" ? "" : " ") $j
+            break
+          }
+        }
+        print type " " comment
+      }' <<< "$line")"
+      printf '  %s  %s\n' "${type_field:-(unknown)}" "${comment_field:-(no comment)}"
     done <<< "$local_keys"
   fi
   exit 0
@@ -126,14 +137,37 @@ fi
 if [[ "$MODE" == "revoke" ]]; then
   _check_auth_keys
   [[ -z "$REVOKE_ARG" ]] && die "--revoke requires an argument (key blob or comment)"
-  # Match by exact blob (2nd field) or exact comment (3rd field) — literal
-  # substring, not regex, so count always equals actual removals.
-  ESCAPED="$(printf '%s' "$REVOKE_ARG" | sed 's/[\/&]/\\&/g')"
-  # Count matching lines before removal using the same predicate as removal
-  match_count="$(sudo awk -v pat="$ESCAPED" '
-    $2 == pat || $3 == pat {found++}
-    END {print found+0}
-  ' "$OSM_AUTH_KEYS")"
+  # Lines written by this script have an options prefix, so their field layout is:
+  #   $1=command="...",restrict  $2=ssh-<type>  $3=<blob>  $4 onward=<comment>
+  # A bare key line (no options) would be:
+  #   $1=ssh-<type>  $2=<blob>  $3 onward=<comment>
+  # We locate the blob and comment by finding the first field that starts with
+  # "ssh-", "ecdsa-", or "sk-" (the key-type token).  The blob is the field
+  # immediately after that token; the comment is everything after the blob.
+  # We match pat against the blob (exact) or the full comment (exact).
+  # Pass the pattern via ENVIRON["OSM_PAT"] instead of awk -v so that
+  # backslashes in the value (e.g. DESKTOP\alice) are not escape-processed
+  # by awk before the comparison — awk -v runs escape processing on the
+  # value, turning \a → bell char, \n → newline, etc., which breaks matching.
+  # shellcheck disable=SC2016  # awk variables are expanded by awk, not the shell
+  AWK_MATCH='
+    BEGIN { pat = ENVIRON["OSM_PAT"] }
+    {
+      blob = ""; comment = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^(ssh-|ecdsa-|sk-)/) {
+          blob = $(i+1)
+          rest = ""
+          for (j = i+2; j <= NF; j++) rest = rest (rest=="" ? "" : " ") $j
+          comment = rest
+          break
+        }
+      }
+      if (blob == pat || comment == pat) found++
+    }
+    END { print found+0 }
+  '
+  match_count="$(sudo OSM_PAT="$REVOKE_ARG" awk "$AWK_MATCH" "$OSM_AUTH_KEYS")"
   if [[ "$match_count" -eq 0 ]]; then
     warn "No line matching '$REVOKE_ARG' found in $OSM_AUTH_KEYS"
     exit 0
@@ -144,10 +178,23 @@ if [[ "$MODE" == "revoke" ]]; then
   TMP="$(mktemp)"
   # SC2024: the redirect writes to a user-owned temp file (no sudo needed there).
   # sudo is only needed so awk can READ the privileged authorized_keys file.
-  # shellcheck disable=SC2024
-  sudo awk -v pat="$ESCAPED" '
-    $2 == pat || $3 == pat { next }
-    { print }
+  # shellcheck disable=SC2016,SC2024
+  sudo OSM_PAT="$REVOKE_ARG" awk '
+    BEGIN { pat = ENVIRON["OSM_PAT"] }
+    {
+      blob = ""; comment = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^(ssh-|ecdsa-|sk-)/) {
+          blob = $(i+1)
+          rest = ""
+          for (j = i+2; j <= NF; j++) rest = rest (rest=="" ? "" : " ") $j
+          comment = rest
+          break
+        }
+      }
+      if (blob == pat || comment == pat) next
+      print
+    }
   ' "$OSM_AUTH_KEYS" > "$TMP"
   sudo tee "$OSM_AUTH_KEYS" < "$TMP" >/dev/null
   sudo chown osm:osm "$OSM_AUTH_KEYS"
