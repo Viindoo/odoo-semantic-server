@@ -6,7 +6,7 @@ Mark: pytest.mark.postgres (custom marker; any test that needs a real pg_conn).
 """
 import pytest
 
-from src.db.auth_registry import create_feedback, list_feedback
+from src.db.pg import auth_store
 
 pytestmark = pytest.mark.postgres
 
@@ -16,8 +16,7 @@ def test_create_and_list_feedback(pg_conn):
 
     run_migrations(pg_conn)
 
-    fid = create_feedback(
-        pg_conn,
+    fid = auth_store().create_feedback(
         pattern_node_id="test.pattern.1",
         api_key_id=None,
         rating="up",
@@ -25,7 +24,7 @@ def test_create_and_list_feedback(pg_conn):
     )
     assert isinstance(fid, int), f"Expected int id, got {fid!r}"
 
-    results = list_feedback(pg_conn, "test.pattern.1")
+    results = auth_store().list_feedback("test.pattern.1")
     assert len(results) >= 1
     # Find the row we just inserted
     our_row = next((r for r in results if r["id"] == fid), None)
@@ -40,8 +39,7 @@ def test_create_feedback_down_rating(pg_conn):
 
     run_migrations(pg_conn)
 
-    fid = create_feedback(
-        pg_conn,
+    fid = auth_store().create_feedback(
         pattern_node_id="test.pattern.2",
         api_key_id=None,
         rating="down",
@@ -49,7 +47,7 @@ def test_create_feedback_down_rating(pg_conn):
     )
     assert isinstance(fid, int)
 
-    results = list_feedback(pg_conn, "test.pattern.2")
+    results = auth_store().list_feedback("test.pattern.2")
     our = next((r for r in results if r["id"] == fid), None)
     assert our is not None
     assert our["rating"] == "down"
@@ -60,7 +58,7 @@ def test_list_feedback_empty(pg_conn):
 
     run_migrations(pg_conn)
 
-    results = list_feedback(pg_conn, "test.pattern.nonexistent.xyz")
+    results = auth_store().list_feedback("test.pattern.nonexistent.xyz")
     assert isinstance(results, list)
     assert len(results) == 0
 
@@ -74,8 +72,7 @@ def test_feedback_invalid_rating_rejected(pg_conn):
     run_migrations(pg_conn)
 
     with pytest.raises((psycopg2.errors.CheckViolation, psycopg2.IntegrityError)):
-        create_feedback(
-            pg_conn,
+        auth_store().create_feedback(
             pattern_node_id="test.pattern.3",
             api_key_id=None,
             rating="invalid",

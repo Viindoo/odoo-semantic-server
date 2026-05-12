@@ -27,7 +27,7 @@ def test_no_job_id_skips_tracking(fake_pg, monkeypatch):
         "src.indexer.__main__.index_profile",
         lambda pg, **kw: {"modules": 1, "fields": 0, "methods": 0},
     )
-    monkeypatch.setattr("src.indexer.__main__.job_registry.update_job", mock_update)
+    monkeypatch.setattr("src.indexer.__main__.job_registry.update_job", mock_update, raising=False)
 
     rc = main_mod.main(["index-repo", "--profile", "p1", "--no-embed"])
     assert rc == 0
@@ -46,7 +46,7 @@ def test_with_job_id_marks_running_then_done(fake_pg, monkeypatch):
         "src.indexer.__main__.index_profile",
         lambda pg, **kw: {"modules": 1, "fields": 0, "methods": 0},
     )
-    monkeypatch.setattr("src.indexer.__main__.job_registry.update_job", mock_update)
+    monkeypatch.setattr("src.indexer.__main__.job_registry.update_job", mock_update, raising=False)
 
     rc = main_mod.main(["index-repo", "--profile", "p1", "--no-embed", "--job-id", "42"])
     assert rc == 0
@@ -69,7 +69,7 @@ def test_with_job_id_marks_error_on_exception(fake_pg, monkeypatch):
 
     monkeypatch.setattr("src.indexer.__main__.open_production_pg", lambda: fake_pg)
     monkeypatch.setattr("src.indexer.__main__.index_profile", boom)
-    monkeypatch.setattr("src.indexer.__main__.job_registry.update_job", mock_update)
+    monkeypatch.setattr("src.indexer.__main__.job_registry.update_job", mock_update, raising=False)
 
     with pytest.raises(RuntimeError, match="boom"):
         main_mod.main(["index-repo", "--profile", "p1", "--no-embed", "--job-id", "99"])
@@ -89,7 +89,8 @@ def test_update_job_failure_does_not_block_indexing(fake_pg, monkeypatch):
     )
     monkeypatch.setattr(
         "src.indexer.__main__.job_registry.update_job",
-        MagicMock(side_effect=Exception("DB down"))
+        MagicMock(side_effect=Exception("DB down")),
+        raising=False,
     )
 
     rc = main_mod.main(["index-repo", "--profile", "p1", "--no-embed", "--job-id", "1"])

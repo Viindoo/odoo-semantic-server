@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.db.migrate import run_migrations
-from src.db.repo_registry import add_profile, add_repo
+from src.db.pg import repo_store
 from src.indexer.pipeline import index_profile
 from tests.conftest import (
     TEST_VERSION,
@@ -102,8 +102,8 @@ def test_index_profile_seeds_patterns(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_seed", branch=TEST_VERSION)
     _seed_minimal_module(repo, "seed_mod")
-    pid = add_profile(clean_pg, "seed_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/seed", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("seed_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/seed", TEST_VERSION, str(repo))
 
     # index_profile should complete and auto-reseed.
     summary = index_profile(clean_pg, profile_name="seed_prof")
@@ -139,8 +139,8 @@ def test_index_profile_skips_seed_when_unchanged(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_skip", branch=TEST_VERSION)
     _seed_minimal_module(repo, "skip_mod")
-    pid = add_profile(clean_pg, "skip_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/skip", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("skip_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/skip", TEST_VERSION, str(repo))
 
     # First run — seeds patterns and sets sentinel.
     index_profile(clean_pg, profile_name="skip_prof")
@@ -200,8 +200,8 @@ def test_index_profile_no_embed_skips_pattern_embeddings(
 
     repo = make_git_repo(tmp_path / "repo_noembed", branch=TEST_VERSION)
     _seed_minimal_module(repo, "noembed_mod")
-    pid = add_profile(clean_pg, "noembed_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/noembed", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("noembed_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/noembed", TEST_VERSION, str(repo))
 
     import logging
     with caplog.at_level(logging.INFO, logger="src.indexer.pipeline"):
@@ -259,8 +259,8 @@ def test_seed_failure_does_not_fail_indexer(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_fail", branch=TEST_VERSION)
     _seed_minimal_module(repo, "fail_mod")
-    pid = add_profile(clean_pg, "fail_prof", TEST_VERSION)
-    add_repo(clean_pg, pid, "local/fail", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("fail_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/fail", TEST_VERSION, str(repo))
 
     import logging
     with caplog.at_level(logging.WARNING, logger="src.indexer.pipeline"):

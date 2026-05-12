@@ -95,7 +95,7 @@ def test_index_module_increments_embedder(
     and writes at least as many embedding rows as the module has chunks.
     """
     from src.db.migrate import _vector_extension_available, run_migrations
-    from src.db.repo_registry import add_profile, add_repo
+    from src.db.pg import repo_store
     from src.indexer.pipeline import index_profile
 
     run_migrations(clean_pg)
@@ -105,8 +105,8 @@ def test_index_module_increments_embedder(
     repo = _make_git_repo(tmp_path / "repo_obs1")
     _seed_module(repo, "obs_module")
 
-    pid = add_profile(clean_pg, "obs_profile1", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("obs_profile1", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     embedder = FakeEmbedder(dim=1024)
     count_before = embedder.call_count
@@ -152,7 +152,7 @@ def test_reindex_skip_does_not_re_embed(
     before any embedding happens. call_count delta on the second run must be 0.
     """
     from src.db.migrate import _vector_extension_available, run_migrations
-    from src.db.repo_registry import add_profile, add_repo
+    from src.db.pg import repo_store
     from src.indexer.pipeline import index_profile
 
     run_migrations(clean_pg)
@@ -162,8 +162,8 @@ def test_reindex_skip_does_not_re_embed(
     repo = _make_git_repo(tmp_path / "repo_obs2")
     _seed_module(repo, "obs_skip_module")
 
-    pid = add_profile(clean_pg, "obs_profile2", TEST_VERSION)
-    add_repo(clean_pg, pid, "file://local", TEST_VERSION, str(repo))
+    pid = repo_store().add_profile("obs_profile2", TEST_VERSION)
+    repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     embedder = FakeEmbedder(dim=1024)
 

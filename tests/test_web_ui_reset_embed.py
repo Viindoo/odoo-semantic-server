@@ -51,11 +51,10 @@ def _async_client(app):
 
 
 def _setup_profile_and_repo(migrated_pg, profile_name="test_profile", head_sha=None):
-    from src.db.repo_registry import add_profile, add_repo
+    from src.db.pg import repo_store
 
-    pid = add_profile(migrated_pg, name=profile_name, odoo_version="99.0")
-    rid = add_repo(
-        migrated_pg,
+    pid = repo_store().add_profile(name=profile_name, odoo_version="99.0")
+    rid = repo_store().add_repo(
         profile_id=pid,
         url="file://local",
         branch="99.0",
