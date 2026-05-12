@@ -373,7 +373,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - Baked snapshot JSON cho graph data (`scripts/dump_graph_snippet.py`).
 
 **Streams + sub-PRs (planned, not yet opened):**
-- [ ] **Stream A — Web UI prefix** (1 PR): `feat/m8-admin-prefix` — ~20 files, +450/-130 LOC, 4-6h. Includes ADR-0012.
+- [ ] **Stream A — Web UI prefix** (1 PR): `feat/m8-admin-prefix` — ~20 files, +450/-130 LOC, 4-6h. Includes ADR-0013.
 - [ ] **Stream B — Landing site** (4 PRs):
   - [ ] `feat/m8-landing-scaffold` — Astro setup, basic index.astro, package.json, lockfile (3-4h).
   - [ ] `feat/m8-graph-snapshot` — `scripts/dump_graph_snippet.py` + baked JSON committed (2-3h).
@@ -383,7 +383,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [ ] **CI** (1 PR): `feat/m8-ci-landing` — `.github/workflows/landing-build.yml` với Lighthouse perf gate (1-2h).
 - [x] **Stream X — Web UI ↔ CLI parity** (1 PR): `feat/m8-webui-cli-parity` — 9 WIs (W0 foundation + W1 delete profile + W2 delete repo + W3 index options + W4 reset embed + W7 index all + W5 index core + W6 seed patterns + W8 apply preset). 8 routes/forms mới, browser tests cho mỗi WI, scoped Neo4j cleanup, FK cascade + cross-store delete. Resolved high-severity gap: `--no-embed` rồi muốn re-embed không bị skip nhờ button "Re-embed" (reset head_sha=NULL).
 
-**Acceptance criteria** (xem master plan §10): public URL 200 + Lighthouse ≥ 80/95/95 + noscript fallback + admin login flow + nginx -t pass + ADR-0012/0013 committed.
+**Acceptance criteria** (xem master plan §10): public URL 200 + Lighthouse ≥ 80/95/95 + noscript fallback + admin login flow + nginx -t pass + ADR-0013/0014 committed.
 
 **SaaS roadmap implications** (defer):
 - M9 "Auth Wow" — public signup, OAuth, tenant API keys.
