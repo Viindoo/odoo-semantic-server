@@ -224,7 +224,7 @@ class TestMaxWorkers2PartialFailure:
             patch("src.indexer.pipeline.open_production_pg", side_effect=fake_open_pg),
         ):
             from src.indexer.pipeline import index_profile
-            with pytest.raises(RuntimeError, match="simulated failure on repo 10"):
+            with pytest.raises(RuntimeError, match="1 repo\\(s\\) failed"):
                 index_profile(mock_pg_conn, profile_name="test", max_workers=2)
 
         # repo[1] should have been indexed despite repo[0] failing
