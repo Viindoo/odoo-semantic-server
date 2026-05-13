@@ -49,14 +49,16 @@ Người dùng **không cài gì**. Nhận URL + API key từ admin → chọn A
 
 → **[`docs/client-setup.md`](docs/client-setup.md)** cho config từng client: Claude Code, Codex CLI, Gemini CLI, VS Code, Antigravity (snippets + pitfalls đầy đủ).
 
-### Quick add — Claude Code
+### Quick install — Claude Code
 
 ```bash
-claude mcp add --scope user --transport http odoo-semantic <MCP_URL> \
-    --header "X-API-Key: <API_KEY>"
+claude plugin marketplace add Viindoo/claude-plugins --scope user
+claude plugin install odoo-semantic@viindoo-plugins --scope user
 ```
 
-> ⚠️ `~/.claude/settings.json` (permissions/hooks) ≠ `~/.claude.json` (MCP servers). Xem [docs/client-setup.md#claude-code](docs/client-setup.md#claude-code) để tránh pitfall phổ biến nhất.
+Sau đó trong Claude Code session: `/odoo-semantic:connect` để nhập URL + API key.
+
+> Self-hosted hoặc không dùng plugin? Xem [manual MCP setup](docs/client-setup.md#manual-mcp-setup-advanced--self-hosted) cho `claude mcp add` flow + pitfalls.
 
 ---
 
@@ -131,7 +133,7 @@ Different roles get the most value from different tools. Quick-start guides:
 | Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](docs/personas/marketer.md) |
 | Sales | `check_module_exists`, `find_examples`, `resolve_model` | [→ Sales Guide](docs/personas/sales.md) |
 
-> **Claude Code users:** Install the Odoo Semantic plugin via [`/install/`](https://odoo-semantic.viindoo.com/install/) (or `/plugin install odoo-semantic@viindoo-plugins` inside Claude Code) for persona-specific slash commands. After install, run `/odoo-semantic:connect` — required on Claude Code v2.1.x because userConfig auto-prompt is broken upstream ([#39455](https://github.com/anthropics/claude-code/issues/39455)).
+> **Claude Code users:** Install the Odoo Semantic plugin — `claude plugin install odoo-semantic@viindoo-plugins` (sau khi `claude plugin marketplace add Viindoo/claude-plugins`), rồi `/odoo-semantic:connect`. Alternative: dùng [install page](https://odoo-semantic.viindoo.com/install/) → tab Claude Code → sub-tab "Plugin".
 > **Gemini users:** See [Gem instructions](dist/gemini-gem-instructions.md).
 > **ChatGPT users:** See [Custom GPT instructions](dist/openai-gpt-instructions.md).
 > **Cursor users:** See [Cursor rules](dist/cursor-rules.md).

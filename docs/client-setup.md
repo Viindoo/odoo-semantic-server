@@ -1,76 +1,5 @@
 # Client Setup — Odoo Semantic MCP
 
-## Claude Code — Plugin Install (Recommended)
-
-For Claude Code users, the plugin is the fastest path: it bundles the MCP server config, all 11 persona skills, and the setup command in one install.
-
-### 1. Add the Viindoo marketplace (one-time)
-
-```bash
-claude plugin marketplace add Viindoo/claude-plugins --scope user
-```
-
-Or inside Claude Code:
-```
-/plugin marketplace add Viindoo/claude-plugins
-```
-
-### 2. Install the plugin
-
-```bash
-claude plugin install odoo-semantic@viindoo-plugins --scope user
-```
-
-Or:
-```
-/plugin install odoo-semantic@viindoo-plugins
-```
-
-### 3. Configure API key and server URL
-
-On first use, Claude Code will prompt for:
-- **API Key** — starts with `osm_`, get it from your admin or the [install page](https://odoo-semantic.viindoo.com/install/)
-- **MCP Server URL** — default `https://odoo-semantic.viindoo.com/mcp` (change for self-hosted)
-
-Or run the interactive setup command:
-```
-/odoo-semantic:connect
-```
-
-### 4. Verify
-
-```
-Using odoo-semantic tools, show the full inheritance chain of sale.order in Odoo 17.0
-```
-
-Expected: tree output with module names, `Defined in:`, field counts.
-
-### Available persona skills
-
-After install, 11 skills activate automatically:
-
-| Skill | Persona | Trigger |
-|-------|---------|---------|
-| `odoo-risk-overview` | CEO | "upgrade risk for our codebase" |
-| `odoo-customization-inventory` | CEO | "list all our customizations" |
-| `odoo-override-finder` | Developer | "where to override method X" |
-| `odoo-deprecation-audit` | Developer | "audit deprecated API usage" |
-| `odoo-version-diff` | Developer | "what changed between v16 and v17" |
-| `odoo-feature-check` | Consultant | "does Odoo have module X" |
-| `odoo-gap-analysis` | Consultant | "gap analysis for client requirements" |
-| `odoo-feature-highlights` | Marketer | "new features in Odoo 17" |
-| `odoo-addon-diff` | Marketer | "CE vs EE comparison" |
-| `odoo-capability-proof` | Sales | "prove Odoo can do X" |
-| `odoo-objection-handler` | Sales | "handle objection about feature Y" |
-
----
-
-> **Other AI tools (Codex, Gemini, VS Code, Antigravity):** The plugin is Claude Code only. For other tools, follow the per-client MCP config sections below.
-
----
-
-← [README](../README.md) | [Deploy Guide](deploy.md) | [Contributing](../CONTRIBUTING.md)
-
 Hướng dẫn này dành cho **end user** muốn kết nối AI tool của mình vào một MCP server đã được admin deploy sẵn.
 
 > **Bạn không cần cài gì** — chỉ cần URL + API key từ admin, rồi làm theo section tương ứng với AI tool đang dùng.
@@ -91,6 +20,82 @@ Hướng dẫn này dành cho **end user** muốn kết nối AI tool của mìn
 ---
 
 ## Claude Code
+
+### Plugin install (recommended)
+
+For Claude Code users, the plugin is the fastest path: it bundles the MCP server config, all 15 persona skills, and the setup command in one install.
+
+#### 1. Add the Viindoo marketplace (one-time)
+
+```bash
+claude plugin marketplace add Viindoo/claude-plugins --scope user
+```
+
+Or inside Claude Code:
+```
+/plugin marketplace add Viindoo/claude-plugins
+```
+
+#### 2. Install the plugin
+
+```bash
+claude plugin install odoo-semantic@viindoo-plugins --scope user
+```
+
+Or:
+```
+/plugin install odoo-semantic@viindoo-plugins
+```
+
+#### 3. Configure API key and server URL
+
+On first use, Claude Code will prompt for:
+- **API Key** — starts with `osm_`, get it from your admin or the [install page](https://odoo-semantic.viindoo.com/install/)
+- **MCP Server URL** — default `https://odoo-semantic.viindoo.com/mcp` (change for self-hosted)
+
+Or run the interactive setup command:
+```
+/odoo-semantic:connect
+```
+
+#### 4. Verify
+
+```
+Using odoo-semantic tools, show the full inheritance chain of sale.order in Odoo 17.0
+```
+
+Expected: tree output with module names, `Defined in:`, field counts.
+
+#### Available persona skills
+
+After install, 15 skills activate automatically:
+
+| Skill | Persona | Trigger |
+|-------|---------|---------|
+| `odoo-risk-overview` | CEO | "upgrade risk for our codebase" |
+| `odoo-customization-inventory` | CEO | "list all our customizations" |
+| `odoo-override-finder` | Developer | "where to override method X" |
+| `odoo-deprecation-audit` | Developer | "audit deprecated API usage" |
+| `odoo-version-diff` | Developer | "what changed between v16 and v17" |
+| `odoo-coder` | Developer | "viết model/computed field/onchange" |
+| `odoo-owl-coder` | Developer | "viết OWL component cho Odoo v15+" |
+| `odoo-js-coder` | Developer | "viết JS widget cho Odoo v8-14" |
+| `odoo-code-reviewer` | Developer | "review code Odoo (Python/JS/XML)" |
+| `odoo-feature-check` | Consultant | "does Odoo have module X" |
+| `odoo-gap-analysis` | Consultant | "gap analysis for client requirements" |
+| `odoo-feature-highlights` | Marketer | "new features in Odoo 17" |
+| `odoo-addon-diff` | Marketer | "CE vs EE comparison" |
+| `odoo-capability-proof` | Sales | "prove Odoo can do X" |
+| `odoo-objection-handler` | Sales | "handle objection about feature Y" |
+
+---
+
+> **Other AI tools (Codex, Gemini, VS Code, Antigravity):** The plugin is Claude Code only. For other tools, follow the per-client MCP config sections below.
+
+---
+
+### Manual MCP setup (advanced / self-hosted)
+<a id="manual-mcp-setup-advanced--self-hosted"></a>
 
 Docs: <https://code.claude.com/docs/en/mcp>
 
@@ -119,7 +124,7 @@ Verify: `/mcp` trong session đang chạy, hoặc `claude mcp list` ngoài shell
 
 ⚠️ **Pitfall 2:** Sau khi add phải **restart Claude Code** — entry mới không load runtime.
 
-### auto-trust: skip permission prompts
+### Auto-trust: skip permission prompts
 <a id="claude-code-auto-trust"></a>
 
 > ✅ **Nếu bạn cài qua plugin Viindoo marketplace:** `/odoo-semantic:connect`

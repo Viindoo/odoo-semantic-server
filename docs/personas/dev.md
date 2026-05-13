@@ -2,7 +2,7 @@
 
 <!-- This persona intentionally uses the full 14-tool table instead of the "Most Useful Tools" template variant — devs need the full surface area. -->
 
-> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:connect` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
+> **Get started (Claude Code):** `claude plugin marketplace add Viindoo/claude-plugins` → `claude plugin install odoo-semantic@viindoo-plugins` → `/odoo-semantic:connect`. Chi tiết + AI tools khác: [client setup](../client-setup.md).
 
 The full 14-tool arsenal, optimized for development workflows. From understanding inheritance to safely extending core methods, this guide covers the daily patterns.
 
