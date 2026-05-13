@@ -124,6 +124,10 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [ ] `https://<domain>/install/` → load thành công, không 404
 - [ ] Dán API key vào form → snippet cho Claude Code hiển thị đúng URL + header
   - *Snippet phải chứa đúng domain + port, không phải localhost*
+- [ ] Tab Claude Code có 2 sub-tabs "Plugin (recommended)" + "Manual MCP" — sub-tab Plugin mặc định active
+- [ ] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic@viindoo-plugins`, `/odoo-semantic:connect`
+- [ ] Marketplace reachable: `claude plugin marketplace add Viindoo/claude-plugins --scope user` exit 0
+- [ ] SHA trong `marketplace.json` resolve được: `git ls-remote https://github.com/Viindoo/odoo-semantic-mcp.git | grep <sha>` thấy match
 
 ---
 

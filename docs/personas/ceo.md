@@ -1,6 +1,6 @@
 # Odoo Semantic — CEO / Manager Guide
 
-> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:connect` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
+> **Get started (Claude Code):** `claude plugin marketplace add Viindoo/claude-plugins` → `claude plugin install odoo-semantic@viindoo-plugins` → `/odoo-semantic:connect`. Chi tiết + AI tools khác: [client setup](../client-setup.md).
 
 You don't need to understand Odoo's code to get value from this tool. Ask plain-language questions about risk, upgrade cost, and customization scope — and get structured answers your team can act on.
 
