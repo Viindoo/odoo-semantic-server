@@ -89,6 +89,24 @@
   https://odoo-semantic.viindoo.com:9999/mcp \
   --header "X-API-Key: YOUR_API_KEY"</code></pre>
     </div>
+
+    <details style="margin-top:1rem;">
+      <summary style="cursor:pointer;font-size:0.9rem;color:#444;">
+        Skip permission prompts (optional)
+      </summary>
+      <div style="margin-top:0.5rem;font-size:0.85rem;color:#666;">
+        Plugin users: <code>/odoo-semantic:connect</code> does this for you. Otherwise, merge into <code>~/.claude/settings.json</code> so every <code>mcp__odoo-semantic__*</code> tool is auto-allowed:
+      </div>
+      <div class="file-label-outer" style="font-size:0.8rem;color:#666;margin:0.4rem 0 0.3rem;">~/.claude/settings.json</div>
+      <div class="code-wrap">
+        <button class="copy-btn" data-target="code-claude-allow">Copy</button>
+        <pre class="code-block" id="code-claude-allow"><code class="language-json">{
+  "permissions": {
+    "allow": ["mcp__odoo-semantic"]
+  }
+}</code></pre>
+      </div>
+    </details>
   </div>
 
   <!-- Codex CLI -->
