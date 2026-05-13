@@ -21,6 +21,12 @@ Then inside Claude Code, run:
 > [#39827](https://github.com/anthropics/claude-code/issues/39827)). Without
 > `/odoo-semantic:setup` the plugin loads its skills but the MCP server silently
 > fails — `claude mcp list` will not show `odoo-semantic`.
+>
+> ⚠️ **Restart Claude Code after `/odoo-semantic:setup`** to actually load the
+> MCP tools. Claude Code v2.x does not hot-reload MCP servers within a session
+> ([#46426](https://github.com/anthropics/claude-code/issues/46426) — "not
+> planned"). The setup command verifies the server via `curl` and tells you
+> when to restart.
 
 ## Available skills
 
@@ -58,8 +64,9 @@ Then inside Claude Code, run:
 Interactive setup that:
 1. Prompts for your MCP server URL and API key
 2. Validates key format (`osm_...`)
-3. Updates `~/.claude.json` with the MCP server config
-4. Runs a connectivity check against `resolve_model`
+3. Registers the MCP server via `claude mcp add --scope user`
+4. Probes `/health` + `/mcp` with `curl` to verify server + key
+5. Tells you to restart Claude Code (required to load MCP tools)
 
 ## Requirements
 
