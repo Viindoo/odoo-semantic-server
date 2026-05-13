@@ -1,5 +1,7 @@
 # M7 Close-All + Go-Live Plan
 
+> **Status:** ✓ DONE — M7 shipped 2026-05-11
+
 > **Session tag:** `20260511-close-all` (orchestrator mints actual `osm-wt-<timestamp>-<rand>` at Phase 3a)
 > **Plan author:** Opus 4.7 orchestrator (this conversation)
 > **Spawning model strategy:** Haiku cho mechanical/plumbing, Sonnet cho design judgment

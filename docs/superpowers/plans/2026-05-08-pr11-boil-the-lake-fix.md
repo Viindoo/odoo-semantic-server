@@ -1,5 +1,7 @@
 # PR #11 Boil-the-Lake Fix Plan
 
+> **Status:** ✓ DONE — PR11 merged 2026-05-08
+
 **Created**: 2026-05-08
 **Target PR**: https://github.com/Viindoo/odoo-semantic-mcp/pull/11
 **Target branch**: `feat/m45-spec-wow` (continue, no new PR)

@@ -1,5 +1,7 @@
 # Smoke Test Automation — Approach A + C
 
+> **Status:** ✓ DONE — Smoke automation shipped 2026-05-08
+
 **Created**: 2026-05-08
 **Goal**: Tự động hoá 3 manual smoke test (B1 indexer wiring, B2 lifecycle, Phase 0 v8/v9) bằng 2-tier strategy:
 - **A** — Per-PR fast smoke với fixture nhỏ (~30s).
