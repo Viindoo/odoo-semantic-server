@@ -4,21 +4,24 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Odoo Semantic MCP — Install for your AI tool</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; line-height: 1.6; }
     .container { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
-    h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem; color: #1a1a1a; }
+    .brand-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+    .brand-mark { width: 44px; height: 44px; flex-shrink: 0; }
+    h1 { font-size: 1.6rem; font-weight: 700; color: #1a1a1a; }
     .intro { color: #555; margin-bottom: 1.5rem; }
-    .intro a { color: #6d28d9; }
+    .intro a { color: #7F4282; }
     .key-row { margin-bottom: 1.5rem; }
     .key-row label { display: block; font-weight: 600; margin-bottom: 0.4rem; font-size: 0.9rem; }
     #apikey {
       width: 100%; padding: 0.55rem 0.75rem; font-family: monospace; font-size: 0.95rem;
-      border: 1.5px solid #c4b5fd; border-radius: 6px; outline: none; background: #fff;
+      border: 1.5px solid #B8E5EC; border-radius: 6px; outline: none; background: #fff;
     }
-    #apikey:focus { border-color: #7c3aed; box-shadow: 0 0 0 3px #ede9fe; }
+    #apikey:focus { border-color: #00BBCE; box-shadow: 0 0 0 3px #E6F8FA; }
     /* Tabs */
     .tabs { display: flex; gap: 0; border-bottom: 2px solid #e5e7eb; margin-bottom: 1.25rem; flex-wrap: wrap; }
     .tab-btn {
@@ -26,8 +29,8 @@
       background: none; border: none; border-bottom: 2px solid transparent;
       margin-bottom: -2px; color: #666; transition: color 0.15s, border-color 0.15s;
     }
-    .tab-btn:hover { color: #7c3aed; }
-    .tab-btn.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+    .tab-btn:hover { color: #7F4282; }
+    .tab-btn.active { color: #7F4282; border-bottom-color: #00BBCE; }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
     /* Code block */
@@ -55,16 +58,16 @@
     }
     .vscode-btn:hover { background: #106ebe; }
     .footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.825rem; color: #888; }
-    .footer a { color: #7c3aed; }
+    .footer a { color: #7F4282; }
     /* Sub-tabs (Claude Code plugin / manual) */
-    .sub-tabs { display: flex; gap: 0; border-bottom: 1.5px solid #ddd6fe; margin-bottom: 1rem; margin-top: 0.25rem; }
+    .sub-tabs { display: flex; gap: 0; border-bottom: 1.5px solid #D5F1F5; margin-bottom: 1rem; margin-top: 0.25rem; }
     .sub-tab-btn {
       padding: 0.35rem 0.8rem; font-size: 0.8rem; font-weight: 500; cursor: pointer;
       background: none; border: none; border-bottom: 2px solid transparent;
       margin-bottom: -1.5px; color: #888; transition: color 0.15s, border-color 0.15s;
     }
-    .sub-tab-btn:hover { color: #7c3aed; }
-    .sub-tab-btn.active { color: #7c3aed; border-bottom-color: #c4b5fd; }
+    .sub-tab-btn:hover { color: #7F4282; }
+    .sub-tab-btn.active { color: #7F4282; border-bottom-color: #00BBCE; }
     .sub-tab-panel { display: none; }
     .sub-tab-panel.active { display: block; }
     .step-label { font-size: 0.8rem; color: #888; margin: 0.5rem 0 0.2rem; font-weight: 600; }
@@ -72,7 +75,10 @@
 </head>
 <body>
 <div class="container">
-  <h1>Odoo Semantic MCP — Install for your AI tool</h1>
+  <div class="brand-row">
+    <img class="brand-mark" src="logo-mark.svg" alt="" aria-hidden="true">
+    <h1>Odoo Semantic MCP — Install for your AI tool</h1>
+  </div>
   <p class="intro">
     Connect your AI coding tool to Odoo Semantic MCP to get real inheritance chains, field types,
     and view overrides — no more hallucinations.
