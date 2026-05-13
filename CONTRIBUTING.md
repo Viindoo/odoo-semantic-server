@@ -445,4 +445,4 @@ claude plugin validate dist/odoo-semantic-plugin/
 
 ### Publishing
 
-See [docs/deploy/plugin-release.md](docs/deploy/plugin-release.md) for the full release + SHA-pinning workflow.
+See [dist/odoo-semantic-plugin/plugin-release.md](dist/odoo-semantic-plugin/plugin-release.md) for the full release + SHA-pinning workflow.
