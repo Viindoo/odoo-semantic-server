@@ -602,66 +602,19 @@ Qwen3-Embedding-4B qua Ollama tạo vector 1024 chiều (MRL, asymmetric instruc
 
 ---
 
-## Incremental Indexer (M6 Wave 2)
+## Incremental Indexer
 
-`pipeline._index_repo` so sánh `git rev-parse HEAD` với stored `repos.head_sha`:
+`pipeline._index_repo` so sánh `git rev-parse HEAD` với `repos.head_sha` để skip unchanged repos (zero-cost). Force-push detected qua `is_ancestor` fail → full reindex fallback. `head_sha` chỉ update sau full success. `Module.last_commit_sha` mutable property (NOT trong MERGE key).
 
-- **Bằng nhau** → log "Repo unchanged — skipping" + return ngay (zero-cost).
-- **Force-push detected** (`is_ancestor` fail) → log warning + full reindex.
-- **Otherwise** → `git diff --name-only old..new` → filter scan results to changed module dirs only via `incremental.compute_changed_module_paths()`.
-- **head_sha chỉ update sau full success** — partial failure mid-write giữ nguyên head_sha cũ → next run retry.
-
-**Module node** thêm property `last_commit_sha` (NOT trong MERGE key — mutable SET props per ADR-0001). Cho phép query "module này last touched commit nào" trong `resolve_model` etc.
-
-### `--full` flag (monthly cleanup)
-
-```bash
-python -m src.indexer index-repo --full --profile <name>
-```
-
-Bypass skip + diff filter. Dùng định kỳ (recommend monthly) để clean up stale Module nodes từ rename/move. Module rename caveat: rename dir → cả old và new path xuất hiện trong diff, cả hai re-index. Stale Neo4j Module node cho old path còn lại; dùng `--full` để cleanup.
-
-### `seed-patterns --force` bypass
-
-```bash
-python -m src.indexer seed-patterns --force
-```
-
-Re-embed tất cả patterns regardless of sha256 sentinel. Dùng khi pattern đổi embed strategy hoặc backend Ollama updated.
+**Design rationale + edge cases (module rename, --full flag, auto-reseed sentinel):** [`docs/adr/0007-incremental-indexer.md`](adr/0007-incremental-indexer.md).
 
 ---
 
 ## SSH Auto-Clone (M6 Wave 4)
 
-### GIT_SSH_COMMAND Pattern
+Web UI `POST /repos/{id}/clone` auto-clone SSH repos với FERNET-decrypted key. Key delivery qua `GIT_SSH_COMMAND` env var (KHÔNG `-i` flag — `/proc/<pid>/cmdline` leak). Tempfile `mkstemp(mode=0o600)` + try/finally cleanup. Project-local `known_hosts` (NEVER `~/.ssh/`). Full clone (no `--depth=1`) cho incremental indexer compat.
 
-Private key path NEVER đi vào argv (procfs world-readable). Dùng env var thay vì `-i` flag:
-
-```bash
-GIT_SSH_COMMAND="ssh -i <tmp_key> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<project_known_hosts>" \
-  git clone --branch <branch> --single-branch <url> <target>
-```
-
-### Project-Local known_hosts
-
-Host key verification writes to `~/.local/share/odoo-semantic-mcp/known_hosts` (NOT system `~/.ssh/known_hosts`). Multi-tenant safe, không conflicts với user's personal SSH setup (per ADR-0008 D4). Admin có thể inspect/clear nếu MITM suspected.
-
-### Tempfile 0o600 + try/finally Cleanup
-
-```python
-fd, tmp_path = tempfile.mkstemp(prefix='osm-ssh-', suffix='.key')
-try:
-    os.fchmod(fd, 0o600)  # secure permissions trước khi write key
-    os.write(fd, decrypted_key_bytes)
-finally:
-    os.close(fd)
-```
-
-Cleanup runs on success, failure, và mid-clone exception. SIGKILL leak nếu orchestrator kills process mid-finally (tempfile remains), accepted trade-off (system tmpdir cleanup on reboot).
-
-### Full Clone (NOT `--depth=1`)
-
-Clone command: `git clone --branch <branch> --single-branch <url>`. **Why:** M6 Wave 2 incremental indexer requires full git history để compute `git diff old..new`. Shallow clone would force full reindex mỗi lần change → defeat incremental benefit.
+**Full policy + key delivery rationale + multi-tenant safety:** [`docs/adr/0008-ssh-auto-clone.md`](adr/0008-ssh-auto-clone.md).
 
 ---
 
