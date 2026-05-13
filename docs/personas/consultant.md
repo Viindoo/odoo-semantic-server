@@ -1,6 +1,6 @@
 # Odoo Semantic — Consultant Guide
 
-> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:setup` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
+> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:connect` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
 
 For functional consultants and solution architects: quickly verify feature availability, close gap analyses, and scope customizations before committing estimates.
 

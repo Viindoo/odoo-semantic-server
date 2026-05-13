@@ -1,6 +1,6 @@
 # Odoo Semantic — Marketer Guide
 
-> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:setup` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
+> **Get started:** Install the [Odoo Semantic plugin](../../dist/odoo-semantic-plugin/README.md) or run `/odoo-semantic:connect` in Claude Code. For other AI tools, see [client setup](../client-setup.md).
 
 Create accurate, data-backed Odoo content: version comparison articles, feature highlight posts, upgrade guides, and capability summaries — all grounded in real codebase facts, not marketing sheets.
 

@@ -34,7 +34,7 @@ On first use, Claude Code will prompt for:
 
 Or run the interactive setup command:
 ```
-/odoo-semantic:setup
+/odoo-semantic:connect
 ```
 
 ### 4. Verify

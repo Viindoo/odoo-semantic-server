@@ -15,7 +15,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 - New `dist/odoo-semantic-plugin/` — installable Claude Code plugin with:
   - 11 persona SKILL.md files: CEO (risk-overview, customization-inventory), Developer (override-finder, deprecation-audit, version-diff), Consultant (feature-check, gap-analysis), Marketer (feature-highlights, addon-diff), Sales (capability-proof, objection-handler)
   - 2 sub-agent files: `odoo-router.md` (Haiku classifier) + `odoo-upgrade-planner.md` (Sonnet orchestrator)
-  - `/odoo-semantic:setup` slash command for interactive API-key setup
+  - `/odoo-semantic:connect` slash command for interactive API-key setup
   - `.mcp.json` template with `${ODOO_SEMANTIC_API_KEY}` env interpolation
 - New `dist/marketplaces/viindoo/marketplace.json` for self-host distribution
 - Added `tests/test_skill_disambiguation.py` — 31/31 parametrized routing accuracy tests (100%)
