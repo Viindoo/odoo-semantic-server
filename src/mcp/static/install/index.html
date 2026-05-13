@@ -56,6 +56,18 @@
     .vscode-btn:hover { background: #106ebe; }
     .footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.825rem; color: #888; }
     .footer a { color: #7c3aed; }
+    /* Sub-tabs (Claude Code plugin / manual) */
+    .sub-tabs { display: flex; gap: 0; border-bottom: 1.5px solid #ddd6fe; margin-bottom: 1rem; margin-top: 0.25rem; }
+    .sub-tab-btn {
+      padding: 0.35rem 0.8rem; font-size: 0.8rem; font-weight: 500; cursor: pointer;
+      background: none; border: none; border-bottom: 2px solid transparent;
+      margin-bottom: -1.5px; color: #888; transition: color 0.15s, border-color 0.15s;
+    }
+    .sub-tab-btn:hover { color: #7c3aed; }
+    .sub-tab-btn.active { color: #7c3aed; border-bottom-color: #c4b5fd; }
+    .sub-tab-panel { display: none; }
+    .sub-tab-panel.active { display: block; }
+    .step-label { font-size: 0.8rem; color: #888; margin: 0.5rem 0 0.2rem; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -83,11 +95,44 @@
 
   <!-- Claude Code -->
   <div class="tab-panel active" id="tab-claude" role="tabpanel">
-    <div class="code-wrap">
-      <button class="copy-btn" data-target="code-claude">Copy</button>
-      <pre class="code-block" id="code-claude"><code class="language-bash">claude mcp add --transport http --scope user odoo-semantic \
+    <!-- Sub-tab nav -->
+    <div class="sub-tabs" role="tablist">
+      <button class="sub-tab-btn active" data-subtab="plugin" role="tab">Plugin (recommended)</button>
+      <button class="sub-tab-btn" data-subtab="manual" role="tab">Manual MCP</button>
+    </div>
+
+    <!-- Plugin sub-tab -->
+    <div class="sub-tab-panel active" id="sub-tab-plugin">
+      <div class="step-label">Step 1 — Add the Viindoo marketplace (one-time)</div>
+      <div class="code-wrap">
+        <button class="copy-btn" data-target="code-claude-plugin-step1">Copy</button>
+        <pre class="code-block" id="code-claude-plugin-step1"><code class="language-bash">claude plugin marketplace add Viindoo/claude-plugins --scope user</code></pre>
+      </div>
+
+      <div class="step-label">Step 2 — Install the plugin</div>
+      <div class="code-wrap">
+        <button class="copy-btn" data-target="code-claude-plugin-step2">Copy</button>
+        <pre class="code-block" id="code-claude-plugin-step2"><code class="language-bash">claude plugin install odoo-semantic@viindoo-plugins --scope user</code></pre>
+      </div>
+
+      <div class="step-label">Step 3 — Run the setup command (prompts for URL + API key)</div>
+      <div class="code-wrap">
+        <button class="copy-btn" data-target="code-claude-plugin-step3">Copy</button>
+        <pre class="code-block" id="code-claude-plugin-step3"><code class="language-bash">/odoo-semantic:connect</code></pre>
+      </div>
+      <div style="font-size:0.8rem;color:#666;margin-top:0.35rem;">
+        The command will prompt for your API key and server URL, then auto-configure permissions.
+      </div>
+    </div>
+
+    <!-- Manual MCP sub-tab -->
+    <div class="sub-tab-panel" id="sub-tab-manual">
+      <div class="code-wrap">
+        <button class="copy-btn" data-target="code-claude-manual">Copy</button>
+        <pre class="code-block" id="code-claude-manual"><code class="language-bash">claude mcp add --transport http --scope user odoo-semantic \
   https://odoo-semantic.viindoo.com/mcp \
   --header "X-API-Key: YOUR_API_KEY"</code></pre>
+      </div>
     </div>
 
     <details style="margin-top:1rem;">
@@ -202,6 +247,18 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
       tabPanels.forEach(function(p) { p.classList.remove('active'); });
       btn.classList.add('active');
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ---- Sub-tab switching (Claude Code: Plugin / Manual) ----
+  var subTabBtns = document.querySelectorAll('.sub-tab-btn');
+  var subTabPanels = document.querySelectorAll('.sub-tab-panel');
+  subTabBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      subTabBtns.forEach(function(b) { b.classList.remove('active'); });
+      subTabPanels.forEach(function(p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById('sub-tab-' + btn.dataset.subtab).classList.add('active');
     });
   });
 
