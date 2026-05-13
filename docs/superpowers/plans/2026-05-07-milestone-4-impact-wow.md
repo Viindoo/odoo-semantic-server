@@ -1,5 +1,7 @@
 # Milestone 4 — "Impact Wow" Implementation Plan
 
+> **Status:** ✓ DONE — M4 shipped 2026-05-07
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Nguyên tắc bắt buộc khi implement:**

@@ -196,7 +196,7 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        # Ranking tiers — see docs/adr/0004:
+        # Ranking tiers — see docs/adr/0013:
         # T1 is_def_rank: m.is_definition flag (post-reindex, authoritative).
         # T2 field_count: Field nodes declared on this model in this module —
         #                 100% accurate signal pre-reindex on real data
@@ -274,7 +274,7 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        # 5-tier ranking via m_node proxy — see docs/adr/0004
+        # 5-tier ranking via m_node proxy — see docs/adr/0013
         records = session.run(f"""
             MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
             OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
@@ -320,7 +320,7 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        # 5-tier ranking via m_node proxy — see docs/adr/0004
+        # 5-tier ranking via m_node proxy — see docs/adr/0013
         records = session.run(f"""
             MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
             OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})

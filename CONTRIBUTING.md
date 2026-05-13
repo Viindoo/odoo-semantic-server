@@ -445,4 +445,104 @@ claude plugin validate dist/odoo-semantic-plugin/
 
 ### Publishing
 
-See [docs/deploy/plugin-release.md](docs/deploy/plugin-release.md) for the full release + SHA-pinning workflow.
+See [dist/odoo-semantic-plugin/plugin-release.md](dist/odoo-semantic-plugin/plugin-release.md) for the full release + SHA-pinning workflow.
+
+---
+
+## Local E2E (test MCP local trước khi production)
+
+Muốn test MCP local với Claude Code (không cần đợi production deploy)? 5 phút setup.
+
+### 1. Clone + cài deps + bootstrap DB
+
+```bash
+git clone https://github.com/Viindoo/odoo-semantic-mcp
+cd odoo-semantic-mcp
+make install                     # tạo venv + sao .env.example, odoo-semantic.conf.example
+# Sửa .env: điền NEO4J_PASSWORD và PG_PASSWORD (replace <PASSWORD> trong PG_DSN)
+# Sửa odoo-semantic.conf: điền [neo4j] password + [postgresql] dsn (khớp với .env)
+docker compose up -d             # start Neo4j (:7474, :7687) + PostgreSQL (:5432)
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+```
+
+### 1b. Generate FERNET_KEY + create first API key
+
+```bash
+# Generate FERNET_KEY (required for SSH key encryption):
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Add the output to .env as FERNET_KEY=<value>
+
+# Create your first API key:
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager create-api-key mykey
+# → prints: osm_xxxx... (save this — shown only once)
+```
+
+### 2. Đăng ký 1 profile + index 1 Odoo repo
+
+```bash
+# Cần sẵn 1 Odoo CE 17 repo local. Nếu chưa có:
+git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
+
+# Đăng ký + attach repo + index
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile odoo17 --version 17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
+  --profile odoo17 --url file://local --branch 17.0 --local-path ~/git/odoo_17.0
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile odoo17 --no-embed
+# (--no-embed bỏ qua M3 semantic search; cần Ollama nếu muốn dùng find_examples)
+
+# (M4.5+) Index Odoo core API symbols + lint rules + CLI cho version 17.0:
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core \
+  --source ~/git/odoo_17.0 --version 17.0
+# Sau bước này: lookup_core_api / api_version_diff / find_deprecated_usage /
+# lint_check / cli_help mới có data để query.
+
+# (M4.6+) Seed curated PatternExample catalogue (~50 entries):
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer.seed_patterns
+# Hoặc skip embed (chỉ Neo4j nodes, không pgvector):
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer.seed_patterns --no-embed
+# Sau bước này: suggest_pattern / check_module_exists / find_override_point
+# có data để query.
+```
+
+### Multi-version parallel indexing
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all \
+    --profile-workers 3 --max-workers 2
+```
+
+Indexes 3 profiles in parallel; each profile uses 2 repo-workers internally
+(up to 6 threads total). Per-profile Postgres advisory locks ensure no two
+indexer runs collide on the same profile.
+
+### 3. Start MCP server
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+# → Server lắng nghe http://127.0.0.1:8002/mcp
+```
+
+### 4. Trỏ Claude Code vào local server
+
+```bash
+claude mcp add --scope user --transport http odoo-semantic \
+    http://127.0.0.1:8002/mcp \
+    --header "X-API-Key: osm_xxxx..."
+```
+
+Cho client khác (Codex, Gemini, VS Code, Antigravity): thay `<MCP_URL>` trong [README §Onboard End User](../README.md#onboard-end-user-zero-install) bằng `http://127.0.0.1:8002/mcp`.
+
+Restart Claude Code, gõ prompt tự nhiên để verify:
+```
+Dùng odoo-semantic, resolve model sale.order trên Odoo 17.0
+```
+
+### Tool dependencies
+
+| Tool | M1–M2 | M3 Semantic | M4 Impact |
+|------|:---:|:---:|:---:|
+| `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view` | ✓ Neo4j | — | — |
+| `find_examples` | — | ✓ Neo4j + PostgreSQL + Ollama | — |
+| `impact_analysis` | — | — | ✓ Neo4j |
+
+`find_examples` cần Ollama chạy với model `qwen3-embedding-q5km`. Các tool khác không cần embedder.

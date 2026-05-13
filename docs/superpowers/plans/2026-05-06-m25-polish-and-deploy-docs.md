@@ -1,5 +1,7 @@
 # M2.5 Polish + Deploy Docs Implementation Plan
 
+> **Status:** ✓ DONE — M2.5 polish shipped 2026-05-07
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix 3 Opus review findings (load_dotenv asymmetry I1, index_all abort I2, missing path validation I3) và tạo `docs/deploy.md` production guide đầy đủ 3 tiers (DB/App/Proxy) với SSOT — nội dung không duplicate sang README hay docs khác.

@@ -1,5 +1,7 @@
 # Web UI under `/admin/` path prefix ⚠️ SUPERSEDED
 
+> **Status:** ⊘ SUPERSEDED — folded into M8 astro-unified
+
 > **SUPERSEDED 2026-05-12** — FastAPI `root_path` refactor approach dropped. Admin prefix is now handled by Astro routing (Astro serves `/admin/*` via SSR). FastAPI becomes pure JSON API at `/api/*`.
 > See authoritative plan: [`2026-05-12-milestone-8-astro-unified.md`](2026-05-12-milestone-8-astro-unified.md) Stream A (FastAPI JSON API) + Stream B (Astro admin pages).
 >

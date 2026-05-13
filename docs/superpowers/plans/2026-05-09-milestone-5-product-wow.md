@@ -1,5 +1,7 @@
 # Plan: Milestone 5 — "Product Wow" (rev 2 — post-Opus debate)
 
+> **Status:** ✓ DONE — M5 shipped 2026-05-09
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans.
 >
 > **Bắt buộc khi implement:**

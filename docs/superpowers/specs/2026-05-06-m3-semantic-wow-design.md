@@ -1,5 +1,7 @@
 # M3 "Semantic Wow" — Design Spec
 
+> **Status:** ✓ DONE — M3 shipped 2026-05-06
+
 > **Ngày:** 2026-05-06 (updated 2026-05-07)
 > **Trạng thái:** Approved (v3 — post 3-round Opus debate) — ready for implementation plan
 > **Outcome:** `find_examples("tính thuế theo quốc gia đối tác")` trả về code thật từ

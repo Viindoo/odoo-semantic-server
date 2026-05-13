@@ -1,5 +1,7 @@
 # Milestone 8 — "Public Wow" ⚠️ SUPERSEDED
 
+> **Status:** ⊘ SUPERSEDED — replaced by 2026-05-12-milestone-8-astro-unified.md
+
 > **SUPERSEDED 2026-05-12** — Architecture revised to Astro unified (landing + admin) with FastAPI pure JSON API.
 > See authoritative plan: [`2026-05-12-milestone-8-astro-unified.md`](2026-05-12-milestone-8-astro-unified.md)
 >

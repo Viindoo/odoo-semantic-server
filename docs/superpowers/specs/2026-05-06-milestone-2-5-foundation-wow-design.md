@@ -1,5 +1,7 @@
 # Design Spec: Milestone 2.5 — "Foundation Wow"
 
+> **Status:** ✓ DONE — M2.5 foundation shipped
+
 **Date:** 2026-05-06  
 **Status:** Approved by David Tran  
 **Scope:** Infrastructure foundation enabling real E2E testing of M1+M2, extensible to M5+ per-user scoping
