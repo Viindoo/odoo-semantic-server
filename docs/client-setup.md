@@ -122,7 +122,12 @@ Verify: `/mcp` trong session đang chạy, hoặc `claude mcp list` ngoài shell
 ### auto-trust: skip permission prompts
 <a id="claude-code-auto-trust"></a>
 
-Thêm vào `~/.claude/settings.json` để pre-approve mọi tool của server này:
+> ✅ **Nếu bạn cài qua plugin Viindoo marketplace:** `/odoo-semantic:connect`
+> hiện đã **tự động** thêm entry này vào `~/.claude/settings.json` (idempotent,
+> có backup, không đụng tới các key khác). Trả `Y` ở prompt cuối — không cần
+> đọc tiếp section này. Trả `n` → quay lại làm thủ công theo snippet dưới.
+
+Snippet manual (cho ai cài qua `claude mcp add` raw, không qua plugin):
 
 ```json
 {
