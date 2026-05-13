@@ -225,7 +225,7 @@ The server already runs ollama+qwen. Port matrix — no conflicts:
 | Neo4j Bolt | 7687 | 127.0.0.1 (same-server) |
 | Neo4j Browser | 7474 | 127.0.0.1 |
 | PostgreSQL | 5432 | 127.0.0.1 |
-| ollama | 11434/80/9999 | existing, no conflict |
+| ollama | 11434/80/443 | existing, no conflict |
 
 **Reverse proxy (admin's responsibility)**: Route `https://<domain>/mcp` → `http://127.0.0.1:8002/mcp`. Auth until M5 = IP allowlist or basic auth at proxy level. README documents this explicitly: "No API key validation until M5 — protect endpoint at reverse proxy."
 

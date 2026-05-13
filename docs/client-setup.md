@@ -29,8 +29,8 @@ Or:
 ### 3. Configure API key and server URL
 
 On first use, Claude Code will prompt for:
-- **API Key** — starts with `osm_`, get it from your admin or the [install page](https://odoo-semantic.viindoo.com:9999/install/)
-- **MCP Server URL** — default `https://odoo-semantic.viindoo.com:9999/mcp` (change for self-hosted)
+- **API Key** — starts with `osm_`, get it from your admin or the [install page](https://odoo-semantic.viindoo.com/install/)
+- **MCP Server URL** — default `https://odoo-semantic.viindoo.com/mcp` (change for self-hosted)
 
 Or run the interactive setup command:
 ```
@@ -86,7 +86,7 @@ Hướng dẫn này dành cho **end user** muốn kết nối AI tool của mìn
 > dưới đây có canonical add command + JSON fallback + verify command + 1 pitfall
 > đặc trưng của client đó.
 
-> 💡 **Nhanh nhất:** truy cập **https://odoo-semantic.viindoo.com:9999/install/** và dán API key — trang tự sinh snippet đúng cho từng client. Các section dưới đây là tài liệu tham khảo chính thức để setup nâng cao, troubleshooting, và auto-trust patterns.
+> 💡 **Nhanh nhất:** truy cập **https://odoo-semantic.viindoo.com/install/** và dán API key — trang tự sinh snippet đúng cho từng client. Các section dưới đây là tài liệu tham khảo chính thức để setup nâng cao, troubleshooting, và auto-trust patterns.
 
 ---
 
@@ -174,7 +174,7 @@ echo 'export ODOO_SEMANTIC_KEY="YOUR_API_KEY"' >> ~/.bashrc
 Trong `~/.codex/config.toml`:
 ```toml
 [mcp_servers.odoo-semantic]
-url = "https://odoo-semantic.viindoo.com:9999/mcp"
+url = "https://odoo-semantic.viindoo.com/mcp"
 env_http_headers = { "X-API-Key" = "ODOO_SEMANTIC_KEY" }
 ```
 
@@ -210,7 +210,7 @@ Thêm `"trust": true` vào server entry trong `~/.gemini/settings.json`:
 {
   "mcpServers": {
     "odoo-semantic": {
-      "httpUrl": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "httpUrl": "https://odoo-semantic.viindoo.com/mcp",
       "headers": { "X-API-Key": "YOUR_API_KEY" },
       "trust": true
     }
@@ -252,12 +252,12 @@ server"** trong Chat UI lần đầu gọi tool.
 **One-click install URL** (paste vào browser, VS Code tự xử lý):
 
 ```
-vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%3A9999%2Fmcp%22%2C%22headers%22%3A%7B%22X-API-Key%22%3A%22YOUR_API_KEY%22%7D%7D
+vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%2Fmcp%22%2C%22headers%22%3A%7B%22X-API-Key%22%3A%22YOUR_API_KEY%22%7D%7D
 ```
 
 JSON pre-encode (replace `YOUR_API_KEY`):
 ```json
-{"name":"odoo-semantic","type":"http","url":"https://odoo-semantic.viindoo.com:9999/mcp","headers":{"X-API-Key":"YOUR_API_KEY"}}
+{"name":"odoo-semantic","type":"http","url":"https://odoo-semantic.viindoo.com/mcp","headers":{"X-API-Key":"YOUR_API_KEY"}}
 ```
 
 > ⚠️ VS Code hiện chưa rõ có honor `headers` field trong URL handler không. Nếu

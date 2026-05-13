@@ -137,7 +137,7 @@ In `~/.cursor/mcp.json` (or project `.cursor/mcp.json`):
   "mcpServers": {
     "odoo-semantic": {
       "type": "http",
-      "url": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "url": "https://odoo-semantic.viindoo.com/mcp",
       "headers": {
         "X-API-Key": "<YOUR_API_KEY>"
       }

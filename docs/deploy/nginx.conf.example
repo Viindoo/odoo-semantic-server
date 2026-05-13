@@ -52,9 +52,9 @@ server {
     }
 }
 
-# --- Port 9999 variant (public Viindoo instance) ---
+# --- Port 443 variant (public Viindoo instance) ---
 server {
-    listen 9999 ssl http2;
+    listen 443 ssl http2;
     server_name semantic.example.com;
 
     ssl_certificate     /etc/letsencrypt/live/semantic.example.com/fullchain.pem;

@@ -20,16 +20,16 @@
 
 ## 1. Goal
 
-End-state URLs on the production host `odoo-semantic.viindoo.com:9999`:
+End-state URLs on the production host `odoo-semantic.viindoo.com`:
 
 | URL | Owner | Status after this work |
 |-----|-------|------------------------|
-| `https://odoo-semantic.viindoo.com:9999/mcp` | MCP HTTP endpoint | unchanged |
-| `https://odoo-semantic.viindoo.com:9999/health` | MCP health probe | unchanged |
-| `https://odoo-semantic.viindoo.com:9999/install/` | MCP install onboarding page | unchanged |
-| `https://odoo-semantic.viindoo.com:9999/api/feedback{,/...}` | MCP feedback API | unchanged |
-| **`https://odoo-semantic.viindoo.com:9999/admin/`** | **Web UI (new exposure)** | **proxied via nginx to 127.0.0.1:8003** |
-| `https://odoo-semantic.viindoo.com:9999/` | reserved for future public landing site | nginx returns 404 today; documented as future scenario-A static landing |
+| `https://odoo-semantic.viindoo.com/mcp` | MCP HTTP endpoint | unchanged |
+| `https://odoo-semantic.viindoo.com/health` | MCP health probe | unchanged |
+| `https://odoo-semantic.viindoo.com/install/` | MCP install onboarding page | unchanged |
+| `https://odoo-semantic.viindoo.com/api/feedback{,/...}` | MCP feedback API | unchanged |
+| **`https://odoo-semantic.viindoo.com/admin/`** | **Web UI (new exposure)** | **proxied via nginx to 127.0.0.1:8003** |
+| `https://odoo-semantic.viindoo.com/` | reserved for future public landing site | nginx returns 404 today; documented as future scenario-A static landing |
 
 Dev workflow after this change:
 - Web UI accessed at `http://127.0.0.1:8003/admin/` (NOT `/`).
@@ -178,7 +178,7 @@ Add `tests/test_web_ui_admin_prefix.py`:
 
 File: `/etc/nginx/sites-enabled/odoo-semantic-mcp` AND mirror template `docs/deploy/nginx.conf.example`.
 
-Add to the `:9999 ssl` server block (mirror to any other `listen` blocks for the same hostname):
+Add to the ` ssl` server block (mirror to any other `listen` blocks for the same hostname):
 
 ```nginx
 location /admin/ {
@@ -194,7 +194,7 @@ location /admin/ {
 
 **Critical**: `proxy_pass http://127.0.0.1:8003;` (no trailing slash). With `root_path="/admin"` set on FastAPI, the app expects to receive `/admin/login` and internally strips `/admin` when matching routes. A trailing slash on `proxy_pass` (`.../8003/;`) strips `/admin` at the nginx layer — that's the buggy snippet currently in `docs/deploy.md:1023-1031`. Fix the doc.
 
-No firewall changes needed (port 9999 already public). No certbot changes (cert covers hostname for any port). No DNS changes.
+No firewall changes needed (port 443 already public). No certbot changes (cert covers hostname for any port). No DNS changes.
 
 systemd `webui.env` — no env var addition needed (prefix is hard-coded in code).
 
@@ -206,7 +206,7 @@ systemd `webui.env` — no env var addition needed (prefix is hard-coded in code
 |------|--------|
 | `docs/deploy.md` §11 (lines ~1015-1033) | Replace buggy `/admin/` snippet with the correct nginx block above. Remove stale "Web UI không có authentication" warning (M7 W16 added auth — ADR-0011). |
 | `docs/deploy/nginx.conf.example` | Add the location block. |
-| `docs/deploy/odoo-semantic-webui.service` | Comment block mentions UI lives at `:9999/admin/`. No env-var change. |
+| `docs/deploy/odoo-semantic-webui.service` | Comment block mentions UI lives at `/admin/`. No env-var change. |
 | `README.md` | Local E2E Quickstart §4: change Web UI URL to `http://127.0.0.1:8003/admin/`. Trạng Thái section: add note about admin URL. |
 | `~/install-odoo-semantic-mcp.md` (operator runbook on this machine — NOT in repo; per memory `install_runbook_location`) | Update web-UI verify step to `http://127.0.0.1:8003/admin/`. |
 | `~/reindex-odoo-semantic-mcp.md` (per memory `reindex_runbook_location`) | No change unless it references webui URL — verify. |
@@ -239,7 +239,7 @@ Single PR, single commit (or 2-3 logical commits if pre-commit hooks complain ab
 3. Drop the new nginx location block into `/etc/nginx/sites-enabled/odoo-semantic-mcp` (or run `install.sh --systemd` if it now ships the template — TBD, verify).
 4. `sudo nginx -t && sudo systemctl reload nginx`.
 5. `sudo systemctl restart odoo-semantic-webui`.
-6. Smoke: `curl -sI https://odoo-semantic.viindoo.com:9999/admin/login` → 200; with cookie verify login flow end-to-end from a browser on another network.
+6. Smoke: `curl -sI https://odoo-semantic.viindoo.com/admin/login` → 200; with cookie verify login flow end-to-end from a browser on another network.
 
 ---
 
@@ -295,4 +295,4 @@ Reviewer / next-session implementer: re-verify line numbers in §4 before editin
 - [ ] `docs/deploy.md` §11 snippet fixed (no trailing slash on `proxy_pass`).
 - [ ] ADR-0012 written.
 - [ ] CHANGELOG / README URL table updated.
-- [ ] Manual smoke: from browser on another network, `https://odoo-semantic.viindoo.com:9999/admin/` → login page → POST → dashboard → logout → 302 to login. No 404, no 401.
+- [ ] Manual smoke: from browser on another network, `https://odoo-semantic.viindoo.com/admin/` → login page → POST → dashboard → logout → 302 to login. No 404, no 401.

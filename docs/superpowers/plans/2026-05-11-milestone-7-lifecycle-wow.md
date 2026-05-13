@@ -11,7 +11,7 @@
 
 ## 1. Context
 
-M1–M6 đã ship (xem `TASKS.md`). Sản phẩm chạy production tại `https://odoo-semantic.viindoo.com:9999/`. Push này có 2 mục tiêu đồng thời:
+M1–M6 đã ship (xem `TASKS.md`). Sản phẩm chạy production tại `https://odoo-semantic.viindoo.com/`. Push này có 2 mục tiêu đồng thời:
 
 1. **Close M7 "Lifecycle Wow"** — track ecosystem evolution: module rename GC, embedding cost observability, qualified-name resolver, cross-repo dep tracking, migration tool adoption.
 2. **Go-live officially** — fix critical production-readiness gaps audited 2026-05-11: `setup_indexes()` race trên fresh deploy với `--profile-workers >1`, Neo4j backup/restore docs broken, nginx Option C stale comment, FERNET rotation step trỏ sai file path, missing pre-launch E2E checklist + disaster-recovery runbook, missing MCP HTTP-transport smoke tests che cover M1/M2/M2.5/M4 manual E2E items.
@@ -331,7 +331,7 @@ Sau merge PR vào master, tao (main session, hoặc human user) chạy:
 1. Fresh deploy trên staging VM theo `docs/deploy.md` §1-5 → measure time-to-first-query < 30 min.
 2. Backup → simulated disaster → restore theo `docs/deploy/disaster-recovery.md` → verify all data + indexed state recoverable (RTO ≤ 2h).
 3. Per-tool verify: gọi 14 MCP tools via Claude Code prompt trên production data + signoff.
-4. Auth verify: `curl https://<domain>:9999/mcp` without `X-API-Key` → 401; with valid key → 200.
+4. Auth verify: `curl https://<domain>/mcp` without `X-API-Key` → 401; with valid key → 200.
 5. Rate limit: 121 requests/min → 429.
 6. Web UI session: unauth → `/login`; correct creds → dashboard; logout → cookie cleared.
 7. Recall benchmark (nightly Ollama): VN≥0.75, EN≥0.80 confirmed.

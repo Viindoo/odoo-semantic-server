@@ -109,7 +109,7 @@ info:
   version: "1.0"
   description: Odoo codebase intelligence via MCP protocol
 servers:
-  - url: https://odoo-semantic.viindoo.com:9999
+  - url: https://odoo-semantic.viindoo.com
     description: Production MCP server
 paths:
   /mcp:
@@ -189,4 +189,4 @@ What's the safest place to override action_confirm on sale.order?
 
 ## Self-Host URL
 
-Replace `https://odoo-semantic.viindoo.com:9999` with `http://127.0.0.1:8002` for local testing.
+Replace `https://odoo-semantic.viindoo.com` with `http://127.0.0.1:8002` for local testing.

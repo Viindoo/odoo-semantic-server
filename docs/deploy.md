@@ -705,11 +705,11 @@ add_header X-Content-Type-Options    "nosniff"          always;
 add_header Referrer-Policy           "no-referrer"      always;
 ```
 
-**Port 9999 variant** (dành cho public Viindoo instance — expose thêm cổng khác TLS):
+**Port 443 variant** (dành cho public Viindoo instance — expose thêm cổng khác TLS):
 
 ```nginx
 server {
-    listen 9999 ssl http2;
+    listen 443 ssl http2;
     server_name semantic.example.com;
 
     ssl_certificate     /etc/letsencrypt/live/semantic.example.com/fullchain.pem;
@@ -781,7 +781,7 @@ Request thiếu key hoặc key không active → `401 Unauthorized`. Không có 
 ```
 
 **Phân phát key cho user:**
-- Gửi raw key qua kênh bảo mật (Bitwarden, 1Password — không qua email plain text) cùng URL `https://<your-domain>:9999/install/` — user dán key vào trang đó để nhận snippet đúng cho từng AI tool (không cần copy-paste từ docs)
+- Gửi raw key qua kênh bảo mật (Bitwarden, 1Password — không qua email plain text) cùng URL `https://<your-domain>/install/` — user dán key vào trang đó để nhận snippet đúng cho từng AI tool (không cần copy-paste từ docs)
 - Mỗi user/team nên có key riêng để revoke độc lập nếu cần
 - Deactivate key: Web UI → Deactivate, hoặc CLI: `UPDATE api_keys SET active=false WHERE name='<name>';`
 

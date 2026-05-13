@@ -272,8 +272,8 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 **Outcome:** AI client trả lời được "đổi file Y trong repo A làm vỡ những gì trong repo B", "module EE Z có Viindoo equivalent nào auto-detected"; admin có metrics về embedding cost + auto-cleanup tools.
 
 **D1 — Go-live docs overhaul (shipped 2026-05-11):**
-- [x] `docs/deploy.md`: §2.4 Neo4j backup/restore commands (working docker cp pattern) + §4.1 port 9999 variant + HSTS + security headers + §3.5 service file path unified (canonical `docs/deploy/`) + §7 security checklist expanded (HSTS, port isolation, rate_limit_rpm, webui.env, FERNET secrets, Docker TCP, session auth) + §13 FERNET rotation fixed (path + `systemctl restart`) + §14 Log Rotation section new
-- [x] `docs/deploy/nginx.conf.example`: remove stale "M5 chưa implement" comment; Option C (X-API-Key) promoted primary; port 9999 block + HSTS + security headers added
+- [x] `docs/deploy.md`: §2.4 Neo4j backup/restore commands (working docker cp pattern) + §4.1 port 443 variant + HSTS + security headers + §3.5 service file path unified (canonical `docs/deploy/`) + §7 security checklist expanded (HSTS, port isolation, rate_limit_rpm, webui.env, FERNET secrets, Docker TCP, session auth) + §13 FERNET rotation fixed (path + `systemctl restart`) + §14 Log Rotation section new
+- [x] `docs/deploy/nginx.conf.example`: remove stale "M5 chưa implement" comment; Option C (X-API-Key) promoted primary; port 443 block + HSTS + security headers added
 - [x] `odoo-semantic.conf.example`: `[auth]` section với `rate_limit_rpm = 120` + comment
 - [x] `docs/deploy/logrotate.d/odoo-semantic`: new logrotate config (weekly, rotate 4, compress)
 - [x] `docs/deploy/pre-launch-checklist.md`: new — bilingual, 10 verification sections, 14 MCP tool sign-off table
@@ -358,7 +358,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **Status:** Planning — revised 2026-05-12 (Astro unified decision). Không có code change.
 
-**Intent:** Mở production host `odoo-semantic.viindoo.com:9999` cho anonymous public traffic với landing site + admin UI đầy đủ trên Astro unified. Jinja2 xóa hoàn toàn. Đặt nền cho M9 OAuth/signup.
+**Intent:** Mở production host `odoo-semantic.viindoo.com` cho anonymous public traffic với landing site + admin UI đầy đủ trên Astro unified. Jinja2 xóa hoàn toàn. Đặt nền cho M9 OAuth/signup.
 
 **Outcome:**
 - `GET /` → Astro static landing + React Flow hero animation (5s auto-reveal).
@@ -368,7 +368,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **Architecture target:**
 ```
-nginx (port 9999, prod)
+nginx (port 443, prod)
 ├── /          → Astro server (port 4321): static landing
 ├── /admin/*   → Astro server (port 4321): SSR admin UI (auth-gated)
 ├── /api/*     → FastAPI (port 8003): JSON API only (no Jinja2)

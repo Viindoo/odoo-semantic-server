@@ -19,19 +19,19 @@
 
 ## 1. Intent
 
-Open the production host (`odoo-semantic.viindoo.com:9999`) to **anonymous public traffic** with a polished landing site, while keeping admin operations safely gated. Set foundation for future SaaS productization (monthly subscription, public signup, billing).
+Open the production host (`odoo-semantic.viindoo.com`) to **anonymous public traffic** with a polished landing site, while keeping admin operations safely gated. Set foundation for future SaaS productization (monthly subscription, public signup, billing).
 
 ## 2. Outcome — what changes for the visitor
 
 | URL | Today | After M8 |
 |-----|-------|----------|
-| `https://odoo-semantic.viindoo.com:9999/` | 404 | Public marketing + docs landing page with animated React Flow hero showing inheritance graph (cinematic, auto-revealing) |
-| `https://odoo-semantic.viindoo.com:9999/mcp` | MCP JSON-RPC endpoint (X-API-Key) | unchanged |
-| `https://odoo-semantic.viindoo.com:9999/install/` | MCP install onboarding HTML | unchanged (linked from landing CTA) |
-| `https://odoo-semantic.viindoo.com:9999/health` | MCP `/health` | unchanged |
-| `https://odoo-semantic.viindoo.com:9999/api/feedback*` | Feedback API | unchanged |
-| `https://odoo-semantic.viindoo.com:9999/docs/...` | n/a | Public docs (existing markdown rendered via Astro) |
-| `https://odoo-semantic.viindoo.com:9999/admin/` | n/a (webui is LAN-only) | Web UI proxied; session-auth required |
+| `https://odoo-semantic.viindoo.com/` | 404 | Public marketing + docs landing page with animated React Flow hero showing inheritance graph (cinematic, auto-revealing) |
+| `https://odoo-semantic.viindoo.com/mcp` | MCP JSON-RPC endpoint (X-API-Key) | unchanged |
+| `https://odoo-semantic.viindoo.com/install/` | MCP install onboarding HTML | unchanged (linked from landing CTA) |
+| `https://odoo-semantic.viindoo.com/health` | MCP `/health` | unchanged |
+| `https://odoo-semantic.viindoo.com/api/feedback*` | Feedback API | unchanged |
+| `https://odoo-semantic.viindoo.com/docs/...` | n/a | Public docs (existing markdown rendered via Astro) |
+| `https://odoo-semantic.viindoo.com/admin/` | n/a (webui is LAN-only) | Web UI proxied; session-auth required |
 
 End user benefit: visitors see a real demonstration of the MCP's graph knowledge within 5 seconds of landing, with clear install CTA and docs deep-links.
 
@@ -200,7 +200,7 @@ Position assignment: simple radial-tree heuristic in the script (root at center,
 - Update `.gitignore`: `landing/node_modules/`, `landing/dist/`, `landing/.astro/`.
 - Update `pyproject.toml`: no changes (script uses existing `neo4j` dep).
 - Update CI workflow `.github/workflows/landing-build.yml` (new).
-- Update `README.md`: replace install snippet section with link to `https://odoo-semantic.viindoo.com:9999/`. Keep self-host quickstart in repo README.
+- Update `README.md`: replace install snippet section with link to `https://odoo-semantic.viindoo.com/`. Keep self-host quickstart in repo README.
 
 ---
 
@@ -328,7 +328,7 @@ None at planning time — all toolchain and design decisions locked by user 2026
 
 When all PRs #A through #G are merged AND deployed:
 
-- [ ] `https://odoo-semantic.viindoo.com:9999/` returns 200 with public landing HTML.
+- [ ] `https://odoo-semantic.viindoo.com/` returns 200 with public landing HTML.
 - [ ] Hero animation autoplays within 1s of page load, completes within 5s.
 - [ ] Page Lighthouse mobile perf ≥ 80, accessibility ≥ 95, SEO ≥ 95.
 - [ ] `<noscript>` fallback contains the graph as nested `<ul>` tree.

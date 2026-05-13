@@ -3,6 +3,6 @@
   "plugin": "odoo-semantic",
   "version": "0.2.0",
   "download_url": "https://github.com/Viindoo/odoo-semantic-mcp/releases/download/v0.2.0/odoo-semantic-plugin.zip",
-  "install_url": "https://odoo-semantic.viindoo.com:9999/install/",
+  "install_url": "https://odoo-semantic.viindoo.com/install/",
   "published_at": "2026-05-12"
 }

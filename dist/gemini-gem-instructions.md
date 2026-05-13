@@ -136,7 +136,7 @@ When no data is found, say: "No data indexed for [model/field] in Odoo [version]
 3. Set **Description:** `Odoo codebase intelligence — inheritance, impact analysis, upgrade planning`
 4. Paste the full system instructions block above into the **Instructions** field
 5. Under **Tools**, add MCP integration:
-   - **URL:** `https://odoo-semantic.viindoo.com:9999/mcp` (or your self-hosted URL)
+   - **URL:** `https://odoo-semantic.viindoo.com/mcp` (or your self-hosted URL)
    - **Header:** `X-API-Key: <YOUR_API_KEY>`
 6. Save the Gem
 

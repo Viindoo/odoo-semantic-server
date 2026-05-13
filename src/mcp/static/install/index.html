@@ -86,7 +86,7 @@
     <div class="code-wrap">
       <button class="copy-btn" data-target="code-claude">Copy</button>
       <pre class="code-block" id="code-claude"><code class="language-bash">claude mcp add --transport http --scope user odoo-semantic \
-  https://odoo-semantic.viindoo.com:9999/mcp \
+  https://odoo-semantic.viindoo.com/mcp \
   --header "X-API-Key: YOUR_API_KEY"</code></pre>
     </div>
 
@@ -115,7 +115,7 @@
     <div class="code-wrap">
       <button class="copy-btn" data-target="code-codex">Copy</button>
       <pre class="code-block" id="code-codex"><code class="language-toml">[mcp_servers.odoo-semantic]
-url = "https://odoo-semantic.viindoo.com:9999/mcp"
+url = "https://odoo-semantic.viindoo.com/mcp"
 http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
     </div>
   </div>
@@ -128,7 +128,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
       <pre class="code-block" id="code-gemini"><code class="language-json">{
   "mcpServers": {
     "odoo-semantic": {
-      "httpUrl": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "httpUrl": "https://odoo-semantic.viindoo.com/mcp",
       "headers": { "X-API-Key": "YOUR_API_KEY" },
       "trust": true
     }
@@ -146,14 +146,14 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
   "servers": {
     "odoo-semantic": {
       "type": "http",
-      "url": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "url": "https://odoo-semantic.viindoo.com/mcp",
       "headers": { "X-API-Key": "YOUR_API_KEY" }
     }
   }
 }</code></pre>
     </div>
     <a class="vscode-btn" id="vscode-install-btn"
-       href="vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%3A9999%2Fmcp%22%2C%22headers%22%3A%7B%22X-API-Key%22%3A%22YOUR_API_KEY%22%7D%7D">
+       href="vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%2Fmcp%22%2C%22headers%22%3A%7B%22X-API-Key%22%3A%22YOUR_API_KEY%22%7D%7D">
       &#x25B6; Install in VS Code
     </a>
   </div>
@@ -166,7 +166,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
       <pre class="code-block" id="code-antigravity"><code class="language-json">{
   "mcpServers": {
     "odoo-semantic": {
-      "serverUrl": "https://odoo-semantic.viindoo.com:9999/mcp",
+      "serverUrl": "https://odoo-semantic.viindoo.com/mcp",
       "headers": { "X-API-Key": "YOUR_API_KEY" }
     }
   }
@@ -223,7 +223,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
     var cfg = {
       name: 'odoo-semantic',
       type: 'http',
-      url: 'https://odoo-semantic.viindoo.com:9999/mcp',
+      url: 'https://odoo-semantic.viindoo.com/mcp',
       headers: { 'X-API-Key': apiKey }
     };
     var btn = document.getElementById('vscode-install-btn');

@@ -8,7 +8,7 @@
       "command_name": "server",
       "status": "stable",
       "type": "int",
-      "default": "9999",
+      "default": "443",
       "help": "Smoke test flag (not a real Odoo flag)"
     }
   ]

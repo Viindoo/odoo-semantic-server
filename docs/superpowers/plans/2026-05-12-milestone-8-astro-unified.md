@@ -24,7 +24,7 @@ nginx
 
 ### New (2026-05-12 — Astro unified)
 ```
-nginx (port 9999, prod)
+nginx (port 443, prod)
 ├── /          → Astro server port 4321 (static landing)
 ├── /admin/*   → Astro server port 4321 (SSR admin, auth-gated)
 ├── /api/*     → FastAPI port 8003 (JSON API only, no Jinja2)
@@ -244,7 +244,7 @@ ADR to write: `docs/adr/0012-astro-unified.md` — Astro output:hybrid; islands 
 
 ```nginx
 server {
-    listen 9999 ssl http2;
+    listen 443 ssl http2;
     server_name odoo-semantic.viindoo.com;
     # ... existing ssl_certificate / ssl_protocols ...
 
