@@ -2,25 +2,23 @@
 
 A Claude Code plugin that brings Odoo codebase intelligence into your AI coding workflow. Adds 15 persona-specific skills, 2 orchestration agents, and a setup command powered by the Odoo Semantic MCP server.
 
-## Quick install (2 steps — both required)
+## Quick install (3 steps — all required)
 
-```bash
-claude plugin install dist/odoo-semantic-plugin/
-```
-
-Then inside Claude Code, run:
+Inside Claude Code, run:
 
 ```
+/plugin marketplace add Viindoo/claude-plugins   # one-time, if not already registered
+/plugin install odoo-semantic@viindoo-plugins
 /odoo-semantic:setup
 ```
 
-> ⚠️ **Step 2 is mandatory on Claude Code v2.1.x.** Plugin manifests use a
+> ⚠️ **`/odoo-semantic:setup` is mandatory on Claude Code v2.1.x.** Plugin manifests use a
 > `userConfig` block to collect the API key + MCP URL, but the CLI currently
 > does not prompt for those values at install time
 > ([anthropics/claude-code#39455](https://github.com/anthropics/claude-code/issues/39455),
-> [#39827](https://github.com/anthropics/claude-code/issues/39827)). Without
-> `/odoo-semantic:setup` the plugin loads its skills but the MCP server silently
-> fails — `claude mcp list` will not show `odoo-semantic`.
+> [#39827](https://github.com/anthropics/claude-code/issues/39827)). Without it
+> the plugin loads its skills but the MCP server silently fails — `claude mcp list`
+> will not show `odoo-semantic`.
 >
 > ⚠️ **Restart Claude Code after `/odoo-semantic:setup`** to actually load the
 > MCP tools. Claude Code v2.x does not hot-reload MCP servers within a session
@@ -70,24 +68,9 @@ Interactive setup that:
 
 ## Requirements
 
-- **Odoo Semantic MCP server URL** — self-hosted or use `https://odoo-semantic.viindoo.com:9999/mcp`
-- **API key** — format `osm_<alphanumeric>`, obtain from your server admin or via `/install/` endpoint
+- **Odoo Semantic MCP server URL** — `https://odoo-semantic.viindoo.com:9999/mcp` (provided by your admin)
+- **API key** — format `osm_<alphanumeric>`, obtain from your server admin or via the `/install/` endpoint
 - Claude Code with MCP support (tested on v2.1.140)
-
-## Alternative — skip the plugin, register the MCP server directly
-
-If you only want the 14 MCP tools (`resolve_model`, `impact_analysis`, etc.) and
-don't need the persona-specific skills, register the server without installing
-the plugin:
-
-```bash
-claude mcp add --scope user --transport http odoo-semantic \
-  https://odoo-semantic.viindoo.com:9999/mcp \
-  --header "X-API-Key: osm_yourkey"
-```
-
-This is what `/odoo-semantic:setup` runs under the hood. The plugin adds 15
-skills + 2 orchestration agents on top of the raw MCP server.
 
 ## For server admins — issuing API keys
 
@@ -98,3 +81,11 @@ Run on the server (not the client):
 ```
 
 The raw key prints once (`osm_…`). Distribute over a secure channel.
+
+## For contributors — local dev install
+
+Test changes from a checkout without going through the marketplace:
+
+```bash
+claude --plugin-dir ./dist/odoo-semantic-plugin/
+```
