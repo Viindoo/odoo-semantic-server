@@ -98,6 +98,12 @@ embed thêm Ollama — defer được, xem `docs/deploy/embedder-setup.md`.
 
 ---
 
+## 0.5 System Requirements
+
+<!-- WI2 sẽ fill content từ README §System Requirements (Server) move. Placeholder để link anchor không break. -->
+
+---
+
 ## 1. Prerequisites
 
 | Thứ | Phiên bản | Dùng cho |
@@ -870,6 +876,8 @@ docker compose restart postgres
 
 ## 7. Security Checklist
 
+→ **Pre-launch sign-off + 14 MCP tool verification matrix:** [`docs/deploy/pre-launch-checklist.md`](deploy/pre-launch-checklist.md).
+
 Trước khi expose public internet:
 
 - [ ] `.env` và `odoo-semantic.conf` có quyền `600`, owner `odoo-semantic`
@@ -1111,63 +1119,13 @@ server không cần FERNET_KEY runtime — chỉ Web UI và CLI
 
 ---
 
-## 13. Backup (M5.5)
+## 13. Backup
 
-### Backup PostgreSQL — CLI (M5.5+)
+Daily automated backup cho cả Neo4j + PostgreSQL. Cron schedule + retention policy + restore order chi tiết đầy đủ trong runbook:
 
-```bash
-python -m src.cli backup --output backup_$(date +%Y%m%d).sql
-```
+→ **[`docs/deploy/disaster-recovery.md`](deploy/disaster-recovery.md)** — Backup strategy, restore commands, RTO estimate, validation queries.
 
-Hoặc chạy `pg_dump` trực tiếp:
-
-```bash
-pg_dump -h localhost -U odoo_semantic odoo_semantic > backup_$(date +%Y%m%d).sql
-```
-
-### Backup Neo4j
-
-Dùng Neo4j Browser hoặc cypher-shell:
-```bash
-neo4j-admin database dump neo4j --to-path=/backups/
-```
-
-Hoặc đơn giản hơn: copy thư mục Neo4j data khi service stopped.
-
-### Restore
-
-```bash
-psql -h localhost -U odoo_semantic odoo_semantic < backup_2026XXXX.sql
-```
-
-### FERNET key rotation (M5.5+)
-
-Nếu cần đổi FERNET_KEY (vd: key bị lộ):
-
-```bash
-# 1. Re-encrypt tất cả SSH private key rows trong DB:
-sudo -u odoo-semantic -H bash -c '
-    export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
-    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet \
-      --old-key <FERNET_KEY_cũ> \
-      --new-key <FERNET_KEY_mới>
-'
-
-# 2. Cập nhật FERNET_KEY trong production env file:
-sudo tee /etc/odoo-semantic/webui.env > /dev/null <<EOF
-FERNET_KEY=<FERNET_KEY_mới>
-EOF
-sudo chmod 600 /etc/odoo-semantic/webui.env
-sudo chown odoo-semantic:odoo-semantic /etc/odoo-semantic/webui.env
-
-# 3. Restart Web UI để load key mới:
-sudo systemctl restart odoo-semantic-webui
-sudo systemctl status odoo-semantic-webui   # verify running
-```
-
-> **Quan trọng:** bước 1 phải hoàn tất trước bước 2. Nếu restart trước khi re-encrypt xong → Web UI dùng key mới nhưng DB còn key cũ → không decrypt được SSH keys.
-
-Manual backup via `python -m src.cli backup` shipped in M5.5; automated S3 upload not on roadmap.
+§2.4 trong file này có snippet backup thủ công cho ad-hoc use; DR runbook là canonical cho production cron + restore.
 
 ---
 
@@ -1237,7 +1195,7 @@ SSH auto-clone uses `git clone --branch <branch> --single-branch <url>` (full hi
 
 ---
 
-## 11. Recall Benchmark Setup
+## 16. Recall Benchmark Setup
 
 The M3 `find_examples` tool uses cosine similarity + Neo4j centrality rerank.
 Two test tracks verify ranking quality:
