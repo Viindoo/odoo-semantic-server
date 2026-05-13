@@ -305,7 +305,7 @@ Different roles get the most value from different tools. Quick-start guides:
 | Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](docs/personas/marketer.md) |
 | Sales | `check_module_exists`, `find_examples`, `resolve_model` | [→ Sales Guide](docs/personas/sales.md) |
 
-> **Claude Code users:** Install the [Odoo Semantic plugin](dist/odoo-semantic-plugin/) for persona-specific slash commands.
+> **Claude Code users:** Install the Odoo Semantic plugin via [`/install/`](https://odoo-semantic.viindoo.com:9999/install/) (or `/plugin install odoo-semantic@viindoo-plugins` inside Claude Code) for persona-specific slash commands. After install, run `/odoo-semantic:connect` — required on Claude Code v2.1.x because userConfig auto-prompt is broken upstream ([#39455](https://github.com/anthropics/claude-code/issues/39455)).
 > **Gemini users:** See [Gem instructions](dist/gemini-gem-instructions.md).
 > **ChatGPT users:** See [Custom GPT instructions](dist/openai-gpt-instructions.md).
 > **Cursor users:** See [Cursor rules](dist/cursor-rules.md).

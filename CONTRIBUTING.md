@@ -417,7 +417,7 @@ dist/odoo-semantic-plugin/
 ├── .mcp.json                 # MCP server config: HTTP transport, ${user_config.*} interpolation
 ├── skills/                   # 11 SKILL.md files (one per persona skill)
 ├── agents/                   # odoo-router.md (Haiku) + odoo-upgrade-planner.md (Sonnet)
-├── commands/                 # odoo-setup.md (/odoo-semantic:setup)
+├── commands/                 # connect.md (/odoo-semantic:connect)
 └── README.md
 ```
 

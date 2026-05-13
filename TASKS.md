@@ -311,7 +311,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **Intent:** Make AI clients (Claude Code, Claude.ai, Gemini, ChatGPT) **proactively auto-pick** `odoo-semantic` tools across five personas (CEO, developer, consultant, marketer, sales). Currently descriptions only say WHAT tools do — non-technical users phrasing questions in business language never reach the right tool. Two-track fix: rewrite 14 tool docstrings with `TRIGGER / PREFER / SKIP` clauses (Track 1), and ship a Claude Code plugin bundling MCP config + 11 persona skills + 2 router sub-agents (Track 2). Cross-vendor adapters for Gemini Gems / OpenAI Custom GPT / Cursor sit alongside the plugin.
 
-**Outcome:** Hit-rate ≥ 80% on auto-route across 5 personas × 25 sample queries, measured on Claude Code + Gemini + ChatGPT with variance ≤ 15%. Distributed via Viindoo self-host marketplace; `/odoo-semantic:setup` slash command handles API-key prompt + `~/.claude.json` write + validation.
+**Outcome:** Hit-rate ≥ 80% on auto-route across 5 personas × 25 sample queries, measured on Claude Code + Gemini + ChatGPT with variance ≤ 15%. Distributed via Viindoo self-host marketplace; `/odoo-semantic:connect` slash command handles API-key prompt + `~/.claude.json` write + validation.
 
 **Plans liên quan:**
 - [`docs/superpowers/plans/2026-05-11-milestone-7.5-persona-proactive.md`](docs/superpowers/plans/2026-05-11-milestone-7.5-persona-proactive.md) — Master plan (4 tracks, 40+ WIs, worktree topology, model assignment per WI).
@@ -326,7 +326,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [x] T2.2–T2.12: 11 persona SKILL.md files (CEO ×2, Dev ×3, Consultant ×2, Marketer ×2, Sales ×2)
 - [x] T2.13: `agents/odoo-router.md` — Haiku model, classify-only
 - [x] T2.14: `agents/odoo-upgrade-planner.md` — Sonnet model, multi-step orchestration
-- [x] T2.15: `commands/odoo-setup.md` — `/odoo-semantic:setup` interactive install
+- [x] T2.15: `commands/connect.md` — `/odoo-semantic:connect` interactive install
 - [x] T2.16: `tests/test_skill_disambiguation.py` — 31/31 pass, 100% routing accuracy
 
 **Track 3 — Cross-vendor adapters + persona docs:**
