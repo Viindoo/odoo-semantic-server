@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login — Odoo Semantic MCP Admin</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='4' width='20' height='6' rx='2' fill='%23A659A8'/><rect x='6' y='13' width='20' height='6' rx='2' fill='%237F4282'/><rect x='8' y='22' width='20' height='6' rx='2' fill='%235A2D5D'/><circle cx='3' cy='16' r='2.5' fill='%2300BBCE'/></svg>">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -23,16 +24,24 @@
             width: 100%;
             max-width: 380px;
         }
+        .brand-mark {
+            width: 56px;
+            height: 56px;
+            display: block;
+            margin: 0 auto 0.75rem;
+        }
         .brand {
             font-size: 1.1rem;
             font-weight: 700;
-            color: #a78bfa;
+            color: #7F4282;
             margin-bottom: 0.25rem;
+            text-align: center;
         }
         h1 {
             font-size: 1.35rem;
             margin-bottom: 1.5rem;
             color: #1a1a2e;
+            text-align: center;
         }
         .alert {
             padding: 0.6rem 0.9rem;
@@ -60,13 +69,13 @@
             margin-bottom: 1rem;
         }
         input[type="text"]:focus, input[type="password"]:focus {
-            border-color: #6366f1;
-            box-shadow: 0 0 0 2px rgba(99,102,241,0.15);
+            border-color: #00BBCE;
+            box-shadow: 0 0 0 2px rgba(0,187,206,0.18);
         }
         button[type="submit"] {
             width: 100%;
             padding: 0.6rem;
-            background: #6366f1;
+            background: #00BBCE;
             color: white;
             border: none;
             border-radius: 5px;
@@ -76,11 +85,19 @@
             margin-top: 0.25rem;
             transition: background 0.15s;
         }
-        button[type="submit"]:hover { background: #4f46e5; }
+        button[type="submit"]:hover { background: #009CAB; }
     </style>
 </head>
 <body>
     <div class="login-card">
+        <svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true">
+            <rect x="90"  y="126" width="260" height="36" rx="8" fill="#C5A3C8"/>
+            <rect x="108" y="182" width="260" height="36" rx="8" fill="#9F6BA1"/>
+            <rect x="126" y="238" width="260" height="36" rx="8" fill="#7F4282"/>
+            <rect x="144" y="294" width="260" height="36" rx="8" fill="#5E305F"/>
+            <rect x="162" y="350" width="260" height="36" rx="8" fill="#3F1F4B"/>
+            <circle cx="106" cy="256" r="14" fill="#00BBCE"/>
+        </svg>
         <div class="brand">Odoo Semantic MCP</div>
         <h1>Admin Login</h1>
 
