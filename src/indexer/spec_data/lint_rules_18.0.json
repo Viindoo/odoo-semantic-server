@@ -1,7 +1,7 @@
 {
   "_curate_status": "partial",
   "_generated_at": "2026-05-14",
-  "_note": "Placeholder per ADR-0002 §4. Curate manually or via M6 community contribution.",
+  "_note": "Curated rules always merged with live-extracted pylint-odoo/ESLint rules (per parser_lint_rules.py). Add entries here to ensure rule availability even without odoo_source_root.",
   "rules": [
     {
       "rule_id": "W8201",

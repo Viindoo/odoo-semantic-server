@@ -218,6 +218,63 @@ Unit tests (`make test`) không bị ảnh hưởng bởi Docker và luôn chạ
 
 ---
 
+## Ollama Setup (cho recall benchmark)
+
+Recall benchmark `tests/test_find_examples_recall.py -m ollama` cần Ollama server chạy với model Qwen3 embedding. Setup local (~15 phút, ~4GB disk):
+
+### 1. Install Ollama
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Hoặc theo platform: <https://ollama.com/download>
+
+### 2. Pull embedding model
+
+```bash
+ollama pull qwen3-embedding-q5km
+```
+
+### 3. Start Ollama server (background)
+
+```bash
+ollama serve  # mặc định localhost:11434
+```
+
+Verify:
+
+```bash
+curl http://localhost:11434/api/tags | grep qwen3-embedding
+```
+
+### 4. Set OLLAMA_URL env var (nếu không default)
+
+```bash
+export OLLAMA_URL=http://localhost:11434  # http, KHÔNG https
+```
+
+> **Pitfall (M7.5 P1-A):** Nếu dùng `https://` scheme với self-signed cert → `CERTIFICATE_VERIFY_FAILED`. Production-side fix tại `docs/deploy/m7.5-production-fixes.md`.
+
+### 5. Re-index Viindoo 17.0 with embeddings
+
+```bash
+# KHÔNG dùng --no-embed flag, vì recall benchmark cần embeddings
+python -m src.indexer index-repo --profile viindoo_17
+```
+
+### 6. Run recall benchmark
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/pytest tests/test_find_examples_recall.py -m ollama -v
+```
+
+Gate: VN recall@5 ≥ 0.75 (38/50 hits), EN recall@5 ≥ 0.80 (40/50), gap ≤ 0.05.
+
+Reference (production setup): [`docs/deploy/embedder-setup.md`](docs/deploy/embedder-setup.md).
+
+---
+
 ## Quản Lý Neo4j Thủ Công (Tùy Chọn)
 
 Nếu muốn giữ Neo4j chạy liên tục trong quá trình dev (không cần testcontainers spin up mỗi lần):

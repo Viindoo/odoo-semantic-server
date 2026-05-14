@@ -162,3 +162,51 @@ def test_parse_lint_rules_smoke_real_v17():
     assert "E8502" in rule_ids or any(rid.startswith("E") for rid in rule_ids)
     # ESLint baseline
     assert any(r.kind == "eslint-odoo" for r in rules)
+
+
+def test_translation_format_interpolation_in_static_v16(tmp_path):
+    """W8201 translation-format-interpolation rule present in static v16 catalogue."""
+    # Copy the real spec_data file so the test is self-contained.
+    real_json = Path(__file__).parent.parent / "src/indexer/spec_data/lint_rules_16.0.json"
+    (tmp_path / "lint_rules_16.0.json").write_text(real_json.read_text())
+    rules = parse_lint_rules_for_version(
+        "16.0",
+        odoo_source_root=None,
+        static_data_dir=str(tmp_path),
+    )
+    rule_ids = {r.rule_id for r in rules}
+    assert "W8201" in rule_ids, f"W8201 missing from v16 catalogue; got: {sorted(rule_ids)}"
+    w8201 = next(r for r in rules if r.rule_id == "W8201")
+    assert w8201.kind == "pylint-odoo"
+    assert w8201.severity == "warning"
+    assert "UserError" in (w8201.message or "")
+
+
+def test_translation_format_interpolation_in_static_v17(tmp_path):
+    """W8201 present in static v17 catalogue and merged into parse_lint_rules_for_version result."""
+    real_json = Path(__file__).parent.parent / "src/indexer/spec_data/lint_rules_17.0.json"
+    (tmp_path / "lint_rules_17.0.json").write_text(real_json.read_text())
+    # No odoo_source_root — tests static-only path for v17.
+    rules = parse_lint_rules_for_version(
+        "17.0",
+        odoo_source_root=None,
+        static_data_dir=str(tmp_path),
+    )
+    rule_ids = {r.rule_id for r in rules}
+    assert "W8201" in rule_ids, f"W8201 missing from v17 catalogue; got: {sorted(rule_ids)}"
+    w8201 = next(r for r in rules if r.rule_id == "W8201")
+    assert w8201.odoo_version == "17.0"
+    assert w8201.kind == "pylint-odoo"
+
+
+def test_translation_format_interpolation_in_static_v18(tmp_path):
+    """W8201 present in static v18 catalogue."""
+    real_json = Path(__file__).parent.parent / "src/indexer/spec_data/lint_rules_18.0.json"
+    (tmp_path / "lint_rules_18.0.json").write_text(real_json.read_text())
+    rules = parse_lint_rules_for_version(
+        "18.0",
+        odoo_source_root=None,
+        static_data_dir=str(tmp_path),
+    )
+    rule_ids = {r.rule_id for r in rules}
+    assert "W8201" in rule_ids, f"W8201 missing from v18 catalogue; got: {sorted(rule_ids)}"
