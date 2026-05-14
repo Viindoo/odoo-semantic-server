@@ -184,6 +184,15 @@ and extend the ANN WHERE clause in a future migration.
   (`docs/deploy.md §Post-M8 reindex`) covers the sequence:
   `index odoo_N` → `index standard_profile_N` → `index internal_profile_N`
   for each active version.
+- **Startup warning surfaces unreindexed nodes** (added in the follow-up
+  fix commit): at ASGI startup, the lifespan hook runs a best-effort Cypher
+  query counting nodes whose `profile` property is `NULL`. When the count is
+  > 0, `src.mcp.server` logs a `WARNING`-level message:
+  > "*N* Neo4j nodes have no `profile` property — these are invisible to
+  > profile-scoped MCP queries. Run a full reindex per ADR-0014 to backfill."
+  The warning is wrapped in `try/except` so it cannot block startup. Ops
+  teams should monitor server startup logs after any upgrade and schedule the
+  reindex documented in `docs/deploy.md §Post-M8 reindex`.
 - Each indexer run writes slightly more data to Neo4j (one extra list
   property per node). Measured overhead: negligible (< 5% write time on
   benchmark repos).

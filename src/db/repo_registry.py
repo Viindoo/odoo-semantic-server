@@ -21,33 +21,41 @@ class RepoStore:
     ) -> int:
         """Insert a new profile. Raises ValueError if name already exists.
 
-        When *parent_id* is provided, validates cycle-free + version-match
-        via ``_validate_parent`` before committing.
+        When *parent_id* is provided, the parent's existence and odoo_version
+        match are validated **before** the INSERT so that a failed validation
+        cannot leave an orphan row.  (``checkout()`` sets autocommit=True, so
+        an INSERT that auto-commits before validation would create an orphan.)
         """
+        if parent_id is not None:
+            # Validate parent existence + version match before touching the DB.
+            # The child doesn't exist yet so cycle detection is trivially safe —
+            # only version match and parent existence need to be checked here.
+            with self._pool.checkout() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT odoo_version FROM profiles WHERE id = %s",
+                        (parent_id,),
+                    )
+                    parent_row = cur.fetchone()
+            if parent_row is None:
+                raise ValueError(f"parent profile id={parent_id} not found")
+            parent_version = parent_row[0]
+            if parent_version != odoo_version:
+                raise ValueError(
+                    f"version mismatch: child odoo_version={odoo_version!r} != "
+                    f"parent odoo_version={parent_version!r}"
+                )
+
         try:
             with self._pool.checkout() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO profiles (name, odoo_version, description) "
-                        "VALUES (%s, %s, %s) RETURNING id",
-                        (name, odoo_version, description),
+                        "INSERT INTO profiles "
+                        "(name, odoo_version, description, parent_profile_id) "
+                        "VALUES (%s, %s, %s, %s) RETURNING id",
+                        (name, odoo_version, description, parent_id),
                     )
                     row_id = cur.fetchone()[0]
-
-                if parent_id is not None:
-                    # Validate before persisting — rollback on failure.
-                    try:
-                        self._validate_parent(row_id, parent_id, conn=conn)
-                    except ValueError:
-                        conn.rollback()
-                        raise
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE profiles SET parent_profile_id = %s WHERE id = %s",
-                            (parent_id, row_id),
-                        )
-
-                conn.commit()
             return row_id
         except psycopg2.errors.UniqueViolation as e:
             raise ValueError(f"Profile '{name}' already exists") from e

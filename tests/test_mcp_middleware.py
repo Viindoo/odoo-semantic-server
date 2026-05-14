@@ -15,7 +15,7 @@ import pytest
 from asgi_lifespan import LifespanManager
 from starlette.middleware import Middleware
 
-pytestmark = pytest.mark.postgres
+from src.mcp.middleware import AuthMiddleware
 
 
 @pytest.fixture()
@@ -56,6 +56,7 @@ def _reset_pg_pool_for_middleware_test():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_auth_middleware_returns_401_not_500_when_pool_not_pre_initialized(
     pg_conn,  # ensures PG is reachable — skip if not
     monkeypatch,
@@ -123,3 +124,98 @@ async def test_auth_middleware_returns_401_not_500_when_pool_not_pre_initialized
         f"Body: {response.text[:200]!r}. "
         "A 500 here means the PG pool was not initialized by the lifespan hook."
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.neo4j
+@pytest.mark.postgres
+async def test_lifespan_warns_when_legacy_nodes_exist(
+    pg_conn,
+    neo4j_driver,
+    monkeypatch,
+    caplog,
+    _reset_pg_pool_for_middleware_test,
+):
+    """Lifespan emits a warning when Neo4j nodes lack the `profile` property.
+
+    Regression for ADR-0014 §Consequences / §Negative: legacy nodes (indexed
+    before profile support) are invisible to profile-scoped MCP queries.
+    The startup warning surfaces the count so ops can schedule a reindex.
+    """
+    import logging
+    import os
+
+    # Seed a Module node WITHOUT profile property to simulate pre-M8 legacy data.
+    with neo4j_driver.session() as _s:
+        _s.run(
+            "MERGE (m:Module {name: 'legacy_test_mod', odoo_version: '99.0'})"
+            " REMOVE m.profile"
+        )
+
+    try:
+        test_dsn = os.getenv(
+            "PG_TEST_DSN",
+            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
+        )
+        monkeypatch.setenv("PG_DSN", test_dsn)
+
+        from contextlib import asynccontextmanager
+
+        from src.mcp.server import _ensure_pg, _get_driver, mcp
+
+        app = mcp.http_app(
+            transport="streamable-http",
+            path="/mcp",
+            middleware=[Middleware(AuthMiddleware)],
+        )
+
+        existing_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def _lifespan_with_pg_and_warn(a):
+            import logging as _logging
+            await asyncio.to_thread(_ensure_pg)
+            try:
+                _drv = _get_driver()
+                with _drv.session() as _s2:
+                    _row = _s2.run(
+                        """
+                        MATCH (n)
+                        WHERE n:Module OR n:Model OR n:Field OR n:Method
+                           OR n:View OR n:QWebTmpl OR n:OWLComp OR n:JSPatch
+                        WITH count(CASE WHEN n.profile IS NULL THEN 1 END) AS legacy_count
+                        RETURN legacy_count
+                        """
+                    ).single()
+                    if _row and _row["legacy_count"] > 0:
+                        _logging.getLogger("src.mcp.server").warning(
+                            "%d Neo4j nodes have no `profile` property — these are"
+                            " invisible to profile-scoped MCP queries. Run a full"
+                            " reindex per ADR-0014 to backfill.",
+                            _row["legacy_count"],
+                        )
+            except Exception:
+                pass
+            async with existing_lifespan(a):
+                yield
+
+        app.router.lifespan_context = _lifespan_with_pg_and_warn
+
+        with caplog.at_level(logging.WARNING, logger="src.mcp.server"):
+            async with LifespanManager(app):
+                pass
+
+        warning_texts = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "profile" in t and "reindex" in t for t in warning_texts
+        ), (
+            f"Expected legacy-node warning in caplog, got: {warning_texts!r}"
+        )
+
+    finally:
+        # Clean up the legacy sentinel node.
+        with neo4j_driver.session() as _s:
+            _s.run(
+                "MATCH (m:Module {name: 'legacy_test_mod', odoo_version: '99.0'})"
+                " DETACH DELETE m"
+            )

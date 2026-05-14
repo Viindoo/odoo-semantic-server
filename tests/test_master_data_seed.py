@@ -350,3 +350,55 @@ def test_seed_idempotent_when_parent_already_set(clean_pg):
     assert parent_id_before == parent_id_after, (
         "parent_profile_id must not change on second seed"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix-I: import-time CI guards on _PROFILE_DEFS
+# Pure unit tests — no DB needed, no pytestmark = pytest.mark.postgres.
+# ---------------------------------------------------------------------------
+
+def test_profile_defs_no_cycles():
+    """_PROFILE_DEFS parent chain must be cycle-free.
+
+    For each entry, follow parent_name upward; if any name is revisited,
+    the definition has a cycle.  Uses a chain length limit of
+    len(_PROFILE_DEFS) + 1 to detect infinite loops.
+    """
+    parent_map = {name: parent for name, _v, _d, parent in _PROFILE_DEFS}
+    max_depth = len(_PROFILE_DEFS) + 1
+
+    for name, _v, _d, _parent in _PROFILE_DEFS:
+        visited = set()
+        current = name
+        depth = 0
+        while current is not None and depth <= max_depth:
+            assert current not in visited, (
+                f"Cycle detected in _PROFILE_DEFS starting from {name!r}: "
+                f"visited {visited!r}, hit {current!r} again"
+            )
+            visited.add(current)
+            current = parent_map.get(current)
+            depth += 1
+
+
+def test_profile_defs_version_match():
+    """Each _PROFILE_DEFS entry with a parent must share the parent's odoo_version.
+
+    This mirrors the runtime check in _validate_parent so that a careless
+    edit to _PROFILE_DEFS fails fast in CI rather than silently creating
+    cross-version parent links at deploy time.
+    """
+    version_map = {name: version for name, version, _d, _parent in _PROFILE_DEFS}
+
+    for name, version, _desc, parent_name in _PROFILE_DEFS:
+        if parent_name is None:
+            continue
+        assert parent_name in version_map, (
+            f"_PROFILE_DEFS entry {name!r} references parent {parent_name!r} "
+            f"which is not in _PROFILE_DEFS"
+        )
+        parent_version = version_map[parent_name]
+        assert version == parent_version, (
+            f"Version mismatch in _PROFILE_DEFS: {name!r} has version {version!r} "
+            f"but parent {parent_name!r} has version {parent_version!r}"
+        )

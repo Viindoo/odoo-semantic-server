@@ -2364,6 +2364,29 @@ if __name__ == "__main__":
     async def _lifespan_with_pg(app):
         import asyncio as _asyncio
         await _asyncio.to_thread(_ensure_pg)
+        # Best-effort: warn ops team about legacy Neo4j nodes lacking `profile`
+        # property so they know a full reindex is required (per ADR-0014).
+        try:
+            _drv = _get_driver()
+            with _drv.session() as _s:
+                _row = _s.run(
+                    """
+                    MATCH (n)
+                    WHERE n:Module OR n:Model OR n:Field OR n:Method
+                       OR n:View OR n:QWebTmpl OR n:OWLComp OR n:JSPatch
+                    WITH count(CASE WHEN n.profile IS NULL THEN 1 END) AS legacy_count
+                    RETURN legacy_count
+                    """
+                ).single()
+                if _row and _row["legacy_count"] > 0:
+                    _logging.getLogger(__name__).warning(
+                        "%d Neo4j nodes have no `profile` property — these are invisible"
+                        " to profile-scoped MCP queries. Run a full reindex per ADR-0014"
+                        " to backfill.",
+                        _row["legacy_count"],
+                    )
+        except Exception:
+            pass  # startup warning is best-effort — never block startup
         async with _existing_lifespan(app):
             yield
 

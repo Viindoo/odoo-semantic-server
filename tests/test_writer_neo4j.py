@@ -1858,13 +1858,12 @@ def test_model_node_carries_profile_array(writer, neo4j_driver):
 
 
 def test_profile_array_overwritten_on_reindex(writer, neo4j_driver):
-    """Second write_results call overwrites profile array (no append)."""
+    """Re-indexing the same profile is idempotent (no duplicates); union semantics."""
     first_profiles = ["internal_profile_17"]
-    second_profiles = ["internal_profile_17", "standard_profile_17", "odoo_17"]
-
+    # Re-index with the same profile — should not duplicate entries.
     result = make_parse_result("sale", "sale.order")
     writer.write_results([result], profiles=first_profiles)
-    writer.write_results([result], profiles=second_profiles)
+    writer.write_results([result], profiles=first_profiles)
 
     with neo4j_driver.session() as session:
         rec = session.run(
@@ -1872,7 +1871,65 @@ def test_profile_array_overwritten_on_reindex(writer, neo4j_driver):
             n="sale", v=TEST_VERSION,
         ).single()
 
-    assert rec["p"] == second_profiles  # last write wins
+    # Union semantics: re-indexing the same profile must not duplicate it.
+    assert rec["p"] == ["internal_profile_17"]
+
+
+def test_two_sibling_profiles_union_on_shared_module_node(writer, neo4j_driver):
+    """Profiles A and B both index a Module with the same key; both appear in profile array."""
+    profile_a = ["profile_A"]
+    profile_b = ["profile_B"]
+    result = make_parse_result("sale", "sale.order")
+
+    writer.write_results([result], profiles=profile_a)
+    writer.write_results([result], profiles=profile_b)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert set(rec["p"]) == {"profile_A", "profile_B"}, (
+        f"Expected both profiles in union; got {rec['p']!r}"
+    )
+
+
+def test_third_profile_does_not_evict_prior_sibling(writer, neo4j_driver):
+    """A, B, C all index the same node; all three must appear (no eviction)."""
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=["prof_A"])
+    writer.write_results([result], profiles=["prof_B"])
+    writer.write_results([result], profiles=["prof_C"])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert set(rec["p"]) == {"prof_A", "prof_B", "prof_C"}, (
+        f"Expected all three profiles; got {rec['p']!r}"
+    )
+
+
+def test_same_profile_reindex_does_not_duplicate_entries(writer, neo4j_driver):
+    """Index profile A twice; assert no duplicates in the profile array."""
+    result = make_parse_result("sale", "sale.order")
+    profiles = ["internal_profile_17", "standard_profile_17", "odoo_17"]
+    writer.write_results([result], profiles=profiles)
+    writer.write_results([result], profiles=profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    p = rec["p"]
+    assert len(p) == len(set(p)), (
+        f"Duplicate entries in profile array after re-index: {p!r}"
+    )
 
 
 def test_profile_filter_in_ancestor_query(writer, neo4j_driver):
