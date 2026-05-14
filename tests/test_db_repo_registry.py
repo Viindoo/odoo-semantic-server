@@ -348,3 +348,35 @@ def test_cycle_prevention_three_hop(migrated_pg):
     # Attempting to set A's parent = C would form A→B→C→A cycle
     with pytest.raises(ValueError, match="cycle"):
         repo_store().set_profile_parent(a_id, c_id)
+
+
+def test_add_profile_version_mismatch_no_orphan(migrated_pg):
+    """add_profile with version mismatch raises ValueError; no orphan row created.
+
+    Regression for: checkout() sets autocommit=True so INSERT auto-commits
+    before _validate_parent ran, leaving an orphan row with parent_profile_id=NULL.
+    Fix: validate-before-insert.
+    """
+    parent_id = repo_store().add_profile("odoo_16", "16.0")
+    count_before = len(repo_store().list_profiles())
+
+    with pytest.raises(ValueError, match="version mismatch"):
+        repo_store().add_profile("child_17", "17.0", parent_id=parent_id)
+
+    count_after = len(repo_store().list_profiles())
+    assert count_after == count_before, (
+        f"Orphan row inserted: profile count grew from {count_before} to {count_after}"
+    )
+
+
+def test_add_profile_nonexistent_parent_no_orphan(migrated_pg):
+    """add_profile with nonexistent parent_id raises ValueError; no orphan row created."""
+    count_before = len(repo_store().list_profiles())
+
+    with pytest.raises(ValueError, match="not found"):
+        repo_store().add_profile("child_17", "17.0", parent_id=99999)
+
+    count_after = len(repo_store().list_profiles())
+    assert count_after == count_before, (
+        f"Orphan row inserted: profile count grew from {count_before} to {count_after}"
+    )

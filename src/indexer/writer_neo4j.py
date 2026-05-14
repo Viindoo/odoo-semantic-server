@@ -36,11 +36,13 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
 
     tx.run("""
         MERGE (m:Module {name: $name, odoo_version: $v})
+        ON CREATE SET m.profile = $profiles
+        ON MATCH  SET m.profile =
+            [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
             m.edition = $edition,
             m.viindoo_equivalent_qname = $vvq,
-            m.last_commit_sha = $commit_sha,
-            m.profile = $profiles
+            m.last_commit_sha = $commit_sha
     """, name=module.name, v=module.odoo_version,
          repo=module.repo, path=module.path, version_raw=module.version_raw,
          edition=module.edition,
@@ -68,7 +70,8 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                           m.is_transient = $is_transient,
                           m.had_explicit_name = $had_explicit_name,
                           m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list),
-                          m.profile = $profiles
+                          m.profile =
+                              [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (m)-[:{REL_DEFINED_IN}]->(mod)
         """, name=model.name, v=model.odoo_version,
              module_name=model.module,
@@ -143,9 +146,11 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
                 MERGE (f:Field {name: $name, model: $model_name,
                                module: $mod, odoo_version: $v})
+                ON CREATE SET f.profile = $profiles
+                ON MATCH  SET f.profile =
+                    [x IN coalesce(f.profile, []) WHERE NOT x IN $profiles] + $profiles
                 SET f.ttype = $ttype, f.related = $related, f.compute = $compute,
-                    f.stored = $stored, f.required = $required,
-                    f.profile = $profiles
+                    f.stored = $stored, f.required = $required
                 MERGE (f)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=fld.name, ttype=fld.ttype, related=fld.related,
@@ -157,13 +162,15 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
                 MERGE (mth:Method {name: $name, model: $model_name,
                                    module: $mod, odoo_version: $v})
+                ON CREATE SET mth.profile = $profiles
+                ON MATCH  SET mth.profile =
+                    [x IN coalesce(mth.profile, []) WHERE NOT x IN $profiles] + $profiles
                 SET mth.has_super_call = $has_super_call,
                     mth.decorators = $decorators,
                     mth.convention_kind = $ck,
                     mth.super_safety = $ss,
                     mth.return_required = $rr,
-                    mth.signature = $sig,
-                    mth.profile = $profiles
+                    mth.signature = $sig
                 MERGE (mth)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
@@ -189,11 +196,13 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
     for view in result.views:
         tx.run("""
             MERGE (v:View {xmlid: $xmlid, odoo_version: $ver})
+            ON CREATE SET v.profile = $profiles
+            ON MATCH  SET v.profile =
+                [x IN coalesce(v.profile, []) WHERE NOT x IN $profiles] + $profiles
             SET v.name = $name, v.model = $model, v.module = $module,
                 v.type = $view_type, v.mode = $mode,
                 v.xpaths_exprs = $xpaths_exprs,
-                v.xpaths_positions = $xpaths_positions,
-                v.profile = $profiles
+                v.xpaths_positions = $xpaths_positions
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
              view_type=view.view_type, mode=view.mode,
@@ -241,7 +250,10 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
     for qweb in result.qweb:
         tx.run("""
             MERGE (t:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-            SET t.module = $module, t.profile = $profiles
+            ON CREATE SET t.profile = $profiles
+            ON MATCH  SET t.profile =
+                [x IN coalesce(t.profile, []) WHERE NOT x IN $profiles] + $profiles
+            SET t.module = $module
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module, profiles=profiles)
 
         tx.run(f"""
@@ -280,9 +292,11 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
         tx.run(f"""
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             MERGE (c:OWLComp {{name: $name, module: $module_name, odoo_version: $v}})
+            ON CREATE SET c.profile = $profiles
+            ON MATCH  SET c.profile =
+                [x IN coalesce(c.profile, []) WHERE NOT x IN $profiles] + $profiles
             SET c.template = $template, c.extends = $extends,
-                c.bound_model = $bound_model, c.file_path = $file_path,
-                c.profile = $profiles
+                c.bound_model = $bound_model, c.file_path = $file_path
             MERGE (c)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=comp.module, v=comp.odoo_version,
              name=comp.name, template=comp.template, extends=comp.extends,
@@ -313,7 +327,10 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             MERGE (j:JSPatch {{target: $target, patch_name: $patch_name,
                               module: $module_name, odoo_version: $v}})
-            SET j.era = $era, j.file_path = $file_path, j.profile = $profiles
+            ON CREATE SET j.profile = $profiles
+            ON MATCH  SET j.profile =
+                [x IN coalesce(j.profile, []) WHERE NOT x IN $profiles] + $profiles
+            SET j.era = $era, j.file_path = $file_path
             MERGE (j)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=patch.module, v=patch.odoo_version,
              target=patch.target, patch_name=patch.patch_name,
