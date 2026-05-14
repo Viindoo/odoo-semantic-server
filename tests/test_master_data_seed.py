@@ -278,3 +278,127 @@ def test_seed_repos_uses_viindoo_ssh_url(clean_pg, profile_name, expected_url_su
     assert any(expected_url_substring in url for url in urls), (
         f"{profile_name} missing {expected_url_substring} in {urls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# M8 — Parent FK seed tests
+# ---------------------------------------------------------------------------
+
+def test_seed_sets_parent_fk(clean_pg):
+    """After seed_profiles(), internal_profile_17.parent_profile_id → standard_profile_17."""
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT p_child.parent_profile_id, p_parent.name "
+            "FROM profiles p_child "
+            "JOIN profiles p_parent ON p_parent.id = p_child.parent_profile_id "
+            "WHERE p_child.name = %s",
+            ("internal_profile_17",),
+        )
+        row = cur.fetchone()
+
+    assert row is not None, "internal_profile_17 must have a parent_profile_id set"
+    assert row[1] == "standard_profile_17", (
+        f"expected parent standard_profile_17, got {row[1]}"
+    )
+
+
+def test_seed_parent_chain_standard_to_odoo(clean_pg):
+    """standard_profile_17.parent_profile_id → odoo_17 after seed."""
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT p_parent.name "
+            "FROM profiles p_child "
+            "JOIN profiles p_parent ON p_parent.id = p_child.parent_profile_id "
+            "WHERE p_child.name = %s",
+            ("standard_profile_17",),
+        )
+        row = cur.fetchone()
+
+    assert row is not None
+    assert row[0] == "odoo_17"
+
+
+def test_seed_idempotent_when_parent_already_set(clean_pg):
+    """Second seed_profiles() call is a no-op — does not change parent_profile_id."""
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)
+
+    # Record parent FK before second seed
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT parent_profile_id FROM profiles WHERE name = %s",
+            ("internal_profile_17",),
+        )
+        parent_id_before = cur.fetchone()[0]
+
+    # Second seed
+    seed_profiles(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT parent_profile_id FROM profiles WHERE name = %s",
+            ("internal_profile_17",),
+        )
+        parent_id_after = cur.fetchone()[0]
+
+    assert parent_id_before == parent_id_after, (
+        "parent_profile_id must not change on second seed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix-I: import-time CI guards on _PROFILE_DEFS
+# Pure unit tests — no DB needed, no pytestmark = pytest.mark.postgres.
+# ---------------------------------------------------------------------------
+
+def test_profile_defs_no_cycles():
+    """_PROFILE_DEFS parent chain must be cycle-free.
+
+    For each entry, follow parent_name upward; if any name is revisited,
+    the definition has a cycle.  Uses a chain length limit of
+    len(_PROFILE_DEFS) + 1 to detect infinite loops.
+    """
+    parent_map = {name: parent for name, _v, _d, parent in _PROFILE_DEFS}
+    max_depth = len(_PROFILE_DEFS) + 1
+
+    for name, _v, _d, _parent in _PROFILE_DEFS:
+        visited = set()
+        current = name
+        depth = 0
+        while current is not None and depth <= max_depth:
+            assert current not in visited, (
+                f"Cycle detected in _PROFILE_DEFS starting from {name!r}: "
+                f"visited {visited!r}, hit {current!r} again"
+            )
+            visited.add(current)
+            current = parent_map.get(current)
+            depth += 1
+
+
+def test_profile_defs_version_match():
+    """Each _PROFILE_DEFS entry with a parent must share the parent's odoo_version.
+
+    This mirrors the runtime check in _validate_parent so that a careless
+    edit to _PROFILE_DEFS fails fast in CI rather than silently creating
+    cross-version parent links at deploy time.
+    """
+    version_map = {name: version for name, version, _d, _parent in _PROFILE_DEFS}
+
+    for name, version, _desc, parent_name in _PROFILE_DEFS:
+        if parent_name is None:
+            continue
+        assert parent_name in version_map, (
+            f"_PROFILE_DEFS entry {name!r} references parent {parent_name!r} "
+            f"which is not in _PROFILE_DEFS"
+        )
+        parent_version = version_map[parent_name]
+        assert version == parent_version, (
+            f"Version mismatch in _PROFILE_DEFS: {name!r} has version {version!r} "
+            f"but parent {parent_name!r} has version {parent_version!r}"
+        )

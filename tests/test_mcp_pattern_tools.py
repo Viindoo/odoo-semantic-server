@@ -357,3 +357,92 @@ class TestFindOverridePoint:
             _driver=seeded_method_chain,
         )
         assert "method not found" in result.lower()
+
+
+# --- profile_name filter tests for check_module_exists ---------------------
+
+
+class TestCheckModuleExistsProfileFilter:
+    """Verify profile_name backward compat and isolation for check_module_exists."""
+
+    @pytest.fixture
+    def seeded_module_profiles(self, clean_neo4j):
+        """Seed Module nodes with distinct profiles."""
+        import os
+
+        from src.indexer.models import ModuleInfo, ParseResult
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+        user = os.getenv("NEO4J_TEST_USER", "neo4j")
+        password = os.getenv("NEO4J_TEST_PASSWORD", "password")
+
+        writer = Neo4jWriter(uri=uri, user=user, password=password)
+        writer.setup_indexes()
+
+        # sale module → profile "alpha_cme"
+        mod_alpha = ModuleInfo("cme_alpha_mod", TEST_VERSION, "repo_alpha", "/tmp", [], "")
+        writer.write_results(
+            [ParseResult(module=mod_alpha, models=[])],
+            profiles=["alpha_cme"],
+        )
+
+        # viin_sale module → profile "beta_cme"
+        mod_beta = ModuleInfo("cme_beta_mod", TEST_VERSION, "repo_beta", "/tmp", [], "")
+        writer.write_results(
+            [ParseResult(module=mod_beta, models=[])],
+            profiles=["beta_cme"],
+        )
+
+        writer.close()
+        return uri, user, password
+
+    def test_profile_none_backward_compat(self, seeded_module_profiles):
+        """profile_name=None (default) finds modules from all profiles."""
+        from neo4j import GraphDatabase
+
+        from src.mcp.server import _check_module_exists
+
+        uri, user, password = seeded_module_profiles
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        try:
+            result = _check_module_exists(
+                "cme_alpha_mod", odoo_version=TEST_VERSION, _driver=driver,
+            )
+        finally:
+            driver.close()
+        assert "Indexed:         Yes" in result
+
+    def test_profile_filter_finds_correct_module(self, seeded_module_profiles):
+        """profile_name='alpha_cme' finds the alpha module."""
+        from neo4j import GraphDatabase
+
+        from src.mcp.server import _check_module_exists
+
+        uri, user, password = seeded_module_profiles
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        try:
+            result = _check_module_exists(
+                "cme_alpha_mod", odoo_version=TEST_VERSION,
+                profile_name="alpha_cme", _driver=driver,
+            )
+        finally:
+            driver.close()
+        assert "Indexed:         Yes" in result
+
+    def test_profile_filter_hides_other_profile(self, seeded_module_profiles):
+        """profile_name='alpha_cme' does not find the beta module."""
+        from neo4j import GraphDatabase
+
+        from src.mcp.server import _check_module_exists
+
+        uri, user, password = seeded_module_profiles
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        try:
+            result = _check_module_exists(
+                "cme_beta_mod", odoo_version=TEST_VERSION,
+                profile_name="alpha_cme", _driver=driver,
+            )
+        finally:
+            driver.close()
+        assert "Indexed:         No" in result

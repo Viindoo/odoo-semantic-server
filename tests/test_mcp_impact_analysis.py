@@ -317,3 +317,80 @@ def test_impact_analysis_rejects_unresolved_placeholder_model(clean_neo4j, monke
     assert "not found" in result.lower(), (
         f"__unresolved__ placeholder should be rejected as 'not found', got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# profile_name filter tests for impact_analysis
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def seeded_impact_profiles(clean_neo4j, monkeypatch):
+    """Seed Model nodes with distinct profile arrays for profile_name filter tests."""
+    from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    user = os.getenv("NEO4J_TEST_USER", "neo4j")
+    password = os.getenv("NEO4J_TEST_PASSWORD", "password")
+
+    monkeypatch.setenv("NEO4J_URI", uri)
+    monkeypatch.setenv("NEO4J_USER", user)
+    monkeypatch.setenv("NEO4J_PASSWORD", password)
+
+    writer = Neo4jWriter(uri=uri, user=user, password=password)
+    writer.setup_indexes()
+
+    v = TEST_VERSION
+
+    # model in profile "alpha_impact" only
+    alpha_mod = ModuleInfo("alpha_mod", v, "repo_alpha", "/tmp", [], "")
+    alpha_model = ModelInfo(
+        name="alpha.model", module="alpha_mod", odoo_version=v,
+        fields=[FieldInfo("alpha_field", "char")],
+        methods=[MethodInfo("alpha_method", has_super_call=False)],
+    )
+    writer.write_results(
+        [ParseResult(module=alpha_mod, models=[alpha_model])],
+        profiles=["alpha_impact"],
+    )
+
+    # model in profile "beta_impact" only
+    beta_mod = ModuleInfo("beta_mod", v, "repo_beta", "/tmp", [], "")
+    beta_model = ModelInfo(
+        name="beta.model", module="beta_mod", odoo_version=v,
+        fields=[FieldInfo("beta_field", "char")],
+        methods=[MethodInfo("beta_method", has_super_call=False)],
+    )
+    writer.write_results(
+        [ParseResult(module=beta_mod, models=[beta_model])],
+        profiles=["beta_impact"],
+    )
+
+    writer.close()
+    yield v
+
+
+@pytest.mark.neo4j
+def test_impact_analysis_profile_none_backward_compat(
+    seeded_impact_profiles, monkeypatch,
+):
+    """profile_name=None returns impact without filtering (backward compat)."""
+    v = seeded_impact_profiles
+    _impact_analysis, _ = _import_tools(monkeypatch)
+    # Both models exist — querying alpha.model with no profile filter should find it
+    result = _impact_analysis("model", "alpha.model", v, profile_name=None)
+    assert "impact_analysis" in result
+    assert "not found" not in result.lower()
+
+
+@pytest.mark.neo4j
+def test_impact_analysis_profile_filter_excludes_wrong_profile(
+    seeded_impact_profiles, monkeypatch,
+):
+    """profile_name='beta_impact' causes alpha.model to appear as not found."""
+    v = seeded_impact_profiles
+    _impact_analysis, _ = _import_tools(monkeypatch)
+    result = _impact_analysis("model", "alpha.model", v, profile_name="beta_impact")
+    assert "not found" in result.lower(), (
+        f"alpha.model must not be visible under beta_impact profile, got: {result!r}"
+    )

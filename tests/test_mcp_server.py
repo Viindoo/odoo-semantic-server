@@ -1403,3 +1403,103 @@ def test_resolve_view_extended_by_tree_format(multi_view_tools):
     )
     assert "└─" in ext_lines[-1], f"Last extension must use └─:\n{ext_lines[-1]}"
     assert "├─" in ext_lines[0], f"First extension must use ├─:\n{ext_lines[0]}"
+
+
+# --- profile_name filter tests for resolve_view ---
+
+
+@pytest.fixture(scope="module")
+def seeded_views_with_profile(neo4j_driver):
+    """Seed View nodes with distinct profile arrays for profile_name filter tests."""
+    from src.indexer.models import (
+        ModuleInfo,
+        ViewInfo,
+        ViewParseResult,
+    )
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    PROF_VERSION = "93.0"  # distinct — avoids collision with other suites
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=PROF_VERSION)
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    # Module in profile "alpha_93"; view belongs to alpha_93 profile
+    mod_alpha = ModuleInfo("mod_alpha", PROF_VERSION, "repo_alpha", "/tmp", [], "")
+    view_alpha = ViewInfo(
+        xmlid="mod_alpha.view_alpha_form",
+        name="alpha form",
+        model="alpha.model",
+        module="mod_alpha",
+        odoo_version=PROF_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    writer.write_view_results(
+        [ViewParseResult(module=mod_alpha, views=[view_alpha])],
+        profiles=["alpha_93"],
+    )
+
+    # Module in profile "beta_93"; separate view
+    mod_beta = ModuleInfo("mod_beta", PROF_VERSION, "repo_beta", "/tmp", [], "")
+    view_beta = ViewInfo(
+        xmlid="mod_beta.view_beta_form",
+        name="beta form",
+        model="beta.model",
+        module="mod_beta",
+        odoo_version=PROF_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    writer.write_view_results(
+        [ViewParseResult(module=mod_beta, views=[view_beta])],
+        profiles=["beta_93"],
+    )
+
+    writer.close()
+    yield PROF_VERSION
+
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=PROF_VERSION)
+
+
+@pytest.fixture
+def view_profile_tools(seeded_views_with_profile):
+    """Import _resolve_view for profile filter tests."""
+    ver = seeded_views_with_profile
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.server import _resolve_view
+    return _resolve_view, ver
+
+
+def test_resolve_view_profile_none_returns_all(view_profile_tools):
+    """profile_name=None (default) returns views from all profiles (backward compat)."""
+    resolve_view, ver = view_profile_tools
+    result_alpha = resolve_view("mod_alpha.view_alpha_form", ver, profile_name=None)
+    result_beta = resolve_view("mod_beta.view_beta_form", ver, profile_name=None)
+    assert "mod_alpha.view_alpha_form" in result_alpha
+    assert "mod_beta.view_beta_form" in result_beta
+
+
+def test_resolve_view_profile_filter_isolates(view_profile_tools):
+    """profile_name='beta_93' should find the beta view but not the alpha view."""
+    resolve_view, ver = view_profile_tools
+    # beta view is found under beta_93
+    result = resolve_view("mod_beta.view_beta_form", ver, profile_name="beta_93")
+    assert "mod_beta.view_beta_form" in result
+
+    # alpha view is NOT found under beta_93 (different profile)
+    result_alpha = resolve_view("mod_alpha.view_alpha_form", ver, profile_name="beta_93")
+    assert "not found" in result_alpha.lower()

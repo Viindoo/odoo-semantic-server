@@ -195,3 +195,46 @@ def test_find_examples_handles_embedder_construction_failure(seeded, monkeypatch
     )
     assert "embedder unavailable" in result.lower()
     assert "Found 0 results" in result
+
+
+# --- profile_name filter tests for find_examples ----------------------------
+
+
+def test_find_examples_profile_none_backward_compat(seeded):
+    """profile_name=None (default) returns results same as before — no regression."""
+    pg, neo4j_driver = seeded
+    from src.indexer.embedder import FakeEmbedder
+    from src.mcp.server import _find_examples
+
+    result = _find_examples(
+        "confirm sale", odoo_version=TEST_VERSION, limit=2,
+        profile_name=None,
+        _driver=neo4j_driver, _pg_conn=pg, _embedder=FakeEmbedder(dim=1024),
+    )
+    # Should still return results — seeded modules have no profile array set,
+    # so NULL filter passes through all nodes (backward compat).
+    assert "find_examples:" in result
+    assert TEST_VERSION in result
+
+
+def test_find_examples_profile_filter_neo4j_rerank(seeded, clean_neo4j):
+    """profile_name='profx' applied to Neo4j Module rerank — modules outside profx
+    get zero dependents score (not boosted). The pgvector ANN step is unaffected.
+
+    This test verifies the filter does not crash and returns a well-formed response.
+    Since the seeded modules carry no .profile array, they score 0 dependents under
+    any non-None profile filter — but the raw cosine results still surface.
+    """
+    pg, neo4j_driver = seeded
+    from src.indexer.embedder import FakeEmbedder
+    from src.mcp.server import _find_examples
+
+    result = _find_examples(
+        "confirm sale", odoo_version=TEST_VERSION, limit=2,
+        profile_name="profx_nonexistent",
+        _driver=neo4j_driver, _pg_conn=pg, _embedder=FakeEmbedder(dim=1024),
+    )
+    # Must return a valid header — not an error or exception
+    assert "find_examples:" in result
+    # pgvector path is unfiltered — results may still appear (limitation documented in ADR-0014 D6)
+    assert "Found" in result
