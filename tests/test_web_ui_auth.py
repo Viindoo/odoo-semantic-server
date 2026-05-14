@@ -1,11 +1,11 @@
 # tests/test_web_ui_auth.py
-"""Tests for Web UI session-based authentication (M7 W16).
+"""Tests for Web UI session-based authentication (M8 W1 — pure JSON API).
 
-Business intent: An anonymous visitor to the admin Web UI gets redirected to /login.
+Business intent: An anonymous visitor to the admin Web UI gets 401 JSON.
 Logging in with correct credentials grants access; wrong password is rejected;
 logging out clears access.
 
-All 6 tests use httpx.AsyncClient with ASGI transport — no real server or DB required.
+All tests use httpx.AsyncClient with ASGI transport — no real server or DB required.
 The webui_users table is seeded directly via a fake dependency override.
 """
 
@@ -76,10 +76,10 @@ def _restore_patches(app):
 # ---------------------------------------------------------------------------
 
 class TestUnauthRedirect:
-    """Test 1 — unauthenticated request is redirected to /login."""
+    """Test 1 — unauthenticated request gets 401 JSON."""
 
     @pytest.mark.asyncio
-    async def test_unauth_redirects_to_login(self):
+    async def test_unauth_returns_401_json(self):
         import httpx
 
         app = _make_app()
@@ -89,14 +89,13 @@ class TestUnauthRedirect:
                 base_url="https://test",
                 follow_redirects=False,
             ) as client:
-                resp = await client.get("/repos")
+                resp = await client.get("/api/repos/profiles")
         finally:
             _restore_patches(app)
 
-        assert resp.status_code == 302
-        location = resp.headers["location"]
-        assert "/login" in location
-        assert "next" in location
+        assert resp.status_code == 401
+        body = resp.json()
+        assert "not_authenticated" in body.get("error", "") or "not_authenticated" in str(body)
 
 
 class TestLoginCorrectCredentials:
@@ -114,28 +113,29 @@ class TestLoginCorrectCredentials:
                 follow_redirects=False,
             ) as client:
                 resp = await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "secret123", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "secret123"},
                 )
-                assert resp.status_code == 302
+                assert resp.status_code == 200
+                body = resp.json()
+                assert body.get("ok") is True
                 # A Set-Cookie header should be present
                 assert "osm_session" in resp.headers.get("set-cookie", "")
 
-                # Follow the redirect with the session cookie preserved
+                # Follow up with a protected request using session cookie
                 cookies = client.cookies
-                resp2 = await client.get("/", cookies=cookies)
+                resp2 = await client.get("/api/dashboard/stats", cookies=cookies)
         finally:
             _restore_patches(app)
 
-        # Dashboard returns 200 (or redirect to login if session not carried — fail if so)
         assert resp2.status_code == 200
 
 
 class TestLoginWrongPassword:
-    """Test 3 — wrong password results in redirect to /login?error=... with no session cookie."""
+    """Test 3 — wrong password results in 401 JSON with no session cookie."""
 
     @pytest.mark.asyncio
-    async def test_login_wrong_password_returns_error(self):
+    async def test_login_wrong_password_returns_401(self):
         import httpx
 
         app = _make_app(seed_users={"admin": "correct"})
@@ -146,23 +146,21 @@ class TestLoginWrongPassword:
                 follow_redirects=False,
             ) as client:
                 resp = await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "WRONG", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "WRONG"},
                 )
         finally:
             _restore_patches(app)
 
-        # Should redirect back to login with error param, NOT set a session cookie
-        assert resp.status_code == 302
-        location = resp.headers.get("location", "")
-        assert "error=invalid_credentials" in location
+        assert resp.status_code == 401
+        body = resp.json()
+        assert "invalid_credentials" in body.get("error", "")
         set_cookie = resp.headers.get("set-cookie", "")
-        # If a session cookie is set it must not carry a username
         assert "osm_session" not in set_cookie or "username" not in set_cookie
 
 
 class TestLogoutClearsSession:
-    """Test 4 — after logout, accessing a protected route redirects to /login."""
+    """Test 4 — after logout, accessing a protected route returns 401."""
 
     @pytest.mark.asyncio
     async def test_logout_clears_session(self):
@@ -177,32 +175,32 @@ class TestLogoutClearsSession:
             ) as client:
                 # Log in
                 await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "pw", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "pw"},
                 )
                 # Confirm protected page accessible
-                resp_before = await client.get("/")
+                resp_before = await client.get("/api/dashboard/stats")
                 assert resp_before.status_code == 200
 
                 # Log out
-                resp_logout = await client.get("/logout")
-                assert resp_logout.status_code == 302
-                assert "/login" in resp_logout.headers.get("location", "")
+                resp_logout = await client.post("/api/auth/logout")
+                assert resp_logout.status_code == 200
+                body = resp_logout.json()
+                assert body.get("ok") is True
 
-                # Protected page should now redirect to login
-                resp_after = await client.get("/")
+                # Protected page should now return 401
+                resp_after = await client.get("/api/dashboard/stats")
         finally:
             _restore_patches(app)
 
-        assert resp_after.status_code == 302
-        assert "/login" in resp_after.headers.get("location", "")
+        assert resp_after.status_code == 401
 
 
 class TestExemptPaths:
-    """Test 5 — /login and /static/* are accessible without auth."""
+    """Test 5 — /api/auth/* paths are accessible without auth."""
 
     @pytest.mark.asyncio
-    async def test_login_page_exempt(self):
+    async def test_login_endpoint_exempt(self):
         import httpx
 
         app = _make_app()
@@ -212,19 +210,19 @@ class TestExemptPaths:
                 base_url="https://test",
                 follow_redirects=False,
             ) as client:
-                resp = await client.get("/login")
+                resp = await client.post(
+                    "/api/auth/login",
+                    json={"username": "noexist", "password": "nope"},
+                )
         finally:
             _restore_patches(app)
 
-        # /login itself should not redirect to /login (infinite loop)
-        assert resp.status_code == 200
+        # Should get 401 (bad creds), not looped or blocked
+        assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_static_path_exempt_from_redirect(self):
-        """Requests to /static/* must not be redirect-looped (middleware must exempt them).
-
-        Even if the file doesn't exist (404), the middleware must not issue a 302.
-        """
+    async def test_verify_endpoint_returns_401_when_no_session(self):
+        """GET /api/auth/verify returns 401 when no session present."""
         import httpx
 
         app = _make_app()
@@ -234,12 +232,13 @@ class TestExemptPaths:
                 base_url="https://test",
                 follow_redirects=False,
             ) as client:
-                resp = await client.get("/static/nonexistent.css")
+                resp = await client.get("/api/auth/verify")
         finally:
             _restore_patches(app)
 
-        # May be 404 (file not found) but must NOT be 302 to /login
-        assert resp.status_code != 302
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body.get("ok") is False
 
 
 class TestSessionExpiry:
@@ -258,24 +257,23 @@ class TestSessionExpiry:
             ) as client:
                 # Log in to get a valid session
                 await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "pw", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "pw"},
                 )
 
                 # Confirm currently accessible
-                resp_now = await client.get("/")
+                resp_now = await client.get("/api/dashboard/stats")
                 assert resp_now.status_code == 200
 
                 # Advance time past TTL (8h + 1s)
                 future_time = time.time() + SESSION_TTL_SECONDS + 1
                 with unittest.mock.patch("src.web_ui.middleware.time") as mock_time:
                     mock_time.time.return_value = future_time
-                    resp_expired = await client.get("/")
+                    resp_expired = await client.get("/api/dashboard/stats")
         finally:
             _restore_patches(app)
 
-        assert resp_expired.status_code == 302
-        assert "/login" in resp_expired.headers.get("location", "")
+        assert resp_expired.status_code == 401
 
     @pytest.mark.asyncio
     async def test_session_invalid_when_session_at_in_future(self):
@@ -296,11 +294,11 @@ class TestSessionExpiry:
             ) as client:
                 # Log in to get a valid session
                 await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "pw", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "pw"},
                 )
                 # Confirm accessible
-                resp_valid = await client.get("/")
+                resp_valid = await client.get("/api/dashboard/stats")
                 assert resp_valid.status_code == 200
 
                 # Simulate clock going BACK (session_at appears to be in the future)
@@ -308,16 +306,43 @@ class TestSessionExpiry:
                 past_time = time.time() - 10000  # current time looks 10000s ago
                 with unittest.mock.patch("src.web_ui.middleware.time") as mock_time:
                     mock_time.time.return_value = past_time
-                    resp_future = await client.get("/")
+                    resp_future = await client.get("/api/dashboard/stats")
         finally:
             _restore_patches(app)
 
-        # session_at in future → age < 0 → must reject (302 to /login)
-        assert resp_future.status_code == 302, (
-            f"Expected 302 when session_at is in the future (age < 0); "
+        # session_at in future → age < 0 → must reject (401)
+        assert resp_future.status_code == 401, (
+            f"Expected 401 when session_at is in the future (age < 0); "
             f"got {resp_future.status_code}"
         )
-        assert "/login" in resp_future.headers.get("location", "")
+
+
+class TestVerifyEndpoint:
+    """Test GET /api/auth/verify — Astro session proxy."""
+
+    @pytest.mark.asyncio
+    async def test_verify_returns_200_when_session_valid(self):
+        import httpx
+
+        app = _make_app(seed_users={"admin": "pw"})
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="https://test",
+                follow_redirects=False,
+            ) as client:
+                await client.post(
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "pw"},
+                )
+                resp = await client.get("/api/auth/verify")
+        finally:
+            _restore_patches(app)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("username") == "admin"
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +372,7 @@ class TestAuthHelpers:
 # ---------------------------------------------------------------------------
 
 class TestLoginRateLimit:
-    """Finding #17 (MED): POST /login returns 429 after too many failed attempts from same IP."""
+    """Finding #17 (MED): POST /api/auth/login returns 429 after too many failed attempts."""
 
     @pytest.mark.asyncio
     async def test_rate_limit_returns_429_after_threshold(self):
@@ -366,20 +391,20 @@ class TestLoginRateLimit:
                 base_url="https://test",
                 follow_redirects=False,
             ) as client:
-                # 5 failed logins — should each 302 (not rate-limited yet)
+                # 5 failed logins — should each 401 (not rate-limited yet)
                 for i in range(5):
                     resp = await client.post(
-                        "/login",
-                        data={"username": "admin", "password": "WRONG", "next": "/"},
+                        "/api/auth/login",
+                        json={"username": "admin", "password": "WRONG"},
                     )
-                    assert resp.status_code == 302, (
-                        f"Attempt {i+1}: expected 302, got {resp.status_code}"
+                    assert resp.status_code == 401, (
+                        f"Attempt {i+1}: expected 401, got {resp.status_code}"
                     )
 
                 # 6th attempt — should be 429
                 resp_limited = await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "WRONG", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "WRONG"},
                 )
         finally:
             login_mod._LOGIN_FAILURES.clear()
@@ -410,25 +435,25 @@ class TestLoginRateLimit:
                 # 4 failed attempts (just under threshold)
                 for _ in range(4):
                     await client.post(
-                        "/login",
-                        data={"username": "admin", "password": "WRONG", "next": "/"},
+                        "/api/auth/login",
+                        json={"username": "admin", "password": "WRONG"},
                     )
 
                 # Successful login — must clear counter
                 resp_ok = await client.post(
-                    "/login",
-                    data={"username": "admin", "password": "correct", "next": "/"},
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "correct"},
                 )
-                assert resp_ok.status_code == 302
+                assert resp_ok.status_code == 200
 
                 # Now fail 4 more times — should still be under threshold (counter cleared)
                 for i in range(4):
                     resp = await client.post(
-                        "/login",
-                        data={"username": "admin", "password": "WRONG", "next": "/"},
+                        "/api/auth/login",
+                        json={"username": "admin", "password": "WRONG"},
                     )
-                    assert resp.status_code == 302, (
-                        f"Post-success attempt {i+1}: expected 302 not 429 "
+                    assert resp.status_code == 401, (
+                        f"Post-success attempt {i+1}: expected 401 not 429 "
                         f"(counter should have been cleared); got {resp.status_code}"
                     )
         finally:

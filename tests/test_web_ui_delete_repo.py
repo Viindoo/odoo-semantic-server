@@ -1,13 +1,13 @@
 # tests/test_web_ui_delete_repo.py
-"""Integration tests for POST /repos/repos/{id}/delete (M8 W2).
+"""Integration tests for DELETE /api/repos/repos/{id} (M8 W1 pure JSON API).
 
 Tests cover:
 - Happy path: 2 repos under same profile → delete repo_A → repo_A gone, repo_B intact.
 - Cross-store: Neo4j Module nodes for repo_A gone; repo_B Module nodes intact.
 - pgvector embeddings for repo_A gone; repo_B embeddings intact.
 - Multi-profile-same-version: deleting repo of profile_1 leaves profile_2 data intact.
-- Guard: indexer running for profile → 303 with flash, repo NOT deleted.
-- 404-ish redirect when repo_id not found.
+- Guard: indexer running for profile → 409 JSON, repo NOT deleted.
+- 404 JSON when repo_id not found.
 """
 import unittest.mock as mock
 
@@ -24,31 +24,6 @@ pytestmark = [pytest.mark.postgres, pytest.mark.neo4j]
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-class _NoCloseConn:
-    """Proxy psycopg2 connection but no-op close() to keep session conn alive."""
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    def close(self):
-        pass
-
-    def cursor(self, *args, **kwargs):
-        return self._conn.cursor(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-
-def _make_conn_factory(pg_conn):
-    wrapped = _NoCloseConn(pg_conn)
-
-    def factory():
-        return wrapped
-
-    return factory
-
 
 def _async_client(app):
     transport = httpx.ASGITransport(app=app)
@@ -139,7 +114,7 @@ def _count_embeddings(pg_conn, module_name: str, version: str) -> int:
 class TestDeleteRepoHappyPath:
     @pytest.mark.asyncio
     async def test_delete_repo_removes_pg_row_leaves_sibling(self, migrated_pg, clean_neo4j):
-        """POST delete repo_A → repo_A gone from PG; sibling repo_B intact."""
+        """DELETE repo_A → repo_A gone from PG, 200 ok JSON; sibling repo_B intact."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="parity_test_99", odoo_version=TEST_VERSION)
@@ -163,15 +138,11 @@ class TestDeleteRepoHappyPath:
             return_value=0,
         ):
             async with _async_client(app) as client:
-                resp = await client.post(
-                    f"/repos/repos/{rid_a}/delete",
-                    follow_redirects=False,
-                )
+                resp = await client.delete(f"/api/repos/repos/{rid_a}")
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
-        assert "deleted" in location.lower()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
 
         repos = repo_store().get_repos_for_profile("parity_test_99")
         repo_ids = [r["id"] for r in repos]
@@ -213,21 +184,14 @@ class TestDeleteRepoHappyPath:
             return_value=0,
         ):
             async with _async_client(app) as client:
-                await client.post(
-                    f"/repos/repos/{rid_a}/delete",
-                    follow_redirects=False,
-                )
+                await client.delete(f"/api/repos/repos/{rid_a}")
 
         assert _count_neo4j_modules(driver, basename_a, TEST_VERSION) == 0
         assert _count_neo4j_modules(driver, basename_b, TEST_VERSION) == 1
 
     @pytest.mark.asyncio
     async def test_delete_repo_cleans_embeddings_scoped(self, migrated_pg, clean_neo4j):
-        """Delete repo_A → its embeddings gone; repo_B embeddings intact.
-
-        Seeds real Neo4j Module nodes so _collect_module_names_for_repos resolves
-        the correct Odoo module names (not the repo basenames — that was the bug).
-        """
+        """Delete repo_A → its embeddings gone; repo_B embeddings intact."""
         from src.db.pg import repo_store
 
         basename_a = f"emb_repo_a_{TEST_VERSION}"
@@ -260,10 +224,7 @@ class TestDeleteRepoHappyPath:
 
         app = create_app()
         async with _async_client(app) as client:
-            await client.post(
-                f"/repos/repos/{rid_a}/delete",
-                follow_redirects=False,
-            )
+            await client.delete(f"/api/repos/repos/{rid_a}")
 
         post_a = _count_embeddings(migrated_pg, module_a, TEST_VERSION)
         post_b = _count_embeddings(migrated_pg, module_b, TEST_VERSION)
@@ -274,8 +235,8 @@ class TestDeleteRepoHappyPath:
             assert post_b == pre_b  # repo_B untouched
 
     @pytest.mark.asyncio
-    async def test_delete_repo_flash_contains_basename(self, migrated_pg, clean_neo4j):
-        """Flash message must mention the repo basename."""
+    async def test_delete_repo_response_contains_basename(self, migrated_pg, clean_neo4j):
+        """Response body contains the basename and counts."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="flash_repo_99", odoo_version=TEST_VERSION)
@@ -294,13 +255,14 @@ class TestDeleteRepoHappyPath:
             return_value=2,
         ):
             async with _async_client(app) as client:
-                resp = await client.post(
-                    f"/repos/repos/{rid}/delete",
-                    follow_redirects=False,
-                )
+                resp = await client.delete(f"/api/repos/repos/{rid}")
 
-        location = resp.headers["location"]
-        assert "my_flash_repo_99" in location or "deleted" in location.lower()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("basename") == "my_flash_repo_99"
+        assert body.get("neo4j_modules") == 1
+        assert body.get("embeddings") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -312,10 +274,7 @@ class TestDeleteRepoMultiProfileSameVersion:
     async def test_delete_repo_does_not_affect_other_profile_same_version(
         self, migrated_pg, clean_neo4j
     ):
-        """Delete repo under profile_1 (v99.0) → profile_2 (same v99.0) data intact.
-
-        This proves scoping is by (basename, version) not version-wide.
-        """
+        """Delete repo under profile_1 (v99.0) → profile_2 (same v99.0) data intact."""
         from src.db.pg import repo_store
 
         pid1 = repo_store().add_profile(name="profile1_multitest_99", odoo_version=TEST_VERSION)
@@ -346,10 +305,7 @@ class TestDeleteRepoMultiProfileSameVersion:
 
         app = create_app()
         async with _async_client(app) as client:
-            await client.post(
-                f"/repos/repos/{rid1}/delete",
-                follow_redirects=False,
-            )
+            await client.delete(f"/api/repos/repos/{rid1}")
 
         # profile_1 repo gone from PG
         repos_p1 = repo_store().get_repos_for_profile("profile1_multitest_99")
@@ -371,7 +327,7 @@ class TestDeleteRepoMultiProfileSameVersion:
 class TestDeleteRepoGuard:
     @pytest.mark.asyncio
     async def test_blocks_when_indexer_running(self, migrated_pg, clean_neo4j):
-        """Guard: indexer running for profile → 303 with flash, repo NOT deleted."""
+        """Guard: indexer running for profile → 409 JSON, repo NOT deleted."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="guarded_repo_99", odoo_version=TEST_VERSION)
@@ -387,31 +343,25 @@ class TestDeleteRepoGuard:
             return_value=True,
         ):
             async with _async_client(app) as client:
-                resp = await client.post(
-                    f"/repos/repos/{rid}/delete",
-                    follow_redirects=False,
-                )
+                resp = await client.delete(f"/api/repos/repos/{rid}")
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
-        assert "indexer" in location.lower() or "running" in location.lower()
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "error" in body
+        assert "indexer" in body["error"].lower() or "running" in body["error"].lower()
 
         # Repo must still exist
         repos = repo_store().get_repos_for_profile("guarded_repo_99")
         assert any(r["id"] == rid for r in repos)
 
     @pytest.mark.asyncio
-    async def test_redirects_with_flash_for_missing_repo(self, migrated_pg, clean_neo4j):
-        """POST with non-existent repo_id → 303 with 'not found' flash."""
+    async def test_returns_404_for_missing_repo(self, migrated_pg, clean_neo4j):
+        """DELETE with non-existent repo_id → 404 JSON."""
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.post(
-                "/repos/repos/999999/delete",
-                follow_redirects=False,
-            )
+            resp = await client.delete("/api/repos/repos/999999")
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
-        assert "not+found" in location or "not found" in location.lower()
+        assert resp.status_code == 404
+        body = resp.json()
+        assert "error" in body
+        assert "not found" in body["error"].lower()

@@ -4,10 +4,45 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-14 — M8 "Public Wow"
+
+### Breaking Changes
+
+- **Web UI rewritten as Astro SSR (port 4321 default).** FastAPI dropped all Jinja2 templates and now returns JSON only (port 8003).
+  - Deployers must add `odoo-semantic-astro.service` (systemd unit provided at `docs/deploy/odoo-semantic-astro.service`) and run `pnpm build` in `site/` before starting.
+  - Nginx config: use `docs/deploy/nginx-m8.conf` — routes `/api/*` → 8003, `/admin/*` + `/` → 4321, `/mcp` → 8002.
+  - Direct browser requests to `/api/*` now return `Content-Type: application/json` — no HTML pages served from FastAPI.
+
 ### Added
-- Auto-seed 26 master data profiles via `python -m src.db.migrate`: Odoo CE v8–v19, Standard Viindoo v8–v19 (delta: `acme_addons`, `acme_enterprise` v10+, `branding` v13+), and Viindoo Internal v17/v18 (delta: `acme_infra`, `acme_infra_common`, `themes` v17-only, `acme_api`). Total 48 repos seeded with `clone_status='manual'`. Delta-only ownership — PostgreSQL `UNIQUE (url, branch)` forces each (url, branch) into one profile, so each tier owns only repos absent from the lower tier; admins index multiple profiles to get the full bundle. URL convention: `git@github.com:Viindoo/<repo>.git`.
-- New CLI: `python -m src.manager seed-master-data` for idempotent re-seed; supports `--profiles-only` and `--reset` (destructive) flags.
-- Upgrade runbook: `docs/deploy/master-data-upgrade.md` for production deployments — covers backup, verify, edge cases, and rollback.
+
+- **Astro 5.x SSR server** (`output: 'server'`, Tailwind CSS, pnpm) in `site/`
+- **6 admin pages** SSR-rendered by Astro: login, dashboard, repos, api-keys, ssh-keys, operations
+- **AdminLayout** Astro component + Astro middleware session auth (`GET /api/auth/verify` → 401 → redirect `/admin/login`)
+- **Landing page** with React Flow `GraphAnimation` island + cinematic 5-frame hero reveal; baked graph snapshot (`site/public/graph-snapshot.json` from `scripts/dump_graph_snippet.py`)
+- **Public install page** at `/install/` — Astro SSR, API-key onboarding flow
+- **Pricing placeholder page** at `/pricing/` — teaser for M9 SaaS tiers
+- **68 browser tests** (Playwright) split across `tests/browser/admin/` (auth-gated flows) + `tests/browser/public/` (landing + install page); 2 parallel CI jobs (`browser-admin`, `browser-public`)
+- **ADR-0014** Astro unified UI architecture decision
+- **ADR-0015** FastAPI pure JSON API policy
+- **ADR-0016** Profile hierarchy + Neo4j Option Y isolation (`parent_profile_id` FK, ancestor array, cycle-free validation) — renumbered from draft 0014 to avoid clash with Astro ADR
+- **`_json_safe` helper** (`src/web_ui/utils.py`) for safe `datetime` → ISO string conversion in `JSONResponse` — prevents 500 errors on datetime-bearing objects
+- **`/api/jobs/{id}/status` endpoint** extracted to dedicated jobs router (`src/web_ui/routers/jobs.py`)
+- **CI Node 20** setup via `actions/setup-node@v4` + `pnpm/action-setup@v3`; `pnpm run check` (TypeScript + Astro type-check) added as required CI gate
+- **Auto-seed 26 master data profiles** via `python -m src.db.migrate`: Odoo CE v8–v19, Standard Viindoo v8–v19, Viindoo Internal v17/v18 (48 repos total, `clone_status='manual'`)
+- **CLI `seed-master-data`**: idempotent re-seed with `--profiles-only` / `--reset` flags
+- **Upgrade runbook** `docs/deploy/master-data-upgrade.md`
+
+### Removed
+
+- All Jinja2 templates (`src/web_ui/templates/*.html`)
+- `jinja2` dependency from `pyproject.toml`
+- Direct HTML rendering from any FastAPI route
+
+### Fixed (during M8)
+
+- **Astro 5.x `checkOrigin` security:** all mutation fetches in Astro pages now send `Content-Type: application/json` (Astro 5 rejects requests without this header for CSRF protection)
+- **Session datetime serialization 500** in `/api/dashboard/stats` and SSH key listing — root cause: `datetime` objects not JSON-serializable in `JSONResponse`; fixed with `_json_safe` wrapper
+- **Logout endpoint missing** — `POST /api/auth/logout` added; Astro logout page wired correctly
 
 ## [0.2.0] — 2026-05-12
 

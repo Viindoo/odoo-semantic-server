@@ -236,5 +236,5 @@ def test_find_examples_profile_filter_neo4j_rerank(seeded, clean_neo4j):
     )
     # Must return a valid header — not an error or exception
     assert "find_examples:" in result
-    # pgvector path is unfiltered — results may still appear (limitation documented in ADR-0014 D6)
+    # pgvector path is unfiltered — results may still appear (limitation documented in ADR-0016 D6)
     assert "Found" in result

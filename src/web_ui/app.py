@@ -1,22 +1,18 @@
 # src/web_ui/app.py
-"""FastAPI Web UI application — admin interface, port 8003, localhost-only."""
+"""FastAPI Web UI application — pure JSON API, port 8003, localhost-only (M8 W1)."""
 
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 _logger = logging.getLogger(__name__)
-
-TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 @asynccontextmanager
@@ -54,17 +50,14 @@ class _LoopbackOnlyMiddleware(BaseHTTPMiddleware):
 
 
 def create_app() -> FastAPI:
-    """Create and configure the Web UI FastAPI app."""
+    """Create and configure the Web UI FastAPI app (pure JSON API)."""
     app = FastAPI(
         title="Odoo Semantic MCP — Admin",
-        description="Admin interface for managing profiles, repos, API keys, and SSH keys.",
+        description="Admin JSON API for managing profiles, repos, API keys, and SSH keys.",
         docs_url=None,  # Disable OpenAPI docs in admin UI
         redoc_url=None,
         lifespan=_lifespan,
     )
-
-    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    app.state.templates = templates
 
     # Middleware ordering (FastAPI/Starlette add_middleware is LIFO):
     # Last added = outermost (runs first in request chain).
@@ -97,7 +90,7 @@ def create_app() -> FastAPI:
     # Outermost: loopback IP check (added last → runs first)
     app.add_middleware(_LoopbackOnlyMiddleware)
 
-    # Login/logout routes (exempt from auth by AuthRequiredMiddleware)
+    # Auth endpoints (exempt from AuthRequiredMiddleware via /api/auth/ prefix)
     from src.web_ui.routes import login
 
     app.include_router(login.router)
@@ -111,6 +104,12 @@ def create_app() -> FastAPI:
     app.include_router(repos.router)
     app.include_router(api_keys.router)
     app.include_router(ssh_keys.router)
+
+    # Jobs router extracted from repos.py per Phase 8 review:
+    # client polls /api/jobs/{id}/status but repos prefix was /api/repos.
+    from src.web_ui.routes import jobs
+
+    app.include_router(jobs.router)
 
     from src.web_ui.routes import feedback
 

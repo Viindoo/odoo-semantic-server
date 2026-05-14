@@ -4,6 +4,8 @@
 Fixtures: web_ui_server, clean_browser, page — from tests/conftest.py.
 Tests are skipped automatically when Playwright chromium binary is missing
 (handled by pytest_collection_modifyitems in conftest.py).
+
+Note: These browser tests test the Astro frontend, not the FastAPI JSON API directly.
 """
 import pytest
 

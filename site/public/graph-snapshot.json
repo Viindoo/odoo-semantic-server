@@ -1,0 +1,85 @@
+{
+  "_meta": {
+    "generated_by": "scripts/dump_graph_snippet.py",
+    "note": "placeholder — run dump_graph_snippet.py against live Neo4j to regenerate",
+    "model": "sale.order",
+    "odoo_version": "17.0"
+  },
+  "nodes": [
+    {
+      "id": "sale.order:sale",
+      "type": "default",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "sale.order\n(sale)",
+        "module": "sale",
+        "is_definition": true,
+        "field_count": 148,
+        "method_count": 394,
+        "odoo_version": "17.0"
+      }
+    },
+    {
+      "id": "sale.order:viin_sale",
+      "type": "default",
+      "position": { "x": 80, "y": 300 },
+      "data": {
+        "label": "sale.order\n(viin_sale)",
+        "module": "viin_sale",
+        "is_definition": false,
+        "field_count": 12,
+        "odoo_version": "17.0"
+      }
+    },
+    {
+      "id": "sale.order:sale_management",
+      "type": "default",
+      "position": { "x": 300, "y": 340 },
+      "data": {
+        "label": "sale.order\n(sale_management)",
+        "module": "sale_management",
+        "is_definition": false,
+        "field_count": 5,
+        "odoo_version": "17.0"
+      }
+    },
+    {
+      "id": "sale.order:website_sale",
+      "type": "default",
+      "position": { "x": 520, "y": 300 },
+      "data": {
+        "label": "sale.order\n(website_sale)",
+        "module": "website_sale",
+        "is_definition": false,
+        "field_count": 8,
+        "odoo_version": "17.0"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-viin_sale-sale",
+      "source": "sale.order:viin_sale",
+      "target": "sale.order:sale",
+      "type": "inherits",
+      "label": "INHERITS",
+      "data": { "order": 1 }
+    },
+    {
+      "id": "e-sale_management-sale",
+      "source": "sale.order:sale_management",
+      "target": "sale.order:sale",
+      "type": "inherits",
+      "label": "INHERITS",
+      "data": { "order": 2 }
+    },
+    {
+      "id": "e-website_sale-sale",
+      "source": "sale.order:website_sale",
+      "target": "sale.order:sale",
+      "type": "inherits",
+      "label": "INHERITS",
+      "data": { "order": 3 }
+    }
+  ]
+}

@@ -2,12 +2,13 @@
 """Pattern feedback API route — thumbs-up/down ratings for PatternExample nodes."""
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.requests import Request
 
 _logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/feedback")
 
 
 class FeedbackBody(BaseModel):
@@ -16,7 +17,7 @@ class FeedbackBody(BaseModel):
     comment: str | None = None
 
 
-@router.post("/api/feedback")
+@router.post("")
 async def submit_feedback(body: FeedbackBody, request: Request):
     """Submit a thumbs-up or thumbs-down rating for a PatternExample.
 
@@ -44,7 +45,7 @@ async def submit_feedback(body: FeedbackBody, request: Request):
         raise HTTPException(status_code=500, detail="Failed to store feedback")
 
 
-@router.get("/api/feedback/{pattern_id:path}")
+@router.get("/{pattern_id:path}")
 async def get_feedback(pattern_id: str, request: Request):
     """List all feedback entries for a given pattern node id."""
     try:
