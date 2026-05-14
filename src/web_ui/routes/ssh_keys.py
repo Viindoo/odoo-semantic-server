@@ -1,14 +1,15 @@
 # src/web_ui/routes/ssh_keys.py
-"""SSH key pair management — generate Ed25519 keypair, store Fernet-encrypted."""
+"""SSH key pair management — generate Ed25519 keypair, store Fernet-encrypted (M8 W1 pure JSON)."""
 import logging
 import os
-from typing import Annotated
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.requests import Request
 
 _logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/ssh-keys")
 
 
 def _get_fernet():
@@ -90,10 +91,18 @@ def parse_ed25519_private_pem(pem: bytes) -> tuple[str, str]:
     return pub, encrypted
 
 
-@router.get("/ssh-keys", response_class=HTMLResponse)
-async def ssh_keys_page(request: Request):
-    """Render SSH keys management page."""
-    templates = request.app.state.templates
+class CreateSshKeyBody(BaseModel):
+    name: str
+
+
+class ImportSshKeyBody(BaseModel):
+    name: str
+    private_key_pem: str
+
+
+@router.get("")
+async def list_ssh_keys(request: Request):
+    """Return list of SSH keys as JSON."""
     keys = []
     error = None
     fernet_missing = not os.getenv("FERNET_KEY")
@@ -105,90 +114,80 @@ async def ssh_keys_page(request: Request):
     except Exception as e:
         error = str(e)
 
-    return templates.TemplateResponse(
-        request,
-        "ssh_keys.html",
-        {
-            "keys": keys,
-            "error": error,
-            "fernet_missing": fernet_missing,
-            "new_public_key": None,
-        },
-    )
+    return JSONResponse({
+        "keys": list(keys),
+        "fernet_missing": fernet_missing,
+        "error": error,
+    })
 
 
-@router.post("/ssh-keys", response_class=HTMLResponse)
-async def create_ssh_key(
-    request: Request,
-    name: Annotated[str, Form()],
-):
-    """Generate a new Ed25519 keypair, store encrypted, display public key once."""
-    templates = request.app.state.templates
-    keys = []
+@router.post("")
+async def create_ssh_key(body: CreateSshKeyBody, request: Request):
+    """Generate a new Ed25519 keypair, store encrypted, return public key once."""
     error = None
     new_public_key = None
+    keys = []
     fernet_missing = not os.getenv("FERNET_KEY")
 
     if fernet_missing:
-        error = "FERNET_KEY is not set. Cannot store SSH keys securely."
-    else:
-        try:
-            from src.db.pg import auth_store
+        return JSONResponse(
+            {"error": "FERNET_KEY is not set. Cannot store SSH keys securely."},
+            status_code=500,
+        )
 
-            pub, encrypted = generate_ed25519_keypair()
-            auth_store().save_ssh_key(name=name, public_key=pub, private_key_encrypted=encrypted)
-            new_public_key = pub
-            keys = auth_store().list_ssh_keys()
-        except RuntimeError as e:
-            error = str(e)
-            fernet_missing = True
-        except Exception as e:
-            error = str(e)
+    try:
+        from src.db.pg import auth_store
 
-    return templates.TemplateResponse(
-        request,
-        "ssh_keys.html",
-        {
-            "keys": keys,
-            "error": error,
-            "fernet_missing": fernet_missing,
-            "new_public_key": new_public_key,
-        },
-    )
+        pub, encrypted = generate_ed25519_keypair()
+        auth_store().save_ssh_key(name=body.name, public_key=pub, private_key_encrypted=encrypted)
+        new_public_key = pub
+        keys = auth_store().list_ssh_keys()
+    except RuntimeError as e:
+        error = str(e)
+        fernet_missing = True
+    except Exception as e:
+        error = str(e)
+
+    if error:
+        return JSONResponse({"error": error, "fernet_missing": fernet_missing}, status_code=500)
+
+    return JSONResponse({"ok": True, "public_key": new_public_key, "keys": list(keys)})
 
 
-@router.post("/ssh-keys/import", response_class=HTMLResponse)
-async def import_ssh_key(
-    request: Request,
-    name: Annotated[str, Form()],
-    private_key_pem: Annotated[str, Form()],
-):
-    """Import an existing Ed25519 private key (paste PEM). Server derives public key,
+@router.post("/import")
+async def import_ssh_key(body: ImportSshKeyBody, request: Request):
+    """Import an existing Ed25519 private key (PEM). Server derives public key,
     validates Ed25519, encrypts with Fernet, stores in DB."""
-    templates = request.app.state.templates
-    keys = []
     error = None
     new_public_key = None
+    keys = []
     fernet_missing = not os.getenv("FERNET_KEY")
 
     if fernet_missing:
-        error = "FERNET_KEY is not set. Cannot store SSH keys securely."
-    elif not name.strip() or not private_key_pem.strip():
-        error = "Both name and private key PEM are required."
-    else:
-        try:
-            from src.db.pg import auth_store
+        return JSONResponse(
+            {"error": "FERNET_KEY is not set. Cannot store SSH keys securely."},
+            status_code=500,
+        )
 
-            pub, encrypted = parse_ed25519_private_pem(private_key_pem.encode())
-            auth_store().save_ssh_key(name=name, public_key=pub, private_key_encrypted=encrypted)
-            new_public_key = pub
-        except ValueError as e:
-            error = str(e)
-        except RuntimeError as e:
-            error = str(e)
-            fernet_missing = True
-        except Exception as e:
-            error = str(e)
+    if not body.name.strip() or not body.private_key_pem.strip():
+        return JSONResponse(
+            {"error": "Both name and private key PEM are required."},
+            status_code=422,
+        )
+
+    try:
+        from src.db.pg import auth_store
+
+        pub, encrypted = parse_ed25519_private_pem(body.private_key_pem.encode())
+        auth_store().save_ssh_key(name=body.name, public_key=pub, private_key_encrypted=encrypted)
+        new_public_key = pub
+    except ValueError as e:
+        error = str(e)
+    except RuntimeError as e:
+        error = str(e)
+        fernet_missing = True
+    except Exception as e:
+        error = str(e)
 
     try:
         from src.db.pg import auth_store
@@ -198,19 +197,13 @@ async def import_ssh_key(
         if not error:
             error = str(e)
 
-    return templates.TemplateResponse(
-        request,
-        "ssh_keys.html",
-        {
-            "keys": keys,
-            "error": error,
-            "fernet_missing": fernet_missing,
-            "new_public_key": new_public_key,
-        },
-    )
+    if error:
+        return JSONResponse({"error": error, "fernet_missing": fernet_missing}, status_code=422)
+
+    return JSONResponse({"ok": True, "public_key": new_public_key, "keys": list(keys)})
 
 
-@router.post("/ssh-keys/{key_id}/delete", response_class=RedirectResponse)
+@router.delete("/{key_id}")
 async def delete_ssh_key(request: Request, key_id: int):
     """Delete an SSH key pair by id."""
     try:
@@ -220,4 +213,5 @@ async def delete_ssh_key(request: Request, key_id: int):
         _logger.info("SSH key %s deleted", key_id)
     except Exception as e:
         _logger.warning("Delete SSH key %s failed: %s", key_id, e)
-    return RedirectResponse("/ssh-keys", status_code=303)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})

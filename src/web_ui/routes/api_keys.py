@@ -1,19 +1,35 @@
 # src/web_ui/routes/api_keys.py
-"""API key management routes."""
+"""API key management routes (M8 W1 — pure JSON API)."""
+import datetime
 import logging
-from typing import Annotated
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.requests import Request
 
 _logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/api-keys")
 
 
-@router.get("/api-keys", response_class=HTMLResponse)
-async def api_keys_page(request: Request):
-    """Render API keys management page."""
-    templates = request.app.state.templates
+def _serialize_keys(keys) -> list[dict]:
+    """Convert any datetime fields in key dicts to ISO strings for JSON serialization."""
+    result = []
+    for key in keys:
+        row = {}
+        for k, v in key.items():
+            row[k] = v.isoformat() if isinstance(v, datetime.datetime) else v
+        result.append(row)
+    return result
+
+
+class CreateApiKeyBody(BaseModel):
+    name: str
+
+
+@router.get("")
+async def list_api_keys(request: Request):
+    """Return list of all API keys as JSON."""
     keys = []
     error = None
     try:
@@ -23,41 +39,32 @@ async def api_keys_page(request: Request):
     except Exception as e:
         error = str(e)
 
-    return templates.TemplateResponse(
-        request,
-        "api_keys.html",
-        {"keys": keys, "error": error, "new_raw_key": None},
-    )
+    return JSONResponse({"keys": _serialize_keys(keys), "error": error})
 
 
-@router.post("/api-keys", response_class=HTMLResponse)
-async def create_api_key(
-    request: Request,
-    name: Annotated[str, Form()],
-):
-    """Create a new API key and display raw key once."""
-    templates = request.app.state.templates
-    keys = []
+@router.post("")
+async def create_api_key(body: CreateApiKeyBody, request: Request):
+    """Create a new API key. Returns raw key (shown once)."""
     error = None
     new_raw_key = None
+    keys = []
 
     try:
         from src.db.pg import auth_store
 
-        raw_key, _, _ = auth_store().create_api_key(name)
+        raw_key, _, _ = auth_store().create_api_key(body.name)
         new_raw_key = raw_key
         keys = auth_store().list_api_keys()
     except Exception as e:
         error = str(e)
 
-    return templates.TemplateResponse(
-        request,
-        "api_keys.html",
-        {"keys": keys, "error": error, "new_raw_key": new_raw_key},
-    )
+    if error:
+        return JSONResponse({"error": error}, status_code=500)
+
+    return JSONResponse({"ok": True, "raw_key": new_raw_key, "keys": _serialize_keys(keys)})
 
 
-@router.post("/api-keys/{key_id}/deactivate", response_class=RedirectResponse)
+@router.post("/{key_id}/deactivate")
 async def deactivate_api_key(request: Request, key_id: int):
     """Deactivate an API key."""
     try:
@@ -69,4 +76,5 @@ async def deactivate_api_key(request: Request, key_id: int):
         _logger.info("API key %s deactivated", key_id)
     except Exception as e:
         _logger.warning("Deactivate key %s failed: %s", key_id, e)
-    return RedirectResponse("/api-keys", status_code=303)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})

@@ -1,17 +1,30 @@
 # src/web_ui/routes/repos.py
-"""Profiles & Repos management routes."""
+"""Profiles & Repos management routes (M8 W1 — pure JSON API)."""
+import datetime as _dt
 import logging
 import os
 import subprocess
 import sys
 import threading
-from typing import Annotated
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.requests import Request
 
 _logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/repos")
+
+
+def _json_safe(obj):
+    """Recursively convert datetime objects to ISO strings for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, _dt.datetime):
+        return obj.isoformat()
+    return obj
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -25,10 +38,9 @@ def _is_pid_alive(pid: int) -> bool:
         return True  # process exists, different UID — assume alive
 
 
-@router.get("/repos", response_class=HTMLResponse)
-async def repos_page(request: Request):
-    templates = request.app.state.templates
-    flash = request.query_params.get("flash")
+@router.get("/profiles")
+async def list_profiles(request: Request):
+    """Return all profiles with their repos."""
     profiles = []
     error = None
     all_job_id = None
@@ -51,109 +63,94 @@ async def repos_page(request: Request):
     except Exception as e:
         error = str(e)
 
-    return templates.TemplateResponse(
-        request,
-        "repos.html",
-        {
-            "profiles": profiles,
-            "error": error,
-            "flash": flash,
-            "all_job_id": all_job_id,
-            "all_job_status": all_job_status,
-        },
-    )
+    return JSONResponse(_json_safe({
+        "profiles": profiles,
+        "error": error,
+        "all_job_id": all_job_id,
+        "all_job_status": all_job_status,
+    }))
 
 
-@router.post("/repos/profiles", response_class=RedirectResponse)
-async def create_profile(
-    request: Request,
-    name: Annotated[str, Form()],
-    version: Annotated[str, Form()],
-    description: Annotated[str, Form()] = "",
-    parent_id: Annotated[str, Form()] = "",
-):
-    from urllib.parse import quote_plus
+class CreateProfileBody(BaseModel):
+    name: str
+    version: str
+    description: str = ""
+    parent_id: int | None = None
 
-    # Parse parent_id: empty string = None (root profile), digit string = int.
-    _parent_id: int | None = None
-    if parent_id and parent_id.strip().isdigit():
-        _parent_id = int(parent_id.strip())
 
+@router.post("/profiles")
+async def create_profile(body: CreateProfileBody, request: Request):
+    """Create a new profile.
+
+    Optional ``parent_id`` links this profile under another profile (version
+    must match parent; cycle-free + monotonic chain enforced by repo_store).
+    """
     try:
         from src.db.pg import repo_store
 
         repo_store().add_profile(
-            name=name,
-            odoo_version=version,
-            description=description,
-            parent_id=_parent_id,
+            name=body.name,
+            odoo_version=body.version,
+            description=body.description,
+            parent_id=body.parent_id,
         )
     except ValueError as e:
-        # Cycle / version-mismatch validation errors → redirect with flash.
+        # Cycle / version-mismatch validation errors → 400.
         _logger.warning("Create profile validation failed: %s", e)
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus(f"Create profile failed: {e}"),
-            status_code=303,
-        )
+        return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         _logger.warning("Create profile failed: %s", e)
-    return RedirectResponse("/repos", status_code=303)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})
 
 
-@router.post("/repos/profiles/{profile_id}/parent", response_class=RedirectResponse)
+class SetProfileParentBody(BaseModel):
+    parent_id: int | None = None
+
+
+@router.patch("/profiles/{profile_id}/parent")
 async def set_profile_parent(
-    request: Request,
-    profile_id: int,
-    parent_id: Annotated[str, Form()] = "",
+    profile_id: int, body: SetProfileParentBody, request: Request
 ):
     """Update parent_profile_id for an existing profile.
 
-    POST form field ``parent_id``: integer ID of the new parent, or empty string
-    to clear the parent (make this profile a root). Validates cycle-free + version
-    match; returns HTTP 303 redirect to /repos with flash on success or failure.
+    JSON body ``parent_id``: integer ID of the new parent, or ``null`` to clear
+    the parent (make this profile a root). Validates cycle-free + version match.
+    Returns 400 on validation error, 200 on success.
     """
-    from urllib.parse import quote_plus
-
-    _parent_id: int | None = None
-    if parent_id and parent_id.strip().isdigit():
-        _parent_id = int(parent_id.strip())
-
     try:
         from src.db.pg import repo_store
 
-        changed = repo_store().set_profile_parent(profile_id, _parent_id)
-        if changed:
-            flash = f"Profile id={profile_id} parent updated."
-        else:
-            flash = f"Profile id={profile_id} parent already set to requested value."
+        changed = repo_store().set_profile_parent(profile_id, body.parent_id)
     except ValueError as e:
         _logger.warning("Set profile parent validation failed: %s", e)
-        flash = f"Set parent failed: {e}"
+        return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         _logger.warning("Set profile parent failed: %s", e)
-        flash = f"Set parent failed: {e}"
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+    return JSONResponse({
+        "ok": True,
+        "profile_id": profile_id,
+        "parent_id": body.parent_id,
+        "changed": changed,
+    })
 
 
-@router.post("/repos/profiles/{profile_id}/delete", response_class=RedirectResponse)
+@router.delete("/profiles/{profile_id}")
 async def delete_profile(request: Request, profile_id: int):
     """Delete a profile (and cascade-delete its repos), then clean Neo4j + pgvector."""
     from pathlib import Path
-    from urllib.parse import quote_plus
 
     try:
         from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
 
-        # Lookup profile name for flash message + job guard
+        # Lookup profile name
         profiles = repo_store().list_profiles()
         profile = next((p for p in profiles if p["id"] == profile_id), None)
         if profile is None:
-            return RedirectResponse(
-                "/repos?flash=" + quote_plus("Profile not found."),
-                status_code=303,
-            )
+            return JSONResponse({"error": "Profile not found."}, status_code=404)
 
         profile_name = profile["name"]
 
@@ -161,10 +158,9 @@ async def delete_profile(request: Request, profile_id: int):
         with get_pool().checkout() as conn:
             running = indexer_is_running(conn, profile_name)
         if running:
-            flash = f"Cannot delete: indexer running for profile {profile_name}"
-            return RedirectResponse(
-                f"/repos?flash={quote_plus(flash)}",
-                status_code=303,
+            return JSONResponse(
+                {"error": f"Cannot delete: indexer running for profile {profile_name}"},
+                status_code=409,
             )
 
         # Snapshot repos BEFORE PG delete (for Neo4j + pgvector cleanup)
@@ -183,24 +179,21 @@ async def delete_profile(request: Request, profile_id: int):
 
     except Exception as e:
         _logger.warning("Delete profile %s failed: %s", profile_id, e)
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus(f"Delete failed: {e}"),
-            status_code=303,
-        )
+        return JSONResponse({"error": f"Delete failed: {e}"}, status_code=500)
 
-    # Neo4j + pgvector cleanup (outside PG conn — Neo4j driver manages its own connections)
-    # Collect module names FIRST (while Module nodes still exist in Neo4j)
+    # Neo4j + pgvector cleanup (outside PG conn)
     module_names_by_version = _collect_module_names_for_repos(repo_cleanup_pairs)
     total_modules, total_children = _delete_neo4j_for_repos(repo_cleanup_pairs)
     total_embeddings = _delete_embeddings_for_repos(repo_cleanup_pairs, module_names_by_version)
 
-    flash = (
-        f"Profile '{profile_name}' deleted "
-        f"({repo_count} repo{'s' if repo_count != 1 else ''}, "
-        f"{total_modules} Neo4j modules, {total_children} child nodes, "
-        f"{total_embeddings} embeddings)"
-    )
-    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+    return JSONResponse({
+        "ok": True,
+        "profile_name": profile_name,
+        "repo_count": repo_count,
+        "neo4j_modules": total_modules,
+        "neo4j_children": total_children,
+        "embeddings": total_embeddings,
+    })
 
 
 def _get_neo4j_writer():
@@ -346,51 +339,37 @@ def _delete_embeddings_for_repos(
     return total
 
 
-@router.post("/repos/repos", response_class=RedirectResponse)
-async def add_repo(
-    request: Request,
-    profile: Annotated[str, Form()],
-    url: Annotated[str, Form()],
-    branch: Annotated[str, Form()],
-    local_path: Annotated[str, Form()] = "",
-    ssh_key_id: Annotated[str, Form()] = "",
-):
-    from urllib.parse import quote_plus
+class AddRepoBody(BaseModel):
+    profile: str
+    url: str
+    branch: str
+    local_path: str = ""
+    ssh_key_id: str = ""
 
+
+@router.post("/repos")
+async def add_repo(body: AddRepoBody, request: Request):
+    """Add a repo to a profile. Triggers async clone for SSH URLs."""
     from src.git_utils import default_clone_dir, is_ssh_url
 
-    templates = request.app.state.templates
-
-    if is_ssh_url(url):
-        if not ssh_key_id or not ssh_key_id.strip().isdigit():
-            profiles = []
-            try:
-                from src.db.pg import repo_store
-                profiles = repo_store().list_profiles()
-            except Exception:
-                pass
-            return templates.TemplateResponse(
-                request,
-                "repos.html",
-                {
-                    "profiles": profiles,
-                    "error": "SSH URL requires an SSH key. Select one from the dropdown.",
-                    "flash": None,
-                },
+    if is_ssh_url(body.url):
+        if not body.ssh_key_id or not body.ssh_key_id.strip().isdigit():
+            return JSONResponse(
+                {"error": "SSH URL requires an SSH key. Select one from the dropdown."},
                 status_code=400,
             )
-        ssh_key_id_int = int(ssh_key_id.strip())
+        ssh_key_id_int = int(body.ssh_key_id.strip())
         repo_id: int | None = None
         try:
             from src.db.pg import repo_store
 
-            profiles_list = [p for p in repo_store().list_profiles() if p["name"] == profile]
+            profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
             if profiles_list:
-                target_dir = default_clone_dir(profile, url)
+                target_dir = default_clone_dir(body.profile, body.url)
                 repo_id = repo_store().add_repo(
                     profile_id=profiles_list[0]["id"],
-                    url=url,
-                    branch=branch,
+                    url=body.url,
+                    branch=body.branch,
                     local_path=str(target_dir),
                     ssh_key_id=ssh_key_id_int,
                     clone_status="manual",
@@ -407,32 +386,32 @@ async def add_repo(
                     stderr=_clone_log,
                 )
             threading.Thread(target=proc.wait, daemon=True).start()
-            flash = quote_plus("Clone started — refresh to see status")
-            return RedirectResponse(f"/repos?flash={flash}", status_code=303)
-        return RedirectResponse("/repos", status_code=303)
+            return JSONResponse({"ok": True, "repo_id": repo_id, "clone_status": "pending"})
+        return JSONResponse({"ok": False, "error": "Failed to add SSH repo"}, status_code=500)
 
-    # HTTPS / file:// / manual path — legacy behavior unchanged
+    # HTTPS / file:// / manual path
     try:
         from src.db.pg import repo_store
 
-        profiles_list = [p for p in repo_store().list_profiles() if p["name"] == profile]
+        profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
         if profiles_list:
             repo_store().add_repo(
                 profile_id=profiles_list[0]["id"],
-                url=url,
-                branch=branch,
-                local_path=local_path,
+                url=body.url,
+                branch=body.branch,
+                local_path=body.local_path,
                 ssh_key_id=None,
                 clone_status="manual",
             )
     except Exception as e:
         _logger.warning("Add repo failed: %s", e)
-    return RedirectResponse("/repos", status_code=303)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})
 
 
-@router.get("/repos/ssh-keys-list")
+@router.get("/ssh-keys-list")
 async def ssh_keys_list(request: Request):
-    """Return JSON array of SSH key pairs (id + name) for the add-repo form dropdown."""
+    """Return JSON array of SSH key pairs (id + name) for dropdowns."""
     try:
         from src.db.pg import auth_store
 
@@ -442,23 +421,18 @@ async def ssh_keys_list(request: Request):
     return JSONResponse([{"id": k["id"], "name": k["name"]} for k in keys])
 
 
-@router.post("/repos/repos/{repo_id}/delete", response_class=RedirectResponse)
+@router.delete("/repos/{repo_id}")
 async def delete_repo(request: Request, repo_id: int):
     """Delete a single repo, then clean Neo4j + pgvector scoped to that repo."""
     from pathlib import Path
-    from urllib.parse import quote_plus
 
     try:
         from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
 
-        # Lookup repo + profile info; 404-style redirect if missing
         repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
-            return RedirectResponse(
-                "/repos?flash=" + quote_plus("Repo not found."),
-                status_code=303,
-            )
+            return JSONResponse({"error": "Repo not found."}, status_code=404)
 
         profile_name = repo["profile_name"]
         odoo_version = repo["odoo_version"]
@@ -468,101 +442,122 @@ async def delete_repo(request: Request, repo_id: int):
         with get_pool().checkout() as conn:
             running = indexer_is_running(conn, profile_name)
         if running:
-            flash = f"Cannot delete: indexer running for profile {profile_name}"
-            return RedirectResponse(
-                f"/repos?flash={quote_plus(flash)}",
-                status_code=303,
+            return JSONResponse(
+                {"error": f"Cannot delete: indexer running for profile {profile_name}"},
+                status_code=409,
             )
 
-        # PG delete (snapshot already done above)
+        # PG delete
         repo_store().delete_repo(repo_id)
 
     except Exception as e:
         _logger.warning("Delete repo %s failed: %s", repo_id, e)
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus(f"Delete failed: {e}"),
-            status_code=303,
-        )
+        return JSONResponse({"error": f"Delete failed: {e}"}, status_code=500)
 
-    # Neo4j + pgvector cleanup (outside PG conn)
+    # Neo4j + pgvector cleanup
     cleanup_pairs = [{"basename": basename, "version": odoo_version}]
-    # Collect module names FIRST (while Module nodes still exist in Neo4j)
     module_names_by_version = _collect_module_names_for_repos(cleanup_pairs)
     total_modules, total_children = _delete_neo4j_for_repos(cleanup_pairs)
     total_embeddings = _delete_embeddings_for_repos(cleanup_pairs, module_names_by_version)
 
-    flash = (
-        f"Repo '{basename}' deleted "
-        f"({total_modules} Neo4j modules, {total_children} child nodes, "
-        f"{total_embeddings} embeddings)"
-    )
-    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+    return JSONResponse({
+        "ok": True,
+        "basename": basename,
+        "neo4j_modules": total_modules,
+        "neo4j_children": total_children,
+        "embeddings": total_embeddings,
+    })
 
 
-@router.post("/repos/profiles/{profile_id}/clone-all", response_class=RedirectResponse)
-async def clone_all_pending(request: Request, profile_id: int):
+@router.post("/profiles/{profile_id}/clone-all")
+async def clone_all_pending(profile_id: int, request: Request):
     """Bulk-clone all pending/manual/error repos for a profile.
 
     file:// URLs pointing to existing local directories are short-circuited
-    (marked 'cloned' inline without spawning a subprocess).  All other repos
+    (marked 'cloned' inline without spawning a subprocess). All other repos
     have a ``src.cloner`` subprocess spawned in a background thread, mirroring
     the single-repo clone flow.
+
+    Returns JSON: { ok, profile_id, spawned, short_circuited, total }.
     """
     from pathlib import Path
-    from urllib.parse import quote_plus, urlparse
+    from urllib.parse import urlparse
 
-    from src.db.pg import repo_store
+    try:
+        from src.db.pg import repo_store
 
-    pending_statuses = {"manual", "pending", "error"}
+        pending_statuses = {"manual", "pending", "error"}
 
-    all_repos = repo_store().get_repos_for_profile_by_id(profile_id)
-    repos = [r for r in all_repos if r.get("clone_status", "manual") in pending_statuses]
+        all_repos = repo_store().get_repos_for_profile_by_id(profile_id)
+        repos = [
+            r for r in all_repos if r.get("clone_status", "manual") in pending_statuses
+        ]
 
-    if not repos:
-        flash = quote_plus("No pending repos to clone.")
-        return RedirectResponse(f"/repos?flash={flash}", status_code=303)
+        if not repos:
+            return JSONResponse({
+                "ok": True,
+                "profile_id": profile_id,
+                "spawned": 0,
+                "short_circuited": 0,
+                "total": 0,
+                "message": "No pending repos to clone.",
+            })
 
-    short_circuited = 0
-    spawned = 0
+        short_circuited = 0
+        spawned = 0
 
-    for r in repos:
-        repo_id: int = r["id"]
-        url: str = r.get("url", "")
+        for r in repos:
+            repo_id: int = r["id"]
+            url: str = r.get("url", "")
 
-        # Short-circuit file:// URLs with existing local directory
-        parsed = urlparse(url)
-        if parsed.scheme == "file":
-            local_path = parsed.netloc + parsed.path if parsed.netloc else parsed.path
-            if Path(local_path).is_dir():
-                try:
-                    repo_store().update_repo_local_path(repo_id, local_path)
-                    repo_store().set_clone_status(repo_id, "cloned")
-                    short_circuited += 1
-                except Exception as e:
-                    _logger.warning(
-                        "clone-all: short-circuit failed for repo id=%s: %s", repo_id, e
-                    )
-                continue
-
-        # Spawn cloner subprocess (detached, logged to /tmp)
-        try:
-            with open(f"/tmp/osm-clone-{repo_id}.log", "wb") as _clone_log:
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
-                    start_new_session=True,
-                    stdout=_clone_log,
-                    stderr=_clone_log,
+            # Short-circuit file:// URLs with existing local directory
+            parsed = urlparse(url)
+            if parsed.scheme == "file":
+                local_path = (
+                    parsed.netloc + parsed.path if parsed.netloc else parsed.path
                 )
-            threading.Thread(target=proc.wait, daemon=True).start()
-            spawned += 1
-        except Exception as e:
-            _logger.warning("clone-all: spawn failed for repo id=%s: %s", repo_id, e)
+                if Path(local_path).is_dir():
+                    try:
+                        repo_store().update_repo_local_path(repo_id, local_path)
+                        repo_store().set_clone_status(repo_id, "cloned")
+                        short_circuited += 1
+                    except Exception as e:
+                        _logger.warning(
+                            "clone-all: short-circuit failed for repo id=%s: %s",
+                            repo_id,
+                            e,
+                        )
+                    continue
 
-    msg = f"Clone started: {spawned} spawned, {short_circuited} short-circuited (file://)."
-    return RedirectResponse(f"/repos?flash={quote_plus(msg)}", status_code=303)
+            # Spawn cloner subprocess (detached, logged to /tmp)
+            try:
+                with open(f"/tmp/osm-clone-{repo_id}.log", "wb") as _clone_log:
+                    proc = subprocess.Popen(
+                        [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
+                        start_new_session=True,
+                        stdout=_clone_log,
+                        stderr=_clone_log,
+                    )
+                threading.Thread(target=proc.wait, daemon=True).start()
+                spawned += 1
+            except Exception as e:
+                _logger.warning(
+                    "clone-all: spawn failed for repo id=%s: %s", repo_id, e
+                )
+    except Exception as e:
+        _logger.warning("clone-all failed for profile %s: %s", profile_id, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return JSONResponse({
+        "ok": True,
+        "profile_id": profile_id,
+        "spawned": spawned,
+        "short_circuited": short_circuited,
+        "total": spawned + short_circuited,
+    })
 
 
-@router.get("/repos/repos/{repo_id}/clone-status")
+@router.get("/repos/{repo_id}/clone-status")
 async def clone_status(request: Request, repo_id: int):
     """Return JSON clone_status for a single repo (used by badge polling)."""
     try:
@@ -576,43 +571,37 @@ async def clone_status(request: Request, repo_id: int):
     return JSONResponse({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
-        # Return clone_error_msg under the key "error_msg" to preserve API contract.
-        # clone_error_msg is written exclusively by the cloner; repos.error_msg is
-        # written exclusively by the indexer (update_repo_status). Keeping them separate
-        # prevents a cloner success from clearing an indexer error and vice versa.
         "error_msg": repo.get("clone_error_msg"),
     })
 
 
-@router.post("/repos/repos/{repo_id}/index", response_class=RedirectResponse)
-async def index_repo(
-    request: Request,
-    repo_id: int,
-    no_embed: Annotated[str, Form()] = "",
-    full: Annotated[str, Form()] = "",
-    gc: Annotated[str, Form()] = "",
-    max_workers: Annotated[str, Form()] = "1",
-):
-    """Trigger indexer for a specific repo's profile (non-blocking subprocess).
+class IndexRepoBody(BaseModel):
+    no_embed: str = ""
+    full: str = ""
+    gc: str = ""
+    max_workers: str = "1"
 
-    Accepts optional form fields:
-    - no_embed: if truthy, appends --no-embed
-    - full: if truthy, appends --full
-    - gc: if truthy, appends --gc
-    - max_workers: integer 1-8, appends --max-workers N when != 1
-    """
-    from urllib.parse import quote_plus
 
+@router.post("/repos/{repo_id}/index")
+async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
+    """Trigger indexer for a specific repo's profile (non-blocking subprocess)."""
     # Validate max_workers before acquiring a DB connection
     try:
-        max_workers_int = int(max_workers)
+        max_workers_int = int(body.max_workers)
     except (ValueError, TypeError):
-        flash = f"Invalid max_workers value '{max_workers}': must be an integer between 1 and 8."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse(
+            {
+                "error": f"Invalid max_workers value '{body.max_workers}': "
+                "must be an integer between 1 and 8."
+            },
+            status_code=422,
+        )
 
     if not (1 <= max_workers_int <= 8):
-        flash = f"max_workers must be between 1 and 8 (got {max_workers_int})."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse(
+            {"error": f"max_workers must be between 1 and 8 (got {max_workers_int})."},
+            status_code=422,
+        )
 
     try:
         from src.db.pg import get_pool, repo_store
@@ -625,42 +614,37 @@ async def index_repo(
             with get_pool().checkout() as conn:
                 running = indexer_is_running(conn, repo["profile_name"])
             if running:
-                flash = (
-                    "Indexer already running for profile "
-                    f"{repo['profile_name']}. Wait for it to finish."
-                )
-                return RedirectResponse(
-                    f"/repos?flash={quote_plus(flash)}",
-                    status_code=303,
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"Indexer already running for profile "
+                            f"{repo['profile_name']}. Wait for it to finish."
+                        )
+                    },
+                    status_code=409,
                 )
 
             argv = ["index-repo", "--profile", repo["profile_name"]]
-            if no_embed:
+            if body.no_embed:
                 argv += ["--no-embed"]
-            if full:
+            if body.full:
                 argv += ["--full"]
-            if gc:
+            if body.gc:
                 argv += ["--gc"]
             if max_workers_int != 1:
                 argv += ["--max-workers", str(max_workers_int)]
 
-            spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
+            job_id = spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
+            return JSONResponse({"ok": True, "job_id": job_id})
     except Exception as e:
         _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
-    return RedirectResponse("/repos", status_code=303)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})
 
 
-@router.post("/repos/repos/{repo_id}/reset-embed", response_class=RedirectResponse)
+@router.post("/repos/{repo_id}/reset-embed")
 async def reset_embed(request: Request, repo_id: int):
-    """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile.
-
-    This fixes the HIGH-severity gap where `index-repo --no-embed` advanced head_sha,
-    causing subsequent incremental runs to skip permanently — embeddings never written.
-    Setting head_sha=NULL forces a full re-scan on the next run (bypasses incremental skip).
-    No --no-embed, no --full flags: head_sha=NULL alone triggers full embed pass.
-    """
-    from urllib.parse import quote_plus
-
+    """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile."""
     try:
         from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
@@ -668,105 +652,100 @@ async def reset_embed(request: Request, repo_id: int):
 
         repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
-            return RedirectResponse(
-                "/repos?flash=" + quote_plus("Repo not found."),
-                status_code=404,
-            )
+            return JSONResponse({"error": "Repo not found."}, status_code=404)
 
         profile_name = repo["profile_name"]
 
-        # Guard: reject if indexer is already running for this profile
         with get_pool().checkout() as conn:
             running = indexer_is_running(conn, profile_name)
         if running:
-            flash = (
-                f"Cannot reset embed state: indexer already running for profile "
-                f"{profile_name}. Wait for it to finish."
-            )
-            return RedirectResponse(
-                f"/repos?flash={quote_plus(flash)}",
-                status_code=303,
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Cannot reset embed state: indexer already running for profile "
+                        f"{profile_name}. Wait for it to finish."
+                    )
+                },
+                status_code=409,
             )
 
-        # Wipe head_sha → forces full re-scan (bypasses incremental skip)
+        # Wipe head_sha → forces full re-scan
         repo_store().reset_repo_head_sha(repo_id)
 
-        # Spawn index-repo without --no-embed / --full
         argv = ["index-repo", "--profile", profile_name]
         job_id = spawn_indexer_subcommand(argv, job_label=profile_name)
 
-        flash = f"Re-embedding started for '{profile_name}' (job {job_id})"
-        return RedirectResponse(
-            f"/repos?flash={quote_plus(flash)}",
-            status_code=303,
-        )
+        return JSONResponse({"ok": True, "profile_name": profile_name, "job_id": job_id})
 
     except Exception as e:
         _logger.warning("Reset embed for repo %s failed: %s", repo_id, e)
-        return RedirectResponse(
-            "/repos?flash=" + quote_plus(f"Reset embed failed: {e}"),
-            status_code=303,
+        return JSONResponse({"error": f"Reset embed failed: {e}"}, status_code=500)
+
+
+class IndexAllBody(BaseModel):
+    no_embed: str = ""
+    full: str = ""
+    max_workers: str = "1"
+    profile_workers: str = "1"
+
+
+@router.post("/index-all")
+async def index_all(request: Request, body: IndexAllBody):
+    """Trigger bulk index-repo --all for every registered profile."""
+    # Validate max_workers in [1, 8]
+    try:
+        max_workers_int = int(body.max_workers)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            {
+                "error": f"Invalid max_workers '{body.max_workers}': "
+                "must be an integer between 1 and 8."
+            },
+            status_code=422,
+        )
+    if not (1 <= max_workers_int <= 8):
+        return JSONResponse(
+            {"error": f"max_workers must be between 1 and 8 (got {max_workers_int})."},
+            status_code=422,
         )
 
-
-@router.post("/repos/index-all", response_class=RedirectResponse)
-async def index_all(
-    request: Request,
-    no_embed: Annotated[str, Form()] = "",
-    full: Annotated[str, Form()] = "",
-    max_workers: Annotated[str, Form()] = "1",
-    profile_workers: Annotated[str, Form()] = "1",
-):
-    """Trigger bulk index-repo --all for every registered profile.
-
-    Accepts optional form fields:
-    - no_embed: if truthy, appends --no-embed
-    - full: if truthy, appends --full
-    - max_workers: integer 1-8 (per-profile thread count)
-    - profile_workers: integer 1-4 (parallel profile count)
-    """
-    from urllib.parse import quote_plus
-
-    # Validate max_workers ∈ [1, 8]
+    # Validate profile_workers in [1, 4]
     try:
-        max_workers_int = int(max_workers)
+        profile_workers_int = int(body.profile_workers)
     except (ValueError, TypeError):
-        flash = f"Invalid max_workers '{max_workers}': must be an integer between 1 and 8."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
-    if not (1 <= max_workers_int <= 8):
-        flash = f"max_workers must be between 1 and 8 (got {max_workers_int})."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
-
-    # Validate profile_workers ∈ [1, 4]
-    try:
-        profile_workers_int = int(profile_workers)
-    except (ValueError, TypeError):
-        flash = f"Invalid profile_workers '{profile_workers}': must be an integer between 1 and 4."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse(
+            {
+                "error": f"Invalid profile_workers '{body.profile_workers}': "
+                "must be an integer between 1 and 4."
+            },
+            status_code=422,
+        )
     if not (1 <= profile_workers_int <= 4):
-        flash = f"profile_workers must be between 1 and 4 (got {profile_workers_int})."
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse(
+            {"error": f"profile_workers must be between 1 and 4 (got {profile_workers_int})."},
+            status_code=422,
+        )
 
     try:
         from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
         from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
-        # Guard: reject if any profile has a running indexer job
         all_profiles = repo_store().list_profiles()
         blocked = []
         with get_pool().checkout() as conn:
             blocked = [p["name"] for p in all_profiles if indexer_is_running(conn, p["name"])]
         if blocked:
             names = ", ".join(blocked)
-            flash = f"Cannot start index-all: indexer running for: {names}"
-            return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+            return JSONResponse(
+                {"error": f"Cannot start index-all: indexer running for: {names}"},
+                status_code=409,
+            )
 
-        # Build argv
         argv = ["index-repo", "--all"]
-        if no_embed:
+        if body.no_embed:
             argv += ["--no-embed"]
-        if full:
+        if body.full:
             argv += ["--full"]
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]
@@ -774,22 +753,16 @@ async def index_all(
             argv += ["--profile-workers", str(profile_workers_int)]
 
         job_id = spawn_indexer_subcommand(argv, job_label="all")
-        flash = f"Index all started (job {job_id})"
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse({"ok": True, "job_id": job_id})
 
     except Exception as e:
         _logger.warning("index-all trigger failed: %s", e)
-        flash = f"index-all failed: {e}"
-        return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse({"error": f"index-all failed: {e}"}, status_code=500)
 
 
-@router.get("/repos/jobs/{job_id}/status")
+@router.get("/jobs/{job_id}/status")
 async def job_status(request: Request, job_id: int):
-    """Return JSON status of a single indexer job.
-
-    Includes ``is_alive`` field: True/False when status='running' and a PID is recorded,
-    None otherwise. A False value indicates a stuck job (process not found).
-    """
+    """Return JSON status of a single indexer job."""
     try:
         from src.db.pg import job_store
 
@@ -804,7 +777,7 @@ async def job_status(request: Request, job_id: int):
     if pid is not None and job.get("status") == "running":
         is_alive = _is_pid_alive(pid)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "id": job["id"],
         "profile_name": job["profile_name"],
         "status": job["status"],
@@ -814,27 +787,30 @@ async def job_status(request: Request, job_id: int):
         "error_msg": job["error_msg"],
         "created_at": job["created_at"],
         "is_alive": is_alive,
-    })
+    }))
 
 
-@router.post("/repos/jobs/{job_id}/reset", response_class=RedirectResponse)
+@router.post("/jobs/{job_id}/reset")
 async def reset_stuck_job(request: Request, job_id: int):
     """Force-mark a stuck running job as error when its PID is dead."""
-    import datetime as _dt
-    from urllib.parse import quote_plus
-
     try:
         from src.db.pg import job_store
 
         job = job_store().get_job(job_id)
         if job is None:
-            flash = f"Job {job_id} not found."
+            return JSONResponse({"error": f"Job {job_id} not found."}, status_code=404)
         elif job["status"] != "running":
-            flash = f"Job {job_id} is not in 'running' state (current: {job['status']})."
+            return JSONResponse(
+                {"error": f"Job {job_id} is not in 'running' state (current: {job['status']})."},
+                status_code=409,
+            )
         else:
             pid = job.get("pid")
             if pid is not None and _is_pid_alive(pid):
-                flash = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
+                return JSONResponse(
+                    {"error": f"Job {job_id} process (PID {pid}) is still alive — cannot reset."},
+                    status_code=409,
+                )
             else:
                 job_store().update_job(
                     job_id,
@@ -842,8 +818,9 @@ async def reset_stuck_job(request: Request, job_id: int):
                     finished_at=_dt.datetime.now(_dt.UTC),
                     error_msg="Reset by admin (process not found)",
                 )
-                flash = f"Job {job_id} has been reset to error state."
+                return JSONResponse(
+                    {"ok": True, "message": f"Job {job_id} has been reset to error state."}
+                )
     except Exception as e:
-        flash = f"Reset failed: {e}"
         _logger.warning("Reset job %d failed: %s", job_id, e)
-    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
+        return JSONResponse({"error": f"Reset failed: {e}"}, status_code=500)

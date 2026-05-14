@@ -1,11 +1,11 @@
 # tests/test_web_ui_seed_patterns.py
-"""Integration tests for POST /operations/seed-patterns (M8 W6).
+"""Integration tests for POST /api/operations/seed-patterns (M8 W1 pure JSON API).
 
-Tests: valid submission → 303 redirect + flash + indexer_jobs row;
+Tests: valid submission → 200 ok JSON + job_id;
        no version → label 'patterns';
        with version → label 'patterns:17.0';
-       invalid version → 400 re-render with error, no job row;
-       non-existent patterns_file → 400 re-render, no job row;
+       invalid version → 400 error JSON, no job row;
+       non-existent patterns_file → 400 error JSON, no job row;
        argv verification via Popen mock.
 """
 import unittest.mock as mock
@@ -25,38 +25,13 @@ def migrated_pg(clean_pg):
     return clean_pg
 
 
-class _NoCloseConn:
-    """Thin proxy that no-ops close() so session-scoped pg_conn stays open."""
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    def close(self):
-        pass
-
-    def cursor(self, *args, **kwargs):
-        return self._conn.cursor(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-
-def _make_conn_factory(pg_conn):
-    wrapped = _NoCloseConn(pg_conn)
-
-    def factory():
-        return wrapped
-
-    return factory
-
-
 def _async_client(app):
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
 class TestSeedPatternsRoute:
-    """POST /operations/seed-patterns — happy path + validation."""
+    """POST /api/operations/seed-patterns — happy path + validation."""
 
     @pytest.fixture(autouse=True)
     def _cleanup_jobs(self, migrated_pg):
@@ -67,21 +42,21 @@ class TestSeedPatternsRoute:
             cur.execute("DELETE FROM indexer_jobs")
 
     @pytest.mark.asyncio
-    async def test_valid_submission_no_version_redirects_with_flash(self, migrated_pg):
-        """POST with force=on, no version → 303, flash contains 'patterns' and 'job'."""
+    async def test_valid_submission_no_version_returns_ok(self, migrated_pg):
+        """POST with force=on, no version → 200 ok JSON with job_id and 'patterns' label."""
         app = create_app()
         with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/operations/seed-patterns",
-                    data={"force": "on"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"force": "on"},
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert location.startswith("/operations?flash=")
-        assert "job" in location.lower()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "job_id" in body
+        assert "patterns" in body.get("message", "").lower()
 
     @pytest.mark.asyncio
     async def test_valid_submission_no_version_creates_job_label_patterns(self, migrated_pg):
@@ -90,9 +65,8 @@ class TestSeedPatternsRoute:
         with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 await client.post(
-                    "/operations/seed-patterns",
-                    data={"force": "on"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"force": "on"},
                 )
 
         with migrated_pg.cursor() as cur:
@@ -114,9 +88,8 @@ class TestSeedPatternsRoute:
         with mock.patch("subprocess.Popen"):
             async with _async_client(app) as client:
                 await client.post(
-                    "/operations/seed-patterns",
-                    data={"version": "17.0", "force": "on"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"version": "17.0", "force": "on"},
                 )
 
         with migrated_pg.cursor() as cur:
@@ -131,14 +104,13 @@ class TestSeedPatternsRoute:
 
     @pytest.mark.asyncio
     async def test_argv_contains_seed_patterns_and_force(self, migrated_pg):
-        """Popen argv must include seed-patterns --force when force checkbox ticked."""
+        """Popen argv must include seed-patterns --force when force provided."""
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
-                    "/operations/seed-patterns",
-                    data={"force": "on"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"force": "on"},
                 )
 
         mock_popen.assert_called_once()
@@ -154,9 +126,8 @@ class TestSeedPatternsRoute:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
-                    "/operations/seed-patterns",
-                    data={"version": "17.0", "no_embed": "on"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"version": "17.0", "no_embed": "on"},
                 )
 
         argv = mock_popen.call_args[0][0]
@@ -166,14 +137,13 @@ class TestSeedPatternsRoute:
 
     @pytest.mark.asyncio
     async def test_argv_without_force_does_not_include_force(self, migrated_pg):
-        """When force checkbox is NOT ticked, --force must NOT appear in argv."""
+        """When force is NOT provided, --force must NOT appear in argv."""
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
-                    "/operations/seed-patterns",
-                    data={},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={},
                 )
 
         argv = mock_popen.call_args[0][0]
@@ -186,13 +156,14 @@ class TestSeedPatternsRoute:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/operations/seed-patterns",
-                    data={"version": "abc"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"version": "abc"},
                 )
 
         assert resp.status_code == 400
-        assert "abc" in resp.text or "Invalid" in resp.text
+        body = resp.json()
+        assert "error" in body
+        assert "abc" in body["error"] or "Invalid" in body["error"]
         mock_popen.assert_not_called()
 
         with migrated_pg.cursor() as cur:
@@ -206,15 +177,16 @@ class TestSeedPatternsRoute:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/operations/seed-patterns",
-                    data={"patterns_file": "/does/not/exist/patterns.json"},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"patterns_file": "/does/not/exist/patterns.json"},
                 )
 
         assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
         assert (
-            "/does/not/exist/patterns.json" in resp.text
-            or "not exist" in resp.text.lower()
+            "/does/not/exist/patterns.json" in body["error"]
+            or "not exist" in body["error"].lower()
         )
         mock_popen.assert_not_called()
 
@@ -232,9 +204,8 @@ class TestSeedPatternsRoute:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
-                    "/operations/seed-patterns",
-                    data={"patterns_file": str(pf)},
-                    follow_redirects=False,
+                    "/api/operations/seed-patterns",
+                    json={"patterns_file": str(pf)},
                 )
 
         argv = mock_popen.call_args[0][0]
@@ -249,29 +220,11 @@ class TestSeedPatternsRoute:
             with mock.patch("subprocess.Popen"):
                 async with _async_client(app) as client:
                     resp = await client.post(
-                        "/operations/seed-patterns",
-                        data={"version": ver},
-                        follow_redirects=False,
+                        "/api/operations/seed-patterns",
+                        json={"version": ver},
                     )
-            assert resp.status_code == 303, f"version '{ver}' should be valid"
+            assert resp.status_code == 200, f"version '{ver}' should be valid"
+            body = resp.json()
+            assert body.get("ok") is True
             with migrated_pg.cursor() as cur:
                 cur.execute("DELETE FROM indexer_jobs")
-
-
-class TestSeedPatternsGetPage:
-    """GET /operations — seed-patterns section renders correctly."""
-
-    @pytest.mark.asyncio
-    async def test_get_operations_renders_seed_patterns_form(self, migrated_pg):
-        """GET /operations → 200, Seed Pattern Catalogue section present."""
-        app = create_app()
-        async with _async_client(app) as client:
-            resp = await client.get("/operations")
-
-        assert resp.status_code == 200
-        assert "Seed Pattern Catalogue" in resp.text
-        assert "/operations/seed-patterns" in resp.text
-        assert 'name="version"' in resp.text
-        assert 'name="no_embed"' in resp.text
-        assert 'name="force"' in resp.text
-        assert 'name="patterns_file"' in resp.text

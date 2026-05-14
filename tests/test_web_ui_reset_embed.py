@@ -1,12 +1,12 @@
 # tests/test_web_ui_reset_embed.py
-"""Integration tests for POST /repos/repos/{id}/reset-embed (M8 W4).
+"""Integration tests for POST /api/repos/repos/{id}/reset-embed (M8 W1 pure JSON API).
 
 Covers:
-- repo with head_sha set → POST → head_sha IS NULL + job spawned
+- repo with head_sha set → POST → head_sha IS NULL + job spawned + 200 ok JSON
 - argv for spawned subprocess: index-repo --profile X (no --no-embed, no --full)
 - repo with head_sha IS NULL → POST still works (NULL → NULL, spawns index)
-- indexer running → flash error, head_sha unchanged, no Popen
-- non-existent repo_id → 404
+- indexer running → 409 error JSON, head_sha unchanged, no Popen
+- non-existent repo_id → 404 JSON
 """
 import unittest.mock as mock
 
@@ -23,26 +23,6 @@ pytestmark = pytest.mark.postgres
 def migrated_pg(clean_pg):
     run_migrations(clean_pg)
     return clean_pg
-
-
-def _make_conn_factory(pg_conn):
-    """Return a _get_conn replacement that wraps pg_conn without closing it."""
-
-    class _NoCloseConn:
-        def __init__(self, conn):
-            self._conn = conn
-
-        def close(self):
-            pass
-
-        def cursor(self, *args, **kwargs):
-            return self._conn.cursor(*args, **kwargs)
-
-        def __getattr__(self, name):
-            return getattr(self._conn, name)
-
-    wrapped = _NoCloseConn(pg_conn)
-    return lambda: wrapped
 
 
 def _async_client(app):
@@ -76,7 +56,7 @@ def _get_head_sha(pg_conn, repo_id):
 class TestResetEmbed:
     @pytest.mark.asyncio
     async def test_head_sha_set_to_null_after_post(self, migrated_pg):
-        """POST with head_sha='abc123' → head_sha IS NULL in DB after."""
+        """POST with head_sha='abc123' → head_sha IS NULL in DB after, 200 ok JSON."""
         _, rid = _setup_profile_and_repo(migrated_pg, "re_profile_1", head_sha="abc123")
         assert _get_head_sha(migrated_pg, rid) == "abc123"
 
@@ -88,16 +68,17 @@ class TestResetEmbed:
         ):
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/reset-embed",
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/reset-embed",
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         assert _get_head_sha(migrated_pg, rid) is None
 
     @pytest.mark.asyncio
-    async def test_redirect_contains_flash_with_job_id(self, migrated_pg):
-        """POST → 303 redirect with flash containing 'Re-embedding started' and job N."""
+    async def test_response_contains_job_id(self, migrated_pg):
+        """POST → 200 ok JSON containing job_id."""
         _, rid = _setup_profile_and_repo(migrated_pg, "re_profile_2", head_sha="deadbeef")
         app = create_app()
         with mock.patch(
@@ -107,14 +88,13 @@ class TestResetEmbed:
         ):
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/reset-embed",
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/reset-embed",
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
-        assert "Re-embedding" in location or "re-embedding" in location.lower()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "job_id" in body
 
     @pytest.mark.asyncio
     async def test_argv_has_index_repo_profile_no_no_embed_no_full(self, migrated_pg):
@@ -128,8 +108,7 @@ class TestResetEmbed:
         ) as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
-                    f"/repos/repos/{rid}/reset-embed",
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/reset-embed",
                 )
 
         mock_popen.assert_called_once()
@@ -166,11 +145,12 @@ class TestResetEmbed:
         ) as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/reset-embed",
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/reset-embed",
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         # head_sha remains NULL
         assert _get_head_sha(migrated_pg, rid) is None
         # Subprocess was still spawned
@@ -178,7 +158,7 @@ class TestResetEmbed:
 
     @pytest.mark.asyncio
     async def test_indexer_running_blocks_reset_and_no_popen(self, migrated_pg):
-        """When indexer_is_running → flash error, head_sha unchanged, no Popen."""
+        """When indexer_is_running → 409 JSON, head_sha unchanged, no Popen."""
         _, rid = _setup_profile_and_repo(migrated_pg, "re_running_profile", head_sha="sha_before")
         app = create_app()
         with mock.patch(
@@ -188,28 +168,28 @@ class TestResetEmbed:
         ) as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/reset-embed",
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/reset-embed",
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "error" in body
         # head_sha must remain unchanged
         assert _get_head_sha(migrated_pg, rid) == "sha_before"
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_nonexistent_repo_returns_404_style_redirect(self, migrated_pg):
-        """POST on non-existent repo_id → 404 redirect."""
+    async def test_nonexistent_repo_returns_404(self, migrated_pg):
+        """POST on non-existent repo_id → 404 JSON."""
         app = create_app()
         with mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
         ):
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/repos/repos/999999/reset-embed",
-                    follow_redirects=False,
+                    "/api/repos/repos/999999/reset-embed",
                 )
 
         assert resp.status_code == 404
+        body = resp.json()
+        assert "error" in body
