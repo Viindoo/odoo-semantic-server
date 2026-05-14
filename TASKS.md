@@ -184,7 +184,7 @@
 **Section E — Concurrency Hardening (P1):**
 - [x] `src/indexer/pipeline.py`: thêm `indexer_is_running(pg_conn) -> bool` public helper
 - [x] `src/web_ui/routes/repos.py`: dedup check trước Popen + `flash` query param trong `repos_page()`
-- [x] `src/web_ui/templates/repos.html`: flash warning banner (amber style)
+- [x] flash warning banner (amber style) — was src/web_ui/templates/repos.html, file removed in M8 W1 (logic moves to Astro in W3)
 - [x] `tests/test_web_ui_repos.py`: 2 unit tests dedup (blocked + ok path)
 
 **Section F — Job Tracking (P2 — Complete):**
@@ -193,7 +193,7 @@
 - [x] `src/indexer/__main__.py`: thêm `--job-id INT` arg → update job status start/success/error
 - [x] `src/web_ui/routes/repos.py`: `index_repo()` tạo job record + truyền `--job-id` vào subprocess
 - [x] route GET /repos/jobs/{job_id}/status: JSON `{id, profile_name, status, pid, started_at, finished_at, error_msg, created_at}` — landed cùng `src/web_ui/routes/repos.py`
-- [x] `src/web_ui/templates/repos.html`: status badge + JS polling 5s nếu running/queued
+- [x] status badge + JS polling 5s nếu running/queued — was src/web_ui/templates/repos.html, file removed in M8 W1 (logic moves to Astro W3, tested by W7 browser)
 - [x] `tests/test_job_registry.py`: unit tests CRUD (15 tests)
 
 > **Lý do tách M5.5:** items polish không block M5 ship; deferred items cần auth layer M5 trước. Pattern theo M2.5 precedent (milestone phụ giữa product milestones).
