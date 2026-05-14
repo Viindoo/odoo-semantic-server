@@ -25,34 +25,40 @@ import sys
 
 from src.git_utils import default_clone_dir
 
-# (name, odoo_version, description) — 26 rows total.
-_PROFILE_DEFS: list[tuple[str, str, str]] = [
-    ("odoo_8",  "8.0",  "Odoo CE 8.0 (Viindoo fork as canonical CE)"),
-    ("odoo_9",  "9.0",  "Odoo CE 9.0 (Viindoo fork as canonical CE)"),
-    ("odoo_10", "10.0", "Odoo CE 10.0 (Viindoo fork as canonical CE)"),
-    ("odoo_11", "11.0", "Odoo CE 11.0 (Viindoo fork as canonical CE)"),
-    ("odoo_12", "12.0", "Odoo CE 12.0 (Viindoo fork as canonical CE)"),
-    ("odoo_13", "13.0", "Odoo CE 13.0 (Viindoo fork as canonical CE)"),
-    ("odoo_14", "14.0", "Odoo CE 14.0 (Viindoo fork as canonical CE)"),
-    ("odoo_15", "15.0", "Odoo CE 15.0 (Viindoo fork as canonical CE)"),
-    ("odoo_16", "16.0", "Odoo CE 16.0 (Viindoo fork as canonical CE)"),
-    ("odoo_17", "17.0", "Odoo CE 17.0 (Viindoo fork as canonical CE)"),
-    ("odoo_18", "18.0", "Odoo CE 18.0 (Viindoo fork as canonical CE)"),
-    ("odoo_19", "19.0", "Odoo CE 19.0 (Viindoo fork as canonical CE)"),
-    ("standard_viindoo_8",  "8.0",  "Standard Viindoo 8.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_9",  "9.0",  "Standard Viindoo 9.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_10", "10.0", "Standard Viindoo 10.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_11", "11.0", "Standard Viindoo 11.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_12", "12.0", "Standard Viindoo 12.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_13", "13.0", "Standard Viindoo 13.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_14", "14.0", "Standard Viindoo 14.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_15", "15.0", "Standard Viindoo 15.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_16", "16.0", "Standard Viindoo 16.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_17", "17.0", "Standard Viindoo 17.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_18", "18.0", "Standard Viindoo 18.0 (Odoo CE + Viindoo addons)"),
-    ("standard_viindoo_19", "19.0", "Standard Viindoo 19.0 (Odoo CE + Viindoo addons)"),
-    ("viindoo_internal_17", "17.0", "Viindoo Internal 17.0 (Standard Viindoo + internal repos)"),
-    ("viindoo_internal_18", "18.0", "Viindoo Internal 18.0 (Standard Viindoo + internal repos)"),
+# (name, odoo_version, description, parent_name_or_None) — 26 rows total.
+# Hierarchy per version:
+#   odoo_N → None (root)
+#   standard_viindoo_N → odoo_N
+#   viindoo_internal_N → standard_viindoo_N (only v17 and v18 exist)
+_PROFILE_DEFS: list[tuple[str, str, str, str | None]] = [
+    ("odoo_8",  "8.0",  "Odoo CE 8.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_9",  "9.0",  "Odoo CE 9.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_10", "10.0", "Odoo CE 10.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_11", "11.0", "Odoo CE 11.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_12", "12.0", "Odoo CE 12.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_13", "13.0", "Odoo CE 13.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_14", "14.0", "Odoo CE 14.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_15", "15.0", "Odoo CE 15.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_16", "16.0", "Odoo CE 16.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_17", "17.0", "Odoo CE 17.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_18", "18.0", "Odoo CE 18.0 (Viindoo fork as canonical CE)", None),
+    ("odoo_19", "19.0", "Odoo CE 19.0 (Viindoo fork as canonical CE)", None),
+    ("standard_viindoo_8",  "8.0",  "Standard Viindoo 8.0 (Odoo CE + Viindoo addons)",  "odoo_8"),
+    ("standard_viindoo_9",  "9.0",  "Standard Viindoo 9.0 (Odoo CE + Viindoo addons)",  "odoo_9"),
+    ("standard_viindoo_10", "10.0", "Standard Viindoo 10.0 (Odoo CE + Viindoo addons)", "odoo_10"),
+    ("standard_viindoo_11", "11.0", "Standard Viindoo 11.0 (Odoo CE + Viindoo addons)", "odoo_11"),
+    ("standard_viindoo_12", "12.0", "Standard Viindoo 12.0 (Odoo CE + Viindoo addons)", "odoo_12"),
+    ("standard_viindoo_13", "13.0", "Standard Viindoo 13.0 (Odoo CE + Viindoo addons)", "odoo_13"),
+    ("standard_viindoo_14", "14.0", "Standard Viindoo 14.0 (Odoo CE + Viindoo addons)", "odoo_14"),
+    ("standard_viindoo_15", "15.0", "Standard Viindoo 15.0 (Odoo CE + Viindoo addons)", "odoo_15"),
+    ("standard_viindoo_16", "16.0", "Standard Viindoo 16.0 (Odoo CE + Viindoo addons)", "odoo_16"),
+    ("standard_viindoo_17", "17.0", "Standard Viindoo 17.0 (Odoo CE + Viindoo addons)", "odoo_17"),
+    ("standard_viindoo_18", "18.0", "Standard Viindoo 18.0 (Odoo CE + Viindoo addons)", "odoo_18"),
+    ("standard_viindoo_19", "19.0", "Standard Viindoo 19.0 (Odoo CE + Viindoo addons)", "odoo_19"),
+    ("viindoo_internal_17", "17.0",
+     "Viindoo Internal 17.0 (Standard Viindoo + internal repos)", "standard_viindoo_17"),
+    ("viindoo_internal_18", "18.0",
+     "Viindoo Internal 18.0 (Standard Viindoo + internal repos)", "standard_viindoo_18"),
 ]
 
 # URL convention: git@github.com:Viindoo/<repo>.git for ALL Viindoo repos
@@ -140,20 +146,22 @@ _SEED_NAME_PATTERNS = ("odoo\\_%", "standard\\_viindoo\\_%", "viindoo\\_internal
 
 
 def seed_profiles(conn) -> tuple[int, int]:
-    """Idempotent INSERT for the 26 seeded profiles.
+    """Idempotent 2-pass INSERT + FK update for the 26 seeded profiles.
+
+    Pass 1: INSERT all rows with parent_profile_id=NULL (ON CONFLICT DO NOTHING).
+    Pass 2: for each def with a non-None parent_name, look up child_id + parent_id
+            by name, then UPDATE parent_profile_id idempotently (IS DISTINCT FROM).
 
     Returns ``(inserted, skipped)`` where inserted + skipped == 26.
-    Uses ON CONFLICT (name) DO NOTHING — existing profiles (manual or prior
-    seed) are left alone.
 
-    Commits before returning when the caller passes a non-autocommit
-    connection, so callers cannot accidentally leave an open transaction.
-    Under ``migrate.main()`` the connection is autocommit=True and the
-    guard is a no-op.
+    Commits before returning when the caller passes a non-autocommit connection.
+    Under ``migrate.main()`` the connection is autocommit=True and the guard is
+    a no-op.
     """
+    # --- Pass 1: INSERT ---------------------------------------------------
     inserted = 0
     skipped = 0
-    for name, version, description in _PROFILE_DEFS:
+    for name, version, description, _parent in _PROFILE_DEFS:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO profiles (name, odoo_version, description) "
@@ -164,8 +172,49 @@ def seed_profiles(conn) -> tuple[int, int]:
                 inserted += 1
             else:
                 skipped += 1
+
     if not conn.autocommit:
         conn.commit()
+
+    # --- Pass 2: set parent_profile_id FK ----------------------------------
+    # We do a fresh import here to avoid circular-import issues; repo_store()
+    # is not available at module import time (pool may not be initialised).
+    # Direct SQL is simpler and avoids the pool entirely for this seed path.
+    parent_updates = 0
+    for name, _version, _desc, parent_name in _PROFILE_DEFS:
+        if parent_name is None:
+            continue
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM profiles WHERE name = %s", (name,))
+            child_row = cur.fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM profiles WHERE name = %s", (parent_name,))
+            parent_row = cur.fetchone()
+
+        if child_row is None or parent_row is None:
+            # Defensive: profile not present (deleted, or partial seed). Skip silently.
+            continue
+
+        child_id = child_row[0]
+        parent_id = parent_row[0]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE profiles "
+                "SET parent_profile_id = %s "
+                "WHERE id = %s AND parent_profile_id IS DISTINCT FROM %s",
+                (parent_id, child_id, parent_id),
+            )
+            if cur.rowcount > 0:
+                parent_updates += 1
+
+    if not conn.autocommit:
+        conn.commit()
+
+    if parent_updates:
+        print(f"✓ Updated parent_profile_id for {parent_updates} seeded profiles")
+
     return inserted, skipped
 
 

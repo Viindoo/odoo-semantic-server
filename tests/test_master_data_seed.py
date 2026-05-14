@@ -278,3 +278,75 @@ def test_seed_repos_uses_viindoo_ssh_url(clean_pg, profile_name, expected_url_su
     assert any(expected_url_substring in url for url in urls), (
         f"{profile_name} missing {expected_url_substring} in {urls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# M8 — Parent FK seed tests
+# ---------------------------------------------------------------------------
+
+def test_seed_sets_parent_fk(clean_pg):
+    """After seed_profiles(), viindoo_internal_17.parent_profile_id → standard_viindoo_17."""
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT p_child.parent_profile_id, p_parent.name "
+            "FROM profiles p_child "
+            "JOIN profiles p_parent ON p_parent.id = p_child.parent_profile_id "
+            "WHERE p_child.name = %s",
+            ("viindoo_internal_17",),
+        )
+        row = cur.fetchone()
+
+    assert row is not None, "viindoo_internal_17 must have a parent_profile_id set"
+    assert row[1] == "standard_viindoo_17", (
+        f"expected parent standard_viindoo_17, got {row[1]}"
+    )
+
+
+def test_seed_parent_chain_standard_to_odoo(clean_pg):
+    """standard_viindoo_17.parent_profile_id → odoo_17 after seed."""
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT p_parent.name "
+            "FROM profiles p_child "
+            "JOIN profiles p_parent ON p_parent.id = p_child.parent_profile_id "
+            "WHERE p_child.name = %s",
+            ("standard_viindoo_17",),
+        )
+        row = cur.fetchone()
+
+    assert row is not None
+    assert row[0] == "odoo_17"
+
+
+def test_seed_idempotent_when_parent_already_set(clean_pg):
+    """Second seed_profiles() call is a no-op — does not change parent_profile_id."""
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)
+
+    # Record parent FK before second seed
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT parent_profile_id FROM profiles WHERE name = %s",
+            ("viindoo_internal_17",),
+        )
+        parent_id_before = cur.fetchone()[0]
+
+    # Second seed
+    seed_profiles(clean_pg)
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT parent_profile_id FROM profiles WHERE name = %s",
+            ("viindoo_internal_17",),
+        )
+        parent_id_after = cur.fetchone()[0]
+
+    assert parent_id_before == parent_id_after, (
+        "parent_profile_id must not change on second seed"
+    )

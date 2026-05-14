@@ -31,6 +31,16 @@
             <input type="text" name="description" placeholder="optional" maxlength="200"
                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem">
         </div>
+        <div>
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Parent Profile</label>
+            <select name="parent_id"
+                    style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem">
+                <option value="">(none — root profile)</option>
+                {% for p in profiles %}
+                <option value="{{ p.id }}">{{ p.name }} ({{ p.odoo_version }})</option>
+                {% endfor %}
+            </select>
+        </div>
         <button type="submit" class="btn btn-primary">Add Profile</button>
     </form>
 </div>

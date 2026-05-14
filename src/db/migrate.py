@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS profiles (
     created_at   TIMESTAMP DEFAULT NOW()
 );
 
+-- M8: parent_profile_id self-FK for delta-repo hierarchy (idempotent ALTER for
+-- upgrade path from pre-M8 schemas that do not yet have this column).
+ALTER TABLE profiles
+    ADD COLUMN IF NOT EXISTS parent_profile_id INTEGER
+    REFERENCES profiles(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_profiles_parent ON profiles(parent_profile_id);
+
 CREATE TABLE IF NOT EXISTS repos (
     id              SERIAL PRIMARY KEY,
     profile_id      INTEGER REFERENCES profiles(id) ON DELETE CASCADE,
