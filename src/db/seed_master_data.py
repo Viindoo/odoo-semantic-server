@@ -15,7 +15,8 @@ Profile rows are seeded by ``seed_profiles()`` only —
 
 Called from two places:
 1. ``src/db/migrate.py::main`` — after yoyo applies migrations, invokes
-   ``seed_repos(conn)`` (profiles already seeded by the SQL migration).
+   ``seed_all(conn)`` — both profiles and repos seeded by Python; the SQL
+   migration only owns the upgrade-safe ``ALTER TABLE``.
 2. ``python -m src.manager seed-master-data`` CLI — invokes ``seed_all`` or
    ``reset_seeded_data`` for re-seed / destructive reset.
 """
@@ -144,6 +145,11 @@ def seed_profiles(conn) -> tuple[int, int]:
     Returns ``(inserted, skipped)`` where inserted + skipped == 26.
     Uses ON CONFLICT (name) DO NOTHING — existing profiles (manual or prior
     seed) are left alone.
+
+    Commits before returning when the caller passes a non-autocommit
+    connection, so callers cannot accidentally leave an open transaction.
+    Under ``migrate.main()`` the connection is autocommit=True and the
+    guard is a no-op.
     """
     inserted = 0
     skipped = 0
@@ -173,6 +179,11 @@ def seed_repos(conn) -> tuple[int, int]:
     default_clone_dir(profile_name, url)`` and ``clone_status='manual'``.
     ON CONFLICT (url, branch) DO NOTHING — repos already registered (under
     any profile) are left alone.
+
+    Commits before returning when the caller passes a non-autocommit
+    connection, so callers cannot accidentally leave an open transaction.
+    Under ``migrate.main()`` the connection is autocommit=True and the
+    guard is a no-op.
     """
     inserted = 0
     skipped = 0
