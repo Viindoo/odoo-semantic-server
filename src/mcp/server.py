@@ -192,7 +192,11 @@ def _resolve_version(version_arg: str, session) -> str:
     return v
 
 
-def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
+def _resolve_model(
+    model_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
@@ -207,6 +211,7 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
         layers = session.run(
             f"""
             MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
+            WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
             WITH m, mod,
                  CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
                  COUNT {{
@@ -219,7 +224,7 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
             """,
-            name=model_name, v=odoo_version,
+            name=model_name, v=odoo_version, profile_name=profile_name,
         ).data()
 
         if not layers:
@@ -270,13 +275,19 @@ def _resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     return "\n".join(lines)
 
 
-def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
+def _resolve_field(
+    model_name: str,
+    field_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
         # 5-tier ranking via m_node proxy — see docs/adr/0013
         records = session.run(f"""
             MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
             OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
             WITH f, mod, m_node,
@@ -291,7 +302,7 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
             RETURN f, f.module AS module_name, mod.repo AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
-        """, fn=field_name, mn=model_name, v=odoo_version).data()
+        """, fn=field_name, mn=model_name, v=odoo_version, profile_name=profile_name).data()
 
     if not records:
         return (
@@ -316,13 +327,19 @@ def _resolve_field(model_name: str, field_name: str, odoo_version: str = "auto")
     return "\n".join(lines)
 
 
-def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
+def _resolve_method(
+    model_name: str,
+    method_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
         # 5-tier ranking via m_node proxy — see docs/adr/0013
         records = session.run(f"""
             MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
             OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $model, module: mth.module, odoo_version: $v}})
             WITH mth, mod, m_node,
@@ -337,7 +354,7 @@ def _resolve_method(model_name: str, method_name: str, odoo_version: str = "auto
             RETURN mth, mth.module AS module_name, mod.repo AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
-        """, mn=method_name, model=model_name, v=odoo_version).data()
+        """, mn=method_name, model=model_name, v=odoo_version, profile_name=profile_name).data()
 
     if not records:
         return (
@@ -568,7 +585,11 @@ def _find_examples(
 
 
 @mcp.tool()
-def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
+def resolve_model(
+    model_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
     """Return full inheritance chain, field count, and method count for an Odoo model.
 
     TRIGGER when: "show inheritance chain of sale.order", "what fields does
@@ -583,6 +604,11 @@ def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
     Args:
         model_name: Odoo dotted name, e.g. 'sale.order', 'res.partner'.
         odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
+        profile_name: Optional profile filter (e.g. 'internal_profile_17').
+            When provided, only returns nodes whose profile array includes
+            this name — supports delta-repo hierarchy so a query for the
+            deepest child profile also returns nodes from parent profiles.
+            Default None = no filter (all profiles).
 
     Returns:
         Tree text: Defined in, Inherits from, Extended by, Fields count,
@@ -598,11 +624,16 @@ def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
           ├─ Fields: 47
           └─ Methods: 23
     """
-    return _resolve_model(model_name, odoo_version)
+    return _resolve_model(model_name, odoo_version, profile_name)
 
 
 @mcp.tool()
-def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") -> str:
+def resolve_field(
+    model_name: str,
+    field_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
     """Return type, compute/related metadata, and declaring modules for one field.
 
     TRIGGER when: "what type is amount_total field", "is this field computed or
@@ -616,6 +647,9 @@ def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") 
         model_name: e.g. 'sale.order'.
         field_name: e.g. 'amount_total'.
         odoo_version: e.g. '17.0'. Default 'auto'.
+        profile_name: Optional profile filter (e.g. 'internal_profile_17').
+            Filters to nodes whose profile array includes this name.
+            Default None = no filter.
 
     Returns:
         Tree text: Type, Computed, Stored, Required, Related, Declared in
@@ -632,11 +666,16 @@ def resolve_field(model_name: str, field_name: str, odoo_version: str = "auto") 
           └─ Declared in:
               └─ [odoo] sale
     """
-    return _resolve_field(model_name, field_name, odoo_version)
+    return _resolve_field(model_name, field_name, odoo_version, profile_name)
 
 
 @mcp.tool()
-def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto") -> str:
+def resolve_method(
+    model_name: str,
+    method_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
     """Return the full override chain of a method, ordered base to top.
 
     TRIGGER when: "show override chain of action_confirm", "which modules
@@ -651,6 +690,9 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
         model_name: e.g. 'sale.order'.
         method_name: e.g. 'action_confirm'.
         odoo_version: e.g. '17.0'. Default 'auto'.
+        profile_name: Optional profile filter (e.g. 'internal_profile_17').
+            Filters to nodes whose profile array includes this name.
+            Default None = no filter.
 
     Returns:
         Tree text: override chain ordered base→top, each entry shows module,
@@ -664,7 +706,7 @@ def resolve_method(model_name: str, method_name: str, odoo_version: str = "auto"
               ├─ [odoo] viin_sale — ✓ calls super() — decorators: —
               └─ [odoo] to_sale_workflow — ✓ calls super() — decorators: —
     """
-    return _resolve_method(model_name, method_name, odoo_version)
+    return _resolve_method(model_name, method_name, odoo_version, profile_name)
 
 
 @mcp.tool()

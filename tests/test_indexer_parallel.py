@@ -75,12 +75,13 @@ class TestMaxWorkers1Sequential:
         call_order: list[int] = []
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
-                            progress=False, full_reindex=False):
+                            progress=False, full_reindex=False, ancestor_profiles=None):
             call_order.append(repo["id"])
             return _fake_counters()
 
         mock_store = MagicMock()
         mock_store.get_repos_for_profile.return_value = repos
+        mock_store.get_ancestor_profile_names.return_value = ["test"]
 
         with (
             patch("src.indexer.pipeline.repo_store", return_value=mock_store),
@@ -108,7 +109,7 @@ class TestMaxWorkers2Concurrent:
         concurrency_detected = threading.Event()  # set when BOTH are inside simultaneously
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
-                            progress=False, full_reindex=False):
+                            progress=False, full_reindex=False, ancestor_profiles=None):
             inside_event.set()  # signal that we're inside
             # Give the other thread time to also enter
             concurrency_detected.wait(timeout=2.0)
@@ -125,7 +126,7 @@ class TestMaxWorkers2Concurrent:
         overlap_detected = threading.Event()
 
         def fake_index_repo_v2(repo, writer, pg_conn=None, embedder=None, gc=False,
-                               progress=False, full_reindex=False):
+                               progress=False, full_reindex=False, ancestor_profiles=None):
             nonlocal active_count
             with lock:
                 active_count += 1
@@ -144,6 +145,7 @@ class TestMaxWorkers2Concurrent:
 
         mock_store = MagicMock()
         mock_store.get_repos_for_profile.return_value = repos
+        mock_store.get_ancestor_profile_names.return_value = ["test"]
 
         with (
             patch("src.indexer.pipeline.repo_store", return_value=mock_store),
@@ -207,7 +209,7 @@ class TestMaxWorkers2PartialFailure:
         update_calls: list[tuple] = []
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
-                            progress=False, full_reindex=False):
+                            progress=False, full_reindex=False, ancestor_profiles=None):
             if repo["id"] == 10:
                 raise RuntimeError("simulated failure on repo 10")
             return _fake_counters(3)
@@ -223,6 +225,7 @@ class TestMaxWorkers2PartialFailure:
 
         mock_store = MagicMock()
         mock_store.get_repos_for_profile.return_value = repos
+        mock_store.get_ancestor_profile_names.return_value = ["test"]
         mock_store.update_repo_status.side_effect = fake_update_repo_status
 
         with (

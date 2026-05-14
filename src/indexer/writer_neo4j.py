@@ -31,7 +31,7 @@ from .models import (
 _logger = logging.getLogger(__name__)
 
 
-def _write_parse_result(tx, result: ParseResult) -> None:
+def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
     module = result.module
 
     tx.run("""
@@ -39,12 +39,14 @@ def _write_parse_result(tx, result: ParseResult) -> None:
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
             m.edition = $edition,
             m.viindoo_equivalent_qname = $vvq,
-            m.last_commit_sha = $commit_sha
+            m.last_commit_sha = $commit_sha,
+            m.profile = $profiles
     """, name=module.name, v=module.odoo_version,
          repo=module.repo, path=module.path, version_raw=module.version_raw,
          edition=module.edition,
          vvq=module.viindoo_equivalent_qname,
-         commit_sha=module.commit_sha)
+         commit_sha=module.commit_sha,
+         profiles=profiles)
 
     for dep in module.depends:
         tx.run(f"""
@@ -60,18 +62,21 @@ def _write_parse_result(tx, result: ParseResult) -> None:
             ON CREATE SET m.is_transient = $is_transient,
                           m.is_abstract = $is_abstract,
                           m.had_explicit_name = $had_explicit_name,
-                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list)
+                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list),
+                          m.profile = $profiles
             ON MATCH  SET m.is_abstract = $is_abstract,
                           m.is_transient = $is_transient,
                           m.had_explicit_name = $had_explicit_name,
-                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list)
+                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list),
+                          m.profile = $profiles
             MERGE (m)-[:{REL_DEFINED_IN}]->(mod)
         """, name=model.name, v=model.odoo_version,
              module_name=model.module,
              is_abstract=model.is_abstract,
              is_transient=model.is_transient,
              had_explicit_name=model.had_explicit_name,
-             inherit_list=model.inherit)
+             inherit_list=model.inherit,
+             profiles=profiles)
 
         for idx, parent_name in enumerate(model.inherit):
             if parent_name == model.name:
@@ -139,11 +144,13 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                 MERGE (f:Field {name: $name, model: $model_name,
                                module: $mod, odoo_version: $v})
                 SET f.ttype = $ttype, f.related = $related, f.compute = $compute,
-                    f.stored = $stored, f.required = $required
+                    f.stored = $stored, f.required = $required,
+                    f.profile = $profiles
                 MERGE (f)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=fld.name, ttype=fld.ttype, related=fld.related,
-                 compute=fld.compute, stored=fld.stored, required=fld.required)
+                 compute=fld.compute, stored=fld.stored, required=fld.required,
+                 profiles=profiles)
 
         for mth in model.methods:
             tx.run("""
@@ -155,13 +162,14 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                     mth.convention_kind = $ck,
                     mth.super_safety = $ss,
                     mth.return_required = $rr,
-                    mth.signature = $sig
+                    mth.signature = $sig,
+                    mth.profile = $profiles
                 MERGE (mth)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
                  decorators=mth.decorators,
                  ck=mth.convention_kind, ss=mth.super_safety, rr=mth.return_required,
-                 sig=mth.signature)
+                 sig=mth.signature, profiles=profiles)
 
             # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
             # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
@@ -177,19 +185,21 @@ def _write_parse_result(tx, result: ParseResult) -> None:
                      v=model.odoo_version, ref=ref)
 
 
-def _write_view_parse_result(tx, result: ViewParseResult) -> None:
+def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
     for view in result.views:
         tx.run("""
             MERGE (v:View {xmlid: $xmlid, odoo_version: $ver})
             SET v.name = $name, v.model = $model, v.module = $module,
                 v.type = $view_type, v.mode = $mode,
                 v.xpaths_exprs = $xpaths_exprs,
-                v.xpaths_positions = $xpaths_positions
+                v.xpaths_positions = $xpaths_positions,
+                v.profile = $profiles
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
              view_type=view.view_type, mode=view.mode,
              xpaths_exprs=[x.expr for x in view.xpaths],
-             xpaths_positions=[x.position for x in view.xpaths])
+             xpaths_positions=[x.position for x in view.xpaths],
+             profiles=profiles)
 
         tx.run(f"""
             MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
@@ -231,8 +241,8 @@ def _write_view_parse_result(tx, result: ViewParseResult) -> None:
     for qweb in result.qweb:
         tx.run("""
             MERGE (t:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-            SET t.module = $module
-        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module)
+            SET t.module = $module, t.profile = $profiles
+        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module, profiles=profiles)
 
         tx.run(f"""
             MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
@@ -264,18 +274,20 @@ def _write_view_parse_result(tx, result: ViewParseResult) -> None:
                      inherit_xmlid=qweb.inherit_xmlid)
 
 
-def _write_js_graph_result(tx, result: JSGraphResult) -> None:
+def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> None:
     # Write OWLComp nodes first so PATCHES can resolve against them
     for comp in result.components:
         tx.run(f"""
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             MERGE (c:OWLComp {{name: $name, module: $module_name, odoo_version: $v}})
             SET c.template = $template, c.extends = $extends,
-                c.bound_model = $bound_model, c.file_path = $file_path
+                c.bound_model = $bound_model, c.file_path = $file_path,
+                c.profile = $profiles
             MERGE (c)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=comp.module, v=comp.odoo_version,
              name=comp.name, template=comp.template, extends=comp.extends,
-             bound_model=comp.bound_model, file_path=comp.file_path)
+             bound_model=comp.bound_model, file_path=comp.file_path,
+             profiles=profiles)
 
         # EXTENDS edge — only when parent OWLComp exists in same version (no placeholder)
         if comp.extends:
@@ -301,11 +313,11 @@ def _write_js_graph_result(tx, result: JSGraphResult) -> None:
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             MERGE (j:JSPatch {{target: $target, patch_name: $patch_name,
                               module: $module_name, odoo_version: $v}})
-            SET j.era = $era, j.file_path = $file_path
+            SET j.era = $era, j.file_path = $file_path, j.profile = $profiles
             MERGE (j)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=patch.module, v=patch.odoo_version,
              target=patch.target, patch_name=patch.patch_name,
-             era=patch.era, file_path=patch.file_path)
+             era=patch.era, file_path=patch.file_path, profiles=profiles)
 
         # PATCHES edge — try resolve to existing OWLComp, else create placeholder
         rec = tx.run("""
@@ -493,20 +505,43 @@ class Neo4jWriter:
             ]:
                 session.run(stmt)
 
-    def write_results(self, results: list[ParseResult]) -> None:
-        with self.driver.session() as session:
-            for result in results:
-                session.execute_write(_write_parse_result, result)
+    def write_results(
+        self,
+        results: list[ParseResult],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist ParseResult nodes (Module/Model/Field/Method).
 
-    def write_view_results(self, results: list[ViewParseResult]) -> None:
+        *profiles* is the ancestor profile name array (self at index 0, root last)
+        written as a ``profile`` list property on every node. Empty list written
+        when caller doesn't supply a value (backward-compat for unit tests).
+        """
+        _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_view_parse_result, result)
+                session.execute_write(_write_parse_result, result, _profiles)
 
-    def write_js_graph_results(self, results: list[JSGraphResult]) -> None:
+    def write_view_results(
+        self,
+        results: list[ViewParseResult],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist View and QWebTmpl nodes. *profiles* written as node property."""
+        _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_js_graph_result, result)
+                session.execute_write(_write_view_parse_result, result, _profiles)
+
+    def write_js_graph_results(
+        self,
+        results: list[JSGraphResult],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist OWLComp and JSPatch nodes. *profiles* written as node property."""
+        _profiles = profiles if profiles is not None else []
+        with self.driver.session() as session:
+            for result in results:
+                session.execute_write(_write_js_graph_result, result, _profiles)
 
     # --- M4.5 spec layer (CoreSymbol + diff edges) -------------------------
 

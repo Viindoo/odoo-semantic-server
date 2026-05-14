@@ -1819,3 +1819,96 @@ def test_module_merge_key_excludes_last_commit_sha(writer, neo4j_driver):
         f"Expected latest commit_sha 'bbbbbbbbbbbbbbbbbbbb', got {sha_rec['sha']}"
     )
 
+
+# ---------------------------------------------------------------------------
+# M8 — Profile array property tests (ADR-0014 Option Y)
+# ---------------------------------------------------------------------------
+
+def test_module_node_carries_profile_array(writer, neo4j_driver):
+    """write_results with profiles arg writes m.profile list on Module node."""
+    profiles = ["internal_profile_17", "standard_profile_17", "odoo_17"]
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["p"] == profiles
+
+
+def test_model_node_carries_profile_array(writer, neo4j_driver):
+    """write_results with profiles arg writes m.profile list on Model node."""
+    profiles = ["internal_profile_17", "odoo_17"]
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Model {name: $n, module: $mod, odoo_version: $v}) "
+            "RETURN m.profile AS p",
+            n="sale.order", mod="sale", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["p"] == profiles
+
+
+def test_profile_array_overwritten_on_reindex(writer, neo4j_driver):
+    """Second write_results call overwrites profile array (no append)."""
+    first_profiles = ["internal_profile_17"]
+    second_profiles = ["internal_profile_17", "standard_profile_17", "odoo_17"]
+
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=first_profiles)
+    writer.write_results([result], profiles=second_profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert rec["p"] == second_profiles  # last write wins
+
+
+def test_profile_filter_in_ancestor_query(writer, neo4j_driver):
+    """Cypher `$profile_name IN m.profile` returns node indexed under child profile."""
+    # Index "sale" module under internal_profile_17 (which includes odoo_17 in chain)
+    profiles = ["internal_profile_17", "standard_profile_17", "odoo_17"]
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=profiles)
+
+    # Query filtering on ancestor profile "odoo_17" — should still find the node
+    # because odoo_17 is IN the profile array
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            "MATCH (m:Module {odoo_version: $v}) "
+            "WHERE $pn IN m.profile "
+            "RETURN m.name AS name",
+            v=TEST_VERSION, pn="odoo_17",
+        ).data()
+
+    names = [r["name"] for r in rows]
+    assert "sale" in names, (
+        f"Expected 'sale' when filtering profile_name='odoo_17' (ancestor), got {names}"
+    )
+
+
+def test_write_results_no_profiles_empty_array(writer, neo4j_driver):
+    """write_results without profiles arg writes empty profile array (backward compat)."""
+    result = make_parse_result("some_module", "some.model")
+    writer.write_results([result])  # no profiles kwarg
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="some_module", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["p"] == [] or rec["p"] is None  # empty list or null — no crash
+

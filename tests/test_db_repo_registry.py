@@ -236,3 +236,97 @@ def test_ssh_key_delete_sets_repo_ssh_key_id_null(migrated_pg):
     assert repo_after["ssh_key_id"] is None, (
         "repos.ssh_key_id must be NULL after FK ON DELETE SET NULL"
     )
+
+
+# ---------------------------------------------------------------------------
+# M8 — Profile hierarchy tests
+# ---------------------------------------------------------------------------
+
+def test_get_ancestor_profile_names_three_tier(migrated_pg):
+    """get_ancestor_profile_names returns [self, parent, grandparent] in order."""
+    root_id = repo_store().add_profile("odoo_17", "17.0")
+    mid_id = repo_store().add_profile("standard_profile_17", "17.0")
+    leaf_id = repo_store().add_profile("internal_profile_17", "17.0")
+
+    repo_store().set_profile_parent(mid_id, root_id)
+    repo_store().set_profile_parent(leaf_id, mid_id)
+
+    names = repo_store().get_ancestor_profile_names("internal_profile_17")
+    assert names == ["internal_profile_17", "standard_profile_17", "odoo_17"]
+
+
+def test_get_ancestor_repos_three_tier(migrated_pg):
+    """get_ancestor_repos returns repos from all tiers, depth ASC order."""
+    root_id = repo_store().add_profile("odoo_17", "17.0")
+    mid_id = repo_store().add_profile("standard_profile_17", "17.0")
+    leaf_id = repo_store().add_profile("internal_profile_17", "17.0")
+
+    repo_store().set_profile_parent(mid_id, root_id)
+    repo_store().set_profile_parent(leaf_id, mid_id)
+
+    # Add one repo per tier
+    repo_store().add_repo(leaf_id, "github.com/internal/repo", "17.0", "/tmp/internal")
+    repo_store().add_repo(mid_id, "github.com/acme_addons/repo", "17.0", "/tmp/tvtma")
+    repo_store().add_repo(root_id, "github.com/odoo/odoo", "17.0", "/tmp/odoo")
+
+    repos = repo_store().get_ancestor_repos("internal_profile_17")
+    assert len(repos) == 3
+
+    profile_names = [r["profile_name"] for r in repos]
+    # self-tier repos come before parent tiers
+    assert profile_names[0] == "internal_profile_17"
+    assert profile_names[1] == "standard_profile_17"
+    assert profile_names[2] == "odoo_17"
+
+
+def test_cycle_prevention_self_ref(migrated_pg):
+    """set_profile_parent(A, A) raises ValueError — self-reference."""
+    pid = repo_store().add_profile("odoo_17", "17.0")
+    with pytest.raises(ValueError, match="self-reference"):
+        repo_store().set_profile_parent(pid, pid)
+
+
+def test_cycle_prevention_a_b_a(migrated_pg):
+    """A → B exists; B → A raises ValueError (would create cycle)."""
+    a_id = repo_store().add_profile("odoo_17", "17.0")
+    b_id = repo_store().add_profile("standard_profile_17", "17.0")
+
+    repo_store().set_profile_parent(b_id, a_id)  # A → B (B's parent = A)
+
+    # Now try to make A's parent = B — that would create A → B → A cycle
+    with pytest.raises(ValueError, match="cycle"):
+        repo_store().set_profile_parent(a_id, b_id)
+
+
+def test_version_mismatch_rejected(migrated_pg):
+    """parent.odoo_version != child.odoo_version raises ValueError."""
+    parent_id = repo_store().add_profile("odoo_16", "16.0")
+    child_id = repo_store().add_profile("viindoo_17", "17.0")
+
+    with pytest.raises(ValueError, match="version mismatch"):
+        repo_store().set_profile_parent(child_id, parent_id)
+
+
+def test_set_profile_parent_idempotent(migrated_pg):
+    """Calling set_profile_parent twice with same value: first True, second False."""
+    parent_id = repo_store().add_profile("odoo_17", "17.0")
+    child_id = repo_store().add_profile("standard_profile_17", "17.0")
+
+    changed_first = repo_store().set_profile_parent(child_id, parent_id)
+    assert changed_first is True
+
+    changed_second = repo_store().set_profile_parent(child_id, parent_id)
+    assert changed_second is False
+
+
+def test_get_ancestor_profile_names_no_parent(migrated_pg):
+    """Root profile returns just its own name."""
+    repo_store().add_profile("odoo_17", "17.0")
+    names = repo_store().get_ancestor_profile_names("odoo_17")
+    assert names == ["odoo_17"]
+
+
+def test_get_ancestor_profile_names_unknown(migrated_pg):
+    """Non-existent profile returns empty list."""
+    names = repo_store().get_ancestor_profile_names("nonexistent")
+    assert names == []

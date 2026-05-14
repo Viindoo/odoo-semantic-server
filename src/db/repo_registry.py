@@ -11,8 +11,19 @@ class RepoStore:
     def __init__(self, pool: PgPool) -> None:
         self._pool = pool
 
-    def add_profile(self, name: str, odoo_version: str, description: str = "") -> int:
-        """Insert a new profile. Raises ValueError if name already exists."""
+    def add_profile(
+        self,
+        name: str,
+        odoo_version: str,
+        description: str = "",
+        *,
+        parent_id: int | None = None,
+    ) -> int:
+        """Insert a new profile. Raises ValueError if name already exists.
+
+        When *parent_id* is provided, validates cycle-free + version-match
+        via ``_validate_parent`` before committing.
+        """
         try:
             with self._pool.checkout() as conn:
                 with conn.cursor() as cur:
@@ -22,6 +33,20 @@ class RepoStore:
                         (name, odoo_version, description),
                     )
                     row_id = cur.fetchone()[0]
+
+                if parent_id is not None:
+                    # Validate before persisting — rollback on failure.
+                    try:
+                        self._validate_parent(row_id, parent_id, conn=conn)
+                    except ValueError:
+                        conn.rollback()
+                        raise
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE profiles SET parent_profile_id = %s WHERE id = %s",
+                            (parent_id, row_id),
+                        )
+
                 conn.commit()
             return row_id
         except psycopg2.errors.UniqueViolation as e:
@@ -30,6 +55,177 @@ class RepoStore:
     def list_profiles(self) -> list[dict]:
         with self._pool.checkout() as conn:
             return self._pool.fetch_all(conn, "SELECT * FROM profiles ORDER BY id")
+
+    # ------------------------------------------------------------------
+    # Profile hierarchy helpers (M8 — Option Y)
+    # ------------------------------------------------------------------
+
+    def _validate_parent(
+        self,
+        profile_id: int,
+        parent_id: int | None,
+        *,
+        conn=None,
+    ) -> None:
+        """Validate a proposed parent assignment.
+
+        Raises ValueError when:
+        - parent_id == profile_id (self-reference cycle).
+        - Following parent_profile_id upward from *parent_id* reaches
+          *profile_id* (would create a cycle).
+        - parent.odoo_version != child.odoo_version (version mismatch).
+
+        *conn* is an optional already-open connection (used by add_profile to
+        reuse the transaction). When None a new checkout is used.
+        """
+        if parent_id is None:
+            return
+
+        if parent_id == profile_id:
+            raise ValueError(
+                f"profile id={profile_id} cannot be its own parent (self-reference cycle)"
+            )
+
+        def _run(c):
+            # Fetch child + parent versions in one shot, also get ancestor names
+            # via recursive CTE to detect cycles.
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT odoo_version FROM profiles WHERE id = %s",
+                    (profile_id,),
+                )
+                child_row = cur.fetchone()
+
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT odoo_version FROM profiles WHERE id = %s",
+                    (parent_id,),
+                )
+                parent_row = cur.fetchone()
+
+            if child_row is None:
+                raise ValueError(f"profile id={profile_id} not found")
+            if parent_row is None:
+                raise ValueError(f"parent profile id={parent_id} not found")
+
+            child_version = child_row[0]
+            parent_version = parent_row[0]
+
+            if child_version != parent_version:
+                raise ValueError(
+                    f"version mismatch: child odoo_version={child_version!r} != "
+                    f"parent odoo_version={parent_version!r}"
+                )
+
+            # Cycle check: walk upward from parent_id; if we reach profile_id
+            # then setting this parent would create a cycle.
+            with c.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH RECURSIVE ancestors AS (
+                        SELECT id, parent_profile_id
+                        FROM profiles WHERE id = %s
+                        UNION ALL
+                        SELECT p.id, p.parent_profile_id
+                        FROM profiles p
+                        JOIN ancestors a ON p.id = a.parent_profile_id
+                    )
+                    SELECT id FROM ancestors WHERE id = %s
+                    """,
+                    (parent_id, profile_id),
+                )
+                cycle_row = cur.fetchone()
+
+            if cycle_row is not None:
+                raise ValueError(
+                    f"setting parent id={parent_id} for profile id={profile_id} "
+                    f"would create a cycle"
+                )
+
+        if conn is not None:
+            _run(conn)
+        else:
+            with self._pool.checkout() as c:
+                _run(c)
+
+    def set_profile_parent(self, profile_id: int, parent_id: int | None) -> bool:
+        """Set (or clear) the parent_profile_id for *profile_id*.
+
+        Validates cycle-free + version-match before updating. The UPDATE uses
+        ``IS DISTINCT FROM`` so re-applying the same value is a no-op.
+
+        Returns:
+            True if the row was actually changed, False if already at the
+            requested value (idempotent).
+
+        Raises:
+            ValueError — cycle detected, version mismatch, or profile not found.
+        """
+        self._validate_parent(profile_id, parent_id)
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn,
+                "UPDATE profiles "
+                "SET parent_profile_id = %s "
+                "WHERE id = %s AND parent_profile_id IS DISTINCT FROM %s",
+                (parent_id, profile_id, parent_id),
+            )
+        return rowcount > 0
+
+    def get_ancestor_profile_names(self, profile_name: str) -> list[str]:
+        """Return profile names from *self* (index 0) up to root (last).
+
+        Uses a recursive CTE walking ``parent_profile_id`` upward. Returns
+        ``[profile_name]`` (self only) when the profile has no parent.
+        Returns ``[]`` when *profile_name* does not exist.
+        """
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                """
+                WITH RECURSIVE chain AS (
+                    SELECT id, name, parent_profile_id, 0 AS depth
+                    FROM profiles WHERE name = %s
+                    UNION ALL
+                    SELECT p.id, p.name, p.parent_profile_id, chain.depth + 1
+                    FROM profiles p
+                    JOIN chain ON p.id = chain.parent_profile_id
+                )
+                SELECT name FROM chain ORDER BY depth ASC
+                """,
+                (profile_name,),
+            )
+        return [r["name"] for r in rows]
+
+    def get_ancestor_repos(self, profile_name: str) -> list[dict]:
+        """Return repos for *profile_name* and all its ancestors.
+
+        Ordered by depth ASC (self = depth 0, root = deepest depth) so that
+        callers see own repos first, then parent's repos, etc.
+
+        Returns ``[]`` when the profile doesn't exist or has no repos.
+        """
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                """
+                WITH RECURSIVE chain AS (
+                    SELECT id, name, parent_profile_id, 0 AS depth
+                    FROM profiles WHERE name = %s
+                    UNION ALL
+                    SELECT p.id, p.name, p.parent_profile_id, chain.depth + 1
+                    FROM profiles p
+                    JOIN chain ON p.id = chain.parent_profile_id
+                )
+                SELECT r.*, chain.name AS profile_name, chain.depth,
+                       p.odoo_version
+                FROM chain
+                JOIN repos r ON r.profile_id = chain.id
+                JOIN profiles p ON p.id = chain.id
+                ORDER BY chain.depth ASC, r.id ASC
+                """,
+                (profile_name,),
+            )
 
     def add_repo(
         self,

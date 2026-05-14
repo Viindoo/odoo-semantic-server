@@ -70,14 +70,70 @@ async def create_profile(
     name: Annotated[str, Form()],
     version: Annotated[str, Form()],
     description: Annotated[str, Form()] = "",
+    parent_id: Annotated[str, Form()] = "",
 ):
+    from urllib.parse import quote_plus
+
+    # Parse parent_id: empty string = None (root profile), digit string = int.
+    _parent_id: int | None = None
+    if parent_id and parent_id.strip().isdigit():
+        _parent_id = int(parent_id.strip())
+
     try:
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name=name, odoo_version=version, description=description)
+        repo_store().add_profile(
+            name=name,
+            odoo_version=version,
+            description=description,
+            parent_id=_parent_id,
+        )
+    except ValueError as e:
+        # Cycle / version-mismatch validation errors → redirect with flash.
+        _logger.warning("Create profile validation failed: %s", e)
+        return RedirectResponse(
+            "/repos?flash=" + quote_plus(f"Create profile failed: {e}"),
+            status_code=303,
+        )
     except Exception as e:
         _logger.warning("Create profile failed: %s", e)
     return RedirectResponse("/repos", status_code=303)
+
+
+@router.post("/repos/profiles/{profile_id}/parent", response_class=RedirectResponse)
+async def set_profile_parent(
+    request: Request,
+    profile_id: int,
+    parent_id: Annotated[str, Form()] = "",
+):
+    """Update parent_profile_id for an existing profile.
+
+    POST form field ``parent_id``: integer ID of the new parent, or empty string
+    to clear the parent (make this profile a root). Validates cycle-free + version
+    match; returns HTTP 303 redirect to /repos with flash on success or failure.
+    """
+    from urllib.parse import quote_plus
+
+    _parent_id: int | None = None
+    if parent_id and parent_id.strip().isdigit():
+        _parent_id = int(parent_id.strip())
+
+    try:
+        from src.db.pg import repo_store
+
+        changed = repo_store().set_profile_parent(profile_id, _parent_id)
+        if changed:
+            flash = f"Profile id={profile_id} parent updated."
+        else:
+            flash = f"Profile id={profile_id} parent already set to requested value."
+    except ValueError as e:
+        _logger.warning("Set profile parent validation failed: %s", e)
+        flash = f"Set parent failed: {e}"
+    except Exception as e:
+        _logger.warning("Set profile parent failed: %s", e)
+        flash = f"Set parent failed: {e}"
+
+    return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
 
 
 @router.post("/repos/profiles/{profile_id}/delete", response_class=RedirectResponse)
