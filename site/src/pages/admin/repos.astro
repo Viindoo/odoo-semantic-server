@@ -1,0 +1,178 @@
+---
+// Repos & Profiles management page — SSR fetch from FastAPI W1
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import RepoTable from '../../components/RepoTable.astro';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+const [profilesRes, reposRes, sshKeysRes] = await Promise.allSettled([
+  fetch('http://localhost:8003/api/repos/profiles', { headers: { cookie: cookieHeader } }),
+  fetch('http://localhost:8003/api/repos/repos', { headers: { cookie: cookieHeader } }),
+  fetch('http://localhost:8003/api/repos/ssh-keys-list', { headers: { cookie: cookieHeader } }),
+]);
+
+let profilesData: { profiles: unknown[]; all_job_id?: number | null; all_job_status?: string | null; error?: string | null } = { profiles: [] };
+let repos: unknown[] = [];
+let sshKeys: { id: number; name: string }[] = [];
+
+if (profilesRes.status === 'fulfilled' && profilesRes.value.ok) {
+  profilesData = await profilesRes.value.json();
+}
+if (reposRes.status === 'fulfilled' && reposRes.value.ok) {
+  const d = await reposRes.value.json();
+  repos = d.repos ?? d ?? [];
+}
+if (sshKeysRes.status === 'fulfilled' && sshKeysRes.value.ok) {
+  sshKeys = await sshKeysRes.value.json();
+}
+
+// Flatten repos from profiles if direct endpoint returns empty
+if (repos.length === 0 && profilesData.profiles.length > 0) {
+  for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
+    if (p.repos) repos = [...repos, ...p.repos];
+  }
+}
+---
+
+<AdminLayout title="Repositories — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Repositories</h1>
+      <p class="text-sm text-gray-500 mt-1">Manage profiles and their repositories</p>
+    </div>
+  </div>
+
+  <!-- Add Profile Form -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <h2 class="text-base font-semibold text-gray-800 mb-4">Add Profile</h2>
+    <form data-testid="add-profile-form" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
+        <input
+          name="name"
+          type="text"
+          placeholder="viindoo17"
+          data-testid="profile-name-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          required
+        />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Odoo Version</label>
+        <input
+          name="version"
+          type="text"
+          placeholder="17.0"
+          data-testid="profile-version-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          required
+        />
+      </div>
+      <div class="flex items-end">
+        <button
+          type="submit"
+          data-testid="add-profile-button"
+          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        >
+          Add Profile
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Profiles list -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">
+        Profiles ({profilesData.profiles.length})
+      </h2>
+    </div>
+
+    {profilesData.profiles.length === 0 ? (
+      <div data-testid="profiles-empty-state" class="py-12 text-center text-gray-500">
+        <p class="text-3xl mb-2">🗂️</p>
+        <p class="font-medium">No profiles configured.</p>
+        <p class="text-sm mt-1">Add a profile above to get started.</p>
+      </div>
+    ) : (
+      <div class="divide-y divide-gray-100">
+        {(profilesData.profiles as { id: number; name: string; odoo_version: string; description?: string; repos?: unknown[] }[]).map((p) => (
+          <div data-testid="profile-row" data-testid-id={`profile-row-${p.id}`} class="px-5 py-4 flex items-center justify-between hover:bg-gray-50">
+            <div>
+              <p class="font-medium text-gray-800">{p.name}</p>
+              <p class="text-xs text-gray-500 mt-0.5">Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-sm text-gray-500">{p.repos?.length ?? 0} repos</span>
+              <button
+                data-testid={`delete-profile-button-${p.id}`}
+                data-profile-id={String(p.id)}
+                class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+
+  <!-- Repo table component -->
+  <RepoTable
+    repos={repos as Parameters<typeof RepoTable>[0]['repos']}
+    profiles={profilesData.profiles as Parameters<typeof RepoTable>[0]['profiles']}
+    sshKeys={sshKeys}
+  />
+</AdminLayout>
+
+<script>
+  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
+  }
+
+  // Add profile
+  document.querySelector('[data-testid="add-profile-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const res = await fetch('/api/repos/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fd.get('name'), version: fd.get('version') }),
+    });
+    if (res.ok) {
+      showFlash('Profile created.', 'success');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showFlash(data.error ?? 'Failed to create profile.', 'error');
+    }
+  });
+
+  // Delete profile
+  document.querySelectorAll('.delete-profile-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const profileId = (btn as HTMLElement).dataset.profileId;
+      if (!confirm('Delete this profile and ALL its repos? This cannot be undone.')) return;
+      const res = await fetch(`/api/repos/profiles/${profileId}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash('Profile deleted.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        showFlash(data.error ?? 'Delete failed.', 'error');
+      }
+    });
+  });
+</script>

@@ -1,0 +1,303 @@
+---
+export interface Repo {
+  id: number;
+  url: string;
+  branch: string;
+  local_path: string;
+  odoo_version?: string;
+  clone_status?: string;
+  last_job?: { id: number; status: string; error_msg?: string } | null;
+}
+
+export interface Profile {
+  id: number;
+  name: string;
+  odoo_version?: string;
+  description?: string;
+  repos?: Repo[];
+}
+
+export interface SshKey {
+  id: number;
+  name: string;
+}
+
+export interface Props {
+  repos: Repo[];
+  profiles: Profile[];
+  sshKeys: SshKey[];
+}
+
+const { repos = [], profiles = [], sshKeys = [] } = Astro.props;
+
+const cloneStatusColor: Record<string, string> = {
+  manual:  'bg-gray-100 text-gray-600',
+  pending: 'bg-yellow-100 text-yellow-700',
+  cloned:  'bg-green-100 text-green-700',
+  error:   'bg-red-100 text-red-700',
+};
+---
+
+<!-- Add Repo Form -->
+<div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+  <h2 class="text-base font-semibold text-gray-800 mb-4">Add Repository</h2>
+  <form data-testid="add-repo-form" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Profile</label>
+      <select
+        name="profile"
+        data-testid="repos-profile-input"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        required
+      >
+        <option value="">— select profile —</option>
+        {profiles.map((p) => (
+          <option value={p.name}>{p.name} ({p.odoo_version})</option>
+        ))}
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">URL</label>
+      <input
+        name="url"
+        type="text"
+        placeholder="https://... or git@..."
+        data-testid="repos-url-input"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        required
+      />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Branch</label>
+      <input
+        name="branch"
+        type="text"
+        placeholder="17.0"
+        data-testid="repos-branch-input"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        required
+      />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Local path (optional)</label>
+      <input
+        name="local_path"
+        type="text"
+        placeholder="/home/.../repo"
+        data-testid="repos-local-path-input"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+      />
+    </div>
+    {sshKeys.length > 0 && (
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">SSH Key (for git@ URLs)</label>
+        <select
+          name="ssh_key_id"
+          data-testid="repos-ssh-key-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        >
+          <option value="">— none —</option>
+          {sshKeys.map((k) => (
+            <option value={String(k.id)}>{k.name}</option>
+          ))}
+        </select>
+      </div>
+    )}
+    <div class="flex items-end">
+      <button
+        type="submit"
+        data-testid="add-repo-button"
+        class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+      >
+        Add Repository
+      </button>
+    </div>
+  </form>
+</div>
+
+<!-- Repos Table -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+  <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+    <h2 class="text-base font-semibold text-gray-800">Repositories ({repos.length})</h2>
+    <button
+      data-testid="index-all-button"
+      class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg transition-colors"
+    >
+      Index All
+    </button>
+  </div>
+
+  {repos.length === 0 ? (
+    <div data-testid="repos-empty-state" class="py-16 text-center text-gray-500">
+      <p class="text-4xl mb-3">📦</p>
+      <p class="font-medium">No repositories added yet.</p>
+      <p class="text-sm mt-1">Add one using the form above.</p>
+    </div>
+  ) : (
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+          <tr>
+            <th class="px-4 py-3 text-left">Repo / Branch</th>
+            <th class="px-4 py-3 text-left">Profile</th>
+            <th class="px-4 py-3 text-left">Clone</th>
+            <th class="px-4 py-3 text-left">Last Job</th>
+            <th class="px-4 py-3 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {repos.map((repo) => {
+            const cloneClass = cloneStatusColor[repo.clone_status ?? 'manual'] ?? cloneStatusColor.manual;
+            return (
+              <tr data-testid="repo-row" data-testid-id={`repo-row-${repo.id}`} class="hover:bg-gray-50">
+                <td class="px-4 py-3">
+                  <p class="font-medium text-gray-800 truncate max-w-xs" title={repo.url}>{repo.url}</p>
+                  <p class="text-gray-500 text-xs mt-0.5">{repo.branch}</p>
+                </td>
+                <td class="px-4 py-3 text-gray-600">
+                  {profiles.find((p) => p.repos?.some((r) => r.id === repo.id))?.name ?? '—'}
+                </td>
+                <td class="px-4 py-3">
+                  <span class:list={['px-2 py-0.5 rounded-full text-xs font-medium', cloneClass]}>
+                    {repo.clone_status ?? 'manual'}
+                  </span>
+                </td>
+                <td class="px-4 py-3">
+                  {repo.last_job ? (
+                    <span class="text-xs text-gray-600">#{repo.last_job.id} {repo.last_job.status}</span>
+                  ) : (
+                    <span class="text-xs text-gray-400">—</span>
+                  )}
+                </td>
+                <td class="px-4 py-3 text-right">
+                  <div class="flex items-center justify-end gap-2">
+                    <button
+                      data-testid={`index-repo-button-${repo.id}`}
+                      data-repo-id={String(repo.id)}
+                      class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors index-repo-btn"
+                    >
+                      Index
+                    </button>
+                    <button
+                      data-testid={`reset-embed-button-${repo.id}`}
+                      data-repo-id={String(repo.id)}
+                      class="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg transition-colors reset-embed-btn"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      data-testid={`delete-repo-button-${repo.id}`}
+                      data-repo-id={String(repo.id)}
+                      class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-repo-btn"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  )}
+</div>
+
+<script>
+  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium transition-opacity ${
+      type === 'error' ? 'bg-red-100 text-red-800 border border-red-300' : 'bg-green-100 text-green-800 border border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
+  }
+
+  // Add repo form
+  document.querySelector('[data-testid="add-repo-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const body: Record<string, string> = {};
+    fd.forEach((v, k) => { body[k] = String(v); });
+    const res = await fetch('/api/repos/repos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      showFlash('Repository added.', 'success');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showFlash(data.error ?? 'Failed to add repository.', 'error');
+    }
+  });
+
+  // Index repo buttons
+  document.querySelectorAll('.index-repo-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      const res = await fetch(`/api/repos/repos/${repoId}/index`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_workers: '1' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash(`Index job #${data.job_id} started.`, 'success');
+      } else {
+        showFlash(data.error ?? 'Failed to start index.', 'error');
+      }
+    });
+  });
+
+  // Reset embed buttons
+  document.querySelectorAll('.reset-embed-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      if (!confirm('Reset embeddings and re-index this repo?')) return;
+      const res = await fetch(`/api/repos/repos/${repoId}/reset-embed`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash(`Reset started (job #${data.job_id}).`, 'success');
+      } else {
+        showFlash(data.error ?? 'Reset failed.', 'error');
+      }
+    });
+  });
+
+  // Delete repo buttons
+  document.querySelectorAll('.delete-repo-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      if (!confirm('Delete this repository? This cannot be undone.')) return;
+      const res = await fetch(`/api/repos/repos/${repoId}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash('Repository deleted.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        showFlash(data.error ?? 'Delete failed.', 'error');
+      }
+    });
+  });
+
+  // Index all button
+  document.querySelector('[data-testid="index-all-button"]')?.addEventListener('click', async () => {
+    if (!confirm('Trigger index for ALL profiles?')) return;
+    const res = await fetch('/api/repos/index-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_workers: '1', profile_workers: '1' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showFlash(`Index-all job #${data.job_id} started.`, 'success');
+    } else {
+      showFlash(data.error ?? 'Index-all failed.', 'error');
+    }
+  });
+</script>

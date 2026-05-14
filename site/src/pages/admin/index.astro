@@ -1,0 +1,135 @@
+---
+// Admin Dashboard — SSR fetch stats from FastAPI W1
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import StatsCard from '../../components/StatsCard.astro';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+let stats: {
+  profiles: { id: number; name: string; odoo_version: string; repos: unknown[] }[];
+  api_key_count: number;
+  ssh_key_count: number;
+  embeddings_total: number | null;
+  error: string | null;
+} = {
+  profiles: [],
+  api_key_count: 0,
+  ssh_key_count: 0,
+  embeddings_total: null,
+  error: null,
+};
+
+try {
+  const res = await fetch('http://localhost:8003/api/dashboard/stats', {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    stats = await res.json();
+  }
+} catch {
+  stats.error = 'Could not connect to API server.';
+}
+
+const totalRepos = stats.profiles.reduce((sum, p) => sum + (p.repos?.length ?? 0), 0);
+---
+
+<AdminLayout title="Dashboard — Admin">
+  <!-- Flash banner (shared across pages via JS) -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  {stats.error && (
+    <div data-testid="dashboard-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      ⚠️ {stats.error}
+    </div>
+  )}
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-sm text-gray-500 mt-1">System overview — Odoo Semantic MCP</p>
+  </div>
+
+  <!-- Stats Grid -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <StatsCard
+      label="Profiles"
+      value={stats.profiles.length}
+      icon="🗂️"
+      testid="stat-profiles"
+      color="violet"
+    />
+    <StatsCard
+      label="Repositories"
+      value={totalRepos}
+      icon="📦"
+      testid="stat-repos"
+      color="blue"
+    />
+    <StatsCard
+      label="Embeddings"
+      value={stats.embeddings_total}
+      icon="🧠"
+      testid="stat-embeddings"
+      color="green"
+    />
+    <StatsCard
+      label="API Keys"
+      value={stats.api_key_count}
+      icon="🔑"
+      testid="stat-api-keys"
+      color="amber"
+    />
+  </div>
+
+  <!-- Profiles summary -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <h2 class="text-base font-semibold text-gray-800">Profiles</h2>
+      <a href="/admin/repos" data-testid="go-to-repos-link" class="text-sm text-violet-600 hover:text-violet-800 font-medium">
+        Manage →
+      </a>
+    </div>
+
+    {stats.profiles.length === 0 ? (
+      <div data-testid="profiles-empty-state" class="py-12 text-center text-gray-500">
+        <p class="text-3xl mb-2">🗂️</p>
+        <p class="font-medium">No profiles yet.</p>
+        <p class="text-sm mt-1">
+          <a href="/admin/repos" class="text-violet-600 hover:underline">Add a profile</a> to get started.
+        </p>
+      </div>
+    ) : (
+      <div class="divide-y divide-gray-100">
+        {stats.profiles.map((profile) => (
+          <div data-testid="profile-row" class="px-5 py-4 flex items-center justify-between hover:bg-gray-50">
+            <div>
+              <p class="font-medium text-gray-800">{profile.name}</p>
+              <p class="text-xs text-gray-500 mt-0.5">Odoo {profile.odoo_version}</p>
+            </div>
+            <span class="text-sm text-gray-600">
+              {profile.repos?.length ?? 0} repo{(profile.repos?.length ?? 0) !== 1 ? 's' : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+
+  <!-- Quick links -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    {[
+      { href: '/admin/repos', icon: '📦', label: 'Repositories' },
+      { href: '/admin/api-keys', icon: '🔑', label: 'API Keys' },
+      { href: '/admin/ssh-keys', icon: '🔐', label: 'SSH Keys' },
+      { href: '/admin/operations', icon: '⚙️', label: 'Operations' },
+    ].map((link) => (
+      <a
+        href={link.href}
+        data-testid={`quicklink-${link.label.toLowerCase().replace(/ /g, '-')}`}
+        class="bg-white rounded-xl border border-gray-200 p-4 flex flex-col items-center gap-2 hover:border-violet-400 hover:shadow-sm transition-all text-center"
+      >
+        <span class="text-2xl">{link.icon}</span>
+        <span class="text-sm font-medium text-gray-700">{link.label}</span>
+      </a>
+    ))}
+  </div>
+</AdminLayout>

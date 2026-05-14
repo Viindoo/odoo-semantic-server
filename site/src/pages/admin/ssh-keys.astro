@@ -1,0 +1,251 @@
+---
+// SSH Keys management page — SSR fetch from FastAPI W1
+import AdminLayout from '../../layouts/AdminLayout.astro';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+let keysData: {
+  keys: { id: number; name: string; public_key: string; created_at?: string }[];
+  fernet_missing?: boolean;
+  error?: string | null;
+} = { keys: [] };
+
+try {
+  const res = await fetch('http://localhost:8003/api/ssh-keys', {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) keysData = await res.json();
+} catch {
+  keysData.error = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="SSH Keys — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <!-- New public key reveal panel -->
+  <div data-testid="new-pubkey-banner" hidden class="mb-4 bg-green-50 border border-green-300 rounded-xl px-5 py-4">
+    <p class="text-sm font-semibold text-green-800 mb-1">New SSH key generated — add this public key to your Git server (GitHub / GitLab).</p>
+    <code data-testid="new-pubkey-value" class="block text-xs font-mono bg-white border border-green-200 rounded-lg px-3 py-2 select-all text-green-900 break-all whitespace-pre-wrap"></code>
+  </div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">SSH Keys</h1>
+      <p class="text-sm text-gray-500 mt-1">Ed25519 keypairs for private repository access</p>
+    </div>
+  </div>
+
+  {keysData.fernet_missing && (
+    <div data-testid="fernet-missing-warning" class="mb-4 bg-amber-50 border border-amber-300 text-amber-800 px-4 py-3 rounded-xl text-sm">
+      ⚠️ <strong>FERNET_KEY is not set.</strong> SSH key storage is disabled. Set <code>FERNET_KEY</code> in your environment.
+    </div>
+  )}
+
+  {keysData.error && (
+    <div data-testid="ssh-keys-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      ⚠️ {keysData.error}
+    </div>
+  )}
+
+  <!-- Generate new key -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <h2 class="text-base font-semibold text-gray-800 mb-4">Generate Ed25519 Keypair</h2>
+    <form data-testid="generate-ssh-key-form" class="flex gap-3 items-end">
+      <div class="flex-1">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Key Name</label>
+        <input
+          name="name"
+          type="text"
+          placeholder="my-server-key"
+          data-testid="ssh-key-name-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          required
+        />
+      </div>
+      <button
+        type="submit"
+        data-testid="generate-ssh-key-button"
+        class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        disabled={keysData.fernet_missing}
+      >
+        Generate
+      </button>
+    </form>
+  </div>
+
+  <!-- Import existing key -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <h2 class="text-base font-semibold text-gray-800 mb-4">Import Private Key (PEM)</h2>
+    <form data-testid="import-ssh-key-form" class="space-y-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Key Name</label>
+          <input
+            name="name"
+            type="text"
+            placeholder="imported-key"
+            data-testid="ssh-import-name-input"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+            required
+          />
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Private Key PEM</label>
+        <textarea
+          name="private_key_pem"
+          rows={5}
+          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
+          data-testid="ssh-import-pem-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 resize-y"
+          required
+        ></textarea>
+      </div>
+      <button
+        type="submit"
+        data-testid="import-ssh-key-button"
+        class="bg-gray-700 hover:bg-gray-800 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        disabled={keysData.fernet_missing}
+      >
+        Import
+      </button>
+    </form>
+  </div>
+
+  <!-- Keys table -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">Stored Keys ({keysData.keys.length})</h2>
+    </div>
+
+    {keysData.keys.length === 0 ? (
+      <div data-testid="ssh-keys-empty-state" class="py-12 text-center text-gray-500">
+        <p class="text-3xl mb-2">🔐</p>
+        <p class="font-medium">No SSH keys stored.</p>
+        <p class="text-sm mt-1">Generate or import an Ed25519 key above.</p>
+      </div>
+    ) : (
+      <div class="divide-y divide-gray-100">
+        {keysData.keys.map((key) => (
+          <div data-testid="ssh-key-row" data-testid-id={`ssh-key-row-${key.id}`} class="px-5 py-4 hover:bg-gray-50">
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0 flex-1">
+                <p class="font-medium text-gray-800">{key.name}</p>
+                {key.created_at && (
+                  <p class="text-xs text-gray-400 mt-0.5">Created {key.created_at?.slice(0, 16).replace('T', ' ')}</p>
+                )}
+                <code class="block text-xs font-mono text-gray-500 mt-2 truncate max-w-lg" title={key.public_key}>
+                  {key.public_key?.slice(0, 72)}…
+                </code>
+              </div>
+              <div class="flex gap-2 shrink-0">
+                <button
+                  data-testid={`copy-pubkey-button-${key.id}`}
+                  data-pubkey={key.public_key}
+                  class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors copy-pubkey-btn"
+                >
+                  Copy
+                </button>
+                <button
+                  data-testid={`delete-ssh-key-button-${key.id}`}
+                  data-key-id={String(key.id)}
+                  class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-ssh-key-btn"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+</AdminLayout>
+
+<script>
+  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
+  }
+
+  // Generate SSH key
+  document.querySelector('[data-testid="generate-ssh-key-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const res = await fetch('/api/ssh-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fd.get('name') }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.public_key) {
+      const banner = document.querySelector('[data-testid="new-pubkey-banner"]') as HTMLElement | null;
+      const val = document.querySelector('[data-testid="new-pubkey-value"]') as HTMLElement | null;
+      if (banner && val) {
+        val.textContent = data.public_key;
+        banner.removeAttribute('hidden');
+      }
+      setTimeout(() => location.reload(), 4000);
+    } else {
+      showFlash(data.error ?? 'Failed to generate key.', 'error');
+    }
+  });
+
+  // Import SSH key
+  document.querySelector('[data-testid="import-ssh-key-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const res = await fetch('/api/ssh-keys/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fd.get('name'), private_key_pem: fd.get('private_key_pem') }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.public_key) {
+      const banner = document.querySelector('[data-testid="new-pubkey-banner"]') as HTMLElement | null;
+      const val = document.querySelector('[data-testid="new-pubkey-value"]') as HTMLElement | null;
+      if (banner && val) {
+        val.textContent = data.public_key;
+        banner.removeAttribute('hidden');
+      }
+      setTimeout(() => location.reload(), 4000);
+    } else {
+      showFlash(data.error ?? 'Import failed.', 'error');
+    }
+  });
+
+  // Copy public key
+  document.querySelectorAll('.copy-pubkey-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const pubkey = (btn as HTMLElement).dataset.pubkey ?? '';
+      await navigator.clipboard.writeText(pubkey).catch(() => {});
+      showFlash('Public key copied to clipboard.', 'success');
+    });
+  });
+
+  // Delete SSH key
+  document.querySelectorAll('.delete-ssh-key-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const keyId = (btn as HTMLElement).dataset.keyId;
+      if (!confirm('Delete this SSH key pair? Any repos using it will lose access.')) return;
+      const res = await fetch(`/api/ssh-keys/${keyId}`, { method: 'DELETE' });
+      if (res.ok) {
+        showFlash('SSH key deleted.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showFlash(data.error ?? 'Delete failed.', 'error');
+      }
+    });
+  });
+</script>

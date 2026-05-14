@@ -1,0 +1,352 @@
+---
+// Operations page — index-core, seed-patterns, apply-preset, jobs
+import AdminLayout from '../../layouts/AdminLayout.astro';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+let presets: string[] = [];
+try {
+  const res = await fetch('http://localhost:8003/api/operations/presets', {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const d = await res.json();
+    presets = Object.keys(d.presets ?? {});
+  }
+} catch {
+  // non-blocking — presets dropdown just stays empty
+}
+---
+
+<AdminLayout title="Operations — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Operations</h1>
+    <p class="text-sm text-gray-500 mt-1">Long-running indexer commands — results tracked as jobs</p>
+  </div>
+
+  <!-- Active job status (shown after spawn) -->
+  <div data-testid="active-job-container" hidden class="mb-6 bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 flex items-center gap-4">
+    <div>
+      <p class="text-sm font-semibold text-blue-800">Job started</p>
+      <p data-testid="active-job-id" class="text-xs text-blue-600 mt-0.5"></p>
+    </div>
+  </div>
+
+  <!-- Index Core -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">📚</span>
+      <div>
+        <h2 class="text-base font-semibold text-gray-800">Index Core API</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Index Odoo core symbols (models, fields, methods) into the graph DB</p>
+      </div>
+    </div>
+    <form data-testid="index-core-form" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Source path</label>
+        <input
+          name="source"
+          type="text"
+          placeholder="/home/.../odoo17"
+          data-testid="ops-index-core-source-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          required
+        />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Version</label>
+        <input
+          name="version"
+          type="text"
+          placeholder="17.0"
+          data-testid="ops-index-core-version-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          required
+        />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Static data dir (optional)</label>
+        <input
+          name="static_data_dir"
+          type="text"
+          placeholder="/path/to/static-data"
+          data-testid="ops-index-core-static-dir-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        />
+      </div>
+      <div class="sm:col-span-2 lg:col-span-3 flex justify-start">
+        <button
+          type="submit"
+          data-testid="index-core-button"
+          class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+        >
+          Start Index Core
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Seed Patterns -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">🌱</span>
+      <div>
+        <h2 class="text-base font-semibold text-gray-800">Seed Patterns</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Load curated pattern catalogue into the graph + vector store</p>
+      </div>
+    </div>
+    <form data-testid="seed-patterns-form" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Version (optional)</label>
+        <input
+          name="version"
+          type="text"
+          placeholder="17.0 (leave blank for all)"
+          data-testid="ops-seed-patterns-version-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Patterns file (optional)</label>
+        <input
+          name="patterns_file"
+          type="text"
+          placeholder="/path/to/patterns.json"
+          data-testid="ops-seed-patterns-file-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        />
+      </div>
+      <div class="flex items-end gap-3">
+        <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input name="no_embed" type="checkbox" value="1" data-testid="ops-seed-no-embed-input" class="rounded" />
+          No embed
+        </label>
+        <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input name="force" type="checkbox" value="1" data-testid="ops-seed-force-input" class="rounded" />
+          Force
+        </label>
+      </div>
+      <div class="sm:col-span-2 lg:col-span-3 flex justify-start">
+        <button
+          type="submit"
+          data-testid="seed-patterns-button"
+          class="bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+        >
+          Seed Patterns
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Apply Preset -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">⚡</span>
+      <div>
+        <h2 class="text-base font-semibold text-gray-800">Apply Preset</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Register a predefined set of repos + profiles in one click</p>
+      </div>
+    </div>
+    <form data-testid="apply-preset-form" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Preset</label>
+        <select
+          name="name"
+          data-testid="ops-preset-name-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          required
+        >
+          <option value="">— select preset —</option>
+          {presets.map((p) => <option value={p}>{p}</option>)}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Repo base dir (optional)</label>
+        <input
+          name="repo_base_dir"
+          type="text"
+          placeholder="/home/.../git"
+          data-testid="ops-preset-repo-base-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        />
+      </div>
+      <div class="sm:col-span-2 flex items-center gap-3">
+        <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input name="dry_run" type="checkbox" value="1" data-testid="ops-preset-dry-run-input" class="rounded" />
+          Dry run (preview only)
+        </label>
+        <button
+          type="submit"
+          data-testid="apply-preset-button"
+          class="bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+        >
+          Apply Preset
+        </button>
+      </div>
+    </form>
+
+    <!-- Preset result (shown after apply) -->
+    <div data-testid="preset-result" hidden class="mt-4 bg-gray-50 rounded-lg border border-gray-200 px-4 py-3">
+      <pre data-testid="preset-result-content" class="text-xs font-mono text-gray-700 whitespace-pre-wrap overflow-x-auto max-h-64"></pre>
+    </div>
+  </div>
+
+  <!-- Recent jobs placeholder - populated via JS -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">Recent Jobs</h2>
+    </div>
+    <div data-testid="operations-empty-state" class="py-12 text-center text-gray-500">
+      <p class="text-3xl mb-2">⚙️</p>
+      <p class="font-medium">Start an operation above to see job status here.</p>
+    </div>
+    <div data-testid="recent-jobs-list" hidden class="divide-y divide-gray-100"></div>
+  </div>
+</AdminLayout>
+
+<script>
+  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 5000);
+  }
+
+  function showJobStarted(jobId: number | null, label: string) {
+    const container = document.querySelector('[data-testid="active-job-container"]') as HTMLElement | null;
+    const idEl = document.querySelector('[data-testid="active-job-id"]') as HTMLElement | null;
+    if (container && idEl) {
+      idEl.textContent = jobId !== null ? `Job #${jobId} — ${label}` : label;
+      container.removeAttribute('hidden');
+    }
+    // Add to recent jobs list
+    const list = document.querySelector('[data-testid="recent-jobs-list"]') as HTMLElement | null;
+    const emptyState = document.querySelector('[data-testid="operations-empty-state"]') as HTMLElement | null;
+    if (list && jobId !== null) {
+      emptyState?.setAttribute('hidden', '');
+      list.removeAttribute('hidden');
+      const item = document.createElement('div');
+      item.className = 'px-5 py-3 flex items-center justify-between';
+      item.innerHTML = `
+        <span class="text-sm text-gray-700">Job #${jobId} — ${label}</span>
+        <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full" data-job-badge="${jobId}">running</span>
+      `;
+      list.prepend(item);
+      pollJob(jobId, item.querySelector(`[data-job-badge="${jobId}"]`) as HTMLElement);
+    }
+  }
+
+  function pollJob(jobId: number, badgeEl: HTMLElement | null) {
+    function poll() {
+      fetch(`/api/jobs/${jobId}/status`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (badgeEl) {
+            badgeEl.textContent = data.status ?? 'unknown';
+            const colorMap: Record<string, string> = {
+              running: 'bg-blue-100 text-blue-700',
+              done: 'bg-green-100 text-green-700',
+              error: 'bg-red-100 text-red-700',
+              pending: 'bg-yellow-100 text-yellow-700',
+            };
+            badgeEl.className = `text-xs px-2 py-0.5 rounded-full ${colorMap[data.status] ?? 'bg-gray-100 text-gray-600'}`;
+          }
+          if (data.status === 'running' || data.status === 'pending') {
+            setTimeout(poll, 3000);
+          }
+        })
+        .catch(() => setTimeout(poll, 5000));
+    }
+    setTimeout(poll, 3000);
+  }
+
+  // Index Core
+  document.querySelector('[data-testid="index-core-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const res = await fetch('/api/operations/index-core', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: fd.get('source'),
+        version: fd.get('version'),
+        static_data_dir: fd.get('static_data_dir') ?? '',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showFlash(data.message ?? 'Index core started.', 'success');
+      showJobStarted(data.job_id, `core:${fd.get('version')}`);
+    } else {
+      showFlash(data.error ?? 'Index core failed.', 'error');
+    }
+  });
+
+  // Seed Patterns
+  document.querySelector('[data-testid="seed-patterns-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const body: Record<string, string> = {
+      version: String(fd.get('version') ?? ''),
+      patterns_file: String(fd.get('patterns_file') ?? ''),
+      no_embed: fd.get('no_embed') ? '1' : '',
+      force: fd.get('force') ? '1' : '',
+    };
+    const res = await fetch('/api/operations/seed-patterns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showFlash(data.message ?? 'Seed patterns started.', 'success');
+      showJobStarted(data.job_id, 'patterns');
+    } else {
+      showFlash(data.error ?? 'Seed patterns failed.', 'error');
+    }
+  });
+
+  // Apply Preset
+  document.querySelector('[data-testid="apply-preset-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const body: Record<string, unknown> = {
+      name: fd.get('name'),
+      repo_base_dir: fd.get('repo_base_dir') ?? '',
+      dry_run: fd.get('dry_run') ? '1' : '',
+      repo_map_urls: [],
+      repo_map_paths: [],
+    };
+    const res = await fetch('/api/operations/apply-preset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    const resultEl = document.querySelector('[data-testid="preset-result"]') as HTMLElement | null;
+    const resultContent = document.querySelector('[data-testid="preset-result-content"]') as HTMLElement | null;
+    if (res.ok) {
+      if (data.dry_run && resultEl && resultContent) {
+        resultContent.textContent = data.preview ?? '(no output)';
+        resultEl.removeAttribute('hidden');
+      }
+      showFlash(data.message ?? `Preset '${fd.get('name')}' applied.`, 'success');
+    } else {
+      if (resultEl && resultContent) {
+        resultContent.textContent = data.error ?? 'Unknown error';
+        resultEl.removeAttribute('hidden');
+      }
+      showFlash(data.error ?? 'Apply preset failed.', 'error');
+    }
+  });
+</script>

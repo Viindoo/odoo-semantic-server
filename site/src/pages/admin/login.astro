@@ -1,0 +1,127 @@
+---
+// Login page — no auth required (middleware skips /admin/login)
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+// Redirect already-authed users to dashboard
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+let alreadyAuthed = false;
+try {
+  const verify = await fetch('http://localhost:8003/api/auth/verify', {
+    headers: { cookie: cookieHeader },
+  });
+  alreadyAuthed = verify.ok;
+} catch {
+  // server down — allow login page
+}
+
+if (alreadyAuthed) {
+  return Astro.redirect('/admin');
+}
+---
+
+<BaseLayout title="Login — Odoo Semantic MCP">
+  <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+    <!-- Flash banner (shown via JS) -->
+    <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium"></div>
+
+    <div class="w-full max-w-sm">
+      <!-- Logo -->
+      <div class="text-center mb-8">
+        <div class="inline-flex items-center justify-center w-14 h-14 bg-violet-600 rounded-2xl mb-3">
+          <img src="/favicon.svg" alt="Logo" class="w-8 h-8" />
+        </div>
+        <h1 class="text-xl font-bold text-gray-900">Odoo Semantic MCP</h1>
+        <p class="text-sm text-gray-500 mt-1">Admin Login</p>
+      </div>
+
+      <!-- Login form -->
+      <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+        <form data-testid="login-form" class="space-y-4">
+          <div>
+            <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+            <input
+              id="username"
+              name="username"
+              type="text"
+              autocomplete="username"
+              required
+              data-testid="login-username-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500"
+              placeholder="admin"
+            />
+          </div>
+          <div>
+            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              data-testid="login-password-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500"
+              placeholder="••••••••"
+            />
+          </div>
+
+          <!-- Error message -->
+          <p data-testid="login-error" hidden class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"></p>
+
+          <button
+            type="submit"
+            data-testid="login-submit-button"
+            class="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium py-2.5 rounded-lg transition-colors text-sm"
+          >
+            Sign In
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</BaseLayout>
+
+<script>
+  document.querySelector('[data-testid="login-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const errorEl = document.querySelector('[data-testid="login-error"]') as HTMLElement | null;
+    const submitBtn = document.querySelector('[data-testid="login-submit-button"]') as HTMLButtonElement | null;
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Signing in…';
+    }
+    if (errorEl) errorEl.setAttribute('hidden', '');
+
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: fd.get('username'),
+        password: fd.get('password'),
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      window.location.href = '/admin';
+    } else {
+      if (errorEl) {
+        const msg =
+          data.error === 'invalid_credentials'
+            ? 'Invalid username or password.'
+            : data.error === 'Too many failed login attempts; wait 60s'
+              ? 'Too many failed attempts. Wait 60s and try again.'
+              : data.error ?? 'Login failed.';
+        errorEl.textContent = msg;
+        errorEl.removeAttribute('hidden');
+      }
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In';
+      }
+    }
+  });
+</script>
