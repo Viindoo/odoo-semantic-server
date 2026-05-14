@@ -138,7 +138,7 @@ async def test_lifespan_warns_when_legacy_nodes_exist(
 ):
     """Lifespan emits a warning when Neo4j nodes lack the `profile` property.
 
-    Regression for ADR-0014 §Consequences / §Negative: legacy nodes (indexed
+    Regression for ADR-0016 §Consequences / §Negative: legacy nodes (indexed
     before profile support) are invisible to profile-scoped MCP queries.
     The startup warning surfaces the count so ops can schedule a reindex.
     """
@@ -191,7 +191,7 @@ async def test_lifespan_warns_when_legacy_nodes_exist(
                         _logging.getLogger("src.mcp.server").warning(
                             "%d Neo4j nodes have no `profile` property — these are"
                             " invisible to profile-scoped MCP queries. Run a full"
-                            " reindex per ADR-0014 to backfill.",
+                            " reindex per ADR-0016 to backfill.",
                             _row["legacy_count"],
                         )
             except Exception:

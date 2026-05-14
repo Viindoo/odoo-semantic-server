@@ -18,23 +18,30 @@ Tất cả service trên 1 host. Đơn giản, đủ cho dev test E2E hoặc tea
 nhỏ. Đây là default doc khi không nói rõ split.
 
 ```
-Người dùng (AI tool)
+Người dùng (Browser / AI tool)
         │ HTTPS :443
         ▼
-  ┌────────────────────────────────────────────┐
-  │  HOST DUY NHẤT                             │
-  │                                            │
-  │  Nginx/Caddy  (reverse proxy + TLS)        │
-  │      │ 127.0.0.1:8002                      │
-  │      ▼                                     │
-  │  MCP Server   (systemd, user odoo-semantic)│
-  │      │            │              │          │
-  │  bolt│       psycopg2│        HTTP│         │
-  │  7687│         5432  │       11434│         │
-  │      ▼            ▼              ▼          │
-  │  Neo4j ─── Postgres ─── Ollama (M3 only)   │
-  │  (docker)  (docker)     (systemd)          │
-  └────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────┐
+  │  HOST DUY NHẤT                                   │
+  │                                                  │
+  │  Nginx/Caddy  (reverse proxy + TLS)              │
+  │      │ /          → 127.0.0.1:4321 (Astro SSR)  │
+  │      │ /admin/*   → 127.0.0.1:4321 (Astro SSR)  │
+  │      │ /api/*     → 127.0.0.1:8003 (FastAPI)    │
+  │      │ /mcp       → 127.0.0.1:8002 (MCP)        │
+  │      ▼                                           │
+  │  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
+  │  │Astro SSR │  │FastAPI   │  │MCP Server│       │
+  │  │:4321     │  │:8003     │  │:8002     │       │
+  │  │(Node.js) │  │(Python)  │  │(Python)  │       │
+  │  └──────────┘  └──────────┘  └──────────┘       │
+  │        │            │              │             │
+  │        └────────────┴──────────────┘             │
+  │              bolt:7687  pg:5432  http:11434       │
+  │                    ▼       ▼         ▼            │
+  │  Neo4j ───── Postgres ─── Ollama (M3 only)       │
+  │  (docker)    (docker)     (systemd)               │
+  └──────────────────────────────────────────────────┘
 ```
 
 DB ports + Ollama bind `127.0.0.1` — không expose ra ngoài.
@@ -153,6 +160,8 @@ embed thêm Ollama — defer được, xem `docs/deploy/embedder-setup.md`.
 | Docker Engine | 24+ | DB tier |
 | Python | 3.12 | App tier |
 | uv | 0.4+ | Package manager |
+| **Node.js** | **20 LTS+** | **Astro SSR service (M8)** — Node 24 khuyến nghị từ tháng 6/2026 |
+| **pnpm** | bất kỳ | **Astro build tool** — `npm i -g pnpm` hoặc `corepack enable pnpm` |
 | Nginx **hoặc** Caddy | bất kỳ | Proxy tier |
 | DNS record | — | Trỏ domain về IP server |
 | TLS cert | — | Let's Encrypt hoặc wildcard |
@@ -501,11 +510,11 @@ sudo -u odoo-semantic -H bash -c '
 Output: `INFO seed_patterns: Neo4j: wrote 54 PatternExample nodes` +
 `INFO seed_patterns: pgvector: wrote N embedding chunks`.
 
-### 3.5 systemd services (MCP + Web UI)
+### 3.5 systemd services (MCP + FastAPI + Astro)
 
-> User `odoo-semantic` đã tạo ở §1.1.
+> User `odoo-semantic` đã tạo ở §1.1. M8 ship **3 unit files**.
 
-Repo ship 2 unit file ở **`docs/deploy/`** (canonical path — không có file nào ở `systemd/`).
+Repo ship unit files ở **`docs/deploy/`** (canonical path — không có file nào ở `systemd/`).
 
 `install.sh --systemd` tự động cài đặt và điều chỉnh đường dẫn theo ngữ cảnh:
 
@@ -530,7 +539,19 @@ Nếu bạn muốn cài thủ công:
 | File | Service | Bind | Cần |
 |------|---------|------|-----|
 | `docs/deploy/odoo-semantic-mcp.service` | MCP server (port 8002) | `127.0.0.1` qua proxy tier | INI config |
-| `docs/deploy/odoo-semantic-webui.service` | Web UI admin (port 8003) | `127.0.0.1` LAN-only | INI config + `webui.env` (FERNET_KEY) |
+| `docs/deploy/odoo-semantic-webui.service` | FastAPI JSON API (port 8003) | `127.0.0.1` | INI config + `webui.env` (FERNET_KEY) |
+| `docs/deploy/odoo-semantic-astro.service` | Astro SSR frontend (port 4321) | `127.0.0.1` | Node.js 20+; `site/dist/server/entry.mjs` pre-built |
+
+#### Bước 0 — Build Astro frontend
+
+Phải build **trước** khi start `odoo-semantic-astro.service`:
+
+```bash
+cd /opt/odoo-semantic-mcp/site
+pnpm install --frozen-lockfile
+pnpm build
+# → artifacts tại site/dist/server/entry.mjs (production SSR bundle)
+```
 
 Cài MCP unit:
 
@@ -546,7 +567,7 @@ sudo systemctl enable --now odoo-semantic-mcp
 sudo systemctl status odoo-semantic-mcp
 ```
 
-Cài Web UI unit (cần FERNET_KEY — xem §12 để generate):
+Cài FastAPI Web UI unit (cần FERNET_KEY — xem §12 để generate):
 
 ```bash
 sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-webui.service \
@@ -562,6 +583,18 @@ EOF
 
 sudo systemctl enable --now odoo-semantic-webui
 sudo systemctl status odoo-semantic-webui
+```
+
+Cài Astro unit (sau khi `pnpm build` đã chạy — xem Bước 0):
+
+```bash
+sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-astro.service \
+        /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now odoo-semantic-astro
+sudo systemctl status odoo-semantic-astro
+# → ExecStart sẽ chạy: node dist/server/entry.mjs
 ```
 
 ⚠️ **Backup `webui.env` an toàn (vd password manager).** Nếu mất
@@ -763,9 +796,19 @@ server {
 }
 ```
 
-Xem `docs/deploy/nginx.conf.example` để biết config đầy đủ, bao gồm các option auth.
+Xem `docs/deploy/nginx.conf.example` để biết config đầy đủ (pre-M8, MCP-only).
 
-**M8 Astro Unified Architecture (W4):** Nếu deploy M8 (Astro landing + admin pages + FastAPI JSON API), sử dụng `docs/deploy/nginx-m8.conf` template thay vì `nginx.conf.example`. Template này route `/api/*` → port 8003 (FastAPI), `/admin/*` + `/` → port 4321 (Astro SSR), và giữ `/mcp`, `/install/`, `/health` → port 8002 (unchanged). Xem chi tiết tại §Stream C — nginx Integration trong `docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md`.
+**M8 — sử dụng `docs/deploy/nginx-m8.conf` thay thế.** Template này route:
+- `/api/*` → FastAPI :8003 (JSON only)
+- `/admin/*` và `/` → Astro SSR :4321 (landing + admin UI)
+- `/mcp`, `/install/`, `/health` → MCP :8002 (unchanged)
+
+```bash
+sudo cp /opt/odoo-semantic-mcp/docs/deploy/nginx-m8.conf \
+        /etc/nginx/sites-available/odoo-semantic-mcp
+# Thay semantic.example.com bằng domain thật, rồi:
+sudo nginx -t && sudo systemctl reload nginx
+```
 
 ### 4.2 Caddy (auto-TLS, đơn giản hơn)
 

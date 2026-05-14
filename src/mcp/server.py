@@ -788,7 +788,7 @@ def find_examples(
         context_module: Boost results from modules this module depends on.
         chunk_types: Filter by type: method, field, view, qweb, js_era1,
             js_era2, js_era3. Default: all types.
-        profile_name: Profile filter for Neo4j rerank (ADR-0014 D6).
+        profile_name: Profile filter for Neo4j rerank (ADR-0016 D6).
 
     Returns:
         Header + N results ranked by cosine + centrality + context boost.
@@ -2365,7 +2365,7 @@ if __name__ == "__main__":
         import asyncio as _asyncio
         await _asyncio.to_thread(_ensure_pg)
         # Best-effort: warn ops team about legacy Neo4j nodes lacking `profile`
-        # property so they know a full reindex is required (per ADR-0014).
+        # property so they know a full reindex is required (per ADR-0016).
         try:
             _drv = _get_driver()
             with _drv.session() as _s:
@@ -2381,7 +2381,7 @@ if __name__ == "__main__":
                 if _row and _row["legacy_count"] > 0:
                     _logging.getLogger(__name__).warning(
                         "%d Neo4j nodes have no `profile` property — these are invisible"
-                        " to profile-scoped MCP queries. Run a full reindex per ADR-0014"
+                        " to profile-scoped MCP queries. Run a full reindex per ADR-0016"
                         " to backfill.",
                         _row["legacy_count"],
                     )
