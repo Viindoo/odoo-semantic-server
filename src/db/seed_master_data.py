@@ -300,6 +300,14 @@ def reset_seeded_data(conn) -> int:
 
     Returns the number of profile rows deleted.
     """
+    # Break self-FK chain so DELETEs don't trip ON DELETE RESTRICT regardless of iteration order.
+    with conn.cursor() as cur:
+        for pattern in _SEED_NAME_PATTERNS:
+            cur.execute(
+                "UPDATE profiles SET parent_profile_id = NULL WHERE name LIKE %s",
+                (pattern,),
+            )
+
     deleted = 0
     for pattern in _SEED_NAME_PATTERNS:
         with conn.cursor() as cur:
