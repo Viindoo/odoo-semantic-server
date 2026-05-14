@@ -346,7 +346,7 @@ def _index_repo(
                 total_embeddings += len(chunks)
                 total_embed_calls += embed_calls
 
-    # Option Y (ADR-0014): pass ancestor profile list so every node gets a
+    # Option Y (ADR-0016): pass ancestor profile list so every node gets a
     # `profile` property array. Defaults to [repo_root_name] when not provided
     # (legacy callers / unit tests that pre-date profile hierarchy).
     _profiles_arr = ancestor_profiles or []
@@ -502,7 +502,7 @@ def index_profile(
             "owl_comps": 0,
         }
 
-    # Option Y (ADR-0014): build the full ancestor profile name list so every
+    # Option Y (ADR-0016): build the full ancestor profile name list so every
     # Neo4j node written in this run carries the correct `profile` array.
     ancestor_profiles = repo_store().get_ancestor_profile_names(profile_name)
     if not ancestor_profiles:

@@ -1,18 +1,18 @@
 # src/web_ui/routes/login.py
-"""Login / logout endpoints for Web UI session auth (M7 W16)."""
+"""Auth endpoints for Web UI session auth (M8 W1 — pure JSON API)."""
 
 import logging
 import time
-from typing import Annotated
-from urllib.parse import unquote_plus
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.requests import Request
 
-from src.web_ui.auth import verify_password
+from src.web_ui.auth import is_test_bypass_active, verify_password
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/auth")
 
 # ---------------------------------------------------------------------------
 # Per-IP login rate limiting (M7 Opus review finding #17)
@@ -39,7 +39,7 @@ def _clear_failures(ip: str) -> None:
 
 
 def _is_rate_limited(ip: str) -> bool:
-    """Return True if *ip* has ≥ _RATE_MAX_FAILURES failures in the last window."""
+    """Return True if *ip* has >= _RATE_MAX_FAILURES failures in the last window."""
     now = time.time()
     failures = _LOGIN_FAILURES.get(ip, [])
     recent = [t for t in failures if now - t < _RATE_WINDOW_SECONDS]
@@ -54,36 +54,14 @@ def _lookup_user(username: str) -> str | None:
     return auth_store().get_user_password_hash(username)
 
 
-@router.get("/login", response_class=HTMLResponse)
-async def login_get(request: Request):
-    """Render the login form."""
-    # If already authenticated, redirect to dashboard
-    from src.web_ui.middleware import _session_valid
-
-    if _session_valid(request):
-        return RedirectResponse("/", status_code=302)
-
-    templates = request.app.state.templates
-    error = request.query_params.get("error")
-    next_url = request.query_params.get("next", "/")
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {"error": error, "next": next_url},
-    )
+class LoginBody(BaseModel):
+    username: str
+    password: str
 
 
 @router.post("/login")
-async def login_post(
-    request: Request,
-    username: Annotated[str, Form()],
-    password: Annotated[str, Form()],
-    next: Annotated[str, Form()] = "/",
-):
-    """Verify credentials, set session, redirect."""
-    from urllib.parse import quote_plus
-
-    # Per-IP rate limiting: reject after too many consecutive failures.
+async def login_post(body: LoginBody, request: Request):
+    """Verify credentials, set session cookie, return JSON."""
     client_ip = request.client.host if request.client else "unknown"
     if _is_rate_limited(client_ip):
         logger.warning("Login rate-limited for IP %s", client_ip)
@@ -92,33 +70,47 @@ async def login_post(
             status_code=429,
         )
 
-    # Validate redirect target (only allow relative paths)
-    safe_next = "/"
-    if next and next.startswith("/") and not next.startswith("//"):
-        safe_next = unquote_plus(next)
-
     try:
-        pw_hash = _lookup_user(username.strip())
+        pw_hash = _lookup_user(body.username.strip())
     except Exception as exc:
         logger.error("Login DB error: %s", exc)
         pw_hash = None
 
-    if pw_hash is None or not verify_password(password, pw_hash):
-        logger.warning("Failed login attempt for user %r (IP: %s)", username, client_ip)
+    if pw_hash is None or not verify_password(body.password, pw_hash):
+        logger.warning("Failed login attempt for user %r (IP: %s)", body.username, client_ip)
         _record_failure(client_ip)
-        error_url = f"/login?error=invalid_credentials&next={quote_plus(safe_next)}"
-        return RedirectResponse(error_url, status_code=302)
+        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
 
     # Credentials OK — clear failure counter + set session
     _clear_failures(client_ip)
-    request.session["username"] = username.strip()
+    request.session["username"] = body.username.strip()
     request.session["session_at"] = time.time()
-    logger.info("Successful login for user %r (IP: %s)", username, client_ip)
-    return RedirectResponse(safe_next, status_code=302)
+    logger.info("Successful login for user %r (IP: %s)", body.username, client_ip)
+    return JSONResponse({"ok": True, "username": body.username.strip()})
 
 
-@router.get("/logout")
+@router.post("/logout")
 async def logout(request: Request):
-    """Clear session and redirect to login."""
+    """Clear session cookie."""
     request.session.clear()
-    return RedirectResponse("/login", status_code=302)
+    return JSONResponse({"ok": True})
+
+
+@router.get("/verify")
+async def verify_session(request: Request):
+    """Return 200 + username if session is valid, 401 if not.
+
+    Used by Astro middleware to check session before serving protected pages.
+
+    Honors the same WEBUI_AUTH_DISABLED + PYTEST_CURRENT_TEST bypass as
+    AuthRequiredMiddleware so browser tests can verify admin pages without
+    seeding a session cookie. The double-env guard makes the bypass safe in
+    production (PYTEST_CURRENT_TEST is never set by ops).
+    """
+    from src.web_ui.middleware import _session_valid
+
+    if is_test_bypass_active():
+        return JSONResponse({"ok": True, "username": "test-user"})
+    if _session_valid(request):
+        return JSONResponse({"ok": True, "username": request.session.get("username")})
+    return JSONResponse({"ok": False, "error": "not_authenticated"}, status_code=401)

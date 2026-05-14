@@ -54,7 +54,7 @@ Dev: `astro.config.mjs` proxy `/api/*` → `http://localhost:8003` (same-origin 
 | 2026-05-12 | FastAPI → pure JSON API; Jinja2 removed completely in M8 |
 | 2026-05-12 | LoopbackOnlyMiddleware kept (Astro loopback too → compatible) |
 | 2026-05-12 | SessionMiddleware + bcrypt kept in FastAPI (no migration to Astro) |
-| 2026-05-12 | ADR-0012: Astro unified; ADR-0013: FastAPI pure JSON API |
+| 2026-05-12 | ADR-0014: Astro unified; ADR-0015: FastAPI pure JSON API |
 
 ---
 
@@ -115,7 +115,7 @@ master ┬── W1 (FastAPI JSON API) ─────────────�
 
 **Files touched:** `src/web_ui/app.py`, `src/web_ui/routes/*.py` (7 files), `src/web_ui/auth.py`, `src/web_ui/middleware.py`, `pyproject.toml`, `tests/test_web_ui*.py` (JSON assertions instead of HTML)
 
-**ADR to write:** `docs/adr/0013-fastapi-pure-json-api.md` — FastAPI JSON API only; Jinja2 removal; session auth proxy pattern (Astro calls `/api/auth/verify`).
+**ADR to write:** `docs/adr/0015-fastapi-pure-json-api.md` — FastAPI JSON API only; Jinja2 removal; session auth proxy pattern (Astro calls `/api/auth/verify`).
 
 ---
 
@@ -231,7 +231,7 @@ GraphHero cinematic spec (preserved from old plan):
 - Output: `site/public/graph-snapshot.json` (React Flow node/edge format with precomputed x/y)
 - Idempotent; `--include-private` flag opt-in.
 
-ADR to write: `docs/adr/0012-astro-unified.md` — Astro output:hybrid; islands architecture; React Flow for hero + M11 dashboard reuse; Tailwind; baked JSON snapshot; deferred SaaS billing to M9+.
+ADR to write: `docs/adr/0014-astro-unified.md` — Astro output:hybrid; islands architecture; React Flow for hero + M11 dashboard reuse; Tailwind; baked JSON snapshot; deferred SaaS billing to M9+.
 
 ---
 
@@ -362,8 +362,8 @@ W1 + W2 dispatch parallel in one message. W5 dispatched after W2 lands. W3 dispa
 
 ## 6. ADRs to Write
 
-- **ADR-0012:** `docs/adr/0012-astro-unified.md` — Astro `output: 'hybrid'` for unified landing + admin; islands architecture; React Flow reuse plan (M8 hero → M11 dashboard); Tailwind; baked JSON snapshot rationale.
-- **ADR-0013:** `docs/adr/0013-fastapi-pure-json-api.md` — Jinja2 removal; FastAPI → pure JSON API; session auth proxy pattern (Astro middleware calls `/api/auth/verify`); LoopbackOnlyMiddleware compatibility.
+- **ADR-0014:** `docs/adr/0014-astro-unified.md` — Astro `output: 'hybrid'` for unified landing + admin; islands architecture; React Flow reuse plan (M8 hero → M11 dashboard); Tailwind; baked JSON snapshot rationale.
+- **ADR-0015:** `docs/adr/0015-fastapi-pure-json-api.md` — Jinja2 removal; FastAPI → pure JSON API; session auth proxy pattern (Astro middleware calls `/api/auth/verify`); LoopbackOnlyMiddleware compatibility.
 
 ---
 
@@ -421,5 +421,5 @@ W1 + W2 dispatch parallel in one message. W5 dispatched after W2 lands. W3 dispa
 - [ ] `make lint && make test` green
 - [ ] `pnpm run check` (Astro typecheck) green in `site/`
 - [ ] `odoo-semantic-astro.service` starts + survives `systemctl restart`
-- [ ] ADR-0012 + ADR-0013 committed
+- [ ] ADR-0014 + ADR-0015 committed
 - [ ] `docs/deploy.md` updated with new nginx config

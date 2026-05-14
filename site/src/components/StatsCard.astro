@@ -1,0 +1,43 @@
+---
+export interface Props {
+  label: string;
+  value: string | number | null;
+  icon?: string;
+  testid: string;
+  color?: 'violet' | 'blue' | 'green' | 'amber';
+}
+
+const { label, value, icon = '📊', testid, color = 'violet' } = Astro.props;
+
+const colorMap: Record<string, string> = {
+  violet: 'bg-violet-50 border-violet-200 text-violet-700',
+  blue:   'bg-blue-50 border-blue-200 text-blue-700',
+  green:  'bg-green-50 border-green-200 text-green-700',
+  amber:  'bg-amber-50 border-amber-200 text-amber-700',
+};
+
+const iconBgMap: Record<string, string> = {
+  violet: 'bg-violet-100 text-violet-600',
+  blue:   'bg-blue-100 text-blue-600',
+  green:  'bg-green-100 text-green-600',
+  amber:  'bg-amber-100 text-amber-600',
+};
+
+const cardClass = colorMap[color] ?? colorMap['violet'];
+const iconClass = iconBgMap[color] ?? iconBgMap['violet'];
+---
+
+<div
+  data-testid={testid}
+  class:list={['rounded-xl border p-5 flex items-center gap-4 shadow-sm', cardClass]}
+>
+  <div class:list={['w-12 h-12 rounded-lg flex items-center justify-center text-xl shrink-0', iconClass]}>
+    {icon}
+  </div>
+  <div>
+    <p class="text-sm font-medium opacity-70">{label}</p>
+    <p class="text-2xl font-bold mt-0.5">
+      {value === null || value === undefined ? '—' : value}
+    </p>
+  </div>
+</div>

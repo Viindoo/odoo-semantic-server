@@ -112,6 +112,24 @@ jobs:
           print('v17 smoke PASS')
           "
 
+      - name: "Astro smoke — landing page GET /"
+        run: |
+          status=$(curl -sf -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/ 2>/dev/null || echo "000")
+          echo "Landing page status: $status"
+          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
+
+      - name: "Astro smoke — admin login page GET /admin/login"
+        run: |
+          status=$(curl -sf -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/admin/login 2>/dev/null || echo "000")
+          echo "Admin login page status: $status"
+          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
+
+      - name: "FastAPI JSON smoke — GET /api/auth/verify (expect 401 no cookie)"
+        run: |
+          status=$(curl -sf -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/api/auth/verify 2>/dev/null || echo "000")
+          echo "FastAPI auth verify status: $status"
+          [ "$status" = "401" ] || (echo "Expected 401 no cookie, got $status" && exit 1)
+
   smoke-real-odoo-8:
     runs-on: ubuntu-latest
     services:

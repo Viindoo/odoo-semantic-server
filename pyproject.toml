@@ -13,7 +13,6 @@ dependencies = [
     "fastapi>=0.115,<1.0",
     "fastmcp>=2.3,<3.0",
     "itsdangerous>=2.1",       # M7 W16 — Starlette SessionMiddleware cookie signing
-    "jinja2>=3.1,<4.0",
     "jsonschema>=4.21",
     "neo4j>=5.0,<6.0",
     "pgvector>=0.3,<0.5",

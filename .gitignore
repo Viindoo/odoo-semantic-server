@@ -8,3 +8,8 @@ odoo-semantic.conf
 
 # Claude Code local settings
 .claude/
+
+# Astro site build artifacts
+site/node_modules/
+site/dist/
+site/.astro/

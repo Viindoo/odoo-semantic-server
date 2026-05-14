@@ -1,0 +1,46 @@
+# odoo-semantic-astro.service — systemd unit cho Astro frontend server
+# Đặt tại: /etc/systemd/system/odoo-semantic-astro.service
+# Sau khi copy:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now odoo-semantic-astro
+#
+# Astro server (landing page + admin SSR) bind 127.0.0.1:4321 — KHÔNG expose ra Internet.
+# Truy cập từ xa qua nginx proxy (reverse proxy tại https://odoo-semantic.viindoo.com).
+#
+# Deploy:
+#   rsync -avz --exclude=node_modules --exclude=dist \
+#     ./site/ odoo-semantic@prod:/opt/odoo-semantic-mcp/site/
+#   ssh odoo-semantic@prod "cd /opt/odoo-semantic-mcp/site && npm ci && npm run build"
+#   sudo systemctl restart odoo-semantic-astro
+
+[Unit]
+Description=Odoo Semantic MCP — Astro frontend server (landing + admin SSR :4321)
+Documentation=https://github.com/Viindoo/odoo-semantic-mcp
+After=network.target odoo-semantic-webui.service
+Wants=odoo-semantic-webui.service
+
+[Service]
+Type=simple
+User=odoo-semantic
+Group=odoo-semantic
+WorkingDirectory=/opt/odoo-semantic-mcp/site
+ExecStart=/usr/bin/node /opt/odoo-semantic-mcp/site/dist/server/entry.mjs
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment for Node.js server
+Environment=HOST=127.0.0.1
+Environment=PORT=4321
+Environment=NODE_ENV=production
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/odoo-semantic-mcp/site/.astro
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -184,7 +184,7 @@
 **Section E — Concurrency Hardening (P1):**
 - [x] `src/indexer/pipeline.py`: thêm `indexer_is_running(pg_conn) -> bool` public helper
 - [x] `src/web_ui/routes/repos.py`: dedup check trước Popen + `flash` query param trong `repos_page()`
-- [x] `src/web_ui/templates/repos.html`: flash warning banner (amber style)
+- [x] flash warning banner (amber style) — was src/web_ui/templates/repos.html, file removed in M8 W1 (logic moves to Astro in W3)
 - [x] `tests/test_web_ui_repos.py`: 2 unit tests dedup (blocked + ok path)
 
 **Section F — Job Tracking (P2 — Complete):**
@@ -193,7 +193,7 @@
 - [x] `src/indexer/__main__.py`: thêm `--job-id INT` arg → update job status start/success/error
 - [x] `src/web_ui/routes/repos.py`: `index_repo()` tạo job record + truyền `--job-id` vào subprocess
 - [x] route GET /repos/jobs/{job_id}/status: JSON `{id, profile_name, status, pid, started_at, finished_at, error_msg, created_at}` — landed cùng `src/web_ui/routes/repos.py`
-- [x] `src/web_ui/templates/repos.html`: status badge + JS polling 5s nếu running/queued
+- [x] status badge + JS polling 5s nếu running/queued — was src/web_ui/templates/repos.html, file removed in M8 W1 (logic moves to Astro W3, tested by W7 browser)
 - [x] `tests/test_job_registry.py`: unit tests CRUD (15 tests)
 
 > **Lý do tách M5.5:** items polish không block M5 ship; deferred items cần auth layer M5 trước. Pattern theo M2.5 precedent (milestone phụ giữa product milestones).
@@ -369,7 +369,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 ## Milestone 8 — "Public Wow"
 
-**Status:** Planning — revised 2026-05-12 (Astro unified decision). Không có code change.
+**Status:** `[x]` DONE — 2026-05-14 (PR #86 merged, 1195 tests pass, 6/6 CI green, ADR-0014/0015/0016 committed).
 
 **P1 production fix-ups (từ M7.5 verification 2026-05-14 — bắt buộc trước public launch):**
 
@@ -428,19 +428,19 @@ Session flow: `/admin/*` → Astro middleware → `GET /api/auth/verify` (FastAP
 - 2026-05-11: Astro + React Flow + baked JSON snapshot (`scripts/dump_graph_snippet.py`).
 - 2026-05-12: Astro `output: 'hybrid'` — unified cho cả landing (static) VÀ admin (SSR). FastAPI → pure JSON API (Jinja2 xóa). Tailwind CSS. `site/` dir (thay `landing/`).
 
-**Streams + sub-PRs (planned, not yet opened):**
-- [ ] **Stream A — FastAPI pure JSON API** (1 PR, ~3-4h): `feat/m8-fastapi-json-api` — xóa `src/web_ui/templates/` + Jinja2 dep, convert 26 endpoints → `/api/*` JSON, thêm `/api/auth/{login,logout,verify}`. ADR-0013.
-- [ ] **Stream B — Astro hybrid full** (4-5 PRs, ~4-5 days):
-  - [ ] `feat/m8-astro-scaffold` — `site/` dir, `output: 'hybrid'`, Tailwind, pnpm, tsconfig (3-4h).
-  - [ ] `feat/m8-graph-snapshot` — `scripts/dump_graph_snippet.py` + baked JSON (2-3h).
-  - [ ] `feat/m8-admin-pages` — 7 admin pages Astro SSR + AdminLayout + Astro middleware auth (2-3 days).
-  - [ ] `feat/m8-hero-animation` — landing + React Flow GraphAnimation island + cinematic frames (1-2 days).
-  - [ ] `feat/m8-landing-content` — pricing placeholder + docs pages (1 day). ADR-0012.
-- [ ] **Stream C — nginx integration** (1 PR, ~1-2h): `feat/m8-nginx-integration` — `/` + `/admin/*` → Astro :4321; `/api/` → FastAPI :8003; mcp/install/health unchanged. Gate: A + B merged.
-- [ ] **Stream D — systemd + CI** (1 PR, ~4-6h): `feat/m8-astro-service` — `odoo-semantic-astro.service`, CI `setup-node` + `pnpm build` + `pnpm run check`, browser test URL update.
+**Streams + sub-PRs (all shipped via PR #86 — feat/m8-wave-integration):**
+- [x] **Stream A — FastAPI pure JSON API**: `src/web_ui/` pure JSON routes, `/api/auth/{login,logout,verify}`. ADR-0015.
+- [x] **Stream B — Astro hybrid full**:
+  - [x] `site/` dir, `output: 'server'` (Astro 5.x), Tailwind, pnpm, tsconfig.
+  - [x] `scripts/dump_graph_snippet.py` + baked JSON (`site/public/graph-snapshot.json`).
+  - [x] 7 admin pages Astro SSR + AdminLayout + Astro middleware auth.
+  - [x] Landing + React Flow GraphAnimation island + cinematic frames.
+  - [x] Pricing placeholder + docs pages. ADR-0014.
+- [x] **Stream C — nginx integration**: `/` + `/admin/*` → Astro :4321; `/api/` → FastAPI :8003.
+- [x] **Stream D — systemd + CI**: `odoo-semantic-astro.service`, CI `setup-node` + `pnpm build` + `pnpm run check`.
 - [x] **Stream X — Web UI ↔ CLI parity** (done): 9 WIs đã merge — delete profile/repo, index options, reset-embed, index-all, index-core, seed-patterns, apply-preset.
 
-**Acceptance criteria:** `GET /` 200 Lighthouse ≥80/95/95; `GET /admin/login` 200 (Astro SSR); `POST /api/auth/login` 200 JSON + set-cookie; unauthenticated `GET /admin/` → redirect `/admin/login`; Jinja2 không còn trong `pyproject.toml`; nginx -t pass; `make lint + test` + `pnpm run check` green; ADR-0012 + ADR-0013 committed.
+**Acceptance criteria:** `[x]` ALL MET — `GET /` 200 Lighthouse ≥80/95/95 ✓; `GET /admin/login` 200 (Astro SSR) ✓; `POST /api/auth/login` 200 JSON + set-cookie ✓; unauthenticated `GET /admin/` → redirect `/admin/login` ✓; Jinja2 không còn trong `pyproject.toml` ✓; nginx -t pass ✓; `make lint + test` + `pnpm run check` green ✓; ADR-0014 + ADR-0015 + ADR-0016 committed ✓; 1195 tests pass, 6/6 CI green ✓.
 
 **SaaS roadmap:**
 - M9 "Auth Wow" — OAuth Google/GitHub, public signup, tenant API keys (zero migration debt).
@@ -452,23 +452,80 @@ Session flow: `/admin/*` → Astro middleware → `GET /api/auth/verify` (FastAP
 
 ---
 
-## Milestone 9 — "Auth Wow"
+## Milestone 9 — "Auth Wow" + M8 Cleanup
 
-**Status:** Planning (chưa start). M8 phải merge trước.
+**Status:** Active (M8 merged 2026-05-14). M8 cleanup streams run first; Auth Wow features follow.
 
-**Intent:** Public signup, OAuth, multi-user admin, self-serve account operations. Zero migration debt — Jinja2 đã xóa hết trong M8, M9 chỉ làm feature mới thuần túy trên Astro SSR + FastAPI JSON API.
+**Theme:** "Sweep the floors before opening the doors." — close M8 technical debt, harden CI infra, then add Auth features on clean foundation.
 
-**OAuth libraries:** `arctic` + `oslo` trong Astro SSR middleware (compatible natively với Astro output: hybrid). FastAPI `/api/auth/oauth-token` cho token exchange.
+**Intent (Auth Wow):** Public signup, OAuth, multi-user admin, self-serve account operations. Zero migration debt — Jinja2 đã xóa hết trong M8, M9 chỉ làm feature mới thuần túy trên Astro SSR + FastAPI JSON API.
 
-**Items planned:**
+**OAuth libraries:** `arctic` + `oslo` trong Astro SSR middleware. FastAPI `/api/auth/oauth-token` cho token exchange.
+
+### Stream A — CI Infra Hardening (deadline-driven)
+
+- [ ] Update `actions/setup-node@v4` → v5 + `pnpm/action-setup@v3` → v5 supporting Node.js 24. **Deadline 2026-06-02** (GitHub forced upgrade — browser CI jobs will break). P0.
+- [ ] Replace `python -m jsonschema` with `check-jsonschema` pip package (ci.yml:35). Eliminates DeprecationWarning + future-proofs against jsonschema CLI interface changes.
+- [ ] Add `actionlint` as a CI gate to catch workflow drift before it reaches runner.
+
+### Stream B — Test Debt + Coverage Gaps from M8
+
+- [ ] Port `tests/test_clone_poll_timeout.py` to Astro: verify `MAX_TICKS=72` equivalent in `site/src/pages/admin/repos.astro` + add browser test. Currently 4 tests skipped.
+- [ ] Decide on 9 legacy stub files in `tests/test_web_ui_*_browser.py` (M8 W7 breadcrumbs): delete for clarity or keep as git-discoverable history. Document decision.
+- [ ] Add `LoopbackOnlyMiddleware` explicit test: non-loopback client → 403 (`src/web_ui/app.py:42-49`). Coverage gap from Phase 8 review.
+- [ ] Add `_json_safe` regression test fixture pattern for new JSONResponse routes — prevent recurrence of datetime 500 bug.
+- [ ] Fix 2 known M9 warnings (CONTRIBUTING.md Known Upstream Warnings §4-5):
+  - `neo4j._sync.driver:547 DeprecationWarning` — close session explicitly in `test_git_utils` + `test_indexer_main` fixture teardown.
+  - `httpx._client per-request cookies` — refactor `test_web_ui_auth.py` helper to use `httpx.Client(cookies=...)`.
+- [ ] Update `_bypass_webui_auth_for_legacy_tests` autouse fixture comment in `conftest.py:63` — description "tests pre-date session auth" no longer accurate since M8 browser tests also use it.
+
+### Stream C — REST Semantics + Error Handling Polish
+
+- [ ] `POST /api/repos/profiles/{id}/clone-all`: returns 200 "no pending repos" for nonexistent `profile_id` — distinguish missing-resource (404) from empty-collection (200).
+- [ ] `PATCH /api/repos/profiles/{id}/parent`: returns 400 for nonexistent `profile_id` — should be 404. Refactor `_validate_parent` to raise typed exception mapped to correct HTTP status in route.
+- [ ] Decide policy for `/docs` + `/redoc` middleware exempt entries when `docs_url=None, redoc_url=None` are intentional disables. Either re-enable for dev env or trim exempt set.
+
+### Stream D — Astro UI Completeness (expose M8 backend features in UI)
+
+PR #87 + #88 added backend features absorbed into M8 branch. The Astro pages don't yet expose UI for them:
+
+- [ ] Parent dropdown in `site/src/pages/admin/repos.astro` calling `PATCH /api/repos/profiles/{id}/parent`. Allow setting profile hierarchy from UI.
+- [ ] "Clone all pending" button per profile in `repos.astro` calling `POST /api/repos/profiles/{id}/clone-all`. Plus polling spinner for in-progress job count.
+- [ ] M8.1 deferred: JS toggle for URL pattern in `RepoTable.astro` SSH key dropdown — currently SSR-conditional only (`tests/browser/admin/test_repos.py:130`).
+- [ ] `JobStatus.astro` component is duplicated/dead — confirm and either wire into `operations.astro` or delete (Phase 8 R1#7 finding).
+
+### Stream E — Production Operational (M7.5 + M8 carry-over)
+
+- [ ] Cleanup `99.0` test artifact nodes in Neo4j (operational, run on prod: `MATCH (m:Module {odoo_version: '99.0'}) DETACH DELETE m`).
+- [ ] Index core symbols for Odoo v9-v19 on production server (operational, re-run `index-core` per version after M8 deploy).
+- [ ] **M7.5-P2-NAMEGET:** `parser_odoo_core.py` runtime DeprecationWarning detection for `name_get` (carried from M7.5 — see TASKS.md M8 P2 queue).
+- [ ] **M7.5-P2-SEED:** Seed production `suggest_pattern` catalogue (operational — run `python -m src.indexer.seed_patterns` on prod server).
+- [ ] v8 era1 CLI parser enhancement (`parser_cli.py` — 0 CLIFlag for v8).
+
+### Stream F — Long-tail Features (defer or kill)
+
+- [ ] MFA TOTP for Web UI session auth (ADR-0011 extension — security hardening before public launch).
+- [ ] T3.4b VN translation for persona docs (carried from M7.5 design decision to defer).
+- [ ] Pricing page payment integration (`/pricing/` has waitlist teaser only from M8 W5).
+
+### Stream G — Process Discipline Learnings from M8
+
+Two bug patterns surfaced twice during M8 — encode as automated lint to prevent recurrence:
+
+- [ ] Add ruff/custom lint rule: warn on `JSONResponse(<dict>)` without `_json_safe` wrap when dict may contain `datetime` objects.
+- [ ] Add ruff/custom lint rule: warn on client-side `fetch()` with mutating method (`POST`/`PUT`/`DELETE`) without `Content-Type: application/json` header — prevents Astro 5.x `checkOrigin` rejection.
+- [ ] Document both patterns in `CONTRIBUTING.md` Common Pitfalls section (after lint rules built).
+
+### Auth Wow Items (original M9 scope)
+
 - [ ] OAuth integration (Google/GitHub) — `arctic` + `oslo` trong Astro SSR; callback URL `/admin/auth/callback`
 - [ ] Public signup flow + email verification — `/signup` Astro page + FastAPI `/api/auth/register` + SMTP config
 - [ ] Tenant API key issuance per user (sau signup, user tự tạo từ dashboard)
 - [ ] Self-serve webui user management (list/deactivate/reset users qua Web UI — hiện CLI-only `manager create-webui-user`)
 - [ ] Backup/Restore Web UI (React component trong `operations.astro`, gọi `/api/operations/backup|restore` — security review trước khi expose)
-- [ ] FERNET key rotation Web UI (chỉ expose sau khi có 2FA + audit log; tránh leak qua HTTP)
-- [ ] CLI delete-profile / delete-repo subcommands trong `src/manager/__main__.py` (parity CLI cho automation)
-- [ ] DB migrate trigger UI (read-only display current migration version; trigger giữ ở deploy script)
+- [ ] FERNET key rotation Web UI (chỉ expose sau khi có 2FA + audit log)
+- [ ] CLI delete-profile / delete-repo subcommands trong `src/manager/__main__.py` (automation parity)
+- [ ] DB migrate trigger UI (read-only display current migration version)
 
 **Plan file:** [`docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md`](docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md)
 

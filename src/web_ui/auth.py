@@ -67,3 +67,18 @@ def verify_password(pw: str, hash_: str) -> bool:
         return bcrypt.checkpw(pw.encode(), hash_.encode())
     except Exception:
         return False
+
+
+def is_test_bypass_active() -> bool:
+    """Return True only when BOTH test-bypass env vars are set.
+
+    Why both are required: a production deployment with a stale .env
+    containing WEBUI_AUTH_DISABLED=1 must NOT bypass auth. Pairing with
+    PYTEST_CURRENT_TEST (set automatically by pytest itself) ensures the
+    bypass is impossible outside an active pytest process — even if ops
+    accidentally leaves WEBUI_AUTH_DISABLED=1 in the production env file.
+    """
+    return (
+        os.environ.get("WEBUI_AUTH_DISABLED") == "1"
+        and os.environ.get("PYTEST_CURRENT_TEST") is not None
+    )

@@ -320,7 +320,7 @@ def test_index_profile_warns_when_ancestor_not_indexed(
 ):
     """index_profile emits a warning when an ancestor profile has no indexed repos.
 
-    Covers the ADR-0014 D4 warning path: indexing a child before its parent
+    Covers the ADR-0016 D4 warning path: indexing a child before its parent
     should not fail but should warn the admin.
     """
     import logging

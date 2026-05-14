@@ -1,14 +1,13 @@
 # tests/test_web_ui_index_options.py
-"""Tests for POST /repos/repos/{id}/index with extended form options (M8 W3).
+"""Tests for POST /api/repos/repos/{id}/index with extended options (M8 W1 pure JSON API).
 
 Covers:
-- --no-embed, --full, --gc flags appended to argv when form fields are set
+- --no-embed, --full, --gc flags appended to argv when fields are set
 - --max-workers N appended when != 1
 - Default POST (no flags) → clean argv without optional flags
-- max_workers > 8 → 303 with flash error, no Popen
-- max_workers non-int → 303 with flash error, no Popen
+- max_workers > 8 → 422 error JSON, no Popen
+- max_workers non-int → 422 error JSON, no Popen
 - indexer_is_running guard still works after refactor
-- clone_status guard (handled by indexer_is_running / repo presence)
 """
 import unittest.mock as mock
 
@@ -25,26 +24,6 @@ pytestmark = pytest.mark.postgres
 def migrated_pg(clean_pg):
     run_migrations(clean_pg)
     return clean_pg
-
-
-def _make_conn_factory(pg_conn):
-    """Return a _get_conn replacement that wraps pg_conn without closing it."""
-
-    class _NoCloseConn:
-        def __init__(self, conn):
-            self._conn = conn
-
-        def close(self):
-            pass
-
-        def cursor(self, *args, **kwargs):
-            return self._conn.cursor(*args, **kwargs)
-
-        def __getattr__(self, name):
-            return getattr(self._conn, name)
-
-    wrapped = _NoCloseConn(pg_conn)
-    return lambda: wrapped
 
 
 def _async_client(app):
@@ -76,13 +55,13 @@ class TestIndexOptionsFlags:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"full": "on", "gc": "on", "max_workers": "4"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"full": "on", "gc": "on", "max_workers": "4"},
                 )
 
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         mock_popen.assert_called_once()
         argv = mock_popen.call_args[0][0]
         assert "--full" in argv
@@ -93,7 +72,7 @@ class TestIndexOptionsFlags:
 
     @pytest.mark.asyncio
     async def test_default_values_no_optional_flags(self, migrated_pg):
-        """POST with no flags ticked, max_workers=1 → argv has no --full, --gc, --max-workers."""
+        """POST with no flags, max_workers=1 → argv has no --full, --gc, --max-workers."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_2")
         app = create_app()
         with mock.patch(
@@ -101,12 +80,11 @@ class TestIndexOptionsFlags:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"max_workers": "1"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"max_workers": "1"},
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
         mock_popen.assert_called_once()
         argv = mock_popen.call_args[0][0]
         assert "--full" not in argv
@@ -124,56 +102,53 @@ class TestIndexOptionsFlags:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"no_embed": "on", "max_workers": "1"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"no_embed": "on", "max_workers": "1"},
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
         mock_popen.assert_called_once()
         argv = mock_popen.call_args[0][0]
         assert "--no-embed" in argv
 
     @pytest.mark.asyncio
-    async def test_max_workers_over_limit_returns_flash_no_popen(self, migrated_pg):
-        """POST with max_workers=9 → 303 with flash error, Popen NOT called."""
+    async def test_max_workers_over_limit_returns_422(self, migrated_pg):
+        """POST with max_workers=9 → 422 error JSON, Popen NOT called."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_4")
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"max_workers": "9"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"max_workers": "9"},
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
-        assert "8" in location, "flash should mention the max limit 8"
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "error" in body
+        assert "8" in body["error"]
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_max_workers_non_int_returns_flash_no_popen(self, migrated_pg):
-        """POST with max_workers=abc → 303 with flash error, Popen NOT called."""
+    async def test_max_workers_non_int_returns_422(self, migrated_pg):
+        """POST with max_workers=abc → 422 error JSON, Popen NOT called."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_5")
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"max_workers": "abc"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"max_workers": "abc"},
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "error" in body
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_indexer_running_guard_still_works(self, migrated_pg):
-        """When indexer_is_running is True → flash redirect, no Popen (guard preserved)."""
+        """When indexer_is_running is True → 409 JSON, no Popen (guard preserved)."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_6")
         app = create_app()
         with mock.patch(
@@ -181,15 +156,14 @@ class TestIndexOptionsFlags:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"full": "on", "max_workers": "2"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"full": "on", "max_workers": "2"},
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location
-        assert "already" in location.lower()
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "error" in body
+        assert "running" in body["error"].lower() or "already" in body["error"].lower()
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
@@ -204,12 +178,11 @@ class TestIndexOptionsFlags:
         ) as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"max_workers": "1"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"max_workers": "1"},
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
         mock_popen.assert_called_once()
         argv = mock_popen.call_args[0][0]
         # Helper prepends `python -m src.indexer` and appends `--job-id N`
@@ -227,9 +200,8 @@ class TestIndexOptionsFlags:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"max_workers": "1"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"max_workers": "1"},
                 )
 
         mock_popen.assert_called_once()
@@ -240,17 +212,17 @@ class TestIndexOptionsFlags:
 
     @pytest.mark.asyncio
     async def test_max_workers_zero_rejected(self, migrated_pg):
-        """POST with max_workers=0 → 303 flash error, Popen not called."""
+        """POST with max_workers=0 → 422 error JSON, Popen not called."""
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_8")
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    data={"max_workers": "0"},
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={"max_workers": "0"},
                 )
 
-        assert resp.status_code == 303
-        assert "flash=" in resp.headers["location"]
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "error" in body
         mock_popen.assert_not_called()

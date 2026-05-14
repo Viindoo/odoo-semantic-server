@@ -1,7 +1,6 @@
 # tests/test_web_ui_repos.py
-"""Tests for /repos Web UI routes — requires PostgreSQL."""
+"""Tests for /api/repos Web UI routes — requires PostgreSQL (M8 W1 pure JSON API)."""
 import unittest.mock as mock
-from datetime import UTC
 
 import httpx
 import pytest
@@ -18,69 +17,42 @@ def migrated_pg(clean_pg):
     return clean_pg
 
 
-def _make_conn_factory(pg_conn):
-    """Return a _get_conn replacement that returns the test connection.
-
-    The route calls conn.close() in a finally block — we patch that to a no-op
-    so the session-scoped pg_conn stays open across tests.
-    """
-    class _NoCloseConn:
-        """Thin wrapper: proxies all psycopg2 Connection attrs but no-ops close()."""
-
-        def __init__(self, conn):
-            self._conn = conn
-
-        def close(self):
-            pass  # keep the session-scoped connection alive
-
-        def cursor(self, *args, **kwargs):
-            return self._conn.cursor(*args, **kwargs)
-
-        def __getattr__(self, name):
-            return getattr(self._conn, name)
-
-    wrapped = _NoCloseConn(pg_conn)
-
-    def factory():
-        return wrapped
-
-    return factory
-
-
 def _async_client(app):
     """Return an AsyncClient backed by the ASGI app via ASGITransport."""
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
-class TestReposPage:
+class TestProfilesEndpoint:
     @pytest.mark.asyncio
-    async def test_get_repos_returns_200(self, migrated_pg):
+    async def test_get_profiles_returns_200(self, migrated_pg):
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/repos")
+            resp = await client.get("/api/repos/profiles")
         assert resp.status_code == 200
-        assert "Repos" in resp.text
+        body = resp.json()
+        assert "profiles" in body
 
     @pytest.mark.asyncio
-    async def test_get_repos_shows_add_profile_form(self, migrated_pg):
+    async def test_get_profiles_shows_no_profiles_initially(self, migrated_pg):
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/repos")
-        assert "Add Profile" in resp.text
-        assert "No profiles yet" in resp.text
+            resp = await client.get("/api/repos/profiles")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["profiles"] == []
 
     @pytest.mark.asyncio
-    async def test_create_profile_redirects(self, migrated_pg):
+    async def test_create_profile_returns_ok(self, migrated_pg):
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.post(
-                "/repos/profiles",
-                data={"name": "test_profile", "version": "17.0", "description": ""},
-                follow_redirects=False,
+                "/api/repos/profiles",
+                json={"name": "test_profile", "version": "17.0", "description": ""},
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
 
     @pytest.mark.asyncio
     async def test_create_profile_persists(self, migrated_pg):
@@ -89,9 +61,8 @@ class TestReposPage:
         app = create_app()
         async with _async_client(app) as client:
             await client.post(
-                "/repos/profiles",
-                data={"name": "viindoo17", "version": "17.0", "description": "test"},
-                follow_redirects=False,
+                "/api/repos/profiles",
+                json={"name": "viindoo17", "version": "17.0", "description": "test"},
             )
         profiles = repo_store().list_profiles()
         assert len(profiles) == 1
@@ -99,42 +70,43 @@ class TestReposPage:
         assert profiles[0]["odoo_version"] == "17.0"
 
     @pytest.mark.asyncio
-    async def test_get_repos_shows_profile_after_create(self, migrated_pg):
+    async def test_get_profiles_shows_profile_after_create(self, migrated_pg):
         app = create_app()
         async with _async_client(app) as client:
             await client.post(
-                "/repos/profiles",
-                data={"name": "myprofile", "version": "16.0", "description": ""},
-                follow_redirects=False,
+                "/api/repos/profiles",
+                json={"name": "myprofile", "version": "16.0", "description": ""},
             )
-            resp = await client.get("/repos")
-        assert "myprofile" in resp.text
-        assert "16.0" in resp.text
+            resp = await client.get("/api/repos/profiles")
+        assert resp.status_code == 200
+        body = resp.json()
+        names = [p["name"] for p in body["profiles"]]
+        assert "myprofile" in names
 
     @pytest.mark.asyncio
-    async def test_add_repo_redirects(self, migrated_pg):
+    async def test_add_repo_returns_ok(self, migrated_pg):
         from src.db.pg import repo_store
 
-        # Pre-create profile directly via ORM to isolate POST /repos/repos behaviour
+        # Pre-create profile directly via ORM
         repo_store().add_profile(name="p1", odoo_version="17.0")
 
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.post(
-                "/repos/repos",
-                data={
+                "/api/repos/repos",
+                json={
                     "profile": "p1",
                     "url": "file://local",
                     "branch": "17.0",
                     "local_path": "/tmp/odoo_17",
                 },
-                follow_redirects=False,
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
 
     @pytest.mark.asyncio
-    async def test_index_repo_redirects(self, migrated_pg):
+    async def test_index_repo_returns_ok(self, migrated_pg):
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="p1", odoo_version="17.0")
@@ -149,11 +121,12 @@ class TestReposPage:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index",
-                    follow_redirects=False,
+                    f"/api/repos/repos/{rid}/index",
+                    json={},
                 )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         mock_popen.assert_called_once()
 
     @pytest.mark.asyncio
@@ -172,10 +145,10 @@ class TestReposPage:
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
-                await client.post(f"/repos/repos/{rid}/index", follow_redirects=False)
+                await client.post(f"/api/repos/repos/{rid}/index", json={})
 
         mock_popen.assert_called_once()
-        call_args = mock_popen.call_args[0][0]  # first positional arg = command list
+        call_args = mock_popen.call_args[0][0]
         assert "--all" not in call_args, "index must not re-index all profiles (I4)"
         assert "--profile" in call_args
         idx = call_args.index("--profile")
@@ -183,7 +156,7 @@ class TestReposPage:
 
     @pytest.mark.asyncio
     async def test_index_repo_dedup_blocked(self, migrated_pg):
-        """M5.5 Section E: when indexer is running, redirect with flash, Popen NOT called."""
+        """M5.5 Section E: when indexer is running, returns 409, Popen NOT called."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="p_dedup", odoo_version="17.0")
@@ -200,18 +173,18 @@ class TestReposPage:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index", follow_redirects=False
+                    f"/api/repos/repos/{rid}/index", json={}
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location, "redirect must carry flash query param"
-        assert "already" in location.lower(), "flash must mention 'already'"
+        assert resp.status_code == 409
+        body = resp.json()
+        err = body.get("error", "").lower()
+        assert "already" in err or "running" in err
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_index_repo_dedup_ok_spawns_popen(self, migrated_pg):
-        """M5.5 Section E: when indexer not running, Popen called once (dedup pass)."""
+        """M5.5 Section E: when indexer not running, Popen called once."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="p_free", odoo_version="17.0")
@@ -228,12 +201,26 @@ class TestReposPage:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index", follow_redirects=False
+                    f"/api/repos/repos/{rid}/index", json={}
                 )
 
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         mock_popen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_index_repo_missing_returns_404(self, migrated_pg):
+        """index_repo must return 404 for unknown repo_id, not silently {"ok": True}."""
+        app = create_app()
+        with mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    "/api/repos/repos/999999/index", json={}
+                )
+        assert resp.status_code == 404
+        assert "not found" in resp.json().get("error", "").lower()
+        mock_popen.assert_not_called()
 
 
 class TestSshCloneFlow:
@@ -241,7 +228,7 @@ class TestSshCloneFlow:
 
     @pytest.fixture(autouse=True)
     def _cleanup_ssh_keys(self, migrated_pg):
-        """Delete ssh_key_pairs rows before and after each test to avoid cross-test leakage."""
+        """Delete ssh_key_pairs rows before and after each test."""
         with migrated_pg.cursor() as cur:
             cur.execute("DELETE FROM ssh_key_pairs")
         yield
@@ -262,19 +249,19 @@ class TestSshCloneFlow:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/repos/repos",
-                    data={
+                    "/api/repos/repos",
+                    json={
                         "profile": "ssh_profile",
                         "url": "git@github.com:org/repo.git",
                         "branch": "main",
                         "ssh_key_id": str(key_id),
                     },
-                    follow_redirects=False,
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location, "redirect must carry flash query param"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("clone_status") == "pending"
 
         # Popen called with src.cloner --repo-id <N>
         mock_popen.assert_called_once()
@@ -302,18 +289,18 @@ class TestSshCloneFlow:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/repos/repos",
-                    data={
+                    "/api/repos/repos",
+                    json={
                         "profile": "ssh_nokey_profile",
                         "url": "git@github.com:org/repo.git",
                         "branch": "main",
                         # ssh_key_id intentionally omitted
                     },
-                    follow_redirects=False,
                 )
 
         assert resp.status_code == 400
-        assert "SSH" in resp.text or "ssh" in resp.text.lower()
+        body = resp.json()
+        assert "SSH" in body.get("error", "") or "ssh" in body.get("error", "").lower()
         mock_popen.assert_not_called()
         repos = repo_store().list_repos()
         assert len(repos) == 0
@@ -329,18 +316,18 @@ class TestSshCloneFlow:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/repos/repos",
-                    data={
+                    "/api/repos/repos",
+                    json={
                         "profile": "https_profile",
                         "url": "https://github.com/odoo/odoo",
                         "branch": "17.0",
                         "local_path": "/tmp/odoo_https",
                     },
-                    follow_redirects=False,
                 )
 
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         mock_popen.assert_not_called()
         repos = repo_store().list_repos()
         assert len(repos) == 1
@@ -348,7 +335,7 @@ class TestSshCloneFlow:
 
     @pytest.mark.asyncio
     async def test_get_ssh_keys_list_returns_array(self, migrated_pg):
-        """GET /repos/ssh-keys-list → JSON array with id + name keys."""
+        """GET /api/repos/ssh-keys-list → JSON array with id + name keys."""
         from src.db.pg import auth_store
 
         auth_store().save_ssh_key("key-alpha", "ssh-ed25519 AAAA1", "enc1")
@@ -356,7 +343,7 @@ class TestSshCloneFlow:
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/repos/ssh-keys-list")
+            resp = await client.get("/api/repos/ssh-keys-list")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -379,14 +366,13 @@ class TestSshCloneFlow:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    "/repos/repos",
-                    data={
+                    "/api/repos/repos",
+                    json={
                         "profile": "ssh_abc_profile",
                         "url": "git@host:org/repo.git",
                         "branch": "main",
                         "ssh_key_id": "abc",  # non-numeric
                     },
-                    follow_redirects=False,
                 )
 
         assert resp.status_code == 400
@@ -396,7 +382,7 @@ class TestSshCloneFlow:
 
     @pytest.mark.asyncio
     async def test_get_clone_status_returns_current(self, migrated_pg):
-        """GET /repos/repos/{id}/clone-status → JSON with clone_status + error_msg."""
+        """GET /api/repos/repos/{id}/clone-status → JSON with clone_status + error_msg."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="clone_profile", odoo_version="17.0")
@@ -412,7 +398,7 @@ class TestSshCloneFlow:
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get(f"/repos/repos/{rid}/clone-status")
+            resp = await client.get(f"/api/repos/repos/{rid}/clone-status")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -422,7 +408,7 @@ class TestSshCloneFlow:
 
 
 class TestJobIntegration:
-    """WI-F3: job record creation + GET /repos/jobs/{id}/status endpoint."""
+    """WI-F3: job record creation + GET /api/jobs/{id}/status endpoint."""
 
     @pytest.fixture(autouse=True)
     def _cleanup_jobs(self, migrated_pg):
@@ -435,7 +421,7 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_index_repo_creates_job_and_passes_job_id(self, migrated_pg):
-        """POST /repos/repos/{id}/index → job created, --job-id in argv."""
+        """POST /api/repos/repos/{id}/index → job created, --job-id in argv."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="p_job", odoo_version="17.0")
@@ -452,11 +438,12 @@ class TestJobIntegration:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index", follow_redirects=False
+                    f"/api/repos/repos/{rid}/index", json={}
                 )
 
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/repos"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
         mock_popen.assert_called_once()
 
         call_argv = mock_popen.call_args[0][0]
@@ -484,7 +471,7 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_index_repo_dedup_blocks_no_job_created(self, migrated_pg):
-        """Khi indexer_is_running True → KHÔNG tạo job, KHÔNG Popen, flash redirect."""
+        """Khi indexer_is_running True → KHÔNG tạo job, KHÔNG Popen, 409 response."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="p_dedup2", odoo_version="17.0")
@@ -501,12 +488,12 @@ class TestJobIntegration:
         ), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/repos/{rid}/index", follow_redirects=False
+                    f"/api/repos/repos/{rid}/index", json={}
                 )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash=" in location, "redirect must carry flash query param"
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "error" in body
         mock_popen.assert_not_called()
 
         # No job row created
@@ -517,14 +504,14 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_get_job_status_existing(self, migrated_pg):
-        """GET /repos/jobs/{id}/status with existing job → 200 + correct JSON shape."""
+        """GET /api/jobs/{id}/status with existing job → 200 + correct JSON shape."""
         from src.db.pg import job_store
 
         job_id = job_store().create_job("p_status")
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get(f"/repos/jobs/{job_id}/status")
+            resp = await client.get(f"/api/jobs/{job_id}/status")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -539,18 +526,18 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_get_job_status_missing(self, migrated_pg):
-        """GET /repos/jobs/999999/status → 404."""
+        """GET /api/jobs/999999/status → 404."""
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/repos/jobs/999999/status")
+            resp = await client.get("/api/jobs/999999/status")
 
         assert resp.status_code == 404
         data = resp.json()
         assert data["error"] == "job not found"
 
 
-class TestStatusBadgeTemplate:
-    """WI-F4: status badge + 5s polling on repos.html."""
+class TestStatusBadge:
+    """WI-F4: status badge data via JSON endpoint."""
 
     @pytest.fixture(autouse=True)
     def _cleanup_jobs(self, migrated_pg):
@@ -562,8 +549,8 @@ class TestStatusBadgeTemplate:
             cur.execute("DELETE FROM indexer_jobs")
 
     @pytest.mark.asyncio
-    async def test_repos_page_renders_status_badge_when_job_exists(self, migrated_pg):
-        """repos.html renders badge with data-job-id when last_job exists."""
+    async def test_profiles_endpoint_includes_last_job(self, migrated_pg):
+        """GET /api/repos/profiles includes last_job data when job exists."""
         from src.db.pg import job_store, repo_store
 
         pid = repo_store().add_profile(name="badge_profile", odoo_version="17.0")
@@ -578,123 +565,60 @@ class TestStatusBadgeTemplate:
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/repos")
+            resp = await client.get("/api/repos/profiles")
 
         assert resp.status_code == 200
-        assert f'data-job-id="{job_id}"' in resp.text
-        assert 'data-job-status="queued"' in resp.text
+        body = resp.json()
+        profiles = body.get("profiles", [])
+        assert len(profiles) == 1
+        # Profile should contain repos
+        profile = profiles[0]
+        repos = profile.get("repos", [])
+        assert len(repos) == 1
+        # last_job should be attached
+        last_job = repos[0].get("last_job")
+        assert last_job is not None
+        assert last_job["id"] == job_id
+        assert last_job["status"] == "queued"
 
     @pytest.mark.asyncio
-    async def test_repos_page_no_badge_when_no_job(self, migrated_pg):
-        """repos.html shows '—' when no job exists for profile."""
+    async def test_profiles_endpoint_no_job_when_no_jobs(self, migrated_pg):
+        """GET /api/repos/profiles has null last_job when no job exists."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="no_job_profile", odoo_version="17.0")
+        pid = repo_store().add_profile(name="nobadge_profile", odoo_version="17.0")
         repo_store().add_repo(
             profile_id=pid,
             url="file://local",
             branch="17.0",
-            local_path="/tmp/odoo_no_job",
+            local_path="/tmp/odoo_nobadge",
         )
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/repos")
+            resp = await client.get("/api/repos/profiles")
 
-        assert resp.status_code == 200
-        # Should have the "Last Job" column header
-        assert "Last Job" in resp.text
-        # Should show '—' for no job (rendered as muted span)
-        assert "color:#9ca3af" in resp.text
-
-    @pytest.mark.asyncio
-    async def test_repos_page_badge_shows_running_status(self, migrated_pg):
-        """repos.html renders running badge when job status is running."""
-        from datetime import datetime
-
-        from src.db.pg import job_store, repo_store
-
-        pid = repo_store().add_profile(name="running_profile", odoo_version="17.0")
-        repo_store().add_repo(
-            profile_id=pid,
-            url="file://local",
-            branch="17.0",
-            local_path="/tmp/odoo_running",
-        )
-        # Create a job and update to running status
-        job_id = job_store().create_job("running_profile")
-        job_store().update_job(
-            job_id,
-            status="running",
-            pid=12345,
-            started_at=datetime.now(tz=UTC),
-        )
-
-        app = create_app()
-        async with _async_client(app) as client:
-            resp = await client.get("/repos")
-
-        assert resp.status_code == 200
-        assert f'data-job-id="{job_id}"' in resp.text
-        assert 'data-job-status="running"' in resp.text
-
-    @pytest.mark.asyncio
-    async def test_repos_page_badge_shows_error_status(self, migrated_pg):
-        """repos.html renders error badge with tooltip when job status is error."""
-        from datetime import datetime
-
-        from src.db.pg import job_store, repo_store
-
-        pid = repo_store().add_profile(name="error_profile", odoo_version="17.0")
-        repo_store().add_repo(
-            profile_id=pid,
-            url="file://local",
-            branch="17.0",
-            local_path="/tmp/odoo_error",
-        )
-        # Create a job with error
-        job_id = job_store().create_job("error_profile")
-        job_store().update_job(
-            job_id,
-            status="error",
-            error_msg="Sample indexing error",
-            finished_at=datetime.now(tz=UTC),
-        )
-
-        app = create_app()
-        async with _async_client(app) as client:
-            resp = await client.get("/repos")
-
-        assert resp.status_code == 200
-        assert f'data-job-id="{job_id}"' in resp.text
-        assert 'data-job-status="error"' in resp.text
-
-    @pytest.mark.asyncio
-    async def test_repos_page_javascript_in_response(self, migrated_pg):
-        """repos.html includes polling JavaScript with POLL_MS = 5000."""
-        from src.db.pg import repo_store
-
-        repo_store().add_profile(name="js_test", odoo_version="17.0")
-
-        app = create_app()
-        async with _async_client(app) as client:
-            resp = await client.get("/repos")
-
-        assert resp.status_code == 200
-        assert "POLL_MS = 5000" in resp.text
-        assert "renderBadge" in resp.text
-        assert "setInterval(pollCells, POLL_MS)" in resp.text
-        assert "/repos/jobs/" in resp.text  # polling endpoint path
+        body = resp.json()
+        profiles = body.get("profiles", [])
+        assert len(profiles) == 1
+        repos = profiles[0].get("repos", [])
+        assert len(repos) == 1
+        last_job = repos[0].get("last_job")
+        assert last_job is None
 
 
 # ---------------------------------------------------------------------------
-# M8 — Profile hierarchy Web UI tests
+# M8 — Profile hierarchy Web UI tests (ported to pure JSON API)
 # ---------------------------------------------------------------------------
 
 class TestProfileHierarchyWebUI:
+    """Tests for parent_profile_id field on POST /api/repos/profiles and the
+    PATCH /api/repos/profiles/{id}/parent endpoint (ported from M8 Wave A
+    master commit cf1820c — Jinja2 form-style → JSON API)."""
+
     @pytest.mark.asyncio
     async def test_create_profile_with_parent(self, migrated_pg):
-        """POST /repos/profiles with parent_id creates profile with FK set."""
+        """POST /api/repos/profiles with parent_id creates profile with FK set."""
         from src.db.pg import repo_store
 
         # Create the parent profile first
@@ -703,55 +627,69 @@ class TestProfileHierarchyWebUI:
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.post(
-                "/repos/profiles",
-                data={
+                "/api/repos/profiles",
+                json={
                     "name": "standard_viindoo_17",
                     "version": "17.0",
                     "description": "",
-                    "parent_id": str(parent_id),
+                    "parent_id": parent_id,
                 },
-                follow_redirects=False,
             )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
 
         # Verify FK was set in DB
         profiles = repo_store().list_profiles()
-        child = next((p for p in profiles if p["name"] == "standard_viindoo_17"), None)
+        child = next(
+            (p for p in profiles if p["name"] == "standard_viindoo_17"), None
+        )
         assert child is not None
         assert child["parent_profile_id"] == parent_id
 
     @pytest.mark.asyncio
-    async def test_create_profile_cycle_rejected_redirects_with_flash(self, migrated_pg):
-        """POST with parent that would create a cycle returns 303 with flash message."""
+    async def test_create_profile_without_parent_remains_root(self, migrated_pg):
+        """POST without parent_id (or null) creates a root profile (NULL FK)."""
         from src.db.pg import repo_store
 
-        # A → B: A's parent = B
-        b_id = repo_store().add_profile("standard_viindoo_17", "17.0")
-        a_id = repo_store().add_profile("odoo_17", "17.0")
-        repo_store().set_profile_parent(a_id, b_id)  # A's parent = B
-
-        # Now try to POST B with parent_id=A — would create B → A → B cycle
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.post(
-                "/repos/profiles",
-                data={
-                    "name": "odoo_17_dup",
-                    "version": "17.0",
-                    "parent_id": str(a_id),  # a_id's chain already leads to b_id
-                },
-                follow_redirects=False,
+                "/api/repos/profiles",
+                json={"name": "root_only", "version": "17.0"},
             )
 
-        # With no cycle (new profile name not yet in chain), this creates fine.
-        # The cycle test: set_profile_parent on an existing profile to create a
-        # cycle via the set_parent endpoint.
-        assert resp.status_code == 303  # still a redirect (not a cycle on brand-new profile)
+        assert resp.status_code == 200
+        profiles = repo_store().list_profiles()
+        prof = next((p for p in profiles if p["name"] == "root_only"), None)
+        assert prof is not None
+        assert prof["parent_profile_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_profile_version_mismatch_rejected(self, migrated_pg):
+        """POST with parent of a different odoo_version returns 400."""
+        from src.db.pg import repo_store
+
+        # Parent on 17.0
+        parent_id = repo_store().add_profile("odoo_17_parent", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/repos/profiles",
+                json={
+                    "name": "child_18",
+                    "version": "18.0",  # mismatch
+                    "parent_id": parent_id,
+                },
+            )
+
+        assert resp.status_code == 400
+        assert "error" in resp.json()
 
     @pytest.mark.asyncio
     async def test_set_profile_parent_endpoint(self, migrated_pg):
-        """POST /repos/profiles/{id}/parent updates parent_profile_id."""
+        """PATCH /api/repos/profiles/{id}/parent updates parent_profile_id."""
         from src.db.pg import repo_store
 
         parent_id = repo_store().add_profile("odoo_17", "17.0")
@@ -759,22 +697,45 @@ class TestProfileHierarchyWebUI:
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.post(
-                f"/repos/profiles/{child_id}/parent",
-                data={"parent_id": str(parent_id)},
-                follow_redirects=False,
+            resp = await client.patch(
+                f"/api/repos/profiles/{child_id}/parent",
+                json={"parent_id": parent_id},
             )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["profile_id"] == child_id
+        assert body["parent_id"] == parent_id
+
         profiles = repo_store().list_profiles()
         child = next(p for p in profiles if p["id"] == child_id)
         assert child["parent_profile_id"] == parent_id
 
     @pytest.mark.asyncio
-    async def test_set_profile_parent_cycle_returns_redirect_with_flash(self, migrated_pg):
-        """POST /repos/profiles/{id}/parent with cycle redirects with flash message."""
-        from urllib.parse import unquote_plus
+    async def test_set_profile_parent_clear(self, migrated_pg):
+        """PATCH with parent_id=null clears the parent (root again)."""
+        from src.db.pg import repo_store
 
+        parent_id = repo_store().add_profile("odoo_17", "17.0")
+        child_id = repo_store().add_profile("standard_viindoo_17", "17.0")
+        repo_store().set_profile_parent(child_id, parent_id)
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{child_id}/parent",
+                json={"parent_id": None},
+            )
+
+        assert resp.status_code == 200
+        profiles = repo_store().list_profiles()
+        child = next(p for p in profiles if p["id"] == child_id)
+        assert child["parent_profile_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_set_profile_parent_cycle_returns_400(self, migrated_pg):
+        """PATCH with cycle returns 400 + error message."""
         from src.db.pg import repo_store
 
         # Build A → B, then try B.parent = A (cycle)
@@ -784,17 +745,34 @@ class TestProfileHierarchyWebUI:
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.post(
-                f"/repos/profiles/{a_id}/parent",
-                data={"parent_id": str(b_id)},  # A's parent = B (creates cycle)
-                follow_redirects=False,
+            resp = await client.patch(
+                f"/api/repos/profiles/{a_id}/parent",
+                json={"parent_id": b_id},  # A's parent = B (creates cycle)
             )
 
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash" in location
-        flash_msg = unquote_plus(location.split("flash=")[1])
-        assert "cycle" in flash_msg.lower() or "failed" in flash_msg.lower()
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        err = body["error"].lower()
+        assert "cycle" in err or "fail" in err
+
+    @pytest.mark.asyncio
+    async def test_set_profile_parent_version_mismatch_returns_400(self, migrated_pg):
+        """PATCH with parent of different odoo_version returns 400."""
+        from src.db.pg import repo_store
+
+        parent_id = repo_store().add_profile("p17", "17.0")
+        child_id = repo_store().add_profile("c18", "18.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{child_id}/parent",
+                json={"parent_id": parent_id},
+            )
+
+        assert resp.status_code == 400
+        assert "error" in resp.json()
 
     @pytest.mark.asyncio
     async def test_delete_parent_with_children_blocked(self, migrated_pg):
@@ -813,22 +791,22 @@ class TestProfileHierarchyWebUI:
         ):
             app = create_app()
             async with _async_client(app) as client:
-                resp = await client.post(
-                    f"/repos/profiles/{parent_id}/delete",
-                    follow_redirects=False,
+                resp = await client.delete(
+                    f"/api/repos/profiles/{parent_id}"
                 )
 
-        # ON DELETE RESTRICT raises FK error → route should redirect with flash
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "flash" in location
+        # ON DELETE RESTRICT raises FK error → JSON 500 with error
+        assert resp.status_code == 500
+        assert "error" in resp.json()
 
 
 class TestCloneAllEndpoint:
-    """Tests for POST /repos/profiles/{id}/clone-all."""
+    """Tests for POST /api/repos/profiles/{id}/clone-all (JSON API)."""
 
     @pytest.mark.asyncio
-    async def test_clone_all_endpoint_short_circuits_file_urls(self, migrated_pg, tmp_path):
+    async def test_clone_all_endpoint_short_circuits_file_urls(
+        self, migrated_pg, tmp_path
+    ):
         """file:// repos pointing to existing dirs are short-circuited; no subprocess."""
         from src.db.pg import repo_store
 
@@ -844,11 +822,14 @@ class TestCloneAllEndpoint:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/profiles/{pid}/clone-all",
-                    follow_redirects=False,
+                    f"/api/repos/profiles/{pid}/clone-all",
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["short_circuited"] == 1
+        assert body["spawned"] == 0
         # Subprocess must NOT have been spawned for file:// short-circuit
         mock_popen.assert_not_called()
 
@@ -858,7 +839,9 @@ class TestCloneAllEndpoint:
         assert repo["local_path"] == str(tmp_path)
 
     @pytest.mark.asyncio
-    async def test_clone_all_endpoint_spawns_subprocess_for_https(self, migrated_pg, tmp_path):
+    async def test_clone_all_endpoint_spawns_subprocess_for_https(
+        self, migrated_pg, tmp_path
+    ):
         """HTTPS repos get a cloner subprocess spawned, not short-circuited."""
         from src.db.pg import repo_store
 
@@ -876,11 +859,13 @@ class TestCloneAllEndpoint:
             mock_popen.return_value = proc_mock
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/profiles/{pid}/clone-all",
-                    follow_redirects=False,
+                    f"/api/repos/profiles/{pid}/clone-all",
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["spawned"] == 1
         mock_popen.assert_called_once()
         call_args = mock_popen.call_args[0][0]
         assert "src.cloner" in call_args
@@ -903,11 +888,11 @@ class TestCloneAllEndpoint:
         with mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
-                    f"/repos/profiles/{pid}/clone-all",
-                    follow_redirects=False,
+                    f"/api/repos/profiles/{pid}/clone-all",
                 )
 
-        assert resp.status_code == 303
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 0
+        assert "message" in body
         mock_popen.assert_not_called()
-        # Flash message should indicate "nothing to clone"
-        assert "flash" in resp.headers["location"]
