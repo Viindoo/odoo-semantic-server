@@ -499,6 +499,69 @@ async def delete_repo(request: Request, repo_id: int):
     return RedirectResponse(f"/repos?flash={quote_plus(flash)}", status_code=303)
 
 
+@router.post("/repos/profiles/{profile_id}/clone-all", response_class=RedirectResponse)
+async def clone_all_pending(request: Request, profile_id: int):
+    """Bulk-clone all pending/manual/error repos for a profile.
+
+    file:// URLs pointing to existing local directories are short-circuited
+    (marked 'cloned' inline without spawning a subprocess).  All other repos
+    have a ``src.cloner`` subprocess spawned in a background thread, mirroring
+    the single-repo clone flow.
+    """
+    from pathlib import Path
+    from urllib.parse import quote_plus, urlparse
+
+    from src.db.pg import repo_store
+
+    pending_statuses = {"manual", "pending", "error"}
+
+    all_repos = repo_store().get_repos_for_profile_by_id(profile_id)
+    repos = [r for r in all_repos if r.get("clone_status", "manual") in pending_statuses]
+
+    if not repos:
+        flash = quote_plus("No pending repos to clone.")
+        return RedirectResponse(f"/repos?flash={flash}", status_code=303)
+
+    short_circuited = 0
+    spawned = 0
+
+    for r in repos:
+        repo_id: int = r["id"]
+        url: str = r.get("url", "")
+
+        # Short-circuit file:// URLs with existing local directory
+        parsed = urlparse(url)
+        if parsed.scheme == "file":
+            local_path = parsed.netloc + parsed.path if parsed.netloc else parsed.path
+            if Path(local_path).is_dir():
+                try:
+                    repo_store().update_repo_local_path(repo_id, local_path)
+                    repo_store().set_clone_status(repo_id, "cloned")
+                    short_circuited += 1
+                except Exception as e:
+                    _logger.warning(
+                        "clone-all: short-circuit failed for repo id=%s: %s", repo_id, e
+                    )
+                continue
+
+        # Spawn cloner subprocess (detached, logged to /tmp)
+        try:
+            with open(f"/tmp/osm-clone-{repo_id}.log", "wb") as _clone_log:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
+                    start_new_session=True,
+                    stdout=_clone_log,
+                    stderr=_clone_log,
+                )
+            threading.Thread(target=proc.wait, daemon=True).start()
+            spawned += 1
+        except Exception as e:
+            _logger.warning("clone-all: spawn failed for repo id=%s: %s", repo_id, e)
+
+    msg = f"Clone started: {spawned} spawned, {short_circuited} short-circuited (file://)."
+    return RedirectResponse(f"/repos?flash={quote_plus(msg)}", status_code=303)
+
+
 @router.get("/repos/repos/{repo_id}/clone-status")
 async def clone_status(request: Request, repo_id: int):
     """Return JSON clone_status for a single repo (used by badge polling)."""

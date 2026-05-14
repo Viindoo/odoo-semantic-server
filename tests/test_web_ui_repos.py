@@ -822,3 +822,92 @@ class TestProfileHierarchyWebUI:
         assert resp.status_code == 303
         location = resp.headers["location"]
         assert "flash" in location
+
+
+class TestCloneAllEndpoint:
+    """Tests for POST /repos/profiles/{id}/clone-all."""
+
+    @pytest.mark.asyncio
+    async def test_clone_all_endpoint_short_circuits_file_urls(self, migrated_pg, tmp_path):
+        """file:// repos pointing to existing dirs are short-circuited; no subprocess."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("clone_test_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url=f"file://{tmp_path}",
+            branch="17.0",
+            local_path="",
+        )
+
+        app = create_app()
+        with mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/profiles/{pid}/clone-all",
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 303
+        # Subprocess must NOT have been spawned for file:// short-circuit
+        mock_popen.assert_not_called()
+
+        # Row must now be clone_status='cloned' and local_path set
+        repo = repo_store().get_repo_by_id(rid)
+        assert repo["clone_status"] == "cloned"
+        assert repo["local_path"] == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_clone_all_endpoint_spawns_subprocess_for_https(self, migrated_pg, tmp_path):
+        """HTTPS repos get a cloner subprocess spawned, not short-circuited."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("clone_https_profile", "17.0")
+        repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="",
+        )
+
+        app = create_app()
+        with mock.patch("subprocess.Popen") as mock_popen:
+            proc_mock = mock.MagicMock()
+            mock_popen.return_value = proc_mock
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/profiles/{pid}/clone-all",
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 303
+        mock_popen.assert_called_once()
+        call_args = mock_popen.call_args[0][0]
+        assert "src.cloner" in call_args
+
+    @pytest.mark.asyncio
+    async def test_clone_all_skips_already_cloned(self, migrated_pg, tmp_path):
+        """Repos already at clone_status='cloned' are not re-processed."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("clone_skip_profile", "17.0")
+        repo_store().add_repo(
+            profile_id=pid,
+            url=f"file://{tmp_path}",
+            branch="17.0",
+            local_path=str(tmp_path),
+            clone_status="cloned",
+        )
+
+        app = create_app()
+        with mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    f"/repos/profiles/{pid}/clone-all",
+                    follow_redirects=False,
+                )
+
+        assert resp.status_code == 303
+        mock_popen.assert_not_called()
+        # Flash message should indicate "nothing to clone"
+        assert "flash" in resp.headers["location"]

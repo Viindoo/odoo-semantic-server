@@ -269,6 +269,19 @@ class RepoStore:
                 (profile_name,),
             )
 
+    def get_repos_for_profile_by_id(self, profile_id: int) -> list[dict]:
+        """Return all repos for a profile identified by its numeric id."""
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                """
+                SELECT r.*, p.name AS profile_name, p.odoo_version
+                FROM repos r JOIN profiles p ON r.profile_id = p.id
+                WHERE p.id = %s ORDER BY r.id
+                """,
+                (profile_id,),
+            )
+
     def update_repo_status(
         self, repo_id: int, status: str, error_msg: str | None = None
     ) -> None:

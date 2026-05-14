@@ -11,12 +11,15 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import getpass
 import os
 import re
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psycopg2
 
@@ -244,6 +247,116 @@ def _cmd_seed_master_data(args, conn) -> int:
     return 0
 
 
+def _short_circuit_file_url(repo_id: int, url: str) -> bool:
+    """If *url* is a file:// URL pointing to an existing directory, mark it cloned.
+
+    Returns True if short-circuited (no subprocess needed), False otherwise.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        return False
+    # urlparse puts the path in .path; netloc is empty for file:///abs/path,
+    # or carries the host for file://host/abs/path (uncommon).
+    local_path = parsed.netloc + parsed.path if parsed.netloc else parsed.path
+    if not Path(local_path).is_dir():
+        return False
+    repo_store().update_repo_local_path(repo_id, local_path)
+    repo_store().set_clone_status(repo_id, "cloned")
+    return True
+
+
+def _cmd_clone_profile(args, conn) -> int:  # noqa: ARG001 (conn unused but required by dispatch)
+    """Clone all pending/manual/error repos for a profile.
+
+    Short-circuits file:// URLs that point to existing local directories by
+    marking them 'cloned' directly (no subprocess).  All other URLs are cloned
+    by spawning ``python -m src.cloner --repo-id <id>`` subprocesses, capped
+    to ``--max-parallel`` concurrent workers.
+    """
+    profile_name: str = args.profile_name
+    include_ancestors: bool = args.include_ancestors
+    ssh_key_id_arg: int | None = args.ssh_key_id
+    max_parallel: int = max(1, args.max_parallel)
+
+    # 1. Resolve repo list
+    if include_ancestors:
+        all_repos = repo_store().get_ancestor_repos(profile_name)
+    else:
+        all_repos = repo_store().get_repos_for_profile(profile_name)
+
+    if not all_repos:
+        print(f"✗ No repos found for profile '{profile_name}'.", file=sys.stderr)
+        return 2
+
+    # 2. Filter to actionable clone statuses
+    pending_statuses = {"manual", "pending", "error"}
+    repos = [r for r in all_repos if r.get("clone_status", "manual") in pending_statuses]
+
+    # 3. Assign ssh_key_id when requested and not already set
+    if ssh_key_id_arg is not None:
+        from src.db.pg import get_pool
+        pool = get_pool()
+        for r in repos:
+            if r.get("ssh_key_id") is None and r.get("url", "").startswith("git@"):
+                with pool.checkout() as c:
+                    pool.execute(
+                        c,
+                        "UPDATE repos SET ssh_key_id = %s WHERE id = %s",
+                        (ssh_key_id_arg, r["id"]),
+                    )
+                r["ssh_key_id"] = ssh_key_id_arg
+
+    total = len(repos)
+    if total == 0:
+        print(f"✓ Nothing to clone for '{profile_name}' (all repos already cloned).")
+        return 0
+
+    cloned = 0
+    short_circuited = 0
+    failed = 0
+
+    def _clone_one(item: tuple[int, str]) -> str:
+        """Worker: clone one repo; returns 'short', 'ok', or 'error'."""
+        idx, repo = item
+        repo_id: int = repo["id"]
+        url: str = repo["url"]
+        print(f"[{idx}/{total}] cloning {url}")
+        if _short_circuit_file_url(repo_id, url):
+            return "short"
+        result = subprocess.run(
+            [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            stderr_snippet = (result.stderr or b"").decode(errors="replace")[-200:]
+            print(
+                f"  ✗ repo id={repo_id} exit {result.returncode}: {stderr_snippet}",
+                file=sys.stderr,
+            )
+            return "error"
+        return "ok"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        futures = {
+            executor.submit(_clone_one, (i + 1, r)): r
+            for i, r in enumerate(repos)
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            outcome = fut.result()
+            if outcome == "short":
+                short_circuited += 1
+                cloned += 1
+            elif outcome == "ok":
+                cloned += 1
+            else:
+                failed += 1
+
+    print(
+        f"Cloned: {cloned} | Short-circuited: {short_circuited} | Failed: {failed}"
+    )
+    return 0 if failed == 0 else 1
+
+
 def _resolve_local_path(url: str, branch: str, base_dir: str, repo_map: dict[str, str]) -> str:
     """Resolve local path for a repo URL.
 
@@ -399,6 +512,45 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
+    p_clone = sub.add_parser(
+        "clone-profile",
+        help="Clone all pending/manual/error repos for a profile",
+        epilog=textwrap.dedent("""
+            Short-circuits file:// URLs pointing to existing local directories
+            (marks them 'cloned' without running git clone — required for the
+            48 seed repos that already live on disk).
+
+            Examples:
+              python -m src.manager clone-profile odoo17
+              python -m src.manager clone-profile viindoo17 --include-ancestors
+              python -m src.manager clone-profile myprofile --ssh-key-id 1 --max-parallel 4
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_clone.add_argument("profile_name", help="Profile name whose repos to clone")
+    p_clone.add_argument(
+        "--include-ancestors",
+        action="store_true",
+        dest="include_ancestors",
+        help="Also clone repos from parent profiles (recursive)",
+    )
+    p_clone.add_argument(
+        "--ssh-key-id",
+        type=int,
+        default=None,
+        dest="ssh_key_id",
+        metavar="N",
+        help="Assign SSH key id N to any git@ repo that has no key set yet",
+    )
+    p_clone.add_argument(
+        "--max-parallel",
+        type=int,
+        default=4,
+        dest="max_parallel",
+        metavar="N",
+        help="Max concurrent clone subprocesses (default: 4)",
+    )
+
     p_preset = sub.add_parser(
         "apply-preset",
         help="Register a bundled preset of profile + repos in one command",
@@ -516,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
             "create-api-key": _cmd_create_api_key,
             "create-webui-user": _cmd_create_webui_user,
             "seed-master-data": _cmd_seed_master_data,
+            "clone-profile": _cmd_clone_profile,
         }[args.cmd](args, conn)
     finally:
         conn.close()

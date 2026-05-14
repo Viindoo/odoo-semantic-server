@@ -124,6 +124,9 @@
 <div class="card">
     <h2 style="display:flex;align-items:center;gap:0.75rem">
         {{ p.name }} <span style="font-size:0.8rem;font-weight:400;color:#64748b">v{{ p.odoo_version }}</span>
+        <form method="post" action="/repos/profiles/{{ p.id }}/clone-all" style="display:inline;margin:0">
+            <button type="submit" class="btn btn-primary" style="font-size:0.8rem;padding:2px 8px" title="Clone all pending/manual/error repos in this profile">Clone all pending</button>
+        </form>
         <form method="post" action="/repos/profiles/{{ p.id }}/delete" style="display:inline;margin:0"
               onsubmit="return confirm('Delete profile {{ p.name }} and all {{ p.repos | length }} repo(s) under it? This permanently removes Neo4j data scoped to those repos.');">
             <button type="submit" title="Delete profile" style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;color:#dc2626">🗑</button>
