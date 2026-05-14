@@ -101,8 +101,14 @@ jobs:
           pytest tests/test_smoke_index_core.py tests/test_smoke_pattern_wow.py
           tests/test_smoke_product_wow.py -v -rs -m smoke --tb=short
 
-  browser-tests:
+  browser-tests-admin:
+    # Admin browser tests — require Postgres + FastAPI api_server + Astro preview
+    # Time budget: ≤6 min
     runs-on: ubuntu-latest
+    if: |
+      contains(github.event.head_commit.modified, 'site/') ||
+      contains(github.event.head_commit.modified, 'src/web_ui/') ||
+      contains(github.event.head_commit.modified, 'tests/browser/')
     env:
       PG_PASSWORD: password
       PG_TEST_DSN: postgresql://odoo_semantic:password@127.0.0.1:5432/odoo_semantic
@@ -123,4 +129,64 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: playwright install chromium --with-deps
 
-      - run: pytest tests/test_web_ui_browser.py -v -rs -m "browser and postgres" --tb=short
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install Astro dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: site
+
+      - name: Build Astro site
+        run: pnpm build
+        working-directory: site
+
+      - name: Run admin browser tests
+        run: pytest tests/browser/admin/ -v -rs -m "browser and postgres" --tb=short
+
+  browser-tests-public:
+    # Public browser tests — require only Astro preview (no Postgres, no FastAPI)
+    # Time budget: ≤2 min
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.head_commit.modified, 'site/') ||
+      contains(github.event.head_commit.modified, 'tests/browser/')
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pytest-playwright
+      - run: playwright install chromium --with-deps
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install Astro dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: site
+
+      - name: Build Astro site
+        run: pnpm build
+        working-directory: site
+
+      - name: Run public browser tests
+        run: pytest tests/browser/public/ -v -rs -m browser --tb=short

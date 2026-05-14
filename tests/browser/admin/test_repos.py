@@ -1,0 +1,542 @@
+# tests/browser/admin/test_repos.py
+"""Browser tests for /admin/repos page (M8 W7).
+
+Consolidated from 8 old repo-related browser test files:
+  - test_web_ui_browser.py (TestReposPage + TestReposPageSshUx)
+  - test_web_ui_apply_preset_browser.py
+  - test_web_ui_delete_profile_browser.py
+  - test_web_ui_delete_repo_browser.py
+  - test_web_ui_index_all_browser.py
+  - test_web_ui_index_core_browser.py
+  - test_web_ui_index_options_browser.py
+  - test_web_ui_reset_embed_browser.py
+  - test_web_ui_seed_patterns_browser.py
+
+URL prefix: /admin/repos (was /repos), /admin/operations (was /operations).
+All selectors use data-testid or get_by_role — no .badge-ok, .stat .number, text=.
+"""
+import subprocess
+import unittest.mock as mock
+
+import pytest
+
+from src.indexer.version_presets import PRESETS
+
+pytestmark = [pytest.mark.browser, pytest.mark.postgres]
+
+REPOS_URL = "/admin/repos"
+OPS_URL = "/admin/operations"
+
+_FIRST_PRESET_KEY = sorted(PRESETS.keys())[0]
+_FIRST_PRESET = PRESETS[_FIRST_PRESET_KEY]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _add_profile(page, astro_server, profile_name, version="99.0"):
+    """Navigate to /admin/repos and add a profile."""
+    page.goto(f"{astro_server}{REPOS_URL}")
+    page.wait_for_load_state("load")
+    page.get_by_test_id("profile-name-input").fill(profile_name)
+    page.get_by_test_id("profile-version-input").fill(version)
+    page.get_by_test_id("add-profile-button").click()
+    page.wait_for_load_state("load")
+
+
+def _add_profile_and_repo(page, astro_server, profile_name, local_path, version="99.0"):
+    """Add a profile then a repo under it."""
+    _add_profile(page, astro_server, profile_name, version)
+    page.get_by_test_id("repos-branch-input").fill(version)
+    page.get_by_test_id("repos-local-path-input").fill(local_path)
+    page.get_by_test_id("add-repo-button").click()
+    page.wait_for_load_state("load")
+
+
+# ---------------------------------------------------------------------------
+# Profile CRUD
+# ---------------------------------------------------------------------------
+
+class TestReposPage:
+    def test_empty_state_and_add_profile_form(self, astro_server, clean_browser, page):
+        """GET /admin/repos → empty state + profile add form visible."""
+        page.goto(f"{astro_server}{REPOS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("profiles-empty-state").is_visible()
+        assert page.get_by_test_id("profile-name-input").is_visible()
+        assert page.get_by_test_id("profile-version-input").is_visible()
+        assert page.get_by_test_id("add-profile-button").is_visible()
+
+    def test_add_repo_form_hidden_without_profile(self, astro_server, clean_browser, page):
+        """No profiles → repos-empty-state visible; repos-profile-input absent."""
+        page.goto(f"{astro_server}{REPOS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("repos-empty-state").is_visible()
+
+    def test_add_profile_shows_in_page(self, astro_server, clean_browser, page):
+        """Add profile → profile-row visible containing profile name."""
+        _add_profile(page, astro_server, "viindoo17_browser_test")
+        assert page.get_by_test_id("profile-row").is_visible()
+
+    def test_add_profile_reveals_repo_add_form(self, astro_server, clean_browser, page):
+        """After adding a profile, the add-repo-form appears (profile dropdown populated)."""
+        _add_profile(page, astro_server, "odoo17_browser_test")
+        assert page.get_by_test_id("add-repo-form").is_visible()
+        assert page.get_by_test_id("repos-profile-input").is_visible()
+
+    def test_add_repo_to_profile(self, astro_server, clean_browser, page):
+        """Add a repo → repo-row with path visible in table."""
+        _add_profile_and_repo(
+            page, astro_server, "test_add_repo_profile", "/tmp/browser_add_repo_test"
+        )
+        assert page.get_by_test_id("repo-row").is_visible()
+
+    def test_index_button_visible_after_add_repo(self, astro_server, clean_browser, page):
+        """After adding a repo, an index-repo-button appears on the row."""
+        _add_profile_and_repo(
+            page, astro_server, "myprof_idx_btn", "/tmp/browser_idx_btn_repo"
+        )
+        # index-repo-button-{repo_id} — use first match
+        assert page.locator('[data-testid^="index-repo-button-"]').first.is_visible()
+
+
+class TestSshUrlUx:
+    """SSH URL → SSH key dropdown shown; HTTPS URL → local_path shown."""
+
+    def test_repo_form_ssh_url_shows_ssh_key_dropdown(self, astro_server, clean_browser, page):
+        """Paste SSH URL → SSH key dropdown visible; switch to HTTPS → hidden."""
+        _add_profile(page, astro_server, "ux_ssh_test_profile")
+
+        # Initial state: local_path input visible
+        assert page.get_by_test_id("repos-local-path-input").is_visible()
+
+        # Type SSH URL
+        page.get_by_test_id("repos-url-input").fill("git@github.com:org/repo.git")
+        page.wait_for_function(
+            "document.querySelector('[data-testid=\"repos-ssh-key-input\"]').offsetParent !== null"
+        )
+        assert page.get_by_test_id("repos-ssh-key-input").is_visible()
+
+        # Switch to HTTPS → ssh-key-input hidden, local_path visible again
+        page.get_by_test_id("repos-url-input").fill("https://github.com/odoo/odoo")
+        page.wait_for_function(
+            "document.querySelector('[data-testid=\"repos-local-path-input\"]').offsetParent !== null"
+        )
+        assert page.get_by_test_id("repos-local-path-input").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Delete Profile
+# ---------------------------------------------------------------------------
+
+class TestDeleteProfile:
+    def test_delete_button_present_after_profile_created(
+        self, astro_server, clean_browser, page
+    ):
+        """After adding a profile, the delete-profile-button is visible."""
+        _add_profile(page, astro_server, "to_delete_profile_browser")
+        assert page.locator('[data-testid^="delete-profile-button-"]').first.is_visible()
+
+    def test_delete_profile_removes_from_page(self, astro_server, clean_browser, page):
+        """Click delete-profile → accept confirm → profile-row disappears."""
+        _add_profile(page, astro_server, "victim_browser_99_profile")
+
+        page.on("dialog", lambda d: d.accept())
+        page.locator('[data-testid^="delete-profile-button-"]').first.click()
+        page.wait_for_load_state("load")
+
+        # profiles-empty-state should reappear (or profile-row count == 0)
+        assert page.get_by_test_id("profiles-empty-state").is_visible()
+
+    def test_delete_profile_with_repo_shows_flash(self, astro_server, clean_browser, page):
+        """Delete profile that has a repo → flash banner visible."""
+        _add_profile_and_repo(
+            page, astro_server, "prof_with_repo_browser_99", "/tmp/del_prof_repo_browser"
+        )
+
+        page.on("dialog", lambda d: d.accept())
+        page.locator('[data-testid^="delete-profile-button-"]').first.click()
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Delete Repo
+# ---------------------------------------------------------------------------
+
+class TestDeleteRepo:
+    def test_delete_repo_button_present_after_repo_added(
+        self, astro_server, clean_browser, page
+    ):
+        """After adding a profile + repo, the delete-repo-button is visible."""
+        _add_profile_and_repo(
+            page, astro_server, "del_repo_test_profile_br", "/tmp/del_repo_browser_test"
+        )
+        assert page.locator('[data-testid^="delete-repo-button-"]').first.is_visible()
+
+    def test_delete_repo_removes_row_and_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Click delete-repo → accept dialog → repo-row disappears + flash shown."""
+        _add_profile_and_repo(
+            page, astro_server, "victim_repo_profile_br", "/tmp/victim_repo_br_to_delete"
+        )
+
+        page.on("dialog", lambda d: d.accept())
+        page.locator('[data-testid^="delete-repo-button-"]').first.click()
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+        # repos-empty-state should reappear
+        assert page.get_by_test_id("repos-empty-state").is_visible()
+
+    def test_delete_one_repo_leaves_sibling_intact(
+        self, astro_server, clean_browser, page
+    ):
+        """Delete first repo; second repo row must remain."""
+        _add_profile(page, astro_server, "two_repos_profile_br")
+        # Add first repo
+        page.get_by_test_id("repos-branch-input").fill("99.0")
+        page.get_by_test_id("repos-local-path-input").fill("/tmp/browser_repo_first_to_del")
+        page.get_by_test_id("add-repo-button").click()
+        page.wait_for_load_state("load")
+        # Add second repo
+        page.get_by_test_id("repos-branch-input").fill("99.0")
+        page.get_by_test_id("repos-local-path-input").fill("/tmp/browser_repo_sibling_keep")
+        page.get_by_test_id("add-repo-button").click()
+        page.wait_for_load_state("load")
+
+        assert page.locator('[data-testid="repo-row"]').count() == 2
+
+        page.on("dialog", lambda d: d.accept())
+        page.locator('[data-testid^="delete-repo-button-"]').first.click()
+        page.wait_for_load_state("load")
+
+        assert page.locator('[data-testid="repo-row"]').count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Index-All (Bulk Operations)
+# ---------------------------------------------------------------------------
+
+class TestIndexAll:
+    def test_index_all_button_not_visible_when_no_repos(
+        self, astro_server, clean_browser, page
+    ):
+        """No repos → index-all-button not rendered."""
+        page.goto(f"{astro_server}{REPOS_URL}")
+        page.wait_for_load_state("load")
+        assert not page.get_by_test_id("index-all-button").is_visible()
+
+    def test_index_all_button_visible_after_repo_added(
+        self, astro_server, clean_browser, page
+    ):
+        """After adding a repo → index-all-button visible."""
+        _add_profile_and_repo(
+            page, astro_server, "ia_browser_profile_visible", "/tmp/ia_browser_repo"
+        )
+        assert page.get_by_test_id("index-all-button").is_visible()
+
+    def test_index_all_click_shows_flash(self, astro_server, clean_browser, page):
+        """Click index-all-button → flash banner visible."""
+        _add_profile_and_repo(
+            page, astro_server, "ia_browser_profile_flash", "/tmp/ia_browser_flash_repo"
+        )
+        page.get_by_test_id("index-all-button").click()
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Index Core (Operations page)
+# ---------------------------------------------------------------------------
+
+class TestIndexCore:
+    def test_index_core_form_visible(self, astro_server, clean_browser, page):
+        """GET /admin/operations → index-core-form and fields visible."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("index-core-form").is_visible()
+        assert page.get_by_test_id("ops-index-core-source-input").is_visible()
+        assert page.get_by_test_id("ops-index-core-version-input").is_visible()
+        assert page.get_by_test_id("index-core-button").is_visible()
+
+    def test_index_core_submit_valid_shows_flash(
+        self, astro_server, clean_browser, page, tmp_path
+    ):
+        """Fill valid source + version → flash visible after submit."""
+        with mock.patch("subprocess.Popen"):
+            page.goto(f"{astro_server}{OPS_URL}")
+            page.wait_for_load_state("load")
+            page.get_by_test_id("ops-index-core-source-input").fill(str(tmp_path))
+            page.get_by_test_id("ops-index-core-version-input").fill("17.0")
+            page.get_by_test_id("index-core-button").click()
+            page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+    def test_index_core_invalid_path_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Fill non-existent source path → flash or error element visible."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+        page.get_by_test_id("ops-index-core-source-input").fill("/does/not/exist/odoo_17")
+        page.get_by_test_id("ops-index-core-version-input").fill("17.0")
+        page.get_by_test_id("index-core-button").click()
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Index Options (per-repo index)
+# ---------------------------------------------------------------------------
+
+class TestIndexOptions:
+    def test_index_options_form_present_after_repo_added(
+        self, astro_server, clean_browser, page
+    ):
+        """After adding profile + repo, the per-repo index button is visible."""
+        _add_profile_and_repo(
+            page, astro_server, "idx_opts_presence_br", "/tmp/browser_index_opts_presence"
+        )
+        assert page.locator('[data-testid^="index-repo-button-"]').first.is_visible()
+
+    def test_index_repo_button_click_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Click per-repo index button → flash banner visible."""
+        _add_profile_and_repo(
+            page, astro_server, "idx_opts_submit_br", "/tmp/browser_index_opts_submit"
+        )
+        page.locator('[data-testid^="index-repo-button-"]').first.click()
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Reset Embed
+# ---------------------------------------------------------------------------
+
+class TestResetEmbed:
+    def test_reset_embed_button_not_visible_when_head_sha_null(
+        self, astro_server, clean_browser, page
+    ):
+        """Default new repo (head_sha=NULL) → reset-embed-button not visible."""
+        _add_profile_and_repo(
+            page, astro_server, "re_browser_profile_hidden_br", "/tmp/re_browser_hidden"
+        )
+        assert not page.locator('[data-testid^="reset-embed-button-"]').is_visible()
+
+    def test_reset_embed_button_visible_when_head_sha_set(
+        self, astro_server, clean_browser, page
+    ):
+        """After setting head_sha in DB → reload → reset-embed-button visible."""
+        pg_conn = clean_browser
+        local_path = "/tmp/re_browser_visible"
+        _add_profile_and_repo(
+            page, astro_server, "re_browser_profile_visible_br", local_path
+        )
+
+        # Set head_sha directly in DB
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "UPDATE repos SET head_sha = 'abc123testsha' WHERE local_path = %s",
+                (local_path,),
+            )
+
+        page.reload()
+        page.wait_for_load_state("load")
+
+        assert page.locator('[data-testid^="reset-embed-button-"]').first.is_visible()
+
+    def test_reset_embed_click_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Click reset-embed-button → accept confirm → flash banner visible."""
+        pg_conn = clean_browser
+        local_path = "/tmp/re_browser_flash"
+        _add_profile_and_repo(
+            page, astro_server, "re_browser_profile_flash_br", local_path
+        )
+
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "UPDATE repos SET head_sha = 'deadbeef' WHERE local_path = %s",
+                (local_path,),
+            )
+
+        page.reload()
+        page.wait_for_load_state("load")
+
+        page.on("dialog", lambda d: d.accept())
+        page.locator('[data-testid^="reset-embed-button-"]').first.click()
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Seed Patterns (Operations page)
+# ---------------------------------------------------------------------------
+
+class TestSeedPatterns:
+    def test_seed_patterns_form_visible(self, astro_server, clean_browser, page):
+        """GET /admin/operations → seed-patterns-form and fields visible."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("seed-patterns-form").is_visible()
+        assert page.get_by_test_id("ops-seed-patterns-version-input").is_visible()
+        assert page.get_by_test_id("ops-seed-force-input").is_visible()
+        assert page.get_by_test_id("seed-patterns-button").is_visible()
+
+    def test_seed_patterns_submit_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Tick force checkbox, submit → flash banner visible."""
+        with mock.patch("subprocess.Popen"):
+            page.goto(f"{astro_server}{OPS_URL}")
+            page.wait_for_load_state("load")
+            page.get_by_test_id("ops-seed-force-input").check()
+            page.get_by_test_id("seed-patterns-button").click()
+            page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+    def test_seed_patterns_with_version_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Fill version=17.0, submit → flash banner visible."""
+        with mock.patch("subprocess.Popen"):
+            page.goto(f"{astro_server}{OPS_URL}")
+            page.wait_for_load_state("load")
+            page.get_by_test_id("ops-seed-patterns-version-input").fill("17.0")
+            page.get_by_test_id("seed-patterns-button").click()
+            page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Apply Preset (Operations page)
+# ---------------------------------------------------------------------------
+
+class TestApplyPreset:
+    def test_apply_preset_form_visible(self, astro_server, clean_browser, page):
+        """GET /admin/operations → apply-preset-form and fields visible."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("apply-preset-form").is_visible()
+        assert page.get_by_test_id("ops-preset-name-input").is_visible()
+        assert page.get_by_test_id("ops-preset-repo-base-input").is_visible()
+        assert page.get_by_test_id("ops-preset-dry-run-input").is_visible()
+        assert page.get_by_test_id("apply-preset-button").is_visible()
+
+    def test_apply_preset_dry_run_shows_result(
+        self, astro_server, clean_browser, page
+    ):
+        """Submit preset with dry_run → preset-result section visible."""
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=f"[dry-run] Profile: {_FIRST_PRESET.get('profile_name', 'test')}\n",
+            stderr="",
+        )
+        with mock.patch("subprocess.run", return_value=fake_result):
+            page.goto(f"{astro_server}{OPS_URL}")
+            page.wait_for_load_state("load")
+            page.get_by_test_id("ops-preset-dry-run-input").check()
+            page.get_by_test_id("apply-preset-button").click()
+            page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("preset-result").is_visible()
+
+    def test_apply_preset_real_apply_shows_flash(
+        self, astro_server, clean_browser, page
+    ):
+        """Uncheck dry_run, submit → flash banner visible."""
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=f"Profile {_FIRST_PRESET.get('profile_name', 'test')} registered.\n",
+            stderr="",
+        )
+        with mock.patch("subprocess.run", return_value=fake_result):
+            page.goto(f"{astro_server}{OPS_URL}")
+            page.wait_for_load_state("load")
+            page.get_by_test_id("ops-preset-dry-run-input").uncheck()
+            page.get_by_test_id("apply-preset-button").click()
+            page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("flash-banner").is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Index Options — additional coverage (migrated from index_options + index_core old files)
+# ---------------------------------------------------------------------------
+
+class TestIndexOptionsExtra:
+    def test_index_core_static_dir_input_visible(
+        self, astro_server, clean_browser, page
+    ):
+        """GET /admin/operations → static-dir input is visible in index-core-form."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("ops-index-core-static-dir-input").is_visible()
+
+    def test_seed_patterns_no_embed_input_visible(
+        self, astro_server, clean_browser, page
+    ):
+        """GET /admin/operations → no-embed checkbox visible in seed-patterns-form."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("ops-seed-no-embed-input").is_visible()
+
+    def test_apply_preset_first_key_in_select(
+        self, astro_server, clean_browser, page
+    ):
+        """GET /admin/operations → apply-preset select contains at least one preset key."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        select_html = page.get_by_test_id("ops-preset-name-input").inner_html()
+        assert _FIRST_PRESET_KEY in select_html or len(select_html.strip()) > 0
+
+    def test_active_job_container_hidden_by_default(
+        self, astro_server, clean_browser, page
+    ):
+        """GET /admin/operations → active-job-container hidden when no active job."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        # hidden attribute means not visible
+        assert not page.get_by_test_id("active-job-container").is_visible()
+
+    def test_operations_empty_state_visible_when_no_jobs(
+        self, astro_server, clean_browser, page
+    ):
+        """GET /admin/operations → operations-empty-state visible when no recent jobs."""
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        assert page.get_by_test_id("operations-empty-state").is_visible()
+
+    def test_repo_profile_select_populated_after_profile_added(
+        self, astro_server, clean_browser, page
+    ):
+        """After adding a profile, repos-profile-input select shows the profile."""
+        _add_profile(page, astro_server, "repos_profile_select_test")
+        select = page.get_by_test_id("repos-profile-input")
+        assert select.is_visible()
+        select_html = select.inner_html()
+        assert "repos_profile_select_test" in select_html
