@@ -1819,3 +1819,153 @@ def test_module_merge_key_excludes_last_commit_sha(writer, neo4j_driver):
         f"Expected latest commit_sha 'bbbbbbbbbbbbbbbbbbbb', got {sha_rec['sha']}"
     )
 
+
+# ---------------------------------------------------------------------------
+# M8 — Profile array property tests (ADR-0014 Option Y)
+# ---------------------------------------------------------------------------
+
+def test_module_node_carries_profile_array(writer, neo4j_driver):
+    """write_results with profiles arg writes m.profile list on Module node."""
+    profiles = ["viindoo_internal_17", "standard_viindoo_17", "odoo_17"]
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["p"] == profiles
+
+
+def test_model_node_carries_profile_array(writer, neo4j_driver):
+    """write_results with profiles arg writes m.profile list on Model node."""
+    profiles = ["viindoo_internal_17", "odoo_17"]
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Model {name: $n, module: $mod, odoo_version: $v}) "
+            "RETURN m.profile AS p",
+            n="sale.order", mod="sale", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["p"] == profiles
+
+
+def test_profile_array_overwritten_on_reindex(writer, neo4j_driver):
+    """Re-indexing the same profile is idempotent (no duplicates); union semantics."""
+    first_profiles = ["viindoo_internal_17"]
+    # Re-index with the same profile — should not duplicate entries.
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=first_profiles)
+    writer.write_results([result], profiles=first_profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    # Union semantics: re-indexing the same profile must not duplicate it.
+    assert rec["p"] == ["viindoo_internal_17"]
+
+
+def test_two_sibling_profiles_union_on_shared_module_node(writer, neo4j_driver):
+    """Profiles A and B both index a Module with the same key; both appear in profile array."""
+    profile_a = ["profile_A"]
+    profile_b = ["profile_B"]
+    result = make_parse_result("sale", "sale.order")
+
+    writer.write_results([result], profiles=profile_a)
+    writer.write_results([result], profiles=profile_b)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert set(rec["p"]) == {"profile_A", "profile_B"}, (
+        f"Expected both profiles in union; got {rec['p']!r}"
+    )
+
+
+def test_third_profile_does_not_evict_prior_sibling(writer, neo4j_driver):
+    """A, B, C all index the same node; all three must appear (no eviction)."""
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=["prof_A"])
+    writer.write_results([result], profiles=["prof_B"])
+    writer.write_results([result], profiles=["prof_C"])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert set(rec["p"]) == {"prof_A", "prof_B", "prof_C"}, (
+        f"Expected all three profiles; got {rec['p']!r}"
+    )
+
+
+def test_same_profile_reindex_does_not_duplicate_entries(writer, neo4j_driver):
+    """Index profile A twice; assert no duplicates in the profile array."""
+    result = make_parse_result("sale", "sale.order")
+    profiles = ["viindoo_internal_17", "standard_viindoo_17", "odoo_17"]
+    writer.write_results([result], profiles=profiles)
+    writer.write_results([result], profiles=profiles)
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    p = rec["p"]
+    assert len(p) == len(set(p)), (
+        f"Duplicate entries in profile array after re-index: {p!r}"
+    )
+
+
+def test_profile_filter_in_ancestor_query(writer, neo4j_driver):
+    """Cypher `$profile_name IN m.profile` returns node indexed under child profile."""
+    # Index "sale" module under viindoo_internal_17 (which includes odoo_17 in chain)
+    profiles = ["viindoo_internal_17", "standard_viindoo_17", "odoo_17"]
+    result = make_parse_result("sale", "sale.order")
+    writer.write_results([result], profiles=profiles)
+
+    # Query filtering on ancestor profile "odoo_17" — should still find the node
+    # because odoo_17 is IN the profile array
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            "MATCH (m:Module {odoo_version: $v}) "
+            "WHERE $pn IN m.profile "
+            "RETURN m.name AS name",
+            v=TEST_VERSION, pn="odoo_17",
+        ).data()
+
+    names = [r["name"] for r in rows]
+    assert "sale" in names, (
+        f"Expected 'sale' when filtering profile_name='odoo_17' (ancestor), got {names}"
+    )
+
+
+def test_write_results_no_profiles_empty_array(writer, neo4j_driver):
+    """write_results without profiles arg writes empty profile array (backward compat)."""
+    result = make_parse_result("some_module", "some.model")
+    writer.write_results([result])  # no profiles kwarg
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+            n="some_module", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["p"] == [] or rec["p"] is None  # empty list or null — no crash
+

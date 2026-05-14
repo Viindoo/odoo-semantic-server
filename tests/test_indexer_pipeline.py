@@ -313,3 +313,41 @@ def test_index_profile_aggregates_js_counters(
     # Must have js_patches and owl_comps in profile summary
     assert "js_patches" in summary, f"summary missing 'js_patches': {summary}"
     assert "owl_comps" in summary, f"summary missing 'owl_comps': {summary}"
+
+
+def test_index_profile_warns_when_ancestor_not_indexed(
+    clean_neo4j, clean_pg, neo4j_driver, tmp_path, caplog
+):
+    """index_profile emits a warning when an ancestor profile has no indexed repos.
+
+    Covers the ADR-0014 D4 warning path: indexing a child before its parent
+    should not fail but should warn the admin.
+    """
+    import logging
+
+    run_migrations(clean_pg)
+
+    # --- Set up 2-tier hierarchy: root (no repos indexed) → child ---
+    root_id = repo_store().add_profile("root_warn_prof", TEST_VERSION)
+    child_id = repo_store().add_profile("child_warn_prof", TEST_VERSION)
+    repo_store().set_profile_parent(child_id, root_id)
+
+    # Root profile has a repo but it stays in 'pending' status (never indexed)
+    repo_store().add_repo(root_id, "local/root_warn", TEST_VERSION, "/nonexistent/root")
+
+    # Child profile has a real (but empty) repo
+    repo = make_git_repo(tmp_path / "repo_child_warn", branch=TEST_VERSION)
+    repo_store().add_repo(child_id, "local/child_warn", TEST_VERSION, str(repo))
+
+    with caplog.at_level(logging.WARNING, logger="src.indexer.pipeline"):
+        index_profile(clean_pg, profile_name="child_warn_prof")
+
+    # At least one warning must mention the unindexed ancestor
+    warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    ancestor_warnings = [
+        t for t in warning_texts if "root_warn_prof" in t and "no indexed repos" in t
+    ]
+    assert ancestor_warnings, (
+        f"Expected a warning about unindexed ancestor 'root_warn_prof', "
+        f"got warnings: {warning_texts}"
+    )

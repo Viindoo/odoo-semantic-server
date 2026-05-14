@@ -183,3 +183,115 @@ def test_add_repo_rejects_nonexistent_path(migrated_pg, tmp_path):
     ], env_extra=env)
     assert res.returncode == 1
     assert "does not exist" in res.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
+# clone-profile unit tests (no Docker — mocked repo_store + subprocess)
+# ---------------------------------------------------------------------------
+
+def _make_args(**kwargs):
+    """Build a minimal argparse-like Namespace for _cmd_clone_profile."""
+    import argparse
+    defaults = {
+        "profile_name": "myprofile",
+        "include_ancestors": False,
+        "ssh_key_id": None,
+        "max_parallel": 4,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def _make_repo(repo_id: int, url: str, clone_status: str = "manual"):
+    return {
+        "id": repo_id,
+        "url": url,
+        "branch": "17.0",
+        "clone_status": clone_status,
+        "ssh_key_id": None,
+        "profile_id": 1,
+    }
+
+
+def test_clone_profile_short_circuits_existing_file_paths(tmp_path):
+    """file:// URL pointing to an existing directory → clone_status='cloned', no subprocess."""
+    from unittest.mock import MagicMock, patch
+
+    from src.manager.__main__ import _cmd_clone_profile
+
+    repo = _make_repo(1, f"file://{tmp_path}")
+    store = MagicMock()
+    store.get_repos_for_profile.return_value = [repo]
+
+    with (
+        patch("src.db.pg.repo_store", return_value=store),
+        patch("src.manager.__main__.repo_store", return_value=store),
+        patch("subprocess.run") as mock_subproc,
+    ):
+        rc = _cmd_clone_profile(_make_args(), conn=None)
+
+    assert rc == 0
+    store.update_repo_local_path.assert_called_once_with(1, str(tmp_path))
+    store.set_clone_status.assert_called_once_with(1, "cloned")
+    mock_subproc.assert_not_called()
+
+
+def test_clone_profile_skips_already_cloned(tmp_path):
+    """Repos with clone_status='cloned' are filtered out before processing."""
+    from unittest.mock import MagicMock, patch
+
+    from src.manager.__main__ import _cmd_clone_profile
+
+    repo = _make_repo(2, f"file://{tmp_path}", clone_status="cloned")
+    store = MagicMock()
+    store.get_repos_for_profile.return_value = [repo]
+
+    with (
+        patch("src.db.pg.repo_store", return_value=store),
+        patch("src.manager.__main__.repo_store", return_value=store),
+        patch("subprocess.run") as mock_subproc,
+    ):
+        rc = _cmd_clone_profile(_make_args(), conn=None)
+
+    assert rc == 0
+    store.update_repo_local_path.assert_not_called()
+    store.set_clone_status.assert_not_called()
+    mock_subproc.assert_not_called()
+
+
+def test_clone_profile_max_parallel_caps_workers(tmp_path):
+    """--max-parallel 2 must not exceed 2 concurrent subprocesses for 8 repos."""
+    import threading
+    from unittest.mock import MagicMock, patch
+
+    from src.manager.__main__ import _cmd_clone_profile
+
+    # Use a nonexistent file:// path so they go through subprocess path
+    repos = [_make_repo(i, f"https://github.com/org/repo{i}.git") for i in range(1, 9)]
+    store = MagicMock()
+    store.get_repos_for_profile.return_value = repos
+
+    lock = threading.Lock()
+    counter = {"current": 0, "peak": 0}
+
+    def fake_run(*args, **kwargs):
+        with lock:
+            counter["current"] += 1
+            counter["peak"] = max(counter["peak"], counter["current"])
+        import time
+        time.sleep(0.02)  # small sleep to allow concurrency to show
+        with lock:
+            counter["current"] -= 1
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with (
+        patch("src.db.pg.repo_store", return_value=store),
+        patch("src.manager.__main__.repo_store", return_value=store),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        rc = _cmd_clone_profile(_make_args(max_parallel=2), conn=None)
+
+    assert rc == 0
+    assert counter["peak"] <= 2, f"peak concurrency was {counter['peak']}, expected ≤ 2"

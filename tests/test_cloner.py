@@ -231,3 +231,51 @@ def test_main_lifecycle_status_transitions(tmp_path):
 
     assert rc == 0
     assert observed == ["pending", "cloned"]
+
+
+# ---------------------------------------------------------------------------
+# 7. file:// URL does NOT trigger the SSH-key gate (exit code must not be 2)
+# ---------------------------------------------------------------------------
+
+_FILE_REPO = {
+    "id": 10,
+    "url": "file:///tmp/some_local_repo",
+    "branch": "17.0",
+    "profile_name": "odoo17",
+    "ssh_key_id": None,    # no SSH key — this is fine for file:// URLs
+    "local_path": "",
+    "clone_status": "manual",
+}
+
+
+def test_file_url_does_not_require_ssh_key(tmp_path):
+    """file:// URL with ssh_key_id=NULL must not exit 2 (SSH-key-missing gate).
+
+    The cloner will attempt git clone on the file:// path; that may fail because
+    no real repo exists at /tmp/some_local_repo, but the SSH-key guard (which
+    returns exit 2) must NOT be triggered.  We mock clone_repo to raise an
+    exception (simulating a missing git repo) so exit code is 1, not 2.
+    """
+    statuses: list[str] = []
+
+    def fake_set_status(rid, status, error_msg=None):
+        statuses.append(status)
+
+    repo_s = _make_repo_store(
+        get_repo_by_id=dict(_FILE_REPO),
+        set_clone_status=fake_set_status,
+    )
+
+    with (
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
+        patch(
+            "src.cloner.__main__.clone_repo",
+            side_effect=Exception("not a git repo"),
+        ),
+        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+    ):
+        rc = main(["--repo-id", "10"])
+
+    # SSH-key gate returns 2; clone failure returns 1. We must NOT get 2.
+    assert rc != 2, "file:// URL must not trip the SSH-key-missing gate (exit 2)"

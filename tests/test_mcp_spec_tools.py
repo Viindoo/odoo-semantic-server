@@ -304,3 +304,96 @@ class TestCliHelp:
             "nonexistent_cmd_xyz", flag=None, odoo_version=v_from,
         )
         assert "not found" in out.lower()
+
+
+# --- profile_name filter tests for find_deprecated_usage -------------------
+
+
+class TestFindDeprecatedUsageProfileFilter:
+    """Verify that profile_name=None preserves backward compat and that a
+    non-matching profile_name hides Method nodes from other profiles."""
+
+    @pytest.fixture(scope="class")
+    def seeded_deprecated_profiles(self, neo4j_driver):
+        """Seed two Method nodes with distinct profiles that use a deprecated symbol."""
+        DEPR_VERSION = "92.0"
+
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=DEPR_VERSION,
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        from src.indexer.models import CoreSymbolInfo
+
+        # CoreSymbol node (deprecated)
+        writer.write_core_symbols([
+            CoreSymbolInfo(
+                qualified_name="odoo.models.BaseModel.name_get",
+                odoo_version=DEPR_VERSION,
+                kind="orm_method",
+                status="deprecated",
+                replacement_qname="odoo.models.BaseModel.display_name",
+            ),
+        ])
+
+        # Two user modules: alpha_depr (profile alpha_depr) and beta_depr (profile beta_depr)
+        alpha_mod = ModuleInfo("alpha_depr_mod", DEPR_VERSION, "repo_alpha", "/tmp", [], "")
+        alpha_method = MethodInfo(
+            name="legacy_alpha", has_super_call=False, decorators=[],
+            core_symbol_refs=["name_get"],
+        )
+        alpha_model = ModelInfo(
+            name="alpha.depr.model", module="alpha_depr_mod", odoo_version=DEPR_VERSION,
+            methods=[alpha_method],
+        )
+        writer.write_results(
+            [ParseResult(module=alpha_mod, models=[alpha_model])],
+            profiles=["alpha_depr"],
+        )
+
+        beta_mod = ModuleInfo("beta_depr_mod", DEPR_VERSION, "repo_beta", "/tmp", [], "")
+        beta_method = MethodInfo(
+            name="legacy_beta", has_super_call=False, decorators=[],
+            core_symbol_refs=["name_get"],
+        )
+        beta_model = ModelInfo(
+            name="beta.depr.model", module="beta_depr_mod", odoo_version=DEPR_VERSION,
+            methods=[beta_method],
+        )
+        writer.write_results(
+            [ParseResult(module=beta_mod, models=[beta_model])],
+            profiles=["beta_depr"],
+        )
+
+        writer.close()
+        yield DEPR_VERSION
+
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=DEPR_VERSION,
+            )
+
+    def test_profile_none_returns_both(
+        self, seeded_deprecated_profiles, spec_tools,
+    ):
+        """profile_name=None returns hits from all profiles (backward compat)."""
+        v = seeded_deprecated_profiles
+        out = spec_tools._find_deprecated_usage(v, profile_name=None)
+        assert "legacy_alpha" in out
+        assert "legacy_beta" in out
+
+    def test_profile_filter_excludes_other_profile(
+        self, seeded_deprecated_profiles, spec_tools,
+    ):
+        """profile_name='alpha_depr' returns alpha hits and hides beta hits."""
+        v = seeded_deprecated_profiles
+        out = spec_tools._find_deprecated_usage(v, profile_name="alpha_depr")
+        assert "legacy_alpha" in out
+        assert "legacy_beta" not in out

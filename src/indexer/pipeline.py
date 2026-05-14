@@ -147,6 +147,7 @@ def _index_repo(
     progress: bool = False,
     full_reindex: bool = False,
     gc: bool = False,
+    ancestor_profiles: list[str] | None = None,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
@@ -345,9 +346,13 @@ def _index_repo(
                 total_embeddings += len(chunks)
                 total_embed_calls += embed_calls
 
-    writer.write_results(py_results)
-    writer.write_view_results(view_results)
-    writer.write_js_graph_results(js_graph_results)
+    # Option Y (ADR-0014): pass ancestor profile list so every node gets a
+    # `profile` property array. Defaults to [repo_root_name] when not provided
+    # (legacy callers / unit tests that pre-date profile hierarchy).
+    _profiles_arr = ancestor_profiles or []
+    writer.write_results(py_results, profiles=_profiles_arr)
+    writer.write_view_results(view_results, profiles=_profiles_arr)
+    writer.write_js_graph_results(js_graph_results, profiles=_profiles_arr)
 
     # === Module GC (M7 C4): delete stale Module nodes after successful writes ===
     # Risk gate: only run when scanner found ≥1 module to avoid data loss when
@@ -497,6 +502,25 @@ def index_profile(
             "owl_comps": 0,
         }
 
+    # Option Y (ADR-0014): build the full ancestor profile name list so every
+    # Neo4j node written in this run carries the correct `profile` array.
+    ancestor_profiles = repo_store().get_ancestor_profile_names(profile_name)
+    if not ancestor_profiles:
+        # get_ancestor_profile_names returns [] when profile not found — should
+        # not happen since get_repos_for_profile succeeded, but be defensive.
+        ancestor_profiles = [profile_name]
+
+    # Warn when any ancestor profile has no indexed repos — do NOT auto-recurse.
+    for anc_name in ancestor_profiles[1:]:  # skip self (index 0)
+        anc_repos = repo_store().get_repos_for_profile(anc_name)
+        if not any(r.get("status") == "indexed" for r in anc_repos):
+            _logger.warning(
+                "index_profile: ancestor profile %r has no indexed repos — "
+                "query for %r may miss inherited nodes until ancestor is indexed",
+                anc_name,
+                profile_name,
+            )
+
     with _indexer_lock(pg_conn, profile_name):
         uri, user, password = _neo4j_creds()
         writer = Neo4jWriter(uri, user, password)
@@ -521,6 +545,7 @@ def index_profile(
                         counters = _index_repo(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
                             progress=progress, full_reindex=full_reindex, gc=gc,
+                            ancestor_profiles=ancestor_profiles,
                         )
                         _elapsed = time.monotonic() - _t0
                         total_modules += counters["modules"]
@@ -574,6 +599,7 @@ def index_profile(
                             progress=False,
                             full_reindex=full_reindex,
                             gc=gc,
+                            ancestor_profiles=ancestor_profiles,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")

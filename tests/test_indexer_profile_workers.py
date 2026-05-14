@@ -95,7 +95,7 @@ class TestTwoProfilesParallel:
 
         def fake_index_repo(
             repo, writer, pg_conn=None, embedder=None, progress=False, full_reindex=False,
-            gc=False,
+            gc=False, ancestor_profiles=None,
         ):
             # repo id 1 → 3 modules, repo id 2 → 5 modules
             return _fake_counters(modules=3 if repo["id"] == 1 else 5)
@@ -103,6 +103,7 @@ class TestTwoProfilesParallel:
         mock_store = MagicMock()
         mock_store.list_profiles.return_value = profiles
         mock_store.get_repos_for_profile.side_effect = fake_get_repos
+        mock_store.get_ancestor_profile_names.side_effect = lambda pn: [pn]
 
         with (
             patch("src.indexer.pipeline.repo_store", return_value=mock_store),
@@ -166,7 +167,7 @@ class TestProfileFailureDoesNotBlockOthers:
 
         def fake_index_repo(
             repo, writer, pg_conn=None, embedder=None, progress=False, full_reindex=False,
-            gc=False,
+            gc=False, ancestor_profiles=None,
         ):
             if repo["id"] == 2:
                 raise RuntimeError("simulated failure for profile 'bad'")
@@ -176,6 +177,7 @@ class TestProfileFailureDoesNotBlockOthers:
         mock_store = MagicMock()
         mock_store.list_profiles.return_value = profiles
         mock_store.get_repos_for_profile.side_effect = fake_get_repos
+        mock_store.get_ancestor_profile_names.side_effect = lambda pn: [pn]
 
         with (
             patch("src.indexer.pipeline.repo_store", return_value=mock_store),
