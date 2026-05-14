@@ -62,7 +62,15 @@ class LoginBody(BaseModel):
 @router.post("/login")
 async def login_post(body: LoginBody, request: Request):
     """Verify credentials, set session cookie, return JSON."""
-    client_ip = request.client.host if request.client else "unknown"
+    # uvicorn runs with proxy_headers=False so request.client.host is the
+    # nginx loopback peer (127.0.0.1). Prefer X-Real-IP / X-Forwarded-For so
+    # rate-limit buckets by the real client, not the shared proxy address.
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    client_ip = (
+        request.headers.get("x-real-ip")
+        or forwarded
+        or (request.client.host if request.client else "unknown")
+    )
     if _is_rate_limited(client_ip):
         logger.warning("Login rate-limited for IP %s", client_ip)
         return JSONResponse(

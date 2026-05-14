@@ -1,5 +1,13 @@
 # src/web_ui/__main__.py
-"""Start Web UI server. Binds to 127.0.0.1 only (no auth M5 — not safe to expose)."""
+"""Start Web UI server.
+
+Binds to 127.0.0.1 only. Public access happens via nginx reverse-proxy that
+forwards ``/api/*`` to this service (see ``docs/deploy/nginx-m8.conf``).
+``proxy_headers=False`` keeps uvicorn from rewriting ``request.client.host``
+to the X-Forwarded-For value, so :class:`_LoopbackOnlyMiddleware` continues
+to gate on the real TCP peer (nginx loopback). Real client IP is recovered
+from the X-Real-IP header where genuinely needed (see ``routes/login.py``).
+"""
 import logging
 import os
 import sys
@@ -27,7 +35,10 @@ def main() -> None:
     host = "127.0.0.1"
     port = 8003
     app = create_app()
-    uvicorn.run(app, host=host, port=port, access_log=True)
+    # proxy_headers=False — see module docstring for rationale. Trusting
+    # X-Forwarded-For from nginx would rewrite scope["client"] and trip
+    # _LoopbackOnlyMiddleware with 403 for every external /api/* request.
+    uvicorn.run(app, host=host, port=port, access_log=True, proxy_headers=False)
 
 
 if __name__ == "__main__":
