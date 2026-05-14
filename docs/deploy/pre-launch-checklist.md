@@ -139,10 +139,15 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 
 ## 8. Systemd Services
 
-**Services tự-restart khi crash, và sẽ khởi động lại sau reboot.**
+**Services tự-restart khi crash, và sẽ khởi động lại sau reboot. M8: 3 services.**
 
 - [ ] `systemctl is-enabled odoo-semantic-mcp` → `enabled` **(admin SSH verify)**
 - [ ] `systemctl is-enabled odoo-semantic-webui` → `enabled` **(admin SSH verify)**
+- [ ] `systemctl is-enabled odoo-semantic-astro` → `enabled` **(admin SSH verify — M8 new)**
+- [ ] `systemctl is-active odoo-semantic-astro` → `active (running)` port 4321 **(admin SSH verify)**
+  - *Kiểm tra: `curl -I http://127.0.0.1:4321/` → HTTP 200 HTML*
+- [ ] Astro build artifacts present: `ls /opt/odoo-semantic-mcp/site/dist/server/entry.mjs` → file tồn tại **(admin SSH verify)**
+  - *Nếu thiếu: `cd /opt/odoo-semantic-mcp/site && pnpm install --frozen-lockfile && pnpm build`*
 - [ ] Simulate crash: `sudo systemctl kill -s SIGKILL odoo-semantic-mcp` → sau 5s `systemctl status` → `active (running)` lại **(admin SSH verify)**
   - *Restart policy: `Restart=on-failure` trong service file*
 
@@ -162,24 +167,34 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 
 **Xác nhận session-based auth hoạt động đúng trước khi mở Web UI (port 8003).**
 
-> **§10 M8 DEPENDENCY (annotated 2026-05-14):** Items §10.2–§10.4 phụ thuộc M8 Astro deployment. Jinja2 webui (`odoo-semantic-webui.service` port 8003) sẽ bị thay thế hoàn toàn bằng Astro frontend trong M8 — xem [`docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md`](../superpowers/plans/2026-05-12-milestone-8-astro-unified.md) §9 (đã absorb P1-E criteria cho `/admin/repos`).
->
-> **Exit criteria** cho §10.x items:
-> - M8 W3 (`feat/m8-admin-pages`) merged — `site/src/pages/admin/repos.astro` tồn tại
-> - M8 W4 (`feat/m8-nginx-integration`) merged — nginx route `/admin/*` → Astro `:4321`
-> - `odoo-semantic-astro.service` running + enabled trên production
->
-> **DO NOT** mark §10.x items là `[x]` hoặc "skipped permanently" trước khi M8 deploy. Re-verify sau khi M8 release.
+> **§10 M8 DELIVERED (2026-05-14):** M8 PR #86 merged. `site/src/pages/admin/repos.astro` tồn tại. nginx-m8.conf routes `/admin/*` → Astro `:4321`. Items §10.2–§10.4 cần re-verify sau khi `odoo-semantic-astro.service` active trên production (verify theo §10.5).
 
 - [ ] `create-webui-user` đã chạy — ít nhất 1 admin user tồn tại:
   `python -m src.manager list-webui-users` → thấy ít nhất 1 user **(admin SSH verify)**
   - *Tạo user: `python -m src.manager create-webui-user admin` (prompt mật khẩu)*
 - [ ] Unauthenticated GET `/admin/repos` → 302 redirect đến `/admin/login`:
-  `curl -I https://odoo-semantic.viindoo.com/admin/repos` → `Location: /admin/login` **(IS M8 DEPENDENCY — deferred to `feat/m8-admin-pages` W3 + `feat/m8-nginx-integration` W4. Re-verify khi `odoo-semantic-astro.service` active. Was M7.5-P1-E, absorbed into M8 plan §9.)**
-- [ ] POST `/admin/login` với sai mật khẩu → flash error (không grant session) **(IS M8 DEPENDENCY — re-verify post-M8)**
-- [ ] GET `/admin/logout` clears session → tiếp theo request tới `/admin/` → 302 `/admin/login` **(IS M8 DEPENDENCY — re-verify post-M8)**
+  `curl -I https://odoo-semantic.viindoo.com/admin/repos` → `Location: /admin/login` **(re-verify post-M8 deploy — was M7.5-P1-E, now covered by Astro middleware + nginx-m8.conf)**
+- [ ] POST `/admin/login` với sai mật khẩu → flash error (không grant session) **(re-verify post-M8 deploy)**
+- [ ] GET `/admin/logout` clears session → tiếp theo request tới `/admin/` → 302 `/admin/login` **(re-verify post-M8 deploy)**
 - [ ] `WEBUI_SESSION_SECRET` đã set trong `webui.env` (không dùng auto-generated ephemeral secret):
   `sudo grep WEBUI_SESSION_SECRET /etc/odoo-semantic/webui.env` → non-empty value **(admin SSH verify — secret vẫn applicable cho Astro auth, không phải M8 dependency)**
+
+---
+
+## 10.5 Astro Frontend (M8)
+
+**Verify Astro landing + admin UI live sau khi `odoo-semantic-astro.service` active.**
+
+- [ ] `curl -sI http://127.0.0.1:4321/` → HTTP 200, `Content-Type: text/html` — Astro landing page **(admin SSH verify)**
+- [ ] `curl -sI https://<domain>/` → HTTP 200 HTML (qua nginx) — landing hero reachable
+- [ ] `curl -sI https://<domain>/admin` → 302 redirect đến `/admin/login` (Astro middleware auth-gate) **(admin SSH verify)**
+- [ ] `curl -sI https://<domain>/api/health` → HTTP 200 `Content-Type: application/json` — FastAPI JSON-only confirm **(NOT `text/html`)**
+  - *Nếu trả HTML: FastAPI vẫn mount Jinja2 — kiểm tra `pyproject.toml` đã xóa `jinja2` dependency*
+- [ ] Nginx routing sanity:
+  - `curl -sI https://<domain>/api/repos/profiles` → HTTP 200 JSON (FastAPI :8003)
+  - `curl -sI https://<domain>/admin/login` → HTTP 200 HTML (Astro :4321)
+  - `curl -sI https://<domain>/mcp` → HTTP 401 (MCP :8002, auth required)
+- [ ] Browser tests pass post-deploy: `pytest tests/browser/admin/ -m browser` (từ deploy server hoặc CI) — 68 tests GREEN **(admin hoặc CI verify)**
 
 ---
 
@@ -199,8 +214,9 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 | Systemd Services (§8) | | | |
 | Indexer Cron (§9) | | | |
 | Web UI Session Auth (§10) | | | |
+| Astro Frontend M8 (§10.5) | | | |
 
-**Khi tất cả 11 mục `[x]` → deploy ready. Phân phát key + URL.**
+**Khi tất cả 12 mục `[x]` → deploy ready. Phân phát key + URL.**
 
 ---
 

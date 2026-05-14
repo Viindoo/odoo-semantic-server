@@ -1,4 +1,4 @@
-# ADR-0014 — Profile Hierarchy and Neo4j Node Isolation (Option Y)
+# ADR-0016 — Profile Hierarchy and Neo4j Node Isolation (Option Y)
 
 **Date:** 2026-05-14
 **Status:** Accepted — M8
@@ -189,7 +189,7 @@ and extend the ANN WHERE clause in a future migration.
   query counting nodes whose `profile` property is `NULL`. When the count is
   > 0, `src.mcp.server` logs a `WARNING`-level message:
   > "*N* Neo4j nodes have no `profile` property — these are invisible to
-  > profile-scoped MCP queries. Run a full reindex per ADR-0014 to backfill."
+  > profile-scoped MCP queries. Run a full reindex per ADR-0016 to backfill."
   The warning is wrapped in `try/except` so it cannot block startup. Ops
   teams should monitor server startup logs after any upgrade and schedule the
   reindex documented in `docs/deploy.md §Post-M8 reindex`.

@@ -24,13 +24,20 @@ Khi AI coding tool (Claude Code, Codex, Gemini) làm việc với Odoo, chúng t
 Odoo repos (~/git/*_17.0/)
         │
         ▼  index một lần trên server
-┌───────────────────────────┐
-│  Indexer Pipeline         │
-│  Neo4j + pgvector         │
-│  MCP Server :8002         │
-└───────────┬───────────────┘
-            │  HTTPS / MCP protocol
-            ▼
+┌──────────────────────────────────────────────┐
+│  Indexer Pipeline                            │
+│  Neo4j + pgvector                            │
+│                                              │
+│  FastAPI JSON API  (port 8003)               │
+│  Astro SSR + React islands  (port 4321)      │
+│  MCP Server  (port 8002)                     │
+└─────────────────────┬────────────────────────┘
+                      │ nginx routes:
+                      │  /api/*   → 8003 (JSON only)
+                      │  /admin/* → 4321 (Astro SSR, auth-gated)
+                      │  /        → 4321 (landing + hero)
+                      │  /mcp     → 8002 (MCP protocol)
+                      ▼
   Claude Code / VS Code / Codex / Gemini
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
@@ -81,7 +88,7 @@ Test MCP local với Claude Code (không cần production server) — 5 phút se
 
 ## System Requirements (Server)
 
-Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–M5 đầy đủ):
+Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–M5 đầy đủ). M8 thêm Node.js 20+ runtime cho Astro service.
 
 → **[`docs/deploy.md §0.5 System Requirements`](docs/deploy.md#05-system-requirements)** cho table chi tiết + scaling guidance.
 
@@ -89,15 +96,18 @@ Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–
 
 ## Deploy Server (Admin)
 
-Happy-path 3-lệnh:
+Happy-path cho M8 (3 services):
 
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-mcp && cd odoo-semantic-mcp
 make install && docker compose up -d
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+
+# Build Astro frontend (requires Node.js 20+, pnpm):
+cd site && pnpm install --frozen-lockfile && pnpm build && cd ..
 ```
 
-Sau đó: register profile, index repos, generate FERNET_KEY + API key, start Web UI + MCP server.
+Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 systemd services (MCP :8002, FastAPI :8003, Astro :4321).
 
 → **[`docs/deploy.md`](docs/deploy.md)** cho production setup (all-in-one vs split-tier, systemd, nginx, TLS, backup).
 
@@ -142,9 +152,9 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.2.0 (2026-05-12) — M7.5 Persona Wow complete. 14 tools, Claude Code plugin, cross-vendor adapters.
+**Latest release:** v0.3.0 (2026-05-14) — M8 Public Wow complete. Astro SSR unified UI (landing + 6 admin pages), FastAPI pure JSON API, React Flow hero, 68 browser tests.
 
-**Active milestone:** M8 "Public Wow" — planning.
+**Active milestone:** M9 "Auth Wow" — OAuth, public signup, multi-user admin.
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 

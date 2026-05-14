@@ -15,6 +15,8 @@ Tài liệu này dành cho developer muốn contribute hoặc phát triển thê
 | **Docker** | bất kỳ | Chạy Neo4j cho integration tests — testcontainers tự quản lý, không cần thao tác thủ công |
 | **Git** | bất kỳ | Clone repo, scanner cần `git branch` |
 | **uv** | ≥ 0.4 | Package manager (nhanh hơn pip) |
+| **Node.js** | 20 LTS+ | Build + run Astro frontend (`site/`) — Node 24 khuyến nghị từ tháng 6/2026 khi GitHub Actions nâng chuẩn |
+| **pnpm** | bất kỳ | Package manager cho `site/` — `npm i -g pnpm` hoặc `corepack enable pnpm` |
 
 > Nếu chưa có `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`  
 > Nếu chưa có Docker: xem mục **[Cài Docker](#cài-docker)** bên dưới — có thêm bước cấu hình bắt buộc sau khi cài.
@@ -357,20 +359,27 @@ Khi `ruff check` raise UP violation, sửa root cause (đổi syntax sang form m
 
 **`make test` (unit tests):** 0 warnings.
 
-**`make test-integration` (CI):** 0 warnings — CI uses GitHub Actions service container; `neo4j_driver` fixture skips testcontainers import entirely when `CI=true`.
+**`make test-integration` (CI):** CI uses GitHub Actions service container; `neo4j_driver` fixture skips testcontainers import entirely when `CI=true`. **5 known warnings total** — 3 upstream (cannot fix without upstream release) + 2 tracked in M9 backlog:
 
-**`make test-integration` (local dev with Docker):** 2 warnings from testcontainers:
+**Upstream (3) — do not suppress:**
 
-```
-DeprecationWarning: The @wait_container_is_ready decorator is deprecated...
-```
-Source: `testcontainers/core/waiting_utils.py` and `testcontainers/neo4j/__init__.py` — the `@wait_container_is_ready()` decorator fires at class-definition time (module import). Cannot be avoided without modifying upstream source or downgrading to testcontainers 3.x (which would require a full API rewrite of `conftest.py`).
-Status: Upstream issue in testcontainers 4.x. Will be resolved when upstream removes the deprecated decorator.
+1–2. `DeprecationWarning: The @wait_container_is_ready decorator is deprecated...` (fires twice)  
+   Source: `testcontainers/core/waiting_utils.py` + `testcontainers/neo4j/__init__.py` — class-definition time import, not per-test. Cannot be avoided without modifying upstream source or downgrading to testcontainers 3.x (full conftest.py API rewrite).  
+   Status: Upstream issue in testcontainers 4.x. Upgrade when fixed.
 
-**Action:** Do NOT suppress with `filterwarnings`. Monitor testcontainers releases and upgrade when fixed.
+3. (Removed — `AuthlibDeprecationWarning` fixed by pinning `authlib>=1.6.5,<1.7.0`.)
 
-**Previously tracked — now fixed:**
-- `AuthlibDeprecationWarning` (authlib.jose → joserfc migration): fixed by pinning `authlib>=1.6.5,<1.7.0` — the warning was added in v1.7.0.
+**M9 backlog (2) — root cause known, fix deferred:**
+
+4. `neo4j._sync.driver:547 DeprecationWarning: The 'Driver' class has been deprecated...`  
+   Surfaces in `test_git_utils` + `test_indexer_main`. Root cause: Neo4j driver destructor fires without explicit `driver.close()` call in those test fixtures. Fix: close session explicitly in teardown. Backlog item: TASKS.md M9 Stream B.
+
+5. `httpx._client: 'per-request cookies' will be deprecated...`  
+   Surfaces in `test_web_ui_auth.py`. Root cause: test helper passes `cookies=` kwarg to httpx request directly instead of via a `Client` instance. Fix: refactor helper to use `httpx.Client(cookies=...)`. Backlog item: TASKS.md M9 Stream B.
+
+**`make test-integration` (local dev with Docker):** Same 5 warnings as CI.
+
+**Action:** Do NOT suppress with `filterwarnings`. Fix root cause when the M9 stream is scheduled.
 
 ---
 
@@ -572,12 +581,33 @@ Indexes 3 profiles in parallel; each profile uses 2 repo-workers internally
 (up to 6 threads total). Per-profile Postgres advisory locks ensure no two
 indexer runs collide on the same profile.
 
-### 3. Start MCP server
+### 3. Start backend + frontend (3 processes)
 
+M8 dùng 3 service tách biệt. Mở 3 terminal:
+
+**Terminal A — FastAPI JSON API (port 8003):**
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.web_ui.app
+# → Server lắng nghe http://127.0.0.1:8003
+```
+
+**Terminal B — Astro frontend (port 4321):**
+```bash
+# Dev với hot-reload (khuyến nghị khi phát triển UI):
+cd site && pnpm install && pnpm dev
+# → http://localhost:4321
+
+# Hoặc build + preview (CI-style, giống production):
+cd site && pnpm build && pnpm preview
+```
+
+**Terminal C — MCP server (port 8002):**
 ```bash
 ~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 # → Server lắng nghe http://127.0.0.1:8002/mcp
 ```
+
+> **Lưu ý về proxy:** Trong dev, Astro gọi trực tiếp `http://localhost:8003/api/*` (configured trong `site/astro.config.mjs`). Không cần nginx local — chỉ cần khi test production-style routing.
 
 ### 4. Trỏ Claude Code vào local server
 
@@ -593,6 +623,24 @@ Restart Claude Code, gõ prompt tự nhiên để verify:
 ```
 Dùng odoo-semantic, resolve model sale.order trên Odoo 17.0
 ```
+
+### Browser tests
+
+Browser tests (Playwright) sống tại `tests/browser/` chia 2 sub-package:
+
+```
+tests/browser/
+├── admin/        # 68 tests — admin UI (auth-gated pages)
+└── public/       # landing + install page
+```
+
+Chạy local (cần 3 service đang chạy — xem §3):
+```bash
+~/.venv/odoo-semantic-mcp/bin/pytest tests/browser/admin/ -m browser -v
+~/.venv/odoo-semantic-mcp/bin/pytest tests/browser/public/ -m browser -v
+```
+
+CI chạy 2 job parallel (`browser-admin` + `browser-public`), mỗi job dùng `playwright install chromium`.
 
 ### Tool dependencies
 

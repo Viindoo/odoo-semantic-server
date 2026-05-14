@@ -1821,7 +1821,7 @@ def test_module_merge_key_excludes_last_commit_sha(writer, neo4j_driver):
 
 
 # ---------------------------------------------------------------------------
-# M8 — Profile array property tests (ADR-0014 Option Y)
+# M8 — Profile array property tests (ADR-0016 Option Y)
 # ---------------------------------------------------------------------------
 
 def test_module_node_carries_profile_array(writer, neo4j_driver):
