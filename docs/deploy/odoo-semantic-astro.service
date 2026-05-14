@@ -10,8 +10,15 @@
 # Deploy:
 #   rsync -avz --exclude=node_modules --exclude=dist \
 #     ./site/ odoo-semantic@prod:/opt/odoo-semantic-mcp/site/
-#   ssh odoo-semantic@prod "cd /opt/odoo-semantic-mcp/site && npm ci && npm run build"
+#   ssh odoo-semantic@prod 'cd /opt/odoo-semantic-mcp/site && \
+#     pnpm install --frozen-lockfile && pnpm build'
 #   sudo systemctl restart odoo-semantic-astro
+#
+# Single-host variant: if the service runs from /home/<user>/git/...
+# instead of /opt/, override User=<user>, WorkingDirectory=<path>, AND change
+# ProtectHome=true → ProtectHome=read-only so node can read dist/ under /home.
+# pnpm 10+ also requires site/pnpm-workspace.yaml (committed) — without it,
+# `pnpm build` aborts with ERR_PNPM_IGNORED_BUILDS for esbuild/sharp.
 
 [Unit]
 Description=Odoo Semantic MCP — Astro frontend server (landing + admin SSR :4321)
