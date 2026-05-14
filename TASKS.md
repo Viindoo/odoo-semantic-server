@@ -372,16 +372,20 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 **Status:** Planning — revised 2026-05-12 (Astro unified decision). Không có code change.
 
 **P1 production fix-ups (từ M7.5 verification 2026-05-14 — bắt buộc trước public launch):**
-- [ ] **M7.5-P1-A:** Fix Ollama SSL `CERTIFICATE_VERIFY_FAILED` trên production — sửa `OLLAMA_BASE_URL` scheme (`https://` → `http://`) hoặc add self-signed CA. Unblock `find_examples` + `suggest_pattern` + M3 recall benchmark. Owner: Infra. Detail: `docs/m7.5-verification-issues.md`.
-- [ ] **M7.5-P1-B:** Re-run `index-core` cho 16.0 + 17.0 để fill `name_get` CoreSymbol gap. Unblock `lookup_core_api` + `api_version_diff`. Owner: Indexer.
-- [ ] **M7.5-P1-C:** Re-run CLI parsing cho 17.0 để fill `--gevent-port` CLICommand gap. Unblock `cli_help`. Owner: Indexer.
-- [ ] **M7.5-P1-D:** Add `Strict-Transport-Security` header vào nginx config + reload. Unblock pre-launch §1.1. Owner: Infra.
-- [ ] **M7.5-P1-E:** Resolve `/admin` 404 — confirm Web UI service intent (running pending M8 hoặc intentionally stopped). Unblock §10.2. Owner: Infra + M8 owner (Astro Stream B may supersede).
 
-**P2 polish queue (M8 hoặc later):**
-- [ ] **M7.5-P2-AR:** 5 persona TRIGGER tuning fixes (odoo-feature-check, odoo-gap-analysis, odoo-feature-highlights, odoo-addon-diff, odoo-capability-proof). Detail trong `docs/m7.5-pilot-results.md` failing-queries section.
-- [ ] **M7.5-P2-LINT:** Audit LintRule catalogue cho UserError/ValidationError string-formatting rule.
-- [ ] **M7.5-P2-DOCS:** Add Ollama setup runbook vào `CONTRIBUTING.md` (qwen3-embedding-q5km pull + verify steps).
+> **2026-05-14 follow-up:** Phase-1 investigation (PR follow-on after #82) confirmed cả 5 P1 đều là deployment issues, KHÔNG cần code fix. Runbook chi tiết đã ship: [`docs/deploy/m7.5-production-fixes.md`](docs/deploy/m7.5-production-fixes.md). Items dưới đây remain `[ ]` cho đến khi admin chạy runbook trên production server.
+
+- [ ] **M7.5-P1-A:** Fix Ollama SSL `CERTIFICATE_VERIFY_FAILED` — production conf có `[embedder] url = https://...` thay vì `http://`. Code default đúng `http://`. Unblock `find_examples` + `suggest_pattern` + M3 recall benchmark. Owner: Infra. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §4.
+- [ ] **M7.5-P1-B:** Re-run `index-core` cho 16.0 + 17.0 để fill `name_get` CoreSymbol gap. Parser OK — chỉ là production index stale. Unblock `lookup_core_api` + `api_version_diff`. Note: sau re-index, `name_get` sẽ show `status='stable'` (không phải 'deprecated') vì Odoo 17 dùng runtime `DeprecationWarning` thay decorator — P2 enhancement riêng. Owner: Indexer admin. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §5.
+- [ ] **M7.5-P1-C:** Re-run `index-core` cho 17.0 để fill `--gevent-port` CLICommand gap. Parser OK — production index stale. Unblock `cli_help`. Owner: Indexer admin. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §5.
+- [ ] **M7.5-P1-D:** Add `Strict-Transport-Security` header vào nginx config + reload. Unblock pre-launch §1.1. Owner: Infra. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §3.
+- [ ] **M7.5-P1-E:** Resolve `/admin` 404 — confirm Web UI service intent (running pre-M8 hoặc M8 Astro dependency). Branch A: restart webui + check nginx upstream. Branch B: mark §10 entirely M8 dependency. Unblock §10.2. Owner: Infra + M8 owner. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §6.
+
+**P2 polish queue (đã ship code-side; production hoặc downstream pending):**
+- [x] **M7.5-P2-AR:** 5 persona TRIGGER tuning fixes shipped 2026-05-14 — `dist/odoo-semantic-plugin/skills/{odoo-feature-check,odoo-gap-analysis,odoo-feature-highlights,odoo-addon-diff,odoo-capability-proof}/SKILL.md` mở rộng description với failing-query phrases. Disambiguation regression 31/31 PASS. *Note: full live LLM re-measurement defer M8.*
+- [x] **M7.5-P2-LINT:** Added pylint-odoo rule **W8201** (translation-format-interpolation, "String formatting used in UserError/ValidationError — use lazy %s args or named placeholders") to `src/indexer/spec_data/lint_rules_{16.0,17.0,18.0}.json`. 11 new tests in `tests/test_parser_lint_rules.py`. Admin cần re-run `index-core` để load vào production catalogue.
+- [x] **M7.5-P2-DOCS:** Added "Ollama Setup (cho recall benchmark)" section in `CONTRIBUTING.md` (line 221) — qwen3-embedding-q5km pull + verify steps + cross-link to `docs/deploy/embedder-setup.md`.
+- [ ] **M7.5-P2-NAMEGET:** Parser limitation — Odoo 17 dùng runtime `DeprecationWarning` cho `name_get` thay vì `@api.deprecated` decorator. Sau re-index, `lookup_core_api("name_get", "17.0")` show `status='stable'` thay vì 'deprecated'. Cần extend `parser_odoo_core.py` để detect runtime warnings trong body. Track for M8 polish.
 
 
 
