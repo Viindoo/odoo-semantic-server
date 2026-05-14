@@ -44,4 +44,7 @@ class TestLoginPage:
         """GET /admin (without auth cookie) → 302 redirect to /admin/login."""
         response = page.goto(f"{astro_server}/admin", wait_until="load")
         # After following redirects, we should be on the login page
-        assert "/admin/login" in page.url or (response is not None and response.url and "/login" in response.url)
+        on_login = "/admin/login" in page.url
+        if not on_login and response is not None and response.url:
+            on_login = "/login" in response.url
+        assert on_login

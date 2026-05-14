@@ -123,7 +123,8 @@ class TestSshUrlUx:
         # Switch to HTTPS → ssh-key-input hidden, local_path visible again
         page.get_by_test_id("repos-url-input").fill("https://github.com/odoo/odoo")
         page.wait_for_function(
-            "document.querySelector('[data-testid=\"repos-local-path-input\"]').offsetParent !== null"
+            "document.querySelector('[data-testid=\"repos-local-path-input\"]')"
+            ".offsetParent !== null"
         )
         assert page.get_by_test_id("repos-local-path-input").is_visible()
 
