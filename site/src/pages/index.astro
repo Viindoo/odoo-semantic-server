@@ -2,10 +2,172 @@
 export const prerender = true;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
+import GraphHero from '../components/GraphHero';
+import InstallSnippets from '../components/InstallSnippets.astro';
 ---
 
-<BaseLayout title="Odoo Semantic MCP">
-  <main class="min-h-screen flex items-center justify-center">
-    <h1 class="text-2xl font-bold text-gray-700">Landing placeholder — W5</h1>
-  </main>
+<BaseLayout
+  title="Odoo Semantic MCP"
+  description="Knowledge engine hiểu sâu codebase Odoo — inheritance chain, view structure, JS patch — exposed via MCP protocol."
+>
+  <!-- Hero Section -->
+  <section class="relative bg-gradient-to-br from-gray-950 via-violet-950/30 to-gray-950 min-h-[80vh] flex flex-col items-center justify-center px-4 py-20 overflow-hidden">
+    <!-- Background grid decoration -->
+    <div class="absolute inset-0 bg-[linear-gradient(to_right,#1f2937_1px,transparent_1px),linear-gradient(to_bottom,#1f2937_1px,transparent_1px)] bg-[size:48px_48px] opacity-30 pointer-events-none" />
+
+    <div class="relative z-10 max-w-4xl mx-auto text-center">
+      <!-- Badge -->
+      <div class="inline-flex items-center gap-2 bg-violet-900/40 border border-violet-700/50 text-violet-300 text-xs font-mono px-3 py-1.5 rounded-full mb-6">
+        <span class="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+        v0.2.0 — M7.5 complete &bull; 14 MCP tools
+      </div>
+
+      <!-- Main heading -->
+      <h1 class="text-4xl sm:text-5xl md:text-6xl font-bold text-white leading-tight mb-6">
+        Odoo Semantic MCP —<br />
+        <span class="text-violet-400">Hiểu sâu codebase Odoo</span><br />
+        <span class="text-gray-300">qua MCP protocol</span>
+      </h1>
+
+      <p class="text-lg sm:text-xl text-gray-400 max-w-2xl mx-auto mb-10">
+        14 MCP tools, cross-repo, cross-version, từ v8 đến v20+.<br />
+        Không hallucinate field. Không bịa method. Trace được XPath chain.
+      </p>
+
+      <!-- CTA Buttons -->
+      <div class="flex flex-wrap items-center justify-center gap-4 mb-14">
+        <a
+          href="/install/"
+          class="inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white font-semibold px-6 py-3 rounded-xl transition-colors shadow-lg shadow-violet-900/40"
+        >
+          Get Started
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
+        </a>
+        <a
+          href="/admin/login"
+          class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-semibold px-6 py-3 rounded-xl transition-colors border border-gray-700"
+        >
+          Sign in
+        </a>
+      </div>
+
+      <!-- React Flow Graph Island -->
+      <div class="w-full max-w-2xl mx-auto rounded-2xl overflow-hidden shadow-2xl shadow-violet-950/60 border border-gray-800">
+        <GraphHero client:visible />
+      </div>
+
+      <!-- noscript fallback -->
+      <noscript>
+        <div class="mt-6 bg-gray-900 border border-gray-700 rounded-xl p-6 text-left text-sm font-mono text-gray-300">
+          <p class="text-gray-500 mb-3"># sale.order inheritance chain (Odoo 17.0)</p>
+          <ul class="space-y-1">
+            <li>sale.order [<span class="text-violet-400">sale</span>] — <em>definition</em>, 148 fields</li>
+            <li>├─ sale.order [<span class="text-blue-400">sale_management</span>] — extends</li>
+            <li>├─ sale.order [<span class="text-cyan-400">website_sale</span>] — extends</li>
+            <li>├─ sale.order [<span class="text-green-400">viin_sale</span>] — extends</li>
+            <li>└─ sale.order [<span class="text-yellow-400">sale_stock</span>] — extends</li>
+          </ul>
+        </div>
+      </noscript>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section class="bg-white py-20 px-4">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-3xl font-bold text-center text-gray-900 mb-4">
+        Tại sao Odoo Semantic MCP?
+      </h2>
+      <p class="text-center text-gray-500 mb-12 max-w-xl mx-auto">
+        AI coding tool hiểu sai Odoo vì chúng không có graph của codebase bạn.
+        Chúng tôi fix vấn đề đó.
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Card 1: Cross-repo -->
+        <div class="bg-gradient-to-br from-violet-50 to-violet-100/50 border border-violet-200 rounded-2xl p-6">
+          <div class="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h7" />
+            </svg>
+          </div>
+          <h3 class="text-lg font-semibold text-gray-900 mb-2">Cross-repo Awareness</h3>
+          <p class="text-sm text-gray-600">
+            Index toàn bộ repos — CE, EE, custom addons — vào một graph duy nhất.
+            Trace inheritance chain qua ranh giới repo không mất mát.
+          </p>
+          <div class="mt-4 font-mono text-xs text-violet-700 bg-violet-100 rounded-lg p-3">
+            sale → sale_management → viin_sale → …
+          </div>
+        </div>
+
+        <!-- Card 2: Cross-version -->
+        <div class="bg-gradient-to-br from-blue-50 to-blue-100/50 border border-blue-200 rounded-2xl p-6">
+          <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <h3 class="text-lg font-semibold text-gray-900 mb-2">Cross-version v8 → v20+</h3>
+          <p class="text-sm text-gray-600">
+            Era-aware parsing: v8/v9 <code class="bg-blue-100 px-1 rounded">_columns</code> dict,
+            v10+ AST. API diff giữa bất kỳ hai version — không cần đọc changelog thủ công.
+          </p>
+          <div class="mt-4 font-mono text-xs text-blue-700 bg-blue-100 rounded-lg p-3">
+            api_version_diff(v16→v17) → 12 breaking changes
+          </div>
+        </div>
+
+        <!-- Card 3: AI-native -->
+        <div class="bg-gradient-to-br from-green-50 to-green-100/50 border border-green-200 rounded-2xl p-6">
+          <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+          </div>
+          <h3 class="text-lg font-semibold text-gray-900 mb-2">AI-native Output</h3>
+          <p class="text-sm text-gray-600">
+            Output cây có cấu trúc — Claude, Codex, Gemini đọc được ngay không cần parse thêm.
+            Zero install cho end user: chỉ URL + API key.
+          </p>
+          <div class="mt-4 font-mono text-xs text-green-700 bg-green-100 rounded-lg p-3">
+            Defined in: [sale] sale.order<br />
+            Fields: 148 &bull; Methods: 394
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install Snippets Section -->
+  <section class="bg-gray-50 py-20 px-4 border-t border-gray-200">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-3xl font-bold text-center text-gray-900 mb-4">
+        Connect Your AI Tool
+      </h2>
+      <p class="text-center text-gray-500 mb-10 max-w-xl mx-auto">
+        Thêm URL + API key vào config file tương ứng — bắt đầu trong dưới 5 phút.
+      </p>
+      <InstallSnippets />
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="bg-gray-950 text-gray-500 py-10 px-4 text-center text-sm">
+    <p>
+      Odoo Semantic MCP &bull; v0.2.0 &bull; Built by
+      <a href="https://viindoo.com" class="text-violet-400 hover:text-violet-300 transition-colors">Viindoo</a>
+    </p>
+    <p class="mt-2">
+      <a href="/admin/login" class="hover:text-gray-300 transition-colors">Admin</a>
+      &bull;
+      <a href="https://github.com/Viindoo/odoo-semantic-mcp" class="hover:text-gray-300 transition-colors">GitHub</a>
+      &bull;
+      <a href="/install/" class="hover:text-gray-300 transition-colors">Install</a>
+      &bull;
+      <a href="/pricing" class="hover:text-gray-300 transition-colors">Pricing</a>
+    </p>
+  </footer>
 </BaseLayout>

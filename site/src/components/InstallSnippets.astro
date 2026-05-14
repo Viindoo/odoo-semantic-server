@@ -1,0 +1,209 @@
+---
+// InstallSnippets.astro — 5-client install tabs
+// Pure CSS tab switching, no React dependency
+---
+
+<section class="install-snippets w-full max-w-3xl mx-auto my-8">
+  <h2 class="text-xl font-semibold text-gray-800 mb-4">Quick Install</h2>
+
+  <div class="tabs" role="tablist" aria-label="Client install instructions">
+    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="claude" aria-controls="tab-claude">
+      Claude Code
+    </button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="codex" aria-controls="tab-codex">
+      Codex CLI
+    </button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="gemini" aria-controls="tab-gemini">
+      Gemini CLI
+    </button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="vscode" aria-controls="tab-vscode">
+      VS Code
+    </button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="antigravity" aria-controls="tab-antigravity">
+      Antigravity
+    </button>
+  </div>
+
+  <!-- Claude Code -->
+  <div class="tab-panel active" id="tab-claude" role="tabpanel">
+    <p class="text-sm text-gray-600 mb-3">
+      Plugin install (recommended) — bundles MCP config + 15 persona skills:
+    </p>
+    <pre class="code-block"><code>claude plugin marketplace add Viindoo/claude-plugins --scope user
+claude plugin install odoo-semantic@viindoo-plugins --scope user</code></pre>
+    <p class="text-sm text-gray-600 mt-3 mb-2">
+      Then configure in Claude Code:
+    </p>
+    <pre class="code-block"><code>/odoo-semantic:connect</code></pre>
+    <p class="text-xs text-gray-400 mt-3">
+      Manual setup:
+      <code class="bg-gray-100 px-1 rounded text-xs">claude mcp add --scope user --transport http odoo-semantic &lt;MCP_URL&gt; --header "X-API-Key: &lt;API_KEY&gt;"</code>
+    </p>
+  </div>
+
+  <!-- Codex CLI -->
+  <div class="tab-panel" id="tab-codex" role="tabpanel">
+    <p class="text-sm text-gray-600 mb-3">
+      Edit <code class="bg-gray-100 px-1 rounded">~/.codex/config.toml</code> (CLI add has no <code>--header</code> flag):
+    </p>
+    <pre class="code-block"><code>[mcp_servers.odoo-semantic]
+url = "https://odoo-semantic.viindoo.com/mcp"
+http_headers = &#123; "X-API-Key" = "&lt;API_KEY&gt;" &#125;</code></pre>
+    <p class="text-xs text-amber-600 mt-3">
+      ⚠ Use <code>http_headers</code> (snake_case + plural) — <code>headers</code> is silently ignored.
+    </p>
+    <p class="text-sm text-gray-600 mt-3">Verify: <code class="bg-gray-100 px-1 rounded">codex mcp list</code></p>
+  </div>
+
+  <!-- Gemini CLI -->
+  <div class="tab-panel" id="tab-gemini" role="tabpanel">
+    <p class="text-sm text-gray-600 mb-3">
+      Edit <code class="bg-gray-100 px-1 rounded">~/.gemini/settings.json</code>:
+    </p>
+    <pre class="code-block"><code>&#123;
+  "mcpServers": &#123;
+    "odoo-semantic": &#123;
+      "httpUrl": "https://odoo-semantic.viindoo.com/mcp",
+      "headers": &#123; "X-API-Key": "&lt;API_KEY&gt;" &#125;,
+      "timeout": 10000
+    &#125;
+  &#125;
+&#125;</code></pre>
+    <p class="text-xs text-amber-600 mt-3">
+      ⚠ Use <code>httpUrl</code> (camelCase) — Gemini CLI ignores <code>url</code>.
+    </p>
+  </div>
+
+  <!-- VS Code -->
+  <div class="tab-panel" id="tab-vscode" role="tabpanel">
+    <p class="text-sm text-gray-600 mb-3">
+      Command Palette → <strong>MCP: Open User Configuration</strong> — add to <code>mcp.json</code>:
+    </p>
+    <pre class="code-block"><code>&#123;
+  "servers": &#123;
+    "odoo-semantic": &#123;
+      "type": "http",
+      "url": "https://odoo-semantic.viindoo.com/mcp",
+      "headers": &#123; "X-API-Key": "&lt;API_KEY&gt;" &#125;
+    &#125;
+  &#125;
+&#125;</code></pre>
+    <p class="text-sm text-gray-600 mt-3">
+      One-click install (paste in browser):
+    </p>
+    <pre class="code-block text-xs"><code>vscode:mcp/install?%7B%22name%22%3A%22odoo-semantic%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fodoo-semantic.viindoo.com%2Fmcp%22%7D</code></pre>
+    <p class="text-xs text-amber-600 mt-3">
+      ⚠ Top-level key is <code>servers</code> (not <code>mcpServers</code>). Requires VS Code v1.99+.
+    </p>
+  </div>
+
+  <!-- Antigravity -->
+  <div class="tab-panel" id="tab-antigravity" role="tabpanel">
+    <p class="text-sm text-gray-600 mb-3">
+      IDE → <strong>Manage MCP Servers → View raw config</strong>, or edit
+      <code class="bg-gray-100 px-1 rounded">~/.gemini/antigravity/mcp_config.json</code>:
+    </p>
+    <pre class="code-block"><code>&#123;
+  "mcpServers": &#123;
+    "odoo-semantic": &#123;
+      "serverUrl": "https://odoo-semantic.viindoo.com/mcp",
+      "headers": &#123; "X-API-Key": "&lt;API_KEY&gt;" &#125;
+    &#125;
+  &#125;
+&#125;</code></pre>
+    <p class="text-xs text-amber-600 mt-3">
+      ⚠ Use <code>serverUrl</code> (camelCase) — not <code>url</code> or <code>httpUrl</code>.
+    </p>
+    <p class="text-sm text-gray-600 mt-3">
+      Pre-approve tools: <strong>...</strong> → <strong>MCP Servers</strong> → allow <code>mcp(odoo-semantic.*)</code>
+    </p>
+  </div>
+</section>
+
+<style>
+  .tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 2px solid #e5e7eb;
+    margin-bottom: 0;
+    flex-wrap: wrap;
+  }
+
+  .tab-btn {
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #6b7280;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    margin-bottom: -2px;
+    white-space: nowrap;
+  }
+
+  .tab-btn:hover {
+    color: #4f46e5;
+  }
+
+  .tab-btn.active {
+    color: #4f46e5;
+    border-bottom-color: #4f46e5;
+  }
+
+  .tab-panel {
+    display: none;
+    padding: 20px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+  }
+
+  .tab-panel.active {
+    display: block;
+  }
+
+  .code-block {
+    background: #111827;
+    color: #e5e7eb;
+    padding: 14px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.6;
+  }
+
+  .code-block code {
+    background: none;
+    color: inherit;
+    font-size: inherit;
+    padding: 0;
+  }
+</style>
+
+<script>
+  const tabBtns = document.querySelectorAll<HTMLButtonElement>('.tab-btn');
+  const tabPanels = document.querySelectorAll<HTMLElement>('.tab-panel');
+
+  tabBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.tab;
+
+      tabBtns.forEach((b) => {
+        b.classList.remove('active');
+        b.setAttribute('aria-selected', 'false');
+      });
+      tabPanels.forEach((p) => p.classList.remove('active'));
+
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
+
+      const panel = document.getElementById(`tab-${target}`);
+      if (panel) panel.classList.add('active');
+    });
+  });
+</script>
