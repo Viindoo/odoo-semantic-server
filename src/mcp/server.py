@@ -2,7 +2,7 @@
 import math
 import os
 import threading
-from contextlib import contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 
 from fastmcp import FastMCP
 from neo4j import GraphDatabase
@@ -2251,6 +2251,26 @@ if __name__ == "__main__":
         path="/mcp",
         middleware=[_Middleware(AuthMiddleware)],
     )
+
+    # --- P0 fix: initialize PG pool before the first request reaches middleware ---
+    # AuthMiddleware.dispatch calls auth_store() → get_pool() on every authenticated
+    # request.  Without this startup hook, get_pool() raises RuntimeError because
+    # init_pool() was never called, and every MCP request returns HTTP 500.
+    #
+    # We wrap the app's existing lifespan so that _ensure_pg() runs during ASGI
+    # startup — before uvicorn accepts any connections.  _ensure_pg() is idempotent:
+    # if the pool was already initialised (e.g. by a test harness) it is a no-op.
+    _existing_lifespan = _app.router.lifespan_context
+
+    @asynccontextmanager
+    async def _lifespan_with_pg(app):
+        import asyncio as _asyncio
+        await _asyncio.to_thread(_ensure_pg)
+        async with _existing_lifespan(app):
+            yield
+
+    _app.router.lifespan_context = _lifespan_with_pg
+    # --------------------------------------------------------------------------
 
     _install_dir = _Path(__file__).parent / "static" / "install"
     if _install_dir.is_dir():
