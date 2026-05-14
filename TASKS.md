@@ -373,13 +373,22 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **P1 production fix-ups (từ M7.5 verification 2026-05-14 — bắt buộc trước public launch):**
 
-> **2026-05-14 follow-up:** Phase-1 investigation (PR follow-on after #82) confirmed cả 5 P1 đều là deployment issues, KHÔNG cần code fix. Runbook chi tiết đã ship: [`docs/deploy/m7.5-production-fixes.md`](docs/deploy/m7.5-production-fixes.md). Items dưới đây remain `[ ]` cho đến khi admin chạy runbook trên production server.
+> **2026-05-14 hotfix executed** (worktree `worktree-m7.5-hotfix`): 4/5 P1 RESOLVED, 1/5 DEFERRED → M8. Real prod root causes khác runbook ban đầu — runbook đã được sửa. Chi tiết: [`docs/m7.5-verification-issues.md`](docs/m7.5-verification-issues.md) Resolution Stamps.
 
-- [ ] **M7.5-P1-A:** Fix Ollama SSL `CERTIFICATE_VERIFY_FAILED` — production conf có `[embedder] url = https://...` thay vì `http://`. Code default đúng `http://`. Unblock `find_examples` + `suggest_pattern` + M3 recall benchmark. Owner: Infra. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §4.
-- [ ] **M7.5-P1-B:** Re-run `index-core` cho 16.0 + 17.0 để fill `name_get` CoreSymbol gap. Parser OK — chỉ là production index stale. Unblock `lookup_core_api` + `api_version_diff`. Note: sau re-index, `name_get` sẽ show `status='stable'` (không phải 'deprecated') vì Odoo 17 dùng runtime `DeprecationWarning` thay decorator — P2 enhancement riêng. Owner: Indexer admin. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §5.
-- [ ] **M7.5-P1-C:** Re-run `index-core` cho 17.0 để fill `--gevent-port` CLICommand gap. Parser OK — production index stale. Unblock `cli_help`. Owner: Indexer admin. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §5.
-- [ ] **M7.5-P1-D:** Add `Strict-Transport-Security` header vào nginx config + reload. Unblock pre-launch §1.1. Owner: Infra. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §3.
-- [ ] **M7.5-P1-E:** Resolve `/admin` 404 — confirm Web UI service intent (running pre-M8 hoặc M8 Astro dependency). Branch A: restart webui + check nginx upstream. Branch B: mark §10 entirely M8 dependency. Unblock §10.2. Owner: Infra + M8 owner. **Runbook:** `docs/deploy/m7.5-production-fixes.md` §6.
+- [x] **M7.5-P1-A:** Fix embedder URL — actual root cause: wrong port `:9999` (closed) trên remote `embed.viindoo.com`, không phải Ollama localhost TLS. Drop port → use 443. Conf line 19 edited + MCP restart. Verified: `curl https://embed.viindoo.com/api/embed` → 401 (auth required = OK). **Runbook §4.2.**
+- [x] **M7.5-P1-B:** Run `index-core --source ~/git/odoo_17.0 --version 17.0` — 501 CoreSymbol + 12 CLICommand + 80 CLIFlag + 17 LintRule populated. `name_get` indexed (status=stable per P2 quirk). **Runbook §5 Tier 1.**
+- [x] **M7.5-P1-C:** Bundled with P1-B. `--gevent-port` flag indexed for v17. **Runbook §5 Tier 1.**
+- [x] **M7.5-P1-D:** `add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;` added to `/etc/nginx/sites-available/odoo-semantic-mcp` server block (corrected filename — runbook had `odoo-semantic`). Nginx reloaded; verified. **Runbook §3.**
+- [~] **M7.5-P1-E:** DEFERRED to M8 (Branch B chosen per M8/M9 Astro unified decision — Jinja2 webui replaced by Astro this week). Absorbed into M8 plan §9 acceptance criteria + pre-launch §10 M8 dependency annotation with explicit exit criteria (W3+W4 merged + `odoo-semantic-astro.service` active). **Runbook §6 Branch B.**
+
+**M8/M9 backlog from hotfix discoveries (2026-05-14):**
+
+- [ ] **Profile + core index gap v9-v19:** Only v8 + v17 profiles exist in Postgres. Register profile + Add Repo (SSH URL `git@github.com:Viindoo/odoo.git` branch `<V>.0`) via admin webui (leverages M6 Wave 4 SSH auto-clone, [ADR-0008](docs/adr/0008-ssh-auto-clone.md)) cho v9, v10, v11, v12, v13, v14, v15, v16, v18, v19. Then `index-core` per version. Unblocks full `api_version_diff` coverage.
+- [ ] **v18 source repo missing:** Register via admin webui SSH (as above) — clones automatically via auto-clone flow. Don't direct `git clone` (avoid hand-managed filesystem layout).
+- [ ] **v8 parser limitation:** `index-core --version 8.0` writes 167 CoreSymbol but 0 CLIFlag/LintRule — era1 (openerp-server) CLI structure not handled. Extend `parser_cli.py` for era1.
+- [ ] **Admin UI core-index status column [P3 UX]:** Admin `/repos` page only shows MODULE index status (`indexed/error/pending` from Postgres `repos.status`). Add column or badge for CORE index status per version (CoreSymbol count > 0). Prevents user confusion that "v17 indexed" implies core index complete.
+- [ ] **Cleanup test artifact:** `MATCH (m:Module {odoo_version: '96.0', name: 'snap_mod', module_name: NULL}) DETACH DELETE m` — one anomalous node from test run leaking into production Neo4j.
+- [ ] **Re-register local v9-v16/v19 via webui (decide):** Currently local `~/git/odoo_<V>.0` directories exist but no Postgres profile/repo records. Either retire local clones in favor of webui-registered + auto-cloned repos (consistent topology), or keep local as mirror. **Recommendation:** re-register via webui to retire ad-hoc local layout.
 
 **P2 polish queue (đã ship code-side; production hoặc downstream pending):**
 - [x] **M7.5-P2-AR:** 5 persona TRIGGER tuning fixes shipped 2026-05-14 — `dist/odoo-semantic-plugin/skills/{odoo-feature-check,odoo-gap-analysis,odoo-feature-highlights,odoo-addon-diff,odoo-capability-proof}/SKILL.md` mở rộng description với failing-query phrases. Disambiguation regression 31/31 PASS. *Note: full live LLM re-measurement defer M8.*
