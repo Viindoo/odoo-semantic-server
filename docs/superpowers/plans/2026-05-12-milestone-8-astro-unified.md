@@ -400,6 +400,9 @@ W1 + W2 dispatch parallel in one message. W5 dispatched after W2 lands. W3 dispa
 
 ## 9. Acceptance Criteria
 
+> **Note (annotated 2026-05-14):** Two `/admin/repos` criteria below absorb **P1-E** from M7.5 verification (`docs/m7.5-verification-issues.md` + `docs/deploy/m7.5-production-fixes.md` §6 Branch B). P1-E is resolved by W3 (`feat/m8-admin-pages` → `site/src/pages/admin/repos.astro`) + W4 (`feat/m8-nginx-integration` → nginx route `/admin/*` to Astro `:4321`) + `odoo-semantic-astro.service` running on production. No separate pre-M8 fix is needed.
+
+
 - [ ] `GET /` → 200, Lighthouse mobile perf ≥ 80, accessibility ≥ 95, SEO ≥ 95
 - [ ] Hero animation autoplays within 1s, completes within 5s
 - [ ] `<noscript>` fallback contains graph as `<ul>` tree
@@ -408,6 +411,8 @@ W1 + W2 dispatch parallel in one message. W5 dispatched after W2 lands. W3 dispa
 - [ ] `POST /api/auth/login` wrong creds → 401 JSON `{"error": "..."}`
 - [ ] `GET /admin/` unauthenticated → redirect 302 → `/admin/login`
 - [ ] `GET /admin/` authenticated → 200 dashboard with real counts
+- [ ] `GET /admin/repos` unauthenticated → redirect 302 → `/admin/login` *(absorbs M7.5 P1-E, see note below)*
+- [ ] `GET /admin/repos` authenticated → 200 repo management page (Astro SSR — profiles + repos CRUD visible)
 - [ ] `GET /api/repos/profiles` no cookie → 401 JSON
 - [ ] `GET /mcp`, `/install/`, `/health` → unchanged (no regression)
 - [ ] Jinja2 not in `pyproject.toml` dependencies
