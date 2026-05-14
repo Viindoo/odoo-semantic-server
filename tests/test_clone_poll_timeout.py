@@ -3,8 +3,20 @@
 
 Static code verification tests (no browser or DB needed).
 Verify that repos.html includes MAX_TICKS constant and timeout logic.
+
+DEPRECATED in M8 W1: src/web_ui/templates/repos.html was removed when Jinja2 was
+replaced by Astro SSR. Polling logic moves to site/src/pages/admin/repos.astro
+(W3) and is covered by browser tests in tests/browser/admin/test_repos.py (W7).
+This file is skipped at collection time; deletion will be confirmed with user
+once W3+W7 land and equivalent coverage is verified.
 """
 import pathlib
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Template removed in M8 W1 — coverage moves to W3 Astro page + W7 browser tests"
+)
 
 
 class TestReposClonePollTimeout:
