@@ -74,7 +74,7 @@
 - [x] `src/mcp/server.py`: `find_examples` MCP tool (hybrid pgvector ANN + Neo4j centrality rerank)
 - [x] `tests/`: 100% unit test coverage cho tất cả M3 components
 - [x] `docs/deploy.md`: thêm §9 Embedder Setup (Ollama + pgvector bootstrap + license note)
-- [ ] **E2E manual**: Ollama chạy với qwen3-embedding-q5km → index Viindoo 17.0 → Claude Code call `find_examples` *(2026-05-14 — BLOCKED by P1 Ollama SSL on production: `CERTIFICATE_VERIFY_FAILED` khi MCP server gọi embedder. Smoke test không thể chạy cho đến khi infra fix `OLLAMA_BASE_URL` scheme. Issue tracked in `docs/m7.5-verification-issues.md`.)*
+- [x] **E2E manual**: Ollama chạy với qwen3-embedding-q5km → index Viindoo 17.0 → Claude Code call `find_examples` *(2026-05-14 — UNBLOCKED post-PR #84: actual root cause was wrong embedder port `:9999`, not Ollama SSL. After URL fix, client-side smoke via Claude Code MCP plugin PASS: `find_examples("sale order confirm", "17.0")` → 5 results, top score 0.84. 2-of-2 cross-check (Opus + Sonnet shadow) confirmed. Report: `docs/m7.5-mcp-verification.md`.)*
 - [ ] **Recall benchmark**: `pytest tests/test_find_examples_recall.py -m ollama` → VN≥0.75, EN≥0.80 *(2026-05-14 — BLOCKED bởi cùng Ollama SSL issue. Local benchmark cần `qwen3-embedding-q5km` model pull + Viindoo 17.0 re-index local; defer đến khi có local Ollama replica hoặc production fix.)*
 
 ## Milestone 4 — "Impact Wow"
@@ -395,6 +395,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [x] **M7.5-P2-LINT:** Added pylint-odoo rule **W8201** (translation-format-interpolation, "String formatting used in UserError/ValidationError — use lazy %s args or named placeholders") to `src/indexer/spec_data/lint_rules_{16.0,17.0,18.0}.json`. 11 new tests in `tests/test_parser_lint_rules.py`. Admin cần re-run `index-core` để load vào production catalogue.
 - [x] **M7.5-P2-DOCS:** Added "Ollama Setup (cho recall benchmark)" section in `CONTRIBUTING.md` (line 221) — qwen3-embedding-q5km pull + verify steps + cross-link to `docs/deploy/embedder-setup.md`.
 - [ ] **M7.5-P2-NAMEGET:** Parser limitation — Odoo 17 dùng runtime `DeprecationWarning` cho `name_get` thay vì `@api.deprecated` decorator. Sau re-index, `lookup_core_api("name_get", "17.0")` show `status='stable'` thay vì 'deprecated'. Cần extend `parser_odoo_core.py` để detect runtime warnings trong body. Track for M8 polish.
+- [ ] **M7.5-P2-SEED:** Operational gap discovered 2026-05-14 post-PR #84 cross-check — `suggest_pattern` returns `no patterns indexed. Run: python -m src.indexer.seed_patterns` on production. PatternExample nodes + `_SeedMeta` sentinel absent. Admin task: SSH to prod, run `python -m src.indexer.seed_patterns`. After this, ADR-0007 auto-reseed sentinel skips re-embed on subsequent runs. Tracked in `docs/m7.5-mcp-verification.md` and `docs/m7.5-verification-issues.md`.
 
 
 
