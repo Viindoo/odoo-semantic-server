@@ -90,8 +90,21 @@ def api_server(pg_conn):
     env = os.environ.copy()
     env["PG_DSN"] = pg_dsn
     env.setdefault("FERNET_KEY", Fernet.generate_key().decode())
-    env["WEBUI_AUTH_DISABLED"] = "1"
+    # NOTE: We do NOT set WEBUI_AUTH_DISABLED or PYTEST_CURRENT_TEST here. Admin
+    # browser tests use real session cookies — see tests/browser/admin/conftest.py
+    # for the _admin_session_cookie fixture that seeds a test user, logs in via
+    # POST /api/auth/login, and injects the resulting Set-Cookie into the
+    # Playwright browser context. The earlier auth-bypass approach defeated
+    # tests in test_login.py / test_logout.py that exercise pre-auth flows.
 
+    # Why --log-level warning: ``critical`` swallows the FastAPI/Starlette
+    # error logger output, so unhandled exceptions in route handlers surface
+    # only as the bare HTTP 500 body ``Internal Server Error`` with no
+    # traceback in the pytest job output. Bumping to ``warning`` lets the
+    # default Starlette error logger write tracebacks to stderr (inherited
+    # by the pytest process), making future regressions diagnosable from CI
+    # logs without rerunning locally. ``warning`` keeps the access-log
+    # noise low (200/304/redirects stay silent).
     proc = subprocess.Popen(
         [
             "python", "-m", "uvicorn",
@@ -99,18 +112,17 @@ def api_server(pg_conn):
             "--factory",
             "--host", "127.0.0.1",
             "--port", str(API_PORT),
-            "--log-level", "critical",
+            "--log-level", "warning",
         ],
         env=env,
     )
     base_url = f"http://127.0.0.1:{API_PORT}"
-    if not _wait_for_server(f"{base_url}/api/health", timeout=15):
-        # Fallback: try root path (older FastAPI app may not have /api/health)
-        if not _wait_for_server(base_url, timeout=5):
-            proc.terminate()
-            pytest.skip(
-                f"FastAPI api_server did not start on port {API_PORT} within 20s."
-            )
+    # Poll /openapi.json — always 200 when FastAPI is up, no auth needed
+    if not _wait_for_server(f"{base_url}/openapi.json", timeout=30):
+        proc.terminate()
+        pytest.skip(
+            f"FastAPI api_server did not start on port {API_PORT} within 30s."
+        )
     yield base_url
     proc.terminate()
     try:

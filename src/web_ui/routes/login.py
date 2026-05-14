@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
-from src.web_ui.auth import verify_password
+from src.web_ui.auth import is_test_bypass_active, verify_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
@@ -101,9 +101,16 @@ async def verify_session(request: Request):
     """Return 200 + username if session is valid, 401 if not.
 
     Used by Astro middleware to check session before serving protected pages.
+
+    Honors the same WEBUI_AUTH_DISABLED + PYTEST_CURRENT_TEST bypass as
+    AuthRequiredMiddleware so browser tests can verify admin pages without
+    seeding a session cookie. The double-env guard makes the bypass safe in
+    production (PYTEST_CURRENT_TEST is never set by ops).
     """
     from src.web_ui.middleware import _session_valid
 
+    if is_test_bypass_active():
+        return JSONResponse({"ok": True, "username": "test-user"})
     if _session_valid(request):
         return JSONResponse({"ok": True, "username": request.session.get("username")})
     return JSONResponse({"ok": False, "error": "not_authenticated"}, status_code=401)

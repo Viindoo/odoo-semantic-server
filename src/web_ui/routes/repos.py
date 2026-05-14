@@ -1,8 +1,11 @@
 # src/web_ui/routes/repos.py
-"""Profiles & Repos management routes (M8 W1 — pure JSON API)."""
-import datetime as _dt
+"""Profiles & Repos management routes (M8 W1 — pure JSON API).
+
+Note: job status/reset routes were moved to src/web_ui/routes/jobs.py
+(Phase 8 review) so that clients polling /api/jobs/{id}/status resolve
+correctly. The original prefix "/api/repos" caused 404s for those paths.
+"""
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -12,30 +15,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.web_ui._json import _json_safe
+
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos")
-
-
-def _json_safe(obj):
-    """Recursively convert datetime objects to ISO strings for JSON serialization."""
-    if isinstance(obj, dict):
-        return {k: _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_json_safe(v) for v in obj]
-    if isinstance(obj, _dt.datetime):
-        return obj.isoformat()
-    return obj
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Return True if process pid is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # process exists, different UID — assume alive
 
 
 @router.get("/profiles")
@@ -610,36 +593,42 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
 
         repos = repo_store().list_repos()
         repo = next((r for r in repos if r["id"] == repo_id), None)
-        if repo and repo.get("profile_name"):
-            with get_pool().checkout() as conn:
-                running = indexer_is_running(conn, repo["profile_name"])
-            if running:
-                return JSONResponse(
-                    {
-                        "error": (
-                            f"Indexer already running for profile "
-                            f"{repo['profile_name']}. Wait for it to finish."
-                        )
-                    },
-                    status_code=409,
-                )
+        if repo is None:
+            return JSONResponse({"error": "Repo not found."}, status_code=404)
+        if not repo.get("profile_name"):
+            return JSONResponse(
+                {"error": "Repo is not attached to a profile."},
+                status_code=400,
+            )
 
-            argv = ["index-repo", "--profile", repo["profile_name"]]
-            if body.no_embed:
-                argv += ["--no-embed"]
-            if body.full:
-                argv += ["--full"]
-            if body.gc:
-                argv += ["--gc"]
-            if max_workers_int != 1:
-                argv += ["--max-workers", str(max_workers_int)]
+        with get_pool().checkout() as conn:
+            running = indexer_is_running(conn, repo["profile_name"])
+        if running:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Indexer already running for profile "
+                        f"{repo['profile_name']}. Wait for it to finish."
+                    )
+                },
+                status_code=409,
+            )
 
-            job_id = spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
-            return JSONResponse({"ok": True, "job_id": job_id})
+        argv = ["index-repo", "--profile", repo["profile_name"]]
+        if body.no_embed:
+            argv += ["--no-embed"]
+        if body.full:
+            argv += ["--full"]
+        if body.gc:
+            argv += ["--gc"]
+        if max_workers_int != 1:
+            argv += ["--max-workers", str(max_workers_int)]
+
+        job_id = spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
+        return JSONResponse({"ok": True, "job_id": job_id})
     except Exception as e:
         _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
         return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True})
 
 
 @router.post("/repos/{repo_id}/reset-embed")
@@ -760,67 +749,6 @@ async def index_all(request: Request, body: IndexAllBody):
         return JSONResponse({"error": f"index-all failed: {e}"}, status_code=500)
 
 
-@router.get("/jobs/{job_id}/status")
-async def job_status(request: Request, job_id: int):
-    """Return JSON status of a single indexer job."""
-    try:
-        from src.db.pg import job_store
-
-        job = job_store().get_job(job_id)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    if job is None:
-        return JSONResponse({"error": "job not found"}, status_code=404)
-
-    pid = job.get("pid")
-    is_alive: bool | None = None
-    if pid is not None and job.get("status") == "running":
-        is_alive = _is_pid_alive(pid)
-
-    return JSONResponse(_json_safe({
-        "id": job["id"],
-        "profile_name": job["profile_name"],
-        "status": job["status"],
-        "pid": job["pid"],
-        "started_at": job["started_at"],
-        "finished_at": job["finished_at"],
-        "error_msg": job["error_msg"],
-        "created_at": job["created_at"],
-        "is_alive": is_alive,
-    }))
-
-
-@router.post("/jobs/{job_id}/reset")
-async def reset_stuck_job(request: Request, job_id: int):
-    """Force-mark a stuck running job as error when its PID is dead."""
-    try:
-        from src.db.pg import job_store
-
-        job = job_store().get_job(job_id)
-        if job is None:
-            return JSONResponse({"error": f"Job {job_id} not found."}, status_code=404)
-        elif job["status"] != "running":
-            return JSONResponse(
-                {"error": f"Job {job_id} is not in 'running' state (current: {job['status']})."},
-                status_code=409,
-            )
-        else:
-            pid = job.get("pid")
-            if pid is not None and _is_pid_alive(pid):
-                return JSONResponse(
-                    {"error": f"Job {job_id} process (PID {pid}) is still alive — cannot reset."},
-                    status_code=409,
-                )
-            else:
-                job_store().update_job(
-                    job_id,
-                    status="error",
-                    finished_at=_dt.datetime.now(_dt.UTC),
-                    error_msg="Reset by admin (process not found)",
-                )
-                return JSONResponse(
-                    {"ok": True, "message": f"Job {job_id} has been reset to error state."}
-                )
-    except Exception as e:
-        _logger.warning("Reset job %d failed: %s", job_id, e)
-        return JSONResponse({"error": f"Reset failed: {e}"}, status_code=500)
+# Job status and reset routes have been moved to src/web_ui/routes/jobs.py
+# (prefix="/api/jobs") per Phase 8 review — see that module for job_status
+# and reset_stuck_job handlers.

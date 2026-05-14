@@ -369,7 +369,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 ## Milestone 8 — "Public Wow"
 
-**Status:** Planning — revised 2026-05-12 (Astro unified decision). Không có code change.
+**Status:** Implementation complete (W0–W7), CI green, Phase 8 review applied (PR #86).
 
 **P1 production fix-ups (từ M7.5 verification 2026-05-14 — bắt buộc trước public launch):**
 
@@ -428,19 +428,19 @@ Session flow: `/admin/*` → Astro middleware → `GET /api/auth/verify` (FastAP
 - 2026-05-11: Astro + React Flow + baked JSON snapshot (`scripts/dump_graph_snippet.py`).
 - 2026-05-12: Astro `output: 'hybrid'` — unified cho cả landing (static) VÀ admin (SSR). FastAPI → pure JSON API (Jinja2 xóa). Tailwind CSS. `site/` dir (thay `landing/`).
 
-**Streams + sub-PRs (planned, not yet opened):**
-- [ ] **Stream A — FastAPI pure JSON API** (1 PR, ~3-4h): `feat/m8-fastapi-json-api` — xóa `src/web_ui/templates/` + Jinja2 dep, convert 26 endpoints → `/api/*` JSON, thêm `/api/auth/{login,logout,verify}`. ADR-0013.
-- [ ] **Stream B — Astro hybrid full** (4-5 PRs, ~4-5 days):
-  - [ ] `feat/m8-astro-scaffold` — `site/` dir, `output: 'hybrid'`, Tailwind, pnpm, tsconfig (3-4h).
-  - [ ] `feat/m8-graph-snapshot` — `scripts/dump_graph_snippet.py` + baked JSON (2-3h).
-  - [ ] `feat/m8-admin-pages` — 7 admin pages Astro SSR + AdminLayout + Astro middleware auth (2-3 days).
-  - [ ] `feat/m8-hero-animation` — landing + React Flow GraphAnimation island + cinematic frames (1-2 days).
-  - [ ] `feat/m8-landing-content` — pricing placeholder + docs pages (1 day). ADR-0012.
-- [ ] **Stream C — nginx integration** (1 PR, ~1-2h): `feat/m8-nginx-integration` — `/` + `/admin/*` → Astro :4321; `/api/` → FastAPI :8003; mcp/install/health unchanged. Gate: A + B merged.
-- [ ] **Stream D — systemd + CI** (1 PR, ~4-6h): `feat/m8-astro-service` — `odoo-semantic-astro.service`, CI `setup-node` + `pnpm build` + `pnpm run check`, browser test URL update.
+**Streams + sub-PRs (all shipped via PR #86 — feat/m8-wave-integration):**
+- [x] **Stream A — FastAPI pure JSON API**: `src/web_ui/` pure JSON routes, `/api/auth/{login,logout,verify}`. ADR-0015.
+- [x] **Stream B — Astro hybrid full**:
+  - [x] `site/` dir, `output: 'server'` (Astro 5.x), Tailwind, pnpm, tsconfig.
+  - [x] `scripts/dump_graph_snippet.py` + baked JSON (`site/public/graph-snapshot.json`).
+  - [x] 7 admin pages Astro SSR + AdminLayout + Astro middleware auth.
+  - [x] Landing + React Flow GraphAnimation island + cinematic frames.
+  - [x] Pricing placeholder + docs pages. ADR-0014.
+- [x] **Stream C — nginx integration**: `/` + `/admin/*` → Astro :4321; `/api/` → FastAPI :8003.
+- [x] **Stream D — systemd + CI**: `odoo-semantic-astro.service`, CI `setup-node` + `pnpm build` + `pnpm run check`.
 - [x] **Stream X — Web UI ↔ CLI parity** (done): 9 WIs đã merge — delete profile/repo, index options, reset-embed, index-all, index-core, seed-patterns, apply-preset.
 
-**Acceptance criteria:** `GET /` 200 Lighthouse ≥80/95/95; `GET /admin/login` 200 (Astro SSR); `POST /api/auth/login` 200 JSON + set-cookie; unauthenticated `GET /admin/` → redirect `/admin/login`; Jinja2 không còn trong `pyproject.toml`; nginx -t pass; `make lint + test` + `pnpm run check` green; ADR-0012 + ADR-0013 committed.
+**Acceptance criteria:** `GET /` 200 Lighthouse ≥80/95/95; `GET /admin/login` 200 (Astro SSR); `POST /api/auth/login` 200 JSON + set-cookie; unauthenticated `GET /admin/` → redirect `/admin/login`; Jinja2 không còn trong `pyproject.toml`; nginx -t pass; `make lint + test` + `pnpm run check` green; ADR-0014 + ADR-0015 committed.
 
 **SaaS roadmap:**
 - M9 "Auth Wow" — OAuth Google/GitHub, public signup, tenant API keys (zero migration debt).

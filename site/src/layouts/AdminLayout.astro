@@ -8,7 +8,7 @@ export interface Props {
 const { title = 'Admin — Odoo Semantic MCP' } = Astro.props;
 
 const navItems = [
-  { id: 'dashboard', label: 'Dashboard', href: '/admin/dashboard', icon: '⬛' },
+  { id: 'dashboard', label: 'Dashboard', href: '/admin/', icon: '⬛' },
   { id: 'repos', label: 'Repositories', href: '/admin/repos', icon: '📦' },
   { id: 'api-keys', label: 'API Keys', href: '/admin/api-keys', icon: '🔑' },
   { id: 'ssh-keys', label: 'SSH Keys', href: '/admin/ssh-keys', icon: '🔐' },
@@ -34,7 +34,12 @@ const currentPath = Astro.url.pathname;
       <!-- Navigation -->
       <nav class="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
+          // Dashboard (`/admin/`) is active only on the exact admin root, otherwise
+          // every /admin/* path would highlight Dashboard alongside the real section.
+          const isActive =
+            item.href === '/admin/'
+              ? currentPath === '/admin' || currentPath === '/admin/'
+              : currentPath.startsWith(item.href);
           return (
             <a
               href={item.href}

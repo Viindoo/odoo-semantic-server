@@ -1,12 +1,13 @@
 ---
 // Operations page — index-core, seed-patterns, apply-preset, jobs
 import AdminLayout from '../../layouts/AdminLayout.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
 let presets: string[] = [];
 try {
-  const res = await fetch('http://localhost:8003/api/operations/presets', {
+  const res = await fetch(`${FASTAPI_BASE}/api/operations/presets`, {
     headers: { cookie: cookieHeader },
   });
   if (res.ok) {
@@ -27,8 +28,12 @@ try {
     <p class="text-sm text-gray-500 mt-1">Long-running indexer commands — results tracked as jobs</p>
   </div>
 
-  <!-- Active job status (shown after spawn) -->
-  <div data-testid="active-job-container" hidden class="mb-6 bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 flex items-center gap-4">
+  <!-- Active job status (shown after spawn).
+       Tailwind `flex` overrides `[hidden] { display: none }` because utility
+       classes win on specificity, so we use the `hidden` utility class instead
+       of the HTML attribute — and the JS toggle below now adds/removes the
+       class rather than the attribute. -->
+  <div data-testid="active-job-container" class="hidden mb-6 bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 items-center gap-4">
     <div>
       <p class="text-sm font-semibold text-blue-800">Job started</p>
       <p data-testid="active-job-id" class="text-xs text-blue-600 mt-0.5"></p>
@@ -224,7 +229,13 @@ try {
     const idEl = document.querySelector('[data-testid="active-job-id"]') as HTMLElement | null;
     if (container && idEl) {
       idEl.textContent = jobId !== null ? `Job #${jobId} — ${label}` : label;
-      container.removeAttribute('hidden');
+      // Swap Tailwind's `hidden` (display:none) for `flex` (display:flex) so
+      // the previously-hidden container becomes visible with its intended
+      // layout. Reversing the action_-job_container fix above also requires
+      // this JS update (removeAttribute on the legacy `hidden` attribute is a
+      // no-op now that we use the class instead).
+      container.classList.remove('hidden');
+      container.classList.add('flex');
     }
     // Add to recent jobs list
     const list = document.querySelector('[data-testid="recent-jobs-list"]') as HTMLElement | null;

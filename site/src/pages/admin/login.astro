@@ -1,12 +1,13 @@
 ---
 // Login page — no auth required (middleware skips /admin/login)
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
 
 // Redirect already-authed users to dashboard
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 let alreadyAuthed = false;
 try {
-  const verify = await fetch('http://localhost:8003/api/auth/verify', {
+  const verify = await fetch(`${FASTAPI_BASE}/api/auth/verify`, {
     headers: { cookie: cookieHeader },
   });
   alreadyAuthed = verify.ok;

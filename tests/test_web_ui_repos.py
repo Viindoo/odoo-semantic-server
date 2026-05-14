@@ -209,6 +209,19 @@ class TestProfilesEndpoint:
         assert body.get("ok") is True
         mock_popen.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_index_repo_missing_returns_404(self, migrated_pg):
+        """index_repo must return 404 for unknown repo_id, not silently {"ok": True}."""
+        app = create_app()
+        with mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(
+                    "/api/repos/repos/999999/index", json={}
+                )
+        assert resp.status_code == 404
+        assert "not found" in resp.json().get("error", "").lower()
+        mock_popen.assert_not_called()
+
 
 class TestSshCloneFlow:
     """W4-4: SSH URL detection → cloner Popen + clone-status polling endpoints."""
@@ -395,7 +408,7 @@ class TestSshCloneFlow:
 
 
 class TestJobIntegration:
-    """WI-F3: job record creation + GET /api/repos/jobs/{id}/status endpoint."""
+    """WI-F3: job record creation + GET /api/jobs/{id}/status endpoint."""
 
     @pytest.fixture(autouse=True)
     def _cleanup_jobs(self, migrated_pg):
@@ -491,14 +504,14 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_get_job_status_existing(self, migrated_pg):
-        """GET /api/repos/jobs/{id}/status with existing job → 200 + correct JSON shape."""
+        """GET /api/jobs/{id}/status with existing job → 200 + correct JSON shape."""
         from src.db.pg import job_store
 
         job_id = job_store().create_job("p_status")
 
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get(f"/api/repos/jobs/{job_id}/status")
+            resp = await client.get(f"/api/jobs/{job_id}/status")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -513,10 +526,10 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_get_job_status_missing(self, migrated_pg):
-        """GET /api/repos/jobs/999999/status → 404."""
+        """GET /api/jobs/999999/status → 404."""
         app = create_app()
         async with _async_client(app) as client:
-            resp = await client.get("/api/repos/jobs/999999/status")
+            resp = await client.get("/api/jobs/999999/status")
 
         assert resp.status_code == 404
         data = resp.json()

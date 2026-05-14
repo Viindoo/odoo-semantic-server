@@ -10,11 +10,9 @@ export default defineConfig({
   adapter: node({ mode: 'standalone' }),
   integrations: [react(), tailwind()],
   server: { host: '127.0.0.1', port: 4321 },
-  vite: {
-    server: {
-      proxy: {
-        '/api': 'http://localhost:8003',
-      },
-    },
-  },
+  // /api/* is proxied to FastAPI by an SSR endpoint at src/pages/api/[...path].ts
+  // (works in pnpm dev AND pnpm preview). Vite's server.proxy was removed because
+  // it is dev-only — pnpm preview silently dropped it and admin browser tests 404'd
+  // on every client-side fetch('/api/...'). In production nginx handles /api/* before
+  // Astro sees it, so the SSR proxy is dead code there but harmless.
 });

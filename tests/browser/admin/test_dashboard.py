@@ -6,6 +6,7 @@ URL prefix: /admin/ (was / in old Jinja2 UI).
 Selectors: data-testid (was .stat .number, nav a:has-text, etc.).
 """
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = [pytest.mark.browser, pytest.mark.postgres]
 
@@ -19,16 +20,16 @@ class TestDashboard:
         page.wait_for_load_state("load")
 
         # Stats cards (data-testid from StatsCard component)
-        assert page.get_by_test_id("stat-profiles").is_visible()
-        assert page.get_by_test_id("stat-repos").is_visible()
-        assert page.get_by_test_id("stat-api-keys").is_visible()
+        expect(page.get_by_test_id("stat-profiles")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("stat-repos")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("stat-api-keys")).to_be_visible(timeout=5000)
 
     def test_empty_state_profiles_visible(self, astro_server, clean_browser, page):
         """Empty DB → profiles-empty-state element visible on dashboard."""
         page.goto(f"{astro_server}{ADMIN_BASE}/")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("profiles-empty-state").is_visible()
+        expect(page.get_by_test_id("profiles-empty-state")).to_be_visible(timeout=5000)
 
     def test_empty_state_has_link_to_repos(self, astro_server, clean_browser, page):
         """Dashboard empty state includes a link to /admin/repos."""
@@ -36,7 +37,7 @@ class TestDashboard:
         page.wait_for_load_state("load")
 
         # go-to-repos-link or profiles-empty-state contains a repos link
-        assert page.get_by_test_id("go-to-repos-link").is_visible()
+        expect(page.get_by_test_id("go-to-repos-link")).to_be_visible(timeout=5000)
 
 
 class TestNavigation:
@@ -66,10 +67,10 @@ class TestNavigation:
         page.goto(f"{astro_server}{ADMIN_BASE}/")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("quicklink-repositories").is_visible()
-        assert page.get_by_test_id("quicklink-api-keys").is_visible()
-        assert page.get_by_test_id("quicklink-ssh-keys").is_visible()
-        assert page.get_by_test_id("quicklink-operations").is_visible()
+        expect(page.get_by_test_id("quicklink-repositories")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("quicklink-api-keys")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("quicklink-ssh-keys")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("quicklink-operations")).to_be_visible(timeout=5000)
 
     def test_operations_nav_link_reaches_operations_page(
         self, astro_server, clean_browser, page
@@ -87,4 +88,27 @@ class TestNavigation:
         page.goto(f"{astro_server}{ADMIN_BASE}/")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("nav-logout").is_visible()
+        expect(page.get_by_test_id("nav-logout")).to_be_visible(timeout=5000)
+
+
+class TestAdminRouting:
+    def test_unknown_admin_subpath_redirects_or_404(
+        self, astro_server, clean_browser, page
+    ):
+        """GET /admin/nonexistent → 404 or auth redirect to /admin/login.
+
+        Moved here from tests/browser/public/test_404.py because the Astro
+        middleware calls /api/auth/verify on every /admin/* path, so this
+        test needs FastAPI running (admin job has it, public job does not).
+        """
+        response = page.goto(
+            f"{astro_server}{ADMIN_BASE}/nonexistent-page-m8-w7",
+            wait_until="load",
+        )
+        final_url = page.url
+        assert response is not None
+        assert response.status in (200, 302, 404) and (
+            response.status == 404
+            or "/admin/login" in final_url
+            or "/login" in final_url
+        )

@@ -6,6 +6,7 @@ URL: /admin/ssh-keys (was /ssh-keys).
 Selectors: data-testid (was #generate-form, #import-form, text=...).
 """
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = [pytest.mark.browser, pytest.mark.postgres]
 
@@ -18,37 +19,41 @@ class TestSshKeysPage:
         page.goto(f"{astro_server}{SSH_KEYS_URL}")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("ssh-keys-empty-state").is_visible()
+        expect(page.get_by_test_id("ssh-keys-empty-state")).to_be_visible(timeout=5000)
 
     def test_generate_form_visible(self, astro_server, clean_browser, page):
         """GET /admin/ssh-keys → generate form and button visible."""
         page.goto(f"{astro_server}{SSH_KEYS_URL}")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("generate-ssh-key-form").is_visible()
-        assert page.get_by_test_id("ssh-key-name-input").is_visible()
-        assert page.get_by_test_id("generate-ssh-key-button").is_visible()
+        expect(page.get_by_test_id("generate-ssh-key-form")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("ssh-key-name-input")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("generate-ssh-key-button")).to_be_visible(timeout=5000)
 
     def test_import_form_visible(self, astro_server, clean_browser, page):
         """GET /admin/ssh-keys → import form visible."""
         page.goto(f"{astro_server}{SSH_KEYS_URL}")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("import-ssh-key-form").is_visible()
-        assert page.get_by_test_id("ssh-import-name-input").is_visible()
-        assert page.get_by_test_id("ssh-import-pem-input").is_visible()
-        assert page.get_by_test_id("import-ssh-key-button").is_visible()
+        expect(page.get_by_test_id("import-ssh-key-form")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("ssh-import-name-input")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("ssh-import-pem-input")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("import-ssh-key-button")).to_be_visible(timeout=5000)
 
     def test_generate_key_shows_public_key_banner(self, astro_server, clean_browser, page):
-        """Fill name, click generate → new-pubkey-banner visible with ssh-ed25519."""
+        """Fill name, click generate → new-pubkey-banner visible with ssh-ed25519.
+
+        The generate handler is slow on CI (Ed25519 keypair + Fernet encryption
+        + DB INSERT + 800ms reload timer). Use expect's auto-wait with a
+        generous timeout instead of a fixed sleep that races the network.
+        """
         page.goto(f"{astro_server}{SSH_KEYS_URL}")
         page.wait_for_load_state("load")
 
         page.get_by_test_id("ssh-key-name-input").fill("test-ed25519-br")
         page.get_by_test_id("generate-ssh-key-button").click()
-        page.wait_for_timeout(800)
 
-        assert page.get_by_test_id("new-pubkey-banner").is_visible()
+        expect(page.get_by_test_id("new-pubkey-banner")).to_be_visible(timeout=10000)
         pubkey_text = page.get_by_test_id("new-pubkey-value").inner_text()
         assert "ssh-ed25519" in pubkey_text
 
@@ -59,13 +64,14 @@ class TestSshKeysPage:
 
         page.get_by_test_id("ssh-key-name-input").fill("my-deploy-key-br")
         page.get_by_test_id("generate-ssh-key-button").click()
-        page.wait_for_timeout(800)
+        # Wait for the banner so we know save_ssh_key succeeded before reloading.
+        expect(page.get_by_test_id("new-pubkey-banner")).to_be_visible(timeout=10000)
 
         # Reload to get clean list view (post-create shows banner, GET shows table)
         page.goto(f"{astro_server}{SSH_KEYS_URL}")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("ssh-key-row").is_visible()
+        expect(page.get_by_test_id("ssh-key-row").first).to_be_visible(timeout=5000)
 
     def test_import_existing_keypair_shows_pubkey_banner(
         self, astro_server, clean_browser, page
@@ -91,9 +97,8 @@ class TestSshKeysPage:
         page.get_by_test_id("ssh-import-name-input").fill("imported-ed25519-br")
         page.get_by_test_id("ssh-import-pem-input").fill(pem)
         page.get_by_test_id("import-ssh-key-button").click()
-        page.wait_for_timeout(800)
 
-        assert page.get_by_test_id("new-pubkey-banner").is_visible()
+        expect(page.get_by_test_id("new-pubkey-banner")).to_be_visible(timeout=10000)
         pubkey_text = page.get_by_test_id("new-pubkey-value").inner_text()
         assert "ssh-ed25519" in pubkey_text
 
@@ -104,16 +109,14 @@ class TestSshKeysPage:
 
         page.get_by_test_id("ssh-key-name-input").fill("to-delete-key-br")
         page.get_by_test_id("generate-ssh-key-button").click()
-        page.wait_for_timeout(800)
+        expect(page.get_by_test_id("new-pubkey-banner")).to_be_visible(timeout=10000)
 
         # Reload to get table view
         page.goto(f"{astro_server}{SSH_KEYS_URL}")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("ssh-key-row").is_visible()
+        expect(page.get_by_test_id("ssh-key-row").first).to_be_visible(timeout=5000)
 
         page.on("dialog", lambda d: d.accept())
         page.locator('[data-testid^="delete-ssh-key-button-"]').first.click()
-        page.wait_for_timeout(800)
-
-        assert not page.get_by_test_id("ssh-key-row").is_visible()
+        expect(page.get_by_test_id("ssh-key-row")).not_to_be_visible(timeout=8000)

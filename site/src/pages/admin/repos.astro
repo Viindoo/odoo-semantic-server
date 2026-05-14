@@ -2,13 +2,14 @@
 // Repos & Profiles management page — SSR fetch from FastAPI W1
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import RepoTable from '../../components/RepoTable.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
 const [profilesRes, reposRes, sshKeysRes] = await Promise.allSettled([
-  fetch('http://localhost:8003/api/repos/profiles', { headers: { cookie: cookieHeader } }),
-  fetch('http://localhost:8003/api/repos/repos', { headers: { cookie: cookieHeader } }),
-  fetch('http://localhost:8003/api/repos/ssh-keys-list', { headers: { cookie: cookieHeader } }),
+  fetch(`${FASTAPI_BASE}/api/repos/profiles`, { headers: { cookie: cookieHeader } }),
+  fetch(`${FASTAPI_BASE}/api/repos/repos`, { headers: { cookie: cookieHeader } }),
+  fetch(`${FASTAPI_BASE}/api/repos/ssh-keys-list`, { headers: { cookie: cookieHeader } }),
 ]);
 
 let profilesData: { profiles: unknown[]; all_job_id?: number | null; all_job_status?: string | null; error?: string | null } = { profiles: [] };
@@ -165,7 +166,14 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     btn.addEventListener('click', async () => {
       const profileId = (btn as HTMLElement).dataset.profileId;
       if (!confirm('Delete this profile and ALL its repos? This cannot be undone.')) return;
-      const res = await fetch(`/api/repos/profiles/${profileId}`, { method: 'DELETE' });
+      // Content-Type: application/json is required to bypass Astro's default
+      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
+      // form-like content types (none, urlencoded, multipart, text/plain) as
+      // "Cross-site form submission". JSON requests are exempt from that check.
+      const res = await fetch(`/api/repos/profiles/${profileId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         showFlash('Profile deleted.', 'success');

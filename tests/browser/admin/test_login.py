@@ -7,8 +7,15 @@ Tests:
   3. Unauthenticated access to /admin redirects to /admin/login
 """
 import pytest
+from playwright.sync_api import expect
 
-pytestmark = [pytest.mark.browser, pytest.mark.postgres]
+pytestmark = [
+    pytest.mark.browser,
+    pytest.mark.postgres,
+    # Every test in this file exercises the pre-auth flow; skip the autouse
+    # admin-login fixture so the browser context starts with no session cookie.
+    pytest.mark.unauthenticated,
+]
 
 
 class TestLoginPage:
@@ -17,10 +24,10 @@ class TestLoginPage:
         page.goto(f"{astro_server}/admin/login")
         page.wait_for_load_state("load")
 
-        assert page.get_by_test_id("login-form").is_visible()
-        assert page.get_by_test_id("login-username-input").is_visible()
-        assert page.get_by_test_id("login-password-input").is_visible()
-        assert page.get_by_test_id("login-submit-button").is_visible()
+        expect(page.get_by_test_id("login-form")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("login-username-input")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("login-password-input")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("login-submit-button")).to_be_visible(timeout=5000)
 
     def test_invalid_credentials_shows_error(self, astro_server, page):
         """Submit wrong credentials → inline error visible, no redirect to /admin."""
@@ -36,7 +43,7 @@ class TestLoginPage:
 
         # Error element should become visible (hidden attr removed)
         error_el = page.get_by_test_id("login-error")
-        assert error_el.is_visible()
+        expect(error_el).to_be_visible(timeout=5000)
         # Should NOT have navigated away from login
         assert "/admin/login" in page.url or "/login" in page.url
 

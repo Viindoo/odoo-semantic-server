@@ -1,6 +1,7 @@
 ---
 // API Keys management page — SSR fetch from FastAPI W1
 import AdminLayout from '../../layouts/AdminLayout.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
@@ -10,7 +11,7 @@ let keysData: {
 } = { keys: [] };
 
 try {
-  const res = await fetch('http://localhost:8003/api/api-keys', {
+  const res = await fetch(`${FASTAPI_BASE}/api/api-keys`, {
     headers: { cookie: cookieHeader },
   });
   if (res.ok) keysData = await res.json();
@@ -122,9 +123,12 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
     )}
   </div>
 
-  <!-- Inactive keys (collapsed by default) -->
+  <!-- Inactive keys. Why: `open` by default so admins see deactivated keys
+       without an extra click, and so Playwright's `to_be_visible()` resolves
+       on `api-key-row-inactive` (a closed <details> CSS-hides its children
+       and Playwright treats them as not visible). -->
   {inactiveKeys.length > 0 && (
-    <details class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <details open class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <summary class="px-5 py-4 cursor-pointer text-sm font-medium text-gray-500 hover:text-gray-800 list-none flex items-center gap-2">
         <span>▶ Deactivated Keys ({inactiveKeys.length})</span>
       </summary>
@@ -193,7 +197,14 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
     btn.addEventListener('click', async () => {
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Deactivate this API key? All tools using it will lose access.')) return;
-      const res = await fetch(`/api/api-keys/${keyId}/deactivate`, { method: 'POST' });
+      // Content-Type: application/json is required to bypass Astro's default
+      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
+      // form-like content types (none, urlencoded, multipart, text/plain) as
+      // "Cross-site form submission". JSON requests are exempt from that check.
+      const res = await fetch(`/api/api-keys/${keyId}/deactivate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
       if (res.ok) {
         showFlash('API key deactivated.', 'success');
         setTimeout(() => location.reload(), 800);

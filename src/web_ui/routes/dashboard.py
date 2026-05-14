@@ -4,6 +4,8 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
+from src.web_ui._json import _json_safe
+
 router = APIRouter(prefix="/api/dashboard")
 
 
@@ -46,10 +48,10 @@ async def dashboard_stats(request: Request):
     except Exception as e:
         error = str(e)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "profiles": profiles,
         "api_key_count": api_key_count,
         "ssh_key_count": ssh_key_count,
         "embeddings_total": embeddings_total,
         "error": error,
-    })
+    }))

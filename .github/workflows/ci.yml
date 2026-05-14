@@ -103,12 +103,9 @@ jobs:
 
   browser-tests-admin:
     # Admin browser tests — require Postgres + FastAPI api_server + Astro preview
-    # Time budget: ≤6 min
+    # Time budget: ≤20 min (70+ tests × ~15s each with Playwright)
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.head_commit.modified, 'site/') ||
-      contains(github.event.head_commit.modified, 'src/web_ui/') ||
-      contains(github.event.head_commit.modified, 'tests/browser/')
+    timeout-minutes: 25
     env:
       PG_PASSWORD: password
       PG_TEST_DSN: postgresql://odoo_semantic:password@127.0.0.1:5432/odoo_semantic
@@ -156,16 +153,14 @@ jobs:
     # Public browser tests — require only Astro preview (no Postgres, no FastAPI)
     # Time budget: ≤2 min
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.head_commit.modified, 'site/') ||
-      contains(github.event.head_commit.modified, 'tests/browser/')
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pytest pytest-playwright
+      - run: pip install -e ".[dev]"
       - run: playwright install chromium --with-deps
 
       - name: Setup pnpm

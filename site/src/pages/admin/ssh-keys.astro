@@ -1,6 +1,7 @@
 ---
 // SSH Keys management page — SSR fetch from FastAPI W1
 import AdminLayout from '../../layouts/AdminLayout.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
@@ -11,7 +12,7 @@ let keysData: {
 } = { keys: [] };
 
 try {
-  const res = await fetch('http://localhost:8003/api/ssh-keys', {
+  const res = await fetch(`${FASTAPI_BASE}/api/ssh-keys`, {
     headers: { cookie: cookieHeader },
   });
   if (res.ok) keysData = await res.json();
@@ -238,7 +239,14 @@ try {
     btn.addEventListener('click', async () => {
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Delete this SSH key pair? Any repos using it will lose access.')) return;
-      const res = await fetch(`/api/ssh-keys/${keyId}`, { method: 'DELETE' });
+      // Content-Type: application/json is required to bypass Astro's default
+      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
+      // form-like content types (none, urlencoded, multipart, text/plain) as
+      // "Cross-site form submission". JSON requests are exempt from that check.
+      const res = await fetch(`/api/ssh-keys/${keyId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
       if (res.ok) {
         showFlash('SSH key deleted.', 'success');
         setTimeout(() => location.reload(), 800);

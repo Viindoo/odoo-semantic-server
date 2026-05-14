@@ -105,6 +105,12 @@ def create_app() -> FastAPI:
     app.include_router(api_keys.router)
     app.include_router(ssh_keys.router)
 
+    # Jobs router extracted from repos.py per Phase 8 review:
+    # client polls /api/jobs/{id}/status but repos prefix was /api/repos.
+    from src.web_ui.routes import jobs
+
+    app.include_router(jobs.router)
+
     from src.web_ui.routes import feedback
 
     app.include_router(feedback.router)

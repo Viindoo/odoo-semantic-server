@@ -6,6 +6,7 @@ export interface Repo {
   local_path: string;
   odoo_version?: string;
   clone_status?: string;
+  head_sha?: string | null;
   last_job?: { id: number; status: string; error_msg?: string } | null;
 }
 
@@ -119,12 +120,14 @@ const cloneStatusColor: Record<string, string> = {
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
   <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
     <h2 class="text-base font-semibold text-gray-800">Repositories ({repos.length})</h2>
-    <button
-      data-testid="index-all-button"
-      class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg transition-colors"
-    >
-      Index All
-    </button>
+    {repos.length > 0 && (
+      <button
+        data-testid="index-all-button"
+        class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg transition-colors"
+      >
+        Index All
+      </button>
+    )}
   </div>
 
   {repos.length === 0 ? (
@@ -178,13 +181,15 @@ const cloneStatusColor: Record<string, string> = {
                     >
                       Index
                     </button>
-                    <button
-                      data-testid={`reset-embed-button-${repo.id}`}
-                      data-repo-id={String(repo.id)}
-                      class="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg transition-colors reset-embed-btn"
-                    >
-                      Reset
-                    </button>
+                    {repo.head_sha && (
+                      <button
+                        data-testid={`reset-embed-button-${repo.id}`}
+                        data-repo-id={String(repo.id)}
+                        class="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg transition-colors reset-embed-btn"
+                      >
+                        Reset
+                      </button>
+                    )}
                     <button
                       data-testid={`delete-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
@@ -259,7 +264,11 @@ const cloneStatusColor: Record<string, string> = {
     btn.addEventListener('click', async () => {
       const repoId = (btn as HTMLElement).dataset.repoId;
       if (!confirm('Reset embeddings and re-index this repo?')) return;
-      const res = await fetch(`/api/repos/repos/${repoId}/reset-embed`, { method: 'POST' });
+      // Content-Type required to bypass Astro security.checkOrigin (see repos.astro).
+      const res = await fetch(`/api/repos/repos/${repoId}/reset-embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         showFlash(`Reset started (job #${data.job_id}).`, 'success');
@@ -274,7 +283,11 @@ const cloneStatusColor: Record<string, string> = {
     btn.addEventListener('click', async () => {
       const repoId = (btn as HTMLElement).dataset.repoId;
       if (!confirm('Delete this repository? This cannot be undone.')) return;
-      const res = await fetch(`/api/repos/repos/${repoId}`, { method: 'DELETE' });
+      // Content-Type required to bypass Astro security.checkOrigin (see repos.astro).
+      const res = await fetch(`/api/repos/repos/${repoId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         showFlash('Repository deleted.', 'success');

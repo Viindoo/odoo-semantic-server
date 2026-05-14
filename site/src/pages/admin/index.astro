@@ -2,6 +2,7 @@
 // Admin Dashboard — SSR fetch stats from FastAPI W1
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import StatsCard from '../../components/StatsCard.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
@@ -20,7 +21,7 @@ let stats: {
 };
 
 try {
-  const res = await fetch('http://localhost:8003/api/dashboard/stats', {
+  const res = await fetch(`${FASTAPI_BASE}/api/dashboard/stats`, {
     headers: { cookie: cookieHeader },
   });
   if (res.ok) {

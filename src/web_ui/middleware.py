@@ -11,20 +11,27 @@ Exempt paths (no auth required):
     /api/auth/logout    POST
     /api/auth/verify    GET
     /health             Health probe (if present on this port)
+    /openapi.json       FastAPI schema (intentionally public — used by
+                        tests/browser/conftest.py api_server fixture for
+                        readiness polling, and by external API consumers)
+    /docs, /redoc       Interactive docs render the same schema
 """
 
-import os
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from src.web_ui.auth import SESSION_TTL_SECONDS
+from src.web_ui.auth import SESSION_TTL_SECONDS, is_test_bypass_active
 
-# Paths exempt from authentication
+# Paths exempt from authentication. /openapi.json is unauthenticated by design
+# (FastAPI's schema is meant to be introspected); /docs and /redoc are the
+# matching interactive UIs. Keeping these out of the auth scope is required for
+# the api_server fixture in tests/browser/conftest.py to poll readiness — the
+# wait would otherwise see 401 and time out before the subprocess is healthy.
 _EXEMPT_PREFIXES = ("/api/auth/",)
-_EXEMPT_EXACT = {"/health"}
+_EXEMPT_EXACT = {"/health", "/openapi.json", "/docs", "/redoc"}
 
 
 def _is_exempt(path: str) -> bool:
@@ -58,11 +65,8 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         # Test-only bypass: BOTH env vars must be set so a misconfigured
         # production deployment (or copy-pasted .env) cannot accidentally
-        # disable auth. PYTEST_CURRENT_TEST is set by pytest itself.
-        if (
-            os.environ.get("WEBUI_AUTH_DISABLED") == "1"
-            and os.environ.get("PYTEST_CURRENT_TEST")
-        ):
+        # disable auth. See auth.is_test_bypass_active() for rationale.
+        if is_test_bypass_active():
             return await call_next(request)
         if _is_exempt(request.url.path):
             return await call_next(request)

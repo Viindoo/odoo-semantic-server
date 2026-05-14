@@ -29,7 +29,7 @@ Adopt **Astro 5.x** as the unified frontend runtime for both the public landing 
 
 | Concern | Decision | Rationale |
 |---------|----------|-----------|
-| Output mode | `output: 'server'` (SSR by default) | Lets per-page `export const prerender = true` opt static pages out of SSR while admin pages stay dynamic |
+| Output mode | `output: 'server'` (SSR by default; Astro 5.x merged `'hybrid'` into `'server'`) | Lets per-page `export const prerender = true` opt static pages out of SSR while admin pages stay dynamic |
 | Static opt-out | `export const prerender = true` per file | Landing pages (M5) are static; admin pages are always dynamic (SSR fetch from FastAPI) |
 | Adapter | `@astrojs/node` in `standalone` mode | Single Node process; compatible with systemd + Caddy reverse proxy; no serverless runtime coupling |
 | Package manager | `pnpm` | Consistent with Viindoo toolchain; workspace support for future multi-package layout |
@@ -40,7 +40,7 @@ Adopt **Astro 5.x** as the unified frontend runtime for both the public landing 
 
 ### Baked JSON snapshot for hero
 
-The hero section will use a static JSON snapshot of representative query results (committed to `site/src/data/hero-snapshot.json`) rather than a live `resolve_model` call. This avoids exposing a public Neo4j read endpoint and keeps the landing page fully prerenderable.
+The hero section will use a static JSON snapshot of representative query results (committed to `site/public/graph-snapshot.json`, served as-is without bundler indirection) rather than a live `resolve_model` call. This avoids exposing a public Neo4j read endpoint and keeps the landing page fully prerenderable.
 
 ---
 
