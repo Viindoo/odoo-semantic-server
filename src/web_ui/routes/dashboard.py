@@ -1,17 +1,18 @@
 # src/web_ui/routes/dashboard.py
-"""Dashboard route — overview of profiles, repos, and system status."""
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+"""Dashboard route — overview of profiles, repos, and system status (M8 W1 pure JSON)."""
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from starlette.requests import Request
 
-router = APIRouter()
+router = APIRouter(prefix="/api/dashboard")
 
 
 def _count_embeddings() -> int | None:
     """Return total row count from the embeddings table, or None on any error.
 
     Handles the case where pgvector is absent (table doesn't exist yet) or
-    the connection is unavailable — returns None so the template can show
-    'N/A' instead of crashing the dashboard.
+    the connection is unavailable — returns None so the response can show
+    null instead of crashing the dashboard.
     """
     try:
         from src.db.pg import get_pool
@@ -23,11 +24,9 @@ def _count_embeddings() -> int | None:
         return None
 
 
-@router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    """Render dashboard with profiles + repos overview."""
-    templates = request.app.state.templates
-
+@router.get("/stats")
+async def dashboard_stats(request: Request):
+    """Return dashboard stats as JSON: profiles, repo counts, api_key_count, ssh_key_count."""
     profiles = []
     api_key_count = 0
     ssh_key_count = 0
@@ -47,14 +46,10 @@ async def dashboard(request: Request):
     except Exception as e:
         error = str(e)
 
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "profiles": profiles,
-            "api_key_count": api_key_count,
-            "ssh_key_count": ssh_key_count,
-            "embeddings_total": embeddings_total,
-            "error": error,
-        },
-    )
+    return JSONResponse({
+        "profiles": profiles,
+        "api_key_count": api_key_count,
+        "ssh_key_count": ssh_key_count,
+        "embeddings_total": embeddings_total,
+        "error": error,
+    })

@@ -1,16 +1,16 @@
 # src/web_ui/middleware.py
-"""Auth-required middleware for Web UI (M7 W16).
+"""Auth-required middleware for Web UI (M8 W1 — pure JSON API).
 
 AuthRequiredMiddleware:
     Every request not matching the exempt paths below must have a valid
-    session cookie (set by POST /login) whose "session_at" timestamp is
+    session cookie (set by POST /api/auth/login) whose "session_at" timestamp is
     within SESSION_TTL_SECONDS.
 
 Exempt paths (no auth required):
-    /login          GET + POST
-    /logout         GET
-    /static/*       Static assets
-    /health         Health probe (if present on this port)
+    /api/auth/login     POST
+    /api/auth/logout    POST
+    /api/auth/verify    GET
+    /health             Health probe (if present on this port)
 """
 
 import os
@@ -18,13 +18,13 @@ import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import JSONResponse, Response
 
 from src.web_ui.auth import SESSION_TTL_SECONDS
 
 # Paths exempt from authentication
-_EXEMPT_PREFIXES = ("/static/",)
-_EXEMPT_EXACT = {"/login", "/logout", "/health"}
+_EXEMPT_PREFIXES = ("/api/auth/",)
+_EXEMPT_EXACT = {"/health"}
 
 
 def _is_exempt(path: str) -> bool:
@@ -53,7 +53,7 @@ def _session_valid(request: Request) -> bool:
 
 
 class AuthRequiredMiddleware(BaseHTTPMiddleware):
-    """Redirect unauthenticated requests to /login (except exempt paths)."""
+    """Return 401 JSON for unauthenticated requests to non-exempt paths."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         # Test-only bypass: BOTH env vars must be set so a misconfigured
@@ -70,13 +70,7 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
         if _session_valid(request):
             return await call_next(request)
 
-        # Preserve original path as ?next= for post-login redirect
-        next_path = request.url.path
-        if request.url.query:
-            next_path = f"{next_path}?{request.url.query}"
-        from urllib.parse import quote_plus
-
-        return RedirectResponse(
-            url=f"/login?next={quote_plus(next_path)}",
-            status_code=302,
+        return JSONResponse(
+            {"error": "not_authenticated", "detail": "Valid session required"},
+            status_code=401,
         )

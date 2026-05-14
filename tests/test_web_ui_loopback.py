@@ -21,7 +21,7 @@ class TestLoopbackMiddleware:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_app), base_url="http://test"
         ) as client:
-            resp = await client.get("/")
+            resp = await client.get("/api/auth/verify")
         assert resp.status_code != 403, "loopback request must not be rejected"
 
     @pytest.mark.asyncio
@@ -33,7 +33,7 @@ class TestLoopbackMiddleware:
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test"
         ) as client:
-            resp = await client.get("/")
+            resp = await client.get("/api/auth/verify")
         assert resp.status_code == 403
         assert resp.json()["error"] == "forbidden"
 
@@ -46,5 +46,5 @@ class TestLoopbackMiddleware:
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test"
         ) as client:
-            resp = await client.get("/")
+            resp = await client.get("/api/auth/verify")
         assert resp.status_code != 403, "IPv6 loopback must not be rejected"
