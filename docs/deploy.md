@@ -1168,6 +1168,8 @@ Daily automated backup cho cả Neo4j + PostgreSQL. Cron schedule + retention po
 
 §2.4 trong file này có snippet backup thủ công cho ad-hoc use; DR runbook là canonical cho production cron + restore.
 
+→ **[`docs/deploy/m7.5-production-fixes.md`](deploy/m7.5-production-fixes.md)** — Hotfix runbook cho 5 P1 issues phát hiện M7.5 verification (2026-05-14): HSTS header, Ollama SSL, CoreSymbol re-index, CLICommand re-index, Web UI 404.
+
 ---
 
 ## 14. Log Rotation
