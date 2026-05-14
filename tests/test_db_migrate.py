@@ -19,7 +19,7 @@ def test_migrate_creates_profiles_table(clean_pg):
             WHERE table_name = 'profiles' ORDER BY ordinal_position
         """)
         cols = [r[0] for r in cur.fetchall()]
-    assert cols == ["id", "name", "odoo_version", "description", "created_at"]
+    assert cols == ["id", "name", "odoo_version", "description", "created_at", "parent_profile_id"]
 
 
 def test_migrate_creates_repos_table(clean_pg):
