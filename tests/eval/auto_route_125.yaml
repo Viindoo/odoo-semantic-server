@@ -1,0 +1,662 @@
+# Auto-route pilot golden set (M7.5 T4.3)
+# 5 personas × 25 queries = 125 total
+# Each query maps to ONE expected skill — chosen because TRIGGER strings of that skill match strongly
+# Used for: hit-rate measurement on Claude Code skill auto-routing
+# Generated: 2026-05-14
+#
+# Language distribution: ~50% Vietnamese (vi), ~50% English (en)
+# Distribution per persona:
+#   CEO (25): 13 → odoo-risk-overview, 12 → odoo-customization-inventory
+#   Developer (25): 9 → odoo-override-finder, 8 → odoo-deprecation-audit, 8 → odoo-version-diff
+#   Consultant (25): 13 → odoo-feature-check, 12 → odoo-gap-analysis
+#   Marketer (25): 13 → odoo-feature-highlights, 12 → odoo-addon-diff
+#   Sales (25): 13 → odoo-capability-proof, 12 → odoo-objection-handler
+
+queries:
+
+  # ─── CEO: odoo-risk-overview (13 queries) ───────────────────────────────────
+
+  - persona: ceo
+    query: "Cho tao tổng quan rủi ro customization Odoo hiện tại"
+    expected_skill: odoo-risk-overview
+    lang: vi
+
+  - persona: ceo
+    query: "give me a risk overview of our Odoo customization"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "business risk report for our Odoo upgrade from v16 to v17"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "what breaks if we modify the amount_total field system-wide"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "báo cáo rủi ro nâng cấp Odoo cho ban giám đốc"
+    expected_skill: odoo-risk-overview
+    lang: vi
+
+  - persona: ceo
+    query: "how risky is it to upgrade our Odoo system right now"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "chúng ta có bao nhiêu rủi ro khi nâng cấp Odoo từ 16 lên 17"
+    expected_skill: odoo-risk-overview
+    lang: vi
+
+  - persona: ceo
+    query: "đánh giá rủi ro trước khi thay đổi hệ thống Odoo"
+    expected_skill: odoo-risk-overview
+    lang: vi
+
+  - persona: ceo
+    query: "what is the upgrade risk for our current Odoo system"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "rủi ro customization Odoo của chúng ta đang ở mức nào"
+    expected_skill: odoo-risk-overview
+    lang: vi
+
+  - persona: ceo
+    query: "give me a health check of our Odoo customizations and their upgrade risk"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "how much technical debt and upgrade risk do we have in our Odoo system"
+    expected_skill: odoo-risk-overview
+    lang: en
+
+  - persona: ceo
+    query: "tổng quan rủi ro kỹ thuật của hệ thống Odoo trước khi nâng cấp"
+    expected_skill: odoo-risk-overview
+    lang: vi
+
+  # ─── CEO: odoo-customization-inventory (12 queries) ─────────────────────────
+
+  - persona: ceo
+    query: "List all our Odoo customizations for upgrade audit"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  - persona: ceo
+    query: "inventory of custom modules we have built on top of Odoo"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  - persona: ceo
+    query: "liệt kê tất cả customization Odoo của chúng ta"
+    expected_skill: odoo-customization-inventory
+    lang: vi
+
+  - persona: ceo
+    query: "bản kiểm kê module tùy chỉnh trước khi nâng cấp hệ thống"
+    expected_skill: odoo-customization-inventory
+    lang: vi
+
+  - persona: ceo
+    query: "chúng ta đang custom những gì trên nền Odoo"
+    expected_skill: odoo-customization-inventory
+    lang: vi
+
+  - persona: ceo
+    query: "what have we built on top of standard Odoo over the years"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  - persona: ceo
+    query: "scope of customization in our Odoo installation before the audit"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  - persona: ceo
+    query: "here is a list of our module names, are these standard or custom modules"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  - persona: ceo
+    query: "kiểm kê toàn bộ module custom của công ty để chuẩn bị upgrade"
+    expected_skill: odoo-customization-inventory
+    lang: vi
+
+  - persona: ceo
+    query: "what modules has our team built versus standard Odoo"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  - persona: ceo
+    query: "danh sách tất cả module tùy chỉnh, phân loại standard hay custom"
+    expected_skill: odoo-customization-inventory
+    lang: vi
+
+  - persona: ceo
+    query: "I need an executive summary of all the Odoo customizations in our system"
+    expected_skill: odoo-customization-inventory
+    lang: en
+
+  # ─── Developer: odoo-override-finder (9 queries) ────────────────────────────
+
+  - persona: dev
+    query: "find override point for action_confirm in sale.order"
+    expected_skill: odoo-override-finder
+    lang: en
+
+  - persona: dev
+    query: "best place to extend partner creation logic in Odoo"
+    expected_skill: odoo-override-finder
+    lang: en
+
+  - persona: dev
+    query: "where should I hook into invoice validation"
+    expected_skill: odoo-override-finder
+    lang: en
+
+  - persona: dev
+    query: "điểm override cho method action_post trong account.move"
+    expected_skill: odoo-override-finder
+    lang: vi
+
+  - persona: dev
+    query: "tôi muốn thêm logic vào lúc xác nhận đơn hàng, override ở đâu"
+    expected_skill: odoo-override-finder
+    lang: vi
+
+  - persona: dev
+    query: "how to extend the Odoo sale order model safely"
+    expected_skill: odoo-override-finder
+    lang: en
+
+  - persona: dev
+    query: "where should I write custom code to trigger when a PO is approved"
+    expected_skill: odoo-override-finder
+    lang: en
+
+  - persona: dev
+    query: "override method _compute_amount_tax ở module nào là đúng"
+    expected_skill: odoo-override-finder
+    lang: vi
+
+  - persona: dev
+    query: "I want to do something when a sale order is confirmed, where do I put my code"
+    expected_skill: odoo-override-finder
+    lang: en
+
+  # ─── Developer: odoo-deprecation-audit (8 queries) ──────────────────────────
+
+  - persona: dev
+    query: "audit deprecated API usage in our codebase before upgrading"
+    expected_skill: odoo-deprecation-audit
+    lang: en
+
+  - persona: dev
+    query: "find old-style code before we upgrade Odoo to version 17"
+    expected_skill: odoo-deprecation-audit
+    lang: en
+
+  - persona: dev
+    query: "kiểm tra deprecated API trong codebase để chuẩn bị upgrade Odoo"
+    expected_skill: odoo-deprecation-audit
+    lang: vi
+
+  - persona: dev
+    query: "tìm code cũ trước khi nâng cấp Odoo lên phiên bản mới"
+    expected_skill: odoo-deprecation-audit
+    lang: vi
+
+  - persona: dev
+    query: "migration readiness check — what deprecated symbols will break in v17"
+    expected_skill: odoo-deprecation-audit
+    lang: en
+
+  - persona: dev
+    query: "is our code ready for Odoo 17, what will break when we upgrade"
+    expected_skill: odoo-deprecation-audit
+    lang: en
+
+  - persona: dev
+    query: "chuẩn bị upgrade Odoo: tìm tất cả usage của @api.multi trong code"
+    expected_skill: odoo-deprecation-audit
+    lang: vi
+
+  - persona: dev
+    query: "upgrade readiness check for deprecated symbols in our custom modules"
+    expected_skill: odoo-deprecation-audit
+    lang: en
+
+  # ─── Developer: odoo-version-diff (8 queries) ───────────────────────────────
+
+  - persona: dev
+    query: "what changed between Odoo 16 and 17"
+    expected_skill: odoo-version-diff
+    lang: en
+
+  - persona: dev
+    query: "show breaking changes in the upgrade from v16 to v17"
+    expected_skill: odoo-version-diff
+    lang: en
+
+  - persona: dev
+    query: "new API in Odoo version 17 that I need to know about"
+    expected_skill: odoo-version-diff
+    lang: en
+
+  - persona: dev
+    query: "API nào thay đổi từ Odoo v16 sang v17"
+    expected_skill: odoo-version-diff
+    lang: vi
+
+  - persona: dev
+    query: "tính năng mới Odoo 17 dành cho developer"
+    expected_skill: odoo-version-diff
+    lang: vi
+
+  - persona: dev
+    query: "migration guide from Odoo 15 to 17, what are the main breaking changes"
+    expected_skill: odoo-version-diff
+    lang: en
+
+  - persona: dev
+    query: "what was removed in Odoo v13 that I need to replace"
+    expected_skill: odoo-version-diff
+    lang: en
+
+  - persona: dev
+    query: "thay đổi API nào từ v15 sang v16 ảnh hưởng đến module của tôi"
+    expected_skill: odoo-version-diff
+    lang: vi
+
+  # ─── Consultant: odoo-feature-check (13 queries) ────────────────────────────
+
+  - persona: consultant
+    query: "does Odoo have a project management module built in"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "is subscription billing available out of the box in Odoo"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "check if expense management exists in standard Odoo"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "Odoo có sẵn tính năng quản lý hợp đồng không"
+    expected_skill: odoo-feature-check
+    lang: vi
+
+  - persona: consultant
+    query: "module X có trong Odoo CE không hay phải mua EE"
+    expected_skill: odoo-feature-check
+    lang: vi
+
+  - persona: consultant
+    query: "tính năng này có cần custom không hay Odoo đã có sẵn"
+    expected_skill: odoo-feature-check
+    lang: vi
+
+  - persona: consultant
+    query: "does Odoo Community have a field service management module or is it Enterprise only"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "what does standard Odoo cover for manufacturing planning requirements"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "is this feature available out of the box in Odoo 17"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "Odoo có sẵn module ký hợp đồng điện tử không, CE hay EE"
+    expected_skill: odoo-feature-check
+    lang: vi
+
+  - persona: consultant
+    query: "check if recurring invoices are built in to Odoo standard or need customization"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  - persona: consultant
+    query: "tính năng phê duyệt đơn hàng có trong Odoo CE không"
+    expected_skill: odoo-feature-check
+    lang: vi
+
+  - persona: consultant
+    query: "does Odoo have native support for multi-currency accounting out of the box"
+    expected_skill: odoo-feature-check
+    lang: en
+
+  # ─── Consultant: odoo-gap-analysis (12 queries) ─────────────────────────────
+
+  - persona: consultant
+    query: "gap analysis for client requirements against Odoo standard"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "what needs to be customized for this client implementation project"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "standard versus custom feature map for the client proposal"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "phân tích gap giữa yêu cầu khách hàng và Odoo standard"
+    expected_skill: odoo-gap-analysis
+    lang: vi
+
+  - persona: consultant
+    query: "tính năng nào cần custom, tính năng nào Odoo đã có sẵn"
+    expected_skill: odoo-gap-analysis
+    lang: vi
+
+  - persona: consultant
+    query: "estimate customization effort for these client requirements"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "scoping workshop: what is out of the box vs needs development for this project"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "the client has 15 requirements, help me classify standard vs custom for each"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "scope of customization needed before we give the project estimate"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "lập bảng phân tích gap: yêu cầu nào Odoo đáp ứng, yêu cầu nào cần custom"
+    expected_skill: odoo-gap-analysis
+    lang: vi
+
+  - persona: consultant
+    query: "what's out of the box vs needs development for this Odoo implementation"
+    expected_skill: odoo-gap-analysis
+    lang: en
+
+  - persona: consultant
+    query: "cần custom bao nhiêu để đáp ứng yêu cầu nghiệp vụ của khách hàng này"
+    expected_skill: odoo-gap-analysis
+    lang: vi
+
+  # ─── Marketer: odoo-feature-highlights (13 queries) ─────────────────────────
+
+  - persona: marketer
+    query: "highlight new features in Odoo 17 for our sales deck"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "what is exciting in the new Odoo version for our marketing content"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "feature comparison for the sales deck presentation about Odoo 17"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "tính năng nổi bật Odoo 17 để viết bài marketing"
+    expected_skill: odoo-feature-highlights
+    lang: vi
+
+  - persona: marketer
+    query: "nêu điểm mạnh của Odoo 17 so với phiên bản trước để làm slide"
+    expected_skill: odoo-feature-highlights
+    lang: vi
+
+  - persona: marketer
+    query: "viết nội dung marketing về tính năng mới của Odoo 17"
+    expected_skill: odoo-feature-highlights
+    lang: vi
+
+  - persona: marketer
+    query: "what's new for customers in the latest Odoo release, for a blog post"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "generate marketing-friendly highlights for Odoo 17 vs 16"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "I'm writing release notes for customers, what are the key improvements in Odoo 17"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "tóm tắt tính năng mới Odoo 17 bằng ngôn ngữ kinh doanh cho khách hàng"
+    expected_skill: odoo-feature-highlights
+    lang: vi
+
+  - persona: marketer
+    query: "what should I put in the product announcement for Odoo 17 upgrade"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  - persona: marketer
+    query: "điểm khác biệt nổi bật của Odoo 17 so với Odoo 16 cho bài thuyết trình"
+    expected_skill: odoo-feature-highlights
+    lang: vi
+
+  - persona: marketer
+    query: "list the most exciting improvements in Odoo 17 for a customer-facing presentation"
+    expected_skill: odoo-feature-highlights
+    lang: en
+
+  # ─── Marketer: odoo-addon-diff (12 queries) ─────────────────────────────────
+
+  - persona: marketer
+    query: "compare Odoo CE vs EE features for our client proposal"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  - persona: marketer
+    query: "what modules are only in Enterprise edition and not Community"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  - persona: marketer
+    query: "addon comparison community versus enterprise for manufacturing"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  - persona: marketer
+    query: "so sánh CE và EE cho khách hàng đang cân nhắc mua Enterprise"
+    expected_skill: odoo-addon-diff
+    lang: vi
+
+  - persona: marketer
+    query: "module nào chỉ có trong Enterprise edition Odoo"
+    expected_skill: odoo-addon-diff
+    lang: vi
+
+  - persona: marketer
+    query: "tính năng nào cần mua EE, tính năng nào CE đã có"
+    expected_skill: odoo-addon-diff
+    lang: vi
+
+  - persona: marketer
+    query: "Viindoo so với Odoo Enterprise — tính năng nào Viindoo có mà Odoo EE không có"
+    expected_skill: odoo-addon-diff
+    lang: vi
+
+  - persona: marketer
+    query: "CE vs EE feature table for the sales comparison presentation"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  - persona: marketer
+    query: "what Viindoo-specific modules are not available in standard Odoo CE or EE"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  - persona: marketer
+    query: "build a community vs enterprise comparison table for the proposal"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  - persona: marketer
+    query: "so sánh tính năng giữa Odoo Community và Odoo Enterprise để tư vấn khách hàng"
+    expected_skill: odoo-addon-diff
+    lang: vi
+
+  - persona: marketer
+    query: "which Odoo Enterprise edition modules justify the subscription cost"
+    expected_skill: odoo-addon-diff
+    lang: en
+
+  # ─── Sales: odoo-capability-proof (13 queries) ──────────────────────────────
+
+  - persona: sales
+    query: "prove Odoo can handle multi-currency invoicing for this client"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "show capability evidence that Odoo supports approval workflows"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "chứng minh Odoo làm được quản lý kho đa kho cho khách hàng"
+    expected_skill: odoo-capability-proof
+    lang: vi
+
+  - persona: sales
+    query: "bằng chứng tính năng Odoo hỗ trợ quy trình phê duyệt đơn hàng"
+    expected_skill: odoo-capability-proof
+    lang: vi
+
+  - persona: sales
+    query: "the prospect asks if Odoo supports X — show me the evidence to convince them"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "khách hàng hỏi Odoo có hỗ trợ tính năng eSign không, chứng minh cho họ"
+    expected_skill: odoo-capability-proof
+    lang: vi
+
+  - persona: sales
+    query: "build a capability evidence package for Odoo's project management features"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "prove Odoo can do real-time inventory tracking with actual module references"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "does Odoo support barcode scanning in the warehouse — give me proof for the demo"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "chứng minh bằng code thực tế rằng Odoo hỗ trợ hóa đơn điện tử"
+    expected_skill: odoo-capability-proof
+    lang: vi
+
+  - persona: sales
+    query: "assemble demo material proving Odoo handles multi-company accounting"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  - persona: sales
+    query: "bằng chứng cụ thể Odoo làm được luồng phê duyệt mua hàng nhiều cấp"
+    expected_skill: odoo-capability-proof
+    lang: vi
+
+  - persona: sales
+    query: "the client wants proof not promises — show Odoo's subscription billing capability"
+    expected_skill: odoo-capability-proof
+    lang: en
+
+  # ─── Sales: odoo-objection-handler (12 queries) ─────────────────────────────
+
+  - persona: sales
+    query: "handle the objection that Odoo cannot support complex workflows"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "the client says Odoo doesn't support multi-level approval, how do I respond"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "phản bác lo ngại của khách hàng rằng Odoo không làm được kế toán VAS"
+    expected_skill: odoo-objection-handler
+    lang: vi
+
+  - persona: sales
+    query: "xử lý phản đối từ khách hàng: họ nói Odoo không đủ tính năng sản xuất"
+    expected_skill: odoo-objection-handler
+    lang: vi
+
+  - persona: sales
+    query: "the prospect says SAP does manufacturing better than Odoo, counter argument"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "respond to 'Odoo doesn't handle Vietnamese tax compliance' objection"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "khách hàng nói Odoo không làm được báo cáo thuế Việt Nam, phản bác thế nào"
+    expected_skill: odoo-objection-handler
+    lang: vi
+
+  - persona: sales
+    query: "how to respond when client doubts Odoo can handle their payroll requirements"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "the client says they heard Odoo doesn't scale well — craft a counter response"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "handle objection: we tried Odoo before and it was too complex for our users"
+    expected_skill: odoo-objection-handler
+    lang: en
+
+  - persona: sales
+    query: "khách hàng lo ngại Odoo không có tính năng X, giúp tôi xử lý phản đối này"
+    expected_skill: odoo-objection-handler
+    lang: vi
+
+  - persona: sales
+    query: "how to counter the argument that Odoo doesn't support our industry vertical"
+    expected_skill: odoo-objection-handler
+    lang: en
