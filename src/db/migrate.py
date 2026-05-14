@@ -527,6 +527,26 @@ def main() -> int:
 
         _run_yoyo(dsn, existing_conn=conn)
         print(f"✓ Migrations applied to {safe_dsn}")
+
+        # Master data: profiles seeded by yoyo migration 0002; repos seeded here
+        # because repos.local_path needs Path.home() at runtime (host-dependent).
+        # Failure logs a warning but does NOT fail the migrate run — admin can
+        # re-seed manually via `python -m src.manager seed-master-data`.
+        try:
+            from src.db import seed_master_data
+            summary = seed_master_data.seed_all(conn)
+            print(
+                f"✓ Seeded master data: {summary['profiles_inserted']} profiles new, "
+                f"{summary['profiles_skipped']} unchanged; "
+                f"{summary['repos_inserted']} repos new, "
+                f"{summary['repos_skipped']} unchanged"
+            )
+        except Exception as e:
+            print(
+                f"⚠ Master data seed failed (non-fatal): {e}\n"
+                "  Re-run manually: python -m src.manager seed-master-data",
+                file=sys.stderr,
+            )
     finally:
         conn.close()
     return 0
