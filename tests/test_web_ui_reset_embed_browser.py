@@ -5,7 +5,8 @@ All Reset Embed browser tests have been migrated to
 tests/browser/admin/test_repos.py::TestResetEmbed as part of M8 W7.
 
 URL change: /repos → /admin/repos.
-Selector change: button[title='Reset embed state and re-index'] → data-testid^="reset-embed-button-".
+Selector change: button[title='Reset embed state and re-index']
+  → data-testid^="reset-embed-button-".
 """
 import pytest
 
