@@ -202,12 +202,12 @@ class TestSshKeysPage:
 
     def test_generate_form_visible(self, web_ui_server, clean_browser, page):
         page.goto(f"{web_ui_server}/ssh-keys")
-        assert page.locator("input[name='name']").is_visible()
+        assert page.locator("#generate-form input[name='name']").is_visible()
         assert page.locator("button:has-text('Generate Ed25519 Keypair')").is_visible()
 
     def test_generate_key_shows_public_key(self, web_ui_server, clean_browser, page):
         page.goto(f"{web_ui_server}/ssh-keys")
-        page.fill("input[name='name']", "test-ed25519")
+        page.fill("#generate-form input[name='name']", "test-ed25519")
         page.click("button:has-text('Generate Ed25519 Keypair')")
         page.wait_for_load_state("load")
         content = page.content()
@@ -216,7 +216,7 @@ class TestSshKeysPage:
 
     def test_generated_key_appears_in_table(self, web_ui_server, clean_browser, page):
         page.goto(f"{web_ui_server}/ssh-keys")
-        page.fill("input[name='name']", "my-deploy-key")
+        page.fill("#generate-form input[name='name']", "my-deploy-key")
         page.click("button:has-text('Generate Ed25519 Keypair')")
         page.wait_for_load_state("load")
         assert "my-deploy-key" in page.content()
@@ -224,7 +224,7 @@ class TestSshKeysPage:
     def test_delete_key_removes_from_list(self, web_ui_server, clean_browser, page):
         # Generate a key first
         page.goto(f"{web_ui_server}/ssh-keys")
-        page.fill("input[name='name']", "to-delete-key")
+        page.fill("#generate-form input[name='name']", "to-delete-key")
         page.click("button:has-text('Generate Ed25519 Keypair')")
         page.wait_for_load_state("load")
 
@@ -238,4 +238,33 @@ class TestSshKeysPage:
         page.wait_for_load_state("load")
 
         assert "to-delete-key" not in page.content()
+
+    def test_import_form_visible(self, web_ui_server, clean_browser, page):
+        page.goto(f"{web_ui_server}/ssh-keys")
+        assert page.locator("#import-form input[name='name']").is_visible()
+        assert page.locator("#import-form textarea[name='private_key_pem']").is_visible()
+        assert page.locator("button:has-text('Import Keypair')").is_visible()
+
+    def test_import_existing_keypair_shows_public_key(self, web_ui_server, clean_browser, page):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+        )
+
+        private_key = Ed25519PrivateKey.generate()
+        pem = private_key.private_bytes(
+            encoding=Encoding.PEM,
+            format=PrivateFormat.OpenSSH,
+            encryption_algorithm=NoEncryption(),
+        ).decode()
+
+        page.goto(f"{web_ui_server}/ssh-keys")
+        page.fill("#import-form input[name='name']", "imported-ed25519")
+        page.fill("#import-form textarea[name='private_key_pem']", pem)
+        page.click("button:has-text('Import Keypair')")
+        page.wait_for_load_state("load")
+        content = page.content()
+        assert "ssh-ed25519" in content
 

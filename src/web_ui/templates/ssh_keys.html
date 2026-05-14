@@ -29,7 +29,7 @@
 <div class="card">
     <h2>Generate New Keypair</h2>
     {% if not fernet_missing %}
-    <form method="post" action="/ssh-keys" style="display:flex;gap:0.5rem;align-items:flex-end">
+    <form id="generate-form" method="post" action="/ssh-keys" style="display:flex;gap:0.5rem;align-items:flex-end">
         <div>
             <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Key Name *</label>
             <input type="text" name="name" placeholder="e.g. viindoo-repo-key" maxlength="200" required
@@ -43,6 +43,33 @@
     </p>
     {% else %}
     <p style="color:#94a3b8">Set FERNET_KEY to enable SSH key generation.</p>
+    {% endif %}
+</div>
+
+<!-- Import Existing Keypair Form -->
+<div class="card">
+    <h2>Import Existing Keypair</h2>
+    {% if not fernet_missing %}
+    <form id="import-form" method="post" action="/ssh-keys/import">
+        <div style="margin-bottom:0.5rem">
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Key Name *</label>
+            <input type="text" name="name" placeholder="e.g. github-deploy-key" maxlength="200" required
+                   style="padding:0.375rem 0.5rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.9rem;width:240px">
+        </div>
+        <div style="margin-bottom:0.5rem">
+            <label style="display:block;font-size:0.8rem;margin-bottom:0.2rem">Private Key (PEM, Ed25519 only) *</label>
+            <textarea name="private_key_pem" required rows="10"
+                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
+                      style="width:100%;font-family:monospace;font-size:0.8rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:4px"></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">Import Keypair</button>
+    </form>
+    <p style="margin-top:0.5rem;font-size:0.8rem;color:#64748b">
+        Paste contents of your existing private key file (e.g. <code>cat ~/.ssh/id_ed25519</code>).
+        Server derives the public key, validates Ed25519, encrypts private key with FERNET_KEY.
+    </p>
+    {% else %}
+    <p style="color:#94a3b8">Set FERNET_KEY to enable SSH key import.</p>
     {% endif %}
 </div>
 
