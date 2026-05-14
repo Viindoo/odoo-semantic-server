@@ -42,22 +42,36 @@ def _count_repos_for_profile(conn, profile_name: str) -> int:
         return cur.fetchone()[0]
 
 
-def test_migrate_seeds_26_profiles(clean_pg):
-    """run_migrations() applies 0002_master_data_seed.sql → 26 profiles inserted."""
+def test_seed_profiles_inserts_26(clean_pg):
+    """seed_profiles() inserts the 26 master data profiles; idempotent."""
     run_migrations(clean_pg)
+    inserted, skipped = seed_profiles(clean_pg)
+    assert inserted == 26
+    assert skipped == 0
     assert _count_seeded_profiles(clean_pg) == 26
-    # Sanity: _PROFILE_DEFS matches what we expect
+    # Re-run is a no-op
+    inserted2, skipped2 = seed_profiles(clean_pg)
+    assert inserted2 == 0
+    assert skipped2 == 26
+    # Sanity: _PROFILE_DEFS matches
     assert len(_PROFILE_DEFS) == 26
 
 
-def test_seed_repos_inserts_68_total(clean_pg):
-    """seed_repos() inserts the expected 68 repos across all 26 profiles."""
-    run_migrations(clean_pg)  # profiles already seeded via migration 0002
+def test_seed_repos_inserts_48_total(clean_pg):
+    """seed_repos() inserts the expected 48 repos across all 26 profiles.
+
+    Delta-only model: each profile owns only repos NOT present in a lower tier.
+    Odoo CE owns Viindoo/odoo; Standard Viindoo owns addons only; Viindoo
+    Internal owns internal-only repos. PostgreSQL ``UNIQUE (url, branch)`` on
+    ``repos`` enforces this.
+    """
+    run_migrations(clean_pg)
+    seed_profiles(clean_pg)  # FK requires profile rows
     inserted, skipped = seed_repos(clean_pg)
-    assert inserted == 68
+    assert inserted == 48
     assert skipped == 0
     # Sanity against the data definition
-    assert sum(len(v) for v in _REPO_DEFS_BY_PROFILE.values()) == 68
+    assert sum(len(v) for v in _REPO_DEFS_BY_PROFILE.values()) == 48
 
 
 def test_seed_all_idempotent(clean_pg):
@@ -65,50 +79,51 @@ def test_seed_all_idempotent(clean_pg):
     run_migrations(clean_pg)
     first = seed_all(clean_pg)
     second = seed_all(clean_pg)
-    # First call: profiles are already there (seeded by migration 0002).
-    # seed_profiles INSERT ON CONFLICT DO NOTHING → all 26 skipped.
-    assert first["profiles_inserted"] == 0
-    assert first["profiles_skipped"] == 26
-    assert first["repos_inserted"] == 68
+    # First call: empty schema → everything inserts
+    assert first["profiles_inserted"] == 26
+    assert first["profiles_skipped"] == 0
+    assert first["repos_inserted"] == 48
     assert first["repos_skipped"] == 0
-    # Second call: all rows already present → everything skipped
+    # Second call: everything already present → all skipped
     assert second["profiles_inserted"] == 0
     assert second["profiles_skipped"] == 26
     assert second["repos_inserted"] == 0
-    assert second["repos_skipped"] == 68
+    assert second["repos_skipped"] == 48
     # No duplicates: row counts unchanged
     assert _count_seeded_profiles(clean_pg) == 26
     with clean_pg.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM repos")
-        assert cur.fetchone()[0] == 68
+        assert cur.fetchone()[0] == 48
 
 
 def test_seeded_profile_repo_counts_match_matrix(clean_pg):
-    """Each profile tier has the right repo count per the design matrix."""
+    """Each profile tier has the right delta-only repo count per the design matrix."""
     run_migrations(clean_pg)
-    seed_repos(clean_pg)
-    # Odoo CE: 1 repo per version
+    seed_all(clean_pg)
+    # Odoo CE: 1 repo (Viindoo/odoo) per version
     for v in range(8, 20):
         assert _count_repos_for_profile(clean_pg, f"odoo_{v}") == 1, f"odoo_{v}"
-    # Standard Viindoo:
-    #   v8-v9   → 2 (odoo + tvtmaaddons)
-    #   v10-v12 → 3 (+erponline-enterprise)
-    #   v13-v19 → 4 (+branding)
+    # Standard Viindoo (delta — addons only; Odoo CE base lives under odoo_N):
+    #   v8-v9   → 1 (tvtmaaddons)
+    #   v10-v12 → 2 (+erponline-enterprise)
+    #   v13-v19 → 3 (+branding)
     for v in (8, 9):
-        assert _count_repos_for_profile(clean_pg, f"standard_viindoo_{v}") == 2
+        assert _count_repos_for_profile(clean_pg, f"standard_viindoo_{v}") == 1
     for v in (10, 11, 12):
-        assert _count_repos_for_profile(clean_pg, f"standard_viindoo_{v}") == 3
+        assert _count_repos_for_profile(clean_pg, f"standard_viindoo_{v}") == 2
     for v in (13, 14, 15, 16, 17, 18, 19):
-        assert _count_repos_for_profile(clean_pg, f"standard_viindoo_{v}") == 4
-    # Viindoo Internal: v17=8, v18=7 (no themes)
-    assert _count_repos_for_profile(clean_pg, "viindoo_internal_17") == 8
-    assert _count_repos_for_profile(clean_pg, "viindoo_internal_18") == 7
+        assert _count_repos_for_profile(clean_pg, f"standard_viindoo_{v}") == 3
+    # Viindoo Internal (delta — internal repos only):
+    #   v17 → 4 (saas-infra, saas-infra-common, themes, odoo-api)
+    #   v18 → 3 (no themes — max branch is 17.0)
+    assert _count_repos_for_profile(clean_pg, "viindoo_internal_17") == 4
+    assert _count_repos_for_profile(clean_pg, "viindoo_internal_18") == 3
 
 
 def test_viindoo_internal_18_excludes_themes(clean_pg):
     """themes max branch is 17.0 → viindoo_internal_18 must not include themes."""
     run_migrations(clean_pg)
-    seed_repos(clean_pg)
+    seed_all(clean_pg)
     with clean_pg.cursor() as cur:
         cur.execute(
             "SELECT r.url FROM repos r "
@@ -133,7 +148,7 @@ def test_viindoo_internal_18_excludes_themes(clean_pg):
 def test_seeded_repos_clone_status_manual(clean_pg):
     """All seeded repos must have clone_status='manual'."""
     run_migrations(clean_pg)
-    seed_repos(clean_pg)
+    seed_all(clean_pg)
     with clean_pg.cursor() as cur:
         cur.execute(
             "SELECT DISTINCT clone_status FROM repos r "
@@ -171,7 +186,7 @@ def test_reset_seeded_data_deletes_only_seeded_profiles(clean_pg):
     underscore from the apply-preset CLI) MUST be preserved.
     """
     run_migrations(clean_pg)
-    seed_repos(clean_pg)
+    seed_all(clean_pg)
     # Manually create a non-seed profile to verify it survives reset
     with clean_pg.cursor() as cur:
         cur.execute(
@@ -205,7 +220,7 @@ def test_reset_seeded_data_deletes_only_seeded_profiles(clean_pg):
 def test_seed_repos_uses_viindoo_ssh_url(clean_pg, profile_name, expected_url_substring):
     """All seeded repos must use git@github.com:Viindoo/* SSH URLs."""
     run_migrations(clean_pg)
-    seed_repos(clean_pg)
+    seed_all(clean_pg)
     with clean_pg.cursor() as cur:
         cur.execute(
             "SELECT r.url FROM repos r JOIN profiles p ON p.id = r.profile_id "

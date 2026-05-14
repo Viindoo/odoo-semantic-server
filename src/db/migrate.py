@@ -528,8 +528,10 @@ def main() -> int:
         _run_yoyo(dsn, existing_conn=conn)
         print(f"✓ Migrations applied to {safe_dsn}")
 
-        # Master data: profiles seeded by yoyo migration 0002; repos seeded here
-        # because repos.local_path needs Path.home() at runtime (host-dependent).
+        # Master data: profiles + repos are both seeded here (not in the yoyo
+        # SQL migration). This keeps `run_migrations` schema-only so legacy test
+        # fixtures see an empty profiles table; production `migrate.main` does
+        # the full seed via the helper below.
         # Failure logs a warning but does NOT fail the migrate run — admin can
         # re-seed manually via `python -m src.manager seed-master-data`.
         try:

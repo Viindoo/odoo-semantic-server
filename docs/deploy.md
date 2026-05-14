@@ -369,9 +369,11 @@ indexer subprocess; populated bởi `index-repo --job-id N` + Web UI status badg
 ### 3.3.5 Master data auto-seed
 
 `python -m src.db.migrate` tự động seed 26 master data profiles (Odoo v8-v19,
-Standard Viindoo v8-v19, Viindoo Internal v17/v18) + 68 repos rows sau khi
-schema migrations apply xong. Repos `clone_status` mặc định = `manual` —
-admin bấm Clone trong Web UI khi sẵn sàng (tiết kiệm disk + bandwidth).
+Standard Viindoo v8-v19, Viindoo Internal v17/v18) + 48 repos rows (mô hình
+**delta-only** — xem [`docs/deploy/master-data-upgrade.md`](deploy/master-data-upgrade.md)
+phần *Mô Hình Profile Delta*) sau khi schema migrations apply xong. Repos
+`clone_status` mặc định = `manual` — admin bấm Clone trong Web UI khi sẵn sàng
+(tiết kiệm disk + bandwidth).
 
 Re-seed thủ công (vd sau khi code update thêm version mới):
 

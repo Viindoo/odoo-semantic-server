@@ -5,7 +5,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 ## [Unreleased]
 
 ### Added
-- Auto-seed 26 master data profiles via `python -m src.db.migrate`: Odoo CE v8–v19, Standard Viindoo v8–v19 (with `tvtmaaddons`, `erponline-enterprise` v10+, `branding` v13+), and Viindoo Internal v17/v18 (adds `saas-infrastructure`, `saas-infrastructure-common`, `themes` v17-only, `odoo-api`). Total 68 repos seeded with `clone_status='manual'`. URL convention: `git@github.com:Viindoo/<repo>.git`.
+- Auto-seed 26 master data profiles via `python -m src.db.migrate`: Odoo CE v8–v19, Standard Viindoo v8–v19 (delta: `tvtmaaddons`, `erponline-enterprise` v10+, `branding` v13+), and Viindoo Internal v17/v18 (delta: `saas-infrastructure`, `saas-infrastructure-common`, `themes` v17-only, `odoo-api`). Total 48 repos seeded with `clone_status='manual'`. Delta-only ownership — PostgreSQL `UNIQUE (url, branch)` forces each (url, branch) into one profile, so each tier owns only repos absent from the lower tier; admins index multiple profiles to get the full bundle. URL convention: `git@github.com:Viindoo/<repo>.git`.
 - New CLI: `python -m src.manager seed-master-data` for idempotent re-seed; supports `--profiles-only` and `--reset` (destructive) flags.
 - Upgrade runbook: `docs/deploy/master-data-upgrade.md` for production deployments — covers backup, verify, edge cases, and rollback.
 

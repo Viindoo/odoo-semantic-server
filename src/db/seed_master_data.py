@@ -66,15 +66,22 @@ def _odoo_only(version: str) -> list[tuple[str, str, str]]:
 
 
 def _standard_viindoo(version: str) -> list[tuple[str, str, str]]:
-    """Standard Viindoo repos per version.
+    """Standard Viindoo DELTA repos — addons only, excluding the Odoo CE base.
 
-    Composition rules (verified against `gh api orgs/Viindoo/repos`):
-    - odoo + tvtmaaddons: all versions (v8-v19)
-    - erponline-enterprise: v10+ only
-    - branding: v13+ only
+    The Odoo CE base (Viindoo/odoo) is owned by the ``odoo_N`` profile because
+    PostgreSQL ``UNIQUE (url, branch)`` on the ``repos`` table prevents the same
+    (url, branch) pair from belonging to more than one profile. To use Standard
+    Viindoo for a given version, an admin indexes BOTH ``odoo_N`` AND
+    ``standard_viindoo_N``; MCP queries naturally combine them via shared
+    ``odoo_version``.
+
+    Composition rules (verified against ``gh api orgs/Viindoo/repos``):
+
+    - ``tvtmaaddons``: all versions (v8–v19)
+    - ``erponline-enterprise``: v10+ only
+    - ``branding``: v13+ only
     """
     repos: list[tuple[str, str, str]] = [
-        ("odoo",        _VIINDOO_URL.format(repo="odoo"),        version),
         ("tvtmaaddons", _VIINDOO_URL.format(repo="tvtmaaddons"), version),
     ]
     major = int(version.split(".", 1)[0])
@@ -87,15 +94,21 @@ def _standard_viindoo(version: str) -> list[tuple[str, str, str]]:
 
 
 def _viindoo_internal(version: str) -> list[tuple[str, str, str]]:
-    """Viindoo Internal = Standard Viindoo + internal repos.
+    """Viindoo Internal DELTA repos — internal-only repos, no overlap with
+    Standard Viindoo or Odoo CE.
+
+    Same rationale as ``_standard_viindoo``: ``UNIQUE (url, branch)`` forces
+    delta-only ownership. To use Viindoo Internal for a given version, an admin
+    indexes ``odoo_N`` + ``standard_viindoo_N`` + ``viindoo_internal_N``.
 
     Internal additions (verified against GitHub):
-    - saas-infrastructure: v12-v18 (used for v17/v18)
-    - saas-infrastructure-common: v13-v18 (used for v17/v18)
-    - themes: v12-v17 only (NO v18 — themes max branch is 17.0)
-    - odoo-api: v13-v18 (used for v17/v18)
+
+    - ``saas-infrastructure``: v12–v18 (used for v17/v18)
+    - ``saas-infrastructure-common``: v13–v18 (used for v17/v18)
+    - ``themes``: v12–v17 only (NO v18 — max branch is 17.0)
+    - ``odoo-api``: v13–v18 (used for v17/v18)
     """
-    repos = _standard_viindoo(version)
+    repos: list[tuple[str, str, str]] = []
     repos.append(("saas-infrastructure",
                   _VIINDOO_URL.format(repo="saas-infrastructure"), version))
     repos.append(("saas-infrastructure-common",
