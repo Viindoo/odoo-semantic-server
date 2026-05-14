@@ -1,0 +1,14 @@
+# pnpm-workspace.yaml — required by pnpm 10+ to opt in to native postinstall
+# scripts. The package.json `pnpm.onlyBuiltDependencies` field is honored by
+# pnpm 9 but ignored by pnpm 10+; we keep both for forward+backward compat.
+#
+# Without allowBuilds, pnpm refuses to run esbuild/sharp postinstall scripts
+# and `pnpm build` aborts with ERR_PNPM_IGNORED_BUILDS before astro runs.
+allowBuilds:
+  esbuild: true
+  sharp: true
+
+# Skip the implicit `pnpm install` check that pnpm runs before every script.
+# Without this, `pnpm build` re-runs install, hits the same ignored-builds
+# guard, and exits 1 even when node_modules is already complete.
+verifyDepsBeforeRun: never
