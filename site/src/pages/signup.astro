@@ -1,0 +1,254 @@
+---
+// signup.astro — Public signup page (M9 W-SG)
+// prerender=false: SSR so we can redirect already-authed users server-side.
+export const prerender = false;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { FASTAPI_BASE } from '../lib/fastapi';
+
+// Redirect already-authed users to dashboard
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+let alreadyAuthed = false;
+try {
+  const verify = await fetch(`${FASTAPI_BASE}/api/auth/verify`, {
+    headers: { cookie: cookieHeader },
+  });
+  alreadyAuthed = verify.ok;
+} catch {
+  // server down — allow signup page
+}
+
+if (alreadyAuthed) {
+  return Astro.redirect('/admin');
+}
+
+const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
+---
+
+<BaseLayout title="Sign Up — Odoo Semantic MCP">
+  <!-- hCaptcha script -->
+  {hcaptchaSiteKey && (
+    <script src="https://js.hcaptcha.com/1/api.js" async defer is:inline></script>
+  )}
+
+  <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-8">
+    <!-- Flash banner -->
+    <div data-testid="flash-banner" hidden
+      class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium"></div>
+
+    <div class="w-full max-w-sm">
+      <!-- Logo -->
+      <div class="text-center mb-8">
+        <div class="inline-flex items-center justify-center w-14 h-14 bg-viindoo-primary rounded-2xl mb-3">
+          <img src="/favicon.svg" alt="Logo" class="w-8 h-8" />
+        </div>
+        <h1 class="text-xl font-bold text-gray-900">Odoo Semantic MCP</h1>
+        <p class="text-sm text-gray-500 mt-1">Create an account</p>
+      </div>
+
+      <!-- Signup form -->
+      <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+        <!-- Success state (hidden until submit succeeds) -->
+        <div data-testid="signup-success" hidden class="text-center py-4">
+          <p class="text-lg font-semibold text-gray-900 mb-2">Check your email!</p>
+          <p class="text-sm text-gray-600" data-testid="signup-success-msg">
+            We sent a verification link to your email address. Click it to activate your account.
+          </p>
+          <p class="text-xs text-gray-400 mt-3">The link expires in 24 hours.</p>
+        </div>
+
+        <!-- The form itself -->
+        <form data-testid="signup-form" class="space-y-4">
+          <div>
+            <label for="su-email" class="block text-sm font-medium text-gray-700 mb-1">
+              Email
+            </label>
+            <input
+              id="su-email"
+              name="email"
+              type="email"
+              autocomplete="email"
+              required
+              data-testid="signup-email-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-viindoo-primary focus:border-viindoo-primary"
+              placeholder="you@example.com"
+            />
+          </div>
+
+          <div>
+            <label for="su-username" class="block text-sm font-medium text-gray-700 mb-1">
+              Username
+            </label>
+            <input
+              id="su-username"
+              name="username"
+              type="text"
+              autocomplete="username"
+              required
+              minlength="2"
+              maxlength="64"
+              data-testid="signup-username-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-viindoo-primary focus:border-viindoo-primary"
+              placeholder="yourname"
+            />
+          </div>
+
+          <div>
+            <label for="su-password" class="block text-sm font-medium text-gray-700 mb-1">
+              Password
+            </label>
+            <input
+              id="su-password"
+              name="password"
+              type="password"
+              autocomplete="new-password"
+              required
+              minlength="12"
+              data-testid="signup-password-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-viindoo-primary focus:border-viindoo-primary"
+              placeholder="Min 12 characters"
+            />
+          </div>
+
+          <div>
+            <label for="su-confirm-password" class="block text-sm font-medium text-gray-700 mb-1">
+              Confirm Password
+            </label>
+            <input
+              id="su-confirm-password"
+              name="confirm_password"
+              type="password"
+              autocomplete="new-password"
+              required
+              data-testid="signup-confirm-password-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-viindoo-primary focus:border-viindoo-primary"
+              placeholder="Repeat password"
+            />
+          </div>
+
+          <!-- hCaptcha widget (only shown when site key is configured) -->
+          {hcaptchaSiteKey ? (
+            <div
+              class="h-captcha"
+              data-sitekey={hcaptchaSiteKey}
+              data-theme="light"
+              data-testid="signup-hcaptcha"
+            ></div>
+          ) : (
+            <input type="hidden" name="hcaptcha_token" value="" data-testid="signup-hcaptcha-hidden" />
+          )}
+
+          <!-- Error message -->
+          <p data-testid="signup-error" hidden
+            class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"></p>
+
+          <button
+            type="submit"
+            data-testid="signup-submit-button"
+            class="w-full bg-viindoo-primary hover:bg-viindoo-primary-bright
+                   text-viindoo-bg-0 font-medium py-2.5 rounded-lg transition-colors text-sm"
+          >
+            Create Account
+          </button>
+        </form>
+      </div>
+
+      <!-- Login link -->
+      <p class="text-center text-sm text-gray-500 mt-4">
+        Already have an account?
+        <a href="/admin/login" class="text-viindoo-primary hover:underline font-medium">Sign in</a>
+      </p>
+    </div>
+  </div>
+</BaseLayout>
+
+<script define:vars={{ hcaptchaSiteKey }}>
+  const form = document.querySelector('[data-testid="signup-form"]');
+  const successDiv = document.querySelector('[data-testid="signup-success"]');
+  const errorEl = document.querySelector('[data-testid="signup-error"]');
+  const submitBtn = document.querySelector('[data-testid="signup-submit-button"]');
+
+  function showError(msg) {
+    if (errorEl) {
+      errorEl.textContent = msg;
+      errorEl.removeAttribute('hidden');
+    }
+  }
+
+  function clearError() {
+    if (errorEl) errorEl.setAttribute('hidden', '');
+  }
+
+  function setLoading(loading) {
+    if (submitBtn) {
+      submitBtn.disabled = loading;
+      submitBtn.textContent = loading ? 'Creating account…' : 'Create Account';
+    }
+  }
+
+  function getHcaptchaToken() {
+    // When hcaptcha widget is rendered, retrieve its response token.
+    if (!hcaptchaSiteKey) return '';
+    if (typeof hcaptcha === 'undefined') return '';
+    return hcaptcha.getResponse() || '';
+  }
+
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearError();
+    setLoading(true);
+
+    const fd = new FormData(form);
+    const password = fd.get('password');
+    const confirm = fd.get('confirm_password');
+
+    if (password !== confirm) {
+      showError('Passwords do not match.');
+      setLoading(false);
+      return;
+    }
+
+    const payload = {
+      email: fd.get('email'),
+      username: fd.get('username'),
+      password: password,
+      confirm_password: confirm,
+      hcaptcha_token: getHcaptchaToken(),
+    };
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        // Show success state, hide form
+        form.setAttribute('hidden', '');
+        successDiv?.removeAttribute('hidden');
+        const msgEl = document.querySelector('[data-testid="signup-success-msg"]');
+        if (msgEl) {
+          msgEl.textContent =
+            `We sent a verification link to ${payload.email}. Click it to activate your account.`;
+        }
+      } else {
+        showError(data.error ?? 'Signup failed. Please try again.');
+        // Reset hcaptcha on failure
+        if (hcaptchaSiteKey && typeof hcaptcha !== 'undefined') {
+          hcaptcha.reset();
+        }
+        setLoading(false);
+      }
+    } catch {
+      showError('Network error. Please check your connection and try again.');
+      setLoading(false);
+    }
+  });
+</script>

@@ -1,0 +1,180 @@
+---
+// verify-email.astro — Email verification landing page (M9 W-SG)
+// prerender=false: SSR required to read token from URL and call backend.
+export const prerender = false;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { FASTAPI_BASE } from '../lib/fastapi';
+
+const token = Astro.url.searchParams.get('token') ?? '';
+
+type VerifyStatus = 'success' | 'expired' | 'no_token';
+let status: VerifyStatus = 'no_token';
+let autoRedirect = false;
+
+if (token) {
+  try {
+    const resp = await fetch(`${FASTAPI_BASE}/api/auth/verify-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+
+    if (resp.ok) {
+      // Forward the Set-Cookie from FastAPI to the browser so the session is live
+      const setCookie = resp.headers.get('set-cookie');
+      if (setCookie) {
+        Astro.response.headers.set('set-cookie', setCookie);
+      }
+      status = 'success';
+      autoRedirect = true;
+    } else {
+      status = 'expired';
+    }
+  } catch {
+    status = 'expired';
+  }
+}
+---
+
+<BaseLayout title="Email Verification — Odoo Semantic MCP">
+  <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+    <div class="w-full max-w-md text-center">
+      <!-- Logo -->
+      <div class="inline-flex items-center justify-center w-14 h-14 bg-viindoo-primary rounded-2xl mb-6">
+        <img src="/favicon.svg" alt="Logo" class="w-8 h-8" />
+      </div>
+
+      {status === 'success' && (
+        <div data-testid="verify-success">
+          <h1 class="text-2xl font-bold text-gray-900 mb-2">Email verified!</h1>
+          <p class="text-gray-600 mb-6">
+            Your account is now active. Redirecting you to the dashboard…
+          </p>
+          <a
+            href="/admin"
+            data-testid="verify-go-dashboard"
+            class="inline-block bg-viindoo-primary hover:bg-viindoo-primary-bright
+                   text-viindoo-bg-0 font-medium py-2.5 px-6 rounded-lg transition-colors text-sm"
+          >
+            Go to Dashboard
+          </a>
+        </div>
+      )}
+
+      {status === 'expired' && (
+        <div data-testid="verify-expired">
+          <h1 class="text-2xl font-bold text-gray-900 mb-2">Link expired or invalid</h1>
+          <p class="text-gray-600 mb-6">
+            This verification link has expired or was already used.
+            Request a new one below.
+          </p>
+
+          <!-- Resend form -->
+          <form data-testid="resend-form" class="space-y-3 text-left bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+            <label for="resend-email" class="block text-sm font-medium text-gray-700 mb-1">
+              Your email address
+            </label>
+            <input
+              id="resend-email"
+              name="email"
+              type="email"
+              required
+              data-testid="resend-email-input"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-viindoo-primary focus:border-viindoo-primary"
+              placeholder="you@example.com"
+            />
+
+            <p data-testid="resend-error" hidden
+              class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"></p>
+            <p data-testid="resend-success" hidden
+              class="text-sm text-green-700 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
+              Verification email sent! Check your inbox.
+            </p>
+
+            <button
+              type="submit"
+              data-testid="resend-submit-button"
+              class="w-full bg-viindoo-primary hover:bg-viindoo-primary-bright
+                     text-viindoo-bg-0 font-medium py-2.5 rounded-lg transition-colors text-sm"
+            >
+              Resend Verification Email
+            </button>
+          </form>
+
+          <p class="text-sm text-gray-500 mt-4">
+            <a href="/signup" class="text-viindoo-primary hover:underline">Back to Sign Up</a>
+          </p>
+        </div>
+      )}
+
+      {status === 'no_token' && (
+        <div data-testid="verify-no-token">
+          <h1 class="text-2xl font-bold text-gray-900 mb-2">Invalid link</h1>
+          <p class="text-gray-600 mb-6">
+            This URL does not contain a verification token.
+            Check your email for the correct link.
+          </p>
+          <a href="/signup" class="text-viindoo-primary hover:underline text-sm">
+            Back to Sign Up
+          </a>
+        </div>
+      )}
+    </div>
+  </div>
+</BaseLayout>
+
+<script define:vars={{ autoRedirect }}>
+  if (autoRedirect) {
+    // Small delay so the user can read the success message before redirect
+    setTimeout(() => {
+      window.location.href = '/admin';
+    }, 1500);
+  }
+
+  // Resend form handler
+  const resendForm = document.querySelector('[data-testid="resend-form"]');
+  resendForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    const errorEl = document.querySelector('[data-testid="resend-error"]');
+    const successEl = document.querySelector('[data-testid="resend-success"]');
+    const submitBtn = document.querySelector('[data-testid="resend-submit-button"]');
+
+    if (errorEl) errorEl.setAttribute('hidden', '');
+    if (successEl) successEl.setAttribute('hidden', '');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Sending…'; }
+
+    try {
+      const res = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: fd.get('email') }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 429) {
+        if (errorEl) {
+          errorEl.textContent = data.error ?? 'Too many attempts. Try again later.';
+          errorEl.removeAttribute('hidden');
+        }
+      } else if (res.ok) {
+        if (successEl) successEl.removeAttribute('hidden');
+      } else {
+        if (errorEl) {
+          errorEl.textContent = data.error ?? 'Failed to resend email. Try again.';
+          errorEl.removeAttribute('hidden');
+        }
+      }
+    } catch {
+      if (errorEl) {
+        errorEl.textContent = 'Network error. Check your connection and try again.';
+        errorEl.removeAttribute('hidden');
+      }
+    } finally {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Resend Verification Email'; }
+    }
+  });
+</script>
