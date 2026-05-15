@@ -34,7 +34,7 @@ class TestCreateAndVerifyApiKey:
     def test_create_returns_raw_key_with_prefix(self, pg_auth_conn):
         raw, prefix, key_id = auth_store().create_api_key("test-key")
         assert raw.startswith("osm_")
-        assert raw[:8] == prefix
+        assert raw[:12] == prefix  # M9 W-AK: key_prefix bumped 8 → 12 chars
         assert key_id > 0
 
     def test_verify_correct_key(self, pg_auth_conn):

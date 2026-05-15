@@ -1,5 +1,11 @@
 # src/web_ui/routes/api_keys.py
-"""API key management routes (M8 W1 — pure JSON API)."""
+"""API key management routes (M8 W1 — pure JSON API).
+
+M9 W-AK changes:
+  - POST / now sets user_id = current_user_id(request) on new keys.
+  - GET / filters keys by user_id (admin sees all; regular user sees own keys).
+  - Accepts optional ``expires_at`` in POST body (ISO-8601 string, or null).
+"""
 import datetime
 import logging
 
@@ -8,34 +14,47 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.db.audit import audit_action
+
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/api-keys")
 
 
 def _serialize_keys(keys) -> list[dict]:
-    """Convert any datetime fields in key dicts to ISO strings for JSON serialization."""
+    """Convert any datetime/date fields in key dicts to ISO strings for JSON serialization."""
     result = []
     for key in keys:
         row = {}
         for k, v in key.items():
-            row[k] = v.isoformat() if isinstance(v, datetime.datetime) else v
+            row[k] = v.isoformat() if isinstance(v, (datetime.datetime, datetime.date)) else v
         result.append(row)
     return result
 
 
 class CreateApiKeyBody(BaseModel):
     name: str
+    expires_at: str | None = None  # ISO-8601 string or null (eternal)
 
 
 @router.get("")
 async def list_api_keys(request: Request):
-    """Return list of all API keys as JSON."""
+    """Return list of API keys as JSON.
+
+    Scoping rules (M9 §3.3):
+      - Admin session (or no session): returns all keys.
+      - Regular user session: returns only keys owned by that user.
+    """
     keys = []
     error = None
     try:
         from src.db.pg import auth_store
+        from src.web_ui.auth import current_user_id
 
-        keys = auth_store().list_api_keys()
+        uid = current_user_id(request)
+        # Determine if caller is admin: admin keys have user_id=NULL; if uid is None
+        # (no session / CLI context) we treat as admin for backward compat.
+        is_admin = uid is None or request.session.get("is_admin", False)
+        keys = auth_store().list_api_keys(user_id=uid, admin=is_admin)
     except Exception as e:
         error = str(e)
 
@@ -43,18 +62,41 @@ async def list_api_keys(request: Request):
 
 
 @router.post("")
+@audit_action("api_key.create")
 async def create_api_key(body: CreateApiKeyBody, request: Request):
-    """Create a new API key. Returns raw key (shown once)."""
+    """Create a new API key. Returns raw key (shown once).
+
+    user_id is set from the current session (M9 §3.3):
+      - Web UI session: user_id = session user's integer id.
+      - No session (CLI / backward-compat): user_id = NULL (global/admin key).
+    """
     error = None
     new_raw_key = None
     keys = []
 
     try:
         from src.db.pg import auth_store
+        from src.web_ui.auth import current_user_id
 
-        raw_key, _, _ = auth_store().create_api_key(body.name)
+        uid = current_user_id(request)
+
+        # Parse optional expires_at
+        expires_dt: datetime.datetime | None = None
+        if body.expires_at:
+            try:
+                expires_dt = datetime.datetime.fromisoformat(body.expires_at)
+            except ValueError as exc:
+                return JSONResponse(
+                    {"error": f"Invalid expires_at format: {exc}"}, status_code=400
+                )
+
+        raw_key, _, _ = auth_store().create_api_key(
+            body.name, user_id=uid, expires_at=expires_dt
+        )
         new_raw_key = raw_key
-        keys = auth_store().list_api_keys()
+
+        is_admin = uid is None or request.session.get("is_admin", False)
+        keys = auth_store().list_api_keys(user_id=uid, admin=is_admin)
     except Exception as e:
         error = str(e)
 
@@ -65,6 +107,7 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
 
 
 @router.post("/{key_id}/deactivate")
+@audit_action("api_key.deactivate", target_param="key_id")
 async def deactivate_api_key(request: Request, key_id: int):
     """Deactivate an API key."""
     try:

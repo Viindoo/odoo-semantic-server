@@ -43,9 +43,9 @@ class TestHashKey:
     def test_different_inputs_different_hashes(self):
         assert hash_key("key1") != hash_key("key2")
 
-    def test_sha256_length(self):
+    def test_hmac_sha256_length(self):
         h = hash_key("any_key")
-        assert len(h) == 64  # SHA-256 hex = 64 chars
+        assert len(h) == 64  # HMAC-SHA256 hex = 64 chars
 
 
 class TestCacheOperations:

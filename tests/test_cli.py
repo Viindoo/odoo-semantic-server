@@ -92,20 +92,41 @@ class TestDsnParsing:
 
 
 def test_backup_calls_pg_dump(monkeypatch, tmp_path):
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
     monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
-    out = tmp_path / "dump.sql"
+    monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
+    out = backup_dir / "dump.tar.gz"
     args = _build_parser().parse_args(["backup", "--output", str(out)])
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        result = _cmd_backup(args)
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = lambda s: s
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_cursor.fetchone.return_value = (True,)
+    mock_conn.cursor.return_value = mock_cursor
+
+    def _fake_run(cmd, **kwargs):
+        if "pg_dump" in cmd[0]:
+            out_idx = cmd.index("-f") + 1
+            from pathlib import Path
+            Path(cmd[out_idx]).write_text("-- stub\n")
+            return MagicMock(returncode=0, stderr="")
+        return MagicMock(returncode=0, stderr="")
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        with patch("subprocess.run", side_effect=_fake_run) as mock_run:
+            result = _cmd_backup(args)
     assert result == 0
-    called_cmd = mock_run.call_args[0][0]
+    # Verify pg_dump was called with password in env, not argv
+    pg_calls = [c for c in mock_run.call_args_list if "pg_dump" in c[0][0][0]]
+    assert pg_calls, "pg_dump was not called"
+    called_cmd = pg_calls[0][0][0]
     assert "pg_dump" in called_cmd[0]
-    assert str(out) in called_cmd
     # Password must NOT be in argv
     assert "pw" not in " ".join(called_cmd)
     # Password must be in env
-    called_env = mock_run.call_args[1].get("env", {})
+    called_env = pg_calls[0][1].get("env", {})
     assert called_env.get("PGPASSWORD") == "pw"
 
 
@@ -163,7 +184,7 @@ def test_restore_psql_failure(monkeypatch, tmp_path):
     assert result == 1
 
 
-def test_rotate_fernet_re_encrypts_rows():
+def test_rotate_fernet_re_encrypts_rows(monkeypatch):
     from cryptography.fernet import Fernet
 
     old_key = Fernet.generate_key()
@@ -173,57 +194,61 @@ def test_rotate_fernet_re_encrypts_rows():
     encrypted = old_f.encrypt(plaintext).decode()
 
     mock_cursor = MagicMock()
-    mock_cursor.__enter__ = lambda s: s
-    mock_cursor.__exit__ = MagicMock(return_value=False)
     mock_cursor.fetchall.return_value = [(1, encrypted)]
 
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
 
-    # Use `--flag=value` form so argparse can't misread a Fernet key
-    # starting with `-` (URL-safe base64 alphabet includes `-`) as another flag.
-    args = _build_parser().parse_args(
-        ["rotate-fernet", f"--old-key={old_key.decode()}", f"--new-key={new_key.decode()}"]
-    )
+    monkeypatch.setenv("OLD_FERNET_KEY", old_key.decode())
+    monkeypatch.setenv("NEW_FERNET_KEY", new_key.decode())
+
+    args = _build_parser().parse_args(["rotate-fernet"])
     with patch("psycopg2.connect", return_value=mock_conn):
         with patch("src.cli._get_pg_dsn", return_value="postgresql://user:pw@localhost/db"):
             result = _cmd_rotate_fernet(args)
     assert result == 0
-    # Verify UPDATE was called
-    assert mock_cursor.execute.called
+    # Verify UPDATE was called (among the cursor execute calls)
+    update_calls = [c for c in mock_cursor.execute.call_args_list if "UPDATE" in str(c)]
+    assert update_calls, "Expected at least one UPDATE call on successful rotation"
 
 
-def test_rotate_fernet_invalid_key():
-    args = _build_parser().parse_args(
-        ["rotate-fernet", "--old-key=not-a-key", "--new-key=also-bad"]
-    )
-    result = _cmd_rotate_fernet(args)
+def test_rotate_fernet_invalid_key(monkeypatch):
+    monkeypatch.setenv("OLD_FERNET_KEY", "not-a-key")
+    monkeypatch.setenv("NEW_FERNET_KEY", "also-bad")
+    args = _build_parser().parse_args(["rotate-fernet"])
+    with patch("src.cli._get_pg_dsn", return_value="postgresql://user:pw@localhost/db"):
+        result = _cmd_rotate_fernet(args)
     assert result == 1
 
 
-def test_rotate_fernet_skips_undecryptable_row():
+def test_rotate_fernet_aborts_on_undecryptable_row(monkeypatch):
+    """Since M9 W-FE atomic rotation: undecryptable row causes SystemExit(2), not skip."""
+    import pytest
     from cryptography.fernet import Fernet
 
     old_key = Fernet.generate_key()
     new_key = Fernet.generate_key()
-    # Encrypt with a DIFFERENT key so old_key cannot decrypt it
+    # Encrypt with a DIFFERENT key so old_key cannot decrypt it.
     other_key = Fernet.generate_key()
     other_f = Fernet(other_key)
     bad_encrypted = other_f.encrypt(b"secret").decode()
 
     mock_cursor = MagicMock()
-    mock_cursor.__enter__ = lambda s: s
-    mock_cursor.__exit__ = MagicMock(return_value=False)
     mock_cursor.fetchall.return_value = [(1, bad_encrypted)]
 
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
 
-    args = _build_parser().parse_args(
-        ["rotate-fernet", f"--old-key={old_key.decode()}", f"--new-key={new_key.decode()}"]
-    )
+    monkeypatch.setenv("OLD_FERNET_KEY", old_key.decode())
+    monkeypatch.setenv("NEW_FERNET_KEY", new_key.decode())
+
+    args = _build_parser().parse_args(["rotate-fernet"])
     with patch("psycopg2.connect", return_value=mock_conn):
         with patch("src.cli._get_pg_dsn", return_value="postgresql://user:pw@localhost/db"):
-            result = _cmd_rotate_fernet(args)
-    # Should still return 0 (warnings printed, but not fatal)
-    assert result == 0
+            with pytest.raises(SystemExit) as exc_info:
+                _cmd_rotate_fernet(args)
+
+    assert exc_info.value.code == 2
+    # Ensure rollback was called (not commit).
+    mock_conn.rollback.assert_called_once()
+    mock_conn.commit.assert_not_called()

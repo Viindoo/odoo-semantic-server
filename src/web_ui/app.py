@@ -6,6 +6,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -49,12 +50,44 @@ class _LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class _MaintenanceModeMiddleware(BaseHTTPMiddleware):
+    """Return 503 for non-restore requests while a restore is in progress.
+
+    M9 W-RS OWASP item 7: maintenance mode blocks all non-restore API calls
+    with a 503 + Retry-After: 60 header to allow clients to back off.
+    The restore endpoint itself (/api/operations/restore) is allowed through
+    so the 409 concurrent-restore guard can respond correctly.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        from src.web_ui.routes.operations import _RESTORE_IN_PROGRESS
+
+        if _RESTORE_IN_PROGRESS.is_set():
+            # Allow the restore endpoint through (for 409 concurrent guard)
+            if request.url.path == "/api/operations/restore":
+                return await call_next(request)
+            # Allow health checks through
+            if request.url.path in ("/health", "/openapi.json"):
+                return await call_next(request)
+            return JSONResponse(
+                {
+                    "error": "service_in_maintenance",
+                    "detail": "Restore in progress — try again shortly",
+                },
+                status_code=503,
+                headers={"Retry-After": "60"},
+            )
+        return await call_next(request)
+
+
 def create_app() -> FastAPI:
     """Create and configure the Web UI FastAPI app (pure JSON API)."""
     app = FastAPI(
         title="Odoo Semantic MCP — Admin",
         description="Admin JSON API for managing profiles, repos, API keys, and SSH keys.",
-        docs_url=None,  # Disable OpenAPI docs in admin UI
+        # Disabled per ADR-0015 (pure JSON API). Astro renders all admin UI;
+        # FastAPI never serves HTML docs. /docs and /redoc must remain None.
+        docs_url=None,
         redoc_url=None,
         lifespan=_lifespan,
     )
@@ -62,12 +95,26 @@ def create_app() -> FastAPI:
     # Middleware ordering (FastAPI/Starlette add_middleware is LIFO):
     # Last added = outermost (runs first in request chain).
     # Required order (outermost → innermost):
-    #   1. LoopbackOnly  — reject non-loopback (I6 CSRF mitigation) before anything else.
-    #   2. SessionMiddleware — populate request.session from signed cookie.
-    #   3. AuthRequiredMiddleware — check request.session for valid login.
+    #   1. LoopbackOnly       — reject non-loopback (I6 CSRF mitigation) before anything else.
+    #   2. MaintenanceMode    — block all non-restore requests during restore (M9 W-RS).
+    #   3. SessionMiddleware  — populate request.session from signed cookie.
+    #   4. AuthRequiredMiddleware — check request.session for valid login.
+    #   5. CORSMiddleware     — documented no-op (see comment below).
     # Add in REVERSE order so the last add_middleware call = outermost.
 
-    # Innermost: auth check (added first → innermost)
+    # Innermost: CORS (added first → innermost).
+    # Documented no-op: Astro SSR proxies all /api/* calls through nginx,
+    # so browsers never make direct cross-origin requests to FastAPI :8003.
+    # CORSMiddleware here makes intent explicit — no cross-origin access allowed.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[],  # empty = no cross-origin allowed
+        allow_credentials=False,
+        allow_methods=[],
+        allow_headers=[],
+    )
+
+    # Auth check (added second → runs just outside CORSMiddleware)
     from src.web_ui.middleware import AuthRequiredMiddleware
 
     app.add_middleware(AuthRequiredMiddleware)
@@ -75,9 +122,10 @@ def create_app() -> FastAPI:
     # Middle: session cookie parsing
     from src.web_ui.auth import get_session_secret
 
-    # WEBUI_SECURE_COOKIE=1 (default) → Secure flag; set to 0 for local dev over plain HTTP.
+    # F15: WEBUI_SECURE_COOKIE opt-out — cookie is Secure by default.
+    # Set WEBUI_SECURE_COOKIE=0 to disable (local dev over plain HTTP only).
     # WARNING: setting to 0 in production allows session hijacking over plain HTTP.
-    https_only = os.environ.get("WEBUI_SECURE_COOKIE", "1") == "1"
+    https_only = os.environ.get("WEBUI_SECURE_COOKIE", "1") != "0"
     app.add_middleware(
         SessionMiddleware,
         secret_key=get_session_secret(),
@@ -87,13 +135,18 @@ def create_app() -> FastAPI:
         max_age=None,  # Session cookie (browser-close expiry); TTL enforced by session_at
     )
 
+    # Middle: maintenance mode (blocks non-restore requests during restore)
+    app.add_middleware(_MaintenanceModeMiddleware)
+
     # Outermost: loopback IP check (added last → runs first)
     app.add_middleware(_LoopbackOnlyMiddleware)
 
     # Auth endpoints (exempt from AuthRequiredMiddleware via /api/auth/ prefix)
-    from src.web_ui.routes import login
+    from src.web_ui.routes import login, oauth, signup
 
     app.include_router(login.router)
+    app.include_router(oauth.router)
+    app.include_router(signup.router)
 
     from src.web_ui.routes import dashboard
 
@@ -118,5 +171,20 @@ def create_app() -> FastAPI:
     from src.web_ui.routes import operations
 
     app.include_router(operations.router)
+
+    # TOTP MFA routes (M9 W-MF)
+    from src.web_ui.routes import totp
+
+    app.include_router(totp.router)
+
+    # M9 W-UM: User management (list, deactivate, reactivate, reset-password-link)
+    from src.web_ui.routes import admin_users
+
+    app.include_router(admin_users.router)
+
+    # M9 W-UO: Migrations read-only display
+    from src.web_ui.routes import admin_migrations
+
+    app.include_router(admin_migrations.router)
 
     return app
