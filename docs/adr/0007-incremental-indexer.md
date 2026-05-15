@@ -174,3 +174,18 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
      (see pipeline.py cross-repo dep propagation block).
 
 - Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this — future tuning may add explicit metrics.
+
+## Embedder hang risk (added 2026-05-15)
+
+Auto-reseed `seed_patterns` gọi embedder qua `_write_pgvector_with_embedder()`.
+Trước v0.3.x, embedder dùng `urllib.request.urlopen(timeout=N)` — đây là
+per-socket idle timeout, KHÔNG phải total wall-clock deadline. Embed backend
+gửi 1 byte mỗi N-1 giây sẽ giữ socket vô hạn → indexer thread block →
+ThreadPoolExecutor exhaust → pipeline freeze, không có exception nào raise.
+
+Fix: replace urllib bằng `httpx.Client(timeout=httpx.Timeout(...))`. `read`
+timeout của httpx áp giữa các chunk → server im lặng raise `ReadTimeout`
+đúng nghĩa → retry loop hoạt động → repo status chuyển `error`.
+
+**Workaround nếu chạy prod cũ chưa fix:** chạy indexer với `--no-embed`.
+Backfill Neo4j-only ops sẽ skip embedder, không hang.

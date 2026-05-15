@@ -651,3 +651,32 @@ CI chạy 2 job parallel (`browser-admin` + `browser-public`), mỗi job dùng `
 | `impact_analysis` | — | — | ✓ Neo4j |
 
 `find_examples` cần Ollama chạy với model `qwen3-embedding-q5km`. Các tool khác không cần embedder.
+
+---
+
+## Troubleshooting
+
+### Indexer hang
+
+**Symptom:** indexer process chạy nhưng không tiến triển. Kiểm tra:
+- `ps -ef | grep "src.indexer index-repo"` — process state `S` (sleeping).
+- `ss -tnp | grep <pid>` — outbound TCP ESTABLISHED tới embed backend, 0 byte pending.
+- Log file im lặng nhiều phút, không có exception.
+
+**Quick action:**
+```bash
+kill -SIGTERM <pid>
+# Restart bypass embedder:
+~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --no-embed
+```
+
+**Verify embed backend:**
+```bash
+curl -X POST $EMBEDDER_URL/api/embed -d '{"input":"hello"}' -H "Content-Type: application/json"
+# Healthy: response trong <1s
+```
+
+**Tunable timeouts** (env vars, default unit: giây):
+- `EMBEDDER_TIMEOUT_CONNECT` (default 10) — TCP connect timeout.
+- `EMBEDDER_TIMEOUT_READ` (default 1200) — between-chunks read timeout. Backward-compat alias `EMBEDDER_TIMEOUT`.
+- `EMBEDDER_TIMEOUT_WRITE` (default 30) — request body write timeout.
