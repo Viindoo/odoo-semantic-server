@@ -2,9 +2,9 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-## [Unreleased] — M9 "Auth Wow" + M8 cleanup + comprehensive security hardening
+## [0.4.0] — 2026-05-15 — M9 "Auth Wow" + M8 cleanup + comprehensive security hardening
 
-19 worktrees merged via 9-phase orchestration. v0.4.0 candidate.
+19 worktrees merged via 9-phase orchestration. PR #100.
 
 ### Added — Auth Wow features
 

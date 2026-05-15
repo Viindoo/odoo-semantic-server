@@ -88,7 +88,7 @@ Test MCP local với Claude Code (không cần production server) — 5 phút se
 
 ## System Requirements (Server)
 
-Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–M5 đầy đủ). M8 thêm Node.js 20+ runtime cho Astro service.
+Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–M5 đầy đủ). M9 requires Node.js 22+ (pnpm 10+) for Astro service.
 
 → **[`docs/deploy.md §0.5 System Requirements`](docs/deploy.md#05-system-requirements)** cho table chi tiết + scaling guidance.
 
@@ -96,14 +96,14 @@ Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–
 
 ## Deploy Server (Admin)
 
-Happy-path cho M8 (3 services):
+Happy-path cho M9 (3 services):
 
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-mcp && cd odoo-semantic-mcp
 make install && docker compose up -d
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
 
-# Build Astro frontend (requires Node.js 20+, pnpm):
+# Build Astro frontend (requires Node.js 22+, pnpm 10+):
 cd site && pnpm install --frozen-lockfile && pnpm build && cd ..
 ```
 
@@ -152,9 +152,9 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.3.0 (2026-05-14) — M8 Public Wow complete. Astro SSR unified UI (landing + 6 admin pages), FastAPI pure JSON API, React Flow hero, 68 browser tests.
+**Latest release:** v0.4.0 (2026-05-15) — M9 Auth Wow complete. OAuth Google/GitHub, MFA TOTP, public signup + email verify + hCaptcha, multi-user admin, backup/restore UI, audit log, 30+ security findings closed.
 
-**Active milestone:** M9 "Auth Wow" — OAuth, public signup, multi-user admin.
+**Active milestone:** M10 "Billing Wow" — Stripe, plan tiers.
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 
