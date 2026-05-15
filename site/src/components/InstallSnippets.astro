@@ -3,23 +3,23 @@
 // Pure CSS tab switching, no React dependency
 ---
 
-<section class="install-snippets w-full max-w-3xl mx-auto my-8">
+<section class="install-snippets w-full max-w-3xl mx-auto my-8" data-testid="cta-step-0">
   <h2 class="text-xl font-semibold text-gray-800 mb-4">Quick Install</h2>
 
   <div class="tabs" role="tablist" aria-label="Client install instructions">
-    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="claude" aria-controls="tab-claude">
+    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="claude" aria-controls="tab-claude" data-testid="install-tab-claude-code">
       Claude Code
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="codex" aria-controls="tab-codex">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="codex" aria-controls="tab-codex" data-testid="install-tab-codex-cli">
       Codex CLI
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="gemini" aria-controls="tab-gemini">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="gemini" aria-controls="tab-gemini" data-testid="install-tab-gemini-cli">
       Gemini CLI
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="vscode" aria-controls="tab-vscode">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="vscode" aria-controls="tab-vscode" data-testid="install-tab-vs-code">
       VS Code
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="antigravity" aria-controls="tab-antigravity">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="antigravity" aria-controls="tab-antigravity" data-testid="install-tab-antigravity">
       Antigravity
     </button>
   </div>
