@@ -52,9 +52,10 @@ def _make_app(*, auth_bypass: bool = True, session_secret: str = "test-secret-32
     "no bypass" is requested for a single test.
     """
     if auth_bypass:
-        # conftest autouse fixture already sets WEBUI_AUTH_DISABLED=1 for this
-        # module (it is NOT in the real_auth_flow_files set). Nothing to do.
-        pass
+        # Self-managed: this module is in conftest.real_auth_flow_files so
+        # conftest does NOT set WEBUI_AUTH_DISABLED.  Set it explicitly here
+        # for tests that check non-auth functionality (content-type, size, etc.)
+        os.environ["WEBUI_AUTH_DISABLED"] = "1"
     else:
         # Explicit no-bypass — temporarily clear (only affects current test
         # because conftest autouse re-applies on the next test).

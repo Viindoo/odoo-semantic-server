@@ -12,9 +12,9 @@ Account-linking policy (F5 security gate):
        via unverified email at the provider).
     4. No match                              → create new user (is_admin=FALSE).
 
-OAuth-only users have password_hash = NULL.  The login.py password path must
-reject password login for accounts where password_hash IS NULL — see login.py
-for that guard.
+OAuth-only users have password_hash = NULL.  The login.py password path forces
+a dummy-hash bcrypt compare for NULL password_hash so timing matches a
+non-existent user (F1 invariant — timing oracle closed in login.py).
 """
 
 from __future__ import annotations

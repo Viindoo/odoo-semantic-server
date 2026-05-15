@@ -83,6 +83,16 @@ def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
     real_auth_flow_files = {
         "test_web_ui_auth.py",
         "test_web_ui_browser.py",
+        # M9 auth-flow tests: each of these exercises real auth logic and must
+        # not fall through to the WEBUI_AUTH_DISABLED bypass.  Each file is
+        # responsible for managing its own bypass when bypass is incidental
+        # (e.g. test_admin_users seeds WEBUI_AUTH_DISABLED at module level for
+        # tests that check admin data, not the auth flow itself).
+        "test_signup.py",
+        "test_oauth.py",
+        "test_totp.py",
+        "test_admin_users.py",
+        "test_restore_security.py",
     }
     if fname in real_auth_flow_files:
         # Defensive: scrub any leaked bypass env from prior tests in the session.
