@@ -243,9 +243,9 @@ jobs:
       - id: check
         run: |
           if [ -n "$OLLAMA_URL" ]; then
-            echo "enabled=true" >> $GITHUB_OUTPUT
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "enabled=false" >> $GITHUB_OUTPUT
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
         env:
           OLLAMA_URL: ${{ secrets.OLLAMA_URL }}

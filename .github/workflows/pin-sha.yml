@@ -19,7 +19,7 @@ jobs:
 
       - name: Get SHA
         id: info
-        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
         with:
@@ -37,7 +37,7 @@ jobs:
               if p['name'] == 'odoo-semantic':
                   print(p['source'].get('sha', ''))
           ")
-          [ "$CURRENT" = "${{ steps.info.outputs.sha }}" ] && echo "skip=true" >> $GITHUB_OUTPUT || echo "skip=false" >> $GITHUB_OUTPUT
+          [ "$CURRENT" = "${{ steps.info.outputs.sha }}" ] && echo "skip=true" >> "$GITHUB_OUTPUT" || echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Update marketplace.json
         if: steps.check.outputs.skip == 'false'

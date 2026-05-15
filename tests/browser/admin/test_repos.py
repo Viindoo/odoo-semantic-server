@@ -634,7 +634,10 @@ class TestSetParent:
         page.get_by_test_id("profile-name-input").fill("ver_mismatch_v98")
         page.get_by_test_id("profile-version-input").fill("98.0")
         page.get_by_test_id("add-profile-button").click()
-        expect(page.get_by_test_id("profile-row").first).to_be_visible(timeout=8000)
+        # Wait for the SECOND profile-row (nth(1)) — .first matches the existing
+        # ver_match_v99 row immediately and returns before location.reload()
+        # finishes, leaving page.content() with stale HTML missing the v98 row.
+        expect(page.get_by_test_id("profile-row").nth(1)).to_be_visible(timeout=8000)
 
         # The v99 profile's parent select should NOT contain the v98 profile
         page_html = page.content()
