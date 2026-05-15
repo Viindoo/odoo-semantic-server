@@ -8,6 +8,23 @@ import PersonaCards from '../components/PersonaCards.astro';
 import GraphShowcase from '../components/GraphShowcase.tsx';
 import PromptSimulator from '../components/PromptSimulator.tsx';
 import TokenBenchmark from '../components/TokenBenchmark.tsx';
+
+const TOOLS = [
+  { num: '01', name: 'resolve_model', desc: 'Find a model across modules + versions.', group: 'resolve' },
+  { num: '02', name: 'resolve_field', desc: 'Locate a field — type, defaults, overrides.', group: 'resolve' },
+  { num: '03', name: 'resolve_method', desc: 'Trace a method across the inheritance chain.', group: 'resolve' },
+  { num: '04', name: 'resolve_view', desc: 'Find a view + its XPath inheritance order.', group: 'resolve' },
+  { num: '05', name: 'find_examples', desc: 'Pull real-world usage from indexed repos.', group: 'resolve' },
+  { num: '06', name: 'impact_analysis', desc: 'Measure blast radius of a field change.', group: 'resolve' },
+  { num: '07', name: 'lookup_core_api', desc: 'Identify ORM, CLI, and framework symbols.', group: 'resolve' },
+  { num: '08', name: 'api_version_diff', desc: 'Delta between two versions.', group: 'version' },
+  { num: '09', name: 'find_deprecated_usage', desc: 'Scan a codebase for deprecated APIs.', group: 'version' },
+  { num: '10', name: 'lint_check', desc: 'Odoo-specific lint, not generic Python.', group: 'quality' },
+  { num: '11', name: 'cli_help', desc: 'odoo-bin flags for your installed version.', group: 'quality' },
+  { num: '12', name: 'suggest_pattern', desc: 'Curated implementation patterns.', group: 'resolve' },
+  { num: '13', name: 'check_module_exists', desc: 'Settle "is this built-in" debates.', group: 'resolve' },
+  { num: '14', name: 'find_override_point', desc: 'Pinpoint the safest hook for custom logic.', group: 'resolve' },
+];
 ---
 
 <BaseLayout
@@ -118,12 +135,27 @@ import TokenBenchmark from '../components/TokenBenchmark.tsx';
         14 specialized tools.<br />One MCP endpoint.
       </h2>
       <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
-        resolve_model · resolve_field · resolve_method · resolve_view · find_examples · impact_analysis
-        · lookup_core_api · api_version_diff · find_deprecated_usage · lint_check · cli_help
-        · suggest_pattern · check_module_exists · find_override_point
+        Resolve models, fields, methods, views. Find examples, measure impact. Version diffs, deprecation scans, pattern suggestions — all atomic.
       </p>
-      <!-- W9 will fill with 14 tools grid inline -->
-      <div class="mt-12 text-sm font-mono text-viindoo-on-dark-dim opacity-60">{/* 14-tool grid — W9 */}</div>
+
+      <!-- 14-tool grid -->
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
+        {TOOLS.map((tool) => (
+          <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[120px]" data-tool-group={tool.group}>
+            <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
+            <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
+            <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
+            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
+          </div>
+        ))}
+      </div>
+
+      <!-- Tool legend -->
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-5 font-mono text-xs text-viindoo-on-dark-muted">
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-primary"></span>Resolve (10)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary"></span>Version (2)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-warning"></span>Quality (2)</span>
+      </div>
     </div>
   </section>
 
@@ -176,10 +208,30 @@ import TokenBenchmark from '../components/TokenBenchmark.tsx';
       <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">One URL. Any AI tool.</h2>
       <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
         No installation required on your end. Add the URL + API key to your AI tool config — done in under 5 minutes.
-        W9 will add Step 0 and a CTA band here.
       </p>
       <div class="mt-10">
         <InstallSnippets />
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA band before footer -->
+  <section class="bg-viindoo-bg-0 px-6 pb-24">
+    <div class="mx-auto max-w-5xl relative overflow-hidden rounded-3xl border border-white/10 p-12 text-center" style="background: radial-gradient(circle at 20% 30%, rgba(0,187,206,0.18), transparent 50%), radial-gradient(circle at 80% 70%, rgba(127,66,130,0.18), transparent 50%), linear-gradient(120deg, var(--viindoo-bg-1), var(--viindoo-bg-2));">
+      <h2 class="font-display text-3xl md:text-4xl font-extrabold leading-tight mb-4">
+        Stop guessing. Start shipping.
+      </h2>
+      <p class="text-viindoo-on-dark-muted text-lg max-w-2xl mx-auto mb-8">
+        Get an API key, pick your client, and query the Odoo ecosystem in your next prompt.
+      </p>
+      <div class="flex flex-wrap justify-center gap-3">
+        <a href="/admin/login?next=/admin/api-keys" class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200">
+          Get your API key
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a href="/install/" class="inline-flex items-center gap-2 border border-white/20 text-viindoo-on-dark font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-white/5 transition-all duration-200">
+          Read the docs
+        </a>
       </div>
     </div>
   </section>
