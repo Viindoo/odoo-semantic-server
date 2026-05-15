@@ -4,6 +4,7 @@ export const prerender = true;
 import BaseLayout from '../layouts/BaseLayout.astro';
 import InstallSnippets from '../components/InstallSnippets.astro';
 import Hero from '../components/Hero.astro';
+import PersonaCards from '../components/PersonaCards.astro';
 ---
 
 <BaseLayout
@@ -82,8 +83,7 @@ import Hero from '../components/Hero.astro';
         Three workflows we serve deeply, and two more where MCP shines. Whether you write code,
         scope projects, or quantify upgrade risk — get answers in seconds, not days.
       </p>
-      <!-- W4 will mount PersonaCards.astro here -->
-      <div class="mt-12 text-sm font-mono text-viindoo-muted opacity-60">{/* persona cards — W4 */}</div>
+      <PersonaCards />
     </div>
   </section>
 
