@@ -10,11 +10,12 @@ import subprocess
 import sys
 import threading
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
 
 _logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class CreateProfileBody(BaseModel):
 
 
 @router.post("/profiles")
+@audit_action("profile.create")
 async def create_profile(body: CreateProfileBody, request: Request):
     """Create a new profile.
 
@@ -92,6 +94,7 @@ class SetProfileParentBody(BaseModel):
 
 
 @router.patch("/profiles/{profile_id}/parent")
+@audit_action("profile.set_parent", target_param="profile_id")
 async def set_profile_parent(
     profile_id: int, body: SetProfileParentBody, request: Request
 ):
@@ -102,12 +105,20 @@ async def set_profile_parent(
     Returns 400 on validation error, 200 on success.
     """
     try:
+        from src.db.exceptions import (
+            ProfileCycleError,
+            ProfileNotFoundError,
+            ProfileVersionMismatchError,
+        )
         from src.db.pg import repo_store
 
         changed = repo_store().set_profile_parent(profile_id, body.parent_id)
-    except ValueError as e:
+    except ProfileNotFoundError as e:
+        _logger.warning("Set profile parent: profile not found: %s", e)
+        raise HTTPException(status_code=404, detail="Profile not found")
+    except (ProfileCycleError, ProfileVersionMismatchError) as e:
         _logger.warning("Set profile parent validation failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         _logger.warning("Set profile parent failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -121,6 +132,7 @@ async def set_profile_parent(
 
 
 @router.delete("/profiles/{profile_id}")
+@audit_action("profile.delete", target_param="profile_id")
 async def delete_profile(request: Request, profile_id: int):
     """Delete a profile (and cascade-delete its repos), then clean Neo4j + pgvector."""
     from pathlib import Path
@@ -331,6 +343,7 @@ class AddRepoBody(BaseModel):
 
 
 @router.post("/repos")
+@audit_action("repo.create")
 async def add_repo(body: AddRepoBody, request: Request):
     """Add a repo to a profile. Triggers async clone for SSH URLs."""
     from src.git_utils import default_clone_dir, is_ssh_url
@@ -405,6 +418,7 @@ async def ssh_keys_list(request: Request):
 
 
 @router.delete("/repos/{repo_id}")
+@audit_action("repo.delete", target_param="repo_id")
 async def delete_repo(request: Request, repo_id: int):
     """Delete a single repo, then clean Neo4j + pgvector scoped to that repo."""
     from pathlib import Path
@@ -453,6 +467,7 @@ async def delete_repo(request: Request, repo_id: int):
 
 
 @router.post("/profiles/{profile_id}/clone-all")
+@audit_action("profile.clone_all", target_param="profile_id")
 async def clone_all_pending(profile_id: int, request: Request):
     """Bulk-clone all pending/manual/error repos for a profile.
 
@@ -466,8 +481,14 @@ async def clone_all_pending(profile_id: int, request: Request):
     from pathlib import Path
     from urllib.parse import urlparse
 
+    # F22: distinguish 404 (profile does not exist) from 200 (profile exists,
+    # no repos pending). Check profile existence before listing repos.
     try:
         from src.db.pg import repo_store
+
+        profile = repo_store().get_profile_by_id(profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
 
         pending_statuses = {"manual", "pending", "error"}
 
@@ -527,6 +548,8 @@ async def clone_all_pending(profile_id: int, request: Request):
                 _logger.warning(
                     "clone-all: spawn failed for repo id=%s: %s", repo_id, e
                 )
+    except HTTPException:
+        raise
     except Exception as e:
         _logger.warning("clone-all failed for profile %s: %s", profile_id, e)
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -566,6 +589,7 @@ class IndexRepoBody(BaseModel):
 
 
 @router.post("/repos/{repo_id}/index")
+@audit_action("operations.index_repo", target_param="repo_id")
 async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
     """Trigger indexer for a specific repo's profile (non-blocking subprocess)."""
     # Validate max_workers before acquiring a DB connection
@@ -632,6 +656,7 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
 
 
 @router.post("/repos/{repo_id}/reset-embed")
+@audit_action("operations.reset_embed", target_param="repo_id")
 async def reset_embed(request: Request, repo_id: int):
     """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile."""
     try:

@@ -4,6 +4,11 @@ from pathlib import Path
 
 import psycopg2.errors
 
+from src.db.exceptions import (
+    ProfileCycleError,
+    ProfileNotFoundError,
+    ProfileVersionMismatchError,
+)
 from src.db.pg import PgPool
 
 
@@ -64,6 +69,13 @@ class RepoStore:
         with self._pool.checkout() as conn:
             return self._pool.fetch_all(conn, "SELECT * FROM profiles ORDER BY id")
 
+    def get_profile_by_id(self, profile_id: int) -> dict | None:
+        """Return a single profile dict by id, or None if not found."""
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_one(
+                conn, "SELECT * FROM profiles WHERE id = %s", (profile_id,)
+            )
+
     # ------------------------------------------------------------------
     # Profile hierarchy helpers (M8 — Option Y)
     # ------------------------------------------------------------------
@@ -90,7 +102,7 @@ class RepoStore:
             return
 
         if parent_id == profile_id:
-            raise ValueError(
+            raise ProfileCycleError(
                 f"profile id={profile_id} cannot be its own parent (self-reference cycle)"
             )
 
@@ -112,15 +124,15 @@ class RepoStore:
                 parent_row = cur.fetchone()
 
             if child_row is None:
-                raise ValueError(f"profile id={profile_id} not found")
+                raise ProfileNotFoundError(f"profile id={profile_id} not found")
             if parent_row is None:
-                raise ValueError(f"parent profile id={parent_id} not found")
+                raise ProfileNotFoundError(f"parent profile id={parent_id} not found")
 
             child_version = child_row[0]
             parent_version = parent_row[0]
 
             if child_version != parent_version:
-                raise ValueError(
+                raise ProfileVersionMismatchError(
                     f"version mismatch: child odoo_version={child_version!r} != "
                     f"parent odoo_version={parent_version!r}"
                 )
@@ -145,7 +157,7 @@ class RepoStore:
                 cycle_row = cur.fetchone()
 
             if cycle_row is not None:
-                raise ValueError(
+                raise ProfileCycleError(
                     f"setting parent id={parent_id} for profile id={profile_id} "
                     f"would create a cycle"
                 )
@@ -178,6 +190,12 @@ class RepoStore:
                 "WHERE id = %s AND parent_profile_id IS DISTINCT FROM %s",
                 (parent_id, profile_id, parent_id),
             )
+        if rowcount == 0:
+            # Distinguish "already at the requested value" (idempotent, profile
+            # exists) from "profile does not exist at all".
+            profile = self.get_profile_by_id(profile_id)
+            if profile is None:
+                raise ProfileNotFoundError(f"profile id={profile_id} not found")
         return rowcount > 0
 
     def get_ancestor_profile_names(self, profile_name: str) -> list[str]:

@@ -735,7 +735,7 @@ class TestProfileHierarchyWebUI:
 
     @pytest.mark.asyncio
     async def test_set_profile_parent_cycle_returns_400(self, migrated_pg):
-        """PATCH with cycle returns 400 + error message."""
+        """PATCH with cycle returns 422 + error message (was 400 before W-RC)."""
         from src.db.pg import repo_store
 
         # Build A → B, then try B.parent = A (cycle)
@@ -750,15 +750,15 @@ class TestProfileHierarchyWebUI:
                 json={"parent_id": b_id},  # A's parent = B (creates cycle)
             )
 
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         body = resp.json()
-        assert "error" in body
-        err = body["error"].lower()
-        assert "cycle" in err or "fail" in err
+        assert "detail" in body
+        detail = body["detail"].lower()
+        assert "cycle" in detail
 
     @pytest.mark.asyncio
     async def test_set_profile_parent_version_mismatch_returns_400(self, migrated_pg):
-        """PATCH with parent of different odoo_version returns 400."""
+        """PATCH with parent of different odoo_version returns 422 (was 400 before W-RC)."""
         from src.db.pg import repo_store
 
         parent_id = repo_store().add_profile("p17", "17.0")
@@ -771,8 +771,62 @@ class TestProfileHierarchyWebUI:
                 json={"parent_id": parent_id},
             )
 
-        assert resp.status_code == 400
-        assert "error" in resp.json()
+        assert resp.status_code == 422
+        assert "detail" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_patch_parent_nonexistent_profile_returns_404(self, migrated_pg):
+        """PATCH /parent with nonexistent profile_id returns 404."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                "/api/repos/profiles/99999/parent",
+                json={"parent_id": None},
+            )
+
+        assert resp.status_code == 404
+        assert "detail" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_patch_parent_cycle_returns_422(self, migrated_pg):
+        """PATCH /parent cycle returns 422 with typed ProfileCycleError."""
+        from src.db.pg import repo_store
+
+        a_id = repo_store().add_profile("cycle_a", "17.0")
+        b_id = repo_store().add_profile("cycle_b", "17.0")
+        repo_store().set_profile_parent(b_id, a_id)
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{a_id}/parent",
+                json={"parent_id": b_id},
+            )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+        assert "cycle" in body["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_patch_parent_version_mismatch_returns_422(self, migrated_pg):
+        """PATCH /parent version mismatch returns 422 with typed ProfileVersionMismatchError."""
+        from src.db.pg import repo_store
+
+        p17 = repo_store().add_profile("vm_p17", "17.0")
+        c18 = repo_store().add_profile("vm_c18", "18.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{c18}/parent",
+                json={"parent_id": p17},
+            )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+        assert "mismatch" in body["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_delete_parent_with_children_blocked(self, migrated_pg):
@@ -896,3 +950,33 @@ class TestCloneAllEndpoint:
         assert body["total"] == 0
         assert "message" in body
         mock_popen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clone_all_nonexistent_profile_returns_404(self, migrated_pg):
+        """POST /clone-all for a nonexistent profile_id returns 404 (F22)."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post("/api/repos/profiles/99999/clone-all")
+
+        assert resp.status_code == 404
+        body = resp.json()
+        assert "detail" in body
+
+    @pytest.mark.asyncio
+    async def test_clone_all_existing_profile_no_pending_returns_200(
+        self, migrated_pg
+    ):
+        """POST /clone-all for existing profile with no pending repos returns 200 (F22)."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("no_pending_profile", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(f"/api/repos/profiles/{pid}/clone-all")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["total"] == 0
+        assert "message" in body
