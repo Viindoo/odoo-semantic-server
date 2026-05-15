@@ -4,6 +4,8 @@
 #   - NO imports from src.indexer.* or src.mcp.* (prevents circular imports)
 #   - All callers: `from src.constants import XYZ`
 
+import os
+
 # ---------------------------------------------------------------------------
 # Odoo version era boundaries
 # ---------------------------------------------------------------------------
@@ -76,17 +78,40 @@ IMPACT_RISK_MED_THRESHOLD: int = 4
 # Batch sizes
 # ---------------------------------------------------------------------------
 
-NEO4J_WRITE_BATCH_SIZE: int = 500
-EMBEDDER_MAX_BATCH: int = 50    # empirical: ~22s per 100 texts on qwen3-embedding-q5km
+# NEO4J_WRITE_BATCH_SIZE: rows per Neo4j transaction.
+# Override via NEO4J_WRITE_BATCH_SIZE env var.
+NEO4J_WRITE_BATCH_SIZE: int = int(os.getenv("NEO4J_WRITE_BATCH_SIZE", "500"))
+
+# EMBEDDER_MAX_BATCH: texts per Ollama /api/embed call.
+# Empirical: ~22s per 100 texts on qwen3-embedding-q5km.
+# Keep at 50 to stay well under any reverse-proxy proxy_read_timeout (120s).
+# Override via EMBEDDER_MAX_BATCH env var for tuning on faster hardware.
+EMBEDDER_MAX_BATCH: int = int(os.getenv("EMBEDDER_MAX_BATCH", "50"))
 
 # ---------------------------------------------------------------------------
 # Timeouts (seconds)
 # ---------------------------------------------------------------------------
 
-TIMEOUT_GIT_CLONE: int = 600
-TIMEOUT_GIT_DIFF: int = 10
-TIMEOUT_GIT_SCAN: int = 10
-TIMEOUT_EMBEDDER_REQUEST: int = 600    # Ollama runs ~60s; 600s covers large core modules
+# TIMEOUT_GIT_CLONE: subprocess timeout for full git clone (no --depth=1).
+# v17+ odoo/odoo has 1M+ commits; fresh clone on a slow link takes 30+ min.
+# Default 3600s (1h). Override via TIMEOUT_GIT_CLONE env var.
+TIMEOUT_GIT_CLONE: int = int(os.getenv("TIMEOUT_GIT_CLONE", "3600"))
+
+# TIMEOUT_GIT_DIFF: subprocess timeout for git diff/rev-parse commands.
+# These are lightweight read-only ops, but a huge repo or slow disk can stall.
+# Default 30s (was 10s). Override via TIMEOUT_GIT_DIFF env var.
+TIMEOUT_GIT_DIFF: int = int(os.getenv("TIMEOUT_GIT_DIFF", "30"))
+
+# TIMEOUT_GIT_SCAN: subprocess timeout for git rev-parse HEAD during scan.
+# Default 30s (was 10s). Override via TIMEOUT_GIT_SCAN env var.
+TIMEOUT_GIT_SCAN: int = int(os.getenv("TIMEOUT_GIT_SCAN", "30"))
+
+# TIMEOUT_EMBEDDER_REQUEST: per-batch HTTP timeout for Ollama /api/embed.
+# A 50-text batch on qwen3-embedding-q5km takes ~22s on fast hardware but
+# can exceed 90s on CPU-only servers. When Ollama queue is busy (multiple
+# parallel profile workers), each request waits for the queue. 1200s (20 min)
+# gives ample headroom. Override via EMBEDDER_TIMEOUT env var.
+TIMEOUT_EMBEDDER_REQUEST: int = int(os.getenv("EMBEDDER_TIMEOUT", "1200"))
 
 # ---------------------------------------------------------------------------
 # Embedding defaults

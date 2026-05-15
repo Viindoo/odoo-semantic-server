@@ -34,6 +34,10 @@ WorkingDirectory=/opt/odoo-semantic-mcp/site
 ExecStart=/usr/bin/node /opt/odoo-semantic-mcp/site/dist/server/entry.mjs
 Restart=on-failure
 RestartSec=5
+# Astro SSR server starts in ~2s. 60s is generous.
+TimeoutStartSec=60
+# Allow in-flight SSR renders to complete before force-kill.
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 

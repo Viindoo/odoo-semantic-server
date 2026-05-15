@@ -97,14 +97,22 @@ class TestJobLifecycleWithPg:
         return job_store().create_job(label)
 
     def _stub_neo4j(self, monkeypatch):
-        """Stub out Neo4j so test doesn't need a running Neo4j instance."""
+        """Stub out Neo4j so test doesn't need a running Neo4j instance.
+
+        Stubs accept the split-sentinel ``key`` keyword argument (ADR-0007 D6-split).
+        """
         mock_writer = MagicMock()
         mock_writer.driver = MagicMock()
         monkeypatch.setattr(sp_mod, "_get_neo4j_writer", lambda: mock_writer)
         monkeypatch.setattr(sp_mod, "_write_neo4j", lambda patterns: None)
         monkeypatch.setattr(sp_mod, "_write_pgvector", lambda chunks: None)
-        monkeypatch.setattr(sp_mod, "_get_stored_patterns_sha", lambda driver: None)
-        monkeypatch.setattr(sp_mod, "_set_stored_patterns_sha", lambda driver, sha: None)
+        monkeypatch.setattr(
+            sp_mod, "_get_stored_patterns_sha", lambda driver, key="patterns_neo4j": None
+        )
+        monkeypatch.setattr(
+            sp_mod, "_set_stored_patterns_sha",
+            lambda driver, sha, key="patterns_neo4j": None,
+        )
         return mock_writer
 
     def test_job_transitions_queued_to_running_to_done(
@@ -171,9 +179,13 @@ class TestJobLifecycleWithPg:
         current_sha = sp_mod._compute_patterns_sha256(patterns_file)
 
         self._stub_neo4j(monkeypatch)
-        # Override stored sha to match → will trigger skip path
+        # Override stored sha to match for both keys → will trigger skip path.
+        # Per ADR-0007 D6-split: both patterns_neo4j and patterns_pgvector must match
+        # for a full run (no --no-embed) to skip.
         monkeypatch.setattr(
-            sp_mod, "_get_stored_patterns_sha", lambda driver: current_sha
+            sp_mod,
+            "_get_stored_patterns_sha",
+            lambda driver, key="patterns_neo4j": current_sha,
         )
 
         job_id = self._create_queued_job(migrated_pg)

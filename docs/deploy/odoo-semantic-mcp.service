@@ -17,6 +17,10 @@ Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 Restart=on-failure
 RestartSec=5
+# MCP server starts quickly (no indexing at startup). 60s is generous.
+TimeoutStartSec=60
+# Allow in-flight MCP requests to drain before force-kill.
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 # Security hardening

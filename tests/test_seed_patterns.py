@@ -165,7 +165,12 @@ def test_compute_patterns_sha256():
 
 
 def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
-    """After first seed, _SeedMeta sentinel exists with sha256."""
+    """After --no-embed seed, patterns_neo4j sentinel is written but NOT patterns_pgvector.
+
+    Per ADR-0007 D6-split: --no-embed only writes Neo4j PatternExample nodes, so
+    only the patterns_neo4j sentinel is set.  The patterns_pgvector sentinel must
+    remain absent until a full embed run succeeds.
+    """
     from src.indexer.seed_patterns import main
 
     # Set Neo4j config from test environment
@@ -175,6 +180,12 @@ def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
     monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
     monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    # Wipe ALL _SeedMeta nodes so stale sentinels from other runs don't interfere.
+    # clean_neo4j only wipes nodes with odoo_version=TEST_VERSION; _SeedMeta has no
+    # odoo_version property and must be cleaned explicitly.
+    with clean_neo4j.session() as session:
+        session.run("MATCH (s:_SeedMeta) DELETE s")
 
     # Create a minimal patterns.json for testing
     sample = [
@@ -191,28 +202,51 @@ def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
     patterns_file = tmp_path / "patterns.json"
     patterns_file.write_text(json.dumps(sample))
 
-    # Run seed once
+    # Run seed with --no-embed
     argv = ["--patterns-file", str(patterns_file), "--no-embed"]
     result = main(argv)
     assert result == 0
 
-    # Check sentinel exists
+    expected_sha = _compute_patterns_sha256(patterns_file)
+
     writer = _get_neo4j_writer_for_test()
     try:
         with writer.driver.session() as session:
-            result = session.run(
-                "MATCH (s:_SeedMeta {key: 'patterns'}) RETURN s.sha256 AS sha LIMIT 1"
+            # patterns_neo4j sentinel must be written
+            neo4j_row = session.run(
+                "MATCH (s:_SeedMeta {key: 'patterns_neo4j'}) RETURN s.sha256 AS sha LIMIT 1"
             ).single()
-            assert result is not None, "_SeedMeta sentinel not found"
-            stored_sha = result["sha"]
-            expected_sha = _compute_patterns_sha256(patterns_file)
-            assert stored_sha == expected_sha
+            assert neo4j_row is not None, (
+                "patterns_neo4j sentinel not found after --no-embed seed"
+            )
+            assert neo4j_row["sha"] == expected_sha, (
+                f"patterns_neo4j sha mismatch: got {neo4j_row['sha']!r}, "
+                f"expected {expected_sha!r}"
+            )
+
+            # patterns_pgvector sentinel must NOT be written (pgvector was skipped)
+            pgvec_row = session.run(
+                "MATCH (s:_SeedMeta {key: 'patterns_pgvector'}) RETURN s.sha256 AS sha LIMIT 1"
+            ).single()
+            pgvec_sha = pgvec_row["sha"] if pgvec_row else None
+            assert pgvec_row is None, (
+                "patterns_pgvector sentinel must not be set after --no-embed run — "
+                f"found sha={pgvec_sha!r}"
+            )
     finally:
         writer.close()
 
+    # Cleanup: wipe _SeedMeta so stale sentinels don't bleed into other tests.
+    with clean_neo4j.session() as session:
+        session.run("MATCH (s:_SeedMeta) DELETE s")
+
 
 def test_second_seed_no_change_skips(clean_neo4j, tmp_path, caplog, monkeypatch):
-    """Second seed with unchanged patterns.json skips reseed."""
+    """Second --no-embed seed with unchanged patterns.json skips reseed.
+
+    After the first --no-embed run writes the patterns_neo4j sentinel, the second
+    run (also --no-embed) must detect patterns_neo4j hash matches and skip.
+    """
     from src.indexer.seed_patterns import main
 
     # Set Neo4j config from test environment
@@ -222,6 +256,10 @@ def test_second_seed_no_change_skips(clean_neo4j, tmp_path, caplog, monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
     monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    # Wipe stale _SeedMeta from other runs before test starts
+    with clean_neo4j.session() as session:
+        session.run("MATCH (s:_SeedMeta) DELETE s")
 
     sample = [
         {
@@ -237,16 +275,17 @@ def test_second_seed_no_change_skips(clean_neo4j, tmp_path, caplog, monkeypatch)
     patterns_file = tmp_path / "patterns.json"
     patterns_file.write_text(json.dumps(sample))
 
-    # First seed
+    # First seed — writes patterns_neo4j sentinel
     argv = ["--patterns-file", str(patterns_file), "--no-embed"]
     result = main(argv)
     assert result == 0
 
-    # Second seed — should skip
+    # Second seed — patterns_neo4j hash matches → should skip
     caplog.clear()
     with caplog.at_level("INFO"):
         result = main(argv)
     assert result == 0
+    # Log message includes "skipping reseed" for both --no-embed and full paths
     assert "skipping reseed" in caplog.text
 
 
@@ -261,6 +300,10 @@ def test_second_seed_after_modification_reseeds(clean_neo4j, tmp_path, monkeypat
     monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
     monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    # Wipe stale _SeedMeta from other runs before test starts
+    with clean_neo4j.session() as session:
+        session.run("MATCH (s:_SeedMeta) DELETE s")
 
     sample = [
         {
@@ -304,6 +347,10 @@ def test_force_bypasses_sentinel(clean_neo4j, tmp_path, caplog, monkeypatch):
     monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
     monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USER", neo4j_user)
+
+    # Wipe stale _SeedMeta from other runs before test starts
+    with clean_neo4j.session() as session:
+        session.run("MATCH (s:_SeedMeta) DELETE s")
 
     sample = [
         {

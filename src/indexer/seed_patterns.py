@@ -61,21 +61,46 @@ def _compute_patterns_sha256(json_path: Path) -> str:
     return hashlib.sha256(json_path.read_bytes()).hexdigest()
 
 
-def _get_stored_patterns_sha(driver) -> str | None:
-    """Return sha256 stored on the _SeedMeta sentinel node, or None if no sentinel."""
+def _get_stored_patterns_sha(driver, key: str = "patterns_neo4j") -> str | None:
+    """Return sha256 stored on the _SeedMeta sentinel node for ``key``, or None.
+
+    Reads the split sentinel key (e.g. 'patterns_neo4j' or 'patterns_pgvector').
+    Also checks the legacy 'patterns' key as a fallback for the Neo4j sentinel so
+    that existing deployments with the old single-key sentinel are still detected
+    as "already seeded" until a --force run migrates them to split keys.
+
+    Per ADR-0007 D6-split: sentinel is split into two keys so divergence between
+    Neo4j PatternExample nodes and pgvector embeddings is explicitly detectable.
+    """
     with driver.session() as session:
         row = session.run(
-            "MATCH (s:_SeedMeta {key: 'patterns'}) RETURN s.sha256 AS sha LIMIT 1"
+            "MATCH (s:_SeedMeta {key: $key}) RETURN s.sha256 AS sha LIMIT 1",
+            key=key,
         ).single()
-        return row["sha"] if row else None
+        if row:
+            return row["sha"]
+        # Legacy fallback: old single-key sentinel (key='patterns') is treated as
+        # the neo4j sentinel only (pgvector was never written with that key).
+        if key == "patterns_neo4j":
+            legacy = session.run(
+                "MATCH (s:_SeedMeta {key: 'patterns'}) RETURN s.sha256 AS sha LIMIT 1"
+            ).single()
+            return legacy["sha"] if legacy else None
+        return None
 
 
-def _set_stored_patterns_sha(driver, sha: str) -> None:
-    """MERGE _SeedMeta sentinel node and set sha256 + updated_at."""
+def _set_stored_patterns_sha(driver, sha: str, key: str = "patterns_neo4j") -> None:
+    """MERGE _SeedMeta sentinel node for ``key`` and set sha256 + updated_at.
+
+    Per ADR-0007 D6-split: use key='patterns_neo4j' after Neo4j write succeeds and
+    key='patterns_pgvector' after pgvector write succeeds.  Both must match the
+    current sha256 for auto-reseed to skip BOTH stores on the next run.
+    """
     with driver.session() as session:
         session.run(
-            "MERGE (s:_SeedMeta {key: 'patterns'}) "
+            "MERGE (s:_SeedMeta {key: $key}) "
             "SET s.sha256 = $sha, s.updated_at = datetime()",
+            key=key,
             sha=sha,
         )
 
@@ -135,6 +160,12 @@ def run(
     Re-uses an EXISTING Neo4jWriter (no open/close inside) — caller manages lifecycle.
 
     Returns: {"patterns": N_written, "embeddings": N_embedded, "skipped": bool}
+
+    Sentinel policy (ADR-0007 D6-split):
+    - ``patterns_neo4j`` sentinel updated only after Neo4j write succeeds.
+    - ``patterns_pgvector`` sentinel updated only after pgvector write succeeds.
+    - When ``embedder is None`` the pgvector sentinel is NOT updated — a future run
+      with an embedder present will still write the embeddings.
     """
     patterns_path = patterns_file or _DEFAULT_PATTERNS_FILE
     if not patterns_path.exists():
@@ -143,29 +174,62 @@ def run(
 
     current_sha = _compute_patterns_sha256(patterns_path)
 
-    if not force:
-        stored_sha = _get_stored_patterns_sha(writer.driver)
-        if current_sha == stored_sha:
-            _logger.info(
-                "Patterns unchanged (sha=%s) — skipping reseed", current_sha[:12]
-            )
-            return {"patterns": 0, "embeddings": 0, "skipped": True}
+    # Determine which stores need an update.
+    neo4j_needs_update = force
+    pgvector_needs_update = force and embedder is not None
 
-    patterns = _load_patterns(patterns_path, odoo_version_min_filter)
-    writer.write_pattern_examples(patterns)
+    if not force:
+        stored_neo4j_sha = _get_stored_patterns_sha(writer.driver, key="patterns_neo4j")
+        neo4j_needs_update = current_sha != stored_neo4j_sha
+
+        if embedder is not None:
+            stored_pgvec_sha = _get_stored_patterns_sha(writer.driver, key="patterns_pgvector")
+            pgvector_needs_update = current_sha != stored_pgvec_sha
+
+    if not neo4j_needs_update and not pgvector_needs_update:
+        _logger.info(
+            "Auto-reseed: patterns unchanged (sha=%s) — skipping", current_sha[:12]
+        )
+        return {"patterns": 0, "embeddings": 0, "skipped": True}
+
+    n_patterns = 0
+    if neo4j_needs_update:
+        patterns = _load_patterns(patterns_path, odoo_version_min_filter)
+        writer.write_pattern_examples(patterns)
+        n_patterns = len(patterns)
+        # Neo4j sentinel updated after successful write.
+        _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_neo4j")
+        _logger.info("Neo4j: wrote %d PatternExample nodes", n_patterns)
+    else:
+        _logger.info(
+            "Auto-reseed: patterns_neo4j unchanged (sha=%s) — skipping Neo4j write",
+            current_sha[:12],
+        )
+        patterns = _load_patterns(patterns_path, odoo_version_min_filter)
 
     n_embeddings = 0
-    if embedder is not None:
+    if embedder is not None and pgvector_needs_update:
         from src.indexer.writer_pgvector import make_pattern_chunks
         chunks = make_pattern_chunks(patterns)
         _write_pgvector_with_embedder(chunks, embedder)
         n_embeddings = len(chunks)
+        # pgvector sentinel updated only after successful write.
+        _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_pgvector")
+    elif embedder is None:
+        _logger.info(
+            "embedder=None — skipping pattern embeddings (patterns_pgvector sentinel NOT updated)"
+        )
     else:
-        _logger.info("embedder=None — skipping pattern embeddings")
+        _logger.info(
+            "Auto-reseed: patterns_pgvector unchanged (sha=%s) — skipping pgvector write",
+            current_sha[:12],
+        )
 
-    # Sentinel updated only after success
-    _set_stored_patterns_sha(writer.driver, current_sha)
-    return {"patterns": len(patterns), "embeddings": n_embeddings, "skipped": False}
+    return {
+        "patterns": n_patterns,
+        "embeddings": n_embeddings,
+        "skipped": not neo4j_needs_update and not pgvector_needs_update,
+    }
 
 
 def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
@@ -395,18 +459,42 @@ def main(argv: list[str] | None = None) -> int:
         current_sha = _compute_patterns_sha256(patterns_file)
 
         # Check sentinel gating (unless --force).
+        # Per ADR-0007 D6-split: sentinel is split into patterns_neo4j and
+        # patterns_pgvector.  Skip only when the relevant store(s) are up-to-date.
         if not args.force:
             writer = _get_neo4j_writer()
             if writer:
                 try:
-                    stored_sha = _get_stored_patterns_sha(writer.driver)
-                    if current_sha == stored_sha:
-                        _logger.info(
-                            "Patterns unchanged (sha=%s) — skipping reseed",
-                            current_sha[:8],
+                    neo4j_sha = _get_stored_patterns_sha(writer.driver, key="patterns_neo4j")
+                    neo4j_done = current_sha == neo4j_sha
+                    if args.no_embed:
+                        # Only Neo4j store matters — skip if neo4j is already up-to-date.
+                        if neo4j_done:
+                            _logger.info(
+                                "Patterns unchanged (sha=%s) — skipping reseed (--no-embed)",
+                                current_sha[:8],
+                            )
+                            _mark_done(note="skipped: hash unchanged")
+                            return 0
+                    else:
+                        # Both stores must be up-to-date to skip.
+                        pgvec_sha = _get_stored_patterns_sha(
+                            writer.driver, key="patterns_pgvector"
                         )
-                        _mark_done(note="skipped: hash unchanged")
-                        return 0
+                        pgvec_done = current_sha == pgvec_sha
+                        if neo4j_done and pgvec_done:
+                            _logger.info(
+                                "Patterns unchanged (sha=%s) — skipping reseed",
+                                current_sha[:8],
+                            )
+                            _mark_done(note="skipped: hash unchanged")
+                            return 0
+                        elif neo4j_done and not pgvec_done:
+                            _logger.info(
+                                "patterns_neo4j up-to-date but patterns_pgvector missing "
+                                "(sha=%s) — will re-run pgvector embed only",
+                                current_sha[:8],
+                            )
                 finally:
                     writer.close()
 
@@ -424,15 +512,20 @@ def main(argv: list[str] | None = None) -> int:
         _write_neo4j(patterns)
         _logger.info("Neo4j: wrote %d PatternExample nodes", len(patterns))
 
+        # Update the Neo4j sentinel after successful Neo4j write.
+        writer = _get_neo4j_writer()
+        if writer:
+            try:
+                _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_neo4j")
+            finally:
+                writer.close()
+
         if args.no_embed:
-            _logger.info("Skipping pgvector embed step (--no-embed)")
-            # Still update sentinel even if no embed (only Neo4j written).
-            writer = _get_neo4j_writer()
-            if writer:
-                try:
-                    _set_stored_patterns_sha(writer.driver, current_sha)
-                finally:
-                    writer.close()
+            _logger.info(
+                "Skipping pgvector embed step (--no-embed). "
+                "patterns_pgvector sentinel NOT updated — "
+                "run without --no-embed to populate pgvector embeddings."
+            )
             _mark_done()
             return 0
 
@@ -440,11 +533,11 @@ def main(argv: list[str] | None = None) -> int:
         _write_pgvector(chunks)
         _logger.info("pgvector: wrote %d embedding chunks", len(chunks))
 
-        # After successful seed, update sentinel.
+        # Update the pgvector sentinel only after successful pgvector write.
         writer = _get_neo4j_writer()
         if writer:
             try:
-                _set_stored_patterns_sha(writer.driver, current_sha)
+                _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_pgvector")
             finally:
                 writer.close()
 

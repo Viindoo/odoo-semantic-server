@@ -166,12 +166,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 async def _log_usage_async(key_id: int, request: Request, ms: int) -> None:
-    """Log tool usage asynchronously — best-effort, never raises."""
-    try:
-        from src.db.pg import auth_store
+    """HTTP-level request trace — best-effort, never raises.
 
-        tool = request.headers.get("X-Tool-Name", "unknown")
-        _logger.info("mcp_tool tool=%s key_id=%s ms=%d", tool, key_id, ms)
-        await asyncio.to_thread(lambda: auth_store().log_usage(key_id, tool, ms))
+    Note: The DB insert into usage_log is handled by UsageLogMiddleware
+    (src/mcp/tool_log_middleware.py) at the FastMCP layer, where
+    context.message.name gives the actual MCP tool name.  This function
+    only emits an HTTP-level log line for ops tracing; it no longer writes
+    to the DB so that we avoid double-inserts and the tool_name='unknown' bug.
+    """
+    try:
+        _logger.info("http_request key_id=%s ms=%d path=%s", key_id, ms, request.url.path)
     except Exception:
         pass

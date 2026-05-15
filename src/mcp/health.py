@@ -70,6 +70,34 @@ async def _get_embeddings_total() -> int | None:
         return None
 
 
+async def _get_embeddings_by_chunk_type() -> dict[str, int] | None:
+    """Count embeddings by chunk_type.
+
+    Returns:
+        dict: Mapping of chunk_type to count, e.g. {"method": 42715, "field": 41461, ...}
+        None: When pgvector is absent, connection fails, or table doesn't exist.
+
+    Defensive pattern mirrors _get_embeddings_total — any exception produces
+    None rather than propagating (keeps /health always live).
+    """
+    from src.mcp.server import _checkout_pg
+
+    try:
+        def _count_by_type() -> dict[str, int]:
+            with _checkout_pg() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT chunk_type, COUNT(*) FROM embeddings GROUP BY chunk_type"
+                    )
+                    rows = cur.fetchall()
+                    return {row[0]: row[1] for row in rows} if rows else {}
+
+        return await asyncio.to_thread(_count_by_type)
+    except Exception as e:
+        logger.debug("embeddings_by_chunk_type unavailable: %s", e)
+        return None
+
+
 async def health_handler(request: Request) -> JSONResponse:
     """Check health of Neo4j and PostgreSQL connections, return status + version."""
     from src.mcp.server import _checkout_pg, _get_driver
@@ -94,6 +122,7 @@ async def health_handler(request: Request) -> JSONResponse:
 
     tool_count = await _get_mcp_tool_count()
     embeddings_total = await _get_embeddings_total()
+    embeddings_by_chunk_type = await _get_embeddings_by_chunk_type()
 
     both_ok = neo4j_status == "ok" and pg_status == "ok"
     one_ok = neo4j_status == "ok" or pg_status == "ok"
@@ -112,5 +141,8 @@ async def health_handler(request: Request) -> JSONResponse:
         "version": version,
         "mcp_tools": tool_count,
         "embeddings_total": embeddings_total,
+        "embeddings_by_chunk_type": (
+            embeddings_by_chunk_type if embeddings_by_chunk_type is not None else {}
+        ),
     }
     return JSONResponse(body, status_code=http_code)
