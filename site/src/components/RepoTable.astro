@@ -48,7 +48,7 @@ const cloneStatusColor: Record<string, string> = {
       <select
         name="profile"
         data-testid="repos-profile-input"
-        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         required
       >
         <option value="">— select profile —</option>
@@ -64,7 +64,7 @@ const cloneStatusColor: Record<string, string> = {
         type="text"
         placeholder="https://... or git@..."
         data-testid="repos-url-input"
-        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         required
       />
     </div>
@@ -75,7 +75,7 @@ const cloneStatusColor: Record<string, string> = {
         type="text"
         placeholder="17.0"
         data-testid="repos-branch-input"
-        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         required
       />
     </div>
@@ -86,7 +86,7 @@ const cloneStatusColor: Record<string, string> = {
         type="text"
         placeholder="/home/.../repo"
         data-testid="repos-local-path-input"
-        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
       />
     </div>
     {sshKeys.length > 0 && (
@@ -95,7 +95,7 @@ const cloneStatusColor: Record<string, string> = {
         <select
           name="ssh_key_id"
           data-testid="repos-ssh-key-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         >
           <option value="">— none —</option>
           {sshKeys.map((k) => (
@@ -108,7 +108,7 @@ const cloneStatusColor: Record<string, string> = {
       <button
         type="submit"
         data-testid="add-repo-button"
-        class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        class="w-full bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
       >
         Add Repository
       </button>
@@ -123,7 +123,7 @@ const cloneStatusColor: Record<string, string> = {
     {repos.length > 0 && (
       <button
         data-testid="index-all-button"
-        class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg transition-colors"
+        class="text-sm bg-viindoo-info hover:bg-viindoo-primary text-white px-4 py-1.5 rounded-lg transition-colors"
       >
         Index All
       </button>
@@ -177,7 +177,7 @@ const cloneStatusColor: Record<string, string> = {
                     <button
                       data-testid={`index-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
-                      class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors index-repo-btn"
+                      class="text-xs bg-viindoo-info/10 hover:bg-viindoo-info/20 text-viindoo-info px-3 py-1.5 rounded-lg transition-colors index-repo-btn"
                     >
                       Index
                     </button>

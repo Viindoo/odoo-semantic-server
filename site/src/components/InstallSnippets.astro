@@ -3,23 +3,36 @@
 // Pure CSS tab switching, no React dependency
 ---
 
-<section class="install-snippets w-full max-w-3xl mx-auto my-8">
+<section class="install-snippets w-full max-w-3xl mx-auto my-8" data-testid="cta-step-0">
+  <!-- Step 0: API key affordance -->
+  <div class="mb-6 rounded-lg border-2 border-dashed border-viindoo-primary/40 bg-gradient-to-r from-viindoo-primary/5 to-viindoo-secondary/5 p-5 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-widest text-viindoo-primary mb-1">Step 0</p>
+      <p class="font-semibold text-viindoo-on-dark">Grab a free API key</p>
+      <p class="text-xs text-viindoo-on-dark-muted mt-0.5">~30 seconds. Required for all client snippets below.</p>
+    </div>
+    <a href="/admin/login?next=/admin/api-keys" class="inline-flex items-center gap-2 rounded-lg bg-viindoo-primary px-5 py-2.5 text-sm font-semibold text-viindoo-bg-0 transition hover:bg-viindoo-primary-bright">
+      Generate key
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </a>
+  </div>
+
   <h2 class="text-xl font-semibold text-gray-800 mb-4">Quick Install</h2>
 
   <div class="tabs" role="tablist" aria-label="Client install instructions">
-    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="claude" aria-controls="tab-claude">
+    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="claude" aria-controls="tab-claude" data-testid="install-tab-claude-code">
       Claude Code
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="codex" aria-controls="tab-codex">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="codex" aria-controls="tab-codex" data-testid="install-tab-codex-cli">
       Codex CLI
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="gemini" aria-controls="tab-gemini">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="gemini" aria-controls="tab-gemini" data-testid="install-tab-gemini-cli">
       Gemini CLI
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="vscode" aria-controls="tab-vscode">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="vscode" aria-controls="tab-vscode" data-testid="install-tab-vs-code">
       VS Code
     </button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="antigravity" aria-controls="tab-antigravity">
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="antigravity" aria-controls="tab-antigravity" data-testid="install-tab-antigravity">
       Antigravity
     </button>
   </div>
@@ -144,12 +157,12 @@ http_headers = &#123; "X-API-Key" = "&lt;API_KEY&gt;" &#125;</code></pre>
   }
 
   .tab-btn:hover {
-    color: #4f46e5;
+    color: #00BBCE;
   }
 
   .tab-btn.active {
-    color: #4f46e5;
-    border-bottom-color: #4f46e5;
+    color: #00BBCE;
+    border-bottom-color: #00BBCE;
   }
 
   .tab-panel {

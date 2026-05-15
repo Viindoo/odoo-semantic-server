@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-05-15T10:43:00Z",
+  "model": "res.partner",
+  "version": "17.0",
+  "definition": {
+    "module": "base",
+    "field_count": 285,
+    "method_count": 455
+  },
+  "extenders": [
+    {
+      "module": "account",
+      "fields_added": 22,
+      "methods_added": 28,
+      "edition": "ce"
+    },
+    {
+      "module": "sale",
+      "fields_added": 8,
+      "methods_added": 10,
+      "edition": "ce"
+    },
+    {
+      "module": "purchase",
+      "fields_added": 6,
+      "methods_added": 8,
+      "edition": "ce"
+    },
+    {
+      "module": "stock",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "crm",
+      "fields_added": 11,
+      "methods_added": 14,
+      "edition": "ce"
+    },
+    {
+      "module": "website",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "website_sale",
+      "fields_added": 5,
+      "methods_added": 6,
+      "edition": "ce"
+    },
+    {
+      "module": "website_partner",
+      "fields_added": 3,
+      "methods_added": 3,
+      "edition": "ce"
+    },
+    {
+      "module": "hr",
+      "fields_added": 8,
+      "methods_added": 10,
+      "edition": "ce"
+    },
+    {
+      "module": "project",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "event",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    },
+    {
+      "module": "mail",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    }
+  ]
+}

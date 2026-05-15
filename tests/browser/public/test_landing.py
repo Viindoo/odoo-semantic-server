@@ -1,9 +1,9 @@
 # tests/browser/public/test_landing.py
-"""Browser smoke tests for the landing page / (M8 W7).
+"""Browser smoke tests for the landing page /.
 
 Tests:
   1. Landing page renders with hero heading
-  2. GraphHero React component container is present in DOM
+  2. Both hero CTAs are present (targeted by data-testid, decoupled from copy)
 """
 import pytest
 
@@ -16,21 +16,19 @@ class TestLandingPage:
         page.goto(f"{astro_server}/")
         page.wait_for_load_state("load")
 
-        # Main heading — text is from index.astro h1
-        h1 = page.locator("h1").first
+        h1 = page.get_by_test_id("hero-heading")
         assert h1.is_visible()
         heading_text = h1.inner_text()
-        assert "Odoo" in heading_text or "MCP" in heading_text or "Semantic" in heading_text
+        # Outcome-first headline must mention verified knowledge or hallucinations
+        assert "verified" in heading_text.lower() or "hallucination" in heading_text.lower()
 
     def test_hero_cta_buttons_present(self, astro_server, page):
-        """GET / → CTA links to /install/ and /admin/login are present."""
+        """GET / → primary + ghost CTAs are present (targeted by testid)."""
         page.goto(f"{astro_server}/")
         page.wait_for_load_state("load")
 
-        # "Get Started" CTA → /install/
-        get_started = page.get_by_role("link", name="Get Started")
-        assert get_started.is_visible()
+        primary_cta = page.get_by_test_id("cta-try-demo")
+        assert primary_cta.is_visible()
 
-        # At least one link pointing to /admin/login
-        admin_link = page.locator("a[href='/admin/login']").first
-        assert admin_link.is_visible()
+        ghost_cta = page.get_by_test_id("cta-connect-ai")
+        assert ghost_cta.is_visible()

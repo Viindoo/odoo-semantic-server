@@ -10,15 +10,15 @@ export interface Props {
 const { label, value, icon = '📊', testid, color = 'violet' } = Astro.props;
 
 const colorMap: Record<string, string> = {
-  violet: 'bg-violet-50 border-violet-200 text-violet-700',
-  blue:   'bg-blue-50 border-blue-200 text-blue-700',
+  violet: 'bg-viindoo-primary/5 border-viindoo-primary/20 text-viindoo-primary',
+  blue:   'bg-viindoo-info/5 border-viindoo-info/20 text-viindoo-info',
   green:  'bg-green-50 border-green-200 text-green-700',
   amber:  'bg-amber-50 border-amber-200 text-amber-700',
 };
 
 const iconBgMap: Record<string, string> = {
-  violet: 'bg-violet-100 text-violet-600',
-  blue:   'bg-blue-100 text-blue-600',
+  violet: 'bg-viindoo-primary/10 text-viindoo-primary',
+  blue:   'bg-viindoo-info/10 text-viindoo-info',
   green:  'bg-green-100 text-green-600',
   amber:  'bg-amber-100 text-amber-600',
 };

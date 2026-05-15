@@ -61,14 +61,14 @@ try {
           type="text"
           placeholder="my-server-key"
           data-testid="ssh-key-name-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
           required
         />
       </div>
       <button
         type="submit"
         data-testid="generate-ssh-key-button"
-        class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        class="bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
         disabled={keysData.fernet_missing}
       >
         Generate
@@ -88,7 +88,7 @@ try {
             type="text"
             placeholder="imported-key"
             data-testid="ssh-import-name-input"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
             required
           />
         </div>
@@ -100,7 +100,7 @@ try {
           rows={5}
           placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
           data-testid="ssh-import-pem-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 resize-y"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary resize-y"
           required
         ></textarea>
       </div>
@@ -145,7 +145,7 @@ try {
                 <button
                   data-testid={`copy-pubkey-button-${key.id}`}
                   data-pubkey={key.public_key}
-                  class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors copy-pubkey-btn"
+                  class="text-xs bg-viindoo-info/10 hover:bg-viindoo-info/20 text-viindoo-info px-3 py-1.5 rounded-lg transition-colors copy-pubkey-btn"
                 >
                   Copy
                 </button>
