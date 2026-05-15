@@ -680,3 +680,36 @@ curl -X POST $EMBEDDER_URL/api/embed -d '{"input":"hello"}' -H "Content-Type: ap
 - `EMBEDDER_TIMEOUT_CONNECT` (default 10) — TCP connect timeout.
 - `EMBEDDER_TIMEOUT_READ` (default 1200) — between-chunks read timeout. Backward-compat alias `EMBEDDER_TIMEOUT`.
 - `EMBEDDER_TIMEOUT_WRITE` (default 30) — request body write timeout.
+
+---
+
+## Common Pitfalls (M8 + M9 lessons)
+
+### 1. JSONResponse + datetime → 500 error
+
+Standard `starlette.JSONResponse` không serialize được `datetime` từ psycopg2 rows.
+
+Pattern đúng:
+
+```python
+from src.web_ui._json import _json_safe
+return JSONResponse(_json_safe({"created_at": row.created_at, ...}))
+```
+
+Lint script: `scripts/lint_json_response.sh` (chạy qua `make lint`).
+
+### 2. Astro 5.x checkOrigin rejection
+
+Astro `output: 'server'` mặc định reject cross-origin POST không có `Content-Type: application/json`.
+
+Pattern đúng cho client-side fetch:
+
+```javascript
+fetch('/api/endpoint', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});
+```
+
+Lint script: `scripts/lint_fetch_content_type.sh` (chạy qua `make lint`).

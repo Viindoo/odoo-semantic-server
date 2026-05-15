@@ -7,7 +7,7 @@ COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
 .PHONY: help install test test-unit test-integration test-browser test-all \
-        neo4j-up neo4j-down neo4j-logs lint validate-plugin
+        neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell validate-plugin
 
 help:
 	@echo "Targets:"
@@ -81,8 +81,22 @@ neo4j-logs:
 
 # --- Lint ---
 
-lint:
+lint: lint-py lint-shell-advisory
+
+lint-py:
 	$(VENV)/bin/ruff check src/ tests/
+
+# Advisory: scripts report violations but do not fail the build.
+# Legacy violations (66 JSONResponse + 1 fetch as of M9 merge) are tracked
+# in M9 backlog. Promote to strict (lint-shell) after backlog cleanup.
+lint-shell-advisory:
+	@bash scripts/lint_json_response.sh || echo "[advisory] lint_json_response: legacy violations present — see CONTRIBUTING.md Common Pitfalls"
+	@bash scripts/lint_fetch_content_type.sh || echo "[advisory] lint_fetch_content_type: legacy violations present"
+
+# Strict mode — run before commits adding new JSONResponse/fetch sites.
+lint-shell:
+	@bash scripts/lint_json_response.sh
+	@bash scripts/lint_fetch_content_type.sh
 
 validate-plugin:  ## Validate Claude Code plugin schema (requires claude CLI)
 	claude plugin validate dist/odoo-semantic-plugin/

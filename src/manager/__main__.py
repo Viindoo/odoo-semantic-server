@@ -142,10 +142,11 @@ _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_@.\-]{1,64}$")
 
 
 def _cmd_create_webui_user(args, conn) -> int:
-    """Create or reset a Web UI admin user.
+    """Create or reset a Web UI user.
 
     Prompts for password interactively (getpass). Uses bcrypt cost=12.
     --reset allows overwriting an existing user's password.
+    --admin sets is_admin=TRUE on creation.
     """
     from src.web_ui.auth import hash_password
 
@@ -182,11 +183,167 @@ def _cmd_create_webui_user(args, conn) -> int:
         )
         return 2
 
-    auth_store().set_user_password(username, pw_hash)
+    auth_store().set_user_password(username, pw_hash, is_admin=args.admin)
     if existing_hash is not None:
-        print(f"✓ Password reset for '{username}'.")
+        print(f"✓ Password reset for '{username}'{'(admin)' if args.admin else ''}.")
     else:
-        print(f"✓ Web UI user '{username}' created.")
+        print(f"✓ Web UI user '{username}' created{'(admin)' if args.admin else ''}.")
+    return 0
+
+
+def _audit_log(
+    actor: str, action: str, target: str, success: bool, detail: dict | None = None
+) -> None:
+    """Write an audit event. Delegates to src.db.audit.write_audit_log.
+
+    Kept for call-site backward-compatibility. Fire-and-forget — never raises.
+    The 'actor' parameter is accepted but ignored; the canonical CLI actor is
+    resolved by write_audit_log via resolve_actor(cli=True).
+    """
+    from src.db.audit import write_audit_log
+    write_audit_log(
+        actor=f"cli:{os.environ.get('USER', 'unknown')}",
+        action=action,
+        target=target,
+        success=success,
+        detail=detail,
+    )
+
+
+def _cmd_delete_profile(args, conn) -> int:
+    """Delete a profile and all its repos (cascade).
+
+    Prompts for interactive YES confirmation unless --yes is provided.
+    """
+    profile_name = args.name
+    profiles = [p for p in repo_store().list_profiles() if p["name"] == profile_name]
+    if not profiles:
+        print(f"✗ Profile '{profile_name}' not found.", file=sys.stderr)
+        return 2
+
+    profile = profiles[0]
+    if not args.yes:
+        confirm = input(f"Delete profile '{profile_name}' and all its repos? Type YES: ")
+        if confirm.strip() != "YES":
+            print("✗ Aborted.", file=sys.stderr)
+            return 0
+
+    try:
+        repo_store().delete_profile(profile["id"])
+        _audit_log(
+            "cli",
+            "profile.delete",
+            profile_name,
+            True,
+            {"profile_id": profile["id"], "yes_flag": args.yes},
+        )
+        print(f"✓ Deleted profile '{profile_name}' (id={profile['id']})")
+        return 0
+    except ValueError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        _audit_log("cli", "profile.delete", profile_name, False, {"error": str(e)})
+        return 1
+
+
+def _cmd_delete_repo(args, conn) -> int:
+    """Delete a repo by ID or URL.
+
+    Prompts for interactive YES confirmation unless --yes is provided.
+    """
+    id_or_url = args.id_or_url
+    repo = None
+    repo_id = None
+
+    # Try parsing as int first
+    try:
+        repo_id = int(id_or_url)
+        repo = repo_store().get_repo_by_id(repo_id)
+    except ValueError:
+        # Try as URL
+        repos = repo_store().list_repos()
+        for r in repos:
+            if r.get("url") == id_or_url:
+                repo = r
+                repo_id = r["id"]
+                break
+
+    if repo is None:
+        print(f"✗ Repo '{id_or_url}' not found (by ID or URL).", file=sys.stderr)
+        return 2
+
+    if not args.yes:
+        confirm = input(f"Delete repo (id={repo['id']}, url={repo['url']})? Type YES: ")
+        if confirm.strip() != "YES":
+            print("✗ Aborted.", file=sys.stderr)
+            return 0
+
+    try:
+        repo_store().delete_repo(repo_id)
+        _audit_log(
+            "cli",
+            "repo.delete",
+            str(repo_id),
+            True,
+            {"url": repo["url"], "yes_flag": args.yes},
+        )
+        print(f"✓ Deleted repo (id={repo_id}, url={repo['url']})")
+        return 0
+    except ValueError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        _audit_log("cli", "repo.delete", str(repo_id), False, {"error": str(e)})
+        return 1
+
+
+def _cmd_delete_webui_user(args, conn) -> int:
+    """Delete a Web UI user by username.
+
+    Prompts for interactive YES confirmation unless --yes is provided.
+    """
+    username = args.username.strip()
+    if not _USERNAME_RE.match(username):
+        print(
+            f"✗ Username '{username}' invalid. "
+            "Allowed: 1-64 chars, alphanumeric + _ @ . -",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Check if user exists
+    if auth_store().get_user_password_hash(username) is None:
+        print(f"✗ User '{username}' not found.", file=sys.stderr)
+        return 2
+
+    if not args.yes:
+        confirm = input(f"Delete Web UI user '{username}'? Type YES: ")
+        if confirm.strip() != "YES":
+            print("✗ Aborted.", file=sys.stderr)
+            return 0
+
+    try:
+        auth_store().delete_user(username)
+        _audit_log("cli", "webui_user.delete", username, True, {"yes_flag": args.yes})
+        print(f"✓ Deleted Web UI user '{username}'")
+        return 0
+    except ValueError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        _audit_log("cli", "webui_user.delete", username, False, {"error": str(e)})
+        return 1
+
+
+def _cmd_list_webui_users(args, conn) -> int:
+    """List all Web UI users in a table format."""
+    users = auth_store().list_users()
+    if not users:
+        print("(no Web UI users yet)")
+        return 0
+
+    print(f"{'username':<32} {'is_admin':<10} {'is_active':<10} {'created_at'}")
+    print("-" * 80)
+    for u in users:
+        is_admin = str(u.get("is_admin", False))
+        is_active = str(u.get("is_active", True))
+        created_at = str(u.get("created_at", ""))
+        print(f"{u['username']:<32} {is_admin:<10} {is_active:<10} {created_at}")
     return 0
 
 
@@ -463,11 +620,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_wuser = sub.add_parser(
         "create-webui-user",
-        help="Create or reset a Web UI admin user (prompts for password)",
+        help="Create or reset a Web UI user (prompts for password)",
         epilog=textwrap.dedent("""
             Examples:
               python -m src.manager create-webui-user admin
               python -m src.manager create-webui-user admin --reset
+              python -m src.manager create-webui-user admin --admin
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -476,6 +634,76 @@ def main(argv: list[str] | None = None) -> int:
         "--reset",
         action="store_true",
         help="Allow overwriting an existing user's password (for recovery)",
+    )
+    p_wuser.add_argument(
+        "--admin",
+        action="store_true",
+        help="Grant is_admin=TRUE on creation",
+    )
+
+    p_del_profile = sub.add_parser(
+        "delete-profile",
+        help="Delete a profile and all its repos (cascade)",
+        epilog=textwrap.dedent("""
+            Deletes the profile and cascades to remove all attached repos.
+            Requires interactive YES confirmation unless --yes is provided.
+
+            Examples:
+              python -m src.manager delete-profile odoo17
+              python -m src.manager delete-profile odoo17 --yes
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_del_profile.add_argument("name", help="Profile name to delete")
+    p_del_profile.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation",
+    )
+
+    p_del_repo = sub.add_parser(
+        "delete-repo",
+        help="Delete a repo by ID or URL",
+        epilog=textwrap.dedent("""
+            Deletes a single repo by its numeric ID or URL.
+            Requires interactive YES confirmation unless --yes is provided.
+
+            Examples:
+              python -m src.manager delete-repo 123
+              python -m src.manager delete-repo https://github.com/odoo/odoo --yes
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_del_repo.add_argument("id_or_url", help="Repo ID (integer) or URL (string)")
+    p_del_repo.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation",
+    )
+
+    p_del_user = sub.add_parser(
+        "delete-webui-user",
+        help="Delete a Web UI user",
+        epilog=textwrap.dedent("""
+            Deletes a Web UI user by username.
+            Requires interactive YES confirmation unless --yes is provided.
+
+            Examples:
+              python -m src.manager delete-webui-user testuser
+              python -m src.manager delete-webui-user testuser --yes
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_del_user.add_argument("username", help="Username to delete")
+    p_del_user.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation",
+    )
+
+    sub.add_parser(
+        "list-webui-users",
+        help="List all Web UI users",
     )
 
     p_seed = sub.add_parser(
@@ -667,6 +895,10 @@ def main(argv: list[str] | None = None) -> int:
             "list": _cmd_list,
             "create-api-key": _cmd_create_api_key,
             "create-webui-user": _cmd_create_webui_user,
+            "delete-profile": _cmd_delete_profile,
+            "delete-repo": _cmd_delete_repo,
+            "delete-webui-user": _cmd_delete_webui_user,
+            "list-webui-users": _cmd_list_webui_users,
             "seed-master-data": _cmd_seed_master_data,
             "clone-profile": _cmd_clone_profile,
         }[args.cmd](args, conn)
