@@ -27,10 +27,25 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
   <!-- Flash banner -->
   <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
 
-  <!-- New key reveal panel (hidden by default) -->
+  <!-- New key reveal panel (hidden by default). Persists until manual page
+       reload — the raw key is not stored server-side and cannot be re-shown. -->
   <div data-testid="new-key-banner" hidden class="mb-4 bg-green-50 border border-green-300 rounded-xl px-5 py-4">
     <p class="text-sm font-semibold text-green-800 mb-1">New API key created — copy it now. It will not be shown again.</p>
-    <code data-testid="new-key-value" class="block text-sm font-mono bg-white border border-green-200 rounded-lg px-3 py-2 select-all text-green-900 break-all"></code>
+    <div class="flex items-stretch gap-2">
+      <code data-testid="new-key-value" class="flex-1 text-sm font-mono bg-white border border-green-200 rounded-lg px-3 py-2 select-all text-green-900 break-all"></code>
+      <button
+        type="button"
+        data-testid="copy-key-button"
+        aria-label="Copy API key to clipboard"
+        class="shrink-0 inline-flex items-center gap-1.5 bg-white hover:bg-green-100 border border-green-300 text-green-800 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span data-testid="copy-key-button-label">Copy</span>
+      </button>
+    </div>
   </div>
 
   <div class="flex items-center justify-between mb-6">
@@ -185,10 +200,63 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       if (banner && keyVal) {
         keyVal.textContent = data.raw_key;
         banner.removeAttribute('hidden');
+        banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
-      setTimeout(() => location.reload(), 3000);
+      // No auto-reload: the banner stays until the user manually reloads.
+      // The Active Keys table is therefore stale until then — acceptable
+      // tradeoff so the raw key isn't lost to a 3-second timeout.
     } else {
       showFlash(data.error ?? 'Failed to create key.', 'error');
+    }
+  });
+
+  // Copy-to-clipboard for the freshly revealed key.
+  // Primary: navigator.clipboard.writeText (modern browsers on https/loopback).
+  // Fallback: hidden <textarea> + document.execCommand('copy') — required for
+  // older browsers and some non-secure contexts (e.g. http loopback in Firefox).
+  async function copyTextCrossBrowser(text: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // fall through to execCommand fallback
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  document.querySelector('[data-testid="copy-key-button"]')?.addEventListener('click', async () => {
+    const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
+    const label = document.querySelector('[data-testid="copy-key-button-label"]') as HTMLElement | null;
+    const text = (keyVal?.textContent ?? '').trim();
+    if (!text) return;
+    const ok = await copyTextCrossBrowser(text);
+    if (ok) {
+      if (label) {
+        const prev = label.textContent ?? 'Copy';
+        label.textContent = 'Copied!';
+        setTimeout(() => { label.textContent = prev; }, 1500);
+      }
+    } else {
+      showFlash('Copy failed — select the key manually and press Ctrl+C.', 'error');
     }
   });
 
