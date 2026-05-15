@@ -301,36 +301,49 @@ class TestCacheTTLExpiration:
 
     @pytest.mark.asyncio
     async def test_bg_task_usage_log_written(self, pg_auth_conn):
-        """B3: fire-and-forget usage log task must complete (not be GC'd)."""
-        import unittest.mock as mock
+        """B3 + OBS-2: fire-and-forget FastMCP tool log task must complete (not GC'd).
 
-        import httpx
-        from starlette.applications import Starlette
-        from starlette.responses import PlainTextResponse
-        from starlette.routing import Route
+        After P2B.2, the DB insert for usage_log moved from the ASGI layer
+        (_log_usage_async in middleware.py) to the FastMCP layer
+        (_log_tool_call_async in tool_log_middleware.py).  The ASGI middleware
+        now only emits a Python logger line and never writes to the DB.
 
-        raw, _, key_id = auth_store().create_api_key("b3-bg-task")
-        _cache_set(raw, key_id)  # prime cache so no DB verify needed
+        This test validates B3 directly against the current code path: a
+        bare asyncio.create_task() wrapping _log_tool_call_async must survive
+        long enough (not be GC'd) to write a usage_log row with a non-null
+        tool_name (OBS-2 gate).
+        """
+        import asyncio
 
-        async def dummy(request):
-            return PlainTextResponse("ok")
+        from src.mcp.tool_log_middleware import _BG_TASKS, _log_tool_call_async
 
-        app = Starlette(routes=[Route("/mcp", dummy)])
-        app.add_middleware(AuthMiddleware)
+        _, _, key_id = auth_store().create_api_key("b3-bg-task")
 
-        with mock.patch("src.mcp.server._checkout_pg", _checkout_pg_yielding(pg_auth_conn)):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                await client.get("/mcp", headers={"X-API-Key": raw})
-            # Yield control to allow the background log task to complete
-            import asyncio
-            await asyncio.sleep(0.1)
+        # Reproduce the exact fire-and-forget pattern used in UsageLogMiddleware:
+        # create_task + strong-ref set to prevent GC before completion (B3).
+        task = asyncio.create_task(
+            _log_tool_call_async(key_id, "resolve_model", 42)
+        )
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
+
+        # Yield control so the event loop can schedule and complete the task.
+        await asyncio.sleep(0.1)
 
         with pg_auth_conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM usage_log WHERE api_key_id = %s", (key_id,))
-            count = cur.fetchone()[0]
-        assert count >= 1, "usage_log entry must be written by background task (B3)"
+            cur.execute(
+                "SELECT tool_name FROM usage_log WHERE api_key_id = %s",
+                (key_id,),
+            )
+            rows = cur.fetchall()
+        assert len(rows) >= 1, "usage_log entry must be written by background task (B3)"
+        tool_names = [r[0] for r in rows]
+        assert all(tn is not None for tn in tool_names), (
+            "OBS-2 gate: tool_name must be non-null in usage_log"
+        )
+        assert "resolve_model" in tool_names, (
+            "OBS-2 gate: tool_name must match the actual MCP tool invoked"
+        )
 
 
 # ---------------------------------------------------------------------------

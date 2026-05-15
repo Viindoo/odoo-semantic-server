@@ -57,18 +57,26 @@ def _make_minimal_patterns_json(tmp_path: Path) -> Path:
 
 
 def _get_seed_meta_sha(neo4j_driver) -> str | None:
-    """Return sha256 stored on _SeedMeta sentinel, or None."""
+    """Return sha256 stored on _SeedMeta patterns_neo4j sentinel, or None.
+
+    Per ADR-0007 D6-split: reads the patterns_neo4j key (written after Neo4j
+    PatternExample nodes are seeded).  The old key='patterns' is no longer written.
+    """
     with neo4j_driver.session() as session:
         row = session.run(
-            "MATCH (s:_SeedMeta {key: 'patterns'}) RETURN s.sha256 AS sha LIMIT 1"
+            "MATCH (s:_SeedMeta {key: 'patterns_neo4j'}) RETURN s.sha256 AS sha LIMIT 1"
         ).single()
         return row["sha"] if row else None
 
 
 def _wipe_seed_meta(neo4j_driver) -> None:
-    """Remove _SeedMeta sentinel so each test starts clean."""
+    """Remove all _SeedMeta sentinel nodes so each test starts clean.
+
+    Per ADR-0007 D6-split: wipes all keys (patterns_neo4j, patterns_pgvector,
+    legacy 'patterns') to ensure a clean state for each test.
+    """
     with neo4j_driver.session() as session:
-        session.run("MATCH (s:_SeedMeta {key: 'patterns'}) DELETE s")
+        session.run("MATCH (s:_SeedMeta) DELETE s")
 
 
 def _count_pattern_examples(neo4j_driver) -> int:

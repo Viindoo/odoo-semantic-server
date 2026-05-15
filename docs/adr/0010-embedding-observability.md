@@ -78,3 +78,62 @@ This preserves correctness — 0 means "table exists, no rows"; `None` means
   stale. Rejected in favour of exact `COUNT(*)` at current scale.
 - **Global module-level counter**: creates shared mutable state, complicates
   parallel tests, and doesn't reset between runs. Rejected.
+
+## v2 — Chunk-Type Breakdown (2026-05-15)
+
+**Status:** Accepted (2026-05-15)
+
+**Context:** Initial audit (M8 pre-launch) revealed that `/health` returned
+`embeddings_total: 121132` but hid the distribution across chunk types. The fact
+that `pattern_example=0` (audit target) was not visible required ad-hoc SQL
+queries to investigate embedding coverage. This decision extends `/health` with a
+breakdown by chunk_type to support ongoing observability.
+
+### D5 — `/health` adds `embeddings_by_chunk_type` breakdown
+
+The `/health` response now includes:
+
+```json
+{
+  "status": "ok",
+  "embeddings_total": 121132,
+  "embeddings_by_chunk_type": {
+    "method": 42715,
+    "field": 41461,
+    "view": 13971,
+    "qweb": 8386,
+    "js_era2": 6824,
+    "js_era3": 6202,
+    "js_era1": 1573,
+    "pattern_example": 0
+  },
+  ...
+}
+```
+
+Implementation:
+- New `_get_embeddings_by_chunk_type()` function queries `SELECT chunk_type, COUNT(*) FROM embeddings GROUP BY chunk_type`.
+- Uses existing `idx_embeddings_filter` index (already present for fast chunk_type queries) — GROUP BY is cheap (<5ms).
+- Returns `dict[str, int]` on success, `None` on any DB error (mirrors `_get_embeddings_total` defensive pattern).
+- Returns empty `{}` (not `None`) in the JSON response body when pgvector is unavailable — preserves /health liveness.
+
+Rationale for `dict` return in JSON (not list of tuples):
+- Easier for admins to read: `"pattern_example": 0` vs finding the tuple in a list.
+- Clients (dashboards) can directly reference `response.embeddings_by_chunk_type["method"]`.
+- Backward-compatible: clients that ignore the new field are unaffected.
+
+### D6 — Additive only; maintains backward compatibility
+
+- Existing `embeddings_total` field unchanged (remains int or null).
+- New field `embeddings_by_chunk_type` is additive.
+- Existing /health consumers that don't read the field pass through unaffected.
+- Sum of `embeddings_by_chunk_type` values == `embeddings_total` (audit invariant).
+
+## Consequences (v2)
+
+- Admins can instantly see chunk_type distribution at `/health` without SQL.
+- Audit detection is simpler: if `pattern_example=0`, pattern embedding pipeline
+  may need investigation.
+- `/health` response size grows by ~100 bytes (8 chunk types × ~10 chars each).
+- Tests verify: (1) endpoint structure, (2) sum invariant, (3) graceful degradation
+  when pgvector unavailable.

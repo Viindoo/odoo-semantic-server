@@ -1,6 +1,7 @@
 # src/web_ui/routes/operations.py
 """Operations routes — long-running indexer commands (M8 W1 — pure JSON API)."""
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -185,16 +186,20 @@ async def post_apply_preset(body: ApplyPresetBody, request: Request):
         argv.append("--dry-run")
 
     # --- Run synchronously (apply-preset is fast: ~seconds) ---
+    # Timeout raised to 120s (was 60s) — a large profile with many repos needs
+    # more time to register all repos in PostgreSQL on a loaded server.
+    # Override via APPLY_PRESET_TIMEOUT env var if needed.
+    _apply_preset_timeout = int(os.getenv("APPLY_PRESET_TIMEOUT", "120"))
     try:
         result = subprocess.run(
             [sys.executable, *argv],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=_apply_preset_timeout,
         )
     except subprocess.TimeoutExpired:
         return JSONResponse(
-            {"error": "apply-preset timed out after 60 seconds"},
+            {"error": f"apply-preset timed out after {_apply_preset_timeout} seconds"},
             status_code=500,
         )
 

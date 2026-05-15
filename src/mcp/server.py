@@ -26,6 +26,7 @@ from src.constants import (
     SNIPPET_PREVIEW_MAX_LINES,
     VALID_CHUNK_TYPES,
 )
+from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 
 
 def _edition_rank_cypher(node_alias: str = "mod") -> str:
@@ -38,6 +39,11 @@ def _edition_rank_cypher(node_alias: str = "mod") -> str:
 
 
 mcp = FastMCP("odoo-semantic")
+# Register FastMCP-layer usage logging middleware so that on_call_tool has
+# access to context.message.name (the real tool name) — see F5 fix in
+# src/mcp/tool_log_middleware.py.
+mcp.add_middleware(_UsageLogMiddleware())
+
 _driver = None
 _embedder_instance = None
 _version_checked = False

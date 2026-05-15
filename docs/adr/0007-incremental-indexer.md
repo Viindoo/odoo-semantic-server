@@ -77,7 +77,7 @@ DETACH DELETE removes the Module node plus all incident edges (DEFINED_IN, DEPEN
 `seed_patterns()` is called at the end of every `index_profile()` so admins don't need to remember a separate command. To make this cheap, the seed function:
 
 1. Computes sha256 of `src/data/patterns.json`.
-2. MATCH `(:_SeedMeta {key:'patterns'})` to read stored sha.
+2. MATCH `(:_SeedMeta {key:'patterns_neo4j'})` to read stored sha.
 3. If equal → log "Patterns unchanged — skipping" + return (no Neo4j MERGE on PatternExample, no Ollama embed).
 4. Otherwise → run normal seed flow + MERGE sentinel SET sha256=current.
 
@@ -86,6 +86,33 @@ The sentinel is updated AFTER successful seed (same partial-failure rule as D3 �
 `--force` CLI flag bypasses sentinel for "I edited patterns.json and want to be sure" cases.
 
 Auto-reseed failure inside the indexer is logged at WARN level but does NOT fail the indexer run — pattern catalogue is supplementary; an indexed code graph without fresh patterns is still useful.
+
+### D6-split — Sentinel split into patterns_neo4j and patterns_pgvector (F2 fix)
+
+**Problem (F2):** A `--no-embed` CLI run at 2026-05-11T13:36 updated the single `{key:'patterns'}` sentinel before pgvector was ever populated. Every subsequent auto-reseed call saw "patterns unchanged — skipping." Result: Neo4j had 92 PatternExample nodes, pgvector had 0 pattern embeddings — dual-store divergence.
+
+**Root cause:** The original `--no-embed` path unconditionally updated the sentinel even though only Neo4j was written. The single sentinel could not distinguish "both stores done" from "Neo4j only done."
+
+**Fix:** Split the sentinel into two separate `_SeedMeta` nodes:
+
+- `{key: 'patterns_neo4j'}` — set only after Neo4j PatternExample write succeeds.
+- `{key: 'patterns_pgvector'}` — set only after pgvector embed+write succeeds.
+
+**Invariants enforced:**
+
+1. `--no-embed` (or `embedder=None`) writes `patterns_neo4j` after Neo4j succeeds, but NEVER writes `patterns_pgvector`.
+2. A subsequent full run (without `--no-embed`) sees `patterns_pgvector` absent → runs the embed step → writes `patterns_pgvector`.
+3. Auto-reseed via `run()` checks both sentinels independently — Neo4j and pgvector can be at different states without either blocking the other.
+4. `--force` bypasses both sentinels.
+
+**Legacy backward compatibility:** The old `{key:'patterns'}` sentinel (from pre-split deployments) is read as a fallback for the `patterns_neo4j` check only. It is never written by the new code. A `--force` run will migrate the deployment to split sentinels (writes both `patterns_neo4j` and `patterns_pgvector`).
+
+**Operational recovery for F2:**
+```bash
+# Reset the stale single-key sentinel and repopulate pgvector
+python -m src.indexer.seed_patterns --force
+```
+This bypasses both sentinels, writes all patterns to Neo4j, embeds and writes to pgvector, then sets both split sentinels correctly.
 
 ### D7 — `_SeedMeta` label is project-private
 
@@ -105,9 +132,10 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 
 - `tests/test_incremental.py` — D2 helpers + force-push fixture
 - `tests/test_pipeline_incremental.py` — D3 partial-failure + D4 --full + skip-unchanged + diff filter
-- `tests/test_seed_patterns.py` — D6 sentinel hash gating + D7 label
+- `tests/test_seed_patterns.py` — D6 sentinel hash gating + D7 label + D6-split --no-embed behavior
 - `tests/test_pipeline_seed_integration.py` — D6 wired into index_profile
 - `tests/test_indexer_gc.py` — D5 GC flag: delete renamed module, risk gate, default-off
+- `tests/test_dual_store_integrity.py` — D6-split invariants: --no-embed sets only patterns_neo4j, embedder=None leaves patterns_pgvector absent, legacy sentinel fallback, divergence detection
 
 ## Out of scope (recorded for future ADRs)
 

@@ -24,6 +24,10 @@ EnvironmentFile=-/etc/odoo-semantic/webui.env
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
 Restart=on-failure
 RestartSec=5
+# Web UI starts quickly. 60s is generous.
+TimeoutStartSec=60
+# Allow in-flight API requests (including long indexer-spawn calls) to complete.
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 

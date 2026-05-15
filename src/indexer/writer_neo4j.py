@@ -68,8 +68,11 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                           m.profile = $profiles
             ON MATCH  SET m.is_abstract = $is_abstract,
                           m.is_transient = $is_transient,
-                          m.had_explicit_name = $had_explicit_name,
-                          m.is_definition = ($had_explicit_name AND NOT $name IN $inherit_list),
+                          m.had_explicit_name =
+                              coalesce(m.had_explicit_name, false) OR $had_explicit_name,
+                          m.is_definition =
+                              coalesce(m.is_definition, false)
+                              OR ($had_explicit_name AND NOT $name IN $inherit_list),
                           m.profile =
                               [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (m)-[:{REL_DEFINED_IN}]->(mod)
@@ -83,13 +86,21 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
 
         for idx, parent_name in enumerate(model.inherit):
             if parent_name == model.name:
+                # Self-extend: module B's copy of `sale.order` inherits from the
+                # definition node in another module.  The old guard used
+                # `WHERE NOT (:Model {name})-[:INHERITS]->(tip)` which blocked
+                # ANY new edge once ONE already existed — breaking multi-module
+                # extension and also preventing `r.order` from being set on
+                # existing stale edges.  Use per-pair MERGE instead:
+                # ON CREATE sets order for new edges; ON MATCH backfills NULL
+                # order from stale edges without overwriting valid existing values.
                 tx.run(f"""
                     MATCH (ext:Model {{name: $name, module: $mod, odoo_version: $v}})
                     MATCH (tip:Model {{name: $name, odoo_version: $v}})
                     WHERE tip.module <> $mod
-                      AND NOT (:Model {{name: $name, odoo_version: $v}})-[:{REL_INHERITS}]->(tip)
                     MERGE (ext)-[r:{REL_INHERITS}]->(tip)
-                    SET r.order = $order
+                    ON CREATE SET r.order = $order
+                    ON MATCH  SET r.order = coalesce(r.order, $order)
                 """, name=model.name, mod=model.module, v=model.odoo_version,
                      order=idx)
             else:

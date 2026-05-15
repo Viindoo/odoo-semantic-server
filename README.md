@@ -42,7 +42,7 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **14 tools** (M1–M5): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard across v8 → v20+.
+MCP server expose **14 tools** (M1–M5): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
 
 → [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
 

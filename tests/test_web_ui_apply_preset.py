@@ -358,8 +358,8 @@ class TestApplyPresetRepoMap:
         assert argv[0] == sys.executable
 
     @pytest.mark.asyncio
-    async def test_subprocess_run_timeout_60(self, migrated_pg):
-        """subprocess.run must be called with timeout=60."""
+    async def test_subprocess_run_timeout_120(self, migrated_pg):
+        """subprocess.run must be called with timeout=120 (default APPLY_PRESET_TIMEOUT)."""
         app = create_app()
         with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
             async with _async_client(app) as client:
@@ -369,7 +369,7 @@ class TestApplyPresetRepoMap:
                 )
 
         kwargs = mock_run.call_args[1]
-        assert kwargs.get("timeout") == 60
+        assert kwargs.get("timeout") == 120
         assert kwargs.get("capture_output") is True
         assert kwargs.get("text") is True
 
