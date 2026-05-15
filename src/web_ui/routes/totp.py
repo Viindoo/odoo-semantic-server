@@ -475,8 +475,29 @@ async def totp_login(body: MfaLoginBody, request: Request):
     else:
         return JSONResponse({"error": "code_or_backup_code_required"}, status_code=400)
 
-    # Promote to full session
+    # Promote to full session — F7: create active_sessions row so server-side
+    # revoke (revoke_all_sessions / deactivate) can kick this session immediately.
+    from src.web_ui.routes.login import _create_session
+
+    client_ip: str = (
+        request.headers.get("x-real-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    user_agent: str | None = request.headers.get("user-agent")
+    try:
+        session_id = _create_session(
+            user_id=user_id,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+    except Exception as exc:
+        logger.error("totp_login: could not create session: %s", exc)
+        return JSONResponse({"error": "internal_error"}, status_code=500)
+
+    request.session["session_id"] = session_id
     request.session["username"] = username
+    request.session["user_id"] = user_id
     request.session["session_at"] = time.time()
     logger.info("MFA login success for user_id=%d (%r)", user_id, username)
     return JSONResponse({"ok": True, "username": username})

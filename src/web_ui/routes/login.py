@@ -293,12 +293,19 @@ async def login_post(request: Request, body: LoginBody):
         logger.error("Login DB error during user lookup: %s", exc)
         user = None
 
-    # F1 — use dummy hash when user not found so timing is constant
+    # F1 — use dummy hash when user not found so timing is constant.
+    # OAuth-only users: force dummy-hash compare so timing matches non-existent
+    # user (F1 invariant).  password_hash IS NULL for OAuth-only accounts; passing
+    # None to verify_password causes bcrypt to raise, which exits early and leaks
+    # "this account is OAuth-only" via a timing oracle.
     hash_to_check: str
-    if user:
-        hash_to_check = user["password_hash"]
-    else:
+    if user is None:
         hash_to_check = _DUMMY_HASH
+    elif user["password_hash"] is None:
+        # OAuth-only users: force dummy-hash compare so timing matches non-existent user (F1 invariant)
+        hash_to_check = _DUMMY_HASH
+    else:
+        hash_to_check = user["password_hash"]
 
     ok = verify_password(body.password, hash_to_check)
 

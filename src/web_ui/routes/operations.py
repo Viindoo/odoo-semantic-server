@@ -59,7 +59,10 @@ MAX_RESTORE_BYTES = 500 * 1024 * 1024  # 500MB hard limit
 
 # OWASP item 7: maintenance mode flag — set while restore is in progress.
 # Blocks all non-restore requests with 503 + Retry-After: 60.
-_RESTORE_IN_PROGRESS = asyncio.Event()
+# threading.Event (not asyncio.Event): the restore worker is a real
+# threading.Thread and set()/clear() must be thread-safe; asyncio.Event
+# is NOT safe to mutate from outside the event loop.
+_RESTORE_IN_PROGRESS = threading.Event()
 
 # OWASP item 6/10: audit log (module-level list; in production use persistent store)
 _RESTORE_AUDIT_LOG: list[dict] = []

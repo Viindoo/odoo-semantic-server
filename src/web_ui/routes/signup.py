@@ -17,6 +17,7 @@ Security decisions:
     • Audit: every action logged at INFO (success) or WARNING (failure).
 """
 
+import hashlib
 import logging
 import os
 import secrets
@@ -249,8 +250,11 @@ async def register(body: RegisterBody, request: Request):
 
     user_id: int = row[0]
 
-    # Generate token + insert verification record
-    token = secrets.token_urlsafe(32)
+    # Generate token + insert verification record.
+    # Defense-in-depth (F10): raw token is emailed to user; only sha256(token)
+    # is stored in DB so a DB leak cannot be used directly for account takeover.
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(hours=24)
 
     with pool.checkout() as conn:
@@ -260,7 +264,7 @@ async def register(body: RegisterBody, request: Request):
                 cur.execute(
                     "INSERT INTO email_verifications (token, user_id, purpose, expires_at)"
                     " VALUES (%s, %s, 'email_verify', %s)",
-                    (token, user_id, expires_at),
+                    (token_hash, user_id, expires_at),
                 )
             conn.commit()
         except Exception:
@@ -269,11 +273,11 @@ async def register(body: RegisterBody, request: Request):
         finally:
             conn.autocommit = True
 
-    # Send email (dev mode: logs token instead)
+    # Send email with raw token (dev mode: logs token instead)
     base_url = _get_base_url(request)
     try:
         from src.web_ui.email import send_verification_email
-        send_verification_email(to=email, username=username, token=token, base_url=base_url)
+        send_verification_email(to=email, username=username, token=raw_token, base_url=base_url)
     except Exception as exc:
         logger.error("Failed to send verification email to %s: %s", email, exc)
         # Non-fatal: user can use resend endpoint
@@ -293,9 +297,13 @@ async def verify_email(body: VerifyEmailBody, request: Request):
     Returns 200 + Set-Cookie on success.
     Returns 410 Gone if token is expired, invalid, or already used.
     """
-    token = body.token.strip()
-    if not token:
+    raw_token = body.token.strip()
+    if not raw_token:
         return JSONResponse({"error": "Token required."}, status_code=400)
+
+    # Hash the incoming raw token before DB lookup (mirroring password-reset pattern).
+    # DB stores sha256(token) so a DB leak cannot be used directly for account takeover.
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
     pool = _get_pool()
 
@@ -309,7 +317,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
                 " FROM email_verifications"
                 " WHERE token = %s AND purpose = 'email_verify'"
                 " FOR UPDATE",
-                (token,),
+                (token_hash,),
             )
 
             if row is None:
@@ -356,7 +364,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
                 )
                 cur.execute(
                     "UPDATE email_verifications SET used_at = NOW() WHERE token = %s",
-                    (token,),
+                    (token_hash,),
                 )
             conn.commit()
         except Exception:
@@ -365,8 +373,25 @@ async def verify_email(body: VerifyEmailBody, request: Request):
         finally:
             conn.autocommit = True
 
-    # Auto-login: issue session cookie (same pattern as login_post)
+    # Auto-login: issue session cookie — F7: create active_sessions row so
+    # admin-driven revoke_all_sessions / deactivate can kick this session.
+    from src.web_ui.routes.login import _create_session
+
+    client_ip = _get_client_ip(request)
+    user_agent: str | None = request.headers.get("user-agent")
+    try:
+        session_id = _create_session(
+            user_id=user_id,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+    except Exception as exc:
+        logger.error("verify-email: could not create session for user %r: %s", username, exc)
+        return JSONResponse({"error": "internal_error"}, status_code=500)
+
+    request.session["session_id"] = session_id
     request.session["username"] = username
+    request.session["user_id"] = user_id
     request.session["session_at"] = time.time()
     logger.info("verify-email: user %r (id=%d) verified and logged in", username, user_id)
     return JSONResponse({"ok": True, "username": username})
@@ -419,8 +444,10 @@ async def resend_verification(body: ResendBody, request: Request):
                 status_code=429,
             )
 
-    # Generate new token (old tokens remain valid until expiry)
-    token = secrets.token_urlsafe(32)
+    # Generate new token (old tokens remain valid until expiry).
+    # Store sha256(token) in DB; send raw token to user (same pattern as register).
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(hours=24)
 
     with pool.checkout() as conn:
@@ -430,7 +457,7 @@ async def resend_verification(body: ResendBody, request: Request):
                 cur.execute(
                     "INSERT INTO email_verifications (token, user_id, purpose, expires_at)"
                     " VALUES (%s, %s, 'email_verify', %s)",
-                    (token, user_id, expires_at),
+                    (token_hash, user_id, expires_at),
                 )
             conn.commit()
         except Exception:
@@ -442,7 +469,7 @@ async def resend_verification(body: ResendBody, request: Request):
     base_url = _get_base_url(request)
     try:
         from src.web_ui.email import send_verification_email
-        send_verification_email(to=email, username=username, token=token, base_url=base_url)
+        send_verification_email(to=email, username=username, token=raw_token, base_url=base_url)
     except Exception as exc:
         logger.error("Failed to resend verification email to %s: %s", email, exc)
 

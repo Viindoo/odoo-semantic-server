@@ -2,9 +2,13 @@
 """Tests for M9 W-UM: admin user management routes + auth + password reset.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
-Auth bypass is active for most tests (conftest autouse fixture sets WEBUI_AUTH_DISABLED=1).
-Tests that need real admin-gating must override the bypass explicitly.
+Auth bypass is active for most tests: this module self-manages WEBUI_AUTH_DISABLED
+because it is in conftest.real_auth_flow_files (conftest does NOT set the bypass).
+Tests that check admin data correctness use bypass; tests that check auth gating
+override the bypass explicitly (e.g. test_list_users_requires_admin).
 """
+import os
+
 import httpx
 import pytest
 
@@ -12,6 +16,12 @@ from src.db.migrate import run_migrations
 from src.web_ui.app import create_app
 
 pytestmark = pytest.mark.postgres
+
+# Self-managed bypass: conftest no longer sets this for real_auth_flow_files.
+# Tests that check admin data (not auth mechanics) rely on the bypass below.
+# Tests that check admin gating (e.g. test_list_users_requires_admin) patch
+# is_test_bypass_active / current_user_id directly and are unaffected.
+os.environ.setdefault("WEBUI_AUTH_DISABLED", "1")
 
 
 # ---------------------------------------------------------------------------
