@@ -12,12 +12,13 @@ Public signup, OAuth login, multi-user admin, and self-serve account operations.
 
 ---
 
-## 2. Stack Baseline (inherited from M8)
+## 2. Stack Baseline (inherited from M8 + post-PR #98)
 
-- **Frontend:** Astro `output: 'hybrid'` in `site/` — admin pages at `/admin/*` (SSR), landing pages static.
+- **Frontend:** Astro 6.x + `@astrojs/node` 10.x in `site/`, `output: 'server'` (`'hybrid'` merged into `'server'` in Astro 5.x and unchanged in 6.x). Admin pages at `/admin/*` (SSR), landing pages static via per-page `prerender = true`.
 - **Backend:** FastAPI pure JSON API at `/api/*` on port 8003. SessionMiddleware + bcrypt auth.
 - **Auth:** Cookie-based session (signed, SameSite=strict, HttpOnly, 8h TTL). Session verification via `GET /api/auth/verify` from Astro middleware.
-- **OAuth libraries:** `arctic` + `oslo` (Node.js, native Astro SSR support — no Python OAuth needed in M8 base).
+- **OAuth libraries:** `arctic` + `oslo` (Node.js, native Astro SSR support — no Python OAuth needed in M8 base). When installing, verify peer-dep compat with Astro 6.
+- **Toolchain (post-PR #98):** Node.js ≥ 22.12.0 (Astro 6 requirement), pnpm ≥ 10 (workspace `overrides:` + `allowBuilds:` fields). CI pins Node 22 + pnpm 10. `devalue` forced to ≥ 5.8.1 via `pnpm-workspace.yaml` `overrides` (CVE-2026-42570). Do not regress these versions when adding deps.
 
 ---
 
