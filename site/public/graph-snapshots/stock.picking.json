@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-05-15T10:43:00Z",
+  "model": "stock.picking",
+  "version": "17.0",
+  "definition": {
+    "module": "stock",
+    "field_count": 129,
+    "method_count": 223
+  },
+  "extenders": [
+    {
+      "module": "sale_stock",
+      "fields_added": 6,
+      "methods_added": 8,
+      "edition": "ce"
+    },
+    {
+      "module": "purchase_stock",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "stock_account",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "mrp",
+      "fields_added": 4,
+      "methods_added": 6,
+      "edition": "ce"
+    },
+    {
+      "module": "stock_picking_batch",
+      "fields_added": 5,
+      "methods_added": 7,
+      "edition": "ce"
+    },
+    {
+      "module": "stock_delivery",
+      "fields_added": 2,
+      "methods_added": 3,
+      "edition": "ce"
+    },
+    {
+      "module": "stock_dropshipping",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "repair",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    },
+    {
+      "module": "mrp_subcontracting",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "product_expiry",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    }
+  ]
+}

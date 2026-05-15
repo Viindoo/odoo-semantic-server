@@ -1,0 +1,96 @@
+{
+  "generated_at": "2026-05-15T10:43:00Z",
+  "model": "sale.order",
+  "version": "17.0",
+  "definition": {
+    "module": "sale",
+    "field_count": 148,
+    "method_count": 394
+  },
+  "extenders": [
+    {
+      "module": "sale_management",
+      "fields_added": 6,
+      "methods_added": 8,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_stock",
+      "fields_added": 12,
+      "methods_added": 18,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_project",
+      "fields_added": 8,
+      "methods_added": 12,
+      "edition": "ce"
+    },
+    {
+      "module": "website_sale",
+      "fields_added": 4,
+      "methods_added": 6,
+      "edition": "ce"
+    },
+    {
+      "module": "delivery",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_timesheet",
+      "fields_added": 7,
+      "methods_added": 11,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_loyalty",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_product_matrix",
+      "fields_added": 2,
+      "methods_added": 3,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_purchase",
+      "fields_added": 5,
+      "methods_added": 7,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_margin",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_expense",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_mrp",
+      "fields_added": 4,
+      "methods_added": 6,
+      "edition": "ce"
+    },
+    {
+      "module": "event_sale",
+      "fields_added": 3,
+      "methods_added": 3,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_crm",
+      "fields_added": 2,
+      "methods_added": 3,
+      "edition": "ce"
+    }
+  ]
+}

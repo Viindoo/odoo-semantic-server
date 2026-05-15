@@ -1,0 +1,90 @@
+{
+  "generated_at": "2026-05-15T10:43:00Z",
+  "model": "account.move",
+  "version": "17.0",
+  "definition": {
+    "module": "account",
+    "field_count": 366,
+    "method_count": 951
+  },
+  "extenders": [
+    {
+      "module": "sale",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "purchase",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "account_edi",
+      "fields_added": 8,
+      "methods_added": 12,
+      "edition": "ee"
+    },
+    {
+      "module": "account_payment",
+      "fields_added": 6,
+      "methods_added": 9,
+      "edition": "ce"
+    },
+    {
+      "module": "account_debit_note",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "stock_account",
+      "fields_added": 3,
+      "methods_added": 4,
+      "edition": "ce"
+    },
+    {
+      "module": "stock_landed_costs",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    },
+    {
+      "module": "hr_expense",
+      "fields_added": 4,
+      "methods_added": 5,
+      "edition": "ce"
+    },
+    {
+      "module": "point_of_sale",
+      "fields_added": 3,
+      "methods_added": 3,
+      "edition": "ce"
+    },
+    {
+      "module": "purchase_stock",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_stock",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_timesheet",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    },
+    {
+      "module": "sale_expense",
+      "fields_added": 2,
+      "methods_added": 2,
+      "edition": "ce"
+    }
+  ]
+}
