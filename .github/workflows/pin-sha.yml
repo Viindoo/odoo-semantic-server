@@ -15,13 +15,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Get SHA
         id: info
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           repository: Viindoo/claude-plugins
           token: ${{ secrets.CLAUDE_PLUGINS_PAT }}
