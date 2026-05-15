@@ -464,7 +464,7 @@ Session flow: `/admin/*` → Astro middleware → `GET /api/auth/verify` (FastAP
 
 ### Stream A — CI Infra Hardening (deadline-driven)
 
-- [ ] Update `actions/setup-node@v4` → v5 + `pnpm/action-setup@v3` → v5 supporting Node.js 24. **Deadline 2026-06-02** (GitHub forced upgrade — browser CI jobs will break). P0.
+- [ ] Update `actions/setup-node@v4` → v5 + `pnpm/action-setup@v4` → v5 supporting Node.js 24. **Deadline 2026-06-02** (GitHub forced upgrade — browser CI jobs will break). P0. **Note:** PR #98 already bumped Node 20 → 22 and pnpm `version: 9 → 10` (Astro 6 / overrides requirement); this task only bumps the action major refs (`@v4 → @v5`).
 - [ ] Replace `python -m jsonschema` with `check-jsonschema` pip package (ci.yml:35). Eliminates DeprecationWarning + future-proofs against jsonschema CLI interface changes.
 - [ ] Add `actionlint` as a CI gate to catch workflow drift before it reaches runner.
 
