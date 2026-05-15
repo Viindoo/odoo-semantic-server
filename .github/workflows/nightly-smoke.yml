@@ -320,7 +320,7 @@ jobs:
       issues: write
     steps:
       - name: Create GitHub issue on smoke failure
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const today = new Date().toISOString().slice(0, 10);
