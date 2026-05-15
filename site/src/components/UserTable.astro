@@ -1,0 +1,154 @@
+---
+// UserTable.astro — renders the users management table (M9 W-UM)
+// Columns: username, email, is_admin badge, is_active toggle, MFA status, created_at, actions.
+
+export interface UserRow {
+  id: number;
+  username: string;
+  email: string | null;
+  is_admin: boolean;
+  is_active: boolean;
+  mfa_enabled: boolean;
+  created_at: string | null;
+}
+
+export interface Props {
+  users: UserRow[];
+}
+
+const { users } = Astro.props;
+
+function fmtDate(ts: string | null | undefined): string {
+  if (!ts) return '—';
+  return ts.slice(0, 16).replace('T', ' ');
+}
+---
+
+{users.length === 0 ? (
+  <div data-testid="users-empty-state" class="bg-white rounded-xl border border-gray-200 shadow-sm py-12 text-center text-gray-500">
+    <p class="text-3xl mb-2">👤</p>
+    <p class="font-medium">No users found.</p>
+  </div>
+) : (
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+          <tr>
+            <th class="px-4 py-3 text-left">Username</th>
+            <th class="px-4 py-3 text-left">Email</th>
+            <th class="px-4 py-3 text-left">Role</th>
+            <th class="px-4 py-3 text-left">Status</th>
+            <th class="px-4 py-3 text-left">MFA</th>
+            <th class="px-4 py-3 text-left">Created</th>
+            <th class="px-4 py-3 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {users.map((user) => (
+            <tr
+              data-testid="user-row"
+              data-testid-id={`user-row-${user.id}`}
+              class={`hover:bg-gray-50 ${!user.is_active ? 'opacity-60' : ''}`}
+            >
+              <!-- Username -->
+              <td class="px-4 py-3 font-medium text-gray-800">
+                {user.username}
+              </td>
+
+              <!-- Email -->
+              <td class="px-4 py-3 text-gray-500 text-xs">
+                {user.email ?? <span class="text-gray-300">—</span>}
+              </td>
+
+              <!-- Role badge -->
+              <td class="px-4 py-3">
+                {user.is_admin ? (
+                  <span
+                    data-testid={`badge-admin-${user.id}`}
+                    class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800"
+                  >
+                    Admin
+                  </span>
+                ) : (
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                    User
+                  </span>
+                )}
+              </td>
+
+              <!-- Active status -->
+              <td class="px-4 py-3">
+                {user.is_active ? (
+                  <span
+                    data-testid={`badge-active-${user.id}`}
+                    class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800"
+                  >
+                    Active
+                  </span>
+                ) : (
+                  <span
+                    data-testid={`badge-inactive-${user.id}`}
+                    class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700"
+                  >
+                    Inactive
+                  </span>
+                )}
+              </td>
+
+              <!-- MFA status -->
+              <td class="px-4 py-3 text-gray-500 text-xs">
+                {user.mfa_enabled ? (
+                  <span class="text-green-700 font-medium">On</span>
+                ) : (
+                  <span class="text-gray-400">Off</span>
+                )}
+              </td>
+
+              <!-- Created at -->
+              <td class="px-4 py-3 text-gray-400 text-xs">
+                {fmtDate(user.created_at)}
+              </td>
+
+              <!-- Actions -->
+              <td class="px-4 py-3 text-right">
+                <div class="flex items-center justify-end gap-2">
+                  {user.is_active ? (
+                    <button
+                      data-testid={`deactivate-user-button-${user.id}`}
+                      data-action="deactivate"
+                      data-user-id={String(user.id)}
+                      data-username={user.username}
+                      class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      Deactivate
+                    </button>
+                  ) : (
+                    <button
+                      data-testid={`reactivate-user-button-${user.id}`}
+                      data-action="reactivate"
+                      data-user-id={String(user.id)}
+                      data-username={user.username}
+                      class="text-xs bg-green-50 hover:bg-green-100 text-green-700 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      Reactivate
+                    </button>
+                  )}
+                  <button
+                    data-testid={`reset-password-button-${user.id}`}
+                    data-action-reset="true"
+                    data-user-id={String(user.id)}
+                    data-username={user.username}
+                    class="text-xs bg-yellow-50 hover:bg-yellow-100 text-yellow-700 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Reset PW
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+)}

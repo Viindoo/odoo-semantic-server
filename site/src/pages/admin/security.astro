@@ -1,0 +1,168 @@
+---
+// Admin Security page — Two-Factor Authentication management (M9 W-MF)
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import TotpEnrollment from '../../components/TotpEnrollment';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+const forceMfa = Astro.url.searchParams.get('force_mfa') === '1';
+
+// Fetch TOTP status
+let totpEnabled = false;
+let statusError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/auth/totp/status`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    totpEnabled = data.enabled ?? false;
+  } else {
+    statusError = 'Could not fetch 2FA status.';
+  }
+} catch {
+  statusError = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="Security — Admin">
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Security Settings</h1>
+    <p class="text-sm text-gray-500 mt-1">Manage your account security — two-factor authentication</p>
+  </div>
+
+  {forceMfa && (
+    <div data-testid="force-mfa-banner" class="mb-6 bg-amber-50 border border-amber-300 text-amber-800 px-4 py-3 rounded-xl text-sm font-medium">
+      <strong>Action required:</strong> Your admin account must enable two-factor authentication.
+      Please enroll now to continue using the admin panel.
+    </div>
+  )}
+
+  {statusError && (
+    <div class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {statusError}
+    </div>
+  )}
+
+  <!-- 2FA Section -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-semibold text-gray-800">Two-Factor Authentication</h2>
+          <p class="text-sm text-gray-500 mt-1">
+            Protect your account with a time-based one-time password (TOTP) authenticator app.
+          </p>
+        </div>
+        <span
+          data-testid="totp-status-badge"
+          class:list={[
+            'text-xs font-semibold px-3 py-1 rounded-full',
+            totpEnabled
+              ? 'bg-green-100 text-green-700'
+              : 'bg-gray-100 text-gray-600',
+          ]}
+        >
+          {totpEnabled ? 'Enabled' : 'Disabled'}
+        </span>
+      </div>
+    </div>
+
+    <div class="px-5 py-5">
+      {totpEnabled ? (
+        <!-- Disable TOTP form -->
+        <div data-testid="totp-disable-section">
+          <p class="text-sm text-gray-600 mb-4">
+            Two-factor authentication is active. To disable it, enter your current password
+            and a valid 6-digit code from your authenticator app.
+          </p>
+          <form data-testid="disable-totp-form" class="space-y-4 max-w-sm">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
+              <input
+                name="password"
+                type="password"
+                required
+                data-testid="disable-password-input"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                placeholder="Your current password"
+              />
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">6-Digit Code</label>
+              <input
+                name="code"
+                type="text"
+                inputmode="numeric"
+                pattern="[0-9]{6}"
+                maxlength="6"
+                required
+                data-testid="disable-code-input"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary font-mono"
+                placeholder="000000"
+              />
+            </div>
+            <p data-testid="disable-error" hidden class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"></p>
+            <button
+              type="submit"
+              data-testid="disable-totp-btn"
+              class="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm"
+            >
+              Disable 2FA
+            </button>
+          </form>
+        </div>
+      ) : (
+        <!-- Enroll TOTP via React island -->
+        <div data-testid="totp-enroll-section">
+          <p class="text-sm text-gray-600 mb-4">
+            Scan the QR code with an authenticator app (Google Authenticator, Authy, etc.)
+            then confirm with a 6-digit code.
+          </p>
+          <TotpEnrollment client:load />
+        </div>
+      )}
+    </div>
+  </div>
+</AdminLayout>
+
+<script>
+  // Disable TOTP form handler
+  const disableForm = document.querySelector('[data-testid="disable-totp-form"]');
+  if (disableForm) {
+    disableForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.currentTarget as HTMLFormElement;
+      const fd = new FormData(form);
+      const errorEl = document.querySelector('[data-testid="disable-error"]') as HTMLElement | null;
+      const btn = document.querySelector('[data-testid="disable-totp-btn"]') as HTMLButtonElement | null;
+
+      if (btn) { btn.disabled = true; btn.textContent = 'Disabling…'; }
+      if (errorEl) errorEl.setAttribute('hidden', '');
+
+      const res = await fetch('/api/auth/totp/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: fd.get('password'), code: fd.get('code') }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        if (errorEl) {
+          const msg =
+            data.error === 'invalid_credentials' ? 'Incorrect password.' :
+            data.error === 'invalid_code' ? 'Invalid 6-digit code. Check your authenticator app.' :
+            data.error ?? 'Failed to disable 2FA.';
+          errorEl.textContent = msg;
+          errorEl.removeAttribute('hidden');
+        }
+        if (btn) { btn.disabled = false; btn.textContent = 'Disable 2FA'; }
+      }
+    });
+  }
+</script>

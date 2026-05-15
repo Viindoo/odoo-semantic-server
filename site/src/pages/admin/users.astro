@@ -1,0 +1,125 @@
+---
+// Admin Users page — SSR (M9 W-UM)
+// Middleware enforces requireAdmin before rendering this page.
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import UserTable from '../../components/UserTable.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type User = {
+  id: number;
+  username: string;
+  email: string | null;
+  is_admin: boolean;
+  is_active: boolean;
+  mfa_enabled: boolean;
+  created_at: string | null;
+};
+
+let usersData: { users: User[]; error?: string | null } = { users: [] };
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/users`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    usersData = await res.json();
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  }
+} catch {
+  usersData.error = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="Users — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Users</h1>
+      <p class="text-sm text-gray-500 mt-1">Manage web UI user accounts</p>
+    </div>
+    <span class="text-xs bg-violet-100 text-violet-800 px-3 py-1 rounded-full font-medium">
+      {usersData.users.length} user{usersData.users.length !== 1 ? 's' : ''}
+    </span>
+  </div>
+
+  {usersData.error && (
+    <div data-testid="users-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {usersData.error}
+    </div>
+  )}
+
+  <UserTable users={usersData.users} />
+</AdminLayout>
+
+<script>
+  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error'
+        ? 'bg-red-100 text-red-800 border-red-300'
+        : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
+  }
+
+  // Deactivate / Reactivate
+  document.querySelectorAll('[data-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const el = btn as HTMLElement;
+      const action = el.dataset.action as string;
+      const userId = el.dataset.userId as string;
+      const username = el.dataset.username ?? userId;
+
+      const confirmMsg =
+        action === 'deactivate'
+          ? `Deactivate user "${username}"? They will be logged out immediately.`
+          : `Reactivate user "${username}"?`;
+      if (!confirm(confirmMsg)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash(`User "${username}" ${action === 'deactivate' ? 'deactivated' : 'reactivated'}.`);
+        setTimeout(() => location.reload(), 800);
+      } else {
+        showFlash(data.detail ?? data.error ?? `${action} failed.`, 'error');
+      }
+    });
+  });
+
+  // Reset password link
+  document.querySelectorAll('[data-action-reset]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const el = btn as HTMLElement;
+      const userId = el.dataset.userId as string;
+      const username = el.dataset.username ?? userId;
+
+      if (!confirm(`Send password reset link to "${username}"?`)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/reset-password-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const msg = data.email_sent
+          ? `Reset email sent to "${username}".`
+          : `Reset link generated for "${username}" (check server logs — SMTP not configured).`;
+        showFlash(msg);
+      } else {
+        showFlash(data.detail ?? data.error ?? 'Reset failed.', 'error');
+      }
+    });
+  });
+</script>
