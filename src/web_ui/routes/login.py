@@ -302,7 +302,6 @@ async def login_post(request: Request, body: LoginBody):
     if user is None:
         hash_to_check = _DUMMY_HASH
     elif user["password_hash"] is None:
-        # OAuth-only users: force dummy-hash compare so timing matches non-existent user (F1 invariant)
         hash_to_check = _DUMMY_HASH
     else:
         hash_to_check = user["password_hash"]

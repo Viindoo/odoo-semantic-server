@@ -5,6 +5,7 @@ All tests use httpx.AsyncClient with ASGI transport — no real server required.
 A real PostgreSQL connection is needed for DB-layer assertions (pytestmark postgres).
 """
 
+import hashlib
 import logging
 import os
 import secrets
@@ -77,8 +78,13 @@ def _insert_token(
 ):
     """Insert a token record directly — used to test boundary conditions.
 
+    The production route stores sha256(raw_token) in the token column and
+    looks up by that hash.  Tests insert the hashed value so the lookup
+    succeeds when the test POSTs the raw token to /api/auth/verify-email.
+
     user_id is the integer webui_users.id (FK in email_verifications).
     """
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
     if expired:
         expires_at = datetime.now(UTC) - timedelta(hours=1)
     else:
@@ -88,7 +94,7 @@ def _insert_token(
         cur.execute(
             "INSERT INTO email_verifications (token, user_id, purpose, expires_at, used_at)"
             " VALUES (%s, %s, %s, %s, %s)",
-            (token, user_id, purpose, expires_at, used_at),
+            (token_hash, user_id, purpose, expires_at, used_at),
         )
     pg_conn.commit()
 
@@ -350,7 +356,7 @@ class TestVerifyEmail:
             tok = pool.fetch_one(
                 conn,
                 "SELECT used_at FROM email_verifications WHERE token = %s",
-                (token,),
+                (hashlib.sha256(token.encode()).hexdigest(),),
             )
             assert tok["used_at"] is not None
 
@@ -489,9 +495,11 @@ class TestResendVerification:
             )
         assert len(tokens) == 2
 
-        # Old token still in DB (additive, not replaced)
+        # Old token still in DB (additive, not replaced).
+        # DB stores sha256(raw_token); compare hashed value.
+        old_token_hash = hashlib.sha256(old_token.encode()).hexdigest()
         token_values = [r["token"] for r in tokens]
-        assert old_token in token_values
+        assert old_token_hash in token_values
 
     @pytest.mark.asyncio
     async def test_resend_nonexistent_email_returns_200(self, signup_pg):

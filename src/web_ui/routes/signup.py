@@ -322,7 +322,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
 
             if row is None:
                 conn.rollback()
-                logger.warning("verify-email: unknown token (len=%d)", len(token))
+                logger.warning("verify-email: unknown token (len=%d)", len(raw_token))
                 return JSONResponse({"error": "expired_or_invalid"}, status_code=410)
 
             now = datetime.now(UTC)

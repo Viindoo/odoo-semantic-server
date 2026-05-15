@@ -17,11 +17,27 @@ from src.web_ui.app import create_app
 
 pytestmark = pytest.mark.postgres
 
-# Self-managed bypass: conftest no longer sets this for real_auth_flow_files.
-# Tests that check admin data (not auth mechanics) rely on the bypass below.
-# Tests that check admin gating (e.g. test_list_users_requires_admin) patch
-# is_test_bypass_active / current_user_id directly and are unaffected.
-os.environ.setdefault("WEBUI_AUTH_DISABLED", "1")
+
+@pytest.fixture(autouse=True)
+def _enable_auth_bypass_for_admin_users_tests():
+    """Re-enable the auth bypass for tests that check admin data (not auth mechanics).
+
+    conftest._bypass_webui_auth_for_legacy_tests uses monkeypatch.delenv to
+    scrub WEBUI_AUTH_DISABLED for this file (it's in real_auth_flow_files).
+    That fixture runs first (conftest fixtures precede local ones), so the env
+    var is absent when the test body runs.  We restore it here — after conftest
+    has had its say — so that is_test_bypass_active() returns True for all
+    tests that do NOT explicitly patch the bypass function.  Tests that verify
+    auth gating (e.g. test_list_users_requires_admin) patch
+    is_test_bypass_active / current_user_id directly and are unaffected.
+    """
+    prev = os.environ.get("WEBUI_AUTH_DISABLED")
+    os.environ["WEBUI_AUTH_DISABLED"] = "1"
+    yield
+    if prev is None:
+        os.environ.pop("WEBUI_AUTH_DISABLED", None)
+    else:
+        os.environ["WEBUI_AUTH_DISABLED"] = prev
 
 
 # ---------------------------------------------------------------------------
