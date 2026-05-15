@@ -6,6 +6,7 @@ import InstallSnippets from '../components/InstallSnippets.astro';
 import Hero from '../components/Hero.astro';
 import PersonaCards from '../components/PersonaCards.astro';
 import GraphShowcase from '../components/GraphShowcase.tsx';
+import PromptSimulator from '../components/PromptSimulator.tsx';
 ---
 
 <BaseLayout
@@ -139,12 +140,9 @@ import GraphShowcase from '../components/GraphShowcase.tsx';
         Side-by-side: what an AI hallucinates without context vs. what it answers with Odoo Semantic MCP.
         Real queries, real results.
       </p>
-      <!-- W7 will fill with PromptSimulator.tsx -->
-      <div
-        data-testid="prompt-simulator-slot"
-        class="mt-12 min-h-[400px] rounded-2xl border border-white/10 bg-viindoo-bg-1"
-        aria-label="Prompt simulator — coming in W7"
-      />
+      <div class="mt-12">
+        <PromptSimulator client:visible />
+      </div>
     </div>
   </section>
 
