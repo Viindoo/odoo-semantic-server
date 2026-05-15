@@ -2,6 +2,7 @@
 // Repos & Profiles management page — SSR fetch from FastAPI W1
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import RepoTable from '../../components/RepoTable.astro';
+import JobStatus from '../../components/JobStatus.astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
@@ -101,20 +102,58 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     ) : (
       <div class="divide-y divide-gray-100">
         {(profilesData.profiles as { id: number; name: string; odoo_version: string; description?: string; repos?: unknown[] }[]).map((p) => (
-          <div data-testid="profile-row" data-testid-id={`profile-row-${p.id}`} class="px-5 py-4 flex items-center justify-between hover:bg-gray-50">
-            <div>
-              <p class="font-medium text-gray-800">{p.name}</p>
-              <p class="text-xs text-gray-500 mt-0.5">Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}</p>
+          <div data-testid="profile-row" data-testid-id={`profile-row-${p.id}`} class="px-5 py-4 hover:bg-gray-50">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="font-medium text-gray-800">{p.name}</p>
+                <p class="text-xs text-gray-500 mt-0.5">Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}</p>
+              </div>
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="text-sm text-gray-500">{p.repos?.length ?? 0} repos</span>
+
+                <!-- Parent profile dropdown -->
+                <select
+                  data-testid="profile-parent-select"
+                  data-profile-id={String(p.id)}
+                  class="text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select"
+                  title="Set parent profile"
+                >
+                  <option value="">— no parent —</option>
+                  {(profilesData.profiles as { id: number; name: string; odoo_version: string }[])
+                    .filter((other) => other.id !== p.id && other.odoo_version === p.odoo_version)
+                    .map((other) => (
+                      <option value={String(other.id)}>{other.name}</option>
+                    ))
+                  }
+                </select>
+
+                <!-- Clone all pending button -->
+                <button
+                  data-testid="clone-all-button"
+                  data-profile-id={String(p.id)}
+                  class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn"
+                >
+                  Clone all pending
+                </button>
+
+                <button
+                  data-testid={`delete-profile-button-${p.id}`}
+                  data-profile-id={String(p.id)}
+                  class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
-            <div class="flex items-center gap-3">
-              <span class="text-sm text-gray-500">{p.repos?.length ?? 0} repos</span>
-              <button
-                data-testid={`delete-profile-button-${p.id}`}
-                data-profile-id={String(p.id)}
-                class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
-              >
-                Delete
-              </button>
+
+            <!-- JobStatus widget for clone-all (hidden until a job is triggered) -->
+            <div
+              data-testid={`clone-all-status-${p.id}`}
+              data-profile-id={String(p.id)}
+              class="mt-2"
+              hidden
+            >
+              <JobStatus jobId={null} autoPoll={false} testid={`clone-all-job-${p.id}`} />
             </div>
           </div>
         ))}
@@ -159,6 +198,75 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       const data = await res.json().catch(() => ({}));
       showFlash(data.error ?? 'Failed to create profile.', 'error');
     }
+  });
+
+  // Parent profile dropdown — PATCH /api/repos/profiles/{id}/parent
+  document.querySelectorAll('.profile-parent-select').forEach((sel) => {
+    sel.addEventListener('change', async () => {
+      const select = sel as HTMLSelectElement;
+      const profileId = (select as HTMLElement).dataset.profileId;
+      const parentId = select.value ? Number(select.value) : null;
+      const res = await fetch(`/api/repos/profiles/${profileId}/parent`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: parentId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash('Parent updated.', 'success');
+      } else if (res.status === 404) {
+        showFlash(data.error ?? 'Profile not found.', 'error');
+      } else if (res.status === 422) {
+        showFlash(data.detail ?? data.error ?? 'Validation error.', 'error');
+      } else if (res.status === 400) {
+        showFlash(data.error ?? 'Invalid parent selection.', 'error');
+      } else {
+        showFlash(data.error ?? 'Failed to update parent.', 'error');
+      }
+    });
+  });
+
+  // Clone all pending — POST /api/repos/profiles/{id}/clone-all
+  document.querySelectorAll('.clone-all-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const profileId = (btn as HTMLElement).dataset.profileId;
+      (btn as HTMLButtonElement).disabled = true;
+
+      const res = await fetch(`/api/repos/profiles/${profileId}/clone-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        const total: number = data.total ?? 0;
+        if (total === 0) {
+          showFlash('No pending repos to clone.', 'success');
+          (btn as HTMLButtonElement).disabled = false;
+          return;
+        }
+        showFlash(`Clone-all started: ${total} repo(s) processing.`, 'success');
+
+        // Show the JobStatus widget for this profile
+        const statusDiv = document.querySelector(
+          `[data-testid="clone-all-status-${profileId}"]`
+        ) as HTMLElement | null;
+        if (statusDiv) {
+          statusDiv.removeAttribute('hidden');
+          // Update the inner JobStatus badge text with summary
+          const badge = statusDiv.querySelector('[data-testid^="clone-all-job-"]') as HTMLElement | null;
+          if (badge) {
+            badge.textContent = `Spawned: ${data.spawned ?? 0}, Short-circuited: ${data.short_circuited ?? 0}`;
+            badge.removeAttribute('hidden');
+          }
+        }
+      } else if (res.status === 404) {
+        showFlash('Profile not found.', 'error');
+      } else {
+        showFlash(data.error ?? 'Clone-all failed.', 'error');
+      }
+      (btn as HTMLButtonElement).disabled = false;
+    });
   });
 
   // Delete profile

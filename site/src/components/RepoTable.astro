@@ -42,7 +42,7 @@ const cloneStatusColor: Record<string, string> = {
 <!-- Add Repo Form -->
 <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
   <h2 class="text-base font-semibold text-gray-800 mb-4">Add Repository</h2>
-  <form data-testid="add-repo-form" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+  <form data-testid="add-repo-form" data-repo-form class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
     <div>
       <label class="block text-xs font-medium text-gray-600 mb-1">Profile</label>
       <select
@@ -89,21 +89,19 @@ const cloneStatusColor: Record<string, string> = {
         class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
       />
     </div>
-    {sshKeys.length > 0 && (
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1">SSH Key (for git@ URLs)</label>
-        <select
-          name="ssh_key_id"
-          data-testid="repos-ssh-key-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
-        >
-          <option value="">— none —</option>
-          {sshKeys.map((k) => (
-            <option value={String(k.id)}>{k.name}</option>
-          ))}
-        </select>
-      </div>
-    )}
+    <div data-testid="ssh-key-select-wrapper" hidden>
+      <label class="block text-xs font-medium text-gray-600 mb-1">SSH Key (for git@ URLs)</label>
+      <select
+        name="ssh_key_id"
+        data-testid="repos-ssh-key-input"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+      >
+        <option value="">— none —</option>
+        {sshKeys.map((k) => (
+          <option value={String(k.id)}>{k.name}</option>
+        ))}
+      </select>
+    </div>
     <div class="flex items-end">
       <button
         type="submit"
@@ -312,5 +310,19 @@ const cloneStatusColor: Record<string, string> = {
     } else {
       showFlash(data.error ?? 'Index-all failed.', 'error');
     }
+  });
+
+  // SSH key dropdown toggle — show when URL starts with git@, hide otherwise.
+  // Works for all repo-form elements (currently one add-repo-form on the page).
+  document.querySelectorAll('[data-repo-form]').forEach((form) => {
+    const urlInput = form.querySelector('input[name="url"]') as HTMLInputElement | null;
+    const sshDiv = form.querySelector('[data-testid="ssh-key-select-wrapper"]') as HTMLElement | null;
+    if (!urlInput || !sshDiv) return;
+    const update = () => {
+      const isSsh = urlInput.value.startsWith('git@');
+      sshDiv.hidden = !isSsh;
+    };
+    urlInput.addEventListener('input', update);
+    update();  // initial state on page load
   });
 </script>

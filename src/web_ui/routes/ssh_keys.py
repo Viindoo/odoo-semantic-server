@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
 
 _logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ async def list_ssh_keys(request: Request):
 
 
 @router.post("")
+@audit_action("ssh_key.create")
 async def create_ssh_key(body: CreateSshKeyBody, request: Request):
     """Generate a new Ed25519 keypair, store encrypted, return public key once."""
     error = None
@@ -175,6 +177,7 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
 
 
 @router.post("/import")
+@audit_action("ssh_key.import")
 async def import_ssh_key(body: ImportSshKeyBody, request: Request):
     """Import an existing Ed25519 private key (PEM). Server derives public key,
     validates Ed25519, encrypts with Fernet, stores in DB."""
@@ -224,6 +227,7 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
 
 
 @router.delete("/{key_id}")
+@audit_action("ssh_key.delete", target_param="key_id")
 async def delete_ssh_key(request: Request, key_id: int):
     """Delete an SSH key pair by id."""
     try:
