@@ -5,6 +5,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import InstallSnippets from '../components/InstallSnippets.astro';
 import Hero from '../components/Hero.astro';
 import PersonaCards from '../components/PersonaCards.astro';
+import GraphShowcase from '../components/GraphShowcase.tsx';
 ---
 
 <BaseLayout
@@ -98,12 +99,9 @@ import PersonaCards from '../components/PersonaCards.astro';
       <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
         Interactive graph of the full Odoo model hierarchy. Click any node to resolve fields, methods, and override points — live.
       </p>
-      <!-- W6 will replace this with GraphShowcase.tsx -->
-      <div
-        data-testid="graph-showcase-slot"
-        class="mt-12 aspect-video rounded-2xl border border-white/10 bg-viindoo-bg-1"
-        aria-label="Interactive graph showcase — coming in W6"
-      />
+      <div class="mt-12">
+        <GraphShowcase client:visible />
+      </div>
     </div>
   </section>
 
