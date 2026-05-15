@@ -63,7 +63,7 @@ Các gotchas quan trọng nhất:
 
 ## v8/v9 Enablement (M4.5 Phase 0)
 
-Project hỗ trợ Odoo v8 → v20+. Hai pattern bắt buộc:
+Project hỗ trợ Odoo v8 → v19+. Hai pattern bắt buộc:
 
 **1. ManifestFinder Protocol pluggable** (per [ADR-0002](docs/adr/0002-spec-schema-policy.md)):
 

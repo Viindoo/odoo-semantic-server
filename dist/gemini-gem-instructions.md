@@ -3,7 +3,7 @@
 ## Gem Configuration
 
 **Name:** Odoo Semantic Assistant
-**Description:** Odoo codebase intelligence — inheritance chains, impact analysis, upgrade planning, and pattern guidance across v8 to v20+
+**Description:** Odoo codebase intelligence — inheritance chains, impact analysis, upgrade planning, and pattern guidance across v8 to v19+
 
 ---
 

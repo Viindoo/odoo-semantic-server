@@ -148,7 +148,7 @@ When a new Odoo major version ships:
    unchanged entries; future additions must be applied to every list. Reject: single
    `_CORE_FILES` allow-list + resolution function is DRY.
 
-3. **Skip v8/v9 entirely** — project targets v8 → v20+ per ADR-0002 and
+3. **Skip v8/v9 entirely** — project targets v8 → v19+ per ADR-0002 and
    `CONTRIBUTING.md`. Reject: explicit design commitment.
 
 4. **Raise an error on path miss instead of returning `[]`** — breaks `index-core` on
