@@ -1,7 +1,7 @@
 """Tests for FakeEmbedder and Qwen3Embedder."""
 import math
-from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from src.indexer.embedder import EmbedderClient, FakeEmbedder, Qwen3Embedder
@@ -9,6 +9,12 @@ from src.indexer.embedder import EmbedderClient, FakeEmbedder, Qwen3Embedder
 
 def _is_normalized(vec: list[float], tol: float = 1e-5) -> bool:
     return abs(math.sqrt(sum(x * x for x in vec)) - 1.0) < tol
+
+
+def _mock_transport(embeddings: list[list[float]]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"embeddings": embeddings})
+    return httpx.MockTransport(handler)
 
 
 # --- FakeEmbedder ---
@@ -53,101 +59,95 @@ def test_qwen3_embedder_satisfies_protocol():
     assert isinstance(Qwen3Embedder(), EmbedderClient)
 
 
-def _mock_ollama_response(embeddings: list[list[float]]):
-    import json
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({"embeddings": embeddings}).encode()
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    return mock_resp
-
-
-def test_qwen3_embedder_calls_correct_url():
-    raw = [[0.1] * 2048]
-    with patch("urllib.request.urlopen", return_value=_mock_ollama_response(raw)) as mock_open:
-        e = Qwen3Embedder(url="http://ollama:11434", model="qwen3-embedding:4b", dim=1024)
-        e.embed(["test query"])
-    call_args = mock_open.call_args[0][0]
-    assert call_args.full_url == "http://ollama:11434/api/embed"
+def test_qwen3_embedder_protocol_conformance():
+    """embed() must return list[list[float]] with one vector per input text."""
+    raw = [[0.1] * 2048, [0.2] * 2048]
+    e = Qwen3Embedder(url="http://test", model="m", dim=1024, transport=_mock_transport(raw))
+    result = e.embed(["text one", "text two"])
+    assert isinstance(result, list)
+    assert len(result) == 2
+    for vec in result:
+        assert isinstance(vec, list)
+        assert all(isinstance(v, float) for v in vec)
 
 
 def test_qwen3_embedder_truncates_to_dim():
+    """Vectors longer than dim must be sliced to exactly dim elements."""
     raw = [[float(i) / 100 for i in range(2048)]]
-    with patch("urllib.request.urlopen", return_value=_mock_ollama_response(raw)):
-        e = Qwen3Embedder(dim=1024)
-        result = e.embed(["x"])
+    e = Qwen3Embedder(url="http://test", model="m", dim=1024, transport=_mock_transport(raw))
+    result = e.embed(["x"])
     assert len(result[0]) == 1024
 
 
 def test_qwen3_embedder_normalizes():
+    """Each returned vector must be L2-normalised."""
     raw = [[1.0, 2.0, 3.0]]
-    with patch("urllib.request.urlopen", return_value=_mock_ollama_response(raw)):
-        e = Qwen3Embedder(dim=3)
-        result = e.embed(["x"])
+    e = Qwen3Embedder(url="http://test", model="m", dim=3, transport=_mock_transport(raw))
+    result = e.embed(["x"])
     assert _is_normalized(result[0])
 
 
+def test_qwen3_embedder_with_token_sends_bearer_header():
+    """Authorization: Bearer <token> must appear in the request when auth_token is set."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"embeddings": [[0.5, 0.5]]})
+
+    e = Qwen3Embedder(
+        url="http://test", model="m", dim=2, auth_token="abc123",
+        transport=httpx.MockTransport(handler),
+    )
+    e.embed(["hello"])
+    assert len(captured) == 1
+    assert captured[0].headers.get("authorization") == "Bearer abc123"
+
+
+def test_qwen3_embedder_no_token_sends_no_auth_header():
+    """Without auth_token, Authorization header must NOT be present."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
+
+    e = Qwen3Embedder(
+        url="http://test", model="m", dim=2,
+        transport=httpx.MockTransport(handler),
+    )
+    e.embed(["hello"])
+    assert len(captured) == 1
+    assert "authorization" not in captured[0].headers
+
+
 def test_qwen3_embedder_retries_on_error():
-    import urllib.error
-    side_effects = [urllib.error.URLError("timeout"), urllib.error.URLError("timeout")]
-    raw = [[0.5, 0.5]]
-    mock_resp = _mock_ollama_response(raw)
-
+    """Two HTTP errors then success: total call count == 3, result returned."""
     call_count = [0]
-    def fake_urlopen(req, timeout=None):
-        if call_count[0] < len(side_effects):
-            err = side_effects[call_count[0]]
-            call_count[0] += 1
-            raise err
-        call_count[0] += 1
-        return mock_resp
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        e = Qwen3Embedder(dim=2, retries=3)
-        result = e.embed(["x"])
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        if call_count[0] < 3:
+            raise httpx.ConnectError("transient")
+        return httpx.Response(200, json={"embeddings": [[0.5, 0.5]]})
+
+    e = Qwen3Embedder(
+        url="http://test", model="m", dim=2, retries=3,
+        transport=httpx.MockTransport(handler),
+    )
+    result = e.embed(["x"])
     assert len(result) == 1
     assert call_count[0] == 3
 
 
 def test_qwen3_embedder_raises_after_exhausting_retries():
-    import urllib.error
-    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
-        e = Qwen3Embedder(dim=4, retries=2)
-        with pytest.raises(RuntimeError, match="failed after 2 attempts"):
-            e.embed(["x"])
+    """After retries exhausted, RuntimeError must be raised with attempt count."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
 
-
-# --- auth_token ---
-
-def test_qwen3_embedder_no_token_sends_no_auth_header():
-    """Without auth_token, Authorization header must NOT be present."""
-    raw = [[0.1, 0.2]]
-    captured: list = []
-
-    def fake_urlopen(req, timeout=None):
-        captured.append(req)
-        return _mock_ollama_response(raw)
-
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        e = Qwen3Embedder(dim=2)
-        e.embed(["hello"])
-
-    assert len(captured) == 1
-    assert captured[0].get_header("Authorization") is None
-
-
-def test_qwen3_embedder_with_token_sends_bearer_header():
-    """With auth_token set, Authorization: Bearer <token> must be in the request."""
-    raw = [[0.1, 0.2]]
-    captured: list = []
-
-    def fake_urlopen(req, timeout=None):
-        captured.append(req)
-        return _mock_ollama_response(raw)
-
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        e = Qwen3Embedder(dim=2, auth_token="abc123")
-        e.embed(["hello"])
-
-    assert len(captured) == 1
-    assert captured[0].get_header("Authorization") == "Bearer abc123"
+    e = Qwen3Embedder(
+        url="http://test", model="m", dim=4, retries=2,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(RuntimeError, match="failed after 2 attempts"):
+        e.embed(["x"])

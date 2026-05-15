@@ -297,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
                         pass
                 raise
         finally:
+            if embedder is not None:
+                close = getattr(embedder, "close", None)
+                if callable(close):
+                    close()
             pg.close()
 
     elif args.subcommand == "index-core":
