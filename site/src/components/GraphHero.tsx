@@ -24,9 +24,9 @@ const PLACEHOLDER_SNAPSHOT: GraphSnapshot = {
       position: { x: 300, y: 150 },
       data: { label: 'sale.order\n(sale)', module: 'sale', is_definition: true, field_count: 148 },
       style: {
-        background: '#7c3aed',
-        color: '#fff',
-        border: '2px solid #5b21b6',
+        background: '#00BBCE',
+        color: '#07131A',
+        border: '2px solid #008A99',
         borderRadius: 8,
         padding: '8px 12px',
         minWidth: 160,
@@ -40,9 +40,9 @@ const PLACEHOLDER_SNAPSHOT: GraphSnapshot = {
       position: { x: 100, y: 300 },
       data: { label: 'sale.order\n(viin_sale)', module: 'viin_sale' },
       style: {
-        background: '#1d4ed8',
+        background: '#7F4282',
         color: '#fff',
-        border: '2px solid #1e40af',
+        border: '2px solid #5e3060',
         borderRadius: 8,
         padding: '8px 12px',
         minWidth: 160,
@@ -91,8 +91,8 @@ const PLACEHOLDER_SNAPSHOT: GraphSnapshot = {
       type: 'smoothstep',
       label: 'INHERITS',
       markerEnd: { type: MarkerType.ArrowClosed },
-      style: { stroke: '#7c3aed', strokeWidth: 2 },
-      labelStyle: { fill: '#7c3aed', fontSize: 11 },
+      style: { stroke: '#00BBCE', strokeWidth: 2 },
+      labelStyle: { fill: '#00BBCE', fontSize: 11 },
     },
     {
       id: 'e-sale_management-sale',
@@ -202,7 +202,7 @@ export default function GraphHero() {
     return (
       <div className="flex items-center justify-center h-64 bg-gray-950 rounded-xl border border-gray-800">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-viindoo-primary border-t-transparent rounded-full animate-spin" />
           <span className="text-gray-400 text-sm font-mono">Loading graph...</span>
         </div>
       </div>
@@ -244,7 +244,7 @@ export default function GraphHero() {
       {/* Field count badge — appears on frame 4 */}
       {fieldBadge && (
         <div
-          className="absolute top-3 right-3 z-10 bg-violet-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg"
+          className="absolute top-3 right-3 z-10 bg-viindoo-primary text-viindoo-bg-0 text-xs font-bold px-3 py-1 rounded-full shadow-lg"
           style={{
             animation: 'fadeInScale 0.4s ease-out forwards',
           }}

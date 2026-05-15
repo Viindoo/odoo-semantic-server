@@ -1,23 +1,65 @@
+/* Font imports — must be in CSS (not via package.json) for Astro processing */
+@import "@fontsource/montserrat/400.css";
+@import "@fontsource/montserrat/500.css";
+@import "@fontsource/montserrat/600.css";
+@import "@fontsource/montserrat/700.css";
+@import "@fontsource/montserrat/800.css";
+@import "@fontsource/roboto/400.css";
+@import "@fontsource/roboto/500.css";
+@import "@fontsource/roboto/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  html {
-    @apply antialiased;
+  :root {
+    --viindoo-primary: #00BBCE;
+    --viindoo-primary-bright: #2DD4E8;
+    --viindoo-primary-deep: #008A99;
+    --viindoo-secondary: #7F4282;
+    --viindoo-secondary-bright: #A263A5;
+    --viindoo-success: #00B365;
+    --viindoo-warning: #C99700;
+    --viindoo-info: #0099E6;
+    --viindoo-dark: #21272B;
+    --viindoo-body: #282F33;
+    --viindoo-muted: #6B6D70;
+    --viindoo-bg-0: #07131A;
+    --viindoo-bg-1: #0C1E26;
+    --viindoo-bg-2: #112B36;
+    --viindoo-bg-3: #173846;
+    --viindoo-on-dark: #E6F2F4;
+    --viindoo-on-dark-muted: #95B1B8;
+    --viindoo-on-dark-dim: #5A7782;
   }
 
-  body {
-    @apply bg-white text-gray-900;
+  html {
+    font-family: theme('fontFamily.body');
+    color: var(--viindoo-on-dark);
+    background: var(--viindoo-bg-0);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: var(--viindoo-primary);
+    color: var(--viindoo-bg-0);
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply inline-flex items-center px-4 py-2 bg-violet-600 text-white font-medium rounded-lg hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 transition-colors;
+    @apply inline-flex items-center gap-2 rounded-lg bg-viindoo-primary px-6 py-3 font-semibold text-viindoo-bg-0 transition hover:bg-viindoo-primary-bright hover:-translate-y-px;
   }
-
-  .btn-secondary {
-    @apply inline-flex items-center px-4 py-2 bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 transition-colors;
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-6 py-3 font-semibold text-viindoo-on-dark transition hover:border-viindoo-primary hover:bg-viindoo-primary/10;
+  }
+  .btn-purple {
+    @apply inline-flex items-center gap-2 rounded-lg px-6 py-3 font-semibold text-white transition hover:-translate-y-px;
+    background: linear-gradient(110deg, var(--viindoo-primary), var(--viindoo-secondary));
   }
 }
