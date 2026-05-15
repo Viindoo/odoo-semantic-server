@@ -1,0 +1,80 @@
+{
+  "measured_at": "2026-05-15",
+  "tokenizer": "cl100k_base",
+  "methodology": "without_mcp tokens = sum of tiktoken-encoded length of grep output + files an agent would Read to answer the query manually against real ~/git/odoo17 source. with_mcp tokens = tiktoken-encoded length of the single MCP tool response captured live in this session. WebSearch cost in case 2 is conservatively estimated at 1800 tokens (3 result excerpts × 600 tokens), since live WebSearch can't be replayed.",
+  "cases": [
+    {
+      "id": "find-override-point",
+      "persona": "Developer",
+      "query": "Tìm override point cho sale.order.action_confirm",
+      "without_mcp": {
+        "tokens": 35724,
+        "steps": [
+          "grep -rn 'def action_confirm' across 8 candidate sale-related addon dirs (255 tokens)",
+          "Read addons/sale/models/sale_order.py (17609 tokens)",
+          "Read addons/sale_loyalty/models/sale_order.py (12031 tokens)",
+          "Read addons/sale_management/models/sale_order.py (1706 tokens)",
+          "Read addons/event_sale/models/sale_order.py (672 tokens)",
+          "Read addons/sale_crm/models/sale_order.py (139 tokens)",
+          "Read addons/delivery_mondialrelay/models/sale_order.py (154 tokens)",
+          "Read addons/event_booth_sale/models/sale_order.py (419 tokens)",
+          "Read addons/l10n_it_edi_doi/models/sale_order.py (2739 tokens)"
+        ],
+        "note": "Agent must grep across 8 candidate sale-related addon directories then read the full sale_order.py from each (sale/, sale_loyalty/, sale_management/, event_sale/, sale_crm/, delivery_mondialrelay/, event_booth_sale/, l10n_it_edi_doi/) to reconstruct the override chain — and still misses anti-pattern detection."
+      },
+      "with_mcp": {
+        "tokens": 312,
+        "tool": "find_override_point",
+        "note": "Single MCP call returns chain + super() safety per module + 3 anti-patterns ready to render."
+      },
+      "savings_pct": 99.1
+    },
+    {
+      "id": "check-module-exists",
+      "persona": "Consultant",
+      "query": "Odoo 17 có sẵn module loyalty/voucher không?",
+      "without_mcp": {
+        "tokens": 5384,
+        "steps": [
+          "ls ~/git/odoo17/addons/ to scan for loyalty/voucher names (3029 tokens)",
+          "WebSearch 'Odoo 17 loyalty voucher module' — 3 result excerpts (~1800 tokens estimated)",
+          "Read addons/loyalty/__manifest__.py (332 tokens)",
+          "Read addons/sale_loyalty/__manifest__.py (223 tokens)"
+        ],
+        "note": "Agent typically web-searches Odoo docs, lists addons directory, then reads 2 manifest files to confirm. WebSearch cost is estimated (live web not replayable)."
+      },
+      "with_mcp": {
+        "tokens": 43,
+        "tool": "check_module_exists",
+        "note": "Single MCP call returns indexed/edition/EE-confusion across all indexed Odoo versions instantly."
+      },
+      "savings_pct": 99.2
+    },
+    {
+      "id": "impact-analysis-field",
+      "persona": "BA/Manager",
+      "query": "Đổi field sale.order.amount_total ảnh hưởng đến gì?",
+      "without_mcp": {
+        "tokens": 88081,
+        "steps": [
+          "grep -rn 'amount_total' addons/sale/ (36141 tokens)",
+          "Read addons/sale/models/sale_order.py (17609 tokens)",
+          "Read addons/sale/views/sale_order_views.xml (11830 tokens)",
+          "Read addons/sale_loyalty/models/sale_order.py (12031 tokens)",
+          "Read addons/sale_margin/models/sale_order.py (324 tokens)",
+          "Read addons/sale_stock/models/sale_order.py (2796 tokens)",
+          "Read addons/website_sale/models/sale_order.py (5898 tokens)",
+          "Read addons/delivery/models/sale_order.py (1452 tokens)",
+          "Note: agent would still miss JS patches, views in 49 modules, and transitive dependents — output still incomplete vs MCP."
+        ],
+        "note": "Agent greps 'amount_total' across addons/sale/ (already a large output) then samples 6-7 sale_order.py files from sibling modules — and STILL misses 49 views, 124 method overrides, and 89 transitive dependent modules across the whole codebase. Output is incomplete vs MCP."
+      },
+      "with_mcp": {
+        "tokens": 3218,
+        "tool": "impact_analysis",
+        "note": "Single MCP call returns risk score + 49 views + 124 methods + 89 dependent modules in a structured tree."
+      },
+      "savings_pct": 96.3
+    }
+  ]
+}
