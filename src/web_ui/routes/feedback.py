@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.db.audit import audit_action
+
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feedback")
 
@@ -18,6 +20,7 @@ class FeedbackBody(BaseModel):
 
 
 @router.post("")
+@audit_action("feedback.submit")
 async def submit_feedback(body: FeedbackBody, request: Request):
     """Submit a thumbs-up or thumbs-down rating for a PatternExample.
 
