@@ -11,6 +11,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 
 
+_HTTP_METHOD_PREFIXES = (
+    "GET ", "POST ", "PUT ", "PATCH ", "DELETE ", "HEAD ", "OPTIONS ",
+)
+
+
 def _completed_file_refs() -> list[str]:
     """Extract file paths from [x] tasks in TASKS.md."""
     content = (REPO_ROOT / "TASKS.md").read_text()
@@ -20,6 +25,10 @@ def _completed_file_refs() -> list[str]:
         if not m:
             continue
         raw = m.group(1).split(":")[0].strip()
+        # Skip API endpoint refs like `POST /api/foo` — they share the "/"
+        # heuristic with file paths but are not files on disk.
+        if raw.startswith(_HTTP_METHOD_PREFIXES):
+            continue
         if "/" in raw or raw.endswith((".py", ".yml", ".toml", ".md", ".sh")):
             files.append(raw)
     return files
