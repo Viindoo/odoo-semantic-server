@@ -1,5 +1,5 @@
 ---
-// Operations page — index-core, seed-patterns, apply-preset, jobs
+// Operations page — index-core, seed-patterns, apply-preset, jobs, migrations
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 
@@ -17,6 +17,13 @@ try {
 } catch {
   // non-blocking — presets dropdown just stays empty
 }
+
+// M9 W-UO: fetch applied migrations for SSR display
+const migrationsRes = await fetch(`${FASTAPI_BASE}/api/admin/migrations`, {
+  headers: { cookie: cookieHeader },
+}).catch(() => null);
+const migrationsData: { migrations: { id: string; applied_at: string | null }[]; count: number } =
+  migrationsRes?.ok ? await migrationsRes.json() : { migrations: [], count: 0 };
 ---
 
 <AdminLayout title="Operations — Admin">
@@ -199,6 +206,175 @@ try {
     </div>
   </div>
 
+  <!-- DB Migrations (read-only display) — M9 W-UO -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">📋</span>
+      <div>
+        <h2 class="text-base font-semibold text-gray-800">Database Migrations</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Applied yoyo migrations (read-only — trigger via deploy script per ADR-0001)</p>
+      </div>
+    </div>
+    <div data-testid="migrations-list" class="overflow-x-auto">
+      {migrationsData.migrations.length === 0 ? (
+        <p class="text-xs text-gray-400">No migrations recorded yet.</p>
+      ) : (
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="text-left px-3 py-2 text-xs text-gray-600">Migration ID</th>
+              <th class="text-left px-3 py-2 text-xs text-gray-600">Applied At (UTC)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {migrationsData.migrations.map((m) => (
+              <tr class="border-t border-gray-100">
+                <td class="px-3 py-2 font-mono text-xs">{m.id}</td>
+                <td class="px-3 py-2 text-xs text-gray-500">{m.applied_at ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p class="text-xs text-gray-400 mt-2">{migrationsData.count} migration(s) applied</p>
+    </div>
+  </div>
+
+  <!-- Backup (M9 W-BK) -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">💾</span>
+      <div>
+        <h2 class="text-base font-semibold text-gray-800">Create Backup</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Bundle PG dump + Neo4j dump + encrypted FERNET key into a tar.gz archive</p>
+      </div>
+    </div>
+    <form data-testid="backup-form" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Output path (optional)</label>
+        <input
+          name="output"
+          type="text"
+          placeholder="Leave blank for auto-timestamped path"
+          data-testid="ops-backup-output-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+        />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Bundle passphrase env var (optional)</label>
+        <input
+          name="bundle_passphrase_env"
+          type="text"
+          placeholder="e.g. BUNDLE_PASSPHRASE"
+          data-testid="ops-backup-passphrase-env-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+        />
+      </div>
+      <div class="sm:col-span-2 flex justify-start">
+        <button
+          type="submit"
+          data-testid="backup-button"
+          class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+        >
+          Create Backup
+        </button>
+      </div>
+    </form>
+
+    <!-- Backup log stream (shown after job starts) -->
+    <div data-testid="backup-log-container" hidden class="mt-4">
+      <div class="flex items-center justify-between mb-2">
+        <p class="text-xs font-semibold text-gray-700">Backup log</p>
+        <span data-testid="backup-status-badge" class="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full">pending</span>
+      </div>
+      <pre
+        data-testid="backup-log"
+        class="bg-gray-900 text-green-400 rounded-lg p-3 text-xs font-mono overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap"
+      ></pre>
+      <p data-testid="backup-download-link" hidden class="mt-2 text-sm text-viindoo-primary font-medium"></p>
+    </div>
+  </div>
+
+  <!-- Restore Upload (M9 W-RS) -->
+  <div class="bg-white rounded-xl border border-red-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">&#9888;</span>
+      <div>
+        <h2 class="text-base font-semibold text-red-700">Restore from Backup Bundle</h2>
+        <p class="text-xs text-gray-500 mt-0.5">
+          Upload a <code>.tar.gz</code> backup bundle. Service enters maintenance mode during restore.
+          Requires admin session with MFA verified within last 5 minutes.
+          A pre-restore safety backup is created automatically.
+        </p>
+      </div>
+    </div>
+    <form data-testid="restore-form" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">
+          Backup bundle (.tar.gz, max 500MB)
+        </label>
+        <input
+          name="file"
+          type="file"
+          accept=".tar.gz,.tgz"
+          data-testid="restore-file-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+          required
+        />
+        <p class="text-xs text-gray-400 mt-1">Max 500MB. Bundle must contain manifest.json + postgres.sql.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">
+          Fernet passphrase env var (optional)
+        </label>
+        <input
+          name="passphrase_env"
+          type="text"
+          placeholder="RESTORE_PASSPHRASE"
+          data-testid="restore-passphrase-env-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+        />
+        <p class="text-xs text-gray-400 mt-1">Leave blank if bundle has no fernet.enc.</p>
+      </div>
+      <div class="sm:col-span-2 flex justify-start">
+        <button
+          type="submit"
+          data-testid="restore-button"
+          class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+        >
+          Upload &amp; Restore
+        </button>
+      </div>
+    </form>
+    <!-- Restore result -->
+    <div data-testid="restore-result" hidden class="mt-4 bg-gray-50 rounded-lg border border-gray-200 px-4 py-3">
+      <p class="text-xs font-semibold text-gray-600 mb-1">Restore result</p>
+      <pre data-testid="restore-result-content" class="text-xs font-mono text-gray-700 whitespace-pre-wrap overflow-x-auto max-h-64"></pre>
+    </div>
+  </div>
+
+  <!-- FERNET Key Rotation (placeholder — MFA + audit required) — M9 W-UO -->
+  <div class="bg-white rounded-xl border border-amber-200 p-5 mb-6 shadow-sm">
+    <div class="flex items-start gap-3 mb-4">
+      <span class="text-2xl">🔑</span>
+      <div>
+        <h2 class="text-base font-semibold text-amber-700">FERNET Key Rotation</h2>
+        <p class="text-xs text-gray-500 mt-0.5">
+          High-risk operation. Requires fresh MFA verification (within 5 min)
+          and is currently CLI-only. UI trigger deferred to M10.
+        </p>
+      </div>
+    </div>
+    <div data-testid="fernet-rotation-cli-hint" class="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+      <p class="text-xs text-amber-800 font-mono">
+        $ python -m src.cli rotate-fernet --old-key-env OLD_FERNET_KEY --new-key-env NEW_FERNET_KEY
+      </p>
+      <p class="text-xs text-gray-500 mt-1">
+        See <code>docs/adr/0020-fernet-key-delivery.md</code> for full rotation procedure.
+      </p>
+    </div>
+  </div>
+
   <!-- Recent jobs placeholder - populated via JS -->
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
     <div class="px-5 py-4 border-b border-gray-100">
@@ -323,6 +499,120 @@ try {
       showJobStarted(data.job_id, 'patterns');
     } else {
       showFlash(data.error ?? 'Seed patterns failed.', 'error');
+    }
+  });
+
+  // Backup (M9 W-BK)
+  document.querySelector('[data-testid="backup-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const body: Record<string, string> = {
+      output: String(fd.get('output') ?? ''),
+      bundle_passphrase_env: String(fd.get('bundle_passphrase_env') ?? ''),
+    };
+    const res = await fetch('/api/operations/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showFlash(data.error ?? 'Backup failed.', 'error');
+      return;
+    }
+
+    showFlash(data.message ?? 'Backup started.', 'success');
+    const jobId: string = data.job_id;
+    const outputPath: string = data.output ?? '';
+
+    const logContainer = document.querySelector('[data-testid="backup-log-container"]') as HTMLElement | null;
+    const logEl = document.querySelector('[data-testid="backup-log"]') as HTMLElement | null;
+    const badgeEl = document.querySelector('[data-testid="backup-status-badge"]') as HTMLElement | null;
+    const downloadEl = document.querySelector('[data-testid="backup-download-link"]') as HTMLElement | null;
+    if (logContainer) logContainer.removeAttribute('hidden');
+    if (badgeEl) { badgeEl.textContent = 'running'; badgeEl.className = 'text-xs px-2 py-0.5 bg-viindoo-info/10 text-viindoo-info rounded-full'; }
+
+    const es = new EventSource(`/api/operations/backup/${jobId}/stream`);
+    es.onmessage = (evt) => {
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(evt.data); } catch { return; }
+      if (parsed.line && logEl) {
+        logEl.textContent += parsed.line + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      if (parsed.done) {
+        es.close();
+        const ok = parsed.exit_code === 0;
+        if (badgeEl) {
+          badgeEl.textContent = ok ? 'done' : 'error';
+          badgeEl.className = `text-xs px-2 py-0.5 rounded-full ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`;
+        }
+        if (ok && downloadEl && outputPath) {
+          downloadEl.textContent = `Backup saved: ${outputPath}`;
+          downloadEl.removeAttribute('hidden');
+        }
+        showFlash(ok ? `Backup complete: ${outputPath}` : 'Backup failed — check log.', ok ? 'success' : 'error');
+      }
+      if (parsed.error) {
+        es.close();
+        showFlash(String(parsed.error), 'error');
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.className = 'text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full'; }
+    };
+  });
+
+  // Restore Upload (M9 W-RS)
+  document.querySelector('[data-testid="restore-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fileInput = form.querySelector('[data-testid="restore-file-input"]') as HTMLInputElement;
+    const fileObj = fileInput?.files?.[0];
+    if (!fileObj) {
+      showFlash('Please select a file.', 'error');
+      return;
+    }
+    const MAX_BYTES = 500 * 1024 * 1024;
+    if (fileObj.size > MAX_BYTES) {
+      showFlash('File exceeds 500MB limit.', 'error');
+      return;
+    }
+    const uploadFd = new FormData();
+    uploadFd.append('file', fileObj);
+    showFlash('Uploading backup bundle...', 'success');
+    const btn = form.querySelector('[data-testid="restore-button"]') as HTMLButtonElement;
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch('/api/operations/restore', {
+        method: 'POST',
+        body: uploadFd,
+      });
+      const data = await res.json().catch(() => ({}));
+      const resultEl = document.querySelector('[data-testid="restore-result"]') as HTMLElement | null;
+      const resultContent = document.querySelector('[data-testid="restore-result-content"]') as HTMLElement | null;
+      if (res.ok) {
+        if (resultEl && resultContent) {
+          resultContent.textContent = JSON.stringify(data, null, 2);
+          resultEl.removeAttribute('hidden');
+        }
+        showFlash(
+          `Restore started (job ${data.job_id}). Safety backup: ${data.safety_backup ?? 'n/a'}`,
+          'success'
+        );
+      } else {
+        if (resultEl && resultContent) {
+          resultContent.textContent = data.detail ?? data.error ?? 'Unknown error';
+          resultEl.removeAttribute('hidden');
+        }
+        showFlash(data.detail ?? data.error ?? 'Restore upload failed.', 'error');
+      }
+    } catch (err) {
+      showFlash('Restore upload failed: ' + String(err), 'error');
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 
