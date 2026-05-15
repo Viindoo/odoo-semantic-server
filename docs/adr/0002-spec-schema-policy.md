@@ -64,7 +64,7 @@ Cần policy rõ ràng cho composite key, version-range representation (per-vers
 **Positive:**
 - Query per-version chính xác, không bị nhầm version (vd `lookup_core_api("name_get", "18.0")` trả `status: removed`, `lookup_core_api("name_get", "17.0")` trả `status: deprecated`).
 - Diff giữa 2 version dễ via separate node lookup + diff_engine.
-- Schema agnostic v8-v20+ — không hardcode version range.
+- Schema agnostic v8-v19+ — không hardcode version range.
 - ADR-0001 compliant — không cần migration tool sớm hơn dự định.
 
 **Negative:**
