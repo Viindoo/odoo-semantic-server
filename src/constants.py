@@ -106,12 +106,26 @@ TIMEOUT_GIT_DIFF: int = int(os.getenv("TIMEOUT_GIT_DIFF", "30"))
 # Default 30s (was 10s). Override via TIMEOUT_GIT_SCAN env var.
 TIMEOUT_GIT_SCAN: int = int(os.getenv("TIMEOUT_GIT_SCAN", "30"))
 
-# TIMEOUT_EMBEDDER_REQUEST: per-batch HTTP timeout for Ollama /api/embed.
-# A 50-text batch on qwen3-embedding-q5km takes ~22s on fast hardware but
-# can exceed 90s on CPU-only servers. When Ollama queue is busy (multiple
-# parallel profile workers), each request waits for the queue. 1200s (20 min)
-# gives ample headroom. Override via EMBEDDER_TIMEOUT env var.
-TIMEOUT_EMBEDDER_REQUEST: int = int(os.getenv("EMBEDDER_TIMEOUT", "1200"))
+# TIMEOUT_EMBEDDER_CONNECT: TCP connect timeout for Ollama /api/embed.
+# Ollama is local or on LAN — 10s is generous. Override via EMBEDDER_TIMEOUT_CONNECT.
+TIMEOUT_EMBEDDER_CONNECT: int = int(os.getenv("EMBEDDER_TIMEOUT_CONNECT", "10"))
+
+# TIMEOUT_EMBEDDER_READ: between-chunks read timeout (httpx.ReadTimeout).
+# For Ollama-style non-streaming /api/embed, this is effectively the full
+# response wait. A 50-text batch on qwen3-embedding-q5km takes ~22s on fast
+# hardware but can exceed 90s on CPU-only servers. Parallel profile workers
+# queue behind a single Ollama instance, so headroom must be generous.
+# 1200s (20 min). Override via EMBEDDER_TIMEOUT_READ or legacy EMBEDDER_TIMEOUT.
+_embedder_timeout_default = os.getenv("EMBEDDER_TIMEOUT", "1200")
+TIMEOUT_EMBEDDER_READ: int = int(os.getenv("EMBEDDER_TIMEOUT_READ", _embedder_timeout_default))
+
+# TIMEOUT_EMBEDDER_WRITE: timeout for sending the request body to Ollama.
+# Payload is a JSON list of texts — 50 texts is small, 30s is very generous.
+# Override via EMBEDDER_TIMEOUT_WRITE.
+TIMEOUT_EMBEDDER_WRITE: int = int(os.getenv("EMBEDDER_TIMEOUT_WRITE", "30"))
+
+# Backward-compat alias — callers that imported TIMEOUT_EMBEDDER_REQUEST continue to work.
+TIMEOUT_EMBEDDER_REQUEST: int = TIMEOUT_EMBEDDER_READ
 
 # ---------------------------------------------------------------------------
 # Embedding defaults

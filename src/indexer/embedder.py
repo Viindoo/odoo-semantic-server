@@ -4,18 +4,22 @@ EmbedderClient — structural Protocol, any object with .embed() satisfies it.
 FakeEmbedder   — deterministic, seeded, no GPU. For CI and unit tests.
 Qwen3Embedder  — Ollama HTTP client for Qwen3-Embedding-4B Q5_K_M.
 """
-import json
+import logging
 import math
 import random
 import threading
-import urllib.request
+import time
 from typing import Protocol, runtime_checkable
+
+import httpx
 
 from src.constants import (
     DEFAULT_EMBEDDER_DIM,
     DEFAULT_EMBEDDER_MODEL,
     EMBEDDER_MAX_BATCH,
-    TIMEOUT_EMBEDDER_REQUEST,
+    TIMEOUT_EMBEDDER_CONNECT,
+    TIMEOUT_EMBEDDER_READ,
+    TIMEOUT_EMBEDDER_WRITE,
 )
 
 
@@ -31,6 +35,9 @@ class EmbedderClient(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Return L2-normalized embedding vectors for each text."""
         ...
+
+
+_logger = logging.getLogger(__name__)
 
 
 class FakeEmbedder:
@@ -70,6 +77,8 @@ class Qwen3Embedder:
 
     auth_token: optional Bearer token sent as `Authorization: Bearer <token>`.
     Set when Ollama sits behind an authenticated reverse proxy.
+
+    transport: optional httpx.BaseTransport for testing (inject MockTransport).
     """
 
     # Cap per-request batch so a single big module doesn't push past either the
@@ -84,6 +93,7 @@ class Qwen3Embedder:
         dim: int = DEFAULT_EMBEDDER_DIM,
         retries: int = 3,
         auth_token: str | None = None,
+        transport: httpx.BaseTransport | None = None,
     ):
         self._url = url.rstrip("/") + "/api/embed"
         self._model = model
@@ -93,41 +103,58 @@ class Qwen3Embedder:
         self._lock = threading.Lock()
         self.call_count: int = 0
 
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(
+                connect=TIMEOUT_EMBEDDER_CONNECT,
+                read=TIMEOUT_EMBEDDER_READ,
+                write=TIMEOUT_EMBEDDER_WRITE,
+                pool=5.0,
+            ),
+            headers=headers,
+            transport=transport,
+        )
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if len(texts) > self._MAX_BATCH:
             out: list[list[float]] = []
             for i in range(0, len(texts), self._MAX_BATCH):
-                out.extend(self._embed_one(texts[i : i + self._MAX_BATCH]))
+                batch = texts[i : i + self._MAX_BATCH]
+                start = time.monotonic()
+                out.extend(self._embed_one(batch))
+                _logger.debug(
+                    "embed batch n=%d duration=%.2fs", len(batch), time.monotonic() - start
+                )
             with self._lock:
                 self.call_count += 1
             return out
+        start = time.monotonic()
         result = self._embed_one(texts)
+        _logger.debug(
+            "embed batch n=%d duration=%.2fs", len(texts), time.monotonic() - start
+        )
         with self._lock:
             self.call_count += 1
         return result
 
     def _embed_one(self, texts: list[str]) -> list[list[float]]:
-        payload = json.dumps({"model": self._model, "input": texts}).encode()
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._auth_token:
-            headers["Authorization"] = f"Bearer {self._auth_token}"
+        payload = {"model": self._model, "input": texts}
         last_err: Exception | None = None
         for _ in range(self._retries):
             try:
-                req = urllib.request.Request(
-                    self._url,
-                    data=payload,
-                    headers=headers,
-                    method="POST",
-                )
-                # Timeout sized for full-module batches: a 250-text batch on
-                # qwen3-embedding-q5km via Ollama runs ~60s; large core modules
-                # (account, sale, web) push past 90s. 60s would always retry-fail.
-                with urllib.request.urlopen(req, timeout=TIMEOUT_EMBEDDER_REQUEST) as resp:
-                    data = json.loads(resp.read())
+                resp = self._http.post(self._url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
                 return [_normalize(v[: self._dim]) for v in data["embeddings"]]
-            except Exception as e:
+            except httpx.HTTPError as e:
                 last_err = e
         raise RuntimeError(
             f"Qwen3Embedder failed after {self._retries} attempts: {last_err}"
         )
+
+    def close(self) -> None:
+        """Close the underlying HTTP client and release connections."""
+        self._http.close()
