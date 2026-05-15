@@ -33,10 +33,10 @@ try {
        classes win on specificity, so we use the `hidden` utility class instead
        of the HTML attribute — and the JS toggle below now adds/removes the
        class rather than the attribute. -->
-  <div data-testid="active-job-container" class="hidden mb-6 bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 items-center gap-4">
+  <div data-testid="active-job-container" class="hidden mb-6 bg-viindoo-info/5 border border-viindoo-info/20 rounded-xl px-5 py-4 items-center gap-4">
     <div>
-      <p class="text-sm font-semibold text-blue-800">Job started</p>
-      <p data-testid="active-job-id" class="text-xs text-blue-600 mt-0.5"></p>
+      <p class="text-sm font-semibold text-viindoo-info">Job started</p>
+      <p data-testid="active-job-id" class="text-xs text-viindoo-info mt-0.5"></p>
     </div>
   </div>
 
@@ -57,7 +57,7 @@ try {
           type="text"
           placeholder="/home/.../odoo17"
           data-testid="ops-index-core-source-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
           required
         />
       </div>
@@ -68,7 +68,7 @@ try {
           type="text"
           placeholder="17.0"
           data-testid="ops-index-core-version-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
           required
         />
       </div>
@@ -79,14 +79,14 @@ try {
           type="text"
           placeholder="/path/to/static-data"
           data-testid="ops-index-core-static-dir-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         />
       </div>
       <div class="sm:col-span-2 lg:col-span-3 flex justify-start">
         <button
           type="submit"
           data-testid="index-core-button"
-          class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+          class="bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 text-sm font-medium px-5 py-2 rounded-lg transition-colors"
         >
           Start Index Core
         </button>
@@ -111,7 +111,7 @@ try {
           type="text"
           placeholder="17.0 (leave blank for all)"
           data-testid="ops-seed-patterns-version-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         />
       </div>
       <div>
@@ -121,7 +121,7 @@ try {
           type="text"
           placeholder="/path/to/patterns.json"
           data-testid="ops-seed-patterns-file-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         />
       </div>
       <div class="flex items-end gap-3">
@@ -161,7 +161,7 @@ try {
         <select
           name="name"
           data-testid="ops-preset-name-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
           required
         >
           <option value="">— select preset —</option>
@@ -175,7 +175,7 @@ try {
           type="text"
           placeholder="/home/.../git"
           data-testid="ops-preset-repo-base-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         />
       </div>
       <div class="sm:col-span-2 flex items-center gap-3">
@@ -247,7 +247,7 @@ try {
       item.className = 'px-5 py-3 flex items-center justify-between';
       item.innerHTML = `
         <span class="text-sm text-gray-700">Job #${jobId} — ${label}</span>
-        <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full" data-job-badge="${jobId}">running</span>
+        <span class="text-xs px-2 py-0.5 bg-viindoo-info/10 text-viindoo-info rounded-full" data-job-badge="${jobId}">running</span>
       `;
       list.prepend(item);
       pollJob(jobId, item.querySelector(`[data-job-badge="${jobId}"]`) as HTMLElement);
@@ -262,7 +262,7 @@ try {
           if (badgeEl) {
             badgeEl.textContent = data.status ?? 'unknown';
             const colorMap: Record<string, string> = {
-              running: 'bg-blue-100 text-blue-700',
+              running: 'bg-viindoo-info/10 text-viindoo-info',
               done: 'bg-green-100 text-green-700',
               error: 'bg-red-100 text-red-700',
               pending: 'bg-yellow-100 text-yellow-700',

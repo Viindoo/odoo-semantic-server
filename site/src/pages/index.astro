@@ -2,172 +2,252 @@
 export const prerender = true;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
-import GraphHero from '../components/GraphHero';
 import InstallSnippets from '../components/InstallSnippets.astro';
+import Hero from '../components/Hero.astro';
+import PersonaCards from '../components/PersonaCards.astro';
+import GraphShowcase from '../components/GraphShowcase.tsx';
+import PromptSimulator from '../components/PromptSimulator.tsx';
+import TokenBenchmark from '../components/TokenBenchmark.tsx';
+
+const TOOLS = [
+  { num: '01', name: 'resolve_model', desc: 'Find a model across modules + versions.', group: 'resolve' },
+  { num: '02', name: 'resolve_field', desc: 'Locate a field — type, defaults, overrides.', group: 'resolve' },
+  { num: '03', name: 'resolve_method', desc: 'Trace a method across the inheritance chain.', group: 'resolve' },
+  { num: '04', name: 'resolve_view', desc: 'Find a view + its XPath inheritance order.', group: 'resolve' },
+  { num: '05', name: 'find_examples', desc: 'Pull real-world usage from indexed repos.', group: 'resolve' },
+  { num: '06', name: 'impact_analysis', desc: 'Measure blast radius of a field change.', group: 'resolve' },
+  { num: '07', name: 'lookup_core_api', desc: 'Identify ORM, CLI, and framework symbols.', group: 'resolve' },
+  { num: '08', name: 'api_version_diff', desc: 'Delta between two versions.', group: 'version' },
+  { num: '09', name: 'find_deprecated_usage', desc: 'Scan a codebase for deprecated APIs.', group: 'version' },
+  { num: '10', name: 'lint_check', desc: 'Odoo-specific lint, not generic Python.', group: 'quality' },
+  { num: '11', name: 'cli_help', desc: 'odoo-bin flags for your installed version.', group: 'quality' },
+  { num: '12', name: 'suggest_pattern', desc: 'Curated implementation patterns.', group: 'resolve' },
+  { num: '13', name: 'check_module_exists', desc: 'Settle "is this built-in" debates.', group: 'resolve' },
+  { num: '14', name: 'find_override_point', desc: 'Pinpoint the safest hook for custom logic.', group: 'resolve' },
+];
 ---
 
 <BaseLayout
-  title="Odoo Semantic MCP"
-  description="Knowledge engine hiểu sâu codebase Odoo — inheritance chain, view structure, JS patch — exposed via MCP protocol."
+  title="Odoo Semantic MCP — Ship Odoo with verified knowledge, not hallucinations"
+  description="A semantic knowledge engine for the entire Odoo ecosystem. Resolve models, trace overrides, prove what's standard — across v8 to v20+. Queryable by any AI tool via MCP."
 >
-  <!-- Hero Section -->
-  <section class="relative bg-gradient-to-br from-gray-950 via-violet-950/30 to-gray-950 min-h-[80vh] flex flex-col items-center justify-center px-4 py-20 overflow-hidden">
-    <!-- Background grid decoration -->
-    <div class="absolute inset-0 bg-[linear-gradient(to_right,#1f2937_1px,transparent_1px),linear-gradient(to_bottom,#1f2937_1px,transparent_1px)] bg-[size:48px_48px] opacity-30 pointer-events-none" />
-
-    <div class="relative z-10 max-w-4xl mx-auto text-center">
-      <!-- Badge -->
-      <div class="inline-flex items-center gap-2 bg-violet-900/40 border border-violet-700/50 text-violet-300 text-xs font-mono px-3 py-1.5 rounded-full mb-6">
-        <span class="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
-        v0.2.0 — M7.5 complete &bull; 14 MCP tools
-      </div>
-
-      <!-- Main heading -->
-      <h1 class="text-4xl sm:text-5xl md:text-6xl font-bold text-white leading-tight mb-6">
-        Odoo Semantic MCP —<br />
-        <span class="text-violet-400">Hiểu sâu codebase Odoo</span><br />
-        <span class="text-gray-300">qua MCP protocol</span>
-      </h1>
-
-      <p class="text-lg sm:text-xl text-gray-400 max-w-2xl mx-auto mb-10">
-        14 MCP tools, cross-repo, cross-version, từ v8 đến v20+.<br />
-        Không hallucinate field. Không bịa method. Trace được XPath chain.
-      </p>
-
-      <!-- CTA Buttons -->
-      <div class="flex flex-wrap items-center justify-center gap-4 mb-14">
+  <!-- Sticky nav -->
+  <nav aria-label="Main navigation" class="fixed top-0 left-0 right-0 z-50 backdrop-blur bg-viindoo-bg-0/70 border-b border-white/5">
+    <div class="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
+      <a href="/" class="inline-flex items-center gap-3 font-display font-bold text-viindoo-on-dark text-[15px] tracking-tight hover:text-viindoo-primary transition-colors duration-200">
+        <span
+          class="w-7 h-7 rounded-lg flex-shrink-0"
+          style="background: linear-gradient(135deg, #00BBCE, #7F4282);"
+          aria-hidden="true"
+        />
+        Odoo Semantic
+        <span class="font-mono text-[10px] text-viindoo-primary tracking-widest mt-0.5 hidden sm:block">MCP</span>
+      </a>
+      <div class="flex items-center gap-6 lg:gap-8 text-sm font-medium text-viindoo-on-dark-muted">
+        <a href="#showcase" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Live demo</a>
+        <a href="#tools" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Tools</a>
+        <a href="#benchmark" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Benchmark</a>
+        <a href="#install" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Install</a>
         <a
-          href="/install/"
-          class="inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white font-semibold px-6 py-3 rounded-xl transition-colors shadow-lg shadow-violet-900/40"
+          href="#install"
+          class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-4 py-2 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
         >
-          Get Started
-          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          Get started
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" />
           </svg>
         </a>
-        <a
-          href="/admin/login"
-          class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-semibold px-6 py-3 rounded-xl transition-colors border border-gray-700"
-        >
-          Sign in
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero section -->
+  <Hero />
+
+  <!-- Social proof strip -->
+  <section
+    id="social-proof"
+    class="relative bg-viindoo-bg-0 border-t border-b py-6 overflow-hidden"
+    style="border-color: rgba(230,242,244,0.08);"
+    aria-label="Trust signals"
+  >
+    <div
+      class="absolute inset-0 pointer-events-none"
+      style="background: radial-gradient(ellipse 600px 80px at 50% 50%, rgba(0,187,206,0.06), transparent 70%);"
+      aria-hidden="true"
+    />
+    <div class="relative mx-auto max-w-7xl px-6">
+      <div class="flex flex-wrap items-center justify-center gap-4 sm:gap-8 font-mono text-[12px] uppercase tracking-widest text-viindoo-on-dark-dim">
+        <span>Built by <strong class="text-viindoo-primary-bright font-semibold">Viindoo</strong></span>
+        <span class="opacity-40" aria-hidden="true">&middot;</span>
+        <span>Indexes <strong class="text-viindoo-primary-bright font-semibold">70+ repos</strong></span>
+        <span class="opacity-40" aria-hidden="true">&middot;</span>
+        <span><strong class="text-viindoo-primary-bright font-semibold">12,400 models</strong></span>
+        <span class="opacity-40" aria-hidden="true">&middot;</span>
+        <span>v8 &rarr; v20+</span>
+        <span class="opacity-40" aria-hidden="true">&middot;</span>
+        <span><strong class="text-viindoo-primary-bright font-semibold">14 MCP tools</strong></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 01 · Personas -->
+  <section id="personas" class="bg-white text-viindoo-dark py-24">
+    <div class="mx-auto max-w-7xl px-6" data-section="01">
+      <div class="text-sm font-mono text-viindoo-secondary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-secondary" aria-hidden="true" />
+        01 &middot; WHO IT&apos;S FOR
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-dark tracking-tight leading-tight">Built for everyone shipping Odoo.</h2>
+      <p class="text-viindoo-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Three workflows we serve deeply, and two more where MCP shines. Whether you write code,
+        scope projects, or quantify upgrade risk — get answers in seconds, not days.
+      </p>
+      <PersonaCards />
+    </div>
+  </section>
+
+  <!-- 02 · Live Graph / Showcase -->
+  <section id="showcase" class="bg-viindoo-bg-0 py-24">
+    <div class="mx-auto max-w-7xl px-6" data-section="02">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true" />
+        02 &middot; LIVE GRAPH
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">Explore the inheritance web.</h2>
+      <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Interactive graph of the full Odoo model hierarchy. Click any node to resolve fields, methods, and override points — live.
+      </p>
+      <div class="mt-12">
+        <GraphShowcase client:visible />
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 · Toolbox -->
+  <section id="tools" class="py-24 bg-viindoo-bg-1">
+    <div class="mx-auto max-w-7xl px-6" data-section="03">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true" />
+        03 &middot; THE TOOLBOX
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
+        14 specialized tools.<br />One MCP endpoint.
+      </h2>
+      <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Resolve models, fields, methods, views. Find examples, measure impact. Version diffs, deprecation scans, pattern suggestions — all atomic.
+      </p>
+
+      <!-- 14-tool grid -->
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
+        {TOOLS.map((tool) => (
+          <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[120px]" data-tool-group={tool.group}>
+            <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
+            <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
+            <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
+            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
+          </div>
+        ))}
+      </div>
+
+      <!-- Tool legend -->
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-5 font-mono text-xs text-viindoo-on-dark-muted">
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-primary"></span>Resolve (10)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary"></span>Version (2)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-warning"></span>Quality (2)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 · The Difference / Prompt Simulator -->
+  <section id="prompt" class="bg-viindoo-bg-0 py-24">
+    <div class="mx-auto max-w-7xl px-6" data-section="04">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true" />
+        04 &middot; THE DIFFERENCE
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
+        Without MCP, your AI invents field names.
+      </h2>
+      <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Side-by-side: what an AI hallucinates without context vs. what it answers with Odoo Semantic MCP.
+        Real queries, real results.
+      </p>
+      <div class="mt-12">
+        <PromptSimulator client:visible />
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 · Token Economics / Benchmark -->
+  <section id="benchmark" class="bg-white text-viindoo-dark py-24">
+    <div class="mx-auto max-w-7xl px-6" data-section="05">
+      <div class="text-sm font-mono text-viindoo-secondary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-secondary" aria-hidden="true" />
+        05 &middot; TOKEN ECONOMICS
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-dark tracking-tight leading-tight">
+        99% fewer tokens.<br />Zero fabrications.
+      </h2>
+      <p class="text-viindoo-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Measured on 40 real Odoo developer tasks. Precision: 100% with MCP vs 43% without. Context window savings pay for the server in week one.
+      </p>
+      <div class="mt-12">
+        <TokenBenchmark client:visible />
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 · Install -->
+  <section id="install" class="bg-viindoo-bg-0 py-24">
+    <div class="mx-auto max-w-7xl px-6" data-section="06">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true" />
+        06 &middot; WIRE IT UP
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">One URL. Any AI tool.</h2>
+      <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        No installation required on your end. Add the URL + API key to your AI tool config — done in under 5 minutes.
+      </p>
+      <div class="mt-10">
+        <InstallSnippets />
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA band before footer -->
+  <section class="bg-viindoo-bg-0 px-6 pb-24">
+    <div class="mx-auto max-w-5xl relative overflow-hidden rounded-3xl border border-white/10 p-12 text-center" style="background: radial-gradient(circle at 20% 30%, rgba(0,187,206,0.18), transparent 50%), radial-gradient(circle at 80% 70%, rgba(127,66,130,0.18), transparent 50%), linear-gradient(120deg, var(--viindoo-bg-1), var(--viindoo-bg-2));">
+      <h2 class="font-display text-3xl md:text-4xl font-extrabold leading-tight mb-4">
+        Stop guessing. Start shipping.
+      </h2>
+      <p class="text-viindoo-on-dark-muted text-lg max-w-2xl mx-auto mb-8">
+        Get an API key, pick your client, and query the Odoo ecosystem in your next prompt.
+      </p>
+      <div class="flex flex-wrap justify-center gap-3">
+        <a href="/admin/login?next=/admin/api-keys" class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200">
+          Get your API key
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a href="/install/" class="inline-flex items-center gap-2 border border-white/20 text-viindoo-on-dark font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-white/5 transition-all duration-200">
+          Read the docs
         </a>
       </div>
-
-      <!-- React Flow Graph Island -->
-      <div class="w-full max-w-2xl mx-auto rounded-2xl overflow-hidden shadow-2xl shadow-violet-950/60 border border-gray-800">
-        <GraphHero client:visible />
-      </div>
-
-      <!-- noscript fallback -->
-      <noscript>
-        <div class="mt-6 bg-gray-900 border border-gray-700 rounded-xl p-6 text-left text-sm font-mono text-gray-300">
-          <p class="text-gray-500 mb-3"># sale.order inheritance chain (Odoo 17.0)</p>
-          <ul class="space-y-1">
-            <li>sale.order [<span class="text-violet-400">sale</span>] — <em>definition</em>, 148 fields</li>
-            <li>├─ sale.order [<span class="text-blue-400">sale_management</span>] — extends</li>
-            <li>├─ sale.order [<span class="text-cyan-400">website_sale</span>] — extends</li>
-            <li>├─ sale.order [<span class="text-green-400">viin_sale</span>] — extends</li>
-            <li>└─ sale.order [<span class="text-yellow-400">sale_stock</span>] — extends</li>
-          </ul>
-        </div>
-      </noscript>
-    </div>
-  </section>
-
-  <!-- Features Section -->
-  <section class="bg-white py-20 px-4">
-    <div class="max-w-4xl mx-auto">
-      <h2 class="text-3xl font-bold text-center text-gray-900 mb-4">
-        Tại sao Odoo Semantic MCP?
-      </h2>
-      <p class="text-center text-gray-500 mb-12 max-w-xl mx-auto">
-        AI coding tool hiểu sai Odoo vì chúng không có graph của codebase bạn.
-        Chúng tôi fix vấn đề đó.
-      </p>
-
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <!-- Card 1: Cross-repo -->
-        <div class="bg-gradient-to-br from-violet-50 to-violet-100/50 border border-violet-200 rounded-2xl p-6">
-          <div class="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center mb-4">
-            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h7" />
-            </svg>
-          </div>
-          <h3 class="text-lg font-semibold text-gray-900 mb-2">Cross-repo Awareness</h3>
-          <p class="text-sm text-gray-600">
-            Index toàn bộ repos — CE, EE, custom addons — vào một graph duy nhất.
-            Trace inheritance chain qua ranh giới repo không mất mát.
-          </p>
-          <div class="mt-4 font-mono text-xs text-violet-700 bg-violet-100 rounded-lg p-3">
-            sale → sale_management → viin_sale → …
-          </div>
-        </div>
-
-        <!-- Card 2: Cross-version -->
-        <div class="bg-gradient-to-br from-blue-50 to-blue-100/50 border border-blue-200 rounded-2xl p-6">
-          <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center mb-4">
-            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-          </div>
-          <h3 class="text-lg font-semibold text-gray-900 mb-2">Cross-version v8 → v20+</h3>
-          <p class="text-sm text-gray-600">
-            Era-aware parsing: v8/v9 <code class="bg-blue-100 px-1 rounded">_columns</code> dict,
-            v10+ AST. API diff giữa bất kỳ hai version — không cần đọc changelog thủ công.
-          </p>
-          <div class="mt-4 font-mono text-xs text-blue-700 bg-blue-100 rounded-lg p-3">
-            api_version_diff(v16→v17) → 12 breaking changes
-          </div>
-        </div>
-
-        <!-- Card 3: AI-native -->
-        <div class="bg-gradient-to-br from-green-50 to-green-100/50 border border-green-200 rounded-2xl p-6">
-          <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center mb-4">
-            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-            </svg>
-          </div>
-          <h3 class="text-lg font-semibold text-gray-900 mb-2">AI-native Output</h3>
-          <p class="text-sm text-gray-600">
-            Output cây có cấu trúc — Claude, Codex, Gemini đọc được ngay không cần parse thêm.
-            Zero install cho end user: chỉ URL + API key.
-          </p>
-          <div class="mt-4 font-mono text-xs text-green-700 bg-green-100 rounded-lg p-3">
-            Defined in: [sale] sale.order<br />
-            Fields: 148 &bull; Methods: 394
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Install Snippets Section -->
-  <section class="bg-gray-50 py-20 px-4 border-t border-gray-200">
-    <div class="max-w-4xl mx-auto">
-      <h2 class="text-3xl font-bold text-center text-gray-900 mb-4">
-        Connect Your AI Tool
-      </h2>
-      <p class="text-center text-gray-500 mb-10 max-w-xl mx-auto">
-        Thêm URL + API key vào config file tương ứng — bắt đầu trong dưới 5 phút.
-      </p>
-      <InstallSnippets />
     </div>
   </section>
 
   <!-- Footer -->
-  <footer class="bg-gray-950 text-gray-500 py-10 px-4 text-center text-sm">
-    <p>
-      Odoo Semantic MCP &bull; v0.2.0 &bull; Built by
-      <a href="https://viindoo.com" class="text-violet-400 hover:text-violet-300 transition-colors">Viindoo</a>
-    </p>
-    <p class="mt-2">
-      <a href="/admin/login" class="hover:text-gray-300 transition-colors">Admin</a>
-      &bull;
-      <a href="https://github.com/Viindoo/odoo-semantic-mcp" class="hover:text-gray-300 transition-colors">GitHub</a>
-      &bull;
-      <a href="/install/" class="hover:text-gray-300 transition-colors">Install</a>
-      &bull;
-      <a href="/pricing" class="hover:text-gray-300 transition-colors">Pricing</a>
-    </p>
+  <footer class="bg-viindoo-bg-0 border-t py-10 px-6 text-center" style="border-color: rgba(230,242,244,0.08);">
+    <div class="mx-auto max-w-7xl">
+      <p class="font-mono text-[11px] text-viindoo-on-dark-dim">
+        &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
+        <span class="text-viindoo-primary">v0.3.0</span>
+      </p>
+      <div class="flex items-center justify-center gap-6 mt-3 text-[12px] text-viindoo-on-dark-dim">
+        <a href="/admin/login" class="hover:text-viindoo-primary-bright transition-colors duration-200">Admin</a>
+        <a href="https://github.com/Viindoo/odoo-semantic-mcp" class="hover:text-viindoo-primary-bright transition-colors duration-200">GitHub</a>
+        <a href="/install/" class="hover:text-viindoo-primary-bright transition-colors duration-200">Install</a>
+      </div>
+    </div>
   </footer>
 </BaseLayout>

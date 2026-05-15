@@ -1,0 +1,75 @@
+---
+export const prerender = true;
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Benchmark methodology — Odoo Semantic MCP">
+  <main class="bg-viindoo-bg-0 text-viindoo-on-dark min-h-screen pt-24 pb-32">
+    <div class="mx-auto max-w-3xl px-6">
+      <p class="font-mono text-xs uppercase tracking-widest text-viindoo-primary mb-3">Methodology</p>
+      <h1 class="font-display text-4xl md:text-5xl font-bold leading-tight mb-6">How we measured token savings.</h1>
+      <p class="text-viindoo-on-dark-muted text-lg mb-10">
+        Three workflows, end-to-end. Both paths measured with the same tokenizer (<code class="font-mono text-viindoo-primary">tiktoken cl100k_base</code>). No estimation, no extrapolation — raw token counts of actual files an AI agent would read versus a single MCP tool call.
+      </p>
+
+      <section class="space-y-12">
+        <article>
+          <h2 class="font-display text-2xl font-bold mb-3">Tokenizer</h2>
+          <p class="text-viindoo-on-dark-muted">
+            <code class="font-mono text-viindoo-primary">cl100k_base</code> — the encoding used by GPT-4 family models and a close approximation for Claude. Counts represent raw tokens before any reasoning/output expansion.
+          </p>
+        </article>
+
+        <article>
+          <h2 class="font-display text-2xl font-bold mb-3">Case 1 — Find override point (Developer)</h2>
+          <p class="text-viindoo-on-dark-muted mb-3">
+            Query: <em>"Where to safely override <code class="font-mono">sale.order.action_confirm</code>?"</em>
+          </p>
+          <p class="text-viindoo-on-dark-muted mb-3">
+            <strong class="text-viindoo-on-dark">Without MCP:</strong> agent must grep for <code class="font-mono">def action_confirm</code> across 8 sale-related addon directories, then read each candidate file in full. Dominated by <code class="font-mono">addons/sale/models/sale_order.py</code> (17,609 tk) and <code class="font-mono">addons/sale_loyalty/models/sale_order.py</code> (12,031 tk).
+          </p>
+          <p class="text-viindoo-on-dark-muted">
+            <strong class="text-viindoo-on-dark">With MCP:</strong> single call to <code class="font-mono text-viindoo-primary">find_override_point(sale.order, action_confirm)</code> — structured tree of all hooks.
+          </p>
+        </article>
+
+        <article>
+          <h2 class="font-display text-2xl font-bold mb-3">Case 2 — Check standard feature (Consultant)</h2>
+          <p class="text-viindoo-on-dark-muted mb-3">
+            Query: <em>"Does Odoo 17 ship with loyalty programs?"</em>
+          </p>
+          <p class="text-viindoo-on-dark-muted mb-3">
+            <strong class="text-viindoo-on-dark">Without MCP:</strong> <code class="font-mono">ls addons/</code> (3,029 tk) + ~1,800 tk for web search fallback + reading 2 module manifests.
+          </p>
+          <p class="text-viindoo-on-dark-muted">
+            <strong class="text-viindoo-on-dark">With MCP:</strong> <code class="font-mono text-viindoo-primary">check_module_exists(loyalty, v=17.0)</code> returns CE/EE status, version availability, and module path.
+          </p>
+        </article>
+
+        <article>
+          <h2 class="font-display text-2xl font-bold mb-3">Case 3 — Impact analysis (PM / BA)</h2>
+          <p class="text-viindoo-on-dark-muted mb-3">
+            Query: <em>"What changes if <code class="font-mono">amount_total</code> semantics change?"</em>
+          </p>
+          <p class="text-viindoo-on-dark-muted mb-3">
+            <strong class="text-viindoo-on-dark">Without MCP:</strong> recursive grep of <code class="font-mono">amount_total</code> through sale/ + 7 sibling modules. Even at 88,081 tk, the agent misses 49 views, 124 method overrides, and 89 transitive modules.
+          </p>
+          <p class="text-viindoo-on-dark-muted">
+            <strong class="text-viindoo-on-dark">With MCP:</strong> <code class="font-mono text-viindoo-primary">impact_analysis(sale.order, amount_total)</code> returns the full blast radius — every model/method/view/report affected — in one structured tree.
+          </p>
+        </article>
+
+        <article>
+          <h2 class="font-display text-2xl font-bold mb-3">Reproduce</h2>
+          <p class="text-viindoo-on-dark-muted">
+            Raw benchmark data: <a href="/benchmark-data.json" class="text-viindoo-primary hover:underline font-mono text-sm">/benchmark-data.json</a>. Each case includes the step-by-step token accounting. Re-run on your own corpus by indexing your Odoo addons with the indexer and using <code class="font-mono">tiktoken cl100k_base</code> against the resulting tool output.
+          </p>
+        </article>
+      </section>
+
+      <a href="/" class="mt-12 inline-flex items-center gap-2 font-semibold text-viindoo-primary hover:gap-3 transition">
+        &larr; Back to landing
+      </a>
+    </div>
+  </main>
+</BaseLayout>

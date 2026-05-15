@@ -85,7 +85,7 @@ const totalRepos = stats.profiles.reduce((sum, p) => sum + (p.repos?.length ?? 0
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
       <h2 class="text-base font-semibold text-gray-800">Profiles</h2>
-      <a href="/admin/repos" data-testid="go-to-repos-link" class="text-sm text-violet-600 hover:text-violet-800 font-medium">
+      <a href="/admin/repos" data-testid="go-to-repos-link" class="text-sm text-viindoo-primary hover:text-viindoo-primary-bright font-medium">
         Manage →
       </a>
     </div>
@@ -95,7 +95,7 @@ const totalRepos = stats.profiles.reduce((sum, p) => sum + (p.repos?.length ?? 0
         <p class="text-3xl mb-2">🗂️</p>
         <p class="font-medium">No profiles yet.</p>
         <p class="text-sm mt-1">
-          <a href="/admin/repos" class="text-violet-600 hover:underline">Add a profile</a> to get started.
+          <a href="/admin/repos" class="text-viindoo-primary hover:underline">Add a profile</a> to get started.
         </p>
       </div>
     ) : (
@@ -126,7 +126,7 @@ const totalRepos = stats.profiles.reduce((sum, p) => sum + (p.repos?.length ?? 0
       <a
         href={link.href}
         data-testid={`quicklink-${link.label.toLowerCase().replace(/ /g, '-')}`}
-        class="bg-white rounded-xl border border-gray-200 p-4 flex flex-col items-center gap-2 hover:border-violet-400 hover:shadow-sm transition-all text-center"
+        class="bg-white rounded-xl border border-gray-200 p-4 flex flex-col items-center gap-2 hover:border-viindoo-primary hover:shadow-sm transition-all text-center"
       >
         <span class="text-2xl">{link.icon}</span>
         <span class="text-sm font-medium text-gray-700">{link.label}</span>
