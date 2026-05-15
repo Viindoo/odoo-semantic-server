@@ -64,15 +64,29 @@ def pytest_collection_modifyitems(config, items):
 def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
     """Disable the W16 auth middleware for tests that pre-date session auth.
 
-    test_web_ui_auth.py and test_web_ui_browser.py exercise the real auth flow
-    end-to-end and must NOT bypass.  Everything else (test_web_ui_repos.py,
-    test_web_ui_api_keys.py, etc.) was written before auth existed and asserts
-    on 200 responses — they need the bypass.
+    These tests exercise the real auth flow end-to-end and must NOT bypass.
+    All other tests written before/during M8 assume an unauthenticated client
+    can hit /admin/* — they rely on this bypass.
+
+    M9 cross-test contamination guard: several M9 test modules (test_signup,
+    test_operations_backup_route, test_restore_security) historically set
+    WEBUI_AUTH_DISABLED directly via os.environ (not monkeypatch), leaking
+    the bypass into subsequent tests. For tests that exercise real auth flow
+    we explicitly delete the env var so middleware's is_test_bypass_active()
+    correctly returns False regardless of what prior tests did.
     """
     fname = request.node.fspath.basename
-    # Only test_web_ui_auth.py exercises real auth flow end-to-end.
-    # Browser tests pre-date W16 and test UI flows on the assumption pages render.
-    if fname == "test_web_ui_auth.py":
+    # These tests exercise real auth flow end-to-end.
+    # Browser tests also exercise the real auth flow (W7 refactor).
+    # Other M9 auth-flow tests (signup/oauth/totp/admin_users/restore) also
+    # exercise the real auth flow and must not be silently bypassed.
+    real_auth_flow_files = {
+        "test_web_ui_auth.py",
+        "test_web_ui_browser.py",
+    }
+    if fname in real_auth_flow_files:
+        # Defensive: scrub any leaked bypass env from prior tests in the session.
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
         return
     monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
 
@@ -295,6 +309,12 @@ def clean_pg(pg_conn):
         "_yoyo_log",
         "_yoyo_migration",
         "_yoyo_version",
+        # M9 tables (FK-leaf tables first, then referenced tables)
+        "totp_secrets",
+        "email_verifications",
+        "active_sessions",
+        "login_attempts",
+        "admin_audit_log",
         # schema tables in FK-safe order
         "pattern_feedback",
         "indexer_jobs",
@@ -304,6 +324,7 @@ def clean_pg(pg_conn):
         "ssh_key_pairs",
         "embeddings",
         "profiles",
+        "webui_users",
     ]
 
     def _wipe(conn):

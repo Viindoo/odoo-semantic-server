@@ -18,6 +18,9 @@
 
 name: Nightly Real-Source Smoke
 
+permissions:
+  contents: read
+
 on:
   schedule:
     - cron: "0 19 * * *"

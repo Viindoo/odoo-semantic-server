@@ -1,5 +1,8 @@
 name: Pin SHA in claude-plugins
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
@@ -9,14 +12,16 @@ on:
 jobs:
   pin-sha:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Get SHA
         id: info
         run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: Viindoo/claude-plugins
           token: ${{ secrets.CLAUDE_PLUGINS_PAT }}

@@ -238,6 +238,335 @@ def test_migrate_preserves_existing_data(clean_pg):
     )
 
 
+# ---------------------------------------------------------------------------
+# M9 schema tests — verify all M9 migration columns and tables are present
+# ---------------------------------------------------------------------------
+
+
+def test_m9_001_oauth_columns_present(clean_pg):
+    """m9_001: webui_users must have all M9 auth columns after migrate."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'webui_users'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    expected = {
+        "oauth_provider",
+        "oauth_id",
+        "email",
+        "email_verified",
+        "is_admin",
+        "is_active",
+        "role",
+        "created_at",
+    }
+    missing = expected - cols
+    assert not missing, f"webui_users missing M9 columns: {sorted(missing)}"
+
+
+def test_m9_001_webui_users_id_column(clean_pg):
+    """m9_001: webui_users.id SERIAL UNIQUE must exist for downstream FK references."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name, is_nullable
+              FROM information_schema.columns
+             WHERE table_name = 'webui_users' AND column_name = 'id'
+        """)
+        row = cur.fetchone()
+    assert row is not None, "webui_users.id column missing"
+
+
+def test_m9_001_email_unique_constraint(clean_pg):
+    """m9_001: webui_users.email must have a UNIQUE constraint."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT constraint_name
+              FROM information_schema.table_constraints
+             WHERE table_name = 'webui_users'
+               AND constraint_type = 'UNIQUE'
+               AND constraint_name = 'webui_users_email_unique'
+        """)
+        row = cur.fetchone()
+    assert row is not None, "webui_users_email_unique constraint missing"
+
+
+def test_m9_001_role_check_constraint(clean_pg):
+    """m9_001: webui_users.role must only accept 'admin' or 'viewer'."""
+    import psycopg2.errors
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO webui_users (username, password_hash) "
+            "VALUES ('check_role_test', 'hash')"
+        )
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "UPDATE webui_users SET role = 'superuser' "
+                "WHERE username = 'check_role_test'"
+            )
+
+
+def test_m9_002_api_keys_user_fk(clean_pg):
+    """m9_002: api_keys must have user_id FK and expires_at column."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'api_keys'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    assert "user_id" in cols, "api_keys.user_id missing"
+    assert "expires_at" in cols, "api_keys.expires_at missing"
+
+
+def test_m9_002_api_keys_user_id_fk_references(clean_pg):
+    """m9_002: api_keys.user_id must be a FK referencing webui_users(id) with CASCADE."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT rc.delete_rule, ccu.table_name
+              FROM information_schema.referential_constraints rc
+              JOIN information_schema.key_column_usage kcu
+                ON kcu.constraint_name = rc.constraint_name
+              JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = rc.constraint_name
+             WHERE kcu.table_name = 'api_keys' AND kcu.column_name = 'user_id'
+        """)
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"Expected 1 FK on api_keys.user_id, found {len(rows)}"
+    delete_rule, referenced_table = rows[0]
+    assert delete_rule == "CASCADE"
+    assert referenced_table == "webui_users"
+
+
+def test_m9_002_api_keys_user_id_index(clean_pg):
+    """m9_002: idx_api_keys_user_id index must exist for lookup performance."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT indexname FROM pg_indexes
+             WHERE tablename = 'api_keys'
+               AND indexname = 'idx_api_keys_user_id'
+        """)
+        row = cur.fetchone()
+    assert row is not None, "idx_api_keys_user_id index missing"
+
+
+def test_m9_003_admin_audit_log(clean_pg):
+    """m9_003: admin_audit_log table must exist with all required columns."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'admin_audit_log'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    expected = {"id", "actor", "action", "target", "success", "detail", "created_at"}
+    missing = expected - cols
+    assert not missing, f"admin_audit_log missing columns: {sorted(missing)}"
+
+
+def test_m9_003_admin_audit_log_indexes(clean_pg):
+    """m9_003: both composite indexes on admin_audit_log must exist."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT indexname FROM pg_indexes
+             WHERE tablename = 'admin_audit_log'
+        """)
+        indexes = {r[0] for r in cur.fetchall()}
+    assert "idx_audit_actor_created" in indexes, "idx_audit_actor_created missing"
+    assert "idx_audit_action_created" in indexes, "idx_audit_action_created missing"
+
+
+def test_m9_004_login_attempts(clean_pg):
+    """m9_004: login_attempts table must exist with all required columns."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'login_attempts'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    expected = {"id", "identifier", "attempted_at", "success", "ip_address", "user_agent"}
+    missing = expected - cols
+    assert not missing, f"login_attempts missing columns: {sorted(missing)}"
+
+
+def test_m9_004_login_attempts_indexes(clean_pg):
+    """m9_004: both composite indexes on login_attempts must exist."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT indexname FROM pg_indexes
+             WHERE tablename = 'login_attempts'
+        """)
+        indexes = {r[0] for r in cur.fetchall()}
+    assert "idx_login_attempts_identifier_time" in indexes, \
+        "idx_login_attempts_identifier_time missing"
+    assert "idx_login_attempts_ip_time" in indexes, \
+        "idx_login_attempts_ip_time missing"
+
+
+def test_m9_005_active_sessions(clean_pg):
+    """m9_005: active_sessions table must exist with all required columns."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'active_sessions'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    expected = {
+        "session_id", "user_id", "created_at", "expires_at",
+        "last_seen", "ip_address", "user_agent", "mfa_verified_at",
+    }
+    missing = expected - cols
+    assert not missing, f"active_sessions missing columns: {sorted(missing)}"
+
+
+def test_m9_005_active_sessions_fk_cascade(clean_pg):
+    """m9_005: active_sessions.user_id FK must reference webui_users with CASCADE."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT rc.delete_rule, ccu.table_name
+              FROM information_schema.referential_constraints rc
+              JOIN information_schema.key_column_usage kcu
+                ON kcu.constraint_name = rc.constraint_name
+              JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = rc.constraint_name
+             WHERE kcu.table_name = 'active_sessions' AND kcu.column_name = 'user_id'
+        """)
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"Expected 1 FK on active_sessions.user_id, found {len(rows)}"
+    delete_rule, referenced_table = rows[0]
+    assert delete_rule == "CASCADE"
+    assert referenced_table == "webui_users"
+
+
+def test_m9_005_active_sessions_indexes(clean_pg):
+    """m9_005: idx_sessions_user_id and idx_sessions_expires must exist."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT indexname FROM pg_indexes
+             WHERE tablename = 'active_sessions'
+        """)
+        indexes = {r[0] for r in cur.fetchall()}
+    assert "idx_sessions_user_id" in indexes, "idx_sessions_user_id missing"
+    assert "idx_sessions_expires" in indexes, "idx_sessions_expires missing"
+
+
+def test_m9_006_email_verifications(clean_pg):
+    """m9_006: email_verifications table must exist with all required columns."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'email_verifications'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    expected = {"token", "user_id", "purpose", "created_at", "expires_at", "used_at"}
+    missing = expected - cols
+    assert not missing, f"email_verifications missing columns: {sorted(missing)}"
+
+
+def test_m9_006_email_verifications_purpose_check(clean_pg):
+    """m9_006: email_verifications.purpose must only accept defined values."""
+    import psycopg2.errors
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO webui_users (username, password_hash) "
+            "VALUES ('ev_test_user', 'hash')"
+        )
+        cur.execute("SELECT id FROM webui_users WHERE username = 'ev_test_user'")
+        uid = cur.fetchone()[0]
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO email_verifications "
+                "(token, user_id, purpose, expires_at) "
+                "VALUES ('tok1', %s, 'bad_purpose', NOW() + INTERVAL '1 hour')",
+                (uid,),
+            )
+
+
+def test_m9_006_email_verifications_indexes(clean_pg):
+    """m9_006: idx_email_verify_user and idx_email_verify_expires must exist."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT indexname FROM pg_indexes
+             WHERE tablename = 'email_verifications'
+        """)
+        indexes = {r[0] for r in cur.fetchall()}
+    assert "idx_email_verify_user" in indexes, "idx_email_verify_user missing"
+    assert "idx_email_verify_expires" in indexes, "idx_email_verify_expires missing"
+
+
+def test_m9_007_totp_secrets(clean_pg):
+    """m9_007: totp_secrets table must exist with all required columns."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'totp_secrets'
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    expected = {
+        "user_id", "secret_encrypted", "enabled",
+        "enrolled_at", "backup_codes_hash", "last_used_at",
+    }
+    missing = expected - cols
+    assert not missing, f"totp_secrets missing columns: {sorted(missing)}"
+
+
+def test_m9_007_totp_secrets_fk_cascade(clean_pg):
+    """m9_007: totp_secrets.user_id FK must reference webui_users with CASCADE."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT rc.delete_rule, ccu.table_name
+              FROM information_schema.referential_constraints rc
+              JOIN information_schema.key_column_usage kcu
+                ON kcu.constraint_name = rc.constraint_name
+              JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = rc.constraint_name
+             WHERE kcu.table_name = 'totp_secrets' AND kcu.column_name = 'user_id'
+        """)
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"Expected 1 FK on totp_secrets.user_id, found {len(rows)}"
+    delete_rule, referenced_table = rows[0]
+    assert delete_rule == "CASCADE"
+    assert referenced_table == "webui_users"
+
+
+def test_m9_all_new_tables_present(clean_pg):
+    """m9: all 5 new M9 tables must exist after migrate."""
+    run_migrations(clean_pg)
+    expected_tables = {
+        "webui_users",
+        "admin_audit_log",
+        "login_attempts",
+        "active_sessions",
+        "email_verifications",
+        "totp_secrets",
+    }
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT table_name FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        """)
+        found = {row[0] for row in cur.fetchall()}
+    missing = expected_tables - found
+    assert not missing, f"M9 tables missing after migrate: {sorted(missing)}"
+
+
 def test_migrate_fresh_db_creates_all_tables(clean_pg):
     """W15: run_migrations on empty schema must create all tables from 0001_initial.sql.
 
@@ -247,7 +576,8 @@ def test_migrate_fresh_db_creates_all_tables(clean_pg):
     """
     run_migrations(clean_pg)
 
-    # Tables defined in 0001_initial.sql (excluding embeddings which requires pgvector).
+    # Tables defined in 0001_initial.sql + additive migrations
+    # (excluding embeddings which requires pgvector).
     expected_tables = {
         "profiles",
         "repos",
@@ -256,6 +586,7 @@ def test_migrate_fresh_db_creates_all_tables(clean_pg):
         "usage_log",
         "pattern_feedback",
         "indexer_jobs",
+        "key_rotation_log",
     }
 
     with clean_pg.cursor() as cur:
@@ -273,4 +604,39 @@ def test_migrate_fresh_db_creates_all_tables(clean_pg):
     assert not missing, (
         f"Fresh migrate is missing expected tables: {sorted(missing)}. "
         f"Found: {sorted(found)}"
+    )
+
+
+def test_migrate_creates_key_rotation_log(clean_pg):
+    """M9 W-FE: key_rotation_log audit table must be created by migration m9_008."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'key_rotation_log'
+            ORDER BY ordinal_position
+        """)
+        cols = [r[0] for r in cur.fetchall()]
+    assert cols, "key_rotation_log table not found after migrate"
+    assert "id" in cols
+    assert "rotated_at" in cols
+    assert "actor" in cols
+    assert "row_count" in cols
+    assert "old_key_id" in cols
+    assert "new_key_id" in cols
+
+
+def test_key_rotation_log_index_exists(clean_pg):
+    """M9 W-FE: idx_key_rotation_log_time index must be present after migrate."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT indexname
+            FROM pg_indexes
+            WHERE tablename = 'key_rotation_log'
+        """)
+        indexes = [r[0] for r in cur.fetchall()]
+    assert "idx_key_rotation_log_time" in indexes, (
+        f"Expected idx_key_rotation_log_time in {indexes}"
     )
