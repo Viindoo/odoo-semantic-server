@@ -1,0 +1,249 @@
+---
+// Hero.astro — "Technical Cartography" aesthetic
+// Blueprint grid + gradient BG, outcome-first headline, 4 stats, 5 persona pills
+---
+
+<section
+  class="relative min-h-screen flex items-center bg-viindoo-bg-1 overflow-hidden pt-[140px] pb-20"
+  aria-label="Hero"
+>
+  <!-- Blueprint grid overlay -->
+  <div
+    class="absolute inset-0 pointer-events-none"
+    style="background-image: linear-gradient(rgba(0,187,206,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(0,187,206,0.05) 1px, transparent 1px); background-size: 64px 64px; background-position: -1px -1px; mask-image: radial-gradient(ellipse 80% 80% at 50% 40%, black 30%, transparent 80%); -webkit-mask-image: radial-gradient(ellipse 80% 80% at 50% 40%, black 30%, transparent 80%);"
+    aria-hidden="true"
+  />
+
+  <!-- Radial ambient glows -->
+  <div
+    class="absolute inset-0 pointer-events-none"
+    style="background: radial-gradient(ellipse 1200px 600px at 50% 0%, rgba(0,187,206,0.12), transparent 60%), radial-gradient(ellipse 800px 500px at 20% 80%, rgba(127,66,130,0.10), transparent 60%);"
+    aria-hidden="true"
+  />
+
+  <!-- Blueprint crosshair decorations (inline SVG data URIs) -->
+  <div
+    class="absolute inset-0 pointer-events-none"
+    style="background: url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2228%22 height=%2228%22 viewBox=%220 0 28 28%22><path d=%22M14 4 L14 12 M14 16 L14 24 M4 14 L12 14 M16 14 L24 14%22 stroke=%22%2300BBCE%22 stroke-opacity=%220.4%22 stroke-width=%221%22/><circle cx=%2214%22 cy=%2214%22 r=%221.2%22 fill=%22%2300BBCE%22/></svg>') 80px 140px no-repeat, url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2228%22 height=%2228%22 viewBox=%220 0 28 28%22><path d=%22M14 4 L14 12 M14 16 L14 24 M4 14 L12 14 M16 14 L24 14%22 stroke=%22%237F4282%22 stroke-opacity=%220.5%22 stroke-width=%221%22/><circle cx=%2214%22 cy=%2214%22 r=%221.2%22 fill=%22%237F4282%22/></svg>') calc(100% - 80px) 200px no-repeat;"
+    aria-hidden="true"
+  />
+
+  <!-- Main content grid -->
+  <div class="relative z-10 mx-auto max-w-7xl w-full px-6">
+    <div class="grid grid-cols-1 lg:grid-cols-[1.05fr_1fr] gap-14 lg:gap-20 items-center">
+
+      <!-- Left: copy column -->
+      <div class="flex flex-col">
+
+        <!-- Tag pill -->
+        <div class="inline-flex items-center gap-2.5 self-start bg-viindoo-primary/10 border border-viindoo-primary/32 rounded-full px-3.5 py-1.5 mb-7 font-mono text-xs text-viindoo-primary-bright tracking-wide">
+          <span class="w-2 h-2 rounded-full bg-viindoo-success flex-shrink-0" style="box-shadow: 0 0 0 4px rgba(0,179,101,0.18); animation: hero-pulse 2.4s ease-in-out infinite;" aria-hidden="true" />
+          14 MCP tools &middot; Odoo v8 &rarr; v20+ &middot; Cross-repo indexed
+        </div>
+
+        <!-- Headline -->
+        <h1
+          class="font-display font-extrabold text-viindoo-on-dark m-0 leading-[1.02] tracking-[-0.035em] text-[clamp(36px,5.2vw,68px)]"
+          data-testid="hero-heading"
+        >
+          Ship Odoo features with<br />
+          <em class="not-italic font-extrabold" style="background: linear-gradient(110deg, #00BBCE 20%, #7F4282 95%); -webkit-background-clip: text; background-clip: text; color: transparent; position: relative; display: inline-block;">verified knowledge</em><br />
+          not hallucinations.
+        </h1>
+
+        <!-- Sub-copy -->
+        <p class="mt-7 text-[19px] leading-[1.55] text-viindoo-on-dark-muted max-w-[54ch]">
+          A semantic knowledge engine for the entire Odoo ecosystem,
+          <strong class="text-viindoo-on-dark font-medium">queryable by any AI tool</strong>.
+          Resolve models, trace overrides, prove what&apos;s standard &mdash; across v8 to v20+.
+        </p>
+
+        <!-- Persona pills -->
+        <div class="flex flex-wrap gap-2 mt-6" role="list" aria-label="Designed for">
+          <span class="inline-flex items-center gap-1.5 bg-viindoo-bg-2 border border-white/8 rounded-full px-3 py-1 text-xs font-mono text-viindoo-on-dark-muted" role="listitem">
+            <span class="w-1.5 h-1.5 rounded-full bg-viindoo-primary flex-shrink-0" aria-hidden="true" />
+            Developers
+          </span>
+          <span class="inline-flex items-center gap-1.5 bg-viindoo-bg-2 border border-white/8 rounded-full px-3 py-1 text-xs font-mono text-viindoo-on-dark-muted" role="listitem">
+            <span class="w-1.5 h-1.5 rounded-full bg-viindoo-success flex-shrink-0" aria-hidden="true" />
+            Consultants
+          </span>
+          <span class="inline-flex items-center gap-1.5 bg-viindoo-bg-2 border border-white/8 rounded-full px-3 py-1 text-xs font-mono text-viindoo-on-dark-muted" role="listitem">
+            <span class="w-1.5 h-1.5 rounded-full bg-viindoo-warning flex-shrink-0" aria-hidden="true" />
+            BA &middot; Sales
+          </span>
+          <span class="inline-flex items-center gap-1.5 bg-viindoo-bg-2 border border-white/8 rounded-full px-3 py-1 text-xs font-mono text-viindoo-on-dark-muted" role="listitem">
+            <span class="w-1.5 h-1.5 rounded-full bg-viindoo-secondary flex-shrink-0" aria-hidden="true" />
+            CEOs &middot; PMs
+          </span>
+          <span class="inline-flex items-center gap-1.5 bg-viindoo-bg-2 border border-white/8 rounded-full px-3 py-1 text-xs font-mono text-viindoo-on-dark-muted" role="listitem">
+            <span class="w-1.5 h-1.5 rounded-full bg-viindoo-info flex-shrink-0" aria-hidden="true" />
+            Marketers
+          </span>
+        </div>
+
+        <!-- CTAs -->
+        <div class="flex flex-wrap gap-3.5 mt-9">
+          <a
+            href="#showcase"
+            data-testid="cta-try-demo"
+            class="btn-primary inline-flex items-center gap-2.5 font-semibold text-[15px] px-[26px] py-[15px] rounded-lg transition-all duration-200 hover:-translate-y-0.5"
+            style="background: #00BBCE; color: #07131A; box-shadow: 0 8px 24px -8px rgba(0,187,206,0.5), inset 0 1px 0 rgba(255,255,255,0.2);"
+          >
+            Try the demo
+            <svg class="w-4 h-4 transition-transform duration-200 group-hover:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </a>
+          <a
+            href="#install"
+            data-testid="cta-connect-ai"
+            class="btn-ghost inline-flex items-center gap-2.5 font-semibold text-[15px] px-[26px] py-[15px] rounded-lg transition-all duration-200 text-viindoo-on-dark hover:bg-viindoo-primary/8 hover:border-viindoo-primary"
+            style="background: rgba(255,255,255,0.04); border: 1px solid rgba(0,187,206,0.16);"
+          >
+            Connect your AI
+          </a>
+        </div>
+
+        <!-- Stats row -->
+        <div
+          class="grid grid-cols-2 sm:grid-cols-4 gap-7 mt-14 pt-7 border-t"
+          style="border-top-color: rgba(230,242,244,0.08);"
+        >
+          <div class="flex flex-col gap-1">
+            <span class="font-mono text-2xl font-semibold text-viindoo-primary-bright tracking-tight">12,400</span>
+            <span class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest">Models indexed</span>
+          </div>
+          <div class="flex flex-col gap-1">
+            <span class="font-mono text-2xl font-semibold text-viindoo-primary-bright tracking-tight">184,000</span>
+            <span class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest">Fields cross-linked</span>
+          </div>
+          <div class="flex flex-col gap-1">
+            <span class="font-mono text-2xl font-semibold text-viindoo-primary-bright tracking-tight">70+</span>
+            <span class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest">Repos &middot; v8&rarr;v20+</span>
+          </div>
+          <div class="flex flex-col gap-1">
+            <span class="font-mono text-2xl font-semibold text-viindoo-primary-bright tracking-tight">14</span>
+            <span class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest">MCP tools</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: hero graph slot (W6 will replace with interactive React island) -->
+      <div
+        class="relative w-full max-w-[540px] mx-auto lg:ml-auto aspect-square"
+        data-testid="hero-graph-slot"
+        aria-label="Inheritance graph preview — interactive version coming in W6"
+      >
+        <!-- Graph frame -->
+        <div
+          class="absolute inset-0 rounded-2xl border overflow-hidden"
+          style="border-color: rgba(0,187,206,0.16); background: radial-gradient(circle at 50% 50%, rgba(0,187,206,0.06), transparent 70%), #112B36; background-image: linear-gradient(rgba(0,187,206,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(0,187,206,0.04) 1px, transparent 1px); background-size: auto, 32px 32px;"
+          aria-hidden="true"
+        />
+
+        <!-- Graph label chips -->
+        <div class="absolute top-4 left-4 z-10 flex items-center gap-2 font-mono text-[11px] text-viindoo-on-dark-dim">
+          <span class="bg-viindoo-primary/12 border border-viindoo-primary/40 px-2 py-0.5 rounded-full text-viindoo-primary-bright">sale.order</span>
+          <span class="bg-viindoo-secondary/14 border border-viindoo-secondary/42 px-2 py-0.5 rounded-full text-viindoo-secondary-bright">Odoo 17.0</span>
+        </div>
+
+        <!-- Graph status -->
+        <div class="absolute bottom-4 right-4 z-10 inline-flex items-center gap-2 font-mono text-[11px] text-viindoo-on-dark-dim">
+          <span class="w-1.5 h-1.5 rounded-full bg-viindoo-success" style="animation: hero-pulse-text 2s infinite;" aria-hidden="true" />
+          indexed &middot; 148 fields &middot; 4 modules
+        </div>
+
+        <!-- Static SVG graph preview -->
+        <svg
+          viewBox="0 0 540 540"
+          preserveAspectRatio="xMidYMid meet"
+          class="absolute inset-0 w-full h-full"
+          role="img"
+          aria-label="Graph preview of sale.order inheritance chain"
+        >
+          <defs>
+            <radialGradient id="hero-node-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#00BBCE" stop-opacity="0.4" />
+              <stop offset="100%" stop-color="#00BBCE" stop-opacity="0" />
+            </radialGradient>
+          </defs>
+
+          <!-- Glow behind primary node -->
+          <ellipse cx="270" cy="270" rx="140" ry="80" fill="url(#hero-node-glow)" opacity="0.5" />
+
+          <!-- Edges -->
+          <path d="M 270,290 Q 170,360 105,415" fill="none" stroke="#00BBCE" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.5">
+            <animate attributeName="stroke-dashoffset" values="0;-8" dur="2s" repeatCount="indefinite" />
+          </path>
+          <path d="M 270,290 Q 270,400 270,440" fill="none" stroke="#00BBCE" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.5">
+            <animate attributeName="stroke-dashoffset" values="0;-8" dur="2s" repeatCount="indefinite" />
+          </path>
+          <path d="M 270,290 Q 370,360 435,415" fill="none" stroke="#7F4282" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.55">
+            <animate attributeName="stroke-dashoffset" values="0;-8" dur="2s" repeatCount="indefinite" />
+          </path>
+          <path d="M 270,250 Q 270,160 270,115" fill="none" stroke="#00BBCE" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.5">
+            <animate attributeName="stroke-dashoffset" values="0;-8" dur="2s" repeatCount="indefinite" />
+          </path>
+
+          <!-- Top node: parent -->
+          <g transform="translate(190, 85)">
+            <rect x="0" y="0" width="160" height="50" rx="8" fill="#112B36" stroke="#7F4282" stroke-width="1.5" />
+            <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#E6F2F4">_inherit base</text>
+            <text x="14" y="38" font-family="JetBrains Mono, monospace" font-size="9" fill="#5A7782">root model</text>
+          </g>
+
+          <!-- Center node: definition (primary) -->
+          <g transform="translate(170, 240)">
+            <rect x="0" y="0" width="200" height="58" rx="8" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="2" />
+            <text x="14" y="24" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600" fill="#E6F2F4">sale.order</text>
+            <text x="14" y="42" font-family="JetBrains Mono, monospace" font-size="9" fill="#5A7782">DEFINITION · sale · 148 fields</text>
+            <rect x="160" y="8" width="32" height="14" rx="3" fill="rgba(0,187,206,0.15)" stroke="#00BBCE" stroke-width="0.8" />
+            <text x="166" y="18" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#2DD4E8">DEF</text>
+          </g>
+
+          <!-- Bottom-left: CE module -->
+          <g transform="translate(25, 400)">
+            <rect x="0" y="0" width="160" height="50" rx="8" fill="#173846" stroke="rgba(0,187,206,0.16)" stroke-width="1.5" />
+            <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#E6F2F4">sale_management</text>
+            <text x="14" y="38" font-family="JetBrains Mono, monospace" font-size="9" fill="#5A7782">CE · +6 fields</text>
+          </g>
+
+          <!-- Bottom-center: CE module -->
+          <g transform="translate(190, 425)">
+            <rect x="0" y="0" width="160" height="50" rx="8" fill="#173846" stroke="rgba(0,187,206,0.16)" stroke-width="1.5" />
+            <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#E6F2F4">sale_stock</text>
+            <text x="14" y="38" font-family="JetBrains Mono, monospace" font-size="9" fill="#5A7782">CE · +12 fields</text>
+          </g>
+
+          <!-- Bottom-right: EE module -->
+          <g transform="translate(355, 400)">
+            <rect x="0" y="0" width="160" height="50" rx="8" fill="rgba(127,66,130,0.10)" stroke="#7F4282" stroke-width="1.5" />
+            <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#E6F2F4">sale_subscription</text>
+            <text x="14" y="38" font-family="JetBrains Mono, monospace" font-size="9" fill="#A263A5">EE only · +18 fields</text>
+            <rect x="130" y="6" width="22" height="12" rx="2" fill="rgba(127,66,130,0.2)" stroke="#7F4282" stroke-width="0.8" />
+            <text x="134" y="15" font-family="JetBrains Mono, monospace" font-size="7" font-weight="600" fill="#A263A5">EE</text>
+          </g>
+
+          <!-- Edge labels -->
+          <text x="105" y="385" font-family="JetBrains Mono, monospace" font-size="9" fill="#2DD4E8">_inherit</text>
+          <text x="278" y="405" font-family="JetBrains Mono, monospace" font-size="9" fill="#2DD4E8">_inherit</text>
+          <text x="425" y="385" font-family="JetBrains Mono, monospace" font-size="9" fill="#A263A5">_inherit</text>
+          <text x="278" y="180" font-family="JetBrains Mono, monospace" font-size="9" fill="#2DD4E8">extends</text>
+        </svg>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<style>
+  @keyframes hero-pulse {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(0, 179, 101, 0.18); }
+    50% { box-shadow: 0 0 0 7px rgba(0, 179, 101, 0); }
+  }
+  @keyframes hero-pulse-text {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+</style>
