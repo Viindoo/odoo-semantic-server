@@ -7,7 +7,13 @@ pytestmark = pytest.mark.postgres
 
 @pytest.fixture
 def web_app(pg_conn, monkeypatch):
-    """Create Web UI app with mocked database connection."""
+    """Create Web UI app with mocked database connection.
+
+    M9 W-AK: api_keys.user_id now has a FK to webui_users(id) ON DELETE CASCADE.
+    The conftest auth bypass returns current_user_id=1 (sentinel), so we must
+    seed a webui_users row with id=1 here or the INSERT FK check fails. Use
+    setval() to align the SERIAL sequence with the sentinel id.
+    """
     from src.db.migrate import run_migrations
     from src.web_ui.app import create_app
 
@@ -16,6 +22,17 @@ def web_app(pg_conn, monkeypatch):
     # Clean up before test
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM api_keys")
+        # Seed an admin user with id=1 to satisfy api_keys.user_id FK when
+        # current_user_id() returns the bypass sentinel of 1.
+        cur.execute(
+            "DELETE FROM webui_users WHERE username = %s",
+            ("_bypass_actor_id1",),
+        )
+        cur.execute(
+            "INSERT INTO webui_users (username, password_hash, is_admin, is_active, id)"
+            " VALUES (%s, %s, TRUE, TRUE, 1) ON CONFLICT (username) DO NOTHING",
+            ("_bypass_actor_id1", "x"),
+        )
     if not pg_conn.autocommit:
         pg_conn.commit()
 
@@ -29,6 +46,10 @@ def web_app(pg_conn, monkeypatch):
     # Clean up after test
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM api_keys")
+        cur.execute(
+            "DELETE FROM webui_users WHERE username = %s",
+            ("_bypass_actor_id1",),
+        )
     if not pg_conn.autocommit:
         pg_conn.commit()
 

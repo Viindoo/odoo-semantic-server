@@ -1,8 +1,14 @@
 """CRUD for api_keys, ssh_key_pairs, usage_log, webui_users tables via AuthStore."""
+import datetime as _datetime_mod
 import hashlib
+import logging
 import secrets
+from datetime import timedelta
 
+from src.auth import hash_key, hash_key_legacy_sha256
 from src.db.pg import PgPool
+
+logger = logging.getLogger(__name__)
 
 
 class AuthStore:
@@ -15,49 +21,82 @@ class AuthStore:
     # API keys
     # ------------------------------------------------------------------
 
-    def create_api_key(self, name: str) -> tuple[str, str, int]:
-        """Create API key. Return (raw_key, key_prefix, id). raw_key shown once.
+    def create_api_key(
+        self,
+        name: str,
+        user_id: int | None = None,
+        expires_at=None,
+    ) -> tuple[str, str, int]:
+        """Create API key with HMAC-SHA256 hash, optional user ownership and expiry.
 
         Args:
             name: Descriptive name for the key (e.g. 'claude-code-laptop').
+            user_id: Optional webui_users.id FK.  None = global/admin key
+                (CLI-created keys, backward compat).
+            expires_at: Optional datetime (or None for eternal).  When set,
+                the key is rejected after this timestamp.
 
         Returns:
-            Tuple of (raw_key_string, key_prefix_8chars, key_id).
+            Tuple of (raw_key_string, key_prefix_12chars, key_id).
             raw_key is ephemeral and should be displayed to user exactly once.
         """
         raw = "osm_" + secrets.token_urlsafe(32)
-        key_hash = hashlib.sha256(raw.encode()).hexdigest()
-        key_prefix = raw[:8]
+        key_hash = hash_key(raw)
+        key_prefix = raw[:12]  # bumped 8 → 12 chars for new keys
         with self._pool.checkout() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO api_keys (name, key_hash, key_prefix)"
-                    " VALUES (%s, %s, %s) RETURNING id",
-                    (name, key_hash, key_prefix),
+                    "INSERT INTO api_keys (name, key_hash, key_prefix, user_id, expires_at)"
+                    " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (name, key_hash, key_prefix, user_id, expires_at),
                 )
                 row_id = cur.fetchone()[0]
             conn.commit()
         return raw, key_prefix, row_id
 
     def verify_api_key(self, raw_key: str) -> int | None:
-        """Return api_key_id if active + valid. Update last_used_at. Return None if invalid.
+        """Return api_key_id if active + valid (not expired). Update last_used_at.
+
+        Lookup order:
+          1. HMAC-SHA256 (primary — M9+ keys).
+          2. SHA-256 plain (legacy fallback — keys created before M9 HMAC upgrade).
+             Logs a warning on match; fallback expires on LEGACY_HASH_DEADLINE.
+
+        Both paths enforce ``active = TRUE`` and ``expires_at`` filter.
 
         Args:
             raw_key: The full API key string (starts with 'osm_').
 
         Returns:
-            Integer key_id if found and active, None otherwise.
+            Integer key_id if found and active/unexpired, None otherwise.
             Side effect: updates last_used_at timestamp on successful verification.
         """
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        hmac_hash = hash_key(raw_key)
+        expires_filter = "AND (expires_at IS NULL OR expires_at > NOW())"
+        base_query = (
+            "SELECT id FROM api_keys "
+            f"WHERE key_hash = %s AND active = TRUE {expires_filter}"
+        )
+
         with self._pool.checkout() as conn:
-            row = self._pool.fetch_one(
-                conn,
-                "SELECT id FROM api_keys WHERE key_hash = %s AND active = TRUE",
-                (key_hash,),
-            )
+            row = self._pool.fetch_one(conn, base_query, (hmac_hash,))
+
+        if row is None:
+            # Backward-compat: try plain SHA-256 (until LEGACY_HASH_DEADLINE)
+            sha_hash = hash_key_legacy_sha256(raw_key)
+            with self._pool.checkout() as conn:
+                row = self._pool.fetch_one(conn, base_query, (sha_hash,))
+            if row is not None:
+                logger.warning(
+                    "API key id=%s matched via legacy SHA-256 hash. "
+                    "Please rotate this key before %s.",
+                    row["id"],
+                    "2026-06-15",  # LEGACY_HASH_DEADLINE
+                )
+
         if row is None:
             return None
+
         key_id = row["id"]
         with self._pool.checkout() as conn:
             self._pool.execute(
@@ -67,18 +106,37 @@ class AuthStore:
             )
         return key_id
 
-    def list_api_keys(self) -> list[dict]:
-        """List all API keys (without key_hash for security).
+    def list_api_keys(self, user_id: int | None = None, admin: bool = False) -> list[dict]:
+        """List API keys (without key_hash for security).
+
+        Filtering rules:
+          - ``admin=True`` (or ``user_id=None and admin=True``): returns all keys.
+          - ``user_id`` set and ``admin=False``: returns only keys for that user
+            (``user_id = %s``).  Admin keys (``user_id IS NULL``) are excluded.
+          - Default (no args): returns all keys (backward compat for CLI/admin paths
+            that don't carry a session).
+
+        Args:
+            user_id: Filter to this user's keys.  None = no user filter.
+            admin: If True, override user_id filter and return all keys.
 
         Returns:
-            List of dicts with keys: id, name, key_prefix, active, created_at, last_used_at.
+            List of dicts with keys: id, name, key_prefix, active, created_at,
+            last_used_at, user_id, expires_at.
         """
+        select = (
+            "SELECT id, name, key_prefix, active, created_at, last_used_at, "
+            "user_id, expires_at FROM api_keys"
+        )
+        if admin or user_id is None:
+            query = select + " ORDER BY id"
+            params: tuple = ()
+        else:
+            query = select + " WHERE user_id = %s ORDER BY id"
+            params = (user_id,)
+
         with self._pool.checkout() as conn:
-            return self._pool.fetch_all(
-                conn,
-                "SELECT id, name, key_prefix, active, created_at, last_used_at "
-                "FROM api_keys ORDER BY id",
-            )
+            return self._pool.fetch_all(conn, query, params)
 
     def deactivate_api_key(self, key_id: int) -> None:
         """Deactivate an API key by id.
@@ -268,12 +326,13 @@ class AuthStore:
             )
         return row["password_hash"] if row is not None else None
 
-    def set_user_password(self, username: str, password_hash: str) -> None:
+    def set_user_password(self, username: str, password_hash: str, is_admin: bool = False) -> None:
         """Insert or update password_hash for username.
 
         Args:
             username: The web UI username.
             password_hash: bcrypt hash of the new password.
+            is_admin: If True, set is_admin=TRUE on creation (ignored on update).
         """
         with self._pool.checkout() as conn:
             exists = self._pool.fetch_one(
@@ -290,6 +349,278 @@ class AuthStore:
             else:
                 self._pool.execute(
                     conn,
-                    "INSERT INTO webui_users (username, password_hash) VALUES (%s, %s)",
-                    (username, password_hash),
+                    (
+                        "INSERT INTO webui_users "
+                        "(username, password_hash, is_admin) VALUES (%s, %s, %s)"
+                    ),
+                    (username, password_hash, is_admin),
                 )
+
+    def delete_user(self, username: str) -> bool:
+        """Delete a Web UI user by username.
+
+        Returns True if the user was deleted, False if not found.
+        """
+        with self._pool.checkout() as conn:
+            rowcount = self._pool.execute(
+                conn,
+                "DELETE FROM webui_users WHERE username = %s",
+                (username,),
+            )
+        return rowcount > 0
+
+    def list_users(self) -> list[dict]:
+        """List all Web UI users (W-CP CLI — minimal columns)."""
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                (
+                    "SELECT username, is_admin, is_active, created_at "
+                    "FROM webui_users ORDER BY username"
+                ),
+            )
+
+    # ------------------------------------------------------------------
+    # M9: User management (list/deactivate/reactivate + get_user_field)
+    # ------------------------------------------------------------------
+
+    def list_webui_users(self) -> list[dict]:
+        """Return all webui_users rows (no password_hash) ordered by id/username."""
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                "SELECT id, username, email, is_admin, is_active, mfa_enabled, created_at "
+                "FROM webui_users ORDER BY id NULLS LAST, username",
+            )
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["id"],
+                "username": r["username"],
+                "email": r["email"],
+                "is_admin": bool(r["is_admin"]),
+                "is_active": bool(r["is_active"]),
+                "mfa_enabled": bool(r["mfa_enabled"]),
+                "created_at": str(r["created_at"]) if r["created_at"] else None,
+            })
+        return result
+
+    def get_user_by_id(self, user_id: int) -> dict | None:
+        """Return webui_users row by id (no password_hash), or None."""
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT id, username, email, is_admin, is_active, mfa_enabled, created_at "
+                "FROM webui_users WHERE id = %s",
+                (user_id,),
+            )
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "username": row["username"],
+            "email": row["email"],
+            "is_admin": bool(row["is_admin"]),
+            "is_active": bool(row["is_active"]),
+            "mfa_enabled": bool(row["mfa_enabled"]),
+            "created_at": str(row["created_at"]) if row["created_at"] else None,
+        }
+
+    def get_user_field(self, user_id: int, field: str) -> object | None:
+        """Return a single field value from webui_users by id.
+
+        Only allows safe whitelisted field names to prevent SQL injection.
+
+        Args:
+            user_id: The webui_users id.
+            field: Column name to fetch ('is_admin', 'is_active', 'username', 'email').
+
+        Returns:
+            Field value, or None if user not found.
+
+        Raises:
+            ValueError: If field is not in the whitelist.
+        """
+        _ALLOWED = {"is_admin", "is_active", "username", "email", "mfa_enabled"}
+        if field not in _ALLOWED:
+            raise ValueError(f"get_user_field: field '{field}' not allowed")
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                f"SELECT {field} FROM webui_users WHERE id = %s",  # noqa: S608 — field whitelisted
+                (user_id,),
+            )
+        return row[field] if row is not None else None
+
+    def get_user_id_by_username(self, username: str) -> int | None:
+        """Return the id column for a given username, or None."""
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT id FROM webui_users WHERE username = %s",
+                (username,),
+            )
+        return row["id"] if row is not None else None
+
+
+    def set_user_active(self, user_id: int, *, is_active: bool) -> None:
+        """Set is_active flag for a user by id."""
+        with self._pool.checkout() as conn:
+            self._pool.execute(
+                conn,
+                "UPDATE webui_users SET is_active = %s WHERE id = %s",
+                (is_active, user_id),
+            )
+
+    def revoke_all_sessions(self, user_id: int) -> None:
+        """Delete all active_sessions for user_id (instant logout).
+
+        Also clears the Starlette session cache if active_sessions table is
+        used; this method is the single place to invalidate all logins.
+        """
+        with self._pool.checkout() as conn:
+            self._pool.execute(
+                conn,
+                "DELETE FROM active_sessions WHERE user_id = %s",
+                (user_id,),
+            )
+
+    def get_user_password_hash_by_id(self, user_id: int) -> str | None:
+        """Return password_hash for user_id, or None if not found."""
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT password_hash FROM webui_users WHERE id = %s",
+                (user_id,),
+            )
+        return row["password_hash"] if row is not None else None
+
+    # ------------------------------------------------------------------
+    # M9: Email verifications (password reset tokens)
+    # ------------------------------------------------------------------
+
+    def create_password_reset_token(self, user_id: int, ttl_seconds: int = 3600) -> str:
+        """Create a single-use password reset token for user_id.
+
+        Returns:
+            The raw 256-bit token (hex string). Only the SHA-256 hash is stored.
+            Caller must transmit the raw token to the user (email link).
+        """
+        raw_token = secrets.token_hex(32)  # 256-bit entropy
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        now_utc = _datetime_mod.datetime.now(_datetime_mod.UTC)
+        expires_at = now_utc + timedelta(seconds=ttl_seconds)
+        with self._pool.checkout() as conn:
+            # Try inserting with token_hash only (fresh 9001 schema).
+            # Fall back to also setting `token` if the legacy NOT NULL column exists
+            # (live DB from other M9 worktrees that have token TEXT NOT NULL PK).
+            try:
+                self._pool.execute(
+                    conn,
+                    "INSERT INTO email_verifications"
+                    " (user_id, purpose, token_hash, expires_at)"
+                    " VALUES (%s, %s, %s, %s)",
+                    (user_id, "password_reset", token_hash, expires_at),
+                )
+            except Exception:
+                # Retry including the legacy 'token' column (satisfies NOT NULL constraint)
+                self._pool.execute(
+                    conn,
+                    "INSERT INTO email_verifications"
+                    " (user_id, purpose, token_hash, expires_at, token)"
+                    " VALUES (%s, %s, %s, %s, %s)",
+                    (user_id, "password_reset", token_hash, expires_at, token_hash),
+                )
+        return raw_token
+
+    def consume_password_reset_token(self, raw_token: str) -> int | None:
+        """Verify + consume a password reset token.
+
+        Returns:
+            user_id if token is valid + unused + not expired.
+            None if token not found or already used.
+
+        Raises:
+            ValueError: with code 'expired' if token found but expired.
+            ValueError: with code 'used' if token already consumed.
+        """
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT user_id, expires_at, used_at FROM email_verifications "
+                "WHERE token_hash = %s AND purpose = %s",
+                (token_hash, "password_reset"),
+            )
+            if row is None:
+                return None
+            if row["used_at"] is not None:
+                raise ValueError("used")
+            # expires_at may be offset-aware or naive; compare consistently
+            now = _datetime_mod.datetime.now(_datetime_mod.UTC)
+            exp = row["expires_at"]
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=_datetime_mod.UTC)
+            if now > exp:
+                raise ValueError("expired")
+            # Mark as used — identify row by token_hash (unique column; no id needed)
+            self._pool.execute(
+                conn,
+                "UPDATE email_verifications SET used_at = NOW() WHERE token_hash = %s",
+                (token_hash,),
+            )
+        return row["user_id"]
+
+    # ------------------------------------------------------------------
+    # M9: Admin audit log
+    # ------------------------------------------------------------------
+
+    def log_audit(
+        self,
+        *,
+        actor_id: int | None,
+        action: str,
+        target_id: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Insert an admin audit log entry. Fire-and-forget — swallows exceptions.
+
+        DEPRECATED (M9 W-AL): Use src.db.audit.write_audit_log() directly instead.
+        This method is kept for backward compatibility only and will be removed
+        after M9 in a cleanup PR (per ADR-0021 §Legacy Column Deprecation).
+
+        New callers should use:
+            from src.db.audit import write_audit_log
+            write_audit_log(actor=f"user:{actor_id}", action=action, target=str(target_id))
+
+        Args:
+            actor_id: webui_users.id of the admin performing the action.
+            action: Short action code (e.g. 'user.deactivate', 'user.reset_password').
+            target_id: webui_users.id of the affected user (if applicable).
+            detail: Optional free-text detail string.
+        """
+        try:
+            with self._pool.checkout() as conn:
+                # actor_str: string fallback for schemas that have `actor TEXT NOT NULL`
+                # (from other M9 worktrees). Provides a value even when actor_id is None.
+                actor_str = str(actor_id) if actor_id is not None else "system"
+                self._pool.execute(
+                    conn,
+                    "INSERT INTO admin_audit_log"
+                    " (actor_id, action, target_id, detail_text, actor, success)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    (actor_id, action, target_id, detail, actor_str, True),
+                )
+        except Exception:
+            # Fall back to minimal insert if actor column doesn't exist (fresh schema)
+            try:
+                with self._pool.checkout() as conn:
+                    self._pool.execute(
+                        conn,
+                        "INSERT INTO admin_audit_log"
+                        " (actor_id, action, target_id, detail_text)"
+                        " VALUES (%s, %s, %s, %s)",
+                        (actor_id, action, target_id, detail),
+                    )
+            except Exception:
+                pass  # best-effort — audit failure must not break the main action

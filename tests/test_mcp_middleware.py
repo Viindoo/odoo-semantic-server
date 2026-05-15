@@ -81,6 +81,12 @@ async def test_auth_middleware_returns_401_not_500_when_pool_not_pre_initialized
     )
     monkeypatch.setenv("PG_DSN", test_dsn)
 
+    # Ensure migrations are applied — other tests using clean_pg may have
+    # dropped tables (in particular api_keys), which would cause this test
+    # to fail with UndefinedTable when AuthMiddleware queries api_keys.
+    from src.db.migrate import run_migrations
+    run_migrations(pg_conn)
+
     # Import lazily to pick up env changes; also ensure _pool is None (fixture above).
     from contextlib import asynccontextmanager
 

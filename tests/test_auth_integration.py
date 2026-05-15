@@ -101,8 +101,8 @@ class TestAuthEndToEndCycle:
         # Verify the raw key
         assert auth_store().verify_api_key(raw) == key_id
 
-        # Verify the prefix is correct
-        assert raw[:8] == prefix
+        # Verify the prefix is correct (M9 W-AK: key_prefix bumped 8 → 12 chars)
+        assert raw[:12] == prefix
 
     def test_verify_wrong_key_returns_none(self, pg_auth_conn):
         """Attempt to verify a non-existent key → returns None."""
