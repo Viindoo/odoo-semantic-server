@@ -4,7 +4,32 @@
 # Docs: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
 
 semantic.example.com {
+    # Security headers — parity with nginx-m8.conf (M9 W-HD)
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        # CSP Strategy A (M9): unsafe-inline only for style-src (Tailwind).
+        # script-src 'self' only — no unsafe-inline/eval → XSS protection.
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
+        Permissions-Policy "geolocation=(), camera=(), microphone=(), payment=(), usb=()"
+        # Remove server identification header
+        -Server
+    }
+
+    # MCP protocol (SSE streaming — disable buffering)
     reverse_proxy /mcp* 127.0.0.1:8002 {
         flush_interval -1   # -1 = disable buffering, bắt buộc cho SSE streaming
     }
+
+    # FastAPI JSON API
+    reverse_proxy /api/* 127.0.0.1:8003
+
+    # Client setup + health check endpoints
+    reverse_proxy /install/* 127.0.0.1:8002
+    reverse_proxy /health 127.0.0.1:8002
+
+    # Astro SSR (landing + admin pages)
+    reverse_proxy /* 127.0.0.1:4321
 }
