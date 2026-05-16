@@ -148,6 +148,20 @@ Field count signal không phụ thuộc vào INHERITS edge quality, do đó immu
 
 6. **`is_ext` từ `EXISTS outgoing same-name` + `inbound DESC` + `mod_name`** (plan ban đầu) — reject sau smoke test. EXISTS subquery sai trên 5/9 model thật (writer self-inherit edge). `inbound DESC` cũng không reliable vì các Model node thường tie ở `inbound=1` (chain pattern thay vì star pattern).
 
+## Implementation Notes (2026-05-16)
+
+### Clarification: `is_definition` stored, `field_count` computed
+
+To resolve ambiguity between ADR wording and implementation:
+
+- **`m.is_definition` is a stored Model node property**, set at write time by `src/indexer/writer_neo4j.py` lines 67 and 73–75. It is computed once during indexing as `($had_explicit_name AND NOT $name IN $inherit_list)` and SET in the MERGE ON CREATE and ON MATCH clauses. It is `TRUE` for the defining module (module that declares `_name`), and `FALSE` for inheriting modules and placeholder nodes.
+
+- **`field_count` is NOT a stored property — it is computed at query time** in `src/mcp/server.py` lines 223–225 using a Cypher count subquery: `COUNT { (:Field {model: $name, module: m.module, odoo_version: $v}) }`. This is evaluated fresh on each resolve query to rank the defining module by the number of fields it declares for the given model name.
+
+- **Deterministic tiebreak is enforced via ORDER BY** (server.py line 230–231): `ORDER BY is_def_rank ASC, field_count DESC, dependents DESC, edition_rank ASC, mod_name ASC`. The `mod_name ASC` at the end ensures no Cypher arbitrary-order remains when all higher tiers tie.
+
+This design allows `field_count` to be a robust, data-driven ranking signal that does not depend on INHERITS edge quality, while `is_definition` provides a fast post-reindex shortcut for tier 1 evaluation.
+
 ## References
 
 - ADR-0001: Schema Evolution Policy — `is_definition`, `had_explicit_name`, `r.order` là Neo4j property (không PostgreSQL ALTER); SET trong MERGE, idempotent, ADR-0001 compliant.
