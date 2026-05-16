@@ -8,6 +8,8 @@ from src.db.exceptions import (
     ProfileCycleError,
     ProfileNotFoundError,
     ProfileVersionMismatchError,
+    RepoConflictError,
+    RepoNotFoundError,
 )
 from src.db.pg import PgPool
 
@@ -515,6 +517,97 @@ class RepoStore:
             )
         if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
+
+    def update_repo(
+        self,
+        repo_id: int,
+        *,
+        url: str | None = None,
+        branch: str | None = None,
+        ssh_key_id: int | None = None,
+        clear_ssh_key: bool = False,
+        local_path: str | None = None,
+    ) -> list[str]:
+        """Update editable fields of a repo without touching head_sha.
+
+        head_sha is intentionally preserved — this is the whole point of PATCH
+        vs delete+recreate: the incremental indexer can still use the stored sha.
+
+        Args:
+            repo_id: ID of repo to update.
+            url: New remote URL (or None to leave unchanged).
+            branch: New branch name (or None to leave unchanged).
+            ssh_key_id: New SSH key id (or None to leave unchanged).
+            clear_ssh_key: When True, set ssh_key_id = NULL regardless of ssh_key_id arg.
+            local_path: New local checkout path (or None to leave unchanged).
+
+        Returns:
+            List of field names that were updated.
+
+        Raises:
+            RepoNotFoundError: if repo_id does not exist.
+            RepoConflictError: if the new (url, branch) would violate UNIQUE constraint.
+        """
+        # Verify repo exists and fetch current values for conflict-check
+        existing = self.get_repo_by_id(repo_id)
+        if existing is None:
+            raise RepoNotFoundError(f"repo id={repo_id} not found")
+
+        # Resolve effective values for UNIQUE check
+        effective_url = url if url is not None else existing["url"]
+        effective_branch = branch if branch is not None else existing["branch"]
+
+        # Check UNIQUE(url, branch) before UPDATE — exclude current row
+        if url is not None or branch is not None:
+            with self._pool.checkout() as conn:
+                conflict_row = self._pool.fetch_one(
+                    conn,
+                    "SELECT id FROM repos WHERE url = %s AND branch = %s AND id != %s",
+                    (effective_url, effective_branch, repo_id),
+                )
+            if conflict_row is not None:
+                raise RepoConflictError(
+                    f"A repo with url={effective_url!r} branch={effective_branch!r} already exists"
+                )
+
+        # Build dynamic SET clause — only include fields the caller wants to change
+        set_parts: list[str] = []
+        params: list = []
+        updated_fields: list[str] = []
+
+        if url is not None:
+            set_parts.append("url = %s")
+            params.append(url)
+            updated_fields.append("url")
+
+        if branch is not None:
+            set_parts.append("branch = %s")
+            params.append(branch)
+            updated_fields.append("branch")
+
+        if clear_ssh_key:
+            set_parts.append("ssh_key_id = NULL")
+            updated_fields.append("ssh_key_id")
+        elif ssh_key_id is not None:
+            set_parts.append("ssh_key_id = %s")
+            params.append(ssh_key_id)
+            updated_fields.append("ssh_key_id")
+
+        if local_path is not None:
+            set_parts.append("local_path = %s")
+            params.append(local_path)
+            updated_fields.append("local_path")
+
+        if not set_parts:
+            return []  # nothing to update — idempotent no-op
+
+        params.append(repo_id)
+        sql = f"UPDATE repos SET {', '.join(set_parts)} WHERE id = %s"
+
+        with self._pool.checkout() as conn:
+            self._pool.execute(conn, sql, tuple(params))
+
+        return updated_fields
 
     def update_repo_local_path(self, repo_id: int, local_path: str) -> None:
         """Update local_path for a repo after a successful clone.

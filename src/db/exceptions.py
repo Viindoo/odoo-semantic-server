@@ -17,3 +17,11 @@ class ProfileCycleError(ValueError):
 
 class ProfileVersionMismatchError(ValueError):
     """Raised when child and parent profiles have different odoo_version values."""
+
+
+class RepoNotFoundError(KeyError):
+    """Raised when a referenced repo ID does not exist in the database."""
+
+
+class RepoConflictError(ValueError):
+    """Raised when a repo update would violate the UNIQUE(url, branch) constraint."""

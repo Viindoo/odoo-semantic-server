@@ -980,3 +980,108 @@ class TestCloneAllEndpoint:
         assert body["ok"] is True
         assert body["total"] == 0
         assert "message" in body
+
+
+class TestUpdateRepoEndpoint:
+    """Tests for PATCH /api/repos/repos/{id} — edit repo without losing head_sha."""
+
+    @pytest.mark.asyncio
+    async def test_update_repo_happy_path(self, migrated_pg):
+        """PATCH branch → 200; head_sha is preserved."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("edit_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo",
+        )
+        # Simulate a prior index run by storing a head_sha
+        repo_store().update_repo_head_sha(rid, "abc123deadbeef")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={"branch": "16.0"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["repo_id"] == rid
+        assert "branch" in body["updated_fields"]
+
+        # head_sha must NOT be cleared
+        repo = repo_store().get_repo_by_id(rid)
+        assert repo["branch"] == "16.0"
+        assert repo["head_sha"] == "abc123deadbeef"
+
+    @pytest.mark.asyncio
+    async def test_update_repo_404(self, migrated_pg):
+        """PATCH non-existent repo_id → 404."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                "/api/repos/repos/99999",
+                json={"branch": "17.0"},
+            )
+
+        assert resp.status_code == 404
+        assert "error" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_update_repo_conflict(self, migrated_pg):
+        """PATCH url+branch that collides with another repo → 409."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("conflict_profile", "17.0")
+        repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo",
+        )
+        rid2 = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/enterprise.git",
+            branch="17.0",
+            local_path="/tmp/enterprise",
+        )
+
+        # Try to change rid2's URL to match rid1's url+branch
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid2}",
+                json={"url": "https://github.com/odoo/odoo.git", "branch": "17.0"},
+            )
+
+        assert resp.status_code == 409
+        assert "error" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_update_repo_ssh_key_required(self, migrated_pg):
+        """PATCH to SSH URL without ssh_key_id → 400."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("ssh_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo",
+        )
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={"url": "git@github.com:odoo/odoo.git"},
+            )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        assert "SSH" in body["error"] or "ssh" in body["error"].lower()
