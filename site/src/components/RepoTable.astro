@@ -6,6 +6,9 @@ export interface Repo {
   local_path: string;
   odoo_version?: string;
   clone_status?: string;
+  clone_error_msg?: string | null;
+  error_msg?: string | null;
+  last_indexed_at?: string | null;
   head_sha?: string | null;
   last_job?: { id: number; status: string; error_msg?: string } | null;
 }
@@ -37,6 +40,29 @@ const cloneStatusColor: Record<string, string> = {
   cloned:  'bg-green-100 text-green-700',
   error:   'bg-red-100 text-red-700',
 };
+
+// Helper to format ISO timestamp to "YYYY-MM-DD HH:mm"
+function formatTimestamp(isoString: string | null | undefined): string {
+  if (!isoString) return '—';
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return '—';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const mins = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${mins}`;
+  } catch {
+    return '—';
+  }
+}
+
+// Helper to truncate long error messages
+function truncate(text: string | null | undefined, maxLen: number): string {
+  if (!text) return '';
+  return text.length > maxLen ? text.substring(0, maxLen) + '…' : text;
+}
 ---
 
 <!-- Add Repo Form -->
@@ -143,6 +169,7 @@ const cloneStatusColor: Record<string, string> = {
             <th class="px-4 py-3 text-left">Profile</th>
             <th class="px-4 py-3 text-left">Clone</th>
             <th class="px-4 py-3 text-left">Last Job</th>
+            <th class="px-4 py-3 text-left">Last Indexed</th>
             <th class="px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
@@ -159,16 +186,33 @@ const cloneStatusColor: Record<string, string> = {
                   {profiles.find((p) => p.repos?.some((r) => r.id === repo.id))?.name ?? '—'}
                 </td>
                 <td class="px-4 py-3">
-                  <span class:list={['px-2 py-0.5 rounded-full text-xs font-medium', cloneClass]}>
-                    {repo.clone_status ?? 'manual'}
-                  </span>
+                  <div class="flex flex-col gap-1">
+                    <span class:list={['px-2 py-0.5 rounded-full text-xs font-medium', cloneClass]}>
+                      {repo.clone_status ?? 'manual'}
+                    </span>
+                    {repo.clone_status === 'error' && repo.clone_error_msg && (
+                      <span class="text-red-700 text-xs" title={repo.clone_error_msg}>
+                        {truncate(repo.clone_error_msg, 100)}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td class="px-4 py-3">
-                  {repo.last_job ? (
-                    <span class="text-xs text-gray-600">#{repo.last_job.id} {repo.last_job.status}</span>
-                  ) : (
-                    <span class="text-xs text-gray-400">—</span>
-                  )}
+                  <div class="flex flex-col gap-1">
+                    {repo.last_job ? (
+                      <span class="text-xs text-gray-600">#{repo.last_job.id} {repo.last_job.status}</span>
+                    ) : (
+                      <span class="text-xs text-gray-400">—</span>
+                    )}
+                    {repo.error_msg && (
+                      <span class="text-red-700 text-xs" title={repo.error_msg}>
+                        {truncate(repo.error_msg, 100)}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs text-gray-600">{formatTimestamp(repo.last_indexed_at)}</span>
                 </td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-2">
