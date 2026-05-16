@@ -19,6 +19,10 @@ class ProfileVersionMismatchError(ValueError):
     """Raised when child and parent profiles have different odoo_version values."""
 
 
+class ProfileNameConflictError(ValueError):
+    """Raised when a profile name already exists (UNIQUE constraint violation)."""
+
+
 class RepoNotFoundError(KeyError):
     """Raised when a referenced repo ID does not exist in the database."""
 

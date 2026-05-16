@@ -131,6 +131,58 @@ async def set_profile_parent(
     }))
 
 
+class UpdateProfileBody(BaseModel):
+    name: str | None = None
+    version: str | None = None
+    description: str | None = None
+
+
+@router.patch("/profiles/{profile_id}")
+@audit_action("profile.update", target_param="profile_id")
+async def update_profile(
+    profile_id: int, body: UpdateProfileBody, request: Request
+):
+    """Update name, version, and/or description for an existing profile.
+
+    - 404 if profile not found.
+    - 409 if new name conflicts with an existing profile (UNIQUE).
+    - 422 if new version conflicts with a descendant profile version (ADR-0016).
+    - 200 + updated_fields list on success.
+    """
+    try:
+        from src.db.exceptions import (
+            ProfileNameConflictError,
+            ProfileNotFoundError,
+            ProfileVersionMismatchError,
+        )
+        from src.db.pg import repo_store
+
+        updated_fields = repo_store().update_profile(
+            profile_id,
+            name=body.name,
+            version=body.version,
+            description=body.description,
+        )
+    except ProfileNotFoundError as e:
+        _logger.warning("Update profile: not found: %s", e)
+        raise HTTPException(status_code=404, detail="Profile not found")
+    except ProfileNameConflictError as e:
+        _logger.warning("Update profile: name conflict: %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
+    except ProfileVersionMismatchError as e:
+        _logger.warning("Update profile: version mismatch with descendants: %s", e)
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        _logger.warning("Update profile %s failed: %s", profile_id, e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+
+    return JSONResponse(_json_safe({
+        "ok": True,
+        "profile_id": profile_id,
+        "updated_fields": updated_fields,
+    }))
+
+
 @router.delete("/profiles/{profile_id}")
 @audit_action("profile.delete", target_param="profile_id")
 async def delete_profile(request: Request, profile_id: int):

@@ -150,6 +150,14 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
                   </button>
 
                   <button
+                    data-testid={`edit-profile-button-${p.id}`}
+                    data-profile-id={String(p.id)}
+                    class="text-xs bg-yellow-50 hover:bg-yellow-100 text-yellow-700 px-3 py-1.5 rounded-lg transition-colors edit-profile-btn"
+                  >
+                    Edit
+                  </button>
+
+                  <button
                     data-testid={`delete-profile-button-${p.id}`}
                     data-profile-id={String(p.id)}
                     class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
@@ -157,6 +165,57 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
                     Delete
                   </button>
                 </div>
+              </div>
+
+              <!-- Inline Edit Profile form (hidden until Edit button is clicked) -->
+              <div
+                data-testid={`edit-profile-form-${p.id}`}
+                data-profile-id={String(p.id)}
+                class="mt-3 p-3 border border-yellow-200 rounded-lg bg-yellow-50 edit-profile-form"
+                hidden
+              >
+                <form class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end edit-profile-inner-form" data-profile-id={String(p.id)}>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
+                    <input
+                      name="name"
+                      type="text"
+                      value={p.name}
+                      class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Odoo Version</label>
+                    <input
+                      name="version"
+                      type="text"
+                      value={p.odoo_version}
+                      class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                    <input
+                      name="description"
+                      type="text"
+                      value={p.description ?? ''}
+                      class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                    />
+                  </div>
+                  <div class="sm:col-span-3 flex gap-2 justify-end">
+                    <button
+                      type="button"
+                      class="text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors cancel-edit-profile-btn"
+                      data-profile-id={String(p.id)}
+                    >Cancel</button>
+                    <button
+                      type="submit"
+                      class="text-xs bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded-lg transition-colors"
+                    >Save</button>
+                  </div>
+                </form>
               </div>
 
               <!-- JobStatus widget for clone-all (hidden until a job is triggered) -->
@@ -285,6 +344,69 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
         showFlash(data.error ?? 'Clone-all failed.', 'error');
       }
       (btn as HTMLButtonElement).disabled = false;
+    });
+  });
+
+  // Edit profile — toggle inline form
+  document.querySelectorAll('.edit-profile-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const profileId = (btn as HTMLElement).dataset.profileId;
+      const formDiv = document.querySelector(
+        `[data-testid="edit-profile-form-${profileId}"]`
+      ) as HTMLElement | null;
+      if (!formDiv) return;
+      const hidden = formDiv.hasAttribute('hidden');
+      if (hidden) {
+        formDiv.removeAttribute('hidden');
+      } else {
+        formDiv.setAttribute('hidden', '');
+      }
+    });
+  });
+
+  // Cancel edit
+  document.querySelectorAll('.cancel-edit-profile-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const profileId = (btn as HTMLElement).dataset.profileId;
+      const formDiv = document.querySelector(
+        `[data-testid="edit-profile-form-${profileId}"]`
+      ) as HTMLElement | null;
+      formDiv?.setAttribute('hidden', '');
+    });
+  });
+
+  // Submit edit profile form — PATCH /api/repos/profiles/{id}
+  document.querySelectorAll('.edit-profile-inner-form').forEach((formEl) => {
+    formEl.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = formEl as HTMLFormElement;
+      const profileId = (formEl as HTMLElement).dataset.profileId;
+      const fd = new FormData(form);
+      const payload: Record<string, string> = {
+        name: (fd.get('name') as string).trim(),
+        version: (fd.get('version') as string).trim(),
+        description: (fd.get('description') as string).trim(),
+      };
+
+      const res = await fetch(`/api/repos/profiles/${profileId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        showFlash('Profile updated.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else if (res.status === 404) {
+        showFlash(data.detail ?? 'Profile not found.', 'error');
+      } else if (res.status === 409) {
+        showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
+      } else if (res.status === 422) {
+        showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
+      } else {
+        showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+      }
     });
   });
 
