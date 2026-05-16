@@ -58,6 +58,27 @@ Always call the appropriate MCP tool based on the user's intent:
 **find_override_point** — safest extension points
   WHEN: "where to override [method]", "best place to extend [model]", "override point for"
 
+**describe_module** — module architecture overview: manifest summary, models defined/extended, view counts, JS patch count
+  WHEN: "what is module [X]", "what does module [X] do", "describe module [X]", "overview of [X]", "module [X] làm gì"
+
+**list_fields** — enumerate all fields of a model grouped by module (name : type rows)
+  WHEN: "list fields of [model]", "what fields does [model] have", "show fields on [model]", "[model] có field nào"
+
+**list_methods** — enumerate all methods with override counts
+  WHEN: "list methods of [model]", "what methods does [model] have", "[model] có method nào", "enumerate methods on [model]"
+
+**list_views** — enumerate XML views (xmlid + type) for a model
+  WHEN: "list views of [model]", "what views does [model] have", "[model] có view nào", "show views for [model]"
+
+**list_owl_components** — OWL components in a module (v15+ only; empty + warning for v8–v13)
+  WHEN: "OWL components in module [X]", "list OWL components of [X]", "what OWL components does [X] define"
+
+**list_qweb_templates** — QWeb templates defined in a module
+  WHEN: "QWeb templates in module [X]", "list templates of [X]", "what templates does [X] define"
+
+**list_js_patches** — JS patches (era1=v8-13 Widget / era2=v14-16 hybrid / era3=v17+ OWL-only)
+  WHEN: "JS patches on [X]", "patch chain for [X]", "who patches [class]", "list JS patches in [module]"
+
 ## PERSONA MODES
 
 Detect the user's role from context and adjust your response:

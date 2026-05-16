@@ -86,6 +86,41 @@ TRIGGER: "where should I override [method]", "best place to add [behavior]", "ov
 PREFER: extension architecture decisions
 ARGS: model_name, method_name, odoo_version
 
+### describe_module
+TRIGGER: "what is module [X]", "what does module [X] do", "describe module [X]", "module [X] làm gì", "overview of module [X]", "architecture of [X]"
+PREFER: module-level orientation before diving into models or views
+ARGS: name (module technical name), odoo_version, profile_name (optional)
+
+### list_fields
+TRIGGER: "list fields of [model]", "what fields does [model] have", "show fields of [model]", "[model] có những field nào", "enumerate fields on [model]"
+PREFER: getting a complete field inventory grouped by module before resolving individual fields
+ARGS: model (dotted name), odoo_version, module (optional filter), kind (optional: stored/computed/related), limit (default 200)
+
+### list_methods
+TRIGGER: "list methods of [model]", "what methods does [model] have", "show methods on [model]", "[model] có những method nào", "enumerate methods of [model]"
+PREFER: getting a complete method inventory with override counts before tracing individual methods
+ARGS: model (dotted name), odoo_version, module (optional filter), limit (default 200)
+
+### list_views
+TRIGGER: "list views of [model]", "what views does [model] have", "[model] có những view nào", "show XML views for [model]", "enumerate views on [model]"
+PREFER: getting a full view inventory (xmlid + type) before resolving a specific view
+ARGS: model (dotted name), odoo_version, view_type (optional: form/tree/kanban/...), limit (default 200)
+
+### list_owl_components
+TRIGGER: "OWL components in module [X]", "list OWL components of [X]", "what OWL components does [X] define", "components in [X] for model [Y]"
+PREFER: UI-layer inventory for modules that ship OWL widgets (v15+); returns empty + warning for v8–v13
+ARGS: module (technical name), odoo_version, bound_model (optional filter), limit (default 200)
+
+### list_qweb_templates
+TRIGGER: "QWeb templates in module [X]", "list QWeb templates of [X]", "what templates does [X] define", "template inventory for [X]"
+PREFER: template inventory before tracing a specific QWeb override chain
+ARGS: module (technical name), odoo_version, limit (default 200)
+
+### list_js_patches
+TRIGGER: "JS patches on [X]", "patch chain for [X]", "who patches [class/component]", "list JS patches in [module]", "era1/era2/era3 patches for [X]"
+PREFER: understanding JS override chains; era1=v8-13 Widget / era2=v14-16 hybrid / era3=v17+ OWL-only
+ARGS: odoo_version, target (optional: patched class/component name), module (optional filter), era (optional: era1/era2/era3), limit (default 200)
+
 ## Persona Modes
 
 Adapt your response style based on user role signals:

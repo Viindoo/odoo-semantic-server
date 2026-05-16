@@ -41,6 +41,15 @@ These rules configure Cursor IDE to automatically route Odoo-related questions t
 - Impact of field change → call impact_analysis("field", "model.field_name", odoo_version)
 - Impact of method change → call impact_analysis("method", "model.method_name", odoo_version)
 
+### Exploring module architecture
+- User asks "what is module X" or "what does module X do" → call describe_module(name, odoo_version)
+- User wants to list all fields of a model → call list_fields(model, odoo_version)
+- User wants to list all methods of a model → call list_methods(model, odoo_version)
+- User wants to list all views for a model → call list_views(model, odoo_version)
+- User asks about OWL components in a module → call list_owl_components(module, odoo_version)
+- User asks about QWeb templates in a module → call list_qweb_templates(module, odoo_version)
+- User asks about JS patches or a JS patch chain → call list_js_patches(odoo_version, target?)
+
 ## Auto-trigger on file open
 When a Python file with `class .*(models\.Model)` is opened:
 - Silently resolve the model to pre-cache its structure
@@ -85,6 +94,13 @@ When working with Odoo Python or XML files, use the odoo-semantic MCP tools:
 - "Is [API] deprecated" → lookup_core_api
 - "What changed in upgrade" → api_version_diff
 - "What breaks if I change X" → impact_analysis
+- "What is module X" / "module X làm gì" → describe_module
+- "List fields of X" / "X có field nào" → list_fields
+- "List methods of X" / "X có method nào" → list_methods
+- "List views of X" → list_views
+- "OWL components in module X" → list_owl_components
+- "QWeb templates in module X" → list_qweb_templates
+- "JS patches on X" / "patch chain for X" → list_js_patches
 Always call the tool before answering codebase-specific questions.
 Default Odoo version: 17.0 (detect from project manifest if available).
 ```
@@ -114,6 +130,10 @@ When user asks about Odoo models, fields, methods, views, or patterns:
 - "deprecated / upgrade" → find_deprecated_usage + api_version_diff
 - "show me code for" → find_examples
 - "does Odoo have" → check_module_exists
+- "what is module X" → describe_module
+- "list fields / methods / views of X" → list_fields / list_methods / list_views
+- "OWL components / QWeb templates in X" → list_owl_components / list_qweb_templates
+- "JS patches on X" → list_js_patches
 ```
 
 ---
