@@ -41,7 +41,26 @@ def _count_polluted(session) -> int:
 
 @pytest.fixture
 def writer(clean_neo4j, neo4j_driver):
-    """Neo4jWriter on isolated test DB."""
+    """Neo4jWriter on isolated test DB.
+
+    `clean_neo4j` only deletes nodes with `odoo_version` property, but
+    PatternExample uses `odoo_version_min` (no `odoo_version`), so it does
+    not get wiped between tests. Other tests in the suite (test_writer_neo4j,
+    test_mcp_pattern_tools, test_output_snapshots) seed `t-*` and `snap-*`
+    pattern_ids that persist in the shared Neo4j container — explicitly
+    delete forbidden-prefix PatternExample nodes here to guarantee
+    determinism for the pollution-count assertion.
+    """
+    with neo4j_driver.session() as session:
+        prefix_conditions = " OR ".join(
+            f"p.pattern_id STARTS WITH '{pfx}'" for pfx in _FORBIDDEN_PREFIXES
+        )
+        version_list = "[" + ", ".join(f"'{v}'" for v in _FORBIDDEN_VERSIONS) + "]"
+        session.run(
+            f"MATCH (p:PatternExample) WHERE {prefix_conditions} "
+            f"OR p.odoo_version_min IN {version_list} "
+            "DETACH DELETE p"
+        )
     w = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
