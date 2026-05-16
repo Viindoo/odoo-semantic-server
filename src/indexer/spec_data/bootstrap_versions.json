@@ -105,7 +105,6 @@
     "15.0": {
       "bootstrap_version": "5.1",
       "scss_files": [
-        "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
         "addons/web/static/src/scss/bootstrap_overridden.scss",
@@ -123,7 +122,6 @@
     "16.0": {
       "bootstrap_version": "5.1",
       "scss_files": [
-        "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
         "addons/web/static/src/scss/bootstrap_overridden.scss",
@@ -138,12 +136,10 @@
     "17.0": {
       "bootstrap_version": "5.3",
       "scss_files": [
-        "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
         "addons/web/static/src/scss/bootstrap_overridden.scss",
-        "addons/web/static/lib/bootstrap/scss/_variables.scss",
-        "addons/web/static/lib/bootstrap/scss/_variables-dark.scss"
+        "addons/web/static/lib/bootstrap/scss/_variables.scss"
       ],
       "breaking_changes": [
         "Bootstrap 5.3 brings native color modes (light/dark) via data-bs-theme — Odoo backend gains a partial dark-mode story.",
@@ -155,7 +151,6 @@
     "18.0": {
       "bootstrap_version": "5.3",
       "scss_files": [
-        "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
         "addons/web/static/src/scss/bootstrap_overridden.scss",
@@ -171,7 +166,6 @@
     "19.0": {
       "bootstrap_version": "5.3",
       "scss_files": [
-        "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
         "addons/web/static/src/scss/bootstrap_overridden.scss",
