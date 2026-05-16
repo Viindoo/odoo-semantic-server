@@ -28,6 +28,8 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 |---------|---------|-----|-----------|-----------|
 | `EMBEDDER_TIMEOUT` | 1200s | 600s | `src/constants.py` | A 50-text batch on qwen3-embedding-q5km takes ~22s on fast hardware, but can exceed 90s on CPU-only servers when the Ollama queue is busy (e.g., parallel profile workers). 1200s (20 min) gives ample headroom. |
 | `EMBEDDER_MAX_BATCH` | 50 | 50 | `src/constants.py` | Unchanged — 50 keeps each batch under 30s on fast hardware, well within any reverse-proxy `proxy_read_timeout`. Increase only on fast local Ollama. |
+| `EMBEDDER_RETRY_BACKOFF_BASE` | 2.0s | 2.0s | `src/constants.py` | Base delay for `Qwen3Embedder._embed_one` exponential backoff (delay = min(base * 2**i, max)). Lower on fast local Ollama (e.g. 0.5) to fail fast; raise on flaky LAN to avoid hammering. |
+| `EMBEDDER_RETRY_BACKOFF_MAX` | 30.0s | 30.0s | `src/constants.py` | Cap on a single retry sleep so a slow Ollama box doesn't stall the indexer for minutes between attempts. Raise on chronically overloaded GPU hosts. |
 
 ### Neo4j writer
 

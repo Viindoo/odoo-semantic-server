@@ -135,6 +135,16 @@ TIMEOUT_EMBEDDER_WRITE: int = int(os.getenv("EMBEDDER_TIMEOUT_WRITE", "30"))
 # Backward-compat alias — callers that imported TIMEOUT_EMBEDDER_REQUEST continue to work.
 TIMEOUT_EMBEDDER_REQUEST: int = TIMEOUT_EMBEDDER_READ
 
+# EMBEDDER_RETRY_BACKOFF_BASE: base delay (seconds) for exponential retry backoff
+# in Qwen3Embedder._embed_one. Delay between attempt i and i+1 is
+# min(base * 2**i, max). Default 2.0s. Override via EMBEDDER_RETRY_BACKOFF_BASE.
+EMBEDDER_RETRY_BACKOFF_BASE: float = float(os.getenv("EMBEDDER_RETRY_BACKOFF_BASE", "2.0"))
+
+# EMBEDDER_RETRY_BACKOFF_MAX: cap (seconds) on a single retry sleep so a slow
+# Ollama box doesn't stall the indexer for minutes between attempts.
+# Default 30.0s. Override via EMBEDDER_RETRY_BACKOFF_MAX.
+EMBEDDER_RETRY_BACKOFF_MAX: float = float(os.getenv("EMBEDDER_RETRY_BACKOFF_MAX", "30.0"))
+
 # ---------------------------------------------------------------------------
 # Embedding defaults
 # ---------------------------------------------------------------------------

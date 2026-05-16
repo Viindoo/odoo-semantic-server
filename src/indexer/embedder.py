@@ -17,6 +17,8 @@ from src.constants import (
     DEFAULT_EMBEDDER_DIM,
     DEFAULT_EMBEDDER_MODEL,
     EMBEDDER_MAX_BATCH,
+    EMBEDDER_RETRY_BACKOFF_BASE,
+    EMBEDDER_RETRY_BACKOFF_MAX,
     TIMEOUT_EMBEDDER_CONNECT,
     TIMEOUT_EMBEDDER_READ,
     TIMEOUT_EMBEDDER_WRITE,
@@ -94,8 +96,8 @@ class Qwen3Embedder:
         retries: int = 3,
         auth_token: str | None = None,
         transport: httpx.BaseTransport | None = None,
-        retry_backoff_base: float = 2.0,
-        retry_backoff_max: float = 30.0,
+        retry_backoff_base: float = EMBEDDER_RETRY_BACKOFF_BASE,
+        retry_backoff_max: float = EMBEDDER_RETRY_BACKOFF_MAX,
     ):
         self._url = url.rstrip("/") + "/api/embed"
         self._model = model
