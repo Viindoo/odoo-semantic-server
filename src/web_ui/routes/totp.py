@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.web_ui._json import _json_safe
 from src.web_ui.auth import is_test_bypass_active, verify_password
 
 logger = logging.getLogger(__name__)
@@ -265,11 +266,11 @@ async def totp_setup(request: Request):
     Does NOT enable TOTP — user must call /verify to confirm.
     """
     if not is_test_bypass_active() and not request.session.get("username"):
-        return JSONResponse({"error": "not_authenticated"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
 
     user_id = _resolve_user_id(request)
     if user_id is None:
-        return JSONResponse({"error": "user_not_found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
 
     username = request.session.get("username", "user")
 
@@ -287,11 +288,13 @@ async def totp_setup(request: Request):
 
     logger.info("TOTP setup initiated for user_id=%d", user_id)
     return JSONResponse(
-        {
-            "secret": secret,
-            "provisioning_uri": provisioning_uri,
-            "qr_png_base64": qr_png_base64,
-        }
+        _json_safe(
+            {
+                "secret": secret,
+                "provisioning_uri": provisioning_uri,
+                "qr_png_base64": qr_png_base64,
+            }
+        )
     )
 
 
@@ -302,21 +305,21 @@ async def totp_verify(body: VerifyBody, request: Request):
     Backup codes are returned ONCE here — never retrievable again.
     """
     if not is_test_bypass_active() and not request.session.get("username"):
-        return JSONResponse({"error": "not_authenticated"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
 
     user_id = _resolve_user_id(request)
     if user_id is None:
-        return JSONResponse({"error": "user_not_found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
 
     row = _get_totp_row(user_id)
     if row is None:
-        return JSONResponse({"error": "totp_not_setup"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "totp_not_setup"}), status_code=400)
 
     secret = _decrypt_secret(row["secret_encrypted"])
     totp = pyotp.TOTP(secret)
 
     if not totp.verify(body.code.strip(), valid_window=TOTP_VALID_WINDOW):
-        return JSONResponse({"error": "invalid_code"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "invalid_code"}), status_code=400)
 
     # Code valid — generate backup codes and enable
     plain_codes, hashed_codes = _generate_backup_codes()
@@ -324,11 +327,13 @@ async def totp_verify(body: VerifyBody, request: Request):
 
     logger.info("TOTP enabled for user_id=%d", user_id)
     return JSONResponse(
-        {
-            "ok": True,
-            "backup_codes": plain_codes,
-            "message": "TOTP enabled. Save these backup codes — they will not be shown again.",
-        }
+        _json_safe(
+            {
+                "ok": True,
+                "backup_codes": plain_codes,
+                "message": "TOTP enabled. Save these backup codes — they will not be shown again.",
+            }
+        )
     )
 
 
@@ -340,11 +345,11 @@ async def totp_disable(body: DisableBody, request: Request):
     from disabling MFA with just a stolen session cookie).
     """
     if not is_test_bypass_active() and not request.session.get("username"):
-        return JSONResponse({"error": "not_authenticated"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
 
     user_id = _resolve_user_id(request)
     if user_id is None:
-        return JSONResponse({"error": "user_not_found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
 
     # Re-verify password
     from src.db.pg import auth_store
@@ -358,22 +363,22 @@ async def totp_disable(body: DisableBody, request: Request):
             pw_row = cur.fetchone()
 
     if pw_row is None or not verify_password(body.password, pw_row[0]):
-        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "invalid_credentials"}), status_code=401)
 
     # Verify TOTP code
     row = _get_totp_row(user_id)
     if row is None or not row["enabled"]:
-        return JSONResponse({"error": "totp_not_enabled"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "totp_not_enabled"}), status_code=400)
 
     secret = _decrypt_secret(row["secret_encrypted"])
     totp = pyotp.TOTP(secret)
 
     if not totp.verify(body.code.strip(), valid_window=TOTP_VALID_WINDOW):
-        return JSONResponse({"error": "invalid_code"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "invalid_code"}), status_code=400)
 
     _delete_totp(user_id)
     logger.info("TOTP disabled for user_id=%d", user_id)
-    return JSONResponse({"ok": True, "message": "TOTP has been disabled."})
+    return JSONResponse(_json_safe({"ok": True, "message": "TOTP has been disabled."}))
 
 
 # ---------------------------------------------------------------------------
@@ -385,18 +390,20 @@ async def totp_disable(body: DisableBody, request: Request):
 async def totp_status(request: Request):
     """Return current TOTP enrollment status for the logged-in user."""
     if not is_test_bypass_active() and not request.session.get("username"):
-        return JSONResponse({"error": "not_authenticated"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
 
     user_id = _resolve_user_id(request)
     if user_id is None:
-        return JSONResponse({"error": "user_not_found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
 
     row = _get_totp_row(user_id)
     return JSONResponse(
-        {
-            "enabled": row is not None and row["enabled"],
-            "enrolled": row is not None,
-        }
+        _json_safe(
+            {
+                "enabled": row is not None and row["enabled"],
+                "enrolled": row is not None,
+            }
+        )
     )
 
 
@@ -426,15 +433,15 @@ async def totp_login(body: MfaLoginBody, request: Request):
             session_secret.encode(), payload.encode(), hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
-            return JSONResponse({"error": "invalid_mfa_token"}, status_code=401)
+            return JSONResponse(_json_safe({"error": "invalid_mfa_token"}), status_code=401)
         user_id_str, expires_str = payload.split(":", 1)
         user_id = int(user_id_str)
         expires_at = float(expires_str)
     except Exception:
-        return JSONResponse({"error": "invalid_mfa_token"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "invalid_mfa_token"}), status_code=401)
 
     if time.time() > expires_at:
-        return JSONResponse({"error": "mfa_token_expired"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "mfa_token_expired"}), status_code=401)
 
     # Fetch user info
     from src.db.pg import auth_store
@@ -448,21 +455,21 @@ async def totp_login(body: MfaLoginBody, request: Request):
             user_row = cur.fetchone()
 
     if user_row is None:
-        return JSONResponse({"error": "user_not_found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
 
     username = user_row[0]
 
     # Verify TOTP code or backup code
     row = _get_totp_row(user_id)
     if row is None or not row["enabled"]:
-        return JSONResponse({"error": "totp_not_enabled"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "totp_not_enabled"}), status_code=400)
 
     secret = _decrypt_secret(row["secret_encrypted"])
     totp = pyotp.TOTP(secret)
 
     if body.code is not None:
         if not totp.verify(body.code.strip(), valid_window=TOTP_VALID_WINDOW):
-            return JSONResponse({"error": "invalid_code"}, status_code=401)
+            return JSONResponse(_json_safe({"error": "invalid_code"}), status_code=401)
     elif body.backup_code is not None:
         stored = row["backup_codes_hash"]
         if isinstance(stored, str):
@@ -470,10 +477,10 @@ async def totp_login(body: MfaLoginBody, request: Request):
             stored = json.loads(stored)
         valid, updated = _check_backup_code(body.backup_code, stored)
         if not valid:
-            return JSONResponse({"error": "invalid_backup_code"}, status_code=401)
+            return JSONResponse(_json_safe({"error": "invalid_backup_code"}), status_code=401)
         _update_backup_codes(user_id, updated)
     else:
-        return JSONResponse({"error": "code_or_backup_code_required"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "code_or_backup_code_required"}), status_code=400)
 
     # Promote to full session — F7: create active_sessions row so server-side
     # revoke (revoke_all_sessions / deactivate) can kick this session immediately.
@@ -493,14 +500,14 @@ async def totp_login(body: MfaLoginBody, request: Request):
         )
     except Exception as exc:
         logger.error("totp_login: could not create session: %s", exc)
-        return JSONResponse({"error": "internal_error"}, status_code=500)
+        return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
     request.session["session_id"] = session_id
     request.session["username"] = username
     request.session["user_id"] = user_id
     request.session["session_at"] = time.time()
     logger.info("MFA login success for user_id=%d (%r)", user_id, username)
-    return JSONResponse({"ok": True, "username": username})
+    return JSONResponse(_json_safe({"ok": True, "username": username}))
 
 
 # ---------------------------------------------------------------------------

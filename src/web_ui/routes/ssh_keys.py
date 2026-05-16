@@ -15,24 +15,6 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ssh-keys")
 
 
-def _json_safe_keys(keys) -> list[dict]:
-    """Convert datetime fields in SSH key dicts to ISO strings.
-
-    Delegates to the shared _json_safe helper from src.web_ui._json.
-    Kept as a thin wrapper for call-site compatibility (callers pass a list
-    and expect a list[dict] back).
-
-    Why: ``auth_store().list_ssh_keys()`` returns rows whose ``created_at``
-    column is a ``datetime`` from psycopg2. Stdlib ``json`` (used by
-    ``JSONResponse``) cannot serialize ``datetime`` and raises ``TypeError``,
-    which surfaces as a generic 500 ``Internal Server Error`` from FastAPI
-    (no traceback at default log level) — exactly the failure mode the M8 W7
-    SSH browser tests hit: POST ``/api/ssh-keys`` 500 → JS never runs the
-    ``res.ok && data.public_key`` branch → ``new-pubkey-banner`` stays hidden.
-    """
-    return [_json_safe(dict(k)) for k in keys]
-
-
 def _get_fernet():
     """Return Fernet instance. Raises RuntimeError if FERNET_KEY not set."""
     from cryptography.fernet import Fernet
@@ -135,11 +117,11 @@ async def list_ssh_keys(request: Request):
     except Exception as e:
         error = str(e)
 
-    return JSONResponse({
-        "keys": _json_safe_keys(keys),
+    return JSONResponse(_json_safe({
+        "keys": [dict(k) for k in keys],
         "fernet_missing": fernet_missing,
         "error": error,
-    })
+    }))
 
 
 @router.post("")
@@ -153,7 +135,7 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
 
     if fernet_missing:
         return JSONResponse(
-            {"error": "FERNET_KEY is not set. Cannot store SSH keys securely."},
+            _json_safe({"error": "FERNET_KEY is not set. Cannot store SSH keys securely."}),
             status_code=500,
         )
 
@@ -171,9 +153,18 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
         error = str(e)
 
     if error:
-        return JSONResponse({"error": error, "fernet_missing": fernet_missing}, status_code=500)
+        return JSONResponse(
+            _json_safe({"error": error, "fernet_missing": fernet_missing}),
+            status_code=500,
+        )
 
-    return JSONResponse({"ok": True, "public_key": new_public_key, "keys": _json_safe_keys(keys)})
+    return JSONResponse(
+        _json_safe({
+            "ok": True,
+            "public_key": new_public_key,
+            "keys": [dict(k) for k in keys],
+        })
+    )
 
 
 @router.post("/import")
@@ -188,13 +179,13 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
 
     if fernet_missing:
         return JSONResponse(
-            {"error": "FERNET_KEY is not set. Cannot store SSH keys securely."},
+            _json_safe({"error": "FERNET_KEY is not set. Cannot store SSH keys securely."}),
             status_code=500,
         )
 
     if not body.name.strip() or not body.private_key_pem.strip():
         return JSONResponse(
-            {"error": "Both name and private key PEM are required."},
+            _json_safe({"error": "Both name and private key PEM are required."}),
             status_code=422,
         )
 
@@ -221,9 +212,18 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
             error = str(e)
 
     if error:
-        return JSONResponse({"error": error, "fernet_missing": fernet_missing}, status_code=422)
+        return JSONResponse(
+            _json_safe({"error": error, "fernet_missing": fernet_missing}),
+            status_code=422,
+        )
 
-    return JSONResponse({"ok": True, "public_key": new_public_key, "keys": _json_safe_keys(keys)})
+    return JSONResponse(
+        _json_safe({
+            "ok": True,
+            "public_key": new_public_key,
+            "keys": [dict(k) for k in keys],
+        })
+    )
 
 
 @router.delete("/{key_id}")
@@ -237,5 +237,5 @@ async def delete_ssh_key(request: Request, key_id: int):
         _logger.info("SSH key %s deleted", key_id)
     except Exception as e:
         _logger.warning("Delete SSH key %s failed: %s", key_id, e)
-        return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True})
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    return JSONResponse(_json_safe({"ok": True}))

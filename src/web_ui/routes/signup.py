@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.web_ui._json import _json_safe
 from src.web_ui.auth import hash_password
 
 logger = logging.getLogger(__name__)
@@ -181,22 +182,23 @@ async def register(body: RegisterBody, request: Request):
     username = body.username.strip()
 
     if not email or "@" not in email:
-        return JSONResponse({"error": "Invalid email address."}, status_code=400)
+        return JSONResponse(_json_safe({"error": "Invalid email address."}), status_code=400)
     if not username or len(username) < 2 or len(username) > 64:
         return JSONResponse(
-            {"error": "Username must be between 2 and 64 characters."}, status_code=400
+            _json_safe({"error": "Username must be between 2 and 64 characters."}),
+            status_code=400,
         )
     if body.password != body.confirm_password:
-        return JSONResponse({"error": "Passwords do not match."}, status_code=400)
+        return JSONResponse(_json_safe({"error": "Passwords do not match."}), status_code=400)
 
     pw_error = _validate_password(body.password)
     if pw_error:
-        return JSONResponse({"error": pw_error}, status_code=400)
+        return JSONResponse(_json_safe({"error": pw_error}), status_code=400)
 
     # hCaptcha
     if not await _verify_hcaptcha(body.hcaptcha_token, client_ip):
         logger.warning("Signup rejected: invalid captcha (IP=%s email=%s)", client_ip, email)
-        return JSONResponse({"error": "Captcha verification failed."}, status_code=400)
+        return JSONResponse(_json_safe({"error": "Captcha verification failed."}), status_code=400)
 
     pool = _get_pool()
     password_hash = hash_password(body.password)
@@ -221,12 +223,14 @@ async def register(body: RegisterBody, request: Request):
                 client_ip,
             )
             return JSONResponse(
-                {
-                    "error": (
-                        "Email or username already registered. "
-                        "If this is yours, try logging in."
-                    )
-                },
+                _json_safe(
+                    {
+                        "error": (
+                            "Email or username already registered. "
+                            "If this is yours, try logging in."
+                        )
+                    }
+                ),
                 status_code=409,
             )
 
@@ -283,7 +287,7 @@ async def register(body: RegisterBody, request: Request):
         # Non-fatal: user can use resend endpoint
 
     logger.info("Signup: user %r registered (IP=%s)", username, client_ip)
-    return JSONResponse({"status": "verification_email_sent"}, status_code=201)
+    return JSONResponse(_json_safe({"status": "verification_email_sent"}), status_code=201)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +303,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
     """
     raw_token = body.token.strip()
     if not raw_token:
-        return JSONResponse({"error": "Token required."}, status_code=400)
+        return JSONResponse(_json_safe({"error": "Token required."}), status_code=400)
 
     # Hash the incoming raw token before DB lookup (mirroring password-reset pattern).
     # DB stores sha256(token) so a DB leak cannot be used directly for account takeover.
@@ -323,7 +327,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
             if row is None:
                 conn.rollback()
                 logger.warning("verify-email: unknown token (len=%d)", len(raw_token))
-                return JSONResponse({"error": "expired_or_invalid"}, status_code=410)
+                return JSONResponse(_json_safe({"error": "expired_or_invalid"}), status_code=410)
 
             now = datetime.now(UTC)
             expires_at = row["expires_at"]
@@ -339,7 +343,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
                     row["used_at"],
                     expires_at,
                 )
-                return JSONResponse({"error": "expired_or_invalid"}, status_code=410)
+                return JSONResponse(_json_safe({"error": "expired_or_invalid"}), status_code=410)
 
             user_id = row["user_id"]  # integer FK
 
@@ -352,7 +356,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
             if user_row is None:
                 conn.rollback()
                 logger.error("verify-email: user id=%d not found", user_id)
-                return JSONResponse({"error": "expired_or_invalid"}, status_code=410)
+                return JSONResponse(_json_safe({"error": "expired_or_invalid"}), status_code=410)
 
             username = user_row["username"]
 
@@ -387,14 +391,14 @@ async def verify_email(body: VerifyEmailBody, request: Request):
         )
     except Exception as exc:
         logger.error("verify-email: could not create session for user %r: %s", username, exc)
-        return JSONResponse({"error": "internal_error"}, status_code=500)
+        return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
     request.session["session_id"] = session_id
     request.session["username"] = username
     request.session["user_id"] = user_id
     request.session["session_at"] = time.time()
     logger.info("verify-email: user %r (id=%d) verified and logged in", username, user_id)
-    return JSONResponse({"ok": True, "username": username})
+    return JSONResponse(_json_safe({"ok": True, "username": username}))
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +415,7 @@ async def resend_verification(body: ResendBody, request: Request):
     """
     email = body.email.strip().lower()
     if not email or "@" not in email:
-        return JSONResponse({"error": "Invalid email address."}, status_code=400)
+        return JSONResponse(_json_safe({"error": "Invalid email address."}), status_code=400)
 
     pool = _get_pool()
 
@@ -424,7 +428,7 @@ async def resend_verification(body: ResendBody, request: Request):
         if user_row is None:
             # User does not exist or is already verified — return 200 silently
             logger.info("resend-verification: no unverified user for email=%s", email)
-            return JSONResponse({"status": "ok"})
+            return JSONResponse(_json_safe({"status": "ok"}))
 
         user_id: int = user_row["id"]
         username = user_row["username"]
@@ -440,7 +444,7 @@ async def resend_verification(body: ResendBody, request: Request):
         if count_row and count_row["cnt"] >= 3:
             logger.warning("resend-verification: rate limit for email=%s", email)
             return JSONResponse(
-                {"error": "Too many verification emails sent. Try again later."},
+                _json_safe({"error": "Too many verification emails sent. Try again later."}),
                 status_code=429,
             )
 
@@ -474,4 +478,4 @@ async def resend_verification(body: ResendBody, request: Request):
         logger.error("Failed to resend verification email to %s: %s", email, exc)
 
     logger.info("resend-verification: new token sent for email=%s", email)
-    return JSONResponse({"status": "ok"})
+    return JSONResponse(_json_safe({"status": "ok"}))

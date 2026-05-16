@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from src.db.audit import audit_action
+from src.web_ui._json import _json_safe
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feedback")
@@ -42,7 +43,7 @@ async def submit_feedback(body: FeedbackBody, request: Request):
             rating=body.rating,
             comment=body.comment,
         )
-        return JSONResponse({"ok": True, "id": feedback_id})
+        return JSONResponse(_json_safe({"ok": True, "id": feedback_id}))
     except Exception as e:
         _logger.error("Failed to store feedback: %s", e)
         raise HTTPException(status_code=500, detail="Failed to store feedback")
@@ -55,7 +56,7 @@ async def get_feedback(pattern_id: str, request: Request):
         from src.db.pg import auth_store
 
         results = auth_store().list_feedback(pattern_id)
-        return JSONResponse({"pattern_id": pattern_id, "feedback": results})
+        return JSONResponse(_json_safe({"pattern_id": pattern_id, "feedback": results}))
     except Exception as e:
         _logger.error("Failed to retrieve feedback: %s", e)
         raise HTTPException(status_code=500, detail="Failed to retrieve feedback")

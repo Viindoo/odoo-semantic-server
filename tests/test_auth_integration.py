@@ -359,7 +359,7 @@ class TestAuthMiddlewarePublicPath:
         """GET /health works without X-API-Key header."""
 
         async def health(request):
-            return JSONResponse({"status": "ok"})
+            return JSONResponse({"status": "ok"})  # noqa  - test stub (lint-json-response bypass: no datetime)
 
         app = Starlette(routes=[Route("/health", health)])
         app.add_middleware(AuthMiddleware)

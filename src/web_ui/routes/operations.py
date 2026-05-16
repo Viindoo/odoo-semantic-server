@@ -92,7 +92,7 @@ def _strip_ansi(text: str) -> str:
 @router.get("/presets")
 async def list_presets(request: Request):
     """Return available version presets."""
-    return JSONResponse({"presets": PRESETS})
+    return JSONResponse(_json_safe({"presets": PRESETS}))
 
 
 class IndexCoreBody(BaseModel):
@@ -118,7 +118,7 @@ async def post_index_core(body: IndexCoreBody, request: Request):
         )
 
     if error:
-        return JSONResponse({"error": error}, status_code=400)
+        return JSONResponse(_json_safe({"error": error}), status_code=400)
 
     # --- Spawn subprocess ---
     job_id: int | None = None
@@ -133,7 +133,7 @@ async def post_index_core(body: IndexCoreBody, request: Request):
     except Exception as exc:
         _logger.warning("index-core spawn failed: %s", exc)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "job_id": job_id,
         "version": body.version.strip(),
@@ -142,7 +142,7 @@ async def post_index_core(body: IndexCoreBody, request: Request):
             if job_id is not None
             else f"Indexing core specs for {body.version.strip()} (job tracking unavailable)"
         ),
-    })
+    }))
 
 
 class SeedPatternsBody(BaseModel):
@@ -173,7 +173,7 @@ async def post_seed_patterns(body: SeedPatternsBody, request: Request):
         )
 
     if error:
-        return JSONResponse({"error": error}, status_code=400)
+        return JSONResponse(_json_safe({"error": error}), status_code=400)
 
     # --- Spawn subprocess ---
     job_id: int | None = None
@@ -196,7 +196,7 @@ async def post_seed_patterns(body: SeedPatternsBody, request: Request):
         _logger.warning("seed-patterns spawn failed: %s", exc)
 
     label = f"patterns:{version_stripped}" if version_stripped else "patterns"
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "job_id": job_id,
         "message": (
@@ -204,7 +204,7 @@ async def post_seed_patterns(body: SeedPatternsBody, request: Request):
             if job_id is not None
             else "Seeding pattern catalogue (job tracking unavailable)"
         ),
-    })
+    }))
 
 
 class ApplyPresetBody(BaseModel):
@@ -239,7 +239,7 @@ async def post_apply_preset(body: ApplyPresetBody, request: Request):
         )
 
     if error:
-        return JSONResponse({"error": error}, status_code=400)
+        return JSONResponse(_json_safe({"error": error}), status_code=400)
 
     # --- Build argv ---
     argv = ["-m", "src.manager", "apply-preset", body.name]
@@ -271,28 +271,35 @@ async def post_apply_preset(body: ApplyPresetBody, request: Request):
         )
     except subprocess.TimeoutExpired:
         return JSONResponse(
-            {"error": f"apply-preset timed out after {_apply_preset_timeout} seconds"},
+            _json_safe(
+                {"error": f"apply-preset timed out after {_apply_preset_timeout} seconds"}
+            ),
             status_code=500,
         )
 
     if result.returncode != 0:
         stderr_text = result.stderr.strip() or result.stdout.strip() or "Unknown error"
         return JSONResponse(
-            {"error": f"apply-preset failed (exit {result.returncode}): {stderr_text}"},
+            _json_safe(
+                {"error": f"apply-preset failed (exit {result.returncode}): {stderr_text}"}
+            ),
             status_code=400,
         )
 
     if body.dry_run:
-        return JSONResponse({
+        return JSONResponse(_json_safe({
             "ok": True,
             "dry_run": True,
             "preview": result.stdout,
             "preset": body.name,
             "repo_base_dir": body.repo_base_dir,
             "repo_map_pairs": repo_map_pairs,
-        })
+        }))
 
-    return JSONResponse({"ok": True, "message": f"Preset '{body.name}' applied successfully"})
+    return JSONResponse(_json_safe({
+        "ok": True,
+        "message": f"Preset '{body.name}' applied successfully",
+    }))
 
 
 # ---------------------------------------------------------------------------
@@ -363,14 +370,14 @@ async def trigger_backup(request: Request, body: BackupBody):
         output_path = str(Path(backup_dir) / f"backup_{ts}.tar.gz")
 
     if not output_path.endswith(".tar.gz"):
-        return JSONResponse({"error": "output must end with .tar.gz"}, status_code=400)
+        return JSONResponse(_json_safe({"error": "output must end with .tar.gz"}), status_code=400)
 
     # Validate path under BACKUP_DIR (resolve symlinks)
     resolved_out = Path(output_path).resolve()
     resolved_backup_dir = Path(backup_dir).resolve()
     if not str(resolved_out).startswith(str(resolved_backup_dir)):
         return JSONResponse(
-            {"error": f"output must be under BACKUP_DIR={backup_dir}"},
+            _json_safe({"error": f"output must be under BACKUP_DIR={backup_dir}"}),
             status_code=400,
         )
 
@@ -390,13 +397,13 @@ async def trigger_backup(request: Request, body: BackupBody):
     _spawn_backup_subprocess(job_id, output_path, body.bundle_passphrase_env)
 
     stream_url = f"/api/operations/backup/{job_id}/stream"
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "job_id": job_id,
         "stream_url": stream_url,
         "output": output_path,
         "message": f"Backup job {job_id} started.",
-    })
+    }))
 
 
 @router.get("/backup/{job_id}/stream")
@@ -457,7 +464,7 @@ async def backup_status(job_id: str, request: Request):
     with _backup_jobs_lock:
         job = _backup_jobs.get(job_id)
     if job is None:
-        return JSONResponse({"error": "job not found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "job not found"}), status_code=404)
     return JSONResponse(_json_safe(dict(job)))
 
 
@@ -659,14 +666,16 @@ async def trigger_restore(
     t.start()
 
     return JSONResponse(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "sha256": sha256,
-            "size": bytes_read,
-            "filename": fname,
-            "safety_backup": safety_backup_path,
-            "message": "Restore started. Service entering maintenance mode until complete.",
-        },
+        _json_safe(
+            {
+                "ok": True,
+                "job_id": job_id,
+                "sha256": sha256,
+                "size": bytes_read,
+                "filename": fname,
+                "safety_backup": safety_backup_path,
+                "message": "Restore started. Service entering maintenance mode until complete.",
+            }
+        ),
         status_code=202,
     )

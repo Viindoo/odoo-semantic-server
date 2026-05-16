@@ -13,6 +13,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from src.web_ui._json import _json_safe
+
 _logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,7 @@ class _LoopbackOnlyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         host = request.client.host if request.client else ""
         if host not in ("127.0.0.1", "::1"):
-            return JSONResponse({"error": "forbidden"}, status_code=403)
+            return JSONResponse(_json_safe({"error": "forbidden"}), status_code=403)
         return await call_next(request)
 
 
@@ -70,10 +72,12 @@ class _MaintenanceModeMiddleware(BaseHTTPMiddleware):
             if request.url.path in ("/health", "/openapi.json"):
                 return await call_next(request)
             return JSONResponse(
-                {
-                    "error": "service_in_maintenance",
-                    "detail": "Restore in progress — try again shortly",
-                },
+                _json_safe(
+                    {
+                        "error": "service_in_maintenance",
+                        "detail": "Restore in progress — try again shortly",
+                    }
+                ),
                 status_code=503,
                 headers={"Retry-After": "60"},
             )
