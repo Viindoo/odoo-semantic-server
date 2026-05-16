@@ -1621,7 +1621,7 @@ def test_describe_module_empty(neo4j_driver):
 
 
 def test_describe_module_truncation(neo4j_driver):
-    """≥6 defined models → inline preview shows '... and K more'."""
+    """≥21 defined models → inline preview shows '... and K more (use list_fields(...))'."""
     _cleanup_version(neo4j_driver, W6_DESCRIBE_VERSION)
     try:
         writer = Neo4jWriter(
@@ -1633,7 +1633,7 @@ def test_describe_module_truncation(neo4j_driver):
         mega_mod = ModuleInfo(
             "mega_mod", W6_DESCRIBE_VERSION, "test_repo", "/tmp", [], "17.0",
         )
-        # Use describe_module's inline cap of 5 — seed 22 models so cap fires.
+        # describe_module uses LIST_PREVIEW_MAX_ITEMS=20 cap — seed 22 models so cap fires.
         models = [
             ModelInfo(
                 name=f"mega.model.{i:02d}", module="mega_mod",
@@ -1654,8 +1654,9 @@ def test_describe_module_truncation(neo4j_driver):
         srv = _import_server_module()
         out = srv._describe_module("mega_mod", W6_DESCRIBE_VERSION)
         assert "Defines models: 22" in out
-        # describe_module inlines top-5 with "... and K more" tail.
-        assert "and 17 more" in out
+        # describe_module inlines top-20 with "... and K more (use list_fields(...))" tail.
+        assert "and 2 more" in out
+        assert "use list_fields(" in out
     finally:
         _cleanup_version(neo4j_driver, W6_DESCRIBE_VERSION)
 
