@@ -189,6 +189,13 @@ const cloneStatusColor: Record<string, string> = {
                       </button>
                     )}
                     <button
+                      data-testid={`edit-repo-button-${repo.id}`}
+                      data-repo-id={String(repo.id)}
+                      class="text-xs bg-gray-50 hover:bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg transition-colors edit-repo-btn"
+                    >
+                      Edit
+                    </button>
+                    <button
                       data-testid={`delete-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
                       class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-repo-btn"
@@ -196,6 +203,84 @@ const cloneStatusColor: Record<string, string> = {
                       Delete
                     </button>
                   </div>
+                </td>
+              </tr>
+              <!-- Inline edit form row (hidden by default) -->
+              <tr
+                data-testid={`edit-repo-form-row-${repo.id}`}
+                data-repo-id={String(repo.id)}
+                class="edit-repo-form-row bg-blue-50"
+                hidden
+              >
+                <td colspan="5" class="px-4 py-4">
+                  <form
+                    data-testid={`edit-repo-form-${repo.id}`}
+                    data-edit-repo-form
+                    data-repo-id={String(repo.id)}
+                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3"
+                  >
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">URL</label>
+                      <input
+                        name="url"
+                        type="text"
+                        placeholder={repo.url}
+                        data-testid={`edit-repo-url-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">Branch</label>
+                      <input
+                        name="branch"
+                        type="text"
+                        placeholder={repo.branch}
+                        data-testid={`edit-repo-branch-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">SSH Key</label>
+                      <select
+                        name="ssh_key_id"
+                        data-testid={`edit-repo-ssh-key-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      >
+                        <option value="">— unchanged —</option>
+                        <option value="clear">— clear key —</option>
+                        {sshKeys.map((k) => (
+                          <option value={String(k.id)}>{k.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">Local path</label>
+                      <input
+                        name="local_path"
+                        type="text"
+                        placeholder={repo.local_path}
+                        data-testid={`edit-repo-local-path-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      />
+                    </div>
+                    <div class="sm:col-span-2 lg:col-span-4 flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        data-testid={`edit-repo-cancel-${repo.id}`}
+                        data-repo-id={String(repo.id)}
+                        class="text-xs px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors edit-repo-cancel-btn"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        data-testid={`edit-repo-submit-${repo.id}`}
+                        class="text-xs bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 px-4 py-2 rounded-lg transition-colors"
+                      >
+                        Save changes
+                      </button>
+                    </div>
+                  </form>
                 </td>
               </tr>
             );
@@ -310,6 +395,79 @@ const cloneStatusColor: Record<string, string> = {
     } else {
       showFlash(data.error ?? 'Index-all failed.', 'error');
     }
+  });
+
+  // Edit repo buttons — toggle inline edit form row
+  document.querySelectorAll('.edit-repo-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      const formRow = document.querySelector(
+        `[data-testid="edit-repo-form-row-${repoId}"]`
+      ) as HTMLElement | null;
+      if (formRow) {
+        formRow.hidden = !formRow.hidden;
+      }
+    });
+  });
+
+  // Edit repo cancel buttons
+  document.querySelectorAll('.edit-repo-cancel-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      const formRow = document.querySelector(
+        `[data-testid="edit-repo-form-row-${repoId}"]`
+      ) as HTMLElement | null;
+      if (formRow) formRow.hidden = true;
+    });
+  });
+
+  // Edit repo form submit — PATCH /api/repos/repos/{id}
+  document.querySelectorAll('[data-edit-repo-form]').forEach((form) => {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = form as HTMLFormElement;
+      const repoId = (form as HTMLElement).dataset.repoId;
+      const fd = new FormData(f);
+
+      const body: Record<string, unknown> = {};
+      const urlVal = (fd.get('url') as string | null)?.trim();
+      const branchVal = (fd.get('branch') as string | null)?.trim();
+      const sshKeyVal = (fd.get('ssh_key_id') as string | null)?.trim();
+      const localPathVal = (fd.get('local_path') as string | null)?.trim();
+
+      if (urlVal) body['url'] = urlVal;
+      if (branchVal) body['branch'] = branchVal;
+      if (sshKeyVal === 'clear') {
+        body['clear_ssh_key'] = true;
+      } else if (sshKeyVal) {
+        body['ssh_key_id'] = Number(sshKeyVal);
+      }
+      if (localPathVal) body['local_path'] = localPathVal;
+
+      const res = await fetch(`/api/repos/repos/${repoId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        const fields: string[] = data.updated_fields ?? [];
+        showFlash(
+          fields.length ? `Repo updated: ${fields.join(', ')}.` : 'No fields changed.',
+          'success'
+        );
+        setTimeout(() => location.reload(), 800);
+      } else if (res.status === 404) {
+        showFlash(data.error ?? 'Repo not found.', 'error');
+      } else if (res.status === 409) {
+        showFlash(data.error ?? 'URL+branch already taken by another repo.', 'error');
+      } else if (res.status === 400) {
+        showFlash(data.error ?? 'Invalid data.', 'error');
+      } else {
+        showFlash(data.error ?? 'Edit failed.', 'error');
+      }
+    });
   });
 
   // SSH key dropdown toggle — show when URL starts with git@, hide otherwise.
