@@ -155,7 +155,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic@viindoo-plugins`, `/odoo-semantic:connect` *(2026-05-14 — all 3 lệnh present in page)*
 - [x] Marketplace reachable: `claude plugin marketplace add Viindoo/claude-plugins --scope user` exit 0 *(2026-05-14 — `github.com/Viindoo/claude-plugins` → HTTP/2 200; verified via `gh`)*
 - [ ] SHA trong `marketplace.json` resolve được: `git ls-remote https://github.com/Viindoo/odoo-semantic-mcp.git | grep <sha>` thấy match **(admin SSH verify — requires local plugin install)**
-<!-- not verified 2026-05-16: marketplace.json references download_url v0.2.0 release zip which returns HTTP 404 (release zip not published); git tag v0.2.0 exists but zip asset missing — follow-up required -->
+<!-- resolved 2026-05-16 (Wave 9): dropped download_url field from dist/marketplaces/viindoo/marketplace.json — install path is `claude plugin marketplace add Viindoo/claude-plugins` (SHA-pinned git-subdir), not zip download. Per dist/odoo-semantic-plugin/plugin-release.md: "Tags are for release visibility only — they do not affect how users receive updates (SHA is the version identifier)." -->
 
 ---
 
@@ -274,7 +274,7 @@ Items left unchecked after 2026-05-16 read-only verification sweep. Each needs a
 
 4. **§5 Backup & Recovery (all 4 sub-items)** — All require write execution (pg_dump, neo4j dump, restore to non-prod DB, offsite backup confirmation). Must be completed by admin before public launch.
 
-5. **§7 Marketplace release zip missing** — `dist/marketplaces/viindoo/marketplace.json` references `v0.2.0` release zip which returns HTTP 404 from GitHub releases. Tag `v0.2.0` exists but the plugin zip asset was never uploaded. Admin: upload `odoo-semantic-plugin.zip` to the v0.2.0 GitHub release, or update marketplace.json to point to the correct version/URL.
+5. ~~**§7 Marketplace release zip missing**~~ — *Resolved 2026-05-16 (Wave 9):* dropped the `download_url` field from `dist/marketplaces/viindoo/marketplace.json`. Per `dist/odoo-semantic-plugin/plugin-release.md`, tags/release zips are optional and not the install path — users install via `claude plugin marketplace add Viindoo/claude-plugins` (SHA-pinned git-subdir). The Astro `install_url` is the canonical entry point.
 
 6. **§8.6 Crash simulation** — Cannot run `systemctl kill` under read-only guardrail. Admin: test in a maintenance window — kill MCP service, confirm auto-restart within 5s.
 
