@@ -6,6 +6,7 @@ import psycopg2.errors
 
 from src.db.exceptions import (
     ProfileCycleError,
+    ProfileNameConflictError,
     ProfileNotFoundError,
     ProfileVersionMismatchError,
 )
@@ -197,6 +198,90 @@ class RepoStore:
             if profile is None:
                 raise ProfileNotFoundError(f"profile id={profile_id} not found")
         return rowcount > 0
+
+    def update_profile(
+        self,
+        profile_id: int,
+        *,
+        name: str | None = None,
+        version: str | None = None,
+        description: str | None = None,
+    ) -> list[str]:
+        """Update editable fields of a profile.
+
+        Returns:
+            List of field names that were actually changed.
+
+        Raises:
+            ProfileNotFoundError  — profile_id does not exist.
+            ProfileNameConflictError — new name already taken (UNIQUE).
+            ProfileVersionMismatchError — new version conflicts with a descendant.
+        """
+        # Load current profile
+        current = self.get_profile_by_id(profile_id)
+        if current is None:
+            raise ProfileNotFoundError(f"profile id={profile_id} not found")
+
+        # If changing version, check all descendants share the same current version.
+        # Descendants inherit version from the ancestor hierarchy (ADR-0016), so
+        # any descendant with a *different* version would become inconsistent.
+        if version is not None and version != current["odoo_version"]:
+            with self._pool.checkout() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        WITH RECURSIVE descendants AS (
+                            SELECT id, odoo_version
+                            FROM profiles WHERE parent_profile_id = %s
+                            UNION ALL
+                            SELECT p.id, p.odoo_version
+                            FROM profiles p
+                            JOIN descendants d ON p.parent_profile_id = d.id
+                        )
+                        SELECT id, odoo_version FROM descendants
+                        WHERE odoo_version != %s
+                        LIMIT 1
+                        """,
+                        (profile_id, version),
+                    )
+                    conflict_row = cur.fetchone()
+            if conflict_row is not None:
+                raise ProfileVersionMismatchError(
+                    f"Cannot change version to {version!r}: descendant profile "
+                    f"id={conflict_row[0]} has version {conflict_row[1]!r}"
+                )
+
+        # Build dynamic SET clause
+        updates: dict[str, object] = {}
+        if name is not None and name != current["name"]:
+            updates["name"] = name
+        if version is not None and version != current["odoo_version"]:
+            updates["odoo_version"] = version
+        if description is not None and description != current.get("description"):
+            updates["description"] = description
+
+        if not updates:
+            return []
+
+        set_clause = ", ".join(f"{col} = %s" for col in updates)
+        values = list(updates.values()) + [profile_id]
+
+        try:
+            with self._pool.checkout() as conn:
+                rowcount = self._pool.execute(
+                    conn,
+                    f"UPDATE profiles SET {set_clause} WHERE id = %s",
+                    values,
+                )
+        except psycopg2.errors.UniqueViolation as e:
+            raise ProfileNameConflictError(
+                f"Profile name {name!r} already exists"
+            ) from e
+
+        if rowcount == 0:
+            raise ProfileNotFoundError(f"profile id={profile_id} not found")
+
+        return list(updates.keys())
 
     def get_ancestor_profile_names(self, profile_name: str) -> list[str]:
         """Return profile names from *self* (index 0) up to root (last).

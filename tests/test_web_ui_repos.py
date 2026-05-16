@@ -854,6 +854,130 @@ class TestProfileHierarchyWebUI:
         assert "error" in resp.json()
 
 
+class TestUpdateProfileEndpoint:
+    """Tests for PATCH /api/repos/profiles/{id} (edit profile metadata)."""
+
+    @pytest.mark.asyncio
+    async def test_update_profile_happy_path(self, migrated_pg):
+        """PATCH with description change returns 200 + updated_fields."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("upd_profile_happy", "17.0", "original desc")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"description": "updated description"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["profile_id"] == pid
+        assert "description" in body["updated_fields"]
+
+        # Verify persisted
+        profiles = repo_store().list_profiles()
+        p = next(pr for pr in profiles if pr["id"] == pid)
+        assert p["description"] == "updated description"
+
+    @pytest.mark.asyncio
+    async def test_update_profile_404(self, migrated_pg):
+        """PATCH with nonexistent profile_id returns 404."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                "/api/repos/profiles/99999",
+                json={"description": "x"},
+            )
+
+        assert resp.status_code == 404
+        assert "detail" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_update_profile_name_conflict(self, migrated_pg):
+        """PATCH renaming to an existing name returns 409."""
+        from src.db.pg import repo_store
+
+        repo_store().add_profile("name_taken", "17.0")
+        pid2 = repo_store().add_profile("name_to_rename", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid2}",
+                json={"name": "name_taken"},
+            )
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "detail" in body
+
+    @pytest.mark.asyncio
+    async def test_update_profile_version_mismatch_descendants(self, migrated_pg):
+        """PATCH changing version when descendants have different version returns 422."""
+        from src.db.pg import repo_store
+
+        parent_id = repo_store().add_profile("parent_ver17", "17.0")
+        child_id = repo_store().add_profile("child_ver17", "17.0")
+        repo_store().set_profile_parent(child_id, parent_id)
+
+        # Child is on 17.0 — changing parent to 18.0 should conflict
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{parent_id}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+        assert "mismatch" in body["detail"].lower() or "descendant" in body["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_update_profile_no_op_returns_empty_fields(self, migrated_pg):
+        """PATCH with same values returns 200 with empty updated_fields."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("noop_profile", "17.0", "same desc")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"description": "same desc"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["updated_fields"] == []
+
+    @pytest.mark.asyncio
+    async def test_update_profile_version_ok_no_descendants(self, migrated_pg):
+        """PATCH version change when no descendants is allowed."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("lone_profile", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "odoo_version" in body["updated_fields"]
+
+        profiles = repo_store().list_profiles()
+        p = next(pr for pr in profiles if pr["id"] == pid)
+        assert p["odoo_version"] == "18.0"
+
+
 class TestCloneAllEndpoint:
     """Tests for POST /api/repos/profiles/{id}/clone-all (JSON API)."""
 

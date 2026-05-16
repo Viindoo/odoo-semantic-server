@@ -17,3 +17,7 @@ class ProfileCycleError(ValueError):
 
 class ProfileVersionMismatchError(ValueError):
     """Raised when child and parent profiles have different odoo_version values."""
+
+
+class ProfileNameConflictError(ValueError):
+    """Raised when a profile name already exists (UNIQUE constraint violation)."""
