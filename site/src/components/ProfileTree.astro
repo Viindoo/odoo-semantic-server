@@ -1,15 +1,18 @@
 ---
 /**
- * ProfileTree.astro — renders a nested tree view of profiles.
+ * ProfileTree.astro — renders a nested tree view of profiles using SSR.
  *
  * Props:
  *   profiles — the flat list of profile objects (same shape as API response).
  *              Each item may have: id, name, odoo_version, description, repos,
  *              parent_profile_id.
  *
- * The component renders an empty shell; the actual tree DOM is built by the
- * inline <script> below using safe DOM construction (no innerHTML) so there
- * is no XSS risk from profile data.
+ * The tree shape is computed in the Astro frontmatter (server-side) and
+ * rendered as a flat list of (profile, depth) tuples — no client-side DOM
+ * construction needed. Event listeners are wired in the <script> block only.
+ *
+ * XSS: All user-supplied strings are rendered with {p.name} / {p.odoo_version}
+ * etc. (Astro auto-escapes). No set:html or innerHTML is used for user data.
  */
 export interface Profile {
   id: number;
@@ -25,214 +28,161 @@ interface Props {
 }
 
 const { profiles } = Astro.props;
+
+// ── Server-side tree builder ────────────────────────────────────────────────
+// Build tree from flat list, then flatten to (profile, depth) tuples for
+// simple sequential rendering. Profiles whose parent is unknown become roots.
+
+interface TreeNode extends Profile {
+  children: TreeNode[];
+}
+
+function buildTree(list: Profile[]): TreeNode[] {
+  const byId = new Map<number, TreeNode>(
+    list.map((p) => [p.id, { ...p, children: [] }])
+  );
+  const roots: TreeNode[] = [];
+  for (const node of byId.values()) {
+    if (node.parent_profile_id && byId.has(node.parent_profile_id)) {
+      byId.get(node.parent_profile_id)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  return roots;
+}
+
+function flatten(nodes: TreeNode[], depth = 0): { profile: TreeNode; depth: number }[] {
+  const result: { profile: TreeNode; depth: number }[] = [];
+  for (const node of nodes) {
+    result.push({ profile: node, depth });
+    if (node.children.length > 0) {
+      result.push(...flatten(node.children, depth + 1));
+    }
+  }
+  return result;
+}
+
+const rows = flatten(buildTree(profiles));
 ---
 
 <div id="profile-tree-container" class="divide-y divide-gray-100">
-  <!-- Populated by inline JS via buildTree() -->
+  {rows.length === 0 ? (
+    <div class="py-12 text-center text-gray-500">
+      <p class="text-3xl mb-2">🗂️</p>
+      <p class="font-medium">No profiles configured.</p>
+      <p class="text-sm mt-1">Add a profile above to get started.</p>
+    </div>
+  ) : (
+    rows.map(({ profile: p, depth }) => (
+      <div
+        data-testid="profile-tree-row"
+        data-testid-id={`profile-tree-row-${p.id}`}
+        class="px-5 py-4 hover:bg-gray-50 profile-tree-node"
+      >
+        {/* Inner indent wrapper */}
+        <div
+          class={depth > 0 ? 'border-l-2 border-gray-200 ml-2 pl-3' : undefined}
+          style={depth > 0 ? `margin-left: ${depth}rem` : undefined}
+        >
+          {/* Row: flex container for name + actions */}
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            {/* Left: connector symbol + name block */}
+            <div class="flex items-center gap-2">
+              {depth > 0 && (
+                <span class="text-gray-300 text-xs select-none">└─</span>
+              )}
+              <div>
+                <p class="font-medium text-gray-800">{p.name}</p>
+                <p class="text-xs text-gray-500 mt-0.5">
+                  Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}
+                </p>
+              </div>
+            </div>
+
+            {/* Right: repo count + actions */}
+            <div class="flex items-center gap-3 flex-wrap">
+              <span class="text-sm text-gray-500">{(p.repos?.length ?? 0)} repos</span>
+
+              {/* Parent select */}
+              <select
+                data-testid="profile-tree-parent-select"
+                data-profile-id={String(p.id)}
+                class="text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select"
+                title="Set parent profile"
+              >
+                <option value="" selected={!p.parent_profile_id}>— no parent —</option>
+                {profiles
+                  .filter((other) => other.id !== p.id && other.odoo_version === p.odoo_version)
+                  .map((other) => (
+                    <option value={String(other.id)} selected={p.parent_profile_id === other.id}>
+                      {other.name}
+                    </option>
+                  ))
+                }
+              </select>
+
+              {/* Clone all button */}
+              <button
+                data-testid="profile-tree-clone-all-button"
+                data-profile-id={String(p.id)}
+                class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn"
+              >
+                Clone all pending
+              </button>
+
+              {/* Delete button */}
+              <button
+                data-testid={`profile-tree-delete-button-${p.id}`}
+                data-profile-id={String(p.id)}
+                class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+
+          {/* Clone-all status div (hidden until triggered) */}
+          <div
+            data-testid={`profile-tree-clone-all-status-${p.id}`}
+            data-profile-id={String(p.id)}
+            class="mt-2"
+            hidden
+          />
+        </div>
+      </div>
+    ))
+  )}
 </div>
 
-<script define:vars={{ profiles }}>
+<script>
   /**
-   * Build a tree from a flat list of profiles.
-   * Profiles with a missing or unknown parent_profile_id become roots.
+   * Attach event listeners to profile-tree elements.
+   * DOM is server-rendered — we only wire up interactive handlers here.
+   * No document.createElement / tree DOM construction.
    */
-  function buildTree(profileList) {
-    const byId = new Map(profileList.map((p) => [p.id, { ...p, children: [] }]));
-    const roots = [];
-    for (const p of byId.values()) {
-      if (p.parent_profile_id && byId.has(p.parent_profile_id)) {
-        byId.get(p.parent_profile_id).children.push(p);
-      } else {
-        roots.push(p);
-      }
-    }
-    return roots;
+
+  function showFlashTree(msg: string, type: 'success' | 'error') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error'
+        ? 'bg-red-100 text-red-800 border-red-300'
+        : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
   }
 
-  /**
-   * Create a profile card DOM element at the given depth using safe DOM APIs.
-   * No innerHTML is used — all user-supplied strings go through textContent or
-   * setAttribute, which are XSS-safe by design.
-   */
-  function createProfileNode(p, depth) {
-    // Outer wrapper
-    // NOTE: testids are intentionally namespaced with `profile-tree-` to avoid
-    // strict-mode violations with the flat-list view, which uses the canonical
-    // `profile-row`, `profile-parent-select`, `delete-profile-button-{id}`,
-    // `clone-all-button`, `clone-all-status-{id}` testids. Existing browser
-    // tests target the flat list; tree-view-specific tests should use the
-    // `profile-tree-*` namespace.
-    const wrapper = document.createElement('div');
-    wrapper.dataset.testid = 'profile-tree-row';
-    wrapper.dataset.testidId = `profile-tree-row-${p.id}`;
-    wrapper.className = 'px-5 py-4 hover:bg-gray-50 profile-tree-node';
-
-    // Inner connector div (visual indent + optional left-border for children)
-    const inner = document.createElement('div');
-    if (depth > 0) {
-      inner.className = 'border-l-2 border-gray-200 ml-2 pl-3';
-      inner.style.marginLeft = `${depth * 1}rem`;
-    }
-
-    // Row: flex container for name+actions
-    const row = document.createElement('div');
-    row.className = 'flex items-center justify-between flex-wrap gap-2';
-
-    // Left side: connector symbol + name block
-    const leftSide = document.createElement('div');
-    leftSide.className = 'flex items-center gap-2';
-
-    if (depth > 0) {
-      const connector = document.createElement('span');
-      connector.className = 'text-gray-300 text-xs select-none';
-      connector.textContent = '└─';
-      leftSide.appendChild(connector);
-    }
-
-    const nameBlock = document.createElement('div');
-
-    const nameEl = document.createElement('p');
-    nameEl.className = 'font-medium text-gray-800';
-    nameEl.textContent = p.name;
-
-    const metaEl = document.createElement('p');
-    metaEl.className = 'text-xs text-gray-500 mt-0.5';
-    metaEl.textContent = `Odoo ${p.odoo_version}${p.description ? ` — ${p.description}` : ''}`;
-
-    nameBlock.appendChild(nameEl);
-    nameBlock.appendChild(metaEl);
-    leftSide.appendChild(nameBlock);
-
-    // Right side: repo count + actions
-    const rightSide = document.createElement('div');
-    rightSide.className = 'flex items-center gap-3 flex-wrap';
-
-    const repoCount = document.createElement('span');
-    repoCount.className = 'text-sm text-gray-500';
-    repoCount.textContent = `${p.repos?.length ?? 0} repos`;
-
-    // Parent select
-    const parentSelect = document.createElement('select');
-    parentSelect.dataset.testid = 'profile-tree-parent-select';
-    parentSelect.dataset.profileId = String(p.id);
-    parentSelect.className =
-      'text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select';
-    parentSelect.title = 'Set parent profile';
-
-    const noneOpt = document.createElement('option');
-    noneOpt.value = '';
-    noneOpt.textContent = '— no parent —';
-    if (!p.parent_profile_id) noneOpt.selected = true;
-    parentSelect.appendChild(noneOpt);
-
-    for (const other of profiles) {
-      if (other.id === p.id || other.odoo_version !== p.odoo_version) continue;
-      const opt = document.createElement('option');
-      opt.value = String(other.id);
-      opt.textContent = other.name;
-      if (p.parent_profile_id === other.id) opt.selected = true;
-      parentSelect.appendChild(opt);
-    }
-
-    // Clone all button
-    const cloneBtn = document.createElement('button');
-    cloneBtn.dataset.testid = 'profile-tree-clone-all-button';
-    cloneBtn.dataset.profileId = String(p.id);
-    cloneBtn.className =
-      'text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn';
-    cloneBtn.textContent = 'Clone all pending';
-
-    // Delete button
-    const deleteBtn = document.createElement('button');
-    deleteBtn.dataset.testid = `profile-tree-delete-button-${p.id}`;
-    deleteBtn.dataset.profileId = String(p.id);
-    deleteBtn.className =
-      'text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn';
-    deleteBtn.textContent = 'Delete';
-
-    rightSide.appendChild(repoCount);
-    rightSide.appendChild(parentSelect);
-    rightSide.appendChild(cloneBtn);
-    rightSide.appendChild(deleteBtn);
-
-    row.appendChild(leftSide);
-    row.appendChild(rightSide);
-
-    // Clone-all status div (hidden until triggered)
-    const statusDiv = document.createElement('div');
-    statusDiv.dataset.testid = `profile-tree-clone-all-status-${p.id}`;
-    statusDiv.dataset.profileId = String(p.id);
-    statusDiv.className = 'mt-2';
-    statusDiv.hidden = true;
-
-    inner.appendChild(row);
-    inner.appendChild(statusDiv);
-    wrapper.appendChild(inner);
-
-    return wrapper;
-  }
-
-  /**
-   * Recursively append tree nodes to a parent element.
-   */
-  function appendTreeNodes(nodes, parentEl, depth) {
-    for (const node of nodes) {
-      const el = createProfileNode(node, depth);
-      parentEl.appendChild(el);
-      if (node.children && node.children.length > 0) {
-        appendTreeNodes(node.children, parentEl, depth + 1);
-      }
-    }
-  }
-
-  function renderTree() {
-    const container = document.getElementById('profile-tree-container');
-    if (!container) return;
-
-    // Clear existing content safely
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
-
-    const roots = buildTree(profiles);
-
-    if (roots.length === 0) {
-      const emptyState = document.createElement('div');
-      emptyState.className = 'py-12 text-center text-gray-500';
-
-      const emoji = document.createElement('p');
-      emoji.className = 'text-3xl mb-2';
-      emoji.textContent = '🗂️';
-
-      const msg = document.createElement('p');
-      msg.className = 'font-medium';
-      msg.textContent = 'No profiles configured.';
-
-      const hint = document.createElement('p');
-      hint.className = 'text-sm mt-1';
-      hint.textContent = 'Add a profile above to get started.';
-
-      emptyState.appendChild(emoji);
-      emptyState.appendChild(msg);
-      emptyState.appendChild(hint);
-      container.appendChild(emptyState);
-      return;
-    }
-
-    appendTreeNodes(roots, container, 0);
-    attachProfileTreeListeners(container);
-  }
-
-  /**
-   * Attach event listeners to profile-tree elements inside a container.
-   * Called after each tree render to wire up selects and buttons.
-   */
-  function attachProfileTreeListeners(container) {
-    // Parent select
+  const container = document.getElementById('profile-tree-container');
+  if (container) {
+    // Parent select — PATCH /api/repos/profiles/{id}/parent
     container.querySelectorAll('.profile-parent-select').forEach((sel) => {
       sel.addEventListener('change', async () => {
-        const profileId = sel.dataset.profileId;
-        const parentId = sel.value ? Number(sel.value) : null;
+        const select = sel as HTMLSelectElement;
+        const profileId = (select as HTMLElement).dataset.profileId;
+        const parentId = select.value ? Number(select.value) : null;
         const res = await fetch(`/api/repos/profiles/${profileId}/parent`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -253,11 +203,11 @@ const { profiles } = Astro.props;
       });
     });
 
-    // Clone all pending
+    // Clone all pending — POST /api/repos/profiles/{id}/clone-all
     container.querySelectorAll('.clone-all-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const profileId = btn.dataset.profileId;
-        btn.disabled = true;
+        const profileId = (btn as HTMLElement).dataset.profileId;
+        (btn as HTMLButtonElement).disabled = true;
 
         const res = await fetch(`/api/repos/profiles/${profileId}/clone-all`, {
           method: 'POST',
@@ -266,20 +216,20 @@ const { profiles } = Astro.props;
         const data = await res.json().catch(() => ({}));
 
         if (res.ok) {
-          const total = data.total ?? 0;
+          const total: number = data.total ?? 0;
           if (total === 0) {
             showFlashTree('No pending repos to clone.', 'success');
-            btn.disabled = false;
+            (btn as HTMLButtonElement).disabled = false;
             return;
           }
           showFlashTree(`Clone-all started: ${total} repo(s) processing.`, 'success');
 
           const statusDiv = container.querySelector(
             `[data-testid="profile-tree-clone-all-status-${profileId}"]`
-          );
+          ) as HTMLElement | null;
           if (statusDiv) {
             statusDiv.removeAttribute('hidden');
-            const badge = statusDiv.querySelector('[data-testid^="clone-all-job-"]');
+            const badge = statusDiv.querySelector('[data-testid^="clone-all-job-"]') as HTMLElement | null;
             if (badge) {
               badge.textContent = `Spawned: ${data.spawned ?? 0}, Short-circuited: ${data.short_circuited ?? 0}`;
               badge.removeAttribute('hidden');
@@ -290,14 +240,14 @@ const { profiles } = Astro.props;
         } else {
           showFlashTree(data.error ?? 'Clone-all failed.', 'error');
         }
-        btn.disabled = false;
+        (btn as HTMLButtonElement).disabled = false;
       });
     });
 
-    // Delete
+    // Delete profile — DELETE /api/repos/profiles/{id}
     container.querySelectorAll('.delete-profile-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const profileId = btn.dataset.profileId;
+        const profileId = (btn as HTMLElement).dataset.profileId;
         if (!confirm('Delete this profile and ALL its repos? This cannot be undone.')) return;
         const res = await fetch(`/api/repos/profiles/${profileId}`, {
           method: 'DELETE',
@@ -313,23 +263,4 @@ const { profiles } = Astro.props;
       });
     });
   }
-
-  function showFlashTree(msg, type) {
-    const banner = document.querySelector('[data-testid="flash-banner"]');
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error'
-        ? 'bg-red-100 text-red-800 border-red-300'
-        : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
-
-  // Initial render
-  renderTree();
-
-  // Expose for external callers (e.g., toggle in repos.astro)
-  window.__renderProfileTree = renderTree;
 </script>
