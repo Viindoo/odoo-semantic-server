@@ -152,7 +152,7 @@ class TestSmokeAuth:
         from src.mcp.middleware import AuthMiddleware
 
         async def fake_health(request):
-            return JSONResponse({
+            return JSONResponse({  # noqa  - test stub (lint-json-response bypass: no datetime)
                 "status": "ok",
                 "neo4j": "ok",
                 "postgres": "ok",

@@ -52,7 +52,7 @@ async def list_migrations(request: Request, _: int = Depends(require_admin)):
                 rows = cur.fetchall()
     except Exception as exc:
         _logger.error("list_migrations DB error: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
 
     return JSONResponse(_json_safe({
         "ok": True,

@@ -82,11 +82,11 @@ async def create_profile(body: CreateProfileBody, request: Request):
     except ValueError as e:
         # Cycle / version-mismatch validation errors → 400.
         _logger.warning("Create profile validation failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=400)
     except Exception as e:
         _logger.warning("Create profile failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True})
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    return JSONResponse(_json_safe({"ok": True}))
 
 
 class SetProfileParentBody(BaseModel):
@@ -121,14 +121,14 @@ async def set_profile_parent(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         _logger.warning("Set profile parent failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "profile_id": profile_id,
         "parent_id": body.parent_id,
         "changed": changed,
-    })
+    }))
 
 
 @router.delete("/profiles/{profile_id}")
@@ -145,7 +145,7 @@ async def delete_profile(request: Request, profile_id: int):
         profiles = repo_store().list_profiles()
         profile = next((p for p in profiles if p["id"] == profile_id), None)
         if profile is None:
-            return JSONResponse({"error": "Profile not found."}, status_code=404)
+            return JSONResponse(_json_safe({"error": "Profile not found."}), status_code=404)
 
         profile_name = profile["name"]
 
@@ -154,7 +154,9 @@ async def delete_profile(request: Request, profile_id: int):
             running = indexer_is_running(conn, profile_name)
         if running:
             return JSONResponse(
-                {"error": f"Cannot delete: indexer running for profile {profile_name}"},
+                _json_safe(
+                    {"error": f"Cannot delete: indexer running for profile {profile_name}"}
+                ),
                 status_code=409,
             )
 
@@ -174,21 +176,21 @@ async def delete_profile(request: Request, profile_id: int):
 
     except Exception as e:
         _logger.warning("Delete profile %s failed: %s", profile_id, e)
-        return JSONResponse({"error": f"Delete failed: {e}"}, status_code=500)
+        return JSONResponse(_json_safe({"error": f"Delete failed: {e}"}), status_code=500)
 
     # Neo4j + pgvector cleanup (outside PG conn)
     module_names_by_version = _collect_module_names_for_repos(repo_cleanup_pairs)
     total_modules, total_children = _delete_neo4j_for_repos(repo_cleanup_pairs)
     total_embeddings = _delete_embeddings_for_repos(repo_cleanup_pairs, module_names_by_version)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "profile_name": profile_name,
         "repo_count": repo_count,
         "neo4j_modules": total_modules,
         "neo4j_children": total_children,
         "embeddings": total_embeddings,
-    })
+    }))
 
 
 def _get_neo4j_writer():
@@ -351,7 +353,9 @@ async def add_repo(body: AddRepoBody, request: Request):
     if is_ssh_url(body.url):
         if not body.ssh_key_id or not body.ssh_key_id.strip().isdigit():
             return JSONResponse(
-                {"error": "SSH URL requires an SSH key. Select one from the dropdown."},
+                _json_safe(
+                    {"error": "SSH URL requires an SSH key. Select one from the dropdown."}
+                ),
                 status_code=400,
             )
         ssh_key_id_int = int(body.ssh_key_id.strip())
@@ -382,8 +386,15 @@ async def add_repo(body: AddRepoBody, request: Request):
                     stderr=_clone_log,
                 )
             threading.Thread(target=proc.wait, daemon=True).start()
-            return JSONResponse({"ok": True, "repo_id": repo_id, "clone_status": "pending"})
-        return JSONResponse({"ok": False, "error": "Failed to add SSH repo"}, status_code=500)
+            return JSONResponse(_json_safe({
+                "ok": True,
+                "repo_id": repo_id,
+                "clone_status": "pending",
+            }))
+        return JSONResponse(
+            _json_safe({"ok": False, "error": "Failed to add SSH repo"}),
+            status_code=500,
+        )
 
     # HTTPS / file:// / manual path
     try:
@@ -401,8 +412,8 @@ async def add_repo(body: AddRepoBody, request: Request):
             )
     except Exception as e:
         _logger.warning("Add repo failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True})
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    return JSONResponse(_json_safe({"ok": True}))
 
 
 @router.get("/ssh-keys-list")
@@ -413,8 +424,8 @@ async def ssh_keys_list(request: Request):
 
         keys = auth_store().list_ssh_keys()
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    return JSONResponse([{"id": k["id"], "name": k["name"]} for k in keys])
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
+    return JSONResponse(_json_safe([{"id": k["id"], "name": k["name"]} for k in keys]))
 
 
 @router.delete("/repos/{repo_id}")
@@ -429,7 +440,7 @@ async def delete_repo(request: Request, repo_id: int):
 
         repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
-            return JSONResponse({"error": "Repo not found."}, status_code=404)
+            return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
 
         profile_name = repo["profile_name"]
         odoo_version = repo["odoo_version"]
@@ -440,7 +451,9 @@ async def delete_repo(request: Request, repo_id: int):
             running = indexer_is_running(conn, profile_name)
         if running:
             return JSONResponse(
-                {"error": f"Cannot delete: indexer running for profile {profile_name}"},
+                _json_safe(
+                    {"error": f"Cannot delete: indexer running for profile {profile_name}"}
+                ),
                 status_code=409,
             )
 
@@ -449,7 +462,7 @@ async def delete_repo(request: Request, repo_id: int):
 
     except Exception as e:
         _logger.warning("Delete repo %s failed: %s", repo_id, e)
-        return JSONResponse({"error": f"Delete failed: {e}"}, status_code=500)
+        return JSONResponse(_json_safe({"error": f"Delete failed: {e}"}), status_code=500)
 
     # Neo4j + pgvector cleanup
     cleanup_pairs = [{"basename": basename, "version": odoo_version}]
@@ -457,13 +470,13 @@ async def delete_repo(request: Request, repo_id: int):
     total_modules, total_children = _delete_neo4j_for_repos(cleanup_pairs)
     total_embeddings = _delete_embeddings_for_repos(cleanup_pairs, module_names_by_version)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "basename": basename,
         "neo4j_modules": total_modules,
         "neo4j_children": total_children,
         "embeddings": total_embeddings,
-    })
+    }))
 
 
 @router.post("/profiles/{profile_id}/clone-all")
@@ -498,14 +511,14 @@ async def clone_all_pending(profile_id: int, request: Request):
         ]
 
         if not repos:
-            return JSONResponse({
+            return JSONResponse(_json_safe({
                 "ok": True,
                 "profile_id": profile_id,
                 "spawned": 0,
                 "short_circuited": 0,
                 "total": 0,
                 "message": "No pending repos to clone.",
-            })
+            }))
 
         short_circuited = 0
         spawned = 0
@@ -552,15 +565,15 @@ async def clone_all_pending(profile_id: int, request: Request):
         raise
     except Exception as e:
         _logger.warning("clone-all failed for profile %s: %s", profile_id, e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "ok": True,
         "profile_id": profile_id,
         "spawned": spawned,
         "short_circuited": short_circuited,
         "total": spawned + short_circuited,
-    })
+    }))
 
 
 @router.get("/repos/{repo_id}/clone-status")
@@ -571,14 +584,14 @@ async def clone_status(request: Request, repo_id: int):
 
         repo = repo_store().get_repo_by_id(repo_id)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
     if repo is None:
-        return JSONResponse({"error": "repo not found"}, status_code=404)
-    return JSONResponse({
+        return JSONResponse(_json_safe({"error": "repo not found"}), status_code=404)
+    return JSONResponse(_json_safe({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
         "error_msg": repo.get("clone_error_msg"),
-    })
+    }))
 
 
 class IndexRepoBody(BaseModel):
@@ -597,16 +610,20 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
         max_workers_int = int(body.max_workers)
     except (ValueError, TypeError):
         return JSONResponse(
-            {
-                "error": f"Invalid max_workers value '{body.max_workers}': "
-                "must be an integer between 1 and 8."
-            },
+            _json_safe(
+                {
+                    "error": f"Invalid max_workers value '{body.max_workers}': "
+                    "must be an integer between 1 and 8."
+                }
+            ),
             status_code=422,
         )
 
     if not (1 <= max_workers_int <= 8):
         return JSONResponse(
-            {"error": f"max_workers must be between 1 and 8 (got {max_workers_int})."},
+            _json_safe(
+                {"error": f"max_workers must be between 1 and 8 (got {max_workers_int})."}
+            ),
             status_code=422,
         )
 
@@ -618,10 +635,10 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
         repos = repo_store().list_repos()
         repo = next((r for r in repos if r["id"] == repo_id), None)
         if repo is None:
-            return JSONResponse({"error": "Repo not found."}, status_code=404)
+            return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
         if not repo.get("profile_name"):
             return JSONResponse(
-                {"error": "Repo is not attached to a profile."},
+                _json_safe({"error": "Repo is not attached to a profile."}),
                 status_code=400,
             )
 
@@ -629,12 +646,12 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
             running = indexer_is_running(conn, repo["profile_name"])
         if running:
             return JSONResponse(
-                {
+                _json_safe({
                     "error": (
                         f"Indexer already running for profile "
                         f"{repo['profile_name']}. Wait for it to finish."
                     )
-                },
+                }),
                 status_code=409,
             )
 
@@ -649,10 +666,10 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
             argv += ["--max-workers", str(max_workers_int)]
 
         job_id = spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
-        return JSONResponse({"ok": True, "job_id": job_id})
+        return JSONResponse(_json_safe({"ok": True, "job_id": job_id}))
     except Exception as e:
         _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
 
 
 @router.post("/repos/{repo_id}/reset-embed")
@@ -666,7 +683,7 @@ async def reset_embed(request: Request, repo_id: int):
 
         repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
-            return JSONResponse({"error": "Repo not found."}, status_code=404)
+            return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
 
         profile_name = repo["profile_name"]
 
@@ -674,12 +691,12 @@ async def reset_embed(request: Request, repo_id: int):
             running = indexer_is_running(conn, profile_name)
         if running:
             return JSONResponse(
-                {
+                _json_safe({
                     "error": (
                         f"Cannot reset embed state: indexer already running for profile "
                         f"{profile_name}. Wait for it to finish."
                     )
-                },
+                }),
                 status_code=409,
             )
 
@@ -689,11 +706,15 @@ async def reset_embed(request: Request, repo_id: int):
         argv = ["index-repo", "--profile", profile_name]
         job_id = spawn_indexer_subcommand(argv, job_label=profile_name)
 
-        return JSONResponse({"ok": True, "profile_name": profile_name, "job_id": job_id})
+        return JSONResponse(_json_safe({
+            "ok": True,
+            "profile_name": profile_name,
+            "job_id": job_id,
+        }))
 
     except Exception as e:
         _logger.warning("Reset embed for repo %s failed: %s", repo_id, e)
-        return JSONResponse({"error": f"Reset embed failed: {e}"}, status_code=500)
+        return JSONResponse(_json_safe({"error": f"Reset embed failed: {e}"}), status_code=500)
 
 
 class IndexAllBody(BaseModel):
@@ -711,15 +732,19 @@ async def index_all(request: Request, body: IndexAllBody):
         max_workers_int = int(body.max_workers)
     except (ValueError, TypeError):
         return JSONResponse(
-            {
-                "error": f"Invalid max_workers '{body.max_workers}': "
-                "must be an integer between 1 and 8."
-            },
+            _json_safe(
+                {
+                    "error": f"Invalid max_workers '{body.max_workers}': "
+                    "must be an integer between 1 and 8."
+                }
+            ),
             status_code=422,
         )
     if not (1 <= max_workers_int <= 8):
         return JSONResponse(
-            {"error": f"max_workers must be between 1 and 8 (got {max_workers_int})."},
+            _json_safe(
+                {"error": f"max_workers must be between 1 and 8 (got {max_workers_int})."}
+            ),
             status_code=422,
         )
 
@@ -728,15 +753,19 @@ async def index_all(request: Request, body: IndexAllBody):
         profile_workers_int = int(body.profile_workers)
     except (ValueError, TypeError):
         return JSONResponse(
-            {
-                "error": f"Invalid profile_workers '{body.profile_workers}': "
-                "must be an integer between 1 and 4."
-            },
+            _json_safe(
+                {
+                    "error": f"Invalid profile_workers '{body.profile_workers}': "
+                    "must be an integer between 1 and 4."
+                }
+            ),
             status_code=422,
         )
     if not (1 <= profile_workers_int <= 4):
         return JSONResponse(
-            {"error": f"profile_workers must be between 1 and 4 (got {profile_workers_int})."},
+            _json_safe(
+                {"error": f"profile_workers must be between 1 and 4 (got {profile_workers_int})."}
+            ),
             status_code=422,
         )
 
@@ -752,7 +781,9 @@ async def index_all(request: Request, body: IndexAllBody):
         if blocked:
             names = ", ".join(blocked)
             return JSONResponse(
-                {"error": f"Cannot start index-all: indexer running for: {names}"},
+                _json_safe(
+                    {"error": f"Cannot start index-all: indexer running for: {names}"}
+                ),
                 status_code=409,
             )
 
@@ -767,11 +798,11 @@ async def index_all(request: Request, body: IndexAllBody):
             argv += ["--profile-workers", str(profile_workers_int)]
 
         job_id = spawn_indexer_subcommand(argv, job_label="all")
-        return JSONResponse({"ok": True, "job_id": job_id})
+        return JSONResponse(_json_safe({"ok": True, "job_id": job_id}))
 
     except Exception as e:
         _logger.warning("index-all trigger failed: %s", e)
-        return JSONResponse({"error": f"index-all failed: {e}"}, status_code=500)
+        return JSONResponse(_json_safe({"error": f"index-all failed: {e}"}), status_code=500)
 
 
 # Job status and reset routes have been moved to src/web_ui/routes/jobs.py

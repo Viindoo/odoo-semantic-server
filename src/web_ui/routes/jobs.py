@@ -38,9 +38,9 @@ async def job_status(request: Request, job_id: int):
 
         job = job_store().get_job(job_id)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
     if job is None:
-        return JSONResponse({"error": "job not found"}, status_code=404)
+        return JSONResponse(_json_safe({"error": "job not found"}), status_code=404)
 
     pid = job.get("pid")
     is_alive: bool | None = None
@@ -68,17 +68,21 @@ async def reset_stuck_job(request: Request, job_id: int):
 
         job = job_store().get_job(job_id)
         if job is None:
-            return JSONResponse({"error": f"Job {job_id} not found."}, status_code=404)
+            return JSONResponse(_json_safe({"error": f"Job {job_id} not found."}), status_code=404)
         elif job["status"] != "running":
+            error_msg = (
+                f"Job {job_id} is not in 'running' state (current: {job['status']})."
+            )
             return JSONResponse(
-                {"error": f"Job {job_id} is not in 'running' state (current: {job['status']})."},
+                _json_safe({"error": error_msg}),
                 status_code=409,
             )
         else:
             pid = job.get("pid")
             if pid is not None and _is_pid_alive(pid):
+                error_msg = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
                 return JSONResponse(
-                    {"error": f"Job {job_id} process (PID {pid}) is still alive — cannot reset."},
+                    _json_safe({"error": error_msg}),
                     status_code=409,
                 )
             else:
@@ -88,9 +92,10 @@ async def reset_stuck_job(request: Request, job_id: int):
                     finished_at=_dt.datetime.now(_dt.UTC),
                     error_msg="Reset by admin (process not found)",
                 )
+                msg = f"Job {job_id} has been reset to error state."
                 return JSONResponse(
-                    {"ok": True, "message": f"Job {job_id} has been reset to error state."}
+                    _json_safe({"ok": True, "message": msg})
                 )
     except Exception as e:
         _logger.warning("Reset job %d failed: %s", job_id, e)
-        return JSONResponse({"error": f"Reset failed: {e}"}, status_code=500)
+        return JSONResponse(_json_safe({"error": f"Reset failed: {e}"}), status_code=500)

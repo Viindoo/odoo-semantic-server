@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from src.db.audit import audit_action
+from src.web_ui._json import _json_safe
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/api-keys")
@@ -58,7 +59,7 @@ async def list_api_keys(request: Request):
     except Exception as e:
         error = str(e)
 
-    return JSONResponse({"keys": _serialize_keys(keys), "error": error})
+    return JSONResponse(_json_safe({"keys": _serialize_keys(keys), "error": error}))
 
 
 @router.post("")
@@ -87,7 +88,8 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
                 expires_dt = datetime.datetime.fromisoformat(body.expires_at)
             except ValueError as exc:
                 return JSONResponse(
-                    {"error": f"Invalid expires_at format: {exc}"}, status_code=400
+                    _json_safe({"error": f"Invalid expires_at format: {exc}"}),
+                    status_code=400,
                 )
 
         raw_key, _, _ = auth_store().create_api_key(
@@ -101,9 +103,13 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
         error = str(e)
 
     if error:
-        return JSONResponse({"error": error}, status_code=500)
+        return JSONResponse(_json_safe({"error": error}), status_code=500)
 
-    return JSONResponse({"ok": True, "raw_key": new_raw_key, "keys": _serialize_keys(keys)})
+    return JSONResponse(_json_safe({
+        "ok": True,
+        "raw_key": new_raw_key,
+        "keys": _serialize_keys(keys),
+    }))
 
 
 @router.post("/{key_id}/deactivate")
@@ -119,5 +125,5 @@ async def deactivate_api_key(request: Request, key_id: int):
         _logger.info("API key %s deactivated", key_id)
     except Exception as e:
         _logger.warning("Deactivate key %s failed: %s", key_id, e)
-        return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True})
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    return JSONResponse(_json_safe({"ok": True}))

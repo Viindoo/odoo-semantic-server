@@ -19,7 +19,7 @@ help:
 	@echo "  neo4j-up          Start Neo4j container"
 	@echo "  neo4j-down        Stop Neo4j container"
 	@echo "  neo4j-logs        Xem log Neo4j"
-	@echo "  lint              Chạy ruff"
+	@echo "  lint              Chạy ruff + shell lint (strict)"
 
 install:
 	$(UV) venv $(VENV)
@@ -81,19 +81,14 @@ neo4j-logs:
 
 # --- Lint ---
 
-lint: lint-py lint-shell-advisory
+lint: lint-py lint-shell
 
 lint-py:
 	$(VENV)/bin/ruff check src/ tests/
 
-# Advisory: scripts report violations but do not fail the build.
-# Legacy violations (66 JSONResponse + 1 fetch as of M9 merge) are tracked
-# in M9 backlog. Promote to strict (lint-shell) after backlog cleanup.
-lint-shell-advisory:
-	@bash scripts/lint_json_response.sh || echo "[advisory] lint_json_response: legacy violations present — see CONTRIBUTING.md Common Pitfalls"
-	@bash scripts/lint_fetch_content_type.sh || echo "[advisory] lint_fetch_content_type: legacy violations present"
-
-# Strict mode — run before commits adding new JSONResponse/fetch sites.
+# Strict mode — any new JSONResponse(dict) without _json_safe wrap fails the build,
+# any fetch() without Content-Type fails the build. M9 legacy violations cleared
+# in task #22 (2026-05-16). See CONTRIBUTING.md Common Pitfalls.
 lint-shell:
 	@bash scripts/lint_json_response.sh
 	@bash scripts/lint_fetch_content_type.sh

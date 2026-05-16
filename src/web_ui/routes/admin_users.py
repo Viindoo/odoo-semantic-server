@@ -49,7 +49,7 @@ async def list_users(request: Request, actor_id: int = Depends(require_admin)):
         users = _auth_store().list_webui_users()
     except Exception as exc:
         _logger.error("list_users DB error: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
     return JSONResponse(_json_safe({"users": users}))
 
 
@@ -90,9 +90,9 @@ async def deactivate_user(
         raise
     except Exception as exc:
         _logger.error("deactivate_user DB error: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
 
-    return JSONResponse({"ok": True})
+    return JSONResponse(_json_safe({"ok": True}))
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +125,9 @@ async def reactivate_user(
         raise
     except Exception as exc:
         _logger.error("reactivate_user DB error: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
 
-    return JSONResponse({"ok": True})
+    return JSONResponse(_json_safe({"ok": True}))
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +184,9 @@ async def reset_password_link(
         raise
     except Exception as exc:
         _logger.error("reset_password_link error: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
 
-    return JSONResponse({"ok": True, "email_sent": email_sent})
+    return JSONResponse(_json_safe({"ok": True, "email_sent": email_sent}))
 
 
 def _send_reset_email(*, to_email: str, username: str, reset_link: str) -> bool:

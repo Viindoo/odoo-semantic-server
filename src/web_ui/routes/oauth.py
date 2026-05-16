@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 from starlette.requests import Request
 
+from src.web_ui._json import _json_safe
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
 
@@ -275,14 +277,16 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
                     },
                 )
                 return JSONResponse(
-                    {
-                        "error": "email_conflict",
-                        "detail": (
-                            "An account with this email already exists. "
-                            "Your provider has not verified this email address. "
-                            "Please verify your email at the provider and try again."
-                        ),
-                    },
+                    _json_safe(
+                        {
+                            "error": "email_conflict",
+                            "detail": (
+                                "An account with this email already exists. "
+                                "Your provider has not verified this email address. "
+                                "Please verify your email at the provider and try again."
+                            ),
+                        }
+                    ),
                     status_code=409,
                 )
             # Email verified at provider → safe to merge oauth credentials
@@ -292,7 +296,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
                 )
             except Exception as exc:
                 logger.error("OAuth email-merge failed: %s", exc)
-                return JSONResponse({"error": "internal_error"}, status_code=500)
+                return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
             user = existing_by_email
 
         else:
@@ -309,7 +313,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
                 )
             except Exception as exc:
                 logger.error("OAuth user creation failed: %s", exc)
-                return JSONResponse({"error": "internal_error"}, status_code=500)
+                return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
     # -----------------------------------------------------------------------
     # 4. Check account active
@@ -327,7 +331,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
             success=False,
             detail={"ip": client_ip, "reason": "account_inactive", "provider": body.provider},
         )
-        return JSONResponse({"error": "account_inactive"}, status_code=403)
+        return JSONResponse(_json_safe({"error": "account_inactive"}), status_code=403)
 
     # -----------------------------------------------------------------------
     # 5. Issue session
@@ -340,7 +344,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
         )
     except Exception as exc:
         logger.error("OAuth login: session creation failed: %s", exc)
-        return JSONResponse({"error": "internal_error"}, status_code=500)
+        return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
     # -----------------------------------------------------------------------
     # 6. Audit log — success
@@ -367,4 +371,4 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
         body.provider,
         client_ip,
     )
-    return JSONResponse({"ok": True, "username": username})
+    return JSONResponse(_json_safe({"ok": True, "username": username}))

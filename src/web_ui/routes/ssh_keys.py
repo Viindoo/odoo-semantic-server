@@ -135,11 +135,11 @@ async def list_ssh_keys(request: Request):
     except Exception as e:
         error = str(e)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "keys": _json_safe_keys(keys),
         "fernet_missing": fernet_missing,
         "error": error,
-    })
+    }))
 
 
 @router.post("")
@@ -153,7 +153,7 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
 
     if fernet_missing:
         return JSONResponse(
-            {"error": "FERNET_KEY is not set. Cannot store SSH keys securely."},
+            _json_safe({"error": "FERNET_KEY is not set. Cannot store SSH keys securely."}),
             status_code=500,
         )
 
@@ -171,9 +171,18 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
         error = str(e)
 
     if error:
-        return JSONResponse({"error": error, "fernet_missing": fernet_missing}, status_code=500)
+        return JSONResponse(
+            _json_safe({"error": error, "fernet_missing": fernet_missing}),
+            status_code=500,
+        )
 
-    return JSONResponse({"ok": True, "public_key": new_public_key, "keys": _json_safe_keys(keys)})
+    return JSONResponse(
+        _json_safe({
+            "ok": True,
+            "public_key": new_public_key,
+            "keys": _json_safe_keys(keys),
+        })
+    )
 
 
 @router.post("/import")
@@ -188,13 +197,13 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
 
     if fernet_missing:
         return JSONResponse(
-            {"error": "FERNET_KEY is not set. Cannot store SSH keys securely."},
+            _json_safe({"error": "FERNET_KEY is not set. Cannot store SSH keys securely."}),
             status_code=500,
         )
 
     if not body.name.strip() or not body.private_key_pem.strip():
         return JSONResponse(
-            {"error": "Both name and private key PEM are required."},
+            _json_safe({"error": "Both name and private key PEM are required."}),
             status_code=422,
         )
 
@@ -221,9 +230,18 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
             error = str(e)
 
     if error:
-        return JSONResponse({"error": error, "fernet_missing": fernet_missing}, status_code=422)
+        return JSONResponse(
+            _json_safe({"error": error, "fernet_missing": fernet_missing}),
+            status_code=422,
+        )
 
-    return JSONResponse({"ok": True, "public_key": new_public_key, "keys": _json_safe_keys(keys)})
+    return JSONResponse(
+        _json_safe({
+            "ok": True,
+            "public_key": new_public_key,
+            "keys": _json_safe_keys(keys),
+        })
+    )
 
 
 @router.delete("/{key_id}")
@@ -237,5 +255,5 @@ async def delete_ssh_key(request: Request, key_id: int):
         _logger.info("SSH key %s deleted", key_id)
     except Exception as e:
         _logger.warning("Delete SSH key %s failed: %s", key_id, e)
-        return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True})
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    return JSONResponse(_json_safe({"ok": True}))

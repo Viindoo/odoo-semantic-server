@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
+from src.web_ui._json import _json_safe
 from src.web_ui.auth import hash_password, is_test_bypass_active, verify_password
 from src.web_ui.login_attempts import (
     check_rate_limit,
@@ -272,7 +273,7 @@ async def login_post(request: Request, body: LoginBody):
         # Run dummy-hash to keep timing constant regardless of password length.
         # Pad password to 12 chars so bcrypt still processes a non-trivial input.
         verify_password(body.password.ljust(12, "x"), _DUMMY_HASH)
-        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "invalid_credentials"}), status_code=401)
 
     # F3 — resolve client IP using trusted proxy CIDR list
     client_ip = get_client_ip(request)
@@ -282,7 +283,7 @@ async def login_post(request: Request, body: LoginBody):
     if check_rate_limit(body.username.strip(), ip_address=client_ip):
         logger.warning("Login rate-limited for user %r / IP %s", body.username, client_ip)
         return JSONResponse(
-            {"error": "Too many failed login attempts; please wait before retrying"},
+            _json_safe({"error": "Too many failed login attempts; please wait before retrying"}),
             status_code=429,
         )
 
@@ -333,7 +334,7 @@ async def login_post(request: Request, body: LoginBody):
                 "reason": "invalid_credentials",
             },
         )
-        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+        return JSONResponse(_json_safe({"error": "invalid_credentials"}), status_code=401)
 
     # Credentials OK
     username_clean = body.username.strip()
@@ -363,7 +364,7 @@ async def login_post(request: Request, body: LoginBody):
             ip_address=client_ip,
             user_agent=user_agent,
         )
-        return JSONResponse({"mfa_required": True, "mfa_token": mfa_token})
+        return JSONResponse(_json_safe({"mfa_required": True, "mfa_token": mfa_token}))
 
     # F7 — session rotation: revoke all existing sessions before creating new one
     _revoke_all_user_sessions(user["id"])
@@ -377,7 +378,7 @@ async def login_post(request: Request, body: LoginBody):
         )
     except Exception as exc:
         logger.error("Login: could not create session: %s", exc)
-        return JSONResponse({"error": "internal_error"}, status_code=500)
+        return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
     # F2 — record successful attempt
     record_login_attempt(
@@ -404,7 +405,7 @@ async def login_post(request: Request, body: LoginBody):
     request.session["session_at"] = time.time()
 
     logger.info("Successful login for user %r (IP: %s)", username_clean, client_ip)
-    return JSONResponse({"ok": True, "username": username_clean})
+    return JSONResponse(_json_safe({"ok": True, "username": username_clean}))
 
 
 @router.post("/logout")
@@ -414,7 +415,7 @@ async def logout(request: Request):
     if session_id:
         _revoke_session(session_id)
     request.session.clear()
-    return JSONResponse({"ok": True})
+    return JSONResponse(_json_safe({"ok": True}))
 
 
 # ---------------------------------------------------------------------------
@@ -440,10 +441,10 @@ async def reset_password_consume(body: ResetPasswordBody, request: Request):
         try:
             user_id = store.consume_password_reset_token(body.token)
         except ValueError as ve:
-            return JSONResponse({"error": str(ve)}, status_code=410)
+            return JSONResponse(_json_safe({"error": str(ve)}), status_code=410)
 
         if user_id is None:
-            return JSONResponse({"error": "not_found"}, status_code=404)
+            return JSONResponse(_json_safe({"error": "not_found"}), status_code=404)
 
         new_hash = hash_password(body.new_password)
         user = store.get_user_by_id(user_id)
@@ -460,11 +461,11 @@ async def reset_password_consume(body: ResetPasswordBody, request: Request):
             detail={"method": "token"},
         )
         logger.info("Password reset consumed for user_id=%s (%s)", user_id, username)
-        return JSONResponse({"ok": True})
+        return JSONResponse(_json_safe({"ok": True}))
 
     except Exception as exc:
         logger.error("reset_password_consume error: %s", exc)
-        return JSONResponse({"error": "internal_error"}, status_code=500)
+        return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -486,17 +487,23 @@ async def verify_session(request: Request):
     from src.web_ui.middleware import _session_valid
 
     if is_test_bypass_active():
-        return JSONResponse({"ok": True, "username": "test-user", "is_admin": True})
+        return JSONResponse(_json_safe({"ok": True, "username": "test-user", "is_admin": True}))
 
     if not _session_valid(request):
-        return JSONResponse({"ok": False, "error": "not_authenticated"}, status_code=401)
+        return JSONResponse(
+            _json_safe({"ok": False, "error": "not_authenticated"}),
+            status_code=401,
+        )
 
     # F7 — confirm session_id is still live in DB (instant revoke after logout)
     session_id = request.session.get("session_id")
     if session_id:
         row = _lookup_session(session_id)
         if row is None:
-            return JSONResponse({"ok": False, "error": "not_authenticated"}, status_code=401)
+            return JSONResponse(
+                _json_safe({"ok": False, "error": "not_authenticated"}),
+                status_code=401,
+            )
         _update_session_last_seen(session_id)
 
     username = request.session.get("username")
@@ -511,4 +518,4 @@ async def verify_session(request: Request):
             is_admin = bool(store.get_user_field(user_id, "is_admin"))
     except Exception:
         pass  # is_admin stays False on any DB error
-    return JSONResponse({"ok": True, "username": username, "is_admin": is_admin})
+    return JSONResponse(_json_safe({"ok": True, "username": username, "is_admin": is_admin}))

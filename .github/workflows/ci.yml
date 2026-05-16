@@ -25,6 +25,8 @@ jobs:
           python-version: "3.12"
       - run: pip install ruff
       - run: ruff check src/ tests/
+      - run: bash scripts/lint_json_response.sh
+      - run: bash scripts/lint_fetch_content_type.sh
 
   actionlint:
     runs-on: ubuntu-latest
