@@ -225,7 +225,7 @@ class TestAuditActionDecorator:
 
         @audit_action("user.login")
         async def handler(request):
-            return JSONResponse({"ok": True}, status_code=200)
+            return JSONResponse({"ok": True}, status_code=200)  # noqa  - test stub (lint-json-response bypass: no datetime)
 
         req = _make_mock_request(user_id=5)
         req.headers = {}
@@ -311,7 +311,7 @@ class TestAuditActionDecorator:
 
         @audit_action("user.delete", target_param="user_id")
         async def handler(request, user_id: int):
-            return JSONResponse({"ok": True})
+            return JSONResponse({"ok": True})  # noqa  - test stub (lint-json-response bypass: no datetime)
 
         req = _make_mock_request(user_id=1)
         req.headers = {}
@@ -334,7 +334,7 @@ class TestAuditActionDecorator:
 
         @audit_action("repo.delete", target_param="repo_id")
         async def handler(request, repo_id: int):
-            return JSONResponse({"ok": True})
+            return JSONResponse({"ok": True})  # noqa  - test stub (lint-json-response bypass: no datetime)
 
         req = _make_mock_request()
         req.headers = {}
@@ -356,7 +356,7 @@ class TestAuditActionDecorator:
 
         @audit_action("api_key.create")
         async def handler(request):
-            return JSONResponse({"key": "secret"}, status_code=201)
+            return JSONResponse({"key": "secret"}, status_code=201)  # noqa  - test stub (lint-json-response bypass: no datetime)
 
         req = _make_mock_request()
         req.headers = {}

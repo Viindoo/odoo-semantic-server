@@ -34,6 +34,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from src.web_ui._json import _json_safe
 from src.web_ui.auth import SESSION_TTL_SECONDS, is_test_bypass_active
 
 logger = logging.getLogger(__name__)
@@ -170,7 +171,7 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
 
         if not _session_valid(request):
             return JSONResponse(
-                {"error": "not_authenticated", "detail": "Valid session required"},
+                _json_safe({"error": "not_authenticated", "detail": "Valid session required"}),
                 status_code=401,
             )
 
@@ -180,7 +181,7 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
         session_id = request.session.get("session_id")
         if session_id and not _server_session_valid(session_id):
             return JSONResponse(
-                {"error": "not_authenticated", "detail": "Session revoked"},
+                _json_safe({"error": "not_authenticated", "detail": "Session revoked"}),
                 status_code=401,
             )
 
@@ -190,11 +191,13 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
         if username and request.url.path not in _MFA_SETUP_PATHS:
             if _check_mfa_enforcement(username):
                 return JSONResponse(
-                    {
-                        "error": "mfa_required",
-                        "detail": "Admin MFA enrollment required",
-                        "redirect": "/admin/security?force_mfa=1",
-                    },
+                    _json_safe(
+                        {
+                            "error": "mfa_required",
+                            "detail": "Admin MFA enrollment required",
+                            "redirect": "/admin/security?force_mfa=1",
+                        }
+                    ),
                     status_code=403,
                 )
 

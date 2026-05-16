@@ -685,9 +685,10 @@ curl -X POST $EMBEDDER_URL/api/embed -d '{"input":"hello"}' -H "Content-Type: ap
 
 ## Common Pitfalls (M8 + M9 lessons)
 
-### 1. JSONResponse + datetime → 500 error
+### 1. JSONResponse + datetime/Decimal/UUID/bytes → 500 error
 
-Standard `starlette.JSONResponse` không serialize được `datetime` từ psycopg2 rows.
+Standard `starlette.JSONResponse` không serialize được `datetime`, `Decimal`, `uuid.UUID`,
+hay `bytes` từ psycopg2 rows.
 
 Pattern đúng:
 
@@ -696,7 +697,9 @@ from src.web_ui._json import _json_safe
 return JSONResponse(_json_safe({"created_at": row.created_at, ...}))
 ```
 
-Lint script: `scripts/lint_json_response.sh` (chạy qua `make lint`).
+Lint script: `scripts/lint_json_response.sh` (chạy qua `make lint`). **Strict mode**: bất kỳ
+`JSONResponse(dict)` mới nào không wrap `_json_safe` sẽ làm CI đỏ. Test stub có thể bypass
+bằng `# noqa` (lint script grep substring `# noqa` thay vì code chuẩn ruff).
 
 ### 2. Astro 5.x checkOrigin rejection
 
