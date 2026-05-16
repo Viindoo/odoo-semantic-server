@@ -56,9 +56,15 @@ const { profiles } = Astro.props;
    */
   function createProfileNode(p, depth) {
     // Outer wrapper
+    // NOTE: testids are intentionally namespaced with `profile-tree-` to avoid
+    // strict-mode violations with the flat-list view, which uses the canonical
+    // `profile-row`, `profile-parent-select`, `delete-profile-button-{id}`,
+    // `clone-all-button`, `clone-all-status-{id}` testids. Existing browser
+    // tests target the flat list; tree-view-specific tests should use the
+    // `profile-tree-*` namespace.
     const wrapper = document.createElement('div');
-    wrapper.dataset.testid = 'profile-row';
-    wrapper.dataset.testidId = `profile-row-${p.id}`;
+    wrapper.dataset.testid = 'profile-tree-row';
+    wrapper.dataset.testidId = `profile-tree-row-${p.id}`;
     wrapper.className = 'px-5 py-4 hover:bg-gray-50 profile-tree-node';
 
     // Inner connector div (visual indent + optional left-border for children)
@@ -107,7 +113,7 @@ const { profiles } = Astro.props;
 
     // Parent select
     const parentSelect = document.createElement('select');
-    parentSelect.dataset.testid = 'profile-parent-select';
+    parentSelect.dataset.testid = 'profile-tree-parent-select';
     parentSelect.dataset.profileId = String(p.id);
     parentSelect.className =
       'text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select';
@@ -130,7 +136,7 @@ const { profiles } = Astro.props;
 
     // Clone all button
     const cloneBtn = document.createElement('button');
-    cloneBtn.dataset.testid = 'clone-all-button';
+    cloneBtn.dataset.testid = 'profile-tree-clone-all-button';
     cloneBtn.dataset.profileId = String(p.id);
     cloneBtn.className =
       'text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn';
@@ -138,7 +144,7 @@ const { profiles } = Astro.props;
 
     // Delete button
     const deleteBtn = document.createElement('button');
-    deleteBtn.dataset.testid = `delete-profile-button-${p.id}`;
+    deleteBtn.dataset.testid = `profile-tree-delete-button-${p.id}`;
     deleteBtn.dataset.profileId = String(p.id);
     deleteBtn.className =
       'text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn';
@@ -154,7 +160,7 @@ const { profiles } = Astro.props;
 
     // Clone-all status div (hidden until triggered)
     const statusDiv = document.createElement('div');
-    statusDiv.dataset.testid = `clone-all-status-${p.id}`;
+    statusDiv.dataset.testid = `profile-tree-clone-all-status-${p.id}`;
     statusDiv.dataset.profileId = String(p.id);
     statusDiv.className = 'mt-2';
     statusDiv.hidden = true;
@@ -269,7 +275,7 @@ const { profiles } = Astro.props;
           showFlashTree(`Clone-all started: ${total} repo(s) processing.`, 'success');
 
           const statusDiv = container.querySelector(
-            `[data-testid="clone-all-status-${profileId}"]`
+            `[data-testid="profile-tree-clone-all-status-${profileId}"]`
           );
           if (statusDiv) {
             statusDiv.removeAttribute('hidden');
