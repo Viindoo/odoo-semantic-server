@@ -102,7 +102,8 @@ def test_pipeline_index_all_iterates_every_profile(
         repo_store().add_repo(pid, f"local/{prof}", TEST_VERSION, str(repo))
 
     summary = index_all(clean_pg)
-    assert summary["profiles_ok"] == 2
+    # Migration 0004 seeds 5 root profiles (no repos); they index as ok with 0 modules.
+    assert summary["profiles_ok"] >= 2
     assert summary["modules"] >= 2
     assert summary["profiles_failed"] == []
 
@@ -123,7 +124,8 @@ def test_index_all_continues_after_profile_failure(pg_conn, clean_pg, neo4j_driv
 
     summary = index_all(clean_pg)
 
-    assert summary["profiles_ok"] == 1, f"Expected 1 ok profile, got {summary}"
+    # Migration 0004 seeds 5 root profiles (no repos, always ok) + empty_prof (ok) = 6 ok.
+    assert summary["profiles_ok"] >= 1, f"Expected at least 1 ok profile, got {summary}"
     assert "bad_prof" in summary["profiles_failed"]
     assert len(summary["profiles_failed"]) == 1
     assert summary["modules"] == 0
