@@ -273,7 +273,9 @@ def _resolve_model(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
-            RETURN m.module AS module_name, mod.repo AS repo
+            RETURN m.module AS module_name, mod.repo AS repo,
+                   COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
+                   COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
             """,
@@ -285,6 +287,8 @@ def _resolve_model(
 
         base = layers[0]
         extensions = layers[1:]
+        fields_count = base["fields_count"]
+        methods_count = base["methods_count"]
 
         # DISTINCT on p.name only — the same parent (e.g. mail.thread) is reachable
         # via multiple INHERITS edges (one per module that declares _inherit), and
@@ -298,16 +302,6 @@ def _resolve_model(
             RETURN DISTINCT p.name AS pname
             ORDER BY pname
         """, name=model_name, v=odoo_version).data()
-
-        fields_count = session.run(
-            "MATCH (f:Field {model: $n, odoo_version: $v}) RETURN count(f) AS c",
-            n=model_name, v=odoo_version
-        ).single()["c"]
-
-        methods_count = session.run(
-            "MATCH (m:Method {model: $n, odoo_version: $v}) RETURN count(m) AS c",
-            n=model_name, v=odoo_version
-        ).single()["c"]
 
     lines = [f"{model_name} (Odoo {odoo_version})"]
     lines.append(f"├─ Defined in:     [{base['repo']}] {base['module_name']}")
@@ -1469,8 +1463,11 @@ def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     return _lookup_core_api(name, odoo_version)
 
 
-def _format_deprecated_usage(records: list[dict], version: str) -> str:
-    header = f"find_deprecated_usage(Odoo {version}) — {len(records)} hits"
+def _format_deprecated_usage(
+    records: list[dict], version: str, *, overflow: bool = False,
+) -> str:
+    hit_count = f"{len(records)}+" if overflow else str(len(records))
+    header = f"find_deprecated_usage(Odoo {version}) — {hit_count} hits"
     # Wave 5: Next-step footer per ADR-0023 §4. Even the empty branch still
     # gets a Next: hint (replacement search) when no hits are found.
     next_line = _format_next_step([
@@ -1484,24 +1481,7 @@ def _format_deprecated_usage(records: list[dict], version: str) -> str:
             + "\n" + next_line
         )
     lines = [header]
-    more_hint = (
-        f"find_deprecated_usage(odoo_version='{version}', kind=<filter>)"
-        " to narrow the scan"
-    )
-    rendered_hits = _render_capped(
-        records,
-        lambda r: r,  # identity — we render the multi-line hit below
-        cap=LIST_PREVIEW_MAX_ITEMS,
-        more_hint=more_hint,
-    )
-    # _render_capped will return either records[:cap] or records[:cap] + a
-    # trailing "... and K more (use ...)" string. Detect string sentinel.
-    truncated = (
-        len(records) > LIST_PREVIEW_MAX_ITEMS
-        and isinstance(rendered_hits[-1], str)
-    )
-    real_hits = rendered_hits[:-1] if truncated else rendered_hits
-    for r in real_hits:
+    for r in records:
         # Wave 5: every hit is now ├─ (Next: footer below is the new └─).
         connector = "├─"
         sub_indent = "│   "
@@ -1512,8 +1492,14 @@ def _format_deprecated_usage(records: list[dict], version: str) -> str:
         lines.append(f"{connector} {loc}")
         lines.append(f"{sub_indent}├─ uses: {sym} (status={status})")
         lines.append(f"{sub_indent}└─ replacement: {repl}")
-    if truncated:
-        lines.append(f"├─ {rendered_hits[-1]}")
+    if overflow:
+        more_hint = (
+            f"find_deprecated_usage(odoo_version='{version}', kind=<filter>)"
+            " to narrow the scan"
+        )
+        lines.append(
+            f"├─ ... more results may exist beyond preview cap (refine filter via {more_hint})"
+        )
     lines.append(next_line)
     return "\n".join(lines)
 
@@ -1522,7 +1508,8 @@ def _find_deprecated_usage(
     odoo_version: str = "auto", kind: str | None = None,
     profile_name: str | None = None,
 ) -> str:
-    """Quét user code dùng CoreSymbol có status deprecated/removed."""
+    """Scan user code for usage of CoreSymbol entries with deprecated/removed status."""
+    cap_plus_one = LIST_PREVIEW_MAX_ITEMS + 1
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
         cypher = f"""
@@ -1530,7 +1517,8 @@ def _find_deprecated_usage(
             WHERE cs.status IN ['deprecated', 'removed']
             AND ($profile_name IS NULL OR $profile_name IN mth.profile)
         """
-        params: dict = {"v": odoo_version, "profile_name": profile_name}
+        params: dict = {"v": odoo_version, "profile_name": profile_name,
+                        "cap_plus_one": cap_plus_one}
         if kind:
             cypher += " AND cs.kind = $kind"
             params["kind"] = kind
@@ -1540,9 +1528,13 @@ def _find_deprecated_usage(
                    cs.status AS status,
                    cs.replacement_qname AS replacement
             ORDER BY mth.module, mth.model, mth.name
+            LIMIT $cap_plus_one
         """
         records = session.run(cypher, **params).data()
-    return _format_deprecated_usage(records, odoo_version)
+    overflow = len(records) > LIST_PREVIEW_MAX_ITEMS
+    if overflow:
+        records = records[:LIST_PREVIEW_MAX_ITEMS]
+    return _format_deprecated_usage(records, odoo_version, overflow=overflow)
 
 
 _VALID_LINT_LANGUAGES = {"python", "javascript", "xml"}
@@ -2378,12 +2370,10 @@ def _describe_module(
             " for module views",
         ]
     else:
-        # No models — fall back to method behavior surface for the module.
-        next_hints = [
-            f"list_methods(model='res.partner', module='{name}'"
-            f", odoo_version='{odoo_version}') for any extension methods",
-        ]
-    lines.append(_format_next_step(next_hints))
+        # No models defined or extended — skip footer entirely (no useful drill-down).
+        next_hints = []
+    if footer := _format_next_step(next_hints):
+        lines.append(footer)
 
     return "\n".join(lines)
 
@@ -2403,6 +2393,10 @@ def _list_fields(
     `limit` caps the Cypher query size; the render cap is LIST_PREVIEW_FIELDS_MAX.
     """
     cap = LIST_PREVIEW_FIELDS_MAX
+    # Fetch at most cap rows via Cypher; total count comes from separate query.
+    # This avoids double-disclosure: _render_capped handles cap-level cutoff,
+    # the count query drives the "and N more" top-level banner.
+    effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
@@ -2425,7 +2419,7 @@ def _list_fields(
             LIMIT $limit
             """,
             m=model, v=odoo_version, module=module, kind=kind,
-            profile_name=profile_name, limit=limit,
+            profile_name=profile_name, limit=effective_limit,
         ).data()
 
         # Separate count query so we know the true total when Cypher LIMIT trims.
@@ -2529,6 +2523,8 @@ def _list_methods(
     per ADR-0023 §5.3 to flag override-points.
     """
     cap = LIST_PREVIEW_MAX_ITEMS
+    # Fetch at most cap rows via Cypher; total count comes from separate query.
+    effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
@@ -2550,7 +2546,7 @@ def _list_methods(
             LIMIT $limit
             """,
             m=model, v=odoo_version, module=module,
-            profile_name=profile_name, limit=limit,
+            profile_name=profile_name, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -2637,7 +2633,8 @@ def _list_methods(
             f"find_override_point(model='{model}', method='{first_method}'"
             f", odoo_version='{odoo_version}') for hook spot",
         )
-    lines.append(_format_next_step(next_hints))
+    if footer := _format_next_step(next_hints):
+        lines.append(footer)
     return "\n".join(lines)
 
 
@@ -2653,6 +2650,8 @@ def _list_views(
     `view_type` filters by View.type (form/tree/kanban/search/...).
     """
     cap = LIST_PREVIEW_MAX_ITEMS
+    # Fetch at most cap rows via Cypher; total count comes from separate query.
+    effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
@@ -2674,7 +2673,7 @@ def _list_views(
             LIMIT $limit
             """,
             m=model, ver=odoo_version, view_type=view_type,
-            profile_name=profile_name, limit=limit,
+            profile_name=profile_name, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -2919,6 +2918,8 @@ def _list_qweb_templates(
         next_line = _format_next_step([
             f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
             " for OWL components",
+            f"describe_module(name='{module}', odoo_version='{odoo_version}')"
+            " for module overview",
         ])
         return f"{header}\n├─ (none)\n{next_line}"
 
@@ -2951,6 +2952,8 @@ def _list_qweb_templates(
     lines.append(_format_next_step([
         f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
         " for OWL components",
+        f"find_examples(query='QWeb {module}', odoo_version='{odoo_version}')"
+        " for inheritance patterns",
     ]))
     return "\n".join(lines)
 

@@ -1542,6 +1542,7 @@ def _import_server_module():
 # --- per-test version slots — keep distinct from existing suite versions ----
 
 W6_DESCRIBE_VERSION = "85.0"
+W6_DESCRIBE_NO_MODELS_VERSION = "86.0"
 W6_LIST_FIELDS_VERSION = "84.0"
 W6_LIST_METHODS_VERSION = "83.0"
 W6_LIST_VIEWS_VERSION = "82.0"
@@ -1584,13 +1585,28 @@ def test_describe_module_happy(neo4j_driver):
             fields=[FieldInfo("name", "char")],
         )
         sale_model.had_explicit_name = True
-        writer.write_results([ParseResult(module=viin, models=[sale_model])])
+        # Extension model (had_explicit_name=False by default + inherit list)
+        # → writer sets is_definition=false → appears under "Extends models:".
+        ext_model = ModelInfo(
+            name="sale.order", module="viin_sale",
+            odoo_version=W6_DESCRIBE_VERSION,
+            inherit=["sale.order"],
+            fields=[FieldInfo("x_viin_field", "char")],
+        )
+        # had_explicit_name defaults to False — no override needed.
+        writer.write_results([ParseResult(module=viin, models=[sale_model, ext_model])])
         # is_definition flag is needed for "Defines models" Cypher in
-        # _describe_module — set it explicitly.
+        # _describe_module — set it explicitly for the definition model only.
         with neo4j_driver.session() as session:
             session.run(
                 "MATCH (m:Model {name:'sale.report.custom', module:'viin_sale',"
                 "                odoo_version:$v}) SET m.is_definition = true",
+                v=W6_DESCRIBE_VERSION,
+            )
+            # Ensure extension model explicitly has is_definition=false.
+            session.run(
+                "MATCH (m:Model {name:'sale.order', module:'viin_sale',"
+                "                odoo_version:$v}) SET m.is_definition = false",
                 v=W6_DESCRIBE_VERSION,
             )
         writer.close()
@@ -1602,6 +1618,8 @@ def test_describe_module_happy(neo4j_driver):
         assert "Depends:" in out
         assert "├─ Defines models:" in out
         assert "sale.report.custom" in out
+        assert "├─ Extends models:" in out
+        assert "sale.order" in out
         assert "├─ JS patches:" in out
         assert out.rstrip().splitlines()[-1].startswith("└─ Next:")
     finally:
@@ -1659,6 +1677,37 @@ def test_describe_module_truncation(neo4j_driver):
         assert "use list_fields(" in out
     finally:
         _cleanup_version(neo4j_driver, W6_DESCRIBE_VERSION)
+
+
+def test_describe_module_no_models_skips_footer(neo4j_driver):
+    """ADR-0023 §4.4: describe_module with zero models defined/extended emits no Next: footer.
+
+    When a module has 0 defined models AND 0 extended models the server should
+    not emit the drill-down Next: hint, because there is nothing to drill into.
+    """
+    _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        # Seed Module only — no models at all.
+        empty_mod = ModuleInfo(
+            "ww_empty_module", W6_DESCRIBE_NO_MODELS_VERSION,
+            "test_repo", "/tmp", [], "17.0",
+        )
+        writer.write_results([ParseResult(module=empty_mod, models=[])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._describe_module("ww_empty_module", W6_DESCRIBE_NO_MODELS_VERSION)
+        assert "Next:" not in out, (
+            f"Expected no Next: footer for a module with 0 models, got:\n{out!r}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
 
 
 # --- list_fields ------------------------------------------------------------
@@ -2274,7 +2323,19 @@ TERMINAL_TOOLS = {"lint_check", "cli_help", "api_version_diff"}
 SENTINEL_EDGE_CASES = {"find_examples", "suggest_pattern"}
 
 
-@pytest.mark.parametrize("idx", range(21))
+def _tool_invocation_count() -> int:
+    """Return the number of (tool_name, callable) pairs in _all_tool_invocations.
+
+    Used to drive parametrize so the count stays in sync with the actual tool
+    list — no hardcoded magic number.  We pass a dummy version here; only the
+    list length matters at collection time (no DB call is made).
+    """
+    # Use a dummy version string; _all_tool_invocations builds lambdas that
+    # capture the version but doesn't execute any queries at construction time.
+    return len(_all_tool_invocations("_count_only_"))
+
+
+@pytest.mark.parametrize("idx", range(_tool_invocation_count()))
 def test_grammar_consistency_all_tools(grammar_seed, idx):
     """For every MCP tool: header line + valid connector positions.
 
@@ -2462,7 +2523,7 @@ def test_language_policy_static_templates():
 # ===========================================================================
 
 
-@pytest.mark.parametrize("idx", range(21))
+@pytest.mark.parametrize("idx", range(_tool_invocation_count()))
 def test_next_step_no_loop(grammar_seed, idx):
     """ADR-0023 §4.2: a tool's ``Next:`` hint MUST NOT reference itself.
 
