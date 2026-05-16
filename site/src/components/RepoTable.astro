@@ -116,15 +116,26 @@ const cloneStatusColor: Record<string, string> = {
 
 <!-- Repos Table -->
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-  <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+  <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
     <h2 class="text-base font-semibold text-gray-800">Repositories ({repos.length})</h2>
     {repos.length > 0 && (
-      <button
-        data-testid="index-all-button"
-        class="text-sm bg-viindoo-info hover:bg-viindoo-primary text-white px-4 py-1.5 rounded-lg transition-colors"
-      >
-        Index All
-      </button>
+      <div class="flex items-center gap-2">
+        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            data-testid="index-all-full-checkbox"
+            class="w-4 h-4 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
+            title="Force full reindex — cleanup stale Module nodes after module rename/move (ADR-0007)"
+          />
+          <span>Full reindex</span>
+        </label>
+        <button
+          data-testid="index-all-button"
+          class="text-sm bg-viindoo-info hover:bg-viindoo-primary text-white px-4 py-1.5 rounded-lg transition-colors"
+        >
+          Index All
+        </button>
+      </div>
     )}
   </div>
 
@@ -172,6 +183,14 @@ const cloneStatusColor: Record<string, string> = {
                 </td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-2">
+                    <label class="flex items-center gap-1.5 text-xs text-gray-600" title="Force full reindex — cleanup stale Module nodes after module rename/move (ADR-0007)">
+                      <input
+                        type="checkbox"
+                        data-testid={`index-repo-full-checkbox-${repo.id}`}
+                        data-repo-id={String(repo.id)}
+                        class="w-3.5 h-3.5 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
+                      />
+                    </label>
                     <button
                       data-testid={`index-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
@@ -243,10 +262,15 @@ const cloneStatusColor: Record<string, string> = {
   document.querySelectorAll('.index-repo-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const repoId = (btn as HTMLElement).dataset.repoId;
+      const fullCheckbox = document.querySelector(`[data-testid="index-repo-full-checkbox-${repoId}"]`) as HTMLInputElement | null;
+      const body: Record<string, string> = { max_workers: '1' };
+      if (fullCheckbox?.checked) {
+        body.full = '1';
+      }
       const res = await fetch(`/api/repos/repos/${repoId}/index`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ max_workers: '1' }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -299,10 +323,15 @@ const cloneStatusColor: Record<string, string> = {
   // Index all button
   document.querySelector('[data-testid="index-all-button"]')?.addEventListener('click', async () => {
     if (!confirm('Trigger index for ALL profiles?')) return;
+    const fullCheckbox = document.querySelector('[data-testid="index-all-full-checkbox"]') as HTMLInputElement | null;
+    const body: Record<string, string> = { max_workers: '1', profile_workers: '1' };
+    if (fullCheckbox?.checked) {
+      body.full = '1';
+    }
     const res = await fetch('/api/repos/index-all', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ max_workers: '1', profile_workers: '1' }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
