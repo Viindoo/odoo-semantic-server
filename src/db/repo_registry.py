@@ -6,8 +6,12 @@ import psycopg2.errors
 
 from src.db.exceptions import (
     ProfileCycleError,
+    ProfileIndexedError,
+    ProfileNameConflictError,
     ProfileNotFoundError,
     ProfileVersionMismatchError,
+    RepoConflictError,
+    RepoNotFoundError,
 )
 from src.db.pg import PgPool
 
@@ -197,6 +201,147 @@ class RepoStore:
             if profile is None:
                 raise ProfileNotFoundError(f"profile id={profile_id} not found")
         return rowcount > 0
+
+    def _has_indexed_repos(self, profile_id: int) -> int:
+        """Return the count of indexed repos for a profile (head_sha IS NOT NULL).
+
+        A non-zero count means the profile has Neo4j/pgvector data keyed to its
+        current name *and* version — changing either field requires re-indexing.
+        """
+        with self._pool.checkout() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM repos "
+                    "WHERE profile_id = %s AND head_sha IS NOT NULL",
+                    (profile_id,),
+                )
+                return cur.fetchone()[0]
+
+    def update_profile(
+        self,
+        profile_id: int,
+        *,
+        name: str | None = None,
+        version: str | None = None,
+        description: str | None = None,
+    ) -> list[str]:
+        """Update editable fields of a profile.
+
+        Returns:
+            List of field names that were actually changed.
+
+        Raises:
+            ProfileNotFoundError  — profile_id does not exist.
+            ProfileNameConflictError — new name already taken (UNIQUE).
+            ProfileVersionMismatchError — new version conflicts with a descendant or ancestor.
+            ProfileIndexedError — profile has indexed repos; name/version change blocked
+                until re-indexed (HTTP 409).
+        """
+        # Load current profile
+        current = self.get_profile_by_id(profile_id)
+        if current is None:
+            raise ProfileNotFoundError(f"profile id={profile_id} not found")
+
+        # Critical 2: Guard name/version changes when profile has indexed repos.
+        # Neo4j Module.profile is a name string array — both name and version changes
+        # cause stale graph data until a full re-index is run.
+        name_changing = name is not None and name != current["name"]
+        version_changing = version is not None and version != current["odoo_version"]
+
+        if name_changing or version_changing:
+            indexed_count = self._has_indexed_repos(profile_id)
+            if indexed_count > 0:
+                changed_fields = []
+                if name_changing:
+                    changed_fields.append("name")
+                if version_changing:
+                    changed_fields.append("version")
+                fields_str = " and ".join(changed_fields)
+                raise ProfileIndexedError(
+                    f"Profile id={profile_id} has {indexed_count} indexed repo(s). "
+                    f"Re-indexing required before {fields_str} change. "
+                    f"Delete + recreate profile or trigger full reindex."
+                )
+
+        # Critical 1: If changing version, check ancestors for version mismatch.
+        # This prevents a profile with no descendants from being moved to a version
+        # incompatible with its parent.
+        if version_changing:
+            parent_id = current.get("parent_profile_id")
+            if parent_id is not None:
+                with self._pool.checkout() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT odoo_version FROM profiles WHERE id = %s",
+                            (parent_id,),
+                        )
+                        parent_row = cur.fetchone()
+                if parent_row is not None and parent_row[0] != version:
+                    raise ProfileVersionMismatchError(
+                        f"Cannot change version to {version!r}: parent profile "
+                        f"id={parent_id} has version {parent_row[0]!r}"
+                    )
+
+        # If changing version, check all descendants share the same current version.
+        # Descendants inherit version from the ancestor hierarchy (ADR-0016), so
+        # any descendant with a *different* version would become inconsistent.
+        if version_changing:
+            with self._pool.checkout() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        WITH RECURSIVE descendants AS (
+                            SELECT id, odoo_version
+                            FROM profiles WHERE parent_profile_id = %s
+                            UNION ALL
+                            SELECT p.id, p.odoo_version
+                            FROM profiles p
+                            JOIN descendants d ON p.parent_profile_id = d.id
+                        )
+                        SELECT id, odoo_version FROM descendants
+                        WHERE odoo_version != %s
+                        LIMIT 1
+                        """,
+                        (profile_id, version),
+                    )
+                    conflict_row = cur.fetchone()
+            if conflict_row is not None:
+                raise ProfileVersionMismatchError(
+                    f"Cannot change version to {version!r}: descendant profile "
+                    f"id={conflict_row[0]} has version {conflict_row[1]!r}"
+                )
+
+        # Build dynamic SET clause
+        updates: dict[str, object] = {}
+        if name is not None and name != current["name"]:
+            updates["name"] = name
+        if version is not None and version != current["odoo_version"]:
+            updates["odoo_version"] = version
+        if description is not None and description != current.get("description"):
+            updates["description"] = description
+
+        if not updates:
+            return []
+
+        set_clause = ", ".join(f"{col} = %s" for col in updates)
+        values = list(updates.values()) + [profile_id]
+
+        try:
+            with self._pool.checkout() as conn:
+                rowcount = self._pool.execute(
+                    conn,
+                    f"UPDATE profiles SET {set_clause} WHERE id = %s",
+                    values,
+                )
+        except psycopg2.errors.UniqueViolation as e:
+            raise ProfileNameConflictError(
+                f"Profile name {name!r} already exists"
+            ) from e
+
+        if rowcount == 0:
+            raise ProfileNotFoundError(f"profile id={profile_id} not found")
+
+        return list(updates.keys())
 
     def get_ancestor_profile_names(self, profile_name: str) -> list[str]:
         """Return profile names from *self* (index 0) up to root (last).
@@ -515,6 +660,105 @@ class RepoStore:
             )
         if rowcount == 0:
             raise ValueError(f"repo id={repo_id} not found")
+
+    def update_repo(
+        self,
+        repo_id: int,
+        *,
+        url: str | None = None,
+        branch: str | None = None,
+        ssh_key_id: int | None = None,
+        clear_ssh_key: bool = False,
+        local_path: str | None = None,
+    ) -> list[str]:
+        """Update editable fields of a repo without touching head_sha.
+
+        head_sha is intentionally preserved — this is the whole point of PATCH
+        vs delete+recreate: the incremental indexer can still use the stored sha.
+
+        Args:
+            repo_id: ID of repo to update.
+            url: New remote URL (or None to leave unchanged).
+            branch: New branch name (or None to leave unchanged).
+            ssh_key_id: New SSH key id (or None to leave unchanged).
+            clear_ssh_key: When True, set ssh_key_id = NULL regardless of ssh_key_id arg.
+            local_path: New local checkout path (or None to leave unchanged).
+
+        Returns:
+            List of field names that were updated.
+
+        Raises:
+            RepoNotFoundError: if repo_id does not exist.
+            RepoConflictError: if the new (url, branch) would violate UNIQUE constraint.
+        """
+        # Verify repo exists and fetch current values for conflict-check
+        existing = self.get_repo_by_id(repo_id)
+        if existing is None:
+            raise RepoNotFoundError(f"repo id={repo_id} not found")
+
+        # Resolve effective values for UNIQUE check
+        effective_url = url if url is not None else existing["url"]
+        effective_branch = branch if branch is not None else existing["branch"]
+
+        # Check UNIQUE(url, branch) before UPDATE — exclude current row
+        if url is not None or branch is not None:
+            with self._pool.checkout() as conn:
+                conflict_row = self._pool.fetch_one(
+                    conn,
+                    "SELECT id FROM repos WHERE url = %s AND branch = %s AND id != %s",
+                    (effective_url, effective_branch, repo_id),
+                )
+            if conflict_row is not None:
+                raise RepoConflictError(
+                    f"A repo with url={effective_url!r} branch={effective_branch!r} already exists"
+                )
+
+        # Build dynamic SET clause — only include fields the caller wants to change
+        set_parts: list[str] = []
+        params: list = []
+        updated_fields: list[str] = []
+
+        if url is not None:
+            set_parts.append("url = %s")
+            params.append(url)
+            updated_fields.append("url")
+
+        if branch is not None:
+            set_parts.append("branch = %s")
+            params.append(branch)
+            updated_fields.append("branch")
+
+        if clear_ssh_key:
+            set_parts.append("ssh_key_id = NULL")
+            updated_fields.append("ssh_key_id")
+        elif ssh_key_id is not None:
+            set_parts.append("ssh_key_id = %s")
+            params.append(ssh_key_id)
+            updated_fields.append("ssh_key_id")
+
+        if local_path is not None:
+            set_parts.append("local_path = %s")
+            params.append(local_path)
+            updated_fields.append("local_path")
+
+        if not set_parts:
+            return []  # nothing to update — idempotent no-op
+
+        params.append(repo_id)
+        sql = f"UPDATE repos SET {', '.join(set_parts)} WHERE id = %s"
+
+        try:
+            with self._pool.checkout() as conn:
+                self._pool.execute(conn, sql, tuple(params))
+        except psycopg2.errors.UniqueViolation as e:
+            # Safety net for TOCTOU race: pre-check can pass while a concurrent
+            # UPDATE commits the same (url, branch) between our SELECT and UPDATE.
+            raise RepoConflictError(
+                f"A repo with url={effective_url!r} branch={effective_branch!r} "
+                f"already exists (concurrent write)"
+            ) from e
+
+        return updated_fields
 
     def update_repo_local_path(self, repo_id: int, local_path: str) -> None:
         """Update local_path for a repo after a successful clone.

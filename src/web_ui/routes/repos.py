@@ -131,6 +131,91 @@ async def set_profile_parent(
     }))
 
 
+class UpdateProfileBody(BaseModel):
+    name: str | None = None
+    version: str | None = None
+    description: str | None = None
+
+
+@router.patch("/profiles/{profile_id}")
+@audit_action("profile.update", target_param="profile_id")
+async def update_profile(
+    profile_id: int, body: UpdateProfileBody, request: Request
+):
+    """Update name, version, and/or description for an existing profile.
+
+    - 404 if profile not found.
+    - 409 if new name conflicts with an existing profile (UNIQUE), or if profile
+      has indexed repos and name/version change is requested (re-index required).
+    - 422 if new version conflicts with a descendant or ancestor profile version
+      (ADR-0016).
+    - 200 + updated_fields list on success.
+    """
+    try:
+        from src.db.exceptions import (
+            ProfileIndexedError,
+            ProfileNameConflictError,
+            ProfileNotFoundError,
+            ProfileVersionMismatchError,
+        )
+        from src.db.pg import repo_store
+
+        # Capture before-snapshot for forensic audit detail (non-sensitive fields only)
+        existing = repo_store().get_profile_by_id(profile_id)
+        if existing is not None:
+            try:
+                request.state.audit_detail["before"] = {
+                    "name": existing.get("name"),
+                    "odoo_version": existing.get("odoo_version"),
+                    "description": existing.get("description"),
+                }
+            except Exception:
+                pass
+
+        updated_fields = repo_store().update_profile(
+            profile_id,
+            name=body.name,
+            version=body.version,
+            description=body.description,
+        )
+
+        # Capture after-snapshot
+        try:
+            after: dict = {}
+            if body.name is not None:
+                after["name"] = body.name
+            if body.version is not None:
+                after["odoo_version"] = body.version
+            if body.description is not None:
+                after["description"] = body.description
+            request.state.audit_detail["after"] = after
+            request.state.audit_detail["updated_fields"] = updated_fields
+        except Exception:
+            pass
+
+    except ProfileNotFoundError as e:
+        _logger.warning("Update profile: not found: %s", e)
+        raise HTTPException(status_code=404, detail="Profile not found")
+    except ProfileNameConflictError as e:
+        _logger.warning("Update profile: name conflict: %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
+    except ProfileIndexedError as e:
+        _logger.warning("Update profile: indexed repos block change: %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
+    except ProfileVersionMismatchError as e:
+        _logger.warning("Update profile: version mismatch: %s", e)
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        _logger.warning("Update profile %s failed: %s", profile_id, e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+
+    return JSONResponse(_json_safe({
+        "ok": True,
+        "profile_id": profile_id,
+        "updated_fields": updated_fields,
+    }))
+
+
 @router.delete("/profiles/{profile_id}")
 @audit_action("profile.delete", target_param="profile_id")
 async def delete_profile(request: Request, profile_id: int):
@@ -426,6 +511,104 @@ async def ssh_keys_list(request: Request):
     except Exception as e:
         return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
     return JSONResponse(_json_safe([{"id": k["id"], "name": k["name"]} for k in keys]))
+
+
+class UpdateRepoBody(BaseModel):
+    url: str | None = None
+    branch: str | None = None
+    # ssh_key_id: None = do not change; use clear_ssh_key=True to set NULL explicitly.
+    ssh_key_id: int | None = None
+    clear_ssh_key: bool = False
+    local_path: str | None = None
+
+
+@router.patch("/repos/{repo_id}")
+@audit_action("repo.update", target_param="repo_id")
+async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
+    """Update URL / branch / SSH key / local_path of an existing repo.
+
+    head_sha is intentionally preserved so the incremental indexer can still
+    use the stored sha — avoiding a costly full reindex after a metadata edit.
+    """
+    from src.git_utils import is_ssh_url
+
+    try:
+        from src.db.exceptions import RepoConflictError, RepoNotFoundError
+        from src.db.pg import repo_store
+
+        # SSH URL validation: if the effective URL is SSH, a key must be set.
+        # Resolve effective URL (may come from body or from existing row).
+        existing = repo_store().get_repo_by_id(repo_id)
+        if existing is None:
+            return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
+
+        # Capture before-snapshot for forensic audit detail (non-sensitive fields only)
+        try:
+            request.state.audit_detail["before"] = {
+                "url": existing.get("url"),
+                "branch": existing.get("branch"),
+                "ssh_key_id": existing.get("ssh_key_id"),
+                "local_path": existing.get("local_path"),
+            }
+        except Exception:
+            pass
+
+        effective_url = body.url if body.url is not None else existing["url"]
+        effective_ssh_key_id = existing.get("ssh_key_id")
+        if body.clear_ssh_key:
+            effective_ssh_key_id = None
+        elif body.ssh_key_id is not None:
+            effective_ssh_key_id = body.ssh_key_id
+
+        if is_ssh_url(effective_url) and not effective_ssh_key_id:
+            return JSONResponse(
+                _json_safe(
+                    {"error": "SSH URL requires an SSH key. Provide ssh_key_id or select one."}
+                ),
+                status_code=400,
+            )
+
+        updated_fields = repo_store().update_repo(
+            repo_id,
+            url=body.url,
+            branch=body.branch,
+            ssh_key_id=body.ssh_key_id,
+            clear_ssh_key=body.clear_ssh_key,
+            local_path=body.local_path,
+        )
+
+        # Capture after-snapshot — only fields that changed
+        try:
+            after: dict = {}
+            if body.url is not None:
+                after["url"] = body.url
+            if body.branch is not None:
+                after["branch"] = body.branch
+            if body.clear_ssh_key:
+                after["ssh_key_id"] = None
+            elif body.ssh_key_id is not None:
+                after["ssh_key_id"] = body.ssh_key_id
+            if body.local_path is not None:
+                after["local_path"] = body.local_path
+            request.state.audit_detail["after"] = after
+            request.state.audit_detail["updated_fields"] = updated_fields
+        except Exception:
+            pass
+
+    except RepoNotFoundError:
+        return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
+    except RepoConflictError as e:
+        _logger.warning("Update repo %s conflict: %s", repo_id, e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=409)
+    except Exception as e:
+        _logger.warning("Update repo %s failed: %s", repo_id, e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+
+    return JSONResponse(_json_safe({
+        "ok": True,
+        "repo_id": repo_id,
+        "updated_fields": updated_fields,
+    }))
 
 
 @router.delete("/repos/{repo_id}")

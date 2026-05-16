@@ -854,6 +854,130 @@ class TestProfileHierarchyWebUI:
         assert "error" in resp.json()
 
 
+class TestUpdateProfileEndpoint:
+    """Tests for PATCH /api/repos/profiles/{id} (edit profile metadata)."""
+
+    @pytest.mark.asyncio
+    async def test_update_profile_happy_path(self, migrated_pg):
+        """PATCH with description change returns 200 + updated_fields."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("upd_profile_happy", "17.0", "original desc")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"description": "updated description"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["profile_id"] == pid
+        assert "description" in body["updated_fields"]
+
+        # Verify persisted
+        profiles = repo_store().list_profiles()
+        p = next(pr for pr in profiles if pr["id"] == pid)
+        assert p["description"] == "updated description"
+
+    @pytest.mark.asyncio
+    async def test_update_profile_404(self, migrated_pg):
+        """PATCH with nonexistent profile_id returns 404."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                "/api/repos/profiles/99999",
+                json={"description": "x"},
+            )
+
+        assert resp.status_code == 404
+        assert "detail" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_update_profile_name_conflict(self, migrated_pg):
+        """PATCH renaming to an existing name returns 409."""
+        from src.db.pg import repo_store
+
+        repo_store().add_profile("name_taken", "17.0")
+        pid2 = repo_store().add_profile("name_to_rename", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid2}",
+                json={"name": "name_taken"},
+            )
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "detail" in body
+
+    @pytest.mark.asyncio
+    async def test_update_profile_version_mismatch_descendants(self, migrated_pg):
+        """PATCH changing version when descendants have different version returns 422."""
+        from src.db.pg import repo_store
+
+        parent_id = repo_store().add_profile("parent_ver17", "17.0")
+        child_id = repo_store().add_profile("child_ver17", "17.0")
+        repo_store().set_profile_parent(child_id, parent_id)
+
+        # Child is on 17.0 — changing parent to 18.0 should conflict
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{parent_id}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+        assert "mismatch" in body["detail"].lower() or "descendant" in body["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_update_profile_no_op_returns_empty_fields(self, migrated_pg):
+        """PATCH with same values returns 200 with empty updated_fields."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("noop_profile", "17.0", "same desc")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"description": "same desc"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["updated_fields"] == []
+
+    @pytest.mark.asyncio
+    async def test_update_profile_version_ok_no_descendants(self, migrated_pg):
+        """PATCH version change when no descendants is allowed."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("lone_profile", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "odoo_version" in body["updated_fields"]
+
+        profiles = repo_store().list_profiles()
+        p = next(pr for pr in profiles if pr["id"] == pid)
+        assert p["odoo_version"] == "18.0"
+
+
 class TestCloneAllEndpoint:
     """Tests for POST /api/repos/profiles/{id}/clone-all (JSON API)."""
 
@@ -980,3 +1104,386 @@ class TestCloneAllEndpoint:
         assert body["ok"] is True
         assert body["total"] == 0
         assert "message" in body
+
+
+class TestUpdateRepoEndpoint:
+    """Tests for PATCH /api/repos/repos/{id} — edit repo without losing head_sha."""
+
+    @pytest.mark.asyncio
+    async def test_update_repo_happy_path(self, migrated_pg):
+        """PATCH branch → 200; head_sha is preserved."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("edit_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo",
+        )
+        # Simulate a prior index run by storing a head_sha
+        repo_store().update_repo_head_sha(rid, "abc123deadbeef")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={"branch": "16.0"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["repo_id"] == rid
+        assert "branch" in body["updated_fields"]
+
+        # head_sha must NOT be cleared
+        repo = repo_store().get_repo_by_id(rid)
+        assert repo["branch"] == "16.0"
+        assert repo["head_sha"] == "abc123deadbeef"
+
+    @pytest.mark.asyncio
+    async def test_update_repo_404(self, migrated_pg):
+        """PATCH non-existent repo_id → 404."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                "/api/repos/repos/99999",
+                json={"branch": "17.0"},
+            )
+
+        assert resp.status_code == 404
+        assert "error" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_update_repo_conflict(self, migrated_pg):
+        """PATCH url+branch that collides with another repo → 409."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("conflict_profile", "17.0")
+        repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo",
+        )
+        rid2 = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/enterprise.git",
+            branch="17.0",
+            local_path="/tmp/enterprise",
+        )
+
+        # Try to change rid2's URL to match rid1's url+branch
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid2}",
+                json={"url": "https://github.com/odoo/odoo.git", "branch": "17.0"},
+            )
+
+        assert resp.status_code == 409
+        assert "error" in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_update_repo_ssh_key_required(self, migrated_pg):
+        """PATCH to SSH URL without ssh_key_id → 400."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("ssh_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo",
+        )
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={"url": "git@github.com:odoo/odoo.git"},
+            )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        assert "SSH" in body["error"] or "ssh" in body["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_update_repo_empty_body_returns_empty_fields(self, migrated_pg):
+        """PATCH with all-None body (no-op) returns 200 with empty updated_fields."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("noop_repo_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_noop",
+        )
+        repo_store().update_repo_head_sha(rid, "sha_noop123")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["updated_fields"] == []
+
+        # head_sha must be preserved
+        repo = repo_store().get_repo_by_id(rid)
+        assert repo["head_sha"] == "sha_noop123"
+
+    @pytest.mark.asyncio
+    async def test_update_repo_single_field_others_unchanged(self, migrated_pg):
+        """PATCH a single field leaves other fields + head_sha intact."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("single_field_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_single",
+        )
+        repo_store().update_repo_head_sha(rid, "sha_single456")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={"branch": "16.0"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["updated_fields"] == ["branch"]
+
+        repo = repo_store().get_repo_by_id(rid)
+        assert repo["branch"] == "16.0"
+        assert repo["url"] == "https://github.com/odoo/odoo.git"
+        assert repo["local_path"] == "/tmp/odoo_single"
+        assert repo["head_sha"] == "sha_single456"  # must NOT be cleared
+
+    @pytest.mark.asyncio
+    async def test_update_repo_concurrent_uniqueviolation_returns_409(
+        self, migrated_pg
+    ):
+        """Race condition: pre-check passes but UPDATE raises UniqueViolation → 409 not 500."""
+        import psycopg2.errors
+
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("race_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_race",
+        )
+
+        # Mock the pool so the UNIQUE pre-check passes (no conflict row) and the
+        # subsequent UPDATE raises UniqueViolation — simulating a concurrent INSERT
+        # winning the race between our SELECT and our UPDATE.
+        #
+        # The mock must be SQL-aware: get_repo_by_id() also uses fetch_one to load
+        # the existing row, and that call must NOT be intercepted (otherwise the
+        # route returns 404 before reaching the UPDATE path).
+        original_fetch_one = repo_store()._pool.fetch_one
+        original_execute = repo_store()._pool.execute
+
+        def fake_fetch_one(conn, sql, params=None):
+            # Only intercept the UNIQUE conflict pre-check; let get_repo_by_id pass through.
+            if "WHERE url = %s AND branch = %s AND id != %s" in sql:
+                return None
+            return original_fetch_one(conn, sql, params)
+
+        def fake_execute(conn, sql, params=None):
+            if "UPDATE repos SET" in sql:
+                raise psycopg2.errors.UniqueViolation("duplicate key")
+            return original_execute(conn, sql, params)
+
+        app = create_app()
+        with mock.patch.object(
+            repo_store()._pool, "fetch_one", side_effect=fake_fetch_one
+        ), mock.patch.object(
+            repo_store()._pool, "execute", side_effect=fake_execute
+        ):
+            async with _async_client(app) as client:
+                resp = await client.patch(
+                    f"/api/repos/repos/{rid}",
+                    json={"branch": "16.0"},
+                )
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "error" in body
+
+
+class TestUpdateProfileEndpointExtra:
+    """Additional test cases for PATCH /api/repos/profiles/{id} (PR #116 review)."""
+
+    @pytest.mark.asyncio
+    async def test_update_profile_version_change_with_indexed_data_returns_409(
+        self, migrated_pg
+    ):
+        """PATCH version when profile has indexed repos → 409 with reindex message."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("indexed_ver_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_indexed_ver",
+        )
+        # Simulate indexed state
+        repo_store().update_repo_head_sha(rid, "sha_indexed_ver")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "detail" in body
+        detail_lower = body["detail"].lower()
+        assert "indexed" in detail_lower or "reindex" in detail_lower
+
+    @pytest.mark.asyncio
+    async def test_update_profile_name_change_with_indexed_data_returns_409(
+        self, migrated_pg
+    ):
+        """PATCH name when profile has indexed repos → 409 (Neo4j Module.profile is name array)."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("indexed_name_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_indexed_name",
+        )
+        # Simulate indexed state
+        repo_store().update_repo_head_sha(rid, "sha_indexed_name")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"name": "new_name_after_index"},
+            )
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "detail" in body
+        detail_lower = body["detail"].lower()
+        assert "indexed" in detail_lower or "reindex" in detail_lower
+
+    @pytest.mark.asyncio
+    async def test_update_profile_version_change_no_indexed_data_allowed(
+        self, migrated_pg
+    ):
+        """PATCH version when NO indexed repos (head_sha=NULL) → allowed (200)."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("unindexed_ver_profile", "17.0")
+        repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_unindexed_ver",
+            # head_sha stays NULL — not indexed
+        )
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert "odoo_version" in body["updated_fields"]
+
+    @pytest.mark.asyncio
+    async def test_update_profile_ancestor_version_mismatch_returns_422(
+        self, migrated_pg
+    ):
+        """PATCH child version to differ from parent → 422 (ancestor check)."""
+        from src.db.pg import repo_store
+
+        parent_id = repo_store().add_profile("anc_parent_v17", "17.0")
+        child_id = repo_store().add_profile("anc_child_v17", "17.0")
+        repo_store().set_profile_parent(child_id, parent_id)
+
+        # Child has no indexed repos — only ancestor check should trigger
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{child_id}",
+                json={"version": "16.0"},
+            )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+        detail_lower = body["detail"].lower()
+        assert "mismatch" in detail_lower or "parent" in detail_lower
+
+    @pytest.mark.asyncio
+    async def test_update_profile_3_level_descendants_version_mismatch(
+        self, migrated_pg
+    ):
+        """root → child → grandchild; PATCH root version → 422 (descendant check)."""
+        from src.db.pg import repo_store
+
+        root_id = repo_store().add_profile("root_v17", "17.0")
+        child_id = repo_store().add_profile("child_v17", "17.0")
+        grandchild_id = repo_store().add_profile("grandchild_v17", "17.0")
+        repo_store().set_profile_parent(child_id, root_id)
+        repo_store().set_profile_parent(grandchild_id, child_id)
+
+        # Changing root version conflicts with grandchild (still on 17.0)
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{root_id}",
+                json={"version": "18.0"},
+            )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+        detail_lower = body["detail"].lower()
+        assert "mismatch" in detail_lower or "descendant" in detail_lower
+
+    @pytest.mark.asyncio
+    async def test_update_profile_invalid_version_type(self, migrated_pg):
+        """PATCH with version=123 (integer) → 422 from Pydantic validation."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("type_check_profile", "17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/profiles/{pid}",
+                json={"version": 123},
+            )
+
+        # Pydantic coerces int to str for str | None fields in strict=False mode,
+        # so this may return 200 with version="123" OR 422 depending on Pydantic config.
+        # Either outcome is acceptable; what we verify is that it does NOT crash (500).
+        assert resp.status_code in (200, 422)

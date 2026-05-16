@@ -165,6 +165,13 @@ def audit_action(action: str, *, target_param: str | None = None) -> Callable:
         - Other exception  →  success=False, detail={error_type, error_message}.
         - Re-raises original exception always.
 
+    Extra forensic detail (before/after snapshots):
+        Handlers can enrich the audit record by calling
+        ``request.state.audit_detail.update({...})`` before returning.
+        The decorator merges request.state.audit_detail into the detail dict.
+        Only safe, non-sensitive fields should be placed there (url, branch,
+        ssh_key_id, profile name/version — NOT passwords or private keys).
+
     Note:
         Only supports async def handlers (all M9 FastAPI routes are async).
         Sync handlers are not supported and will raise TypeError at decoration time
@@ -204,6 +211,11 @@ def audit_action(action: str, *, target_param: str | None = None) -> Callable:
                 ua = request.headers.get("user-agent", "")
                 if ua:
                     detail["user_agent"] = ua[:200]
+                # Prepare state slot for handler-injected forensic detail
+                try:
+                    request.state.audit_detail = {}
+                except Exception:
+                    pass
 
             try:
                 result = await handler(*args, **kwargs)
@@ -211,6 +223,14 @@ def audit_action(action: str, *, target_param: str | None = None) -> Callable:
                 status = getattr(result, "status_code", None)
                 if status is not None:
                     detail["status_code"] = status
+                # Merge handler-injected forensic detail (before/after snapshots)
+                if request is not None:
+                    try:
+                        handler_extra = getattr(request.state, "audit_detail", {})
+                        if handler_extra:
+                            detail.update(handler_extra)
+                    except Exception:
+                        pass
                 # success criterion: no status_code (treated as 200) OR status < 400
                 ok = (status is None) or (status < 400)
                 write_audit_log(actor, action, target, ok, detail)
@@ -219,6 +239,14 @@ def audit_action(action: str, *, target_param: str | None = None) -> Callable:
             except Exception as exc:
                 from fastapi import HTTPException
 
+                # Merge any partial forensic detail written before the exception
+                if request is not None:
+                    try:
+                        handler_extra = getattr(request.state, "audit_detail", {})
+                        if handler_extra:
+                            detail.update(handler_extra)
+                    except Exception:
+                        pass
                 if isinstance(exc, HTTPException):
                     detail["status_code"] = exc.status_code
                     detail["reason"] = str(exc.detail)
