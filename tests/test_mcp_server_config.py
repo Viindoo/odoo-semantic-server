@@ -94,17 +94,23 @@ def test_get_driver_env_overrides_config(tmp_path, monkeypatch):
 
 
 def test_find_examples_empty_query_returns_early():
-    """_find_examples('') must return immediately without opening any DB connection."""
+    """_find_examples('') must return immediately without opening any DB connection.
+
+    Per ADR-0023 §2 (English-only output policy), the empty-query message is in English.
+    """
     from src.mcp.server import _find_examples
 
     result = _find_examples("", _driver=object(), _pg_conn=object(), _embedder=object())
-    assert "query rỗng" in result
+    assert "empty query" in result
     assert "Found 0 results" in result
 
 
 def test_find_examples_whitespace_query_returns_early():
-    """_find_examples with only whitespace is treated the same as empty."""
+    """_find_examples with only whitespace is treated the same as empty.
+
+    Per ADR-0023 §2 (English-only output policy), the empty-query message is in English.
+    """
     from src.mcp.server import _find_examples
 
     result = _find_examples("   ", _driver=object(), _pg_conn=object(), _embedder=object())
-    assert "query rỗng" in result
+    assert "empty query" in result
