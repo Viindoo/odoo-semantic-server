@@ -1,0 +1,329 @@
+---
+/**
+ * ProfileTree.astro — renders a nested tree view of profiles.
+ *
+ * Props:
+ *   profiles — the flat list of profile objects (same shape as API response).
+ *              Each item may have: id, name, odoo_version, description, repos,
+ *              parent_profile_id.
+ *
+ * The component renders an empty shell; the actual tree DOM is built by the
+ * inline <script> below using safe DOM construction (no innerHTML) so there
+ * is no XSS risk from profile data.
+ */
+export interface Profile {
+  id: number;
+  name: string;
+  odoo_version: string;
+  description?: string;
+  repos?: unknown[];
+  parent_profile_id?: number | null;
+}
+
+interface Props {
+  profiles: Profile[];
+}
+
+const { profiles } = Astro.props;
+---
+
+<div id="profile-tree-container" class="divide-y divide-gray-100">
+  <!-- Populated by inline JS via buildTree() -->
+</div>
+
+<script define:vars={{ profiles }}>
+  /**
+   * Build a tree from a flat list of profiles.
+   * Profiles with a missing or unknown parent_profile_id become roots.
+   */
+  function buildTree(profileList) {
+    const byId = new Map(profileList.map((p) => [p.id, { ...p, children: [] }]));
+    const roots = [];
+    for (const p of byId.values()) {
+      if (p.parent_profile_id && byId.has(p.parent_profile_id)) {
+        byId.get(p.parent_profile_id).children.push(p);
+      } else {
+        roots.push(p);
+      }
+    }
+    return roots;
+  }
+
+  /**
+   * Create a profile card DOM element at the given depth using safe DOM APIs.
+   * No innerHTML is used — all user-supplied strings go through textContent or
+   * setAttribute, which are XSS-safe by design.
+   */
+  function createProfileNode(p, depth) {
+    // Outer wrapper
+    const wrapper = document.createElement('div');
+    wrapper.dataset.testid = 'profile-row';
+    wrapper.dataset.testidId = `profile-row-${p.id}`;
+    wrapper.className = 'px-5 py-4 hover:bg-gray-50 profile-tree-node';
+
+    // Inner connector div (visual indent + optional left-border for children)
+    const inner = document.createElement('div');
+    if (depth > 0) {
+      inner.className = 'border-l-2 border-gray-200 ml-2 pl-3';
+      inner.style.marginLeft = `${depth * 1}rem`;
+    }
+
+    // Row: flex container for name+actions
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between flex-wrap gap-2';
+
+    // Left side: connector symbol + name block
+    const leftSide = document.createElement('div');
+    leftSide.className = 'flex items-center gap-2';
+
+    if (depth > 0) {
+      const connector = document.createElement('span');
+      connector.className = 'text-gray-300 text-xs select-none';
+      connector.textContent = '└─';
+      leftSide.appendChild(connector);
+    }
+
+    const nameBlock = document.createElement('div');
+
+    const nameEl = document.createElement('p');
+    nameEl.className = 'font-medium text-gray-800';
+    nameEl.textContent = p.name;
+
+    const metaEl = document.createElement('p');
+    metaEl.className = 'text-xs text-gray-500 mt-0.5';
+    metaEl.textContent = `Odoo ${p.odoo_version}${p.description ? ` — ${p.description}` : ''}`;
+
+    nameBlock.appendChild(nameEl);
+    nameBlock.appendChild(metaEl);
+    leftSide.appendChild(nameBlock);
+
+    // Right side: repo count + actions
+    const rightSide = document.createElement('div');
+    rightSide.className = 'flex items-center gap-3 flex-wrap';
+
+    const repoCount = document.createElement('span');
+    repoCount.className = 'text-sm text-gray-500';
+    repoCount.textContent = `${p.repos?.length ?? 0} repos`;
+
+    // Parent select
+    const parentSelect = document.createElement('select');
+    parentSelect.dataset.testid = 'profile-parent-select';
+    parentSelect.dataset.profileId = String(p.id);
+    parentSelect.className =
+      'text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select';
+    parentSelect.title = 'Set parent profile';
+
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = '— no parent —';
+    if (!p.parent_profile_id) noneOpt.selected = true;
+    parentSelect.appendChild(noneOpt);
+
+    for (const other of profiles) {
+      if (other.id === p.id || other.odoo_version !== p.odoo_version) continue;
+      const opt = document.createElement('option');
+      opt.value = String(other.id);
+      opt.textContent = other.name;
+      if (p.parent_profile_id === other.id) opt.selected = true;
+      parentSelect.appendChild(opt);
+    }
+
+    // Clone all button
+    const cloneBtn = document.createElement('button');
+    cloneBtn.dataset.testid = 'clone-all-button';
+    cloneBtn.dataset.profileId = String(p.id);
+    cloneBtn.className =
+      'text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn';
+    cloneBtn.textContent = 'Clone all pending';
+
+    // Delete button
+    const deleteBtn = document.createElement('button');
+    deleteBtn.dataset.testid = `delete-profile-button-${p.id}`;
+    deleteBtn.dataset.profileId = String(p.id);
+    deleteBtn.className =
+      'text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn';
+    deleteBtn.textContent = 'Delete';
+
+    rightSide.appendChild(repoCount);
+    rightSide.appendChild(parentSelect);
+    rightSide.appendChild(cloneBtn);
+    rightSide.appendChild(deleteBtn);
+
+    row.appendChild(leftSide);
+    row.appendChild(rightSide);
+
+    // Clone-all status div (hidden until triggered)
+    const statusDiv = document.createElement('div');
+    statusDiv.dataset.testid = `clone-all-status-${p.id}`;
+    statusDiv.dataset.profileId = String(p.id);
+    statusDiv.className = 'mt-2';
+    statusDiv.hidden = true;
+
+    inner.appendChild(row);
+    inner.appendChild(statusDiv);
+    wrapper.appendChild(inner);
+
+    return wrapper;
+  }
+
+  /**
+   * Recursively append tree nodes to a parent element.
+   */
+  function appendTreeNodes(nodes, parentEl, depth) {
+    for (const node of nodes) {
+      const el = createProfileNode(node, depth);
+      parentEl.appendChild(el);
+      if (node.children && node.children.length > 0) {
+        appendTreeNodes(node.children, parentEl, depth + 1);
+      }
+    }
+  }
+
+  function renderTree() {
+    const container = document.getElementById('profile-tree-container');
+    if (!container) return;
+
+    // Clear existing content safely
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
+
+    const roots = buildTree(profiles);
+
+    if (roots.length === 0) {
+      const emptyState = document.createElement('div');
+      emptyState.className = 'py-12 text-center text-gray-500';
+
+      const emoji = document.createElement('p');
+      emoji.className = 'text-3xl mb-2';
+      emoji.textContent = '🗂️';
+
+      const msg = document.createElement('p');
+      msg.className = 'font-medium';
+      msg.textContent = 'No profiles configured.';
+
+      const hint = document.createElement('p');
+      hint.className = 'text-sm mt-1';
+      hint.textContent = 'Add a profile above to get started.';
+
+      emptyState.appendChild(emoji);
+      emptyState.appendChild(msg);
+      emptyState.appendChild(hint);
+      container.appendChild(emptyState);
+      return;
+    }
+
+    appendTreeNodes(roots, container, 0);
+    attachProfileTreeListeners(container);
+  }
+
+  /**
+   * Attach event listeners to profile-tree elements inside a container.
+   * Called after each tree render to wire up selects and buttons.
+   */
+  function attachProfileTreeListeners(container) {
+    // Parent select
+    container.querySelectorAll('.profile-parent-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const profileId = sel.dataset.profileId;
+        const parentId = sel.value ? Number(sel.value) : null;
+        const res = await fetch(`/api/repos/profiles/${profileId}/parent`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: parentId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showFlashTree('Parent updated.', 'success');
+        } else if (res.status === 404) {
+          showFlashTree(data.error ?? 'Profile not found.', 'error');
+        } else if (res.status === 422) {
+          showFlashTree(data.detail ?? data.error ?? 'Validation error.', 'error');
+        } else if (res.status === 400) {
+          showFlashTree(data.error ?? 'Invalid parent selection.', 'error');
+        } else {
+          showFlashTree(data.error ?? 'Failed to update parent.', 'error');
+        }
+      });
+    });
+
+    // Clone all pending
+    container.querySelectorAll('.clone-all-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const profileId = btn.dataset.profileId;
+        btn.disabled = true;
+
+        const res = await fetch(`/api/repos/profiles/${profileId}/clone-all`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok) {
+          const total = data.total ?? 0;
+          if (total === 0) {
+            showFlashTree('No pending repos to clone.', 'success');
+            btn.disabled = false;
+            return;
+          }
+          showFlashTree(`Clone-all started: ${total} repo(s) processing.`, 'success');
+
+          const statusDiv = container.querySelector(
+            `[data-testid="clone-all-status-${profileId}"]`
+          );
+          if (statusDiv) {
+            statusDiv.removeAttribute('hidden');
+            const badge = statusDiv.querySelector('[data-testid^="clone-all-job-"]');
+            if (badge) {
+              badge.textContent = `Spawned: ${data.spawned ?? 0}, Short-circuited: ${data.short_circuited ?? 0}`;
+              badge.removeAttribute('hidden');
+            }
+          }
+        } else if (res.status === 404) {
+          showFlashTree('Profile not found.', 'error');
+        } else {
+          showFlashTree(data.error ?? 'Clone-all failed.', 'error');
+        }
+        btn.disabled = false;
+      });
+    });
+
+    // Delete
+    container.querySelectorAll('.delete-profile-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const profileId = btn.dataset.profileId;
+        if (!confirm('Delete this profile and ALL its repos? This cannot be undone.')) return;
+        const res = await fetch(`/api/repos/profiles/${profileId}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showFlashTree('Profile deleted.', 'success');
+          setTimeout(() => location.reload(), 800);
+        } else {
+          showFlashTree(data.error ?? 'Delete failed.', 'error');
+        }
+      });
+    });
+  }
+
+  function showFlashTree(msg, type) {
+    const banner = document.querySelector('[data-testid="flash-banner"]');
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error'
+        ? 'bg-red-100 text-red-800 border-red-300'
+        : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
+  }
+
+  // Initial render
+  renderTree();
+
+  // Expose for external callers (e.g., toggle in repos.astro)
+  window.__renderProfileTree = renderTree;
+</script>
