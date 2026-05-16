@@ -66,6 +66,14 @@ SNIPPET_PREVIEW_MAX_LINES: int = 5
 ERROR_MSG_MAX_CHARS: int = 100
 CODE_PREVIEW_MAX_CHARS: int = 60
 
+# List-tool preview caps — see ADR-0023 §3. Default applies to list_* tools and
+# any unbounded sublist (Extended by, deprecated usage hits, etc.). Per-tool
+# overrides exist because field-heavy models and verbose JS patches have
+# different readability sweet spots.
+LIST_PREVIEW_MAX_ITEMS: int = 20    # Default cap for list_* and sublists (ADR-0023 §3)
+LIST_PREVIEW_FIELDS_MAX: int = 50   # account.move has ~150 fields; 20 too restrictive
+LIST_PREVIEW_PATCHES_MAX: int = 10  # JS patches are verbose; 10 sufficient for overview
+
 # ---------------------------------------------------------------------------
 # Impact analysis risk thresholds
 # Validated 2026-05-11 against 25-case curated incident set, macro-F1 = 1.0000

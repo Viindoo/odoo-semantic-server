@@ -985,11 +985,17 @@ class TestResolveViewSnapshots:
     def test_resolve_view_base_only(self, neo4j_driver):
         """Test 1: base-only view (no extensions, no parent).
 
+        Wave 3 (ADR-0023 §1.6): empty Extended-by section is now silently
+        skipped — the prior ``└─ No extensions`` literal was removed because
+        ``resolve_view`` is overview intent, not enumeration intent.
+
+        Wave 5 (ADR-0023 §4): drill-down tools terminate with ``└─ Next:``.
+
         Output must contain:
         - Header: "sale.view_sale_form (Odoo 95.0)"
         - Type: form
         - Model: sale.order
-        - "No extensions"
+        - "└─ Next:" footer (the empty Extended-by section is silent-skipped)
         """
         from src.indexer.models import ModuleInfo, ViewInfo, ViewParseResult
 
@@ -1042,8 +1048,14 @@ class TestResolveViewSnapshots:
         assert any("Model:" in ln and "sale.order" in ln for ln in lines), (
             "Missing 'Model: sale.order' line"
         )
-        assert any("No extensions" in ln for ln in lines), (
-            f"Missing 'No extensions' line for base view. Lines: {lines}"
+        # Wave 3 (ADR-0023 §1.6): empty Extended-by branch is silent-skipped;
+        # the prior 'No extensions' literal MUST NOT appear.
+        assert not any("No extensions" in ln for ln in lines), (
+            f"'No extensions' string must be silent-skipped now, got: {lines}"
+        )
+        # Wave 5 (ADR-0023 §4): drill-down tools terminate with '└─ Next:'.
+        assert lines[-1].startswith("└─ Next:"), (
+            f"resolve_view must end with '└─ Next:' footer, got: {lines[-1]!r}"
         )
         assert any(ln.startswith("├─") or ln.startswith("└─") for ln in lines), (
             "Missing tree connectors"

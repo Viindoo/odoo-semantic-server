@@ -42,7 +42,7 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **14 tools** (M1–M5): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point` — Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
+MCP server expose **21 tools** (M1–M5 + M9 Wave 1): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`, `describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches` — Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
 
 → [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
 
@@ -119,14 +119,14 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 |------|----------|
 | [`docs/client-setup.md`](docs/client-setup.md) | **End-user client setup** — Claude Code, Codex, Gemini, VS Code, Antigravity (snippets + pitfalls đầy đủ) |
 | [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
-| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 14 MCP tool sign-off table trước khi mở public |
+| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 21 MCP tool sign-off table trước khi mở public |
 | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | **DR runbook** — backup frequency, restore order, step-by-step commands, RTO estimate |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | **Bắt đầu ở đây nếu bạn là developer** — setup, chạy tests, Local E2E, workflow |
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
-| [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 14 tools, trigger conditions, persona mapping |
+| [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 21 tools, trigger conditions, persona mapping |
 | [`docs/orchestration-workflow.md`](docs/orchestration-workflow.md) | Multi-subagent orchestration workflow (9-phase pattern) |
 
 ---

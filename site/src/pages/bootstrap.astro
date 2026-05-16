@@ -1,0 +1,145 @@
+---
+export const prerender = true;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+import bootstrapData from '../../../src/indexer/spec_data/bootstrap_versions.json';
+
+type VersionInfo = {
+  bootstrap_version: string;
+  scss_files: string[];
+  breaking_changes: string[];
+  notes: string;
+};
+
+const versions = bootstrapData.versions as Record<string, VersionInfo>;
+
+// Sort numerically by major version (8.0, 9.0, 10.0, ..., 19.0).
+const rows = Object.entries(versions)
+  .map(([odooVersion, info]) => ({ odooVersion, ...info }))
+  .sort((a, b) => parseFloat(a.odooVersion) - parseFloat(b.odooVersion));
+
+const owner = bootstrapData._owner;
+const generatedAt = bootstrapData._generated_at;
+const source = bootstrapData._source;
+---
+
+<BaseLayout
+  title="Bootstrap & SCSS by Odoo version — Odoo Semantic MCP"
+  description="Reference table mapping each Odoo major version (v8 to v19) to the Bootstrap version it ships, key SCSS variable files, and breaking changes for frontend developers."
+>
+  <section class="bg-gray-950 min-h-screen py-20 px-4">
+    <!-- Header -->
+    <div class="max-w-5xl mx-auto mb-12">
+      <a
+        href="/"
+        class="inline-flex items-center gap-1 text-viindoo-primary text-sm hover:text-viindoo-primary-bright transition-colors mb-6"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="w-4 h-4"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+        </svg>
+        Back to home
+      </a>
+      <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">
+        Bootstrap &amp; SCSS by Odoo version
+      </h1>
+      <p class="text-gray-400 text-lg max-w-3xl">
+        When you customize an Odoo theme — overriding brand colors, restyling the backend, or
+        forking a frontend module — you need to know exactly which Bootstrap version Odoo ships
+        and which SCSS files are safe customization seams. This table is the cheat-sheet for
+        v8 through v19.
+      </p>
+      <p class="text-gray-500 text-sm max-w-3xl mt-4">
+        SCSS file paths point to the canonical entry points inside Odoo's
+        <code class="text-viindoo-primary">addons/</code> tree. Override brand variables in
+        <em>primary_variables.scss</em> (v15+) or <em>variables.scss</em> /
+        <em>bootstrap_overridden.scss</em> (v11–v14). Never edit files inside
+        <code class="text-viindoo-primary">addons/web/static/lib/bootstrap/</code> directly —
+        those are vendored Bootstrap sources and will be overwritten on upgrade.
+      </p>
+    </div>
+
+    <!-- Table -->
+    <div class="max-w-7xl mx-auto overflow-x-auto rounded-2xl border border-gray-800 bg-gray-900 mb-10">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-gray-900/80 border-b border-gray-800 text-gray-300">
+          <tr>
+            <th class="px-4 py-3 font-semibold whitespace-nowrap">Odoo version</th>
+            <th class="px-4 py-3 font-semibold whitespace-nowrap">Bootstrap</th>
+            <th class="px-4 py-3 font-semibold">Key SCSS files</th>
+            <th class="px-4 py-3 font-semibold">Breaking changes</th>
+            <th class="px-4 py-3 font-semibold">Notes</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800 text-gray-400">
+          {rows.map((row) => (
+            <tr class="align-top hover:bg-gray-900/40 transition-colors">
+              <td class="px-4 py-4 font-mono text-viindoo-primary whitespace-nowrap">
+                {row.odooVersion}
+              </td>
+              <td class="px-4 py-4 font-mono text-viindoo-secondary-bright whitespace-nowrap">
+                {row.bootstrap_version}
+              </td>
+              <td class="px-4 py-4">
+                <ul class="space-y-1">
+                  {row.scss_files.map((f) => (
+                    <li>
+                      <code class="text-xs text-gray-300 break-all">{f}</code>
+                    </li>
+                  ))}
+                </ul>
+              </td>
+              <td class="px-4 py-4">
+                {row.breaking_changes.length === 0 ? (
+                  <span class="text-gray-600 italic">None</span>
+                ) : (
+                  <ul class="list-disc list-outside pl-4 space-y-1.5">
+                    {row.breaking_changes.map((c) => (
+                      <li class="text-gray-400">{c}</li>
+                    ))}
+                  </ul>
+                )}
+              </td>
+              <td class="px-4 py-4 text-gray-400">{row.notes}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Customization tips -->
+    <div class="max-w-5xl mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-10">
+      <h2 class="text-lg font-semibold text-white mb-3">How to use this table</h2>
+      <ul class="list-disc list-outside pl-5 space-y-2 text-sm text-gray-400">
+        <li>
+          <strong class="text-gray-200">Picking a customization seam:</strong> override SCSS
+          variables in your own addon's stylesheet, prepended to the asset bundle. Do not patch
+          files inside <code class="text-viindoo-primary">addons/web/static/lib/bootstrap/</code>.
+        </li>
+        <li>
+          <strong class="text-gray-200">Upgrading a custom theme:</strong> any version row with a
+          Bootstrap major bump (v10 → v11, v14 → v15) requires rewriting your SCSS. Minor bumps
+          are usually drop-in.
+        </li>
+        <li>
+          <strong class="text-gray-200">v17+ dual-layer theming:</strong> Bootstrap 5.3 added CSS
+          custom properties (<code class="text-viindoo-primary">--bs-primary</code>). Runtime
+          overrides win against SCSS variables — verify both layers when debugging unexpected
+          color values.
+        </li>
+      </ul>
+    </div>
+
+    <!-- Footer note -->
+    <p class="max-w-5xl mx-auto text-center text-gray-600 text-xs">
+      Curated by <span class="text-gray-400">{owner}</span> · generated
+      <time datetime={generatedAt}>{generatedAt}</time> · source: {source}
+    </p>
+  </section>
+</BaseLayout>

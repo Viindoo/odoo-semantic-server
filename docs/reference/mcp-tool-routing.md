@@ -1,6 +1,6 @@
 # MCP Tool × Persona × Adapter Routing Matrix
 
-> **Status (2026-05-13):** Canonical source for tool routing logic. Adapter files (cursor/gemini/openai/odoo-router) duplicate this content manually. Generator script deferred to M9+ — see [ADR-0012](../adr/0012-persona-skill-architecture.md).
+> **Status (2026-05-16):** Canonical source for tool routing logic. Adapter files (cursor/gemini/openai/odoo-router) duplicate this content manually. Generator script deferred to M9+ — see [ADR-0012](../adr/0012-persona-skill-architecture.md). 21-tool surface area as of M9 W-OSM Wave 1 (7 enumeration / module overview / UI-layer tools added — see [ADR-0023](../adr/proposed/0023-tool-output-completeness.md)).
 
 ## Purpose
 
@@ -32,6 +32,13 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | suggest_pattern       |     | ●  | ○ |   |   |
 | check_module_exists   | ●  | ○  | ● | ● | ● |
 | find_override_point   |     | ●  |   |   |   |
+| describe_module       | ○  | ●  | ● | ○ | ○ |
+| list_fields           |     | ●  | ○ |   |   |
+| list_methods          |     | ●  |   |   |   |
+| list_views            |     | ●  |   |   |   |
+| list_owl_components   |     | ●  |   |   |   |
+| list_qweb_templates   |     | ●  |   |   |   |
+| list_js_patches       |     | ●  |   |   |   |
 
 **Legend:** ● = primary (default first choice), ○ = secondary (related context)
 
@@ -179,6 +186,76 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Dev deciding where to inject custom behavior; needs convention guidance + super() safety + anti-patterns |
 | **Skip when** | Question is about entire override chain (→ resolve_method) or code examples (→ find_examples) |
 
+### describe_module
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "what does module viin_sale do", "describe sale_management module", "overview of website_sale", "show me the manifest and counts for module Z", "what's inside this module" |
+| **Primary VI** | "module X làm gì", "tóm tắt module Y", "manifest của module Z", "module này có gì bên trong" |
+| **Args** | `name` (required, module technical name), `odoo_version` (optional, default auto), `profile_name` (optional) |
+| **Prefer when** | Caller needs module contents (models, views, JS) and counts in one round-trip — module-level architecture overview |
+| **Skip when** | Caller only needs YES/NO + edition badge (→ check_module_exists, 1 Cypher vs 5) or wants enumerated entities (→ list_fields / list_views / list_methods) |
+
+### list_fields
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "list all fields of sale.order", "show fields on account.move", "what fields does res.partner have", "all monetary fields on account.move", "fields added by viin_sale to sale.order" |
+| **Primary VI** | "liệt kê field của model X", "tất cả field trên sale.order", "field nào thuộc về module Y" |
+| **Args** | `model` (required), `odoo_version` (optional, default auto), `module` (optional filter), `kind` (optional ttype filter), `profile_name` (optional), `limit` (optional, default 200) |
+| **Prefer when** | Caller needs the enumerated field list grouped by module — `resolve_model` only returns the count |
+| **Skip when** | Caller wants one field's detail (→ resolve_field) or only "how many fields" (→ resolve_model is cheaper) |
+
+### list_methods
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "list methods of sale.order", "all methods on res.partner", "what behavior does account.move have", "what are the action_* methods on sale.order" |
+| **Primary VI** | "method nào trên model X", "tất cả method của sale.order", "behavior của model này" |
+| **Args** | `model` (required), `odoo_version` (optional, default auto), `module` (optional filter), `profile_name` (optional), `limit` (optional, default 200) |
+| **Prefer when** | Caller needs the enumerated method list grouped by module; methods overridden in ≥2 modules are marked `(*)` |
+| **Skip when** | Caller wants one method's override chain (→ resolve_method) or the best override point (→ find_override_point) |
+
+### list_views
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "list views of sale.order", "what views are defined for res.partner", "all form views on account.move", "kanban views on hr.employee" |
+| **Primary VI** | "view nào của model X", "tất cả form/tree view trên sale.order", "list view của model này" |
+| **Args** | `model` (required), `odoo_version` (optional, default auto), `view_type` (optional: form/tree/kanban/search/...), `profile_name` (optional), `limit` (optional, default 200) |
+| **Prefer when** | Caller needs the per-model view inventory grouped by module |
+| **Skip when** | Caller wants one view's xpath chain (→ resolve_view) or QWeb portal templates (→ list_qweb_templates) |
+
+### list_owl_components
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "list OWL components in sale_management", "what OWL components does website_sale define", "OWL components for sale.order" |
+| **Primary VI** | "OWL component nào trong module X", "tất cả OWL component bound to res.partner" |
+| **Args** | `module` (required), `odoo_version` (optional, default auto), `bound_model` (optional — triggers heuristic warning footer), `profile_name` (optional), `limit` (optional, default 200) |
+| **Prefer when** | Caller needs the OWL component inventory of a module (Odoo v14+) |
+| **Skip when** | Caller wants legacy Widget extensions (v8-v13) (→ list_js_patches with `era='era1'`) or QWeb templates (→ list_qweb_templates). Returns empty + warning for Odoo v8-v13 (no OWL). |
+
+### list_qweb_templates
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "list QWeb templates in website_sale", "what QWeb templates does module X define", "all t-name templates in module Z", "show me QWeb inheritance for module W" |
+| **Primary VI** | "QWeb template nào trong module Y", "template nào trong module này", "t-name nào trong module" |
+| **Args** | `module` (required), `odoo_version` (optional, default auto), `profile_name` (optional), `limit` (optional, default 200) |
+| **Prefer when** | Caller needs the QWeb template inventory of a module with `t-inherit` parent info |
+| **Skip when** | Caller wants OWL components (v15+ JS classes) (→ list_owl_components) or the template IS an `ir.ui.view` (→ resolve_view) |
+
+### list_js_patches
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "list JS patches on hr.employee", "all OWL patches in Odoo 17", "Widget extends in v12", "legacy widget extensions in v11" |
+| **Primary VI** | "JS patch nào trên model X", "tất cả patch() trong module Y", "widget extend nào trong v11" |
+| **Args** | `odoo_version` (optional, default auto), `target` (optional, patched widget/component name), `module` (optional patching module), `era` (optional: 'era1' v8-v13 Widget extend / 'era2' v14-v16 mixin include / 'era3' v15+ OWL patch — also accepts extend/include/patch), `profile_name` (optional), `limit` (optional, default 200) |
+| **Prefer when** | Caller needs the per-target JS patch inventory across all eras (era1/era2/era3) |
+| **Skip when** | Caller wants OWL component declarations (not patches) (→ list_owl_components) or code-level usage patterns (→ find_examples) |
+
 ---
 
 ## 3. Adapter Sync Map
@@ -191,7 +268,7 @@ Khi update routing logic trong file này, propagate manual sang các adapter sau
 | Gemini Gem | `dist/gemini-gem-instructions.md` | `## Tool Routing Rules` (~L19-88) + `## Persona Modes` (~L91-117) | Instruction prose + tables |
 | Custom GPT | `dist/openai-gpt-instructions.md` | `## TOOL ROUTING` (~L19-89) + `## PERSONA MODES` (~L62-75) | System instruction prose |
 | Haiku router agent | `dist/odoo-semantic-plugin/agents/odoo-router.md` | Tool category list (~L8-24) | Markdown classification |
-| Plugin skills (14) | `dist/odoo-semantic-plugin/skills/<name>/SKILL.md` | `description:` frontmatter TRIGGER line | YAML trigger keywords |
+| Plugin skills (21) | `dist/odoo-semantic-plugin/skills/<name>/SKILL.md` | `description:` frontmatter TRIGGER line | YAML trigger keywords |
 
 > **Drift surface:** Today 6 edit points per new tool. Future generator (deferred to M9+) will reduce to 1 edit in this file + `make generate-adapters`.
 
@@ -294,5 +371,12 @@ Plugin skills can claim overlapping trigger keywords. Resolution policy:
 | suggest_pattern | ✓ | ✓ | ✓ | ✓ | odoo-override-finder |
 | check_module_exists | ✓ | ✓ | ✓ | ✓ | odoo-addon-diff |
 | find_override_point | ✓ | ✓ | ✓ | ✓ | odoo-override-finder |
+| describe_module | ✓ | ✓ | ✓ | ✓ | odoo-customization-inventory |
+| list_fields | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| list_methods | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| list_views | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| list_owl_components | ✓ | ✓ | ✓ | ✓ | odoo-owl-coder |
+| list_qweb_templates | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| list_js_patches | ✓ | ✓ | ✓ | ✓ | odoo-js-coder |
 
-> **Note:** Each adapter implements these tools via HTTP MCP protocol to `odoo-semantic-mcp` server; no duplication of logic, only routing/routing heuristics.
+> **Note:** Each adapter implements these tools via HTTP MCP protocol to `odoo-semantic-mcp` server; no duplication of logic, only routing/routing heuristics. Tool count: 14 (M1–M5) + 7 (M9 W-OSM Wave 1) = 21.

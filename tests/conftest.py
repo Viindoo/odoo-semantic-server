@@ -269,6 +269,104 @@ def make_manifest(
     )
 
 
+# ---------------------------------------------------------------------------
+# Wave 6 (ADR-0023) — seed helpers for OWLComp / JSPatch / QWebTmpl nodes.
+# Used by `tests/test_mcp_server.py::test_list_owl_components_*`,
+# `test_list_qweb_templates_*`, `test_list_js_patches_*`.
+# Direct Cypher MERGE keeps the helper independent of writer_neo4j evolution.
+# ---------------------------------------------------------------------------
+
+
+def seed_owl_components(
+    driver, *, module: str, odoo_version: str, components: list[dict],
+) -> None:
+    """MERGE a batch of OWLComp nodes (and their Module) for tests.
+
+    Each component dict: ``{"name": str, "bound_model": str | None,
+    "template": str | None}``. Repo defaults to ``"test_repo"``.
+    """
+    with driver.session() as session:
+        session.run(
+            "MERGE (mod:Module {name: $m, odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            m=module, v=odoo_version,
+        )
+        for comp in components:
+            session.run(
+                "MERGE (c:OWLComp {name: $name, module: $m, odoo_version: $v}) "
+                "SET c.bound_model = $bound_model, c.template = $template, "
+                "    c.file_path = '' "
+                "WITH c "
+                "MATCH (mod:Module {name: $m, odoo_version: $v}) "
+                "MERGE (c)-[:DEFINED_IN]->(mod)",
+                name=comp["name"], m=module, v=odoo_version,
+                bound_model=comp.get("bound_model"),
+                template=comp.get("template"),
+            )
+
+
+def seed_js_patches(
+    driver, *, module: str, odoo_version: str, patches: list[dict],
+) -> None:
+    """MERGE a batch of JSPatch nodes (and their Module) for tests.
+
+    Each patch dict: ``{"target": str, "patch_name": str,
+    "era": "extend"|"include"|"patch"}``. Repo defaults to ``"test_repo"``.
+    """
+    with driver.session() as session:
+        session.run(
+            "MERGE (mod:Module {name: $m, odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            m=module, v=odoo_version,
+        )
+        for p in patches:
+            session.run(
+                "MERGE (j:JSPatch {target: $target, patch_name: $pn, "
+                "                  module: $m, odoo_version: $v}) "
+                "SET j.era = $era, j.file_path = '' "
+                "WITH j "
+                "MATCH (mod:Module {name: $m, odoo_version: $v}) "
+                "MERGE (j)-[:DEFINED_IN]->(mod)",
+                target=p["target"], pn=p["patch_name"], m=module,
+                v=odoo_version, era=p["era"],
+            )
+
+
+def seed_qweb_templates(
+    driver, *, module: str, odoo_version: str, templates: list[dict],
+) -> None:
+    """MERGE a batch of QWebTmpl nodes (and their Module) for tests.
+
+    Each template dict: ``{"xmlid": str, "inherit_xmlid": str | None}``.
+    When ``inherit_xmlid`` is set the helper MERGE-creates the EXTENDS_TMPL
+    edge (and the parent placeholder if needed).
+    """
+    with driver.session() as session:
+        session.run(
+            "MERGE (mod:Module {name: $m, odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            m=module, v=odoo_version,
+        )
+        for t in templates:
+            session.run(
+                "MERGE (qt:QWebTmpl {xmlid: $xmlid, odoo_version: $v}) "
+                "SET qt.module = $m "
+                "WITH qt "
+                "MATCH (mod:Module {name: $m, odoo_version: $v}) "
+                "MERGE (qt)-[:DEFINED_IN]->(mod)",
+                xmlid=t["xmlid"], m=module, v=odoo_version,
+            )
+            if t.get("inherit_xmlid"):
+                session.run(
+                    "MERGE (parent:QWebTmpl {xmlid: $pxmlid, odoo_version: $v}) "
+                    "ON CREATE SET parent.module = '__seed_parent__' "
+                    "WITH parent "
+                    "MATCH (child:QWebTmpl {xmlid: $cxmlid, odoo_version: $v}) "
+                    "MERGE (child)-[:EXTENDS_TMPL]->(parent)",
+                    cxmlid=t["xmlid"], pxmlid=t["inherit_xmlid"], v=odoo_version,
+                )
+
+
 # --- PostgreSQL fixtures (for src/db tests) ---
 
 PG_TEST_DSN = os.getenv(

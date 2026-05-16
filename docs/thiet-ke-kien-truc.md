@@ -583,7 +583,7 @@ odoo-semantic-mcp/
 │   ├── cloner/                     -- SSH auto-clone subprocess orchestrator (M6 W4)
 │   │   └── __main__.py             -- spawn from web_ui, decrypt key, git clone
 │   ├── mcp/
-│   │   └── server.py               -- MCP server + 14 tools (M4.6 completion)
+│   │   └── server.py               -- MCP server + 21 tools (M9 W-OSM Wave 1)
 │   ├── web_ui/                     -- dashboard + API key mgmt + SSH UI (M5 + M6 W4)
 │   │   ├── app.py                  -- FastAPI app
 │   │   └── templates/              -- Jinja2 templates

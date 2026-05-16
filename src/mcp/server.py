@@ -16,6 +16,9 @@ from src.constants import (
     FIND_EXAMPLES_ANN_LIMIT,
     IMPACT_RISK_HIGH_THRESHOLD,
     IMPACT_RISK_MED_THRESHOLD,
+    LIST_PREVIEW_FIELDS_MAX,
+    LIST_PREVIEW_MAX_ITEMS,
+    LIST_PREVIEW_PATCHES_MAX,
     PG_POOL_MAX_CONN,
     PG_POOL_MIN_CONN,
     REL_DEPENDS_ON,
@@ -36,6 +39,50 @@ def _edition_rank_cypher(node_alias: str = "mod") -> str:
         for ed, rank in sorted(EDITION_PRIORITY.items(), key=lambda x: x[1])
     )
     return f"CASE {node_alias}.edition {cases} ELSE {EDITION_PRIORITY_ELSE} END AS edition_rank"
+
+
+def _render_capped(
+    items: list,
+    formatter,  # Callable[[Any], str]
+    cap: int = LIST_PREVIEW_MAX_ITEMS,
+    total: int | None = None,
+    more_hint: str | None = None,
+) -> list[str]:
+    """Format `items` via `formatter`, capped at `cap`, with total disclosure.
+
+    Returns a list of formatted lines. When `total` (or len(items)) exceeds
+    `cap`, appends a trailing "... and {N-cap} more (use {more_hint})" line.
+
+    `total` defaults to len(items) — pass explicitly when caller has already
+    sliced items (e.g., from a Cypher LIMIT). `more_hint` is the suggested
+    tool invocation to retrieve the full list, e.g.
+    "list_fields(model='sale.order', odoo_version='17.0') for full list".
+    Required when total > cap; raises ValueError otherwise.
+    """
+    real_total = total if total is not None else len(items)
+    lines = [formatter(it) for it in items[:cap]]
+    if real_total > cap:
+        if not more_hint:
+            raise ValueError(
+                f"_render_capped: more_hint required when total ({real_total}) > cap ({cap})"
+            )
+        lines.append(f"... and {real_total - cap} more (use {more_hint})")
+    return lines
+
+
+def _format_next_step(hints: list[str]) -> str:
+    """Render the trailing "└─ Next: ..." footer per ADR-0023 §4.
+
+    Accepts up to 2 hint strings; joins with " | ". Returns a single line
+    ready to append as the last branch of a tree. Empty list returns "".
+    Caller is responsible for ADR-0023 §4 alignment rule (hints must not
+    violate the calling tool's own SKIP clause — i.e., no self-reference).
+    """
+    if not hints:
+        return ""
+    if len(hints) > 2:
+        hints = hints[:2]
+    return f"└─ Next: {' | '.join(hints)}"
 
 
 mcp = FastMCP("odoo-semantic")
@@ -271,13 +318,29 @@ def _resolve_model(
 
     if extensions:
         lines.append("├─ Extended by:")
-        last_ext = len(extensions) - 1
-        for i, ext in enumerate(extensions):
+        more_hint = (
+            f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
+            " for full overview"
+        )
+        rendered = _render_capped(
+            extensions,
+            lambda ext: f"[{ext['repo']}] {ext['module_name']}",
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            more_hint=more_hint,
+        )
+        last_ext = len(rendered) - 1
+        for i, row in enumerate(rendered):
             connector = "└─" if i == last_ext else "├─"
-            lines.append(f"│   {connector} [{ext['repo']}] {ext['module_name']}")
+            lines.append(f"│   {connector} {row}")
 
     lines.append(f"├─ Fields:         {fields_count}")
-    lines.append(f"└─ Methods:        {methods_count}")
+    lines.append(f"├─ Methods:        {methods_count}")
+    lines.append(_format_next_step([
+        f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
+        " for full field list",
+        f"find_override_point(model='{model_name}', odoo_version='{odoo_version}')"
+        " for safe extension spots",
+    ]))
     return "\n".join(lines)
 
 
@@ -325,11 +388,20 @@ def _resolve_field(
         f"├─ Stored:   {'Yes' if base_f.get('stored', True) else 'No'}",
         f"├─ Required: {'Yes' if base_f.get('required', False) else 'No'}",
         f"├─ Related:  {base_f.get('related') or '—'}",
-        "└─ Declared in:",
+        "├─ Declared in:",
     ]
-    for r in records:
+    last_idx = len(records) - 1
+    for i, r in enumerate(records):
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
-        lines.append(f"    └─ {repo_str}{r['module_name']}")
+        connector = "└─" if i == last_idx else "├─"
+        lines.append(f"│   {connector} {repo_str}{r['module_name']}")
+    lines.append(_format_next_step([
+        f"find_override_point(model='{model_name}', method='{field_name}'"
+        f", odoo_version='{odoo_version}') for extension spots",
+        f"impact_analysis(entity_type='field'"
+        f", entity_name='{model_name}.{field_name}'"
+        f", odoo_version='{odoo_version}') for blast radius",
+    ]))
     return "\n".join(lines)
 
 
@@ -370,7 +442,7 @@ def _resolve_method(
 
     lines = [
         f"{model_name}.{method_name}() (Odoo {odoo_version})",
-        f"└─ Override chain ({len(records)}):",
+        f"├─ Override chain ({len(records)}):",
     ]
     last_idx = len(records) - 1
     for i, r in enumerate(records):
@@ -380,9 +452,16 @@ def _resolve_method(
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
         connector = "└─" if i == last_idx else "├─"
         lines.append(
-            f"    {connector} {repo_str}{r['module_name']}"
+            f"│   {connector} {repo_str}{r['module_name']}"
             f" — {super_info} — decorators: {decs}"
         )
+    lines.append(_format_next_step([
+        f"find_override_point(model='{model_name}', method='{method_name}'"
+        f", odoo_version='{odoo_version}') for safe hook spot",
+        f"impact_analysis(entity_type='method'"
+        f", entity_name='{model_name}.{method_name}'"
+        f", odoo_version='{odoo_version}') for blast radius",
+    ]))
     return "\n".join(lines)
 
 
@@ -427,34 +506,102 @@ def _resolve_view(
     repo_str = f"[{view_rec['repo']}] " if view_rec.get("repo") else ""
     mode_label = " (extension)" if v_props.get("mode") == "extension" else ""
 
-    lines = [f"{xmlid} (Odoo {odoo_version})"]
-    lines.append(f"├─ Type:   {v_props.get('type', '?')}")
-    lines.append(f"├─ Model:  {v_props.get('model', '?')}")
-    lines.append(f"├─ Module: {repo_str}{view_rec.get('module_name', '?')}{mode_label}")
-
+    # Build the list of branch (kind, payload) tuples, then render with the
+    # correct connector based on whether each branch is the last one.
+    # ADR-0023 §1.6: empty Extended by is silently skipped (no "No extensions").
+    branches: list[tuple[str, object]] = []
+    branches.append(("type", v_props.get("type", "?")))
+    branches.append(("model", v_props.get("model", "?")))
+    branches.append(
+        ("module", f"{repo_str}{view_rec.get('module_name', '?')}{mode_label}"),
+    )
     if parent_rec:
-        lines.append(f"├─ Inherits from: {parent_rec['parent_xmlid']}")
+        branches.append(("inherits", parent_rec["parent_xmlid"]))
         own_exprs = list(v_props.get("xpaths_exprs") or [])
         own_positions = list(v_props.get("xpaths_positions") or [])
         if own_exprs:
-            lines.append(f"├─ XPath modifications ({len(own_exprs)}):")
-            for expr, pos in zip(own_exprs, own_positions):
-                lines.append(f"│   ├─ {expr} [{pos}]")
-
+            branches.append(("xpaths", list(zip(own_exprs, own_positions))))
     if extensions:
-        lines.append(f"└─ Extended by ({len(extensions)} modules):")
-        for i, ext in enumerate(extensions):
-            ext_repo = f"[{ext['repo']}] " if ext.get("repo") else ""
-            connector = "    └─" if i == len(extensions) - 1 else "    ├─"
-            lines.append(
-                f"{connector} {ext['ext_xmlid']}  →  {ext_repo}{ext.get('module_name', '?')}"
+        branches.append(("extensions", extensions))
+    # Wave 5: append Next-step footer per ADR-0023 §4. Suggest list_views
+    # scoped to the same model when known, plus find_examples for xpath
+    # patterns.
+    view_model = v_props.get("model")
+    next_hints: list[str] = []
+    if view_model:
+        next_hints.append(
+            f"list_views(model='{view_model}', odoo_version='{odoo_version}')"
+            " for sibling views",
+        )
+    next_hints.append(
+        f"find_examples(query='{xmlid} xpath', odoo_version='{odoo_version}')"
+        " for inheritance patterns",
+    )
+    branches.append(("next", next_hints))
+
+    lines = [f"{xmlid} (Odoo {odoo_version})"]
+    last_branch_idx = len(branches) - 1
+    for i, (kind, payload) in enumerate(branches):
+        is_last = i == last_branch_idx
+        connector = "└─" if is_last else "├─"
+        # Sublist indent: 4 spaces when this parent is last; "│   " otherwise.
+        sub_indent = "    " if is_last else "│   "
+        if kind == "type":
+            lines.append(f"{connector} Type:   {payload}")
+        elif kind == "model":
+            lines.append(f"{connector} Model:  {payload}")
+        elif kind == "module":
+            lines.append(f"{connector} Module: {payload}")
+        elif kind == "inherits":
+            lines.append(f"{connector} Inherits from: {payload}")
+        elif kind == "xpaths":
+            pairs = payload  # type: ignore[assignment]
+            lines.append(f"{connector} XPath modifications ({len(pairs)}):")
+            last_x = len(pairs) - 1
+            for j, (expr, pos) in enumerate(pairs):
+                xconn = "└─" if j == last_x else "├─"
+                lines.append(f"{sub_indent}{xconn} {expr} [{pos}]")
+        elif kind == "extensions":
+            exts = payload  # type: ignore[assignment]
+            lines.append(f"{connector} Extended by ({len(exts)} modules):")
+            more_hint = (
+                f"resolve_view(xmlid='{xmlid}', odoo_version='{odoo_version}')"
+                " to drill into a specific view"
             )
-            exprs = list(ext.get("xpaths_exprs") or [])
-            positions = list(ext.get("xpaths_positions") or [])
-            for expr, pos in zip(exprs, positions):
-                lines.append(f"    │   └─ xpath: {expr} [{pos}]")
-    else:
-        lines.append("└─ No extensions")
+
+            def _fmt_ext(ext):
+                ext_repo = f"[{ext['repo']}] " if ext.get("repo") else ""
+                return (
+                    f"{ext['ext_xmlid']}  →  {ext_repo}"
+                    f"{ext.get('module_name', '?')}"
+                )
+
+            rendered = _render_capped(
+                exts,
+                _fmt_ext,
+                cap=LIST_PREVIEW_MAX_ITEMS,
+                more_hint=more_hint,
+            )
+            last_e = len(rendered) - 1
+            # Only the first `min(len(exts), cap)` entries map to real ext
+            # records (with xpaths). The trailing "... and K more" line, when
+            # present, has no xpath subtree — handle it separately.
+            for j, row in enumerate(rendered):
+                econn = "└─" if j == last_e else "├─"
+                lines.append(f"{sub_indent}{econn} {row}")
+                if j < min(len(exts), LIST_PREVIEW_MAX_ITEMS):
+                    ext = exts[j]
+                    exprs = list(ext.get("xpaths_exprs") or [])
+                    positions = list(ext.get("xpaths_positions") or [])
+                    # Sub-sub indent uses pipe when ext is non-last, spaces when last
+                    sub_sub = "    " if j == last_e else "│   "
+                    for expr, pos in zip(exprs, positions):
+                        lines.append(
+                            f"{sub_indent}{sub_sub}└─ xpath: {expr} [{pos}]"
+                        )
+        elif kind == "next":
+            hints = payload  # type: ignore[assignment]
+            lines.append(_format_next_step(hints))
 
     return "\n".join(lines)
 
@@ -472,7 +619,11 @@ def _find_examples(
     _embedder=None,
 ) -> str:
     if not query.strip():
-        return "find_examples: query rỗng — hãy nhập mô tả tính năng cần tìm\nFound 0 results\n"
+        # ADR-0023 §2: tool output must be English-only.
+        return (
+            "find_examples: empty query — provide a description of the"
+            " feature you want to find\nFound 0 results\n"
+        )
 
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 
@@ -597,6 +748,12 @@ def _find_examples(
             lines.append(f"   │ {line}")
         lines.append("   └" + "─" * 42)
         lines.append("")
+    # Wave 5: Next-step footer per ADR-0023 §4. find_examples is a drill-down
+    # entry-point; suggest moving to curated patterns or the canonical method.
+    lines.append(_format_next_step([
+        f"suggest_pattern(intent='{query}', odoo_version='{odoo_version}')"
+        " for curated patterns",
+    ]))
     return "\n".join(lines)
 
 
@@ -1056,10 +1213,33 @@ def _impact_analysis(
     # Dependent modules section
     if dep_modules:
         dep_names = [d["dep_name"] for d in dep_modules]
-        lines.append(f"└─ Dependent modules ({len(dep_names)}): {', '.join(dep_names)}")
+        lines.append(f"├─ Dependent modules ({len(dep_names)}): {', '.join(dep_names)}")
     else:
-        lines.append("└─ Dependent modules: none")
+        lines.append("├─ Dependent modules: none")
 
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    if entity_type == "method":
+        next_hints = [
+            f"find_override_point(model='{model_name}', method='{member_name}'"
+            f", odoo_version='{odoo_version}') for safe extension spot",
+            f"find_deprecated_usage(odoo_version='{odoo_version}')"
+            " to widen for deprecated calls",
+        ]
+    elif entity_type == "field":
+        next_hints = [
+            f"resolve_field(model_name='{model_name}', field_name='{member_name}'"
+            f", odoo_version='{odoo_version}') for field detail",
+            f"find_deprecated_usage(odoo_version='{odoo_version}')"
+            " to widen for deprecated calls",
+        ]
+    else:  # model
+        next_hints = [
+            f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
+            " for behavior surface",
+            f"find_deprecated_usage(odoo_version='{odoo_version}')"
+            " to widen for deprecated calls",
+        ]
+    lines.append(_format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -1133,10 +1313,16 @@ def _format_core_symbol(rec: dict, version: str) -> str:
         lines.append(f"├─ Removed in:  {removed_in}")
     if file_path:
         loc = file_path + (f":{line}" if line else "")
-        lines.append(f"└─ Source:      {loc}")
-    else:
-        # Re-cap last branch as terminal
-        lines[-1] = lines[-1].replace("├─", "└─")
+        lines.append(f"├─ Source:      {loc}")
+    # Wave 5: Next-step footer per ADR-0023 §4. Always ├─ above and append
+    # the Next line as the final └─.
+    next_hints = [
+        f"find_examples(query='{qn}', odoo_version='{version}')"
+        " for in-the-wild usage patterns",
+        f"find_deprecated_usage(odoo_version='{version}')"
+        " to scan for deprecated calls",
+    ]
+    lines.append(_format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -1162,9 +1348,14 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
             LIMIT 1
         """, name=name, v=odoo_version).single()
     if rec is None:
+        next_line = _format_next_step([
+            f"find_examples(query='{name}', odoo_version='{odoo_version}')"
+            " for in-the-wild usage patterns",
+        ])
         return (
             f"lookup_core_api({name!r}, {odoo_version!r})\n"
-            f"└─ not found in indexed Odoo core for version {odoo_version}"
+            f"├─ not found in indexed Odoo core for version {odoo_version}\n"
+            + next_line
         )
     return _format_core_symbol(dict(rec), odoo_version)
 
@@ -1280,21 +1471,50 @@ def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
 
 def _format_deprecated_usage(records: list[dict], version: str) -> str:
     header = f"find_deprecated_usage(Odoo {version}) — {len(records)} hits"
+    # Wave 5: Next-step footer per ADR-0023 §4. Even the empty branch still
+    # gets a Next: hint (replacement search) when no hits are found.
+    next_line = _format_next_step([
+        f"find_examples(query='replacement', odoo_version='{version}')"
+        " for replacement search",
+    ])
     if not records:
-        return header + "\n└─ no deprecated usage found in indexed code"
+        return (
+            header
+            + "\n├─ no deprecated usage found in indexed code"
+            + "\n" + next_line
+        )
     lines = [header]
-    last_idx = len(records) - 1
-    for i, r in enumerate(records):
-        connector = "└─" if i == last_idx else "├─"
+    more_hint = (
+        f"find_deprecated_usage(odoo_version='{version}', kind=<filter>)"
+        " to narrow the scan"
+    )
+    rendered_hits = _render_capped(
+        records,
+        lambda r: r,  # identity — we render the multi-line hit below
+        cap=LIST_PREVIEW_MAX_ITEMS,
+        more_hint=more_hint,
+    )
+    # _render_capped will return either records[:cap] or records[:cap] + a
+    # trailing "... and K more (use ...)" string. Detect string sentinel.
+    truncated = (
+        len(records) > LIST_PREVIEW_MAX_ITEMS
+        and isinstance(rendered_hits[-1], str)
+    )
+    real_hits = rendered_hits[:-1] if truncated else rendered_hits
+    for r in real_hits:
+        # Wave 5: every hit is now ├─ (Next: footer below is the new └─).
+        connector = "├─"
+        sub_indent = "│   "
         loc = f"[{r['module']}] {r['model']}.{r['method']}"
         sym = r["deprecated_symbol"]
         status = r["status"]
         repl = r.get("replacement") or "(no replacement set)"
         lines.append(f"{connector} {loc}")
-        lines.append(
-            f"   ├─ uses: {sym} (status={status})"
-        )
-        lines.append(f"   └─ replacement: {repl}")
+        lines.append(f"{sub_indent}├─ uses: {sym} (status={status})")
+        lines.append(f"{sub_indent}└─ replacement: {repl}")
+    if truncated:
+        lines.append(f"├─ {rendered_hits[-1]}")
+    lines.append(next_line)
     return "\n".join(lines)
 
 
@@ -1534,14 +1754,15 @@ def _format_cli_command_summary(
     if not flags:
         lines.append("└─ no flags indexed")
         return "\n".join(lines)
-    lines.append(f"├─ Flags ({len(flags)}):")
+    # ADR-0023 §1.3: Flags is the last branch → sublist indent is 4 spaces.
+    lines.append(f"└─ Flags ({len(flags)}):")
     last_idx = len(flags) - 1
     for i, f in enumerate(flags):
         connector = "└─" if i == last_idx else "├─"
         flag = f.get("flag_name") or "?"
         status = f.get("status") or "stable"
         suffix = f" (status={status})" if status != "stable" else ""
-        lines.append(f"   {connector} {flag}{suffix}")
+        lines.append(f"    {connector} {flag}{suffix}")
     return "\n".join(lines)
 
 
@@ -1803,10 +2024,15 @@ def _suggest_pattern(
             ranked = cur.fetchall()
 
     if not ranked:
+        next_line = _format_next_step([
+            f"find_examples(query='{intent}', odoo_version='{v}')"
+            " for real-world variants",
+        ])
         return (
             f"suggest_pattern({intent!r}, {v!r}, language={language})\n"
-            "└─ no patterns indexed. Run: "
-            "python -m src.indexer.seed_patterns"
+            "├─ no patterns indexed. Run: "
+            "python -m src.indexer.seed_patterns\n"
+            + next_line
         )
 
     # Decode pattern_id from entity_name slug (<language>__<id>)
@@ -1845,30 +2071,37 @@ def _format_suggest_pattern(
         f"suggest_pattern({intent!r}, {version}, language={language}) "
         f"— {len(ordered_ids)} matches",
     ]
-    last = len(ordered_ids) - 1
+    # Wave 5: all pattern branches become ├─ so the Next: footer is the
+    # final └─ (ADR-0023 §4).
     for i, pid in enumerate(ordered_ids):
         rec = by_id.get(pid)
         if not rec:
             continue
-        connector = "└─" if i == last else "├─"
+        connector = "├─"
         score = score_map.get(pid, 0.0)
         lines.append(f"{connector} #{i + 1} · score {score:.2f} · {pid}")
-        prefix = "    " if i == last else "│   "
+        prefix = "│   "
         lines.append(f"{prefix}├─ Language: {rec['lang']} (min v{rec['vmin']})")
         lines.append(f"{prefix}├─ File:     {rec['fr']}")
         snippet_lines = (rec.get("sn") or "").splitlines()
         if snippet_lines:
             lines.append(f"{prefix}├─ Snippet:")
+            # Snippet is a non-last child → sublist indent is "│   " (4 chars).
             for sl in snippet_lines[:SNIPPET_PREVIEW_MAX_LINES]:
-                lines.append(f"{prefix}│    {sl}")
+                lines.append(f"{prefix}│   {sl}")
             if len(snippet_lines) > SNIPPET_PREVIEW_MAX_LINES:
                 extra = len(snippet_lines) - SNIPPET_PREVIEW_MAX_LINES
-                lines.append(f"{prefix}│    ... ({extra} more lines)")
+                lines.append(f"{prefix}│   ... ({extra} more lines)")
         gotchas = rec.get("g") or []
         if gotchas:
             lines.append(f"{prefix}└─ Gotchas:")
+            # Gotchas is the last child → sublist indent is "    " (4 spaces).
             for g in gotchas:
-                lines.append(f"{prefix}     • {g}")
+                lines.append(f"{prefix}    • {g}")
+    lines.append(_format_next_step([
+        f"find_examples(query='{intent}', odoo_version='{version}')"
+        " for real-world variants",
+    ]))
     return "\n".join(lines)
 
 
@@ -1947,18 +2180,914 @@ def _format_check_module_exists(
             source_hint = " (license=OEEL-1)"
         elif ee_source == "dict":
             source_hint = " (legacy hardcoded dict)"
+        # ADR-0023 §2: English-only tool output.
         lines.append(
-            f"└─ ⚠ WARNING: this is an Odoo Enterprise module{source_hint}. "
+            f"├─ ⚠ WARNING: this is an Odoo Enterprise module{source_hint}. "
             "Do NOT depend on it in a Viindoo Community stack — "
-            "vi phạm GPL/Enterprise license boundary."
+            "this violates the GPL/Enterprise license boundary."
         )
     elif not indexed:
+        # ADR-0023 §4: NO branch is terminal (no useful drill-down).
         lines.append(
             "└─ Hint: module not indexed in this profile. "
             "If it should be, run: python -m src.indexer index-repo --profile <name>"
         )
+        return "\n".join(lines)
+    # Wave 5: YES branch emits Next: footer (ADR-0023 §4).
+    lines.append(_format_next_step([
+        f"describe_module(name='{name}', odoo_version='{version}')"
+        " for full overview",
+    ]))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 — new list_* / describe_module / UI tools (ADR-0023 §5).
+# Read-only Cypher; share the _render_capped / _format_next_step helpers.
+# All tree text English-only per ADR-0023 §2.
+# ---------------------------------------------------------------------------
+
+
+def _describe_module(
+    name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
+    """Layer-0 module overview: manifest + model/view/JS counts.
+
+    Distinct from check_module_exists (1–3 lines, YES/NO + edition) — this
+    tool returns the full architecture tree (~10–15 lines) per ADR-0023 §1.7.
+    Runs 1 Module query + 4 aggregate queries (Models defined, Models
+    extended, Views by type, JS patches).
+    """
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        mod_rec = session.run(
+            """
+            MATCH (m:Module {name: $n, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
+            RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
+                   m.edition AS edition,
+                   m.viindoo_equivalent_qname AS vvq
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).single()
+
+        if not mod_rec:
+            return (
+                f"No module named '{name}' indexed for Odoo {odoo_version}."
+            )
+
+        depends = session.run(
+            f"""
+            MATCH (m:Module {{name: $n, odoo_version: $v}})
+                  -[:{REL_DEPENDS_ON}]->(d:Module)
+            RETURN d.name AS name
+            ORDER BY d.name ASC
+            """,
+            n=name, v=odoo_version,
+        ).data()
+
+        defines = session.run(
+            """
+            MATCH (model:Model {module: $n, odoo_version: $v})
+            WHERE coalesce(model.is_definition, false) = true
+              AND model.module <> '__unresolved__'
+              AND ($profile_name IS NULL OR $profile_name IN model.profile)
+            RETURN model.name AS name
+            ORDER BY model.name ASC
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).data()
+
+        extends = session.run(
+            """
+            MATCH (model:Model {module: $n, odoo_version: $v})
+            WHERE coalesce(model.is_definition, false) = false
+              AND model.module <> '__unresolved__'
+              AND ($profile_name IS NULL OR $profile_name IN model.profile)
+            RETURN model.name AS name
+            ORDER BY model.name ASC
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).data()
+
+        view_breakdown = session.run(
+            """
+            MATCH (view:View {module: $n, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN view.profile)
+            RETURN view.type AS type, count(view) AS c
+            ORDER BY c DESC, type ASC
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).data()
+
+        js_count = session.run(
+            """
+            MATCH (j:JSPatch {module: $n, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN j.profile)
+            RETURN count(j) AS c
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).single()["c"]
+
+    lines = [f"{name} (Odoo {odoo_version})"]
+
+    # Manifest sub-tree (non-last parent → "│   " sublist indent).
+    lines.append("├─ Manifest:")
+    manifest_rows: list[tuple[str, str]] = []
+    if depends:
+        # Inline list with cap (no extra disclosure — depends is rarely > 20).
+        dep_names = ", ".join(d["name"] for d in depends[:20])
+        if len(depends) > 20:
+            dep_names += f", ... and {len(depends) - 20} more"
+        manifest_rows.append(("Depends", dep_names))
     else:
-        lines[-1] = lines[-1].replace("├─", "└─")
+        manifest_rows.append(("Depends", "—"))
+    edition_str = mod_rec.get("edition") or "community"
+    if mod_rec.get("vvq"):
+        edition_str += f" (Viindoo equivalent: {mod_rec['vvq']})"
+    manifest_rows.append(("Edition", edition_str))
+    manifest_rows.append(("Version", mod_rec.get("version_raw") or "—"))
+    last_m = len(manifest_rows) - 1
+    for i, (label, value) in enumerate(manifest_rows):
+        conn = "└─" if i == last_m else "├─"
+        lines.append(f"│   {conn} {label}: {value}")
+
+    # Defines models — count + capped inline preview.
+    def_total = len(defines)
+    if def_total > 0:
+        def_preview = ", ".join(d["name"] for d in defines[:5])
+        if def_total > 5:
+            def_preview += f", ... and {def_total - 5} more"
+        lines.append(f"├─ Defines models: {def_total} ({def_preview})")
+    else:
+        lines.append("├─ Defines models: 0")
+
+    # Extends models — count + capped inline preview.
+    ext_total = len(extends)
+    if ext_total > 0:
+        ext_preview = ", ".join(e["name"] for e in extends[:5])
+        if ext_total > 5:
+            ext_preview += f", ... and {ext_total - 5} more"
+        lines.append(f"├─ Extends models: {ext_total} ({ext_preview})")
+    else:
+        lines.append("├─ Extends models: 0")
+
+    # Views — total + by-type breakdown.
+    view_total = sum(row["c"] for row in view_breakdown)
+    if view_total > 0:
+        breakdown_str = ", ".join(
+            f"{row['c']} {row['type'] or 'unknown'}" for row in view_breakdown
+        )
+        lines.append(f"├─ Views: {view_total} ({breakdown_str})")
+    else:
+        lines.append("├─ Views: 0")
+
+    # JS patches — last data branch. Marked ├─ so Wave 5 can append Next: footer.
+    lines.append(f"├─ JS patches: {js_count}")
+
+    # Wave 5: Next-step footer per ADR-0023 §4. Prefer the first defined model
+    # (drill into its fields/views); fall back to extends if no defined model.
+    # NOTE: cannot suggest check_module_exists (regression per §4.2 alignment).
+    first_target = None
+    if defines:
+        first_target = defines[0]["name"]
+    elif extends:
+        first_target = extends[0]["name"]
+    if first_target:
+        next_hints = [
+            f"list_fields(model='{first_target}', module='{name}'"
+            f", odoo_version='{odoo_version}') for declared fields",
+            f"list_views(model='{first_target}', odoo_version='{odoo_version}')"
+            " for module views",
+        ]
+    else:
+        # No models — fall back to method behavior surface for the module.
+        next_hints = [
+            f"list_methods(model='res.partner', module='{name}'"
+            f", odoo_version='{odoo_version}') for any extension methods",
+        ]
+    lines.append(_format_next_step(next_hints))
+
+    return "\n".join(lines)
+
+
+def _list_fields(
+    model: str,
+    odoo_version: str = "auto",
+    module: str | None = None,
+    kind: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Layer-2 — enumerate fields on a model, grouped by module.
+
+    `kind` filters by Field.ttype (e.g. 'monetary', 'many2one').
+    `module` restricts to one declaring module.
+    `limit` caps the Cypher query size; the render cap is LIST_PREVIEW_FIELDS_MAX.
+    """
+    cap = LIST_PREVIEW_FIELDS_MAX
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (f:Field {{model: $m, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
+              AND ($module IS NULL OR f.module = $module)
+              AND ($kind IS NULL OR f.ttype = $kind)
+              AND f.module <> '__unresolved__'
+            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
+            WITH f, mod,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN f.name AS name, f.ttype AS ttype,
+                   f.module AS module, mod.repo AS repo,
+                   edition_rank, mod_name
+            ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
+            LIMIT $limit
+            """,
+            m=model, v=odoo_version, module=module, kind=kind,
+            profile_name=profile_name, limit=limit,
+        ).data()
+
+        # Separate count query so we know the true total when Cypher LIMIT trims.
+        total_rec = session.run(
+            """
+            MATCH (f:Field {model: $m, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
+              AND ($module IS NULL OR f.module = $module)
+              AND ($kind IS NULL OR f.ttype = $kind)
+              AND f.module <> '__unresolved__'
+            RETURN count(f) AS c
+            """,
+            m=model, v=odoo_version, module=module, kind=kind,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    header = f"Fields of {model} (Odoo {odoo_version})"
+    if total == 0:
+        # Wave 5: Next-step footer (empty result still gets a sensible hint).
+        next_line = _format_next_step([
+            f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+            " for behavior",
+        ])
+        return f"{header}\n├─ (none)\n{next_line}"
+
+    # Group rows by (repo, module) preserving order.
+    groups: dict[tuple[str, str], list[dict]] = {}
+    order: list[tuple[str, str]] = []
+    for r in rows:
+        key = (r.get("repo") or "?", r.get("module") or "?")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    lines = [header]
+    last_g = len(order) - 1
+    for i, key in enumerate(order):
+        repo, mod_name = key
+        is_last_group = i == last_g
+        g_conn = "├─" if not is_last_group else "├─"  # always ├─ so footer slot stays
+        lines.append(f"{g_conn} [{repo}] {mod_name}")
+        sub_indent = "│   "
+
+        items = groups[key]
+        more_hint = (
+            f"list_fields(model='{model}', odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}) for full list"
+        )
+        # Cap per-group based on the global cap proportional split is overkill;
+        # for simplicity cap each group at the global cap and rely on the
+        # explicit total disclosure below.
+        rendered = _render_capped(
+            items,
+            lambda r: f"{r['name']} : {r['ttype']}",
+            cap=cap,
+            more_hint=more_hint,
+        )
+        last_r = len(rendered) - 1
+        for j, row in enumerate(rendered):
+            r_conn = "└─" if j == last_r else "├─"
+            lines.append(f"{sub_indent}{r_conn} {row}")
+
+    if total > len(rows):
+        # Cypher LIMIT trimmed — emit a tree-level disclosure as a sibling
+        # branch (├─) so Wave 5 Next: footer can still be the final └─.
+        lines.append(
+            f"├─ ... and {total - len(rows)} more"
+            f" (use list_fields(model='{model}', odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}))"
+        )
+
+    # Wave 5: Next-step footer per ADR-0023 §4. Drill into the first
+    # rendered field for its full chain, and into list_methods for behavior.
+    first_field = rows[0]["name"] if rows else None
+    next_hints: list[str] = []
+    if first_field:
+        next_hints.append(
+            f"resolve_field(model_name='{model}', field_name='{first_field}'"
+            f", odoo_version='{odoo_version}') for full chain",
+        )
+    next_hints.append(
+        f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+        " for behavior",
+    )
+    lines.append(_format_next_step(next_hints))
+    return "\n".join(lines)
+
+
+def _list_methods(
+    model: str,
+    odoo_version: str = "auto",
+    module: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Layer-4 — enumerate methods on a model, grouped by module.
+
+    Methods appearing in ≥2 modules for the same model are marked with `(*)`
+    per ADR-0023 §5.3 to flag override-points.
+    """
+    cap = LIST_PREVIEW_MAX_ITEMS
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (mth:Method {{model: $m, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+              AND ($module IS NULL OR mth.module = $module)
+              AND mth.module <> '__unresolved__'
+            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
+            WITH mth, mod,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN mth.name AS name, mth.convention_kind AS kind,
+                   mth.module AS module, mod.repo AS repo,
+                   edition_rank, mod_name
+            ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
+            LIMIT $limit
+            """,
+            m=model, v=odoo_version, module=module,
+            profile_name=profile_name, limit=limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (mth:Method {model: $m, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+              AND ($module IS NULL OR mth.module = $module)
+              AND mth.module <> '__unresolved__'
+            RETURN count(mth) AS c
+            """,
+            m=model, v=odoo_version, module=module,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+        # Override-marker: count distinct modules per method name on this model.
+        override_rec = session.run(
+            """
+            MATCH (mth:Method {model: $m, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+              AND mth.module <> '__unresolved__'
+            WITH mth.name AS name, count(DISTINCT mth.module) AS modcount
+            WHERE modcount >= 2
+            RETURN collect(name) AS overrides
+            """,
+            m=model, v=odoo_version, profile_name=profile_name,
+        ).single()
+        override_names = set(override_rec["overrides"]) if override_rec else set()
+
+    header = f"Methods of {model} (Odoo {odoo_version})"
+    if total == 0:
+        next_line = _format_next_step([
+            f"list_fields(model='{model}', odoo_version='{odoo_version}')"
+            " for shape",
+        ])
+        return f"{header}\n├─ (none)\n{next_line}"
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    order: list[tuple[str, str]] = []
+    for r in rows:
+        key = (r.get("repo") or "?", r.get("module") or "?")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    lines = [header]
+    for i, key in enumerate(order):
+        repo, mod_name = key
+        lines.append(f"├─ [{repo}] {mod_name}")
+        sub_indent = "│   "
+        items = groups[key]
+        more_hint = (
+            f"list_methods(model='{model}', odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}) for full list"
+        )
+
+        def _fmt_method(r):
+            marker = "(*)" if r["name"] in override_names else ""
+            kind_str = r.get("kind") or "private"
+            return f"{r['name']}{marker} : {kind_str}"
+
+        rendered = _render_capped(items, _fmt_method, cap=cap, more_hint=more_hint)
+        last_r = len(rendered) - 1
+        for j, row in enumerate(rendered):
+            r_conn = "└─" if j == last_r else "├─"
+            lines.append(f"{sub_indent}{r_conn} {row}")
+
+    if total > len(rows):
+        lines.append(
+            f"├─ ... and {total - len(rows)} more"
+            f" (use list_methods(model='{model}', odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}))"
+        )
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    first_method = rows[0]["name"] if rows else None
+    next_hints: list[str] = []
+    if first_method:
+        next_hints.append(
+            f"resolve_method(model_name='{model}', method_name='{first_method}'"
+            f", odoo_version='{odoo_version}') for override chain",
+        )
+        next_hints.append(
+            f"find_override_point(model='{model}', method='{first_method}'"
+            f", odoo_version='{odoo_version}') for hook spot",
+        )
+    lines.append(_format_next_step(next_hints))
+    return "\n".join(lines)
+
+
+def _list_views(
+    model: str,
+    odoo_version: str = "auto",
+    view_type: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Layer-5 — enumerate XML views targeting a model.
+
+    `view_type` filters by View.type (form/tree/kanban/search/...).
+    """
+    cap = LIST_PREVIEW_MAX_ITEMS
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (v:View {{model: $m, odoo_version: $ver}})
+            WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+              AND ($view_type IS NULL OR v.type = $view_type)
+              AND v.module <> '__unresolved__'
+            OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
+            WITH v, mod,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN v.xmlid AS xmlid, v.type AS type,
+                   v.module AS module, mod.repo AS repo,
+                   edition_rank, mod_name
+            ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
+            LIMIT $limit
+            """,
+            m=model, ver=odoo_version, view_type=view_type,
+            profile_name=profile_name, limit=limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (v:View {model: $m, odoo_version: $ver})
+            WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+              AND ($view_type IS NULL OR v.type = $view_type)
+              AND v.module <> '__unresolved__'
+            RETURN count(v) AS c
+            """,
+            m=model, ver=odoo_version, view_type=view_type,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    header = f"Views of {model} (Odoo {odoo_version})"
+    if total == 0:
+        next_line = _format_next_step([
+            f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+            " for behavior",
+        ])
+        return f"{header}\n├─ (none)\n{next_line}"
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    order: list[tuple[str, str]] = []
+    for r in rows:
+        key = (r.get("repo") or "?", r.get("module") or "?")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    lines = [header]
+    for i, key in enumerate(order):
+        repo, mod_name = key
+        lines.append(f"├─ [{repo}] {mod_name}")
+        sub_indent = "│   "
+        items = groups[key]
+        more_hint = (
+            f"list_views(model='{model}', odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}) for full list"
+        )
+        rendered = _render_capped(
+            items,
+            lambda r: f"{r['xmlid']} : {r.get('type') or 'unknown'}",
+            cap=cap,
+            more_hint=more_hint,
+        )
+        last_r = len(rendered) - 1
+        for j, row in enumerate(rendered):
+            r_conn = "└─" if j == last_r else "├─"
+            lines.append(f"{sub_indent}{r_conn} {row}")
+
+    if total > len(rows):
+        lines.append(
+            f"├─ ... and {total - len(rows)} more"
+            f" (use list_views(model='{model}', odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}))"
+        )
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    first_xmlid = rows[0]["xmlid"] if rows else None
+    next_hints: list[str] = []
+    if first_xmlid:
+        next_hints.append(
+            f"resolve_view(xmlid='{first_xmlid}', odoo_version='{odoo_version}')"
+            " for full xpath chain",
+        )
+    next_hints.append(
+        f"find_examples(query='{model} view', odoo_version='{odoo_version}')"
+        " for inheritance patterns",
+    )
+    lines.append(_format_next_step(next_hints))
+    return "\n".join(lines)
+
+
+def _list_owl_components(
+    module: str,
+    odoo_version: str = "auto",
+    bound_model: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Layer-5b — enumerate OWL components declared in a module.
+
+    Era-aware: returns empty + warning for Odoo majors <= 13 (Widget era,
+    no OWL components). When `bound_model` filter is set, emits a warning
+    footer because parser_js.py:415 bound_model resolution is heuristic.
+    """
+    cap = LIST_PREVIEW_MAX_ITEMS
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        # Era guard: v8-v13 had Widget, not OWL. Return early with hint.
+        try:
+            major = int(odoo_version.split(".")[0])
+        except (ValueError, AttributeError):
+            major = 0
+        if major and major <= 13:
+            # Wave 5: still emit Next: footer suggesting list_js_patches for
+            # era1 widget extensions (the natural era-aware drill-down).
+            next_line = _format_next_step([
+                f"list_js_patches(module='{module}', era='era1'"
+                f", odoo_version='{odoo_version}') for legacy widget extends",
+            ])
+            return (
+                f"OWL components of {module} (Odoo {odoo_version})\n"
+                "├─ (none) — Warning: No OWL components in v8-v13"
+                " (Widget era). Use list_js_patches(era='era1') for legacy"
+                " widget extensions.\n"
+                + next_line
+            )
+
+        rows = session.run(
+            """
+            MATCH (c:OWLComp {module: $mod, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN c.profile)
+              AND ($bound_model IS NULL OR c.bound_model = $bound_model)
+              AND c.module <> '__unresolved__'
+            RETURN c.name AS name, c.bound_model AS bound_model,
+                   c.template AS template
+            ORDER BY c.name ASC
+            LIMIT $limit
+            """,
+            mod=module, v=odoo_version, bound_model=bound_model,
+            profile_name=profile_name, limit=limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (c:OWLComp {module: $mod, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN c.profile)
+              AND ($bound_model IS NULL OR c.bound_model = $bound_model)
+              AND c.module <> '__unresolved__'
+            RETURN count(c) AS c
+            """,
+            mod=module, v=odoo_version, bound_model=bound_model,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    header = f"OWL components of {module} (Odoo {odoo_version})"
+    if total == 0:
+        lines = [header]
+        if bound_model is not None:
+            lines.append(
+                "├─ Warning: bound_model resolution is heuristic"
+                " — may miss components using dynamic this.props.resModel",
+            )
+        lines.append("├─ (none)")
+        # Wave 5: suggest list_qweb_templates / list_js_patches as siblings.
+        lines.append(_format_next_step([
+            f"list_qweb_templates(module='{module}'"
+            f", odoo_version='{odoo_version}') for QWeb templates",
+            f"list_js_patches(module='{module}', odoo_version='{odoo_version}')"
+            " for related patches",
+        ]))
+        return "\n".join(lines)
+
+    lines = [header]
+    more_hint = (
+        f"list_owl_components(module='{module}'"
+        f", odoo_version='{odoo_version}', limit={max(limit * 2, total)})"
+        " for full list"
+    )
+    rendered = _render_capped(
+        rows,
+        lambda r: f"{r['name']} : {r.get('bound_model') or '(unbound)'}",
+        cap=cap,
+        more_hint=more_hint,
+    )
+    # If bound_model filter used, the warning must precede the data (as ├─)
+    # so the final data branch can still terminate cleanly.
+    if bound_model is not None:
+        lines.append(
+            "├─ Warning: bound_model resolution is heuristic"
+            " — may miss components using dynamic this.props.resModel"
+        )
+
+    for row in rendered:
+        # Wave 5: All rows are ├─; Next: footer becomes the final └─.
+        lines.append(f"├─ {row}")
+
+    if total > len(rows):
+        lines.append(
+            f"├─ ... and {total - len(rows)} more"
+            f" (use list_owl_components(module='{module}'"
+            f", odoo_version='{odoo_version}', limit={max(limit * 2, total)}))"
+        )
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    lines.append(_format_next_step([
+        f"list_qweb_templates(module='{module}', odoo_version='{odoo_version}')"
+        " for QWeb templates",
+        f"list_js_patches(module='{module}', odoo_version='{odoo_version}')"
+        " for related patches",
+    ]))
+    return "\n".join(lines)
+
+
+def _list_qweb_templates(
+    module: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Layer-5c — enumerate QWeb templates declared in a module.
+
+    Renders `xmlid : t-inherit=<parent or (root)>` per ADR-0023 §5.3.
+    """
+    cap = LIST_PREVIEW_MAX_ITEMS
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            """
+            MATCH (t:QWebTmpl {module: $mod, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN t.profile)
+              AND t.module <> '__unresolved__'
+            OPTIONAL MATCH (t)-[:EXTENDS_TMPL]->(parent:QWebTmpl)
+            WHERE NOT coalesce(parent.unresolved, false)
+            RETURN t.xmlid AS xmlid, parent.xmlid AS parent_xmlid
+            ORDER BY t.xmlid ASC
+            LIMIT $limit
+            """,
+            mod=module, v=odoo_version, profile_name=profile_name, limit=limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (t:QWebTmpl {module: $mod, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN t.profile)
+              AND t.module <> '__unresolved__'
+            RETURN count(t) AS c
+            """,
+            mod=module, v=odoo_version, profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    header = f"QWeb templates of {module} (Odoo {odoo_version})"
+    if total == 0:
+        next_line = _format_next_step([
+            f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
+            " for OWL components",
+        ])
+        return f"{header}\n├─ (none)\n{next_line}"
+
+    lines = [header]
+    more_hint = (
+        f"list_qweb_templates(module='{module}'"
+        f", odoo_version='{odoo_version}', limit={max(limit * 2, total)})"
+        " for full list"
+    )
+    rendered = _render_capped(
+        rows,
+        lambda r: (
+            f"{r['xmlid']} : t-inherit="
+            f"{r.get('parent_xmlid') or '(root)'}"
+        ),
+        cap=cap,
+        more_hint=more_hint,
+    )
+    for row in rendered:
+        # Wave 5: All rows are ├─; Next: footer becomes the final └─.
+        lines.append(f"├─ {row}")
+
+    if total > len(rows):
+        lines.append(
+            f"├─ ... and {total - len(rows)} more"
+            f" (use list_qweb_templates(module='{module}'"
+            f", odoo_version='{odoo_version}', limit={max(limit * 2, total)}))"
+        )
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    lines.append(_format_next_step([
+        f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
+        " for OWL components",
+    ]))
+    return "\n".join(lines)
+
+
+# Era param mapping per ADR-0023 §5.3: user-facing era1/era2/era3 ↔
+# stored JSPatch.era values ('extend'/'include'/'patch').
+_JS_ERA_MAP = {
+    "era1": "extend",
+    "era2": "include",
+    "era3": "patch",
+    "extend": "extend",
+    "include": "include",
+    "patch": "patch",
+}
+
+
+def _list_js_patches(
+    odoo_version: str = "auto",
+    target: str | None = None,
+    module: str | None = None,
+    era: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Layer-5d — enumerate JS patches across eras (Widget extend, mixin
+    include, OWL patch).
+
+    `era` accepts era1/era2/era3 (preferred) or extend/include/patch (stored
+    values). `target` filters by patched component/widget name.
+    """
+    cap = LIST_PREVIEW_PATCHES_MAX
+
+    era_filter: str | None = None
+    if era is not None:
+        era_filter = _JS_ERA_MAP.get(era.lower())
+        if era_filter is None:
+            return (
+                f"Invalid era '{era}'. Use era1, era2, or era3"
+                " (or extend/include/patch)."
+            )
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (j:JSPatch {{odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN j.profile)
+              AND ($target IS NULL OR j.target = $target)
+              AND ($module IS NULL OR j.module = $module)
+              AND ($era IS NULL OR j.era = $era)
+              AND j.module <> '__unresolved__'
+            OPTIONAL MATCH (mod:Module {{name: j.module, odoo_version: $v}})
+            WITH j, mod,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN j.target AS target, j.patch_name AS patch_name,
+                   j.era AS era, j.module AS module, mod.repo AS repo,
+                   edition_rank, mod_name
+            ORDER BY edition_rank ASC, mod_name ASC, j.target ASC, j.patch_name ASC
+            LIMIT $limit
+            """,
+            v=odoo_version, target=target, module=module, era=era_filter,
+            profile_name=profile_name, limit=limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (j:JSPatch {odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN j.profile)
+              AND ($target IS NULL OR j.target = $target)
+              AND ($module IS NULL OR j.module = $module)
+              AND ($era IS NULL OR j.era = $era)
+              AND j.module <> '__unresolved__'
+            RETURN count(j) AS c
+            """,
+            v=odoo_version, target=target, module=module, era=era_filter,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    parent = target or module or "all targets"
+    header = f"JS patches on {parent} (Odoo {odoo_version})"
+    if total == 0:
+        # Wave 5: Next-step footer per ADR-0023 §4 — suggest OWL components
+        # when module is known (era3 drill-down).
+        if module:
+            next_line = _format_next_step([
+                f"list_owl_components(module='{module}'"
+                f", odoo_version='{odoo_version}') for v15+ components",
+            ])
+        else:
+            next_line = _format_next_step([
+                f"find_examples(query='JS patch', odoo_version='{odoo_version}')"
+                " for patch patterns",
+            ])
+        return f"{header}\n├─ (none)\n{next_line}"
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    order: list[tuple[str, str]] = []
+    for r in rows:
+        key = (r.get("repo") or "?", r.get("module") or "?")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    lines = [header]
+    for key in order:
+        repo, mod_name = key
+        lines.append(f"├─ [{repo}] {mod_name}")
+        sub_indent = "│   "
+        items = groups[key]
+        more_hint = (
+            f"list_js_patches(odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}) for full list"
+        )
+        rendered = _render_capped(
+            items,
+            lambda r: (
+                f"{r['target']}.{r['patch_name']} : era={r.get('era') or '?'}"
+            ),
+            cap=cap,
+            more_hint=more_hint,
+        )
+        last_r = len(rendered) - 1
+        for j, row in enumerate(rendered):
+            r_conn = "└─" if j == last_r else "├─"
+            lines.append(f"{sub_indent}{r_conn} {row}")
+
+    if total > len(rows):
+        lines.append(
+            f"├─ ... and {total - len(rows)} more"
+            f" (use list_js_patches(odoo_version='{odoo_version}'"
+            f", limit={max(limit * 2, total)}))"
+        )
+    # Wave 5: Next-step footer per ADR-0023 §4. Prefer module-scoped OWL
+    # drill-down when module is known; otherwise suggest find_examples.
+    if module:
+        next_hints = [
+            f"list_owl_components(module='{module}'"
+            f", odoo_version='{odoo_version}') for v15+ components",
+            f"find_examples(query='JS patch', odoo_version='{odoo_version}')"
+            " for patch patterns",
+        ]
+    else:
+        next_hints = [
+            f"find_examples(query='JS patch', odoo_version='{odoo_version}')"
+            " for patch patterns",
+        ]
+    lines.append(_format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -2064,6 +3193,10 @@ def _diff_method_across_versions(
             " (model/method may not be indexed)"
         )
         lines.append(f"├─ Status:           {presence_label}")
+        lines.append(_format_next_step([
+            f"list_methods(model='{model}', odoo_version='{to_version}')"
+            " to verify the method name",
+        ]))
         return "\n".join(lines)
     else:
         presence_label = f"added in {to_version} (not in {from_version})"
@@ -2114,10 +3247,17 @@ def _diff_method_across_versions(
     from_ss = from_data["super_safety"] if from_data else "?"
     to_ss = to_data["super_safety"] if to_data else "?"
     if from_ss != to_ss:
-        lines.append(f"└─ Super safety:      changed ({from_ss} → {to_ss})")
+        lines.append(f"├─ Super safety:      changed ({from_ss} → {to_ss})")
     else:
-        lines.append(f"└─ Super safety:      unchanged ({from_ss})")
+        lines.append(f"├─ Super safety:      unchanged ({from_ss})")
 
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    lines.append(_format_next_step([
+        f"resolve_method(model_name='{model}', method_name='{method}'"
+        f", odoo_version='{to_version}') for full chain detail",
+        f"find_examples(query='{method} override', odoo_version='{to_version}')"
+        " for prior art",
+    ]))
     return "\n".join(lines)
 
 
@@ -2153,9 +3293,14 @@ def _find_override_point(
         """, method=method, model=model, v=v).data()
 
     if not records:
+        next_line = _format_next_step([
+            f"list_methods(model='{model}', odoo_version='{v}')"
+            " to find the actual method name",
+        ])
         return (
             f"find_override_point({model!r}, {method!r}, {v})\n"
-            f"└─ method not found on model {model!r} in Odoo {v}"
+            f"├─ method not found on model {model!r} in Odoo {v}\n"
+            + next_line
         )
 
     convention_kind = records[0]["ck"] or "private"
@@ -2192,10 +3337,17 @@ def _format_find_override_point(
         lines.append(
             f"│   {connector} {repo}{r['module']}{ed} — {super_mark} super()"
         )
-    lines.append(f"└─ Anti-patterns ({len(anti_patterns)}):")
+    lines.append(f"├─ Anti-patterns ({len(anti_patterns)}):")
     for i, ap in enumerate(anti_patterns):
         connector = "└─" if i == len(anti_patterns) - 1 else "├─"
-        lines.append(f"    {connector} {ap}")
+        lines.append(f"│   {connector} {ap}")
+    # Wave 5: Next-step footer per ADR-0023 §4.
+    lines.append(_format_next_step([
+        f"resolve_method(model_name='{model}', method_name='{method}'"
+        f", odoo_version='{version}') for full chain detail",
+        f"find_examples(query='{method} override', odoo_version='{version}')"
+        " for prior art",
+    ]))
     return "\n".join(lines)
 
 
@@ -2253,7 +3405,9 @@ def check_module_exists(
     module"
     PREFER over: searching manually — instant cross-version, cross-repo module
     existence check with Enterprise edition detection and Viindoo equivalent
-    SKIP when: user wants module field/method details → use resolve_model;
+    SKIP when: caller needs the module's contents (models, views, JS) — use
+    describe_module instead, which returns a full architecture overview in
+    one round-trip. user wants module field/method details → use resolve_model;
     user wants code examples from a module → use find_examples
 
     Args:
@@ -2316,6 +3470,311 @@ def find_override_point(
           └─ Anti-patterns (3): ...
     """
     return _find_override_point(model, method, odoo_version, to_version=to_version)
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 — @mcp.tool() wrappers for the 7 new tools (ADR-0023 §5).
+# TRIGGER docstrings keep EN + VI for router accuracy (ADR-0012 §2 exception).
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def describe_module(
+    name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
+    """Return a full architecture overview of an Odoo module (manifest +
+    model/view/JS counts).
+
+    TRIGGER when: "what does module viin_sale do", "describe sale_management
+    module", "overview of website_sale", "module X làm gì", "tóm tắt module
+    Y", "show me the manifest and counts for module Z", "what's inside this
+    module"
+    PREFER over: check_module_exists when caller needs module contents
+    (models, views, JS), not just YES/NO existence. Also prefer over
+    resolve_model when the question is about a module, not a model.
+    SKIP when: caller only needs fast YES/NO + edition badge — use
+    check_module_exists (1 Cypher query vs 5). Use list_fields / list_views /
+    list_methods when caller wants the full per-entity enumeration.
+
+    Args:
+        name: Module technical name (e.g. 'sale', 'viin_sale').
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        profile_name: Optional profile filter (e.g. 'viindoo_internal_17').
+
+    Returns:
+        Tree text: Manifest (Depends, Edition, Version), Defines models,
+        Extends models, Views (by type), JS patches.
+
+    Example:
+        describe_module("viin_sale", "17.0")
+        → viin_sale (Odoo 17.0)
+          ├─ Manifest:
+          │   ├─ Depends: sale, account, viin_base
+          │   ├─ Edition: viindoo
+          │   └─ Version: 17.0.1.2.3
+          ├─ Defines models: 2 (sale.report.custom, viin.sale.config)
+          ├─ Extends models: 5 (sale.order, sale.order.line, ...)
+          ├─ Views: 12 (8 form, 3 tree, 1 search)
+          └─ JS patches: 3
+    """
+    return _describe_module(name, odoo_version, profile_name)
+
+
+@mcp.tool()
+def list_fields(
+    model: str,
+    odoo_version: str = "auto",
+    module: str | None = None,
+    kind: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Enumerate fields declared on an Odoo model, grouped by module.
+
+    TRIGGER when: "list all fields of sale.order", "show fields on
+    account.move", "what fields does res.partner have", "liệt kê field của
+    model X", "tất cả field trên sale.order", "all monetary fields on
+    account.move", "fields added by viin_sale to sale.order"
+    PREFER over: resolve_model — that tool only returns the field count;
+    list_fields returns the full enumerated list with type per row.
+    SKIP when: caller wants one field's detail → use resolve_field. When the
+    caller asks "how many fields" only, resolve_model is cheaper.
+
+    Args:
+        model: Odoo model dotted name (e.g. 'sale.order').
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        module: Optional module filter — only fields declared in this module.
+        kind: Optional ttype filter (e.g. 'monetary', 'many2one').
+        profile_name: Optional profile filter.
+        limit: Cypher LIMIT (default 200). Render cap is 50 per ADR-0023 §5.5.
+
+    Returns:
+        Tree text: header + per-module subtree of `name : ttype` rows.
+
+    Example:
+        list_fields("sale.order", "17.0", module="sale")
+        → Fields of sale.order (Odoo 17.0)
+          ├─ [odoo] sale
+          │   ├─ name : char
+          │   ├─ partner_id : many2one
+          │   └─ amount_total : monetary
+    """
+    return _list_fields(
+        model, odoo_version, module, kind, profile_name, limit,
+    )
+
+
+@mcp.tool()
+def list_methods(
+    model: str,
+    odoo_version: str = "auto",
+    module: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Enumerate methods on an Odoo model, grouped by module.
+
+    Methods overridden across ≥2 modules are marked with `(*)`.
+
+    TRIGGER when: "list methods of sale.order", "all methods on res.partner",
+    "what behavior does account.move have", "method nào trên model X",
+    "tất cả method của sale.order", "what are the action_* methods on
+    sale.order"
+    PREFER over: resolve_method — that tool shows one method's chain;
+    list_methods enumerates every method on the model.
+    SKIP when: caller wants one method's override chain → use resolve_method.
+    When the caller asks "best override point" → use find_override_point.
+
+    Args:
+        model: Odoo model dotted name.
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        module: Optional module filter.
+        profile_name: Optional profile filter.
+        limit: Cypher LIMIT (default 200). Render cap is 20.
+
+    Returns:
+        Tree text: header + per-module subtree of `name[(*)] : kind` rows.
+
+    Example:
+        list_methods("sale.order", "17.0")
+        → Methods of sale.order (Odoo 17.0)
+          ├─ [odoo] sale
+          │   ├─ action_confirm(*) : action
+          │   └─ _compute_amount : compute
+    """
+    return _list_methods(model, odoo_version, module, profile_name, limit)
+
+
+@mcp.tool()
+def list_views(
+    model: str,
+    odoo_version: str = "auto",
+    view_type: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Enumerate XML views targeting an Odoo model, grouped by module.
+
+    TRIGGER when: "list views of sale.order", "what views are defined for
+    res.partner", "all form views on account.move", "view nào của model X",
+    "tất cả form/tree view trên sale.order", "kanban views on hr.employee"
+    PREFER over: resolve_view — that tool drills into one xmlid;
+    list_views enumerates every view targeting the model.
+    SKIP when: caller wants one view's xpath chain → use resolve_view. Use
+    list_qweb_templates when the caller wants QWeb (not ir.ui.view) records.
+
+    Args:
+        model: Odoo model dotted name (e.g. 'sale.order').
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        view_type: Optional filter (form/tree/kanban/search/...).
+        profile_name: Optional profile filter.
+        limit: Cypher LIMIT (default 200). Render cap is 20.
+
+    Returns:
+        Tree text: header + per-module subtree of `xmlid : type` rows.
+
+    Example:
+        list_views("sale.order", "17.0", view_type="form")
+        → Views of sale.order (Odoo 17.0)
+          ├─ [odoo] sale
+          │   └─ sale.view_order_form : form
+    """
+    return _list_views(model, odoo_version, view_type, profile_name, limit)
+
+
+@mcp.tool()
+def list_owl_components(
+    module: str,
+    odoo_version: str = "auto",
+    bound_model: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Enumerate OWL components declared in a module (Odoo v14+).
+
+    Era-aware: returns empty + warning for Odoo v8-v13 (Widget era — no OWL).
+    When `bound_model` filter is set, output includes a warning that
+    bound_model resolution is heuristic (parser_js.py:415) and may miss
+    components that resolve the model dynamically via this.props.resModel.
+
+    TRIGGER when: "list OWL components in sale_management", "what OWL
+    components does website_sale define", "OWL components for sale.order",
+    "OWL component nào trong module X", "tất cả OWL component bound to
+    res.partner"
+    PREFER over: find_examples — that tool returns code snippets;
+    list_owl_components gives the structured component inventory.
+    SKIP when: caller wants legacy Widget (v8-v13) → use list_js_patches
+    with era='era1'. Use list_qweb_templates when the caller asks about
+    QWeb templates, not OWL components.
+
+    Args:
+        module: Module name to search within.
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        bound_model: Optional filter — only components whose bound_model
+            heuristic matches this name. Triggers heuristic warning footer.
+        profile_name: Optional profile filter.
+        limit: Cypher LIMIT (default 200). Render cap is 20.
+
+    Returns:
+        Tree text: header + `component_name : bound_model` rows.
+
+    Example:
+        list_owl_components("sale_management", "17.0")
+        → OWL components of sale_management (Odoo 17.0)
+          ├─ SaleOrderKanban : sale.order
+          └─ SaleSidebar : (unbound)
+    """
+    return _list_owl_components(
+        module, odoo_version, bound_model, profile_name, limit,
+    )
+
+
+@mcp.tool()
+def list_qweb_templates(
+    module: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Enumerate QWeb templates declared in a module.
+
+    TRIGGER when: "list QWeb templates in website_sale", "what QWeb
+    templates does module X define", "QWeb template nào trong module Y",
+    "all t-name templates in module Z", "show me QWeb inheritance for
+    module W"
+    PREFER over: find_examples — that tool returns rendered snippets;
+    list_qweb_templates gives the inheritance-aware inventory.
+    SKIP when: caller wants OWL components (v15+ JS classes) → use
+    list_owl_components. Use resolve_view when the template IS an
+    ir.ui.view (not a pure QWeb-portal template).
+
+    Args:
+        module: Module name to search within.
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        profile_name: Optional profile filter.
+        limit: Cypher LIMIT (default 200). Render cap is 20.
+
+    Returns:
+        Tree text: header + `xmlid : t-inherit=<parent or (root)>` rows.
+
+    Example:
+        list_qweb_templates("website_sale", "17.0")
+        → QWeb templates of website_sale (Odoo 17.0)
+          ├─ website_sale.product : t-inherit=(root)
+          └─ website_sale.cart_lines : t-inherit=website_sale.cart
+    """
+    return _list_qweb_templates(module, odoo_version, profile_name, limit)
+
+
+@mcp.tool()
+def list_js_patches(
+    odoo_version: str = "auto",
+    target: str | None = None,
+    module: str | None = None,
+    era: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Enumerate JS patches across all eras (Widget extend, mixin include,
+    OWL patch).
+
+    `era` accepts era1 / era2 / era3 (preferred — ADR-0023 §5.3) or the
+    stored values extend / include / patch.
+
+    TRIGGER when: "list JS patches on hr.employee", "all OWL patches in
+    Odoo 17", "Widget extends in v12", "JS patch nào trên model X",
+    "tất cả patch() trong module Y", "legacy widget extensions in v11"
+    PREFER over: find_examples — that tool returns code snippets;
+    list_js_patches gives the structured per-target inventory.
+    SKIP when: caller wants OWL component declarations (not patches) →
+    use list_owl_components. Use find_examples when the caller wants
+    code-level usage patterns instead of inventory.
+
+    Args:
+        odoo_version: '17.0' / '18.0' / 'auto'.
+        target: Optional filter on patched widget/component name.
+        module: Optional filter on patching module.
+        era: Optional filter — 'era1' (Widget extend, v8-v13),
+            'era2' (mixin include, v14-v16), 'era3' (OWL patch, v15+).
+            Also accepts the stored values extend/include/patch.
+        profile_name: Optional profile filter.
+        limit: Cypher LIMIT (default 200). Render cap is 10.
+
+    Returns:
+        Tree text: header + per-module subtree of
+        `target.patch_name : era=<era>` rows.
+
+    Example:
+        list_js_patches(odoo_version="17.0", target="ListController")
+        → JS patches on ListController (Odoo 17.0)
+          ├─ [odoo] sale_management
+          │   └─ ListController.applyFilters : era=patch
+    """
+    return _list_js_patches(
+        odoo_version, target, module, era, profile_name, limit,
+    )
 
 
 def _mcp_host() -> str:

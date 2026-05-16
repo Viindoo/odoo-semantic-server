@@ -983,7 +983,7 @@ docker compose restart postgres
 
 ## 7. Security Checklist
 
-→ **Pre-launch sign-off + 14 MCP tool verification matrix:** [`docs/deploy/pre-launch-checklist.md`](deploy/pre-launch-checklist.md).
+→ **Pre-launch sign-off + 21 MCP tool verification matrix:** [`docs/deploy/pre-launch-checklist.md`](deploy/pre-launch-checklist.md).
 
 Trước khi expose public internet:
 

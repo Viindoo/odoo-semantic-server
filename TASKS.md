@@ -505,6 +505,7 @@ PR #87 + #88 added backend features absorbed into M8 branch. The Astro pages don
 ### Stream F — Long-tail Features (defer or kill)
 
 - [x] MFA TOTP for Web UI session auth (ADR-0011 extension — security hardening before public launch). ADR-0022.
+- [x] **W-OSM Wave 1 — Tool output completeness (2026-05-16):** 14 → 21 MCP tools. Added 7 new tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) for module architecture overview + entity enumeration + UI-layer inventory. Retrofit grammar consistency across all 14 existing tools (tree connectors, sublist indent, truncation via `_render_capped`, `Next:` footer on 18 drill-down tools). ADR-0023 codifies tree grammar contract + English-only output policy + next-step hint mapping. Plan: [`.claude/plans/swift-coalescing-kurzweil.md`](.claude/plans/swift-coalescing-kurzweil.md).
 - [ ] T3.4b VN translation for persona docs (carried from M7.5 design decision to defer — deferred to M10).
 - [ ] Pricing page payment integration (`/pricing/` has waitlist teaser only from M8 W5 — deferred to M10 "Billing Wow").
 
@@ -550,7 +551,7 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 
 ## Pre-launch Signoff
 
-Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 14 MCP tool sign-off table.
+Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 21 MCP tool sign-off table.
 
 | Mục | Admin | Ngày | Ghi chú |
 |-----|-------|------|---------|
@@ -559,7 +560,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Port Isolation | | | |
 | Logrotate | | | |
 | Backup & Recovery | | | |
-| MCP Tool Sign-Off (14 tools) | | | |
+| MCP Tool Sign-Off (21 tools) | | | |
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
@@ -574,5 +575,5 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
 | ↓ | [`docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 — bắt đầu ở đây |
-| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 14 MCP tool verify |
+| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 21 MCP tool verify |
 | → | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook — backup frequency, restore order, RTO |

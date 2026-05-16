@@ -1,10 +1,10 @@
 # Odoo Semantic — Developer Guide
 
-<!-- This persona intentionally uses the full 14-tool table instead of the "Most Useful Tools" template variant — devs need the full surface area. -->
+<!-- This persona intentionally uses the full 21-tool table instead of the "Most Useful Tools" template variant — devs need the full surface area. -->
 
 > **Get started (Claude Code):** `claude plugin marketplace add Viindoo/claude-plugins` → `claude plugin install odoo-semantic@viindoo-plugins` → `/odoo-semantic:connect`. Chi tiết + AI tools khác: [client setup](../client-setup.md).
 
-The full 14-tool arsenal, optimized for development workflows. From understanding inheritance to safely extending core methods, this guide covers the daily patterns.
+The full 21-tool arsenal, optimized for development workflows. From understanding inheritance to safely extending core methods to enumerating fields/methods/views and UI-layer artefacts (OWL, QWeb, JS patches), this guide covers the daily patterns.
 
 ---
 
@@ -26,6 +26,13 @@ The full 14-tool arsenal, optimized for development workflows. From understandin
 | `check_module_exists` | Verify module availability + CE/EE flag |
 | `find_override_point` | Locate the safest method to override |
 | `cli_help` | Look up `odoo-bin` flags and options |
+| `describe_module` | Module architecture overview — manifest + defines/extends models + view/JS counts |
+| `list_fields` | Enumerate every field on a model, grouped by module (drill-down from `resolve_model` count) |
+| `list_methods` | Enumerate every method on a model with override marker `(*)`, grouped by module |
+| `list_views` | Enumerate every XML view targeting a model, grouped by module |
+| `list_owl_components` | Inventory OWL components in a module (Odoo v14+) |
+| `list_qweb_templates` | Inventory QWeb templates in a module with `t-inherit` parent |
+| `list_js_patches` | Inventory JS patches across all eras — era1 (Widget extend v8-v13), era2 (mixin include v14-v16), era3 (OWL patch v15+) |
 
 ---
 
