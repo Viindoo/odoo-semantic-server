@@ -338,8 +338,8 @@ def _resolve_model(
     lines.append(_format_next_step([
         f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
         " for full field list",
-        f"find_override_point(model='{model_name}', odoo_version='{odoo_version}')"
-        " for safe extension spots",
+        f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
+        " for behavior",
     ]))
     return "\n".join(lines)
 
@@ -396,8 +396,8 @@ def _resolve_field(
         connector = "└─" if i == last_idx else "├─"
         lines.append(f"│   {connector} {repo_str}{r['module_name']}")
     lines.append(_format_next_step([
-        f"find_override_point(model='{model_name}', method='{field_name}'"
-        f", odoo_version='{odoo_version}') for extension spots",
+        f"find_examples(query='{model_name}.{field_name} usage'"
+        f", odoo_version='{odoo_version}') for real-world patterns",
         f"impact_analysis(entity_type='field'"
         f", entity_name='{model_name}.{field_name}'"
         f", odoo_version='{odoo_version}') for blast radius",
@@ -2318,9 +2318,16 @@ def _describe_module(
     # Defines models — count + capped inline preview.
     def_total = len(defines)
     if def_total > 0:
-        def_preview = ", ".join(d["name"] for d in defines[:5])
-        if def_total > 5:
-            def_preview += f", ... and {def_total - 5} more"
+        def_preview_names = [d["name"] for d in defines[:LIST_PREVIEW_MAX_ITEMS]]
+        def_preview = ", ".join(def_preview_names)
+        if def_total > LIST_PREVIEW_MAX_ITEMS:
+            overflow = def_total - LIST_PREVIEW_MAX_ITEMS
+            first_def = defines[0]["name"]
+            def_preview += (
+                f", ... and {overflow} more"
+                f" (use list_fields(model='{first_def}', module='{name}',"
+                f" odoo_version='{odoo_version}'))"
+            )
         lines.append(f"├─ Defines models: {def_total} ({def_preview})")
     else:
         lines.append("├─ Defines models: 0")
@@ -2328,9 +2335,16 @@ def _describe_module(
     # Extends models — count + capped inline preview.
     ext_total = len(extends)
     if ext_total > 0:
-        ext_preview = ", ".join(e["name"] for e in extends[:5])
-        if ext_total > 5:
-            ext_preview += f", ... and {ext_total - 5} more"
+        ext_preview_names = [e["name"] for e in extends[:LIST_PREVIEW_MAX_ITEMS]]
+        ext_preview = ", ".join(ext_preview_names)
+        if ext_total > LIST_PREVIEW_MAX_ITEMS:
+            overflow = ext_total - LIST_PREVIEW_MAX_ITEMS
+            first_ext = extends[0]["name"]
+            ext_preview += (
+                f", ... and {overflow} more"
+                f" (use list_fields(model='{first_ext}', module='{name}',"
+                f" odoo_version='{odoo_version}'))"
+            )
         lines.append(f"├─ Extends models: {ext_total} ({ext_preview})")
     else:
         lines.append("├─ Extends models: 0")
@@ -3209,10 +3223,12 @@ def _diff_method_across_versions(
     added = sorted(to_decs - from_decs)
     if removed or added:
         lines.append("├─ Decorator changes:")
-        for d in removed:
-            lines.append(f"│   ├─ Removed in {to_version}: {d}")
-        for d in added:
-            lines.append(f"│   └─ Added in {to_version}:   {d}")
+        items = [f"Removed in {to_version}: {d}" for d in removed]
+        items += [f"Added in {to_version}:   {d}" for d in added]
+        last_idx = len(items) - 1
+        for i, text in enumerate(items):
+            connector = "└─" if i == last_idx else "├─"
+            lines.append(f"│   {connector} {text}")
     else:
         lines.append("├─ Decorator changes: none")
 
