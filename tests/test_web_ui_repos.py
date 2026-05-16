@@ -1288,9 +1288,21 @@ class TestUpdateRepoEndpoint:
             local_path="/tmp/odoo_race",
         )
 
-        # Mock the pool so pre-check passes (fetch_one returns None = no conflict)
-        # but the execute raises UniqueViolation to simulate a concurrent INSERT.
+        # Mock the pool so the UNIQUE pre-check passes (no conflict row) and the
+        # subsequent UPDATE raises UniqueViolation — simulating a concurrent INSERT
+        # winning the race between our SELECT and our UPDATE.
+        #
+        # The mock must be SQL-aware: get_repo_by_id() also uses fetch_one to load
+        # the existing row, and that call must NOT be intercepted (otherwise the
+        # route returns 404 before reaching the UPDATE path).
+        original_fetch_one = repo_store()._pool.fetch_one
         original_execute = repo_store()._pool.execute
+
+        def fake_fetch_one(conn, sql, params=None):
+            # Only intercept the UNIQUE conflict pre-check; let get_repo_by_id pass through.
+            if "WHERE url = %s AND branch = %s AND id != %s" in sql:
+                return None
+            return original_fetch_one(conn, sql, params)
 
         def fake_execute(conn, sql, params=None):
             if "UPDATE repos SET" in sql:
@@ -1299,7 +1311,7 @@ class TestUpdateRepoEndpoint:
 
         app = create_app()
         with mock.patch.object(
-            repo_store()._pool, "fetch_one", side_effect=lambda *a, **kw: None
+            repo_store()._pool, "fetch_one", side_effect=fake_fetch_one
         ), mock.patch.object(
             repo_store()._pool, "execute", side_effect=fake_execute
         ):
