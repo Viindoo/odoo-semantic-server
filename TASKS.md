@@ -530,6 +530,26 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 
 **Plan file:** [`docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md`](docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md)
 
+### Stream H — Web UI Parity for Repo & Profile Management (M9 follow-up, PR #116)
+
+**Status:** `[x]` DONE — 2026-05-16 (PR #116, v0.4.1). 5 WIs + review fixes merged.
+
+**ADR:** ADR-0024 — PATCH mutation policy (preserve `head_sha` + reject mutations on indexed profiles).
+
+- [x] **WI-A — Surface clone/index errors + last_indexed_at:** RepoTable exposes `clone_error_msg`, `error_msg`, `last_indexed_at` columns.
+- [x] **WI-B — --full checkbox on Index + Index-All buttons:** Expose ADR-0007 `--full` reindex flag in Web UI.
+- [x] **WI-C — Edit Repo form:** `PATCH /api/repos/repos/{id}` endpoint + Web UI form (URL/branch/ssh_key_id/local_path). Preserves `head_sha`.
+- [x] **WI-D — Edit Profile form:** `PATCH /api/repos/profiles/{id}` endpoint + Web UI form. Rejects `name`/`version` change on indexed profiles (409); enforces ancestor/descendant version-match (422).
+- [x] **WI-E — Profile hierarchy tree view:** Toggle flat/tree in admin UI, localStorage persist. ProfileTree.astro SSR template (Astro convention parity). Namespaced `profile-tree-*` testids.
+
+**Review fixes (post-PR-review):**
+
+- [x] Ancestor version-match + indexed guard 409 (critical).
+- [x] UniqueViolation catch → HTTP 409 (TOCTOU race safety).
+- [x] Audit log before/after snapshots for PATCH mutations (ADR-0021 extension).
+- [x] ProfileTree testid namespace fix.
+- [x] +9 backend tests + +5 browser tests.
+
 ---
 
 ## Milestone 10 — "Billing Wow"

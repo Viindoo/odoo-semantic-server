@@ -2,6 +2,32 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.4.1] — 2026-05-16 — M9 follow-up: Web UI parity for repo & profile management
+
+5 WIs merged via PR #116.
+
+### Added (M9 follow-up: Web UI parity)
+
+- `PATCH /api/repos/repos/{id}` — edit URL/branch/ssh_key_id/local_path qua Web UI; preserves `head_sha` (incremental indexer compatible). ADR-0024.
+- `PATCH /api/repos/profiles/{id}` — edit name/version/description; rejects `name`/`version` change on indexed profiles (HTTP 409 `ProfileIndexedError`); enforces ancestor + descendant version-match invariant (HTTP 422). ADR-0024.
+- Admin UI: Edit Repo form, Edit Profile form, profile hierarchy tree view (toggle flat/tree, localStorage persist).
+- RepoTable surfaces `clone_error_msg`, `error_msg`, `last_indexed_at` columns.
+- Index + Index-All buttons: `--full` checkbox (expose ADR-0007 cleanup flag).
+- Audit log captures before/after snapshots for PATCH mutations (ADR-0021 extension).
+
+### Fixed
+
+- TOCTOU race in `update_repo` UNIQUE check — catch `psycopg2.errors.UniqueViolation` → HTTP 409 instead of 500.
+- ProfileTree.astro testid clash with flat list (namespaced `profile-tree-*`).
+- ProfileTree.astro client-side DOM build → SSR template (Astro convention parity).
+
+### Tests
+
+- +9 backend tests for PATCH endpoints (empty body, single field, indexed guard, ancestor/descendant version match, concurrent UniqueViolation).
+- +5 browser tests for tree view toggle and localStorage persistence.
+
+---
+
 ## [0.4.0] — 2026-05-15 — M9 "Auth Wow" + M8 cleanup + comprehensive security hardening
 
 19 worktrees merged via 9-phase orchestration. PR #100.

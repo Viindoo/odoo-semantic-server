@@ -6,6 +6,9 @@ export interface Repo {
   local_path: string;
   odoo_version?: string;
   clone_status?: string;
+  clone_error_msg?: string | null;
+  error_msg?: string | null;
+  last_indexed_at?: string | null;
   head_sha?: string | null;
   last_job?: { id: number; status: string; error_msg?: string } | null;
 }
@@ -37,6 +40,29 @@ const cloneStatusColor: Record<string, string> = {
   cloned:  'bg-green-100 text-green-700',
   error:   'bg-red-100 text-red-700',
 };
+
+// Helper to format ISO timestamp to "YYYY-MM-DD HH:mm"
+function formatTimestamp(isoString: string | null | undefined): string {
+  if (!isoString) return '—';
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return '—';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const mins = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${mins}`;
+  } catch {
+    return '—';
+  }
+}
+
+// Helper to truncate long error messages
+function truncate(text: string | null | undefined, maxLen: number): string {
+  if (!text) return '';
+  return text.length > maxLen ? text.substring(0, maxLen) + '…' : text;
+}
 ---
 
 <!-- Add Repo Form -->
@@ -116,15 +142,26 @@ const cloneStatusColor: Record<string, string> = {
 
 <!-- Repos Table -->
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-  <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+  <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
     <h2 class="text-base font-semibold text-gray-800">Repositories ({repos.length})</h2>
     {repos.length > 0 && (
-      <button
-        data-testid="index-all-button"
-        class="text-sm bg-viindoo-info hover:bg-viindoo-primary text-white px-4 py-1.5 rounded-lg transition-colors"
-      >
-        Index All
-      </button>
+      <div class="flex items-center gap-2">
+        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            data-testid="index-all-full-checkbox"
+            class="w-4 h-4 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
+            title="Force full reindex — cleanup stale Module nodes after module rename/move (ADR-0007)"
+          />
+          <span>Full reindex</span>
+        </label>
+        <button
+          data-testid="index-all-button"
+          class="text-sm bg-viindoo-info hover:bg-viindoo-primary text-white px-4 py-1.5 rounded-lg transition-colors"
+        >
+          Index All
+        </button>
+      </div>
     )}
   </div>
 
@@ -143,6 +180,7 @@ const cloneStatusColor: Record<string, string> = {
             <th class="px-4 py-3 text-left">Profile</th>
             <th class="px-4 py-3 text-left">Clone</th>
             <th class="px-4 py-3 text-left">Last Job</th>
+            <th class="px-4 py-3 text-left">Last Indexed</th>
             <th class="px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
@@ -159,19 +197,44 @@ const cloneStatusColor: Record<string, string> = {
                   {profiles.find((p) => p.repos?.some((r) => r.id === repo.id))?.name ?? '—'}
                 </td>
                 <td class="px-4 py-3">
-                  <span class:list={['px-2 py-0.5 rounded-full text-xs font-medium', cloneClass]}>
-                    {repo.clone_status ?? 'manual'}
-                  </span>
+                  <div class="flex flex-col gap-1">
+                    <span class:list={['px-2 py-0.5 rounded-full text-xs font-medium', cloneClass]}>
+                      {repo.clone_status ?? 'manual'}
+                    </span>
+                    {repo.clone_status === 'error' && repo.clone_error_msg && (
+                      <span class="text-red-700 text-xs" title={repo.clone_error_msg}>
+                        {truncate(repo.clone_error_msg, 100)}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td class="px-4 py-3">
-                  {repo.last_job ? (
-                    <span class="text-xs text-gray-600">#{repo.last_job.id} {repo.last_job.status}</span>
-                  ) : (
-                    <span class="text-xs text-gray-400">—</span>
-                  )}
+                  <div class="flex flex-col gap-1">
+                    {repo.last_job ? (
+                      <span class="text-xs text-gray-600">#{repo.last_job.id} {repo.last_job.status}</span>
+                    ) : (
+                      <span class="text-xs text-gray-400">—</span>
+                    )}
+                    {repo.error_msg && (
+                      <span class="text-red-700 text-xs" title={repo.error_msg}>
+                        {truncate(repo.error_msg, 100)}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs text-gray-600">{formatTimestamp(repo.last_indexed_at)}</span>
                 </td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-2">
+                    <label class="flex items-center gap-1.5 text-xs text-gray-600" title="Force full reindex — cleanup stale Module nodes after module rename/move (ADR-0007)">
+                      <input
+                        type="checkbox"
+                        data-testid={`index-repo-full-checkbox-${repo.id}`}
+                        data-repo-id={String(repo.id)}
+                        class="w-3.5 h-3.5 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
+                      />
+                    </label>
                     <button
                       data-testid={`index-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
@@ -189,6 +252,13 @@ const cloneStatusColor: Record<string, string> = {
                       </button>
                     )}
                     <button
+                      data-testid={`edit-repo-button-${repo.id}`}
+                      data-repo-id={String(repo.id)}
+                      class="text-xs bg-gray-50 hover:bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg transition-colors edit-repo-btn"
+                    >
+                      Edit
+                    </button>
+                    <button
                       data-testid={`delete-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
                       class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-repo-btn"
@@ -196,6 +266,84 @@ const cloneStatusColor: Record<string, string> = {
                       Delete
                     </button>
                   </div>
+                </td>
+              </tr>
+              <!-- Inline edit form row (hidden by default) -->
+              <tr
+                data-testid={`edit-repo-form-row-${repo.id}`}
+                data-repo-id={String(repo.id)}
+                class="edit-repo-form-row bg-blue-50"
+                hidden
+              >
+                <td colspan="5" class="px-4 py-4">
+                  <form
+                    data-testid={`edit-repo-form-${repo.id}`}
+                    data-edit-repo-form
+                    data-repo-id={String(repo.id)}
+                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3"
+                  >
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">URL</label>
+                      <input
+                        name="url"
+                        type="text"
+                        placeholder={repo.url}
+                        data-testid={`edit-repo-url-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">Branch</label>
+                      <input
+                        name="branch"
+                        type="text"
+                        placeholder={repo.branch}
+                        data-testid={`edit-repo-branch-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">SSH Key</label>
+                      <select
+                        name="ssh_key_id"
+                        data-testid={`edit-repo-ssh-key-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      >
+                        <option value="">— unchanged —</option>
+                        <option value="clear">— clear key —</option>
+                        {sshKeys.map((k) => (
+                          <option value={String(k.id)}>{k.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">Local path</label>
+                      <input
+                        name="local_path"
+                        type="text"
+                        placeholder={repo.local_path}
+                        data-testid={`edit-repo-local-path-${repo.id}`}
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                      />
+                    </div>
+                    <div class="sm:col-span-2 lg:col-span-4 flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        data-testid={`edit-repo-cancel-${repo.id}`}
+                        data-repo-id={String(repo.id)}
+                        class="text-xs px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors edit-repo-cancel-btn"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        data-testid={`edit-repo-submit-${repo.id}`}
+                        class="text-xs bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 px-4 py-2 rounded-lg transition-colors"
+                      >
+                        Save changes
+                      </button>
+                    </div>
+                  </form>
                 </td>
               </tr>
             );
@@ -243,10 +391,15 @@ const cloneStatusColor: Record<string, string> = {
   document.querySelectorAll('.index-repo-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const repoId = (btn as HTMLElement).dataset.repoId;
+      const fullCheckbox = document.querySelector(`[data-testid="index-repo-full-checkbox-${repoId}"]`) as HTMLInputElement | null;
+      const body: Record<string, string> = { max_workers: '1' };
+      if (fullCheckbox?.checked) {
+        body.full = '1';
+      }
       const res = await fetch(`/api/repos/repos/${repoId}/index`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ max_workers: '1' }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -299,10 +452,15 @@ const cloneStatusColor: Record<string, string> = {
   // Index all button
   document.querySelector('[data-testid="index-all-button"]')?.addEventListener('click', async () => {
     if (!confirm('Trigger index for ALL profiles?')) return;
+    const fullCheckbox = document.querySelector('[data-testid="index-all-full-checkbox"]') as HTMLInputElement | null;
+    const body: Record<string, string> = { max_workers: '1', profile_workers: '1' };
+    if (fullCheckbox?.checked) {
+      body.full = '1';
+    }
     const res = await fetch('/api/repos/index-all', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ max_workers: '1', profile_workers: '1' }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
@@ -310,6 +468,79 @@ const cloneStatusColor: Record<string, string> = {
     } else {
       showFlash(data.error ?? 'Index-all failed.', 'error');
     }
+  });
+
+  // Edit repo buttons — toggle inline edit form row
+  document.querySelectorAll('.edit-repo-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      const formRow = document.querySelector(
+        `[data-testid="edit-repo-form-row-${repoId}"]`
+      ) as HTMLElement | null;
+      if (formRow) {
+        formRow.hidden = !formRow.hidden;
+      }
+    });
+  });
+
+  // Edit repo cancel buttons
+  document.querySelectorAll('.edit-repo-cancel-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const repoId = (btn as HTMLElement).dataset.repoId;
+      const formRow = document.querySelector(
+        `[data-testid="edit-repo-form-row-${repoId}"]`
+      ) as HTMLElement | null;
+      if (formRow) formRow.hidden = true;
+    });
+  });
+
+  // Edit repo form submit — PATCH /api/repos/repos/{id}
+  document.querySelectorAll('[data-edit-repo-form]').forEach((form) => {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = form as HTMLFormElement;
+      const repoId = (form as HTMLElement).dataset.repoId;
+      const fd = new FormData(f);
+
+      const body: Record<string, unknown> = {};
+      const urlVal = (fd.get('url') as string | null)?.trim();
+      const branchVal = (fd.get('branch') as string | null)?.trim();
+      const sshKeyVal = (fd.get('ssh_key_id') as string | null)?.trim();
+      const localPathVal = (fd.get('local_path') as string | null)?.trim();
+
+      if (urlVal) body['url'] = urlVal;
+      if (branchVal) body['branch'] = branchVal;
+      if (sshKeyVal === 'clear') {
+        body['clear_ssh_key'] = true;
+      } else if (sshKeyVal) {
+        body['ssh_key_id'] = Number(sshKeyVal);
+      }
+      if (localPathVal) body['local_path'] = localPathVal;
+
+      const res = await fetch(`/api/repos/repos/${repoId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        const fields: string[] = data.updated_fields ?? [];
+        showFlash(
+          fields.length ? `Repo updated: ${fields.join(', ')}.` : 'No fields changed.',
+          'success'
+        );
+        setTimeout(() => location.reload(), 800);
+      } else if (res.status === 404) {
+        showFlash(data.error ?? 'Repo not found.', 'error');
+      } else if (res.status === 409) {
+        showFlash(data.error ?? 'URL+branch already taken by another repo.', 'error');
+      } else if (res.status === 400) {
+        showFlash(data.error ?? 'Invalid data.', 'error');
+      } else {
+        showFlash(data.error ?? 'Edit failed.', 'error');
+      }
+    });
   });
 
   // SSH key dropdown toggle — show when URL starts with git@, hide otherwise.

@@ -3,6 +3,7 @@
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import RepoTable from '../../components/RepoTable.astro';
 import JobStatus from '../../components/JobStatus.astro';
+import ProfileTree from '../../components/ProfileTree.astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
@@ -87,10 +88,20 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
 
   <!-- Profiles list -->
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
-    <div class="px-5 py-4 border-b border-gray-100">
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
       <h2 class="text-base font-semibold text-gray-800">
         Profiles ({profilesData.profiles.length})
       </h2>
+      {profilesData.profiles.length > 0 && (
+        <button
+          id="profile-view-toggle"
+          data-testid="profile-view-toggle"
+          class="text-xs border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors"
+          aria-label="Switch profile view mode"
+        >
+          Switch to tree view
+        </button>
+      )}
     </div>
 
     {profilesData.profiles.length === 0 ? (
@@ -100,64 +111,131 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
         <p class="text-sm mt-1">Add a profile above to get started.</p>
       </div>
     ) : (
-      <div class="divide-y divide-gray-100">
-        {(profilesData.profiles as { id: number; name: string; odoo_version: string; description?: string; repos?: unknown[] }[]).map((p) => (
-          <div data-testid="profile-row" data-testid-id={`profile-row-${p.id}`} class="px-5 py-4 hover:bg-gray-50">
-            <div class="flex items-center justify-between">
-              <div>
-                <p class="font-medium text-gray-800">{p.name}</p>
-                <p class="text-xs text-gray-500 mt-0.5">Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}</p>
+      <>
+        <!-- Flat list view (default) -->
+        <div id="profile-flat-list" class="divide-y divide-gray-100">
+          {(profilesData.profiles as { id: number; name: string; odoo_version: string; description?: string; repos?: unknown[]; parent_profile_id?: number | null }[]).map((p) => (
+            <div data-testid="profile-row" data-testid-id={`profile-row-${p.id}`} class="px-5 py-4 hover:bg-gray-50">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-medium text-gray-800">{p.name}</p>
+                  <p class="text-xs text-gray-500 mt-0.5">Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}</p>
+                </div>
+                <div class="flex items-center gap-3 flex-wrap">
+                  <span class="text-sm text-gray-500">{p.repos?.length ?? 0} repos</span>
+
+                  <!-- Parent profile dropdown -->
+                  <select
+                    data-testid="profile-parent-select"
+                    data-profile-id={String(p.id)}
+                    class="text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select"
+                    title="Set parent profile"
+                  >
+                    <option value="">— no parent —</option>
+                    {(profilesData.profiles as { id: number; name: string; odoo_version: string; parent_profile_id?: number | null }[])
+                      .filter((other) => other.id !== p.id && other.odoo_version === p.odoo_version)
+                      .map((other) => (
+                        <option value={String(other.id)} selected={p.parent_profile_id === other.id}>{other.name}</option>
+                      ))
+                    }
+                  </select>
+
+                  <!-- Clone all pending button -->
+                  <button
+                    data-testid="clone-all-button"
+                    data-profile-id={String(p.id)}
+                    class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn"
+                  >
+                    Clone all pending
+                  </button>
+
+                  <button
+                    data-testid={`edit-profile-button-${p.id}`}
+                    data-profile-id={String(p.id)}
+                    class="text-xs bg-yellow-50 hover:bg-yellow-100 text-yellow-700 px-3 py-1.5 rounded-lg transition-colors edit-profile-btn"
+                  >
+                    Edit
+                  </button>
+
+                  <button
+                    data-testid={`delete-profile-button-${p.id}`}
+                    data-profile-id={String(p.id)}
+                    class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
-              <div class="flex items-center gap-3 flex-wrap">
-                <span class="text-sm text-gray-500">{p.repos?.length ?? 0} repos</span>
 
-                <!-- Parent profile dropdown -->
-                <select
-                  data-testid="profile-parent-select"
-                  data-profile-id={String(p.id)}
-                  class="text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select"
-                  title="Set parent profile"
-                >
-                  <option value="">— no parent —</option>
-                  {(profilesData.profiles as { id: number; name: string; odoo_version: string }[])
-                    .filter((other) => other.id !== p.id && other.odoo_version === p.odoo_version)
-                    .map((other) => (
-                      <option value={String(other.id)}>{other.name}</option>
-                    ))
-                  }
-                </select>
+              <!-- Inline Edit Profile form (hidden until Edit button is clicked) -->
+              <div
+                data-testid={`edit-profile-form-${p.id}`}
+                data-profile-id={String(p.id)}
+                class="mt-3 p-3 border border-yellow-200 rounded-lg bg-yellow-50 edit-profile-form"
+                hidden
+              >
+                <form class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end edit-profile-inner-form" data-profile-id={String(p.id)}>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
+                    <input
+                      name="name"
+                      type="text"
+                      value={p.name}
+                      class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Odoo Version</label>
+                    <input
+                      name="version"
+                      type="text"
+                      value={p.odoo_version}
+                      class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                    <input
+                      name="description"
+                      type="text"
+                      value={p.description ?? ''}
+                      class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                    />
+                  </div>
+                  <div class="sm:col-span-3 flex gap-2 justify-end">
+                    <button
+                      type="button"
+                      class="text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors cancel-edit-profile-btn"
+                      data-profile-id={String(p.id)}
+                    >Cancel</button>
+                    <button
+                      type="submit"
+                      class="text-xs bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded-lg transition-colors"
+                    >Save</button>
+                  </div>
+                </form>
+              </div>
 
-                <!-- Clone all pending button -->
-                <button
-                  data-testid="clone-all-button"
-                  data-profile-id={String(p.id)}
-                  class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors clone-all-btn"
-                >
-                  Clone all pending
-                </button>
-
-                <button
-                  data-testid={`delete-profile-button-${p.id}`}
-                  data-profile-id={String(p.id)}
-                  class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors delete-profile-btn"
-                >
-                  Delete
-                </button>
+              <!-- JobStatus widget for clone-all (hidden until a job is triggered) -->
+              <div
+                data-testid={`clone-all-status-${p.id}`}
+                data-profile-id={String(p.id)}
+                class="mt-2"
+                hidden
+              >
+                <JobStatus jobId={null} autoPoll={false} testid={`clone-all-job-${p.id}`} />
               </div>
             </div>
+          ))}
+        </div>
 
-            <!-- JobStatus widget for clone-all (hidden until a job is triggered) -->
-            <div
-              data-testid={`clone-all-status-${p.id}`}
-              data-profile-id={String(p.id)}
-              class="mt-2"
-              hidden
-            >
-              <JobStatus jobId={null} autoPoll={false} testid={`clone-all-job-${p.id}`} />
-            </div>
-          </div>
-        ))}
-      </div>
+        <!-- Tree view (hidden by default; toggled by JS) -->
+        <div id="profile-tree-view" hidden>
+          <ProfileTree profiles={profilesData.profiles as Parameters<typeof ProfileTree>[0]['profiles']} />
+        </div>
+      </>
     )}
   </div>
 
@@ -269,6 +347,69 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     });
   });
 
+  // Edit profile — toggle inline form
+  document.querySelectorAll('.edit-profile-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const profileId = (btn as HTMLElement).dataset.profileId;
+      const formDiv = document.querySelector(
+        `[data-testid="edit-profile-form-${profileId}"]`
+      ) as HTMLElement | null;
+      if (!formDiv) return;
+      const hidden = formDiv.hasAttribute('hidden');
+      if (hidden) {
+        formDiv.removeAttribute('hidden');
+      } else {
+        formDiv.setAttribute('hidden', '');
+      }
+    });
+  });
+
+  // Cancel edit
+  document.querySelectorAll('.cancel-edit-profile-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const profileId = (btn as HTMLElement).dataset.profileId;
+      const formDiv = document.querySelector(
+        `[data-testid="edit-profile-form-${profileId}"]`
+      ) as HTMLElement | null;
+      formDiv?.setAttribute('hidden', '');
+    });
+  });
+
+  // Submit edit profile form — PATCH /api/repos/profiles/{id}
+  document.querySelectorAll('.edit-profile-inner-form').forEach((formEl) => {
+    formEl.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = formEl as HTMLFormElement;
+      const profileId = (formEl as HTMLElement).dataset.profileId;
+      const fd = new FormData(form);
+      const payload: Record<string, string> = {
+        name: (fd.get('name') as string).trim(),
+        version: (fd.get('version') as string).trim(),
+        description: (fd.get('description') as string).trim(),
+      };
+
+      const res = await fetch(`/api/repos/profiles/${profileId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        showFlash('Profile updated.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else if (res.status === 404) {
+        showFlash(data.detail ?? 'Profile not found.', 'error');
+      } else if (res.status === 409) {
+        showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
+      } else if (res.status === 422) {
+        showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
+      } else {
+        showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+      }
+    });
+  });
+
   // Delete profile
   document.querySelectorAll('.delete-profile-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -290,5 +431,40 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
         showFlash(data.error ?? 'Delete failed.', 'error');
       }
     });
+  });
+
+  // ── Profile view toggle (flat list ↔ tree view) ────────────────────────────
+  // localStorage key: 'osm-profile-view' — values: 'flat' | 'tree'
+  const STORAGE_KEY = 'osm-profile-view';
+
+  const toggleBtn = document.getElementById('profile-view-toggle') as HTMLButtonElement | null;
+  const flatList = document.getElementById('profile-flat-list') as HTMLElement | null;
+  const treeView = document.getElementById('profile-tree-view') as HTMLElement | null;
+
+  function applyViewMode(mode: 'flat' | 'tree') {
+    if (!flatList || !treeView || !toggleBtn) return;
+    if (mode === 'tree') {
+      flatList.setAttribute('hidden', '');
+      treeView.removeAttribute('hidden');
+      toggleBtn.textContent = 'Switch to flat list';
+    } else {
+      treeView.setAttribute('hidden', '');
+      flatList.removeAttribute('hidden');
+      toggleBtn.textContent = 'Switch to tree view';
+    }
+  }
+
+  // Restore saved preference on page load
+  const savedMode = localStorage.getItem(STORAGE_KEY) as 'flat' | 'tree' | null;
+  if (savedMode === 'tree') {
+    applyViewMode('tree');
+  }
+
+  // Toggle on click
+  toggleBtn?.addEventListener('click', () => {
+    const isTree = !treeView?.hasAttribute('hidden');
+    const nextMode: 'flat' | 'tree' = isTree ? 'flat' : 'tree';
+    localStorage.setItem(STORAGE_KEY, nextMode);
+    applyViewMode(nextMode);
   });
 </script>

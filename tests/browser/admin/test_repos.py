@@ -677,3 +677,95 @@ class TestCloneAllButton:
         )
         page.get_by_test_id("clone-all-button").first.click()
         expect(page.get_by_test_id("flash-banner")).to_be_visible(timeout=8000)
+
+
+# ---------------------------------------------------------------------------
+# Profile Tree View (M-Minor5/6)
+# ---------------------------------------------------------------------------
+
+class TestProfileTreeView:
+    """Browser tests for the flat ↔ tree view toggle and tree-view rendering.
+
+    All tests seed at least one profile first so the toggle button is rendered
+    (the button is conditionally rendered by SSR only when profiles exist).
+    localStorage key: 'osm-profile-view' — values: 'flat' | 'tree'.
+    """
+
+    def test_toggle_button_visible_when_profiles_exist(
+        self, astro_server, clean_browser, page
+    ):
+        """After adding a profile, the view-toggle button is visible."""
+        _add_profile(page, astro_server, "tree_toggle_vis_profile")
+        expect(page.get_by_test_id("profile-view-toggle")).to_be_visible(timeout=5000)
+
+    def test_default_view_is_flat_list(
+        self, astro_server, clean_browser, page
+    ):
+        """Default page load (no localStorage): flat list visible, tree view hidden."""
+        _add_profile(page, astro_server, "tree_default_flat_profile")
+
+        # Clear localStorage to ensure clean state
+        page.evaluate("localStorage.removeItem('osm-profile-view')")
+        page.reload()
+        page.wait_for_load_state("load")
+
+        expect(page.locator("#profile-flat-list")).to_be_visible(timeout=5000)
+        expect(page.locator("#profile-tree-view")).not_to_be_visible(timeout=5000)
+
+    def test_click_toggle_shows_tree_view(
+        self, astro_server, clean_browser, page
+    ):
+        """Click the toggle button: tree view becomes visible, flat list hidden,
+        button text changes to 'Switch to flat list'."""
+        _add_profile(page, astro_server, "tree_toggle_click_profile")
+
+        page.evaluate("localStorage.removeItem('osm-profile-view')")
+        page.reload()
+        page.wait_for_load_state("load")
+
+        toggle_btn = page.get_by_test_id("profile-view-toggle")
+        expect(toggle_btn).to_be_visible(timeout=5000)
+        toggle_btn.click()
+
+        expect(page.locator("#profile-tree-view")).to_be_visible(timeout=5000)
+        expect(page.locator("#profile-flat-list")).not_to_be_visible(timeout=5000)
+        expect(toggle_btn).to_have_text("Switch to flat list", timeout=3000)
+
+    def test_tree_view_renders_profile_node(
+        self, astro_server, clean_browser, page
+    ):
+        """After toggling to tree view, at least one profile-tree-row is visible."""
+        _add_profile(page, astro_server, "tree_node_render_profile")
+
+        page.evaluate("localStorage.removeItem('osm-profile-view')")
+        page.reload()
+        page.wait_for_load_state("load")
+
+        page.get_by_test_id("profile-view-toggle").click()
+        expect(page.locator("#profile-tree-view")).to_be_visible(timeout=5000)
+
+        # At least one profile-tree-row must be rendered (SSR + visible in DOM)
+        expect(
+            page.locator('[data-testid="profile-tree-row"]').first
+        ).to_be_visible(timeout=5000)
+
+    def test_tree_view_preference_persists_after_reload(
+        self, astro_server, clean_browser, page
+    ):
+        """Click toggle → reload → tree view is still active (localStorage persisted)."""
+        _add_profile(page, astro_server, "tree_persist_profile")
+
+        page.evaluate("localStorage.removeItem('osm-profile-view')")
+        page.reload()
+        page.wait_for_load_state("load")
+
+        # Switch to tree view
+        page.get_by_test_id("profile-view-toggle").click()
+        expect(page.locator("#profile-tree-view")).to_be_visible(timeout=5000)
+
+        # Reload page — JS should restore 'tree' from localStorage
+        page.reload()
+        page.wait_for_load_state("load")
+
+        expect(page.locator("#profile-tree-view")).to_be_visible(timeout=5000)
+        expect(page.locator("#profile-flat-list")).not_to_be_visible(timeout=5000)
