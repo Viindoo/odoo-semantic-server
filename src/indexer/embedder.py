@@ -17,6 +17,8 @@ from src.constants import (
     DEFAULT_EMBEDDER_DIM,
     DEFAULT_EMBEDDER_MODEL,
     EMBEDDER_MAX_BATCH,
+    EMBEDDER_RETRY_BACKOFF_BASE,
+    EMBEDDER_RETRY_BACKOFF_MAX,
     TIMEOUT_EMBEDDER_CONNECT,
     TIMEOUT_EMBEDDER_READ,
     TIMEOUT_EMBEDDER_WRITE,
@@ -94,11 +96,15 @@ class Qwen3Embedder:
         retries: int = 3,
         auth_token: str | None = None,
         transport: httpx.BaseTransport | None = None,
+        retry_backoff_base: float = EMBEDDER_RETRY_BACKOFF_BASE,
+        retry_backoff_max: float = EMBEDDER_RETRY_BACKOFF_MAX,
     ):
         self._url = url.rstrip("/") + "/api/embed"
         self._model = model
         self._dim = dim
         self._retries = retries
+        self._retry_backoff_base = retry_backoff_base
+        self._retry_backoff_max = retry_backoff_max
         self._auth_token = auth_token
         self._lock = threading.Lock()
         self.call_count: int = 0
@@ -143,7 +149,7 @@ class Qwen3Embedder:
     def _embed_one(self, texts: list[str]) -> list[list[float]]:
         payload = {"model": self._model, "input": texts}
         last_err: Exception | None = None
-        for _ in range(self._retries):
+        for i in range(self._retries):
             try:
                 resp = self._http.post(self._url, json=payload)
                 resp.raise_for_status()
@@ -151,6 +157,13 @@ class Qwen3Embedder:
                 return [_normalize(v[: self._dim]) for v in data["embeddings"]]
             except httpx.HTTPError as e:
                 last_err = e
+                if i < self._retries - 1:
+                    delay = min(self._retry_backoff_base * (2 ** i), self._retry_backoff_max)
+                    _logger.warning(
+                        "embed attempt %d/%d failed (%s) — retrying in %.1fs",
+                        i + 1, self._retries, last_err, delay,
+                    )
+                    time.sleep(delay)
         raise RuntimeError(
             f"Qwen3Embedder failed after {self._retries} attempts: {last_err}"
         )

@@ -122,7 +122,8 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                         MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
                         MERGE (placeholder:Model {{name: $parent_name,
                                                   module: '__unresolved__', odoo_version: $v}})
-                        ON CREATE SET placeholder.unresolved = true
+                        ON CREATE SET placeholder.unresolved = true,
+                                      placeholder.is_definition = false
                         MERGE (m)-[r:{REL_INHERITS} {{unresolved: true}}]->(placeholder)
                         SET r.order = $order
                     """, model_name=model.name, mod=model.module,
@@ -146,7 +147,8 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                     MERGE (placeholder:Model {name: $delegated,
                                               module: '__unresolved__', odoo_version: $v})
-                    ON CREATE SET placeholder.unresolved = true
+                    ON CREATE SET placeholder.unresolved = true,
+                                  placeholder.is_definition = false
                     MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]
                           ->(placeholder)
                 """, name=model.name, mod=model.module, v=model.odoo_version,

@@ -148,11 +148,25 @@ Field count signal không phụ thuộc vào INHERITS edge quality, do đó immu
 
 6. **`is_ext` từ `EXISTS outgoing same-name` + `inbound DESC` + `mod_name`** (plan ban đầu) — reject sau smoke test. EXISTS subquery sai trên 5/9 model thật (writer self-inherit edge). `inbound DESC` cũng không reliable vì các Model node thường tie ở `inbound=1` (chain pattern thay vì star pattern).
 
+## Implementation Notes (2026-05-16)
+
+### Clarification: `is_definition` stored, `field_count` computed
+
+To resolve ambiguity between ADR wording and implementation:
+
+- **`m.is_definition` is a stored Model node property**, set at write time by `src/indexer/writer_neo4j.py` lines 67 and 73–75. It is computed once during indexing as `($had_explicit_name AND NOT $name IN $inherit_list)` and SET in the MERGE ON CREATE and ON MATCH clauses. It is `TRUE` for the defining module (module that declares `_name`), and `FALSE` for inheriting modules and placeholder nodes.
+
+- **`field_count` is NOT a stored property — it is computed at query time** in `src/mcp/server.py` lines 270–272 (`_resolve_model`), 361 (`_resolve_field`), 422 (`_resolve_method`) using a Cypher count subquery: `COUNT { (:Field {model: $name, module: m.module, odoo_version: $v}) }`. This is evaluated fresh on each resolve query to rank the defining module by the number of fields it declares for the given model name.
+
+- **Deterministic tiebreak is enforced via ORDER BY** (server.py lines 279–280, 366–367, 427–428): `ORDER BY is_def_rank ASC, field_count DESC, dependents DESC, edition_rank ASC, mod_name ASC`. The `mod_name ASC` at the end ensures no Cypher arbitrary-order remains when all higher tiers tie.
+
+This design allows `field_count` to be a robust, data-driven ranking signal that does not depend on INHERITS edge quality, while `is_definition` provides a fast post-reindex shortcut for tier 1 evaluation.
+
 ## References
 
 - ADR-0001: Schema Evolution Policy — `is_definition`, `had_explicit_name`, `r.order` là Neo4j property (không PostgreSQL ALTER); SET trong MERGE, idempotent, ADR-0001 compliant.
 - ADR-0003: PatternExample Storage — định nghĩa `Module.edition` property (community/enterprise/viindoo/oca/custom) dùng trong tier 3.
 - `CLAUDE.md` "Neo4j 5.x Gotchas" — `COUNT { pattern }` syntax (Neo4j 5.x); tiebreak tất cả ORDER BY để loại Cypher arbitrary-order.
-- `src/mcp/server.py` lines 127–150 (`_resolve_model`), 207–227 (`_resolve_field`), 257–277 (`_resolve_method`) — implementation.
+- `src/mcp/server.py` lines 248–283 (`_resolve_model`), 341–368 (`_resolve_field`), 402–429 (`_resolve_method`) — implementation.
 - `src/indexer/parser_python.py` lines 253–264, 538, 356, 617 — `had_explicit_name` extraction (Era2 AST + Era1 regex).
 - `src/indexer/writer_neo4j.py` lines 47–52, 69–93 — `is_definition` SET và `r.order` SET.
