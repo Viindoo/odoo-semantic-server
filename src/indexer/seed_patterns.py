@@ -404,6 +404,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Initialize PostgreSQL pool (must be done before job_store() is called).
+    dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
+    if dsn:
+        from src.db.pg import get_pool, init_pool
+        try:
+            get_pool()
+        except RuntimeError:
+            init_pool(dsn, min_conn=1, max_conn=5)
+
     job_id: int | None = args.job_id
     _js = None
     if job_id is not None:
