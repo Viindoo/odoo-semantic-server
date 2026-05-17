@@ -551,6 +551,45 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 - [x] ProfileTree testid namespace fix.
 - [x] +9 backend tests + +5 browser tests.
 
+### Stream I — M9 Hardening / Go-Live (PRs #117, #118, #119, #121 — 2026-05-17)
+
+**Status:** `[x]` DONE — 4 PRs merged 2026-05-17. PR #117/#118/#119 deployed to production same day; PR #121 docs-only.
+
+**Plan:** [`.claude/plans/peaceful-orbiting-dongarra.md`](../.claude/plans/peaceful-orbiting-dongarra.md) (orchestrated multi-subagent, 4 WIs + 1 followup commit consolidating 3 HIGH Opus findings + 6 boil-the-lake fixes + sanitization).
+
+- [x] **PR #117 — Migration 0004 self-contained:** SQL rescue path for 12 root CE profiles (`odoo_8`-`odoo_19`). Idempotent `ON CONFLICT DO NOTHING`. Python seeder remains source of truth for Viindoo addon profiles. Seed count test bumped 5 → 12.
+- [x] **PR #118 — Security headers:** FastAPI `_SecurityHeadersMiddleware` (default-src 'none' for JSON API) + Astro SSR `_addSecurityHeaders()` (per-path CSP for `/admin/*`, `/signup`, `/verify-email`, `/reset-password`) + edge nginx permissive superset for prerendered pages. 8 regression tests. Closes M9 CSP gap (memory: `m9_csp_permissions_policy_gap.md`). Nonce-based CSP migration tracked as M10 followup.
+- [x] **PR #119 — Go-live batch (4 WIs + boil-the-lake followup):**
+  - WI-1 indexer writer + parser_js + ADR-0016 D7: 6 placeholder MERGE sites inherit referrer profile via ON CREATE / ON MATCH union semantics (mirrors real-node pattern from commit `4ff56a8`); 3 resolver MATCH sites exclude `__unresolved__` stubs via `WHERE NOT coalesce(unresolved, false)`; parser_js `_extract_era3_components` early-returns for Odoo < v14; ADR-0016 §D7 stub ownership policy added.
+  - WI-2 webui auth MFA sync: `_enable_totp`/`_delete_totp` also `UPDATE webui_users.mfa_enabled` in same transaction; migration `m9_009_backfill_mfa_enabled.sql` symmetric reconciliation (TRUE + FALSE halves).
+  - WI-3 backup CLI + systemd + runbook: `_resolve_postgres_tool` + `_resolve_neo4j_tool` docker-exec fallback helpers (`-e PGPASSWORD` forwarding for postgres); stdout redirect for pg_dump (host pipe instead of container `-f` write); systemd `odoo-semantic-backup.service` + `.timer` (`/bin/sh -c '$(date +%Y%m%d-%H%M%S)'` ExecStart for strftime expansion); extended logrotate stanza; bilingual `backup-runbook.md`.
+  - WI-4 `/api/health` auth-exempt endpoint: route in `app.py`, `_EXEMPT_EXACT` set in `middleware.py`, new `src/_version.py` via `importlib.metadata.version("odoo-semantic-mcp")`.
+  - +11 new tests across 4 new test files.
+- [x] **PR #121 — Pre-launch checklist signoff (docs only):** Update `docs/deploy/pre-launch-checklist.md` flipping §4.1/§5.1/§8.6/§10.5 items to `[x]` post-deploy. Section 11 sign-off table filled (9 of 11 sections). Known followups #12-#15 appended (OWLComp v14 anachronism, Neo4j online backup, logrotate stanza perms, §6 tools 15-21 prod smoke).
+
+**Production deploy ops phase (2026-05-17 — post-PR-#119 merge, before PR #120 deploy):**
+
+- [x] `git pull origin master` + `pip install -e ".[all]"` + `pnpm install --frozen-lockfile && pnpm build` (Astro).
+- [x] `python -m src.db.migrate` — applies `m9_009_backfill_mfa_enabled.sql`.
+- [x] `sudo systemctl restart odoo-semantic-mcp odoo-semantic-webui odoo-semantic-astro` — 3 services healthy + stable PIDs.
+- [x] Smoke verification: `curl -sI https://odoo-semantic.viindoo.com/` shows all 6 security headers (HSTS + CSP + Permissions-Policy + X-Frame DENY + nosniff + Referrer); `/api/health` returns 200 application/json.
+- [x] Backup systemd timer installed + enabled (`OnCalendar=*-*-* 03:00:00`, `Persistent=true`). Manual run produced 2.55 GB postgres bundle (Neo4j component skipped — followup #19).
+- [x] Logrotate config installed (stanza 2 OK; stanza 1 pre-existing followup #20).
+- [x] Crash sim: `sudo systemctl kill -s SIGKILL odoo-semantic-webui` → auto-restart in 5s (new PID, Active: active).
+- [x] Postgres data hygiene: deleted 1 stale `indexer_jobs` queued row (11 days old, no worker) + 4 inactive never-used API keys.
+- [x] Neo4j Cypher cleanup ×2: deleted 2,670 `__unresolved__` stubs v9-v19 + 3,316 v8 orphan children (from prior stale-cleanup) → NULL profile count 5,988 → 2 → 0 (post-reindex).
+- [x] Reindex `--all --full --no-embed` verify run on prod (~16 min main + ~3 min targeted rerun for 3 profiles that hit advisory-lock race with an orphan indexer). Writer fix verified on live data: 0 NULL profile nodes regenerated; `__unresolved__ AND profile IS NULL` count = 0.
+- [x] Ghost uvicorn `--port 8093` (manual dev instance, PID 1018515) killed.
+
+**Acceptance gate met for go-live:** 9 of 11 pre-launch sections `[x]`, 2 partial (§5 non-prod restore optional, §9 cron optional). Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for full signoff table.
+
+**Known followups (non-blocking, tracked in `docs/deploy/pre-launch-checklist.md` "Known follow-ups" §12-#15):**
+
+- [ ] **#12 OWLComp pre-v14 anachronism (239 stubs):** Post-reindex shows 239 `__unresolved__` OWLComp at v8-v13 created by JSPatch era3 detection. Read-side `list_owl_components` MCP tool already has era guard (skip v<14) so user-facing output is correct — impact is only raw-graph pollution. Fix: symmetric v14 guard in `_extract_era3_patches` (parser_js) OR belt-and-suspenders at writer PATCHES placeholder site. Plus Cypher cleanup of current 239 anachronisms. Defer to M10.
+- [ ] **#13 Neo4j online backup:** `neo4j-admin database dump` requires offline DB; fails on running container. Bundle currently postgres-only (manifest.json + postgres.sql). Replace with Cypher-driver-based export (`CALL apoc.export.cypher.all`) or upgrade to Enterprise for `neo4j-admin database backup`. Update `src/cli.py` + ADR-0018 bundle contract. Defer to M10.
+- [ ] **#14 Logrotate /var/log stanza 1 perms:** Pre-existing `/etc/logrotate.d/odoo-semantic` stanza 1 (`/var/log/odoo-semantic-reindex.log`) fails because `/var/log/` is world-writable. Fix: add `su root syslog` directive OR change log location. NOT introduced by WI-3 (stanza 2). Operational fix.
+- [ ] **#15 §6 tools 15-21 prod smoke:** 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) need end-to-end smoke against prod MCP endpoint via Claude Code or another MCP client. Deferred to next session per go-live decision. All 7 are code-complete + unit-tested.
+
 ---
 
 ## Milestone 9 Coverage Fill — 2026-05-17
