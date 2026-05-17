@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lint_rule.schema.json",
+  "title": "LintRule",
+  "description": "A single lint rule entry in a lint_rules_<version>.json file (per ADR-0002 §4).",
+  "type": "object",
+  "required": ["rule_id", "kind", "message", "severity"],
+  "additionalProperties": false,
+  "properties": {
+    "rule_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique rule identifier within its kind. Examples: 'W8101' (pylint-odoo), 'no-var' (ESLint), 'BLE001' (ruff)."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["pylint-odoo", "pylint-stdlib", "eslint", "eslint-odoo", "ruff-builtin"],
+      "description": "Lint tool kind. 'pylint-odoo' for OCA/pylint-odoo checkers, 'eslint'/'eslint-odoo' for JS, 'ruff-builtin' for ruff rule categories."
+    },
+    "message": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable description of what this rule checks. Shown in tool output."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["error", "warning", "info"],
+      "description": "Severity level: 'error' = must fix, 'warning' = should fix, 'info' = advisory."
+    },
+    "file_pattern": {
+      "type": ["string", "null"],
+      "description": "Glob pattern for files this rule applies to. Null means all files.",
+      "examples": ["**/*.py", "**/__manifest__.py", "**/*.xml", "**/*.js", "**/security/*.csv"]
+    },
+    "fix_template": {
+      "type": ["string", "null"],
+      "description": "Optional code snippet or prose describing how to fix the violation. Shown in tool fix_template field."
+    },
+    "core_symbol_qname": {
+      "type": ["string", "null"],
+      "description": "Qualified name of the CoreSymbol this rule is associated with (e.g. 'odoo.models.BaseModel.name_get'). Used to MERGE USES_CORE_SYMBOL edge in Neo4j. Null when rule is not tied to a specific API symbol."
+    }
+  }
+}

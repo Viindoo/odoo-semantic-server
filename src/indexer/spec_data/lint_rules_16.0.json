@@ -1,14 +1,158 @@
 {
-  "_curate_status": "partial",
-  "_generated_at": "2026-05-14",
-  "_note": "Placeholder per ADR-0002 §4. Curate manually or via M6 community contribution.",
+  "_curate_status": "complete",
+  "_generated_at": "2026-05-17",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: `UserError(_('msg', arg))` lazy format (args passed to UserError directly), `_('msg', arg)` translation lazy pattern, `group_operator` still present (renamed `aggregator` v18), `_compute_display_name()` replaces `name_get()`.",
   "rules": [
+    {
+      "rule_id": "W8101",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing required key `name`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8102",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing required key `version`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Add `'version': '16.0.1.0.0'`."
+    },
+    {
+      "rule_id": "W8103",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing recommended key `author`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8104",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing recommended key `license`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8115",
+      "kind": "pylint-odoo",
+      "message": "New model class is missing `_name` attribute.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8120",
+      "kind": "pylint-odoo",
+      "message": "ir.model.access entry missing from security CSV — model may be inaccessible.",
+      "severity": "warning",
+      "file_pattern": "**/security/*.csv"
+    },
+    {
+      "rule_id": "W8121",
+      "kind": "pylint-odoo",
+      "message": "XML id reference does not match any declared id in the module or its dependencies.",
+      "severity": "error",
+      "file_pattern": "**/*.xml"
+    },
+    {
+      "rule_id": "W8122",
+      "kind": "pylint-odoo",
+      "message": "Translation string uses positional `%s` formatting — use named `%(name)s` or lazy `_('msg', arg)` pattern.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use `_('Hello %(name)s') % {'name': name}` or `_('Hello %s', name)` (Odoo 16+ lazy format)."
+    },
+    {
+      "rule_id": "W8130",
+      "kind": "pylint-odoo",
+      "message": "File declared in manifest `data` list does not exist.",
+      "severity": "error",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8140",
+      "kind": "pylint-odoo",
+      "message": "SQL injection risk: `cr.execute` called with string interpolation.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8141",
+      "kind": "pylint-odoo",
+      "message": "Built-in dynamic expression interpreter used with external input — use `odoo.tools.safe_eval` instead.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8150",
+      "kind": "pylint-odoo",
+      "message": "Hardcoded database ID used — use `env.ref()` instead.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8163",
+      "kind": "pylint-odoo",
+      "message": "`create()` override does not call `super()`.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8164",
+      "kind": "pylint-odoo",
+      "message": "`unlink()` override does not call `super()`.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
     {
       "rule_id": "W8201",
       "kind": "pylint-odoo",
-      "message": "String formatting used in UserError/ValidationError — use lazy %s args or named placeholders instead of %-interpolation.",
+      "message": "String formatting used in UserError/ValidationError — use lazy args or named placeholders instead of %-interpolation.",
       "severity": "warning",
-      "fix_template": "raise UserError(_('Hello %s') % name)  # wrong\nraise UserError(_('Hello %(name)s') % {'name': name})  # acceptable\nraise UserError(_('Hello %s', name))  # preferred (Odoo 16+)"
+      "file_pattern": "**/*.py",
+      "fix_template": "raise UserError(_('Hello %(name)s') % {'name': name})  # acceptable\nraise UserError(_('Hello %s', name))  # preferred (Odoo 16+ lazy format)"
+    },
+    {
+      "rule_id": "W8202",
+      "kind": "pylint-odoo",
+      "message": "`name_get()` override detected — in v16 use `_compute_display_name()` instead.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Replace `def name_get(self):` with `def _compute_display_name(self):` setting `rec.display_name = ...`."
+    },
+    {
+      "rule_id": "W8182",
+      "kind": "pylint-odoo",
+      "message": "Static assets declared via `qweb` key — use `assets` key with bundle names.",
+      "severity": "error",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "no-var",
+      "kind": "eslint",
+      "message": "Unexpected `var`. Use `let` or `const` instead.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-console",
+      "kind": "eslint",
+      "message": "Unexpected `console` statement in production JS.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-undef",
+      "kind": "eslint",
+      "message": "Reference to undeclared variable.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "owl/no-unknown-component",
+      "kind": "eslint",
+      "message": "OWL template references a component not imported.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
     }
   ]
 }

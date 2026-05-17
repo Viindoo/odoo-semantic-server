@@ -430,6 +430,24 @@ Every list-tool body call goes through `_render_capped`. Specifically:
 
 ---
 
+## Follow-up (M10 / M10.5)
+
+The following tools are planned and MUST adopt this ADR's grammar contract (§1 tree text, §2 English-only output, §3 truncation, §4 Next-step hints):
+
+- **Stylesheet surface (M10)** — `resolve_stylesheet(module, odoo_version)`, `find_style_override(selector_or_variable, odoo_version)`. From WI-A1 (`:Stylesheet` node landed via ADR-0025); tracked in `TASKS.md` Milestone 10 § "Coverage-fill follow-ups".
+- **ORM Intelligence (M10.5)** — `validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`. From `peaceful-orbiting-dongarra.md` deferred list (WI-A7 absorption); tracked in `TASKS.md` Milestone 10.5.
+
+When these tools land, the integrator MUST:
+
+1. Update routing matrix `docs/reference/mcp-tool-routing.md` with TRIGGER phrases (EN + VI per §2 docstring exception) for each new tool.
+2. Add Next-step hint rows for the new tools in §4.3 of this ADR (the "MUST emit footer — drill-down tools" table grows from 18 to 24 entries).
+3. Update the §4.4 "MAY skip footer — terminal tools" table only if the new tool is genuinely terminal (none of the 6 planned tools qualify — all have natural drill-downs).
+4. Re-run `tests/test_grammar_consistency.py` to ensure the new tools pass the language-policy + truncation-disclosure + no-self-loop tests by construction.
+
+This ADR is **not invalidated** by the new tools — it is the contract they must conform to. The contract's "Boil the Lake" intent is precisely that the next 6 tools cost zero design rounds.
+
+---
+
 ## Alternatives Considered
 
 1. **Per-tool grammar (status quo)** — reject. Phase-1 evidence shows two indent styles already drift after 14 tools. Adding 7 more without a contract guarantees permanent drift.

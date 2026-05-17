@@ -1,6 +1,167 @@
 {
-  "_curate_status": "pending",
-  "_generated_at": "2026-05-08",
-  "_note": "Placeholder per ADR-0002 §4. Curate manually or via M6 community contribution.",
-  "rules": []
+  "_curate_status": "complete",
+  "_generated_at": "2026-05-17",
+  "_note": "Curated from pylint-odoo v3.x for Odoo v12. v12: enterprise split stable, new report engine (QWeb PDF), `_name` required on new models (not just extensions). ESLint from odoo/addons/web/static/src/.eslintrc.",
+  "rules": [
+    {
+      "rule_id": "W8101",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing required key `name`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8102",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing required key `version`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Add `'version': '12.0.1.0.0'`."
+    },
+    {
+      "rule_id": "W8103",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing recommended key `author`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8104",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing recommended key `license`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8105",
+      "kind": "pylint-odoo",
+      "message": "Manifest file `installable` key should be a boolean.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8115",
+      "kind": "pylint-odoo",
+      "message": "New model class is missing `_name` attribute.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Add `_name = 'module.model'` as the first class attribute."
+    },
+    {
+      "rule_id": "W8120",
+      "kind": "pylint-odoo",
+      "message": "ir.model.access entry missing from security CSV — model may be inaccessible.",
+      "severity": "warning",
+      "file_pattern": "**/security/*.csv"
+    },
+    {
+      "rule_id": "W8121",
+      "kind": "pylint-odoo",
+      "message": "XML id reference does not match any declared id in the module or its dependencies.",
+      "severity": "error",
+      "file_pattern": "**/*.xml"
+    },
+    {
+      "rule_id": "W8122",
+      "kind": "pylint-odoo",
+      "message": "Translation string uses positional `%s` formatting — use named `%(name)s`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8130",
+      "kind": "pylint-odoo",
+      "message": "File declared in manifest `data` list does not exist.",
+      "severity": "error",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8131",
+      "kind": "pylint-odoo",
+      "message": "Demo data file declared in manifest `demo` list does not exist.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8140",
+      "kind": "pylint-odoo",
+      "message": "SQL injection risk: `cr.execute` called with string interpolation.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use parameterized query: `cr.execute('SELECT ... WHERE id = %s', (record_id,))`."
+    },
+    {
+      "rule_id": "W8141",
+      "kind": "pylint-odoo",
+      "message": "Built-in dynamic expression interpreter used with external input — use `odoo.tools.safe_eval` instead.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Import safe_eval from odoo.tools.safe_eval and use it to sandbox expression execution."
+    },
+    {
+      "rule_id": "W8150",
+      "kind": "pylint-odoo",
+      "message": "Hardcoded database ID used — use `env.ref()` instead.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8160",
+      "kind": "pylint-odoo",
+      "message": "`_rec_name` field not present in model fields.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8161",
+      "kind": "pylint-odoo",
+      "message": "`copy()` override does not call `super()`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8163",
+      "kind": "pylint-odoo",
+      "message": "`create()` override does not call `super()` — record will not be created.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8164",
+      "kind": "pylint-odoo",
+      "message": "`unlink()` override does not call `super()` — records will not be deleted from DB.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Ensure `res = super().unlink()` is called and returned."
+    },
+    {
+      "rule_id": "W8180",
+      "kind": "pylint-odoo",
+      "message": "QWeb report template missing `t-name` attribute.",
+      "severity": "error",
+      "file_pattern": "**/report/*.xml",
+      "fix_template": "Add `t-name='module.report_template_id'` to the `<template>` tag."
+    },
+    {
+      "rule_id": "no-var",
+      "kind": "eslint",
+      "message": "Unexpected `var`. Use `let` or `const` instead.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-console",
+      "kind": "eslint",
+      "message": "Unexpected `console` statement in production JS.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-undef",
+      "kind": "eslint",
+      "message": "Reference to undeclared variable.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    }
+  ]
 }

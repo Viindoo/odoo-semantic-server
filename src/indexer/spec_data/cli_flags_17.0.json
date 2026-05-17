@@ -32,6 +32,36 @@
       "name": "cloc",
       "description": "Count lines of code for Odoo modules",
       "file_path": "odoo/cli/cloc.py"
+    },
+    {
+      "name": "populate",
+      "description": "Populate database with fake data for testing",
+      "file_path": "odoo/cli/populate.py"
+    },
+    {
+      "name": "genproxytoken",
+      "description": "Generate a proxy token for use with the proxy mode",
+      "file_path": "odoo/cli/genproxytoken.py"
+    },
+    {
+      "name": "tsconfig",
+      "description": "Generate TypeScript configuration for Odoo modules",
+      "file_path": "odoo/cli/tsconfig.py"
+    },
+    {
+      "name": "db",
+      "description": "Database management commands (duplicate, drop, etc.)",
+      "file_path": "odoo/cli/db.py"
+    },
+    {
+      "name": "neutralize",
+      "description": "Neutralize a production database for development use",
+      "file_path": "odoo/cli/neutralize.py"
+    },
+    {
+      "name": "obfuscate",
+      "description": "Obfuscate sensitive data in a database",
+      "file_path": "odoo/cli/obfuscate.py"
     }
   ],
   "flags": [
@@ -91,6 +121,17 @@
       "posix_only": false
     },
     {
+      "flag_name": "--skip-auto-install",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "skip the automatic installation of modules marked as auto_install",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
       "flag_name": "--import-partial",
       "command_name": null,
       "status": "stable",
@@ -105,7 +146,7 @@
       "flag_name": "--pidfile",
       "command_name": null,
       "status": "stable",
-      "default": "base",
+      "default": null,
       "type": "string",
       "help": "file where the server pid will be stored",
       "replacement_flag_name": null,
@@ -116,9 +157,31 @@
       "flag_name": "--addons-path",
       "command_name": null,
       "status": "stable",
-      "default": "base",
+      "default": null,
       "type": "string",
       "help": "specify additional addons paths (separated by commas).",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--upgrade-path",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": "string",
+      "help": "specify an additional upgrade path.",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--pre-upgrade-scripts",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": "string",
+      "help": "Run specific upgrade scripts before loading any module when -u is provided.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -171,10 +234,21 @@
       "flag_name": "--longpolling-port",
       "command_name": null,
       "status": "deprecated",
+      "default": "0",
+      "type": "int",
+      "help": "Deprecated alias to the gevent-port option",
+      "replacement_flag_name": "--gevent-port",
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--gevent-port",
+      "command_name": null,
+      "status": "stable",
       "default": "8072",
       "type": "int",
-      "help": "Listen port for the longpolling HTTP service",
-      "replacement_flag_name": "--gevent-port",
+      "help": "Listen port for the gevent worker",
+      "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
     },
@@ -194,8 +268,19 @@
       "command_name": null,
       "status": "stable",
       "default": null,
-      "type": "int",
+      "type": null,
       "help": "Activate reverse proxy WSGI wrappers (headers rewriting)",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--x-sendfile",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": "int",
+      "help": "Activate X-Sendfile (apache) and X-Accel-Redirect (nginx)",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -272,7 +357,29 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": null,
+      "help": "Comma-separated list of specs to filter which tests to execute. Enable unit tests if set.",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--screencasts",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "Screencasts will go in DIR/{db_name}/screencasts.",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--screenshots",
+      "command_name": null,
+      "status": "stable",
+      "default": "temp_tests_dir",
+      "type": null,
+      "help": "Screenshots will go in DIR/{db_name}/screenshots. Defaults to %s.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -284,17 +391,6 @@
       "default": null,
       "type": null,
       "help": "file where the server log will be stored",
-      "replacement_flag_name": null,
-      "env_name": null,
-      "posix_only": false
-    },
-    {
-      "flag_name": "--logrotate",
-      "command_name": null,
-      "status": "stable",
-      "default": null,
-      "type": null,
-      "help": "enable logfile rotation",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -315,28 +411,6 @@
       "command_name": null,
       "status": "stable",
       "default": "DEFAULT_LOG_HANDLER",
-      "type": null,
-      "help": "setup a handler at LEVEL for a given PREFIX. An empty PREFIX indicates the root logger. This option can be repeated. Example: \"odoo.orm:DEBUG\" or \"werkzeug:CRITICAL\" (default: \":INFO\")",
-      "replacement_flag_name": null,
-      "env_name": null,
-      "posix_only": false
-    },
-    {
-      "flag_name": "--log-request",
-      "command_name": null,
-      "status": "stable",
-      "default": null,
-      "type": null,
-      "help": "shortcut for --log-handler=odoo.http.rpc.request:DEBUG",
-      "replacement_flag_name": null,
-      "env_name": null,
-      "posix_only": false
-    },
-    {
-      "flag_name": "--log-response",
-      "command_name": null,
-      "status": "stable",
-      "default": null,
       "type": null,
       "help": "Logging database",
       "replacement_flag_name": null,
@@ -410,6 +484,17 @@
       "posix_only": false
     },
     {
+      "flag_name": "--from-filter",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": "int",
+      "help": "specify for which email address the SMTP configuration can be used",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
       "flag_name": "--smtp",
       "command_name": null,
       "status": "stable",
@@ -448,13 +533,35 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "specify the database name",
+      "help": "specify the SMTP username for sending email",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
     },
     {
       "flag_name": "--smtp-password",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "specify the SMTP password for sending email",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--smtp-ssl-certificate-filename",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "specify the database name",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--smtp-ssl-private-key-filename",
       "command_name": null,
       "status": "stable",
       "default": null,
@@ -548,6 +655,17 @@
       "default": "64",
       "type": "int",
       "help": "specify the maximum number of physical connections to PostgreSQL",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--db_maxconn_gevent",
+      "command_name": null,
+      "status": "stable",
+      "default": null,
+      "type": "int",
+      "help": "specify the maximum number of physical connections to PostgreSQL specifically for the gevent worker",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -677,7 +795,7 @@
       "flag_name": "--osv-memory-count-limit",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "0",
       "type": "int",
       "help": "Force a limit on the maximum number of records kept in the virtual",
       "replacement_flag_name": null,
@@ -685,13 +803,13 @@
       "posix_only": false
     },
     {
-      "flag_name": "--osv-memory-age-limit",
+      "flag_name": "--transient-age-limit",
       "command_name": null,
-      "status": "deprecated",
+      "status": "stable",
       "default": "1.0",
       "type": "float",
-      "help": "Force a limit on the maximum age of records kept in the virtual",
-      "replacement_flag_name": "--transient-age-limit",
+      "help": "Time limit (decimal value in hours) records created with a",
+      "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
     },
@@ -707,12 +825,23 @@
       "posix_only": false
     },
     {
+      "flag_name": "--limit-time-worker-cron",
+      "command_name": null,
+      "status": "stable",
+      "default": "0",
+      "type": "int",
+      "help": "Maximum time a cron thread/worker stays alive before it is restarted.",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": true
+    },
+    {
       "flag_name": "--unaccent",
       "command_name": null,
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "Use the unaccent function provided by the database when available.",
+      "help": "Try to enable the unaccent extension when creating new databases.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -722,9 +851,20 @@
       "command_name": null,
       "status": "deprecated",
       "default": "/usr/share/GeoIP/GeoLite2-City.mmdb",
-      "type": "int",
-      "help": "Absolute path to the GeoIP database file.",
+      "type": null,
+      "help": "Absolute path to the GeoIP City database file.",
       "replacement_flag_name": "--geoip-city-db",
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--geoip-country-db",
+      "command_name": null,
+      "status": "stable",
+      "default": "/usr/share/GeoIP/GeoLite2-Country.mmdb",
+      "type": "int",
+      "help": "Absolute path to the GeoIP Country database file.",
+      "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
     },
@@ -745,7 +885,7 @@
       "status": "stable",
       "default": "2048 * 1024 * 1024",
       "type": "int",
-      "help": "Maximum allowed virtual memory per worker, when reached the worker be",
+      "help": "Maximum allowed virtual memory per worker (in bytes), when reached the worker be",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -756,7 +896,7 @@
       "status": "stable",
       "default": "2560 * 1024 * 1024",
       "type": "int",
-      "help": "Maximum allowed virtual memory per worker, when reached, any memory",
+      "help": "Maximum allowed virtual memory per worker (in bytes), when reached, any memory",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -798,9 +938,9 @@
       "flag_name": "--limit-request",
       "command_name": null,
       "status": "stable",
-      "default": "8192",
+      "default": "2**16",
       "type": "int",
-      "help": "Maximum number of request to be processed per worker (default 8192).",
+      "help": "Maximum number of request to be processed per worker (default 65536).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true

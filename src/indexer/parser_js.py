@@ -9,6 +9,7 @@ Each era produces JSChunk objects. Large files are sliding-windowed into
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import tree_sitter_javascript as _tsjs
@@ -16,8 +17,26 @@ from tree_sitter import Language, Node, Parser
 
 from .models import JSChunk, JSGraphResult, JSPatchInfo, ModuleInfo, OWLCompInfo
 
+# tree-sitter Parser objects are NOT thread-safe — concurrent parse() calls on
+# the same instance can corrupt internal state.  ADR-0006 enables cross-profile
+# parallel indexing (--profile-workers N), so the indexer can call parse_module*
+# from N threads simultaneously.  Hold one Parser per OS thread via
+# `threading.local`, mirroring the embedder.py pattern (ADR-0010 §D1).
+#
+# `_LANG` is the immutable Language object (safe to share); only the mutable
+# Parser is thread-local.
+
 _LANG = Language(_tsjs.language())
-_PARSER = Parser(_LANG)
+_LOCAL = threading.local()
+
+
+def _get_parser() -> Parser:
+    """Return a thread-local tree-sitter JS Parser."""
+    parser = getattr(_LOCAL, "parser", None)
+    if parser is None:
+        parser = Parser(_LANG)
+        _LOCAL.parser = parser
+    return parser
 
 _WINDOW = 2048
 _OVERLAP = 256
@@ -94,7 +113,7 @@ def _walk(node: Node):
 # --- Era 1: Widget.extend ---
 
 def _parse_era1(source: bytes, module: str, version: str, file_path: str) -> list[JSChunk]:
-    tree = _PARSER.parse(source)
+    tree = _get_parser().parse(source)
     chunks: list[JSChunk] = []
     src_str = source.decode("utf-8", errors="ignore")
 
@@ -143,7 +162,7 @@ def _parse_era1(source: bytes, module: str, version: str, file_path: str) -> lis
 # --- Era 2: odoo.define ---
 
 def _parse_era2(source: bytes, module: str, version: str, file_path: str) -> list[JSChunk]:
-    tree = _PARSER.parse(source)
+    tree = _get_parser().parse(source)
     chunks: list[JSChunk] = []
     src_str = source.decode("utf-8", errors="ignore")
 
@@ -188,7 +207,7 @@ def _parse_era2(source: bytes, module: str, version: str, file_path: str) -> lis
 # --- Era 3: @odoo-module / OWL ---
 
 def _parse_era3(source: bytes, module: str, version: str, file_path: str) -> list[JSChunk]:
-    tree = _PARSER.parse(source)
+    tree = _get_parser().parse(source)
     chunks: list[JSChunk] = []
     src_str = source.decode("utf-8", errors="ignore")
 
@@ -548,7 +567,7 @@ def _extract_graph_from_file(
         return
     src_str = source.decode("utf-8", errors="ignore")
     era = _detect_era(src_str)
-    tree = _PARSER.parse(source)
+    tree = _get_parser().parse(source)
 
     if era == "era1":
         _extract_era1_patches(tree, source, module_info, filepath, result)

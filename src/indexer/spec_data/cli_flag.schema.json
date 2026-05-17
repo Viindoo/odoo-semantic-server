@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CLIFlag",
+  "description": "Schema for a single Odoo CLI flag entry in cli_flags_<version>.json",
+  "type": "object",
+  "required": ["flag_name", "command_name", "status"],
+  "properties": {
+    "flag_name": {
+      "type": "string",
+      "description": "The CLI flag name, e.g. '--addons-path' or '-d'",
+      "pattern": "^-"
+    },
+    "command_name": {
+      "type": ["string", "null"],
+      "description": "The subcommand this flag belongs to (e.g. 'server', 'shell'), or null for global flags"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["stable", "deprecated", "removed"],
+      "description": "Lifecycle status of the flag"
+    },
+    "default": {
+      "type": ["string", "null"],
+      "description": "Default value as a string representation, or null if none"
+    },
+    "type": {
+      "type": ["string", "null"],
+      "description": "Argument type (e.g. 'int', 'string', 'float', 'choice', 'path'), or null"
+    },
+    "help": {
+      "type": ["string", "null"],
+      "description": "Help text from the CLI definition"
+    },
+    "replacement_flag_name": {
+      "type": ["string", "null"],
+      "description": "Successor flag name when status is deprecated or removed, or null"
+    },
+    "env_name": {
+      "type": ["string", "null"],
+      "description": "Environment variable override for this flag, or null"
+    },
+    "posix_only": {
+      "type": "boolean",
+      "description": "True if this flag is only available on POSIX (Linux/macOS) systems"
+    }
+  },
+  "additionalProperties": false
+}

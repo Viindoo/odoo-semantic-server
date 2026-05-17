@@ -33,6 +33,7 @@ REL_CHECKS: str = "CHECKS"
 REL_USES_CORE_SYMBOL: str = "USES_CORE_SYMBOL"
 REL_OF_COMMAND: str = "OF_COMMAND"
 REL_TARGETS_MODEL: str = "TARGETS_MODEL"
+REL_IMPORTS: str = "IMPORTS"
 
 # ---------------------------------------------------------------------------
 # Edition metadata
@@ -54,6 +55,7 @@ VALID_EDITIONS: frozenset[str] = frozenset(EDITION_PRIORITY) | {"custom"}
 
 VALID_CHUNK_TYPES: frozenset[str] = frozenset({
     "method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3",
+    "css", "scss",
 })
 
 # ---------------------------------------------------------------------------
