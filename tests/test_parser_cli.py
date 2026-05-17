@@ -110,8 +110,13 @@ def test_parse_cli_commands_returns_empty_for_nonexistent_root(tmp_path):
 
 
 def test_parse_cli_flags_returns_empty_for_nonexistent_root(tmp_path):
-    """Missing source root → empty list, no exception."""
-    assert parse_cli_flags(str(tmp_path / "missing"), "17.0") == []
+    """Missing source root + no static file → empty list, no exception.
+
+    Uses version "20.0" which has no static cli_flags_20.0.json on disk.
+    (v17 now has a curated static file so it would return data; use a
+    version not yet in the static catalogue to keep the test intent intact.)
+    """
+    assert parse_cli_flags(str(tmp_path / "missing"), "20.0") == []
 
 
 @pytest.mark.skipif(
