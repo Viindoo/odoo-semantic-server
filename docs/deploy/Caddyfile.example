@@ -4,16 +4,20 @@
 # Docs: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
 
 semantic.example.com {
-    # Security headers — parity with nginx-m8.conf (M9 W-HD)
+    # Security headers — transport / framing / sniffing / referrer only.
+    # Content-Security-Policy + Permissions-Policy are OWNED BY THE APPLICATION
+    # MIDDLEWARE (Astro `site/src/middleware.ts` + FastAPI
+    # `src/web_ui/app.py::_SecurityHeadersMiddleware`). DO NOT add CSP or
+    # Permissions-Policy here — per W3C CSP3 §4.1 multiple CSP headers are
+    # intersected (most restrictive wins per directive), so an edge CSP would
+    # silently strip the hCaptcha origins / `unsafe-inline` that the
+    # middleware grants on a per-path basis. See nginx-m8.conf for the full
+    # rationale.
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "no-referrer"
-        # CSP Strategy A (M9): unsafe-inline only for style-src (Tailwind).
-        # script-src 'self' only — no unsafe-inline/eval → XSS protection.
-        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
-        Permissions-Policy "geolocation=(), camera=(), microphone=(), payment=(), usb=()"
         # Remove server identification header
         -Server
     }
