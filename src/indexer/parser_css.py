@@ -17,6 +17,7 @@ Trade-off documented in ADR-0025 §D2:
 """
 import logging
 import re
+import threading
 from pathlib import Path
 
 from .models import CSSChunk, ModuleInfo, StylesheetInfo
@@ -39,22 +40,47 @@ _SKIP_DIRS = frozenset({"lib", "tests"})
 
 
 # ---------------------------------------------------------------------------
-# tree-sitter backend (optional)
+# tree-sitter backend (optional, thread-local)
 # ---------------------------------------------------------------------------
+#
+# tree-sitter Parser objects are NOT thread-safe — concurrent parse() calls on
+# the same instance can corrupt internal state.  ADR-0006 enables cross-profile
+# parallel indexing (--profile-workers N), so the indexer can call parse_file()
+# from N threads simultaneously.  Mirror the embedder.py thread-safety pattern
+# (ADR-0010 §D1) by holding one Parser per OS thread via `threading.local`.
+#
+# `_TS_LANGUAGE` is the immutable Language object (safe to share); only the
+# mutable Parser is thread-local.
 
-def _load_ts_css():
-    """Return (Language, Parser) or (None, None) when package not installed."""
+def _load_ts_language():
+    """Return the tree-sitter CSS Language, or None when package not installed."""
     try:
         import tree_sitter_css as _tscss
-        from tree_sitter import Language, Parser
-        lang = Language(_tscss.language())
-        parser = Parser(lang)
-        return lang, parser
+        from tree_sitter import Language
+        return Language(_tscss.language())
     except ImportError:
-        return None, None
+        return None
 
 
-_TS_LANG, _TS_PARSER = _load_ts_css()
+_TS_LANGUAGE = _load_ts_language()
+_TS_AVAILABLE = _TS_LANGUAGE is not None
+_TS_LOCAL = threading.local()
+
+
+def _get_ts_parser():
+    """Return a thread-local tree-sitter Parser, or None when unavailable.
+
+    Each calling thread gets its own Parser instance lazily — instantiation is
+    cheap (~microseconds) and parser state never crosses threads.
+    """
+    if not _TS_AVAILABLE:
+        return None
+    parser = getattr(_TS_LOCAL, "parser", None)
+    if parser is None:
+        from tree_sitter import Parser
+        parser = Parser(_TS_LANGUAGE)
+        _TS_LOCAL.parser = parser
+    return parser
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +157,7 @@ def _parse_css_treesitter(
     source: bytes, module: str, version: str, file_path: str
 ) -> tuple[list[CSSChunk], StylesheetInfo]:
     """Parse CSS with tree-sitter. Returns (chunks, info)."""
-    tree = _TS_PARSER.parse(source)
+    tree = _get_ts_parser().parse(source)
     src_str = source.decode("utf-8", errors="ignore")
     stem = Path(file_path).stem
 
@@ -386,7 +412,7 @@ def parse_file(
 
     src_str = raw.decode("utf-8", errors="ignore")
 
-    if _TS_PARSER is not None:
+    if _TS_AVAILABLE:
         try:
             return _parse_css_treesitter(raw, module_info.name, module_info.odoo_version, filepath)
         except Exception as exc:

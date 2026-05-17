@@ -254,3 +254,76 @@ class TestParseSCSSBasic:
         assert info.mixin_count >= 1
         for c in chunks:
             assert len(c.content) <= _WINDOW + 1
+
+
+class TestParserThreadSafety:
+    """Thread-safety regression tests — reviewer concern #4.
+
+    Tree-sitter Parser objects are NOT safe for concurrent .parse() calls.
+    ADR-0006 enables --profile-workers N parallel indexing; this test asserts
+    that parallel parse_file() calls from N threads produce identical results
+    to serial parsing, i.e. the thread-local parser pattern works.
+    """
+
+    def test_parser_css_parallel_parse_is_deterministic(self, tmp_path):
+        """N threads parsing the same file in parallel produce identical output."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from src.indexer.parser_css import parse_file as parse_css
+
+        css = (tmp_path / "x.css")
+        css.write_text(
+            ":root { --primary: #875A7B; --secondary: #00a09d; }\n"
+            ".o_form { color: var(--primary); }\n"
+            "@media (min-width: 768px) { .o_form { padding: 16px; } }\n",
+            encoding="utf-8",
+        )
+        module = _make_module()
+        # Serial baseline
+        baseline_chunks, baseline_info = parse_css(str(css), module)
+        baseline_kinds = tuple(c.chunk_kind for c in baseline_chunks)
+
+        # Parallel — every thread MUST produce the same chunk sequence
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = [ex.submit(parse_css, str(css), module) for _ in range(32)]
+            results = [f.result() for f in as_completed(futures)]
+
+        for chunks, info in results:
+            assert tuple(c.chunk_kind for c in chunks) == baseline_kinds
+            assert info.selector_count == baseline_info.selector_count
+            assert info.variable_count == baseline_info.variable_count
+            assert info.import_count == baseline_info.import_count
+
+    def test_parser_scss_parallel_parse_is_deterministic(self, tmp_path):
+        """N threads parsing the same SCSS in parallel produce identical output."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from src.indexer.parser_scss import parse_file as parse_scss
+
+        scss = """\
+        $primary: #875A7B;
+
+        @mixin flex_center() {
+            display: flex;
+            align-items: center;
+        }
+
+        .o_widget {
+            color: $primary;
+            @include flex_center();
+        }
+        """
+        scss_file = _write_scss(tmp_path, scss, "x.scss")
+        module = _make_module()
+        baseline_chunks, baseline_info = parse_scss(str(scss_file), module)
+        baseline_kinds = tuple(sorted(c.chunk_kind for c in baseline_chunks))
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = [ex.submit(parse_scss, str(scss_file), module) for _ in range(32)]
+            results = [f.result() for f in as_completed(futures)]
+
+        for chunks, info in results:
+            assert tuple(sorted(c.chunk_kind for c in chunks)) == baseline_kinds
+            assert info.mixin_count == baseline_info.mixin_count
+            assert info.variable_count == baseline_info.variable_count
+            assert info.selector_count == baseline_info.selector_count

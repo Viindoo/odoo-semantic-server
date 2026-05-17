@@ -1,27 +1,34 @@
 """SCSS parser for Odoo codebases (WI-A1, ADR-0025).
 
-Extends parser_css with SCSS-specific constructs:
+Extracts SCSS-specific constructs:
   - $variable declarations (grouped into variable blocks)
   - @mixin definitions
   - @include directives
   - @extend directives
   - Nested rules (flattened to selector chunks)
-  - @import with SCSS module resolution to absolute path
+  - @import / @use / @forward with SCSS module resolution to absolute path
 
-Uses tree-sitter-css (which handles SCSS dialect) when available. Falls back
-to a regex-based parser otherwise (see ADR-0025 §D2 trade-off note).
+**Always uses regex-based extraction** (not tree-sitter).
 
-Note: tree-sitter-css parses SCSS via the same grammar (CSS superset mode).
-The SCSS-specific nodes differ slightly: `mixin_statement`, `include_statement`,
-`extend_statement`, `variable_declaration`. The tree-sitter parser used here is
-the same _TS_PARSER from parser_css, since tree-sitter-css handles both dialects.
+Rationale (corrects an earlier assumption documented in this docstring):
+  The `tree-sitter-css` grammar parses *standard CSS only*.  It does not
+  recognise SCSS-specific syntax — `@mixin`, `@include`, `@extend`, and
+  bare `$variable` declarations are all silently absorbed into generic
+  `rule_set` / `error` nodes.  Probing for `mixin_statement` /
+  `include_statement` / `extend_statement` node types returns nothing,
+  so a tree-sitter-backed SCSS parser yields `mixin_count = 0`,
+  `variable_count = 0`, etc. — exactly the bug surfaced by the
+  PR #120 CI run.
+
+  The regex-based parser handles every SCSS construct Odoo themes use in
+  practice (Odoo's `web/static/src/scss/` and theme modules), and runs
+  in microseconds per file.  See ADR-0025 §D2 for the trade-off rationale.
 """
 import logging
 import re
 from pathlib import Path
 
 from .models import ModuleInfo, SCSSChunk, StylesheetInfo
-from .parser_css import _TS_PARSER
 
 _logger = logging.getLogger(__name__)
 
@@ -111,145 +118,7 @@ def _resolve_scss_import(import_path: str, source_file: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# tree-sitter-based SCSS parser (preferred)
-# ---------------------------------------------------------------------------
-
-def _walk_ts(node):
-    yield node
-    for child in node.children:
-        yield from _walk_ts(child)
-
-
-def _ts_node_text(node, source: bytes) -> str:
-    return source[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
-
-
-def _parse_scss_treesitter(
-    source: bytes, module: str, version: str, file_path: str
-) -> tuple[list[SCSSChunk], StylesheetInfo]:
-    """Parse SCSS with tree-sitter. Returns (chunks, info)."""
-    tree = _TS_PARSER.parse(source)
-    stem = Path(file_path).stem
-
-    chunks: list[SCSSChunk] = []
-    selector_count = 0
-    variable_count = 0
-    import_count = 0
-    mixin_count = 0
-    imports: list[str] = []
-
-    var_block: list[str] = []
-
-    def _flush_var_block():
-        nonlocal var_block
-        if not var_block:
-            return
-        content = "\n".join(var_block)
-        entity = f"{stem}:variables"
-        chunks.extend(_emit(content, module, version, file_path, "variable", entity))
-        var_block.clear()
-
-    for node in _walk_ts(tree.root_node):
-        node_type = node.type
-
-        # SCSS $variable declaration: `$foo: value;`
-        if node_type == "declaration":
-            raw = _ts_node_text(node, source)
-            if raw.lstrip().startswith("$"):
-                variable_count += 1
-                var_block.append(raw)
-                continue
-
-        # @import "path" or @use "path" (SCSS module system)
-        elif node_type in ("import_statement", "use_statement", "forward_statement"):
-            import_count += 1
-            _flush_var_block()
-            raw = _ts_node_text(node, source)
-            # Extract import path
-            for child in node.children:
-                if child.type in ("string_value", "call_expression"):
-                    val = _ts_node_text(child, source).strip("\"'")
-                    resolved = _resolve_scss_import(val, file_path)
-                    imports.append(resolved or val)
-                    break
-                elif child.type == "string":
-                    val = _ts_node_text(child, source).strip("\"'")
-                    resolved = _resolve_scss_import(val, file_path)
-                    imports.append(resolved or val)
-                    break
-            chunks.extend(_emit(raw, module, version, file_path, "import", stem))
-
-        # @mixin definition
-        elif node_type == "mixin_statement":
-            mixin_count += 1
-            _flush_var_block()
-            raw = _ts_node_text(node, source)
-            # Extract mixin name
-            mixin_name = stem
-            for child in node.children:
-                if child.type in ("name", "identifier", "plain_value"):
-                    mixin_name = _ts_node_text(child, source).strip()
-                    break
-            chunks.extend(_emit(raw, module, version, file_path, "mixin", mixin_name))
-
-        # @include directive
-        elif node_type == "include_statement":
-            _flush_var_block()
-            raw = _ts_node_text(node, source)
-            chunks.extend(_emit(raw, module, version, file_path, "include", stem))
-
-        # @extend directive
-        elif node_type == "extend_statement":
-            _flush_var_block()
-            raw = _ts_node_text(node, source)
-            chunks.extend(_emit(raw, module, version, file_path, "extend", stem))
-
-        # @media block
-        elif node_type == "media_statement":
-            _flush_var_block()
-            raw = _ts_node_text(node, source)
-            condition = stem
-            for child in node.children:
-                if child.type == "media_query_list":
-                    condition = _ts_node_text(child, source).strip()
-                    break
-            entity = f"@media {condition}"
-            chunks.extend(_emit(raw, module, version, file_path, "media", entity))
-
-        # Rule set (selector + block)
-        elif node_type == "rule_set":
-            selector_count += 1
-            _flush_var_block()
-            raw = _ts_node_text(node, source)
-            selector_text = ""
-            for child in node.children:
-                if child.type == "selectors":
-                    selector_text = _ts_node_text(child, source).strip()
-                    break
-            chunks.extend(_emit(raw, module, version, file_path, "selector", selector_text or stem))
-
-    _flush_var_block()
-
-    if not chunks:
-        src_str = source.decode("utf-8", errors="ignore")
-        chunks.extend(_emit(src_str, module, version, file_path, "raw", stem))
-
-    info = StylesheetInfo(
-        file_path=file_path,
-        module=module,
-        odoo_version=version,
-        language="scss",
-        selector_count=selector_count,
-        variable_count=variable_count,
-        import_count=import_count,
-        mixin_count=mixin_count,
-        imports=imports,
-    )
-    return chunks, info
-
-
-# ---------------------------------------------------------------------------
-# Regex-based SCSS fallback parser
+# Regex-based SCSS parser (always-on — see module docstring)
 # ---------------------------------------------------------------------------
 
 _RE_SCSS_VAR = re.compile(r'^\s*\$[\w-]+\s*:', re.MULTILINE)
@@ -385,8 +254,10 @@ def parse_file(
 ) -> tuple[list[SCSSChunk], StylesheetInfo]:
     """Parse a single SCSS file.
 
-    Returns (chunks, StylesheetInfo). Uses tree-sitter when available,
-    falls back to regex parser otherwise (ADR-0025 §D2).
+    Returns (chunks, StylesheetInfo).  Always uses the regex-based parser:
+    `tree-sitter-css` cannot recognise SCSS-specific syntax (@mixin, @include,
+    @extend, $vars), so a tree-sitter path here would silently undercount
+    every SCSS file.  See module docstring + ADR-0025 §D2.
     """
     try:
         raw = Path(filepath).read_bytes()
@@ -397,16 +268,6 @@ def parse_file(
         )
 
     src_str = raw.decode("utf-8", errors="ignore")
-
-    if _TS_PARSER is not None:
-        try:
-            return _parse_scss_treesitter(raw, module_info.name, module_info.odoo_version, filepath)
-        except Exception as exc:
-            _logger.warning(
-                "tree-sitter SCSS parse failed for %s: %s — using regex fallback",
-                filepath, exc,
-            )
-
     return _parse_scss_regex(src_str, module_info.name, module_info.odoo_version, filepath)
 
 
