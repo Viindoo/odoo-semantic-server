@@ -1,14 +1,14 @@
-"""Tests for security header configuration — M9 W-HD.
+"""Tests for security header configuration — M9 W-HD / CSP hardening.
 
 Scope:
 - FastAPI-level: CORSMiddleware explicit no-op (allow_origins=[] → no CORS headers).
-- nginx-level CSP/Permissions-Policy are set by nginx, not FastAPI — those are
-  verified manually via `curl -I https://<domain>/` after deploy. See
-  docs/deploy/nginx-m8.conf comments and docs/deploy/pre-launch-checklist.md.
+- FastAPI-level: _SecurityHeadersMiddleware emits CSP + Permissions-Policy on every
+  response (M9 CSP hardening — replaces previous nginx-only placeholder).
 
-CORSMiddleware with allow_origins=[] is a deliberate no-op:
-  Astro SSR proxies all /api/* calls through nginx server-side, so browsers
-  never make direct cross-origin requests to FastAPI :8003.
+Note: HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy are still added
+by nginx/Caddy (requires sudo — out of session scope). Verify after deploy:
+  curl -sI https://odoo-semantic.viindoo.com/ | grep -E \
+    'Content-Security-Policy|Permissions-Policy|X-Frame-Options'
 """
 
 import pytest
@@ -60,31 +60,80 @@ class TestCORSMiddlewareNoOp:
         assert "access-control-allow-credentials" not in resp.headers
 
 
-class TestNginxHeadersDocumented:
-    """Placeholder to document which headers are nginx-level (not FastAPI).
+class TestSecurityHeadersFastAPI:
+    """_SecurityHeadersMiddleware injects CSP + Permissions-Policy on every response.
 
-    These headers are added by nginx/Caddy, not FastAPI:
-      - Content-Security-Policy
-      - Permissions-Policy
+    FastAPI is a JSON-only API (ADR-0015) — strictest CSP (default-src 'none')
+    is appropriate because JSON responses never load resources.
+    """
+
+    def test_csp_header_present(self, client):
+        """Content-Security-Policy must be present on every FastAPI response."""
+        resp = client.get("/api/auth/login")
+        assert "content-security-policy" in resp.headers
+
+    def test_csp_default_src_none(self, client):
+        """JSON API CSP must use default-src 'none' (strictest — no resource loading)."""
+        resp = client.get("/api/auth/login")
+        csp = resp.headers.get("content-security-policy", "")
+        assert "default-src 'none'" in csp
+
+    def test_csp_frame_ancestors_none(self, client):
+        """frame-ancestors 'none' prevents clickjacking at CSP level."""
+        resp = client.get("/api/auth/login")
+        csp = resp.headers.get("content-security-policy", "")
+        assert "frame-ancestors 'none'" in csp
+
+    def test_permissions_policy_present(self, client):
+        """Permissions-Policy must be present on every FastAPI response."""
+        resp = client.get("/api/auth/login")
+        assert "permissions-policy" in resp.headers
+
+    def test_permissions_policy_camera_disabled(self, client):
+        """camera=() must be present in Permissions-Policy."""
+        resp = client.get("/api/auth/login")
+        pp = resp.headers.get("permissions-policy", "")
+        assert "camera=()" in pp
+
+    def test_permissions_policy_microphone_disabled(self, client):
+        """microphone=() must be present in Permissions-Policy."""
+        resp = client.get("/api/auth/login")
+        pp = resp.headers.get("permissions-policy", "")
+        assert "microphone=()" in pp
+
+    def test_permissions_policy_geolocation_disabled(self, client):
+        """geolocation=() must be present in Permissions-Policy."""
+        resp = client.get("/api/auth/login")
+        pp = resp.headers.get("permissions-policy", "")
+        assert "geolocation=()" in pp
+
+    def test_security_headers_on_auth_endpoint(self, client):
+        """Security headers apply to auth endpoints too (no exempt paths)."""
+        resp = client.post("/api/auth/login", json={"username": "x", "password": "y"})
+        assert "content-security-policy" in resp.headers
+        assert "permissions-policy" in resp.headers
+
+
+class TestNginxHeadersDocumented:
+    """Placeholder to document which headers remain nginx-level (not FastAPI).
+
+    These headers are still added by nginx/Caddy (requires sudo — out of scope):
       - Strict-Transport-Security
-      - X-Frame-Options
+      - X-Frame-Options  (covered also by CSP frame-ancestors above)
       - X-Content-Type-Options
       - Referrer-Policy
 
     Verify after deploy:
       curl -sI https://odoo-semantic.viindoo.com/ | grep -E \
-        'Content-Security-Policy|Permissions-Policy|X-Frame-Options'
+        'Strict-Transport-Security|X-Frame-Options|X-Content-Type-Options'
     """
 
     def test_placeholder(self):
-        """This class documents nginx-level security headers only; no runtime assertions."""
-        nginx_headers = [
-            "Content-Security-Policy",
-            "Permissions-Policy",
+        """Documents nginx-level headers; no runtime assertion needed here."""
+        nginx_only_headers = [
             "Strict-Transport-Security",
             "X-Frame-Options",
             "X-Content-Type-Options",
             "Referrer-Policy",
         ]
-        # Ensure the list is non-empty — keeps this test meaningful as documentation.
-        assert len(nginx_headers) > 0
+        assert len(nginx_only_headers) > 0

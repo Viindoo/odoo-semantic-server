@@ -508,6 +508,7 @@ PR #87 + #88 added backend features absorbed into M8 branch. The Astro pages don
 - [x] **W-OSM Wave 1 — Tool output completeness (2026-05-16):** 14 → 21 MCP tools. Added 7 new tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) for module architecture overview + entity enumeration + UI-layer inventory. Retrofit grammar consistency across all 14 existing tools (tree connectors, sublist indent, truncation via `_render_capped`, `Next:` footer on 18 drill-down tools). ADR-0023 codifies tree grammar contract + English-only output policy + next-step hint mapping. Plan: [`.claude/plans/swift-coalescing-kurzweil.md`](.claude/plans/swift-coalescing-kurzweil.md).
 - [ ] T3.4b VN translation for persona docs (carried from M7.5 design decision to defer — deferred to M10).
 - [ ] Pricing page payment integration (`/pricing/` has waitlist teaser only from M8 W5 — deferred to M10 "Billing Wow").
+- [ ] **Post-M9 CSP nonce migration:** migrate Astro CSP from `script-src 'unsafe-inline'` to per-request nonce when Astro exposes a first-class nonce API (currently inline `<script type="module">…</script>` blocks emitted by SSR force `'unsafe-inline'`). TODO marker lives at `site/src/middleware.ts:19-20` inside `_defaultCspDirectives()`. Lifts the only remaining `'unsafe-inline'` weakness in the application CSP. Deferred to M10 (PR #118 follow-up).
 
 ### Stream G — Process Discipline Learnings from M8
 
