@@ -45,12 +45,19 @@ def _count_repos_for_profile(conn, profile_name: str) -> int:
         return cur.fetchone()[0]
 
 
+_MIGRATION_0004_SEED_COUNT = 12  # all 12 root odoo_8-19 profiles pre-seeded by migration 0004
+
+
 def test_seed_profiles_inserts_26(clean_pg):
-    """seed_profiles() inserts the 26 master data profiles; idempotent."""
+    """seed_profiles() brings total to 26 master data profiles; idempotent.
+
+    Migration 0004 pre-seeds _MIGRATION_0004_SEED_COUNT profiles before the
+    Python seeder runs, so inserted < 26 but total == 26.
+    """
     run_migrations(clean_pg)
     inserted, skipped = seed_profiles(clean_pg)
-    assert inserted == 26
-    assert skipped == 0
+    assert inserted == 26 - _MIGRATION_0004_SEED_COUNT
+    assert skipped == _MIGRATION_0004_SEED_COUNT
     assert _count_seeded_profiles(clean_pg) == 26
     # Re-run is a no-op
     inserted2, skipped2 = seed_profiles(clean_pg)
@@ -78,13 +85,17 @@ def test_seed_repos_inserts_48_total(clean_pg):
 
 
 def test_seed_all_idempotent(clean_pg):
-    """Calling seed_all() twice does not duplicate rows."""
+    """Calling seed_all() twice does not duplicate rows.
+
+    Migration 0004 pre-seeds _MIGRATION_0004_SEED_COUNT profiles before
+    seed_all() runs, so first call inserts fewer profiles but total is still 26.
+    """
     run_migrations(clean_pg)
     first = seed_all(clean_pg)
     second = seed_all(clean_pg)
-    # First call: empty schema → everything inserts
-    assert first["profiles_inserted"] == 26
-    assert first["profiles_skipped"] == 0
+    # First call: migration already seeded 12 root profiles; Python seeder inserts remaining 14.
+    assert first["profiles_inserted"] == 26 - _MIGRATION_0004_SEED_COUNT
+    assert first["profiles_skipped"] == _MIGRATION_0004_SEED_COUNT
     assert first["repos_inserted"] == 48
     assert first["repos_skipped"] == 0
     # Second call: everything already present → all skipped
@@ -165,18 +176,30 @@ def test_seeded_repos_clone_status_manual(clean_pg):
 
 
 def test_admin_data_wins_on_name_conflict(clean_pg):
-    """Manual profile created before seed is NOT overwritten — admin data wins."""
+    """Manual profile created before seed is NOT overwritten — admin data wins.
+
+    Uses a profile name NOT seeded by migration 0004 (which owns odoo_8-19),
+    so we can insert the row manually before the Python seeder runs.
+    ``standard_profile_17`` is owned only by the Python seeder's Pass 1 —
+    not by any SQL migration — making it suitable for this test.
+    """
     run_migrations(clean_pg)
-    # Create a manual profile of the same name BEFORE seed runs.
+    # Create a manual profile of the same name BEFORE the Python seed runs.
+    # standard_profile_17 is not pre-seeded by migration 0004 (SQL rescue path
+    # only covers root odoo_N profiles).
     with clean_pg.cursor() as cur:
         cur.execute(
             "INSERT INTO profiles (name, odoo_version, description) VALUES (%s, %s, %s)",
-            ("odoo_17", "17.0", "MANUAL — do not overwrite"),
+            ("standard_profile_17", "17.0", "MANUAL — do not overwrite"),
         )
-    # Run the seed — odoo_17 already exists → INSERT skipped → manual row preserved
+    # Run the Python seed — standard_profile_17 already exists → INSERT skipped →
+    # manual row preserved (ON CONFLICT DO NOTHING).
     seed_profiles(clean_pg)
     with clean_pg.cursor() as cur:
-        cur.execute("SELECT description FROM profiles WHERE name = %s", ("odoo_17",))
+        cur.execute(
+            "SELECT description FROM profiles WHERE name = %s",
+            ("standard_profile_17",),
+        )
         assert cur.fetchone()[0] == "MANUAL — do not overwrite"
 
 
@@ -251,8 +274,9 @@ def test_cli_rejects_reset_and_profiles_only_combination(clean_pg, capsys):
     assert rc == 1
     captured = capsys.readouterr()
     assert "cannot be combined" in captured.err
-    # DB state unchanged (no DELETE, no INSERT)
-    assert _count_seeded_profiles(clean_pg) == 0
+    # DB state unchanged (no DELETE, no INSERT by the CLI command itself).
+    # Migration 0004 already seeded 12 profiles; the rejected CLI command must not add more.
+    assert _count_seeded_profiles(clean_pg) == _MIGRATION_0004_SEED_COUNT
 
 
 @pytest.mark.parametrize(

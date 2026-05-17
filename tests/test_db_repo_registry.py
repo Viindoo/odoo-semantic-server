@@ -17,9 +17,10 @@ def test_add_and_list_profile(migrated_pg):
     pid = repo_store().add_profile(name="viindoo_17", odoo_version="17.0")
     assert pid > 0
     profiles = repo_store().list_profiles()
-    assert len(profiles) == 1
-    assert profiles[0]["name"] == "viindoo_17"
-    assert profiles[0]["odoo_version"] == "17.0"
+    # Migration 0004 seeds 12 root profiles; this test adds one more.
+    named = [p for p in profiles if p["name"] == "viindoo_17"]
+    assert len(named) == 1
+    assert named[0]["odoo_version"] == "17.0"
 
 
 def test_add_repo_under_profile(migrated_pg):
@@ -244,52 +245,56 @@ def test_ssh_key_delete_sets_repo_ssh_key_id_null(migrated_pg):
 
 def test_get_ancestor_profile_names_three_tier(migrated_pg):
     """get_ancestor_profile_names returns [self, parent, grandparent] in order."""
-    root_id = repo_store().add_profile("odoo_17", "17.0")
-    mid_id = repo_store().add_profile("standard_profile_17", "17.0")
-    leaf_id = repo_store().add_profile("internal_profile_17", "17.0")
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    root_id = repo_store().add_profile("test_root_99", "99.0")
+    mid_id = repo_store().add_profile("test_mid_99", "99.0")
+    leaf_id = repo_store().add_profile("test_leaf_99", "99.0")
 
     repo_store().set_profile_parent(mid_id, root_id)
     repo_store().set_profile_parent(leaf_id, mid_id)
 
-    names = repo_store().get_ancestor_profile_names("internal_profile_17")
-    assert names == ["internal_profile_17", "standard_profile_17", "odoo_17"]
+    names = repo_store().get_ancestor_profile_names("test_leaf_99")
+    assert names == ["test_leaf_99", "test_mid_99", "test_root_99"]
 
 
 def test_get_ancestor_repos_three_tier(migrated_pg):
     """get_ancestor_repos returns repos from all tiers, depth ASC order."""
-    root_id = repo_store().add_profile("odoo_17", "17.0")
-    mid_id = repo_store().add_profile("standard_profile_17", "17.0")
-    leaf_id = repo_store().add_profile("internal_profile_17", "17.0")
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    root_id = repo_store().add_profile("test_root_99", "99.0")
+    mid_id = repo_store().add_profile("test_mid_99", "99.0")
+    leaf_id = repo_store().add_profile("test_leaf_99", "99.0")
 
     repo_store().set_profile_parent(mid_id, root_id)
     repo_store().set_profile_parent(leaf_id, mid_id)
 
     # Add one repo per tier
-    repo_store().add_repo(leaf_id, "github.com/internal/repo", "17.0", "/tmp/internal")
-    repo_store().add_repo(mid_id, "github.com/acme_addons/repo", "17.0", "/tmp/tvtma")
-    repo_store().add_repo(root_id, "github.com/odoo/odoo", "17.0", "/tmp/odoo")
+    repo_store().add_repo(leaf_id, "github.com/internal/repo", "99.0", "/tmp/internal")
+    repo_store().add_repo(mid_id, "github.com/acme_addons/repo", "99.0", "/tmp/tvtma")
+    repo_store().add_repo(root_id, "github.com/odoo/odoo", "99.0", "/tmp/odoo")
 
-    repos = repo_store().get_ancestor_repos("internal_profile_17")
+    repos = repo_store().get_ancestor_repos("test_leaf_99")
     assert len(repos) == 3
 
     profile_names = [r["profile_name"] for r in repos]
     # self-tier repos come before parent tiers
-    assert profile_names[0] == "internal_profile_17"
-    assert profile_names[1] == "standard_profile_17"
-    assert profile_names[2] == "odoo_17"
+    assert profile_names[0] == "test_leaf_99"
+    assert profile_names[1] == "test_mid_99"
+    assert profile_names[2] == "test_root_99"
 
 
 def test_cycle_prevention_self_ref(migrated_pg):
     """set_profile_parent(A, A) raises ValueError — self-reference."""
-    pid = repo_store().add_profile("odoo_17", "17.0")
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    pid = repo_store().add_profile("test_root_99", "99.0")
     with pytest.raises(ValueError, match="self-reference"):
         repo_store().set_profile_parent(pid, pid)
 
 
 def test_cycle_prevention_a_b_a(migrated_pg):
     """A → B exists; B → A raises ValueError (would create cycle)."""
-    a_id = repo_store().add_profile("odoo_17", "17.0")
-    b_id = repo_store().add_profile("standard_profile_17", "17.0")
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    a_id = repo_store().add_profile("test_root_99", "99.0")
+    b_id = repo_store().add_profile("test_mid_99", "99.0")
 
     repo_store().set_profile_parent(b_id, a_id)  # A → B (B's parent = A)
 
@@ -300,8 +305,9 @@ def test_cycle_prevention_a_b_a(migrated_pg):
 
 def test_version_mismatch_rejected(migrated_pg):
     """parent.odoo_version != child.odoo_version raises ValueError."""
-    parent_id = repo_store().add_profile("odoo_16", "16.0")
-    child_id = repo_store().add_profile("viindoo_17", "17.0")
+    # Use non-conflicting names (all odoo_N are seeded by migration 0004).
+    parent_id = repo_store().add_profile("test_mismatch_parent_99", "99.0")
+    child_id = repo_store().add_profile("test_mismatch_child_98", "98.0")
 
     with pytest.raises(ValueError, match="version mismatch"):
         repo_store().set_profile_parent(child_id, parent_id)
@@ -309,8 +315,9 @@ def test_version_mismatch_rejected(migrated_pg):
 
 def test_set_profile_parent_idempotent(migrated_pg):
     """Calling set_profile_parent twice with same value: first True, second False."""
-    parent_id = repo_store().add_profile("odoo_17", "17.0")
-    child_id = repo_store().add_profile("standard_profile_17", "17.0")
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    parent_id = repo_store().add_profile("test_root_99", "99.0")
+    child_id = repo_store().add_profile("test_mid_99", "99.0")
 
     changed_first = repo_store().set_profile_parent(child_id, parent_id)
     assert changed_first is True
@@ -321,9 +328,10 @@ def test_set_profile_parent_idempotent(migrated_pg):
 
 def test_get_ancestor_profile_names_no_parent(migrated_pg):
     """Root profile returns just its own name."""
-    repo_store().add_profile("odoo_17", "17.0")
-    names = repo_store().get_ancestor_profile_names("odoo_17")
-    assert names == ["odoo_17"]
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    repo_store().add_profile("test_root_99", "99.0")
+    names = repo_store().get_ancestor_profile_names("test_root_99")
+    assert names == ["test_root_99"]
 
 
 def test_get_ancestor_profile_names_unknown(migrated_pg):
@@ -338,9 +346,10 @@ def test_cycle_prevention_three_hop(migrated_pg):
     Exercises the recursive CTE path of _validate_parent beyond the simple
     A→B→A case — confirms that the ancestor walk goes all the way to the root.
     """
-    a_id = repo_store().add_profile("odoo_17", "17.0")
-    b_id = repo_store().add_profile("standard_profile_17", "17.0")
-    c_id = repo_store().add_profile("internal_profile_17", "17.0")
+    # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+    a_id = repo_store().add_profile("test_root_99", "99.0")
+    b_id = repo_store().add_profile("test_mid_99", "99.0")
+    c_id = repo_store().add_profile("test_leaf_99", "99.0")
 
     repo_store().set_profile_parent(b_id, a_id)   # B's parent = A  (A→B)
     repo_store().set_profile_parent(c_id, b_id)   # C's parent = B  (B→C)
@@ -357,7 +366,8 @@ def test_add_profile_version_mismatch_no_orphan(migrated_pg):
     before _validate_parent ran, leaving an orphan row with parent_profile_id=NULL.
     Fix: validate-before-insert.
     """
-    parent_id = repo_store().add_profile("odoo_16", "16.0")
+    # Use non-conflicting names (odoo_16 is seeded by migration 0004).
+    parent_id = repo_store().add_profile("test_orphan_parent_16", "16.0")
     count_before = len(repo_store().list_profiles())
 
     with pytest.raises(ValueError, match="version mismatch"):
