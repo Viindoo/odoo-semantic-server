@@ -24,7 +24,7 @@ from src import config
 from src.db.pg import repo_store
 from src.indexer import incremental as _incremental
 from src.indexer import parser_css, parser_js, parser_python, parser_qweb, parser_scss, parser_xml
-from src.indexer.models import ViewParseResult
+from src.indexer.models import StylesheetInfo, ViewParseResult
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry
 from src.indexer.resolver import topological_sort
@@ -274,8 +274,7 @@ def _index_repo(
     view_results: list[ViewParseResult] = []
     js_graph_results = []
     # CSS/SCSS (WI-A1, ADR-0025)
-    from src.indexer.models import StylesheetInfo as _StylesheetInfo  # noqa: PLC0415
-    all_stylesheet_infos: list[_StylesheetInfo] = []
+    all_stylesheet_infos: list[StylesheetInfo] = []
 
     total_modules = 0
     total_views = 0

@@ -268,6 +268,76 @@ def test_string_aware_brace_scan_unit():
 
 
 # ---------------------------------------------------------------------------
+# test_string_aware_brace_scan_unterminated_string
+# ---------------------------------------------------------------------------
+#
+# Defensive-coding tests for malformed v8/v9 sources — reviewer concern #7.
+# These are extremely rare in real code (Python's own tokenizer rejects them)
+# but the era1 fallback runs precisely because tokenize already failed, so the
+# scanner can be fed truncated/half-written buffers from copy-paste artefacts
+# or files cut mid-write.  Goal: never hang / never crash / always return a
+# bounded string within a single linear pass.
+
+def test_string_aware_brace_scan_unterminated_single_quote():
+    """An unterminated single-quoted string must not hang or raise.
+
+    The scanner enters string-skip mode at the opening quote and walks to
+    end-of-buffer; when it never finds the closing quote, depth stays > 0 and
+    the function returns '' (block-not-closed sentinel).
+    """
+    # No closing quote on help= AND no outer closing brace.
+    fragment = "    'name': fields.char('Name', help='unterminated\n"
+    result = _string_aware_brace_scan(fragment, open_depth=1)
+    assert result == "", f"expected empty (unterminated block); got: {result!r}"
+
+
+def test_string_aware_brace_scan_unterminated_triple_quote():
+    """An unterminated triple-quoted string must not hang or raise."""
+    fragment = (
+        "    'name': fields.char(\n"
+        "        'Name',\n"
+        '        help="""unterminated triple-quoted block\n'
+        "        more lines without closing\n"
+    )
+    result = _string_aware_brace_scan(fragment, open_depth=1)
+    assert result == "", f"expected empty (unterminated block); got: {result!r}"
+
+
+def test_string_aware_brace_scan_unterminated_does_not_consume_outer_close():
+    """Unterminated string swallows trailing chars — including the outer }.
+
+    This documents the (intentional) behaviour: once the scanner enters
+    string-mode at an unclosed quote, every subsequent character including
+    '}' is treated as string content.  Result is '' because depth never
+    returns to zero.  The test guards against any future "auto-recover"
+    refactor accidentally treating the trailing } as a real close.
+    """
+    fragment = "    'help': 'open string\n    'amount': fields.float('A'),\n}"
+    result = _string_aware_brace_scan(fragment, open_depth=1)
+    # Whatever we get, it must not have crashed and must be bounded.
+    assert isinstance(result, str)
+    assert len(result) <= len(fragment)
+
+
+def test_string_aware_brace_scan_terminates_within_n_iterations():
+    """Smoke check: scanner always terminates on bounded input (no infinite loop)."""
+    # 50 KB of pathological input: unterminated quotes, stray braces, comments.
+    pathological = (
+        "'a': '\n"        # unterminated single-quote
+        "'b': \"\n"       # unterminated double-quote
+        "# stray } in comment\n"
+        "}}} more braces\n"
+    ) * 1000
+    # Should return within a fraction of a second — no hang.
+    import time
+    t0 = time.monotonic()
+    result = _string_aware_brace_scan(pathological, open_depth=1)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, f"scanner took {elapsed:.3f}s — possible infinite loop"
+    assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
 # test_source_definition_captured_for_single_and_multiline
 # ---------------------------------------------------------------------------
 

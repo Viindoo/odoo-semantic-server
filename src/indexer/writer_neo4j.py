@@ -543,9 +543,18 @@ def _write_stylesheets_batch(
       - :Stylesheet -[:DEFINED_IN]-> :Module  (always written)
       - :Stylesheet -[:IMPORTS]-> :Stylesheet  (only when import target is indexed)
         Silent skip when the imported file_path is not found in Neo4j (per ADR-0025 §D3).
+
+    The DEFINED_IN target Module is written with MERGE (not MATCH) and the
+    profile-union pattern from ADR-0016 §D7 — if the Module hasn't been
+    written yet (forward-reference race in parallel indexing), we create a
+    stub so the Stylesheet is never orphaned.  The real Module write later
+    in the same batch idempotently fills in repo/path/version_raw/etc.
     """
     for s in stylesheets:
-        # MERGE the Stylesheet node + set properties + DEFINED_IN edge
+        # MERGE the Stylesheet node + set properties + DEFINED_IN edge.
+        # Module is MERGE'd (not MATCH'd) to avoid orphan Stylesheet nodes
+        # if the host Module is written by a later batch (parallel-indexer
+        # ordering not guaranteed) — see ADR-0016 §D7 stub-ownership policy.
         tx.run(f"""
             MERGE (ss:Stylesheet {{file_path: $fp, module: $mod, odoo_version: $v}})
             ON CREATE SET ss.language = $lang,
@@ -563,7 +572,10 @@ def _write_stylesheets_batch(
                               [x IN coalesce(ss.profile, []) WHERE NOT x IN $profiles]
                               + $profiles
             WITH ss
-            MATCH (mod:Module {{name: $mod, odoo_version: $v}})
+            MERGE (mod:Module {{name: $mod, odoo_version: $v}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (ss)-[:{REL_DEFINED_IN}]->(mod)
         """, fp=s.file_path, mod=s.module, v=s.odoo_version,
              lang=s.language, sel=s.selector_count, var=s.variable_count,
