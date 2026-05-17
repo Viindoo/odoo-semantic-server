@@ -629,10 +629,50 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
   - Mechanical update: README + TASKS + CHANGELOG + architecture docs reflect A1-A5 implementation facts
   - No schema changes, no new ADRs (ADR-0025 landed with A1)
 
-- [ ] **WI-A7** Deferred items absorption (pending Opus dispatch)
-  - Reason: requires cross-document reasoning for milestone placement + ADR follow-up sections
+- [x] **WI-A7** Deferred items absorption (commit landed with PR #120 squash)
+  - Cross-document reasoning placed 10 deferred items into M10/M10.5/M11 sections below + ADR-0025 Future Work + ADR-0023/ADR-0010 follow-up notes
 
-**Post-deploy ops (B1–B11) tracked separately — see plan section "Group B".**
+**Post-deploy ops (B1–B11) tracked separately — see plan section "Group B" of `streamed-cuddling-phoenix.md`.**
+
+### Post-deploy hotfixes (2026-05-18)
+
+Two prod CLI bugs surfaced when Group B operations ran against the deployed code; both shipped as one-line fixes within the same B-phase session:
+
+- [x] **PR #124** `[FIX] indexer: init_pool before job_store in seed_patterns CLI` — `seed_patterns --force` crashed because `get_pool()` was called before `init_pool()`. Cherry-picked from a Haiku agent's accidental master commit (workflow lesson saved to memory `feedback_brief_worktree_for_subagents`).
+- [x] **PR #125** `[FIX] indexer: coalesce CLIFlag command_name null → "server"` — all 9 `index-core` jobs aborted with `Cannot merge ... null property value for 'command_name'` because curated `cli_flags_*.json` global flags (e.g. `--config`, `--init`) declared `command_name: null`, which Neo4j 5.x rejects in MERGE identity keys. `_load_static_cli_flags` now coalesces None → "server" matching the live parser default. Regression test covers explicit null, explicit "server", and missing key.
+
+### Group B post-deploy ops outcomes (2026-05-18)
+
+| Item | Outcome | Notes |
+|---|---|---|
+| B1 v18 odoo source auto-clone | ✅ Pre-done | `/home/.../clones/odoo_18/odoo` cloned + indexed before this session; verified via DB query (repo id 34, clone_status=cloned). |
+| B2 `index-core` v9-v16 + v19 | ✅ Done | After PR #125 fix; per-version CoreSymbol 179-534, LintRule 21-63, CLIFlag 66-78. |
+| B3 odoo_18 full reindex (OBS-1) | 🟡 Running | Long-running setsid job; baseline 897 modules, target parity with v17 ~1368. |
+| B4 themes 18.0 → viindoo_internal_18 | ⏸ **Deferred (OBS-2)** | See below — upstream Viindoo/themes.git has no `18.0` branch. |
+| B5 viindoo_internal_19 + 4 repos | ⏸ **Deferred (OBS-3)** | See below — none of the 4 saas/api/themes repos has a `19.0` branch upstream. |
+| B6 viindoo_internal_17 diagnosis | ✅ False positive | Earlier audit query error; profile has 49/49 modules indexed correctly. |
+| B7 v13 branding theme_* | ✅ False positive | Branding v13 has no theme_* modules by design. |
+| B8 full reindex all profiles for CSS/SCSS | ⏸ Scheduled overnight | 6-9h wall clock; deferred to off-peak per operator. |
+| B9 v8 reindex (era1 fix verify) | 🟡 Running | Long-running setsid job; expect Neo4j Field count to converge with pgvector field embedding count for v8. |
+| B10 `seed_patterns --force` | ✅ Done | Required PR #124 hotfix to unblock; pattern embeddings for v9-v15 written. |
+| B11 `index-core` v8 + v17 + v18 | ✅ Done | Bundled with B2 after PR #125; v8 has 0 CLICommand (era1 limitation, see line 652). |
+
+### Out of scope — deferred due to upstream Viindoo branch gaps
+
+- [ ] **OBS-2 viindoo_internal_18 themes coverage gap**
+  - Source: B-phase ops 2026-05-18 — attempted to register `git@github.com:Viindoo/themes.git@18.0` via direct DB insert + cloner module; git rejected with `fatal: Remote branch 18.0 not found in upstream origin`.
+  - Verified branch list (via OSM SSH key id=1): themes has `17.0` + `master` only.
+  - Acceptance: when Viindoo cuts `18.0` branch on `themes.git`, re-run the B4 registration step in `streamed-cuddling-phoenix.md` Group B (insert repo row via `repo_store().add_repo(...)` then `python -m src.cloner --repo-id N` then `index-repo --profile viindoo_internal_18 --full`).
+  - Dependency: Viindoo upstream branch cut (external).
+
+- [ ] **OBS-3 viindoo_internal_19 profile not yet creatable**
+  - Source: B-phase ops 2026-05-18 — listed branches for all 4 repos via OSM SSH key id=1:
+    - `odoo-api`: `17.0`, `18.0`, `main` (no 19.0)
+    - `saas-infrastructure`: `17.0`, `18.0`, `master` (no 19.0)
+    - `saas-infrastructure-common`: `17.0`, `18.0`, `master` (no 19.0)
+    - `themes`: `17.0`, `master` (no 18.0 and no 19.0)
+  - Acceptance: when at least 1 repo (typically `odoo-api`) has `19.0` branch cut, create the profile via `python -m src.manager add-profile viindoo_internal_19 --version 19.0 --description "Viindoo internal infrastructure for v19"`, then register repos by DB insert + cloner per the B5 runbook in `streamed-cuddling-phoenix.md`.
+  - Dependency: Viindoo upstream branch cuts (external).
 
 ---
 

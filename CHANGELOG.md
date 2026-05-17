@@ -4,7 +4,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased] — 2026-05-17 — Post-0.4.1 hardening + go-live deploy + M9 Coverage Fill
 
-5 PRs merged after v0.4.1. Production deployed at PR #119 / commit `3f081b9` (admin-invite signup model active). PR #120 (M9 Coverage Fill) + PR #121 (docs signoff) merged but not yet deployed to prod.
+5 PRs merged after v0.4.1. Production deployed at PR #119 / commit `3f081b9` (admin-invite signup model active). PR #120 (M9 Coverage Fill) + PR #121 (docs signoff) merged but not yet deployed to prod. Two post-deploy hotfixes shipped 2026-05-18 — PR #124 (`init_pool` ordering in seed_patterns CLI) and PR #125 (CLIFlag null command_name MERGE bug surfaced when running `index-core` against M9 curated spec_data).
 
 ### Migration 0004 self-contained SQL rescue (PR #117)
 
@@ -97,6 +97,16 @@ All notable changes to Odoo Semantic MCP are documented here.
 #### Changed
 - `docs/deploy/pre-launch-checklist.md` items §4.1, §5.1, §8.6, §10.5 `/api/health` flipped to `[x]` post PR #119 deploy. §4.2, §5.2 marked `[~]` partial with followup references. §11 sign-off table filled (9 of 11 sections `[x]`).
 - Known followups appended: #12 OWLComp v14 anachronism (239 stubs from JSPatch era3 in pre-v14 modules — read-side era guard already protects user output), #13 Neo4j online backup (Cypher export OR Enterprise backup cmd), #14 logrotate `/var/log` perms (pre-existing stanza), #15 §6 tools 15-21 prod smoke (deferred next session).
+
+### Post-deploy hotfixes (2026-05-18)
+
+#### PR #124 — `[FIX] indexer: init_pool before job_store in seed_patterns CLI`
+- `src/indexer/seed_patterns.py` now calls `init_pool(dsn, ...)` before resolving `_get_job_store()`. Previous ordering raised `PostgreSQL pool is not initialized` when invoking `python -m src.indexer.seed_patterns --force`, blocking the B10 PatternExample reseed step of the M9 Coverage Fill post-deploy ops sequence.
+
+#### PR #125 — `[FIX] indexer: coalesce CLIFlag command_name null → "server"`
+- `src/indexer/parser_cli.py::_load_static_cli_flags` coerces `command_name` `None` → `"server"`, matching the live parser default for `odoo-bin server` flags.
+- M9 Coverage Fill curated `cli_flags_*.json` files (12 versions × ~70-88 flags each) declared `command_name: null` for global flags like `--config`, `--init`, `--update`. Neo4j 5.x rejects null property values in MERGE identity keys (`Cannot merge ... null property value for 'command_name'`), aborting every `index-core` invocation before any CLIFlag node was written.
+- Regression test covers explicit null, explicit "server", and missing key.
 
 ### Production state at time of [Unreleased] cut
 
