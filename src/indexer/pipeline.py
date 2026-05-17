@@ -23,7 +23,7 @@ from neo4j import GraphDatabase
 from src import config
 from src.db.pg import repo_store
 from src.indexer import incremental as _incremental
-from src.indexer import parser_js, parser_python, parser_qweb, parser_xml
+from src.indexer import parser_css, parser_js, parser_python, parser_qweb, parser_scss, parser_xml
 from src.indexer.models import ViewParseResult
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry
@@ -273,6 +273,9 @@ def _index_repo(
     py_results = []
     view_results: list[ViewParseResult] = []
     js_graph_results = []
+    # CSS/SCSS (WI-A1, ADR-0025)
+    from src.indexer.models import StylesheetInfo as _StylesheetInfo  # noqa: PLC0415
+    all_stylesheet_infos: list[_StylesheetInfo] = []
 
     total_modules = 0
     total_views = 0
@@ -280,6 +283,7 @@ def _index_repo(
     total_embeddings = 0
     total_js_patches = 0
     total_owl_comps = 0
+    total_stylesheets = 0
     total_embed_calls = 0
 
     # Pre-flight: check whether embedding is possible (once, not per module).
@@ -335,11 +339,25 @@ def _index_repo(
             total_js_patches += len(js_graph.patches)
             total_owl_comps += len(js_graph.components)
 
+            # CSS/SCSS parsing — stylesheet nodes + embeddings (WI-A1, ADR-0025)
+            css_chunks_mod, css_infos = parser_css.parse_module(info)
+            scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
+            all_stylesheet_infos.extend(css_infos)
+            all_stylesheet_infos.extend(scss_infos)
+            total_stylesheets += len(css_infos) + len(scss_infos)
+
             # Semantic embeddings — optional, skipped when pg_conn/embedder absent,
             # pgvector extension is not installed, or version could not be resolved.
             if embed_enabled and version != "unknown":
+                from src.indexer.writer_pgvector import (  # noqa: PLC0415
+                    make_css_chunks,
+                    make_scss_chunks,
+                )
                 js_chunks = parser_js.parse_module(info)
                 chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
+                # Append CSS and SCSS embedding chunks
+                chunks.extend(make_css_chunks(css_chunks_mod))
+                chunks.extend(make_scss_chunks(scss_chunks_mod))
                 embed_calls = write_module_embeddings(
                     mod_name, version, chunks, embedder
                 )
@@ -353,6 +371,8 @@ def _index_repo(
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
     writer.write_js_graph_results(js_graph_results, profiles=_profiles_arr)
+    # WI-A1: write Stylesheet nodes (CSS + SCSS) after module writes
+    writer.write_stylesheets(all_stylesheet_infos, profiles=_profiles_arr)
 
     # === Module GC (M7 C4): delete stale Module nodes after successful writes ===
     # Risk gate: only run when scanner found ≥1 module to avoid data loss when
@@ -451,6 +471,7 @@ def _index_repo(
         "embed_calls": total_embed_calls,
         "js_patches": total_js_patches,
         "owl_comps": total_owl_comps,
+        "stylesheets": total_stylesheets,
     }
 
 

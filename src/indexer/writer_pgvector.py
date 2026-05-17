@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from psycopg2.extras import execute_values
 
 from .embedder import EmbedderClient
-from .models import JSChunk, ParseResult, PatternExample, ViewParseResult
+from .models import CSSChunk, JSChunk, ParseResult, PatternExample, SCSSChunk, ViewParseResult
 
 _WINDOW_CHARS = 2048
 _OVERLAP_CHARS = 256
@@ -122,6 +122,53 @@ def make_chunks(
             jsc.entity_name, None, jsc.file_path, jsc.chunk_idx, jsc.content,
         ))
 
+    return chunks
+
+
+def make_css_chunks(css_chunks: list[CSSChunk]) -> list[EmbeddingChunk]:
+    """Convert CSSChunk list → EmbeddingChunk list (chunk_type='css').
+
+    Each CSSChunk (variable block, selector group, @media query, or raw window)
+    becomes one EmbeddingChunk. entity_name encodes the semantic unit label
+    (selector text, mixin name, variable group prefix, etc.) for ANN filtering.
+    model_name is always None — CSS has no model binding.
+    """
+    chunks: list[EmbeddingChunk] = []
+    for c in css_chunks:
+        chunks.append(EmbeddingChunk(
+            chunk_type="css",
+            module=c.module,
+            odoo_version=c.odoo_version,
+            entity_name=c.entity_name,
+            model_name=None,
+            file_path=c.file_path,
+            chunk_idx=c.chunk_idx,
+            content=c.content,
+        ))
+    return chunks
+
+
+def make_scss_chunks(scss_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
+    """Convert SCSSChunk list → EmbeddingChunk list (chunk_type='scss').
+
+    Same pattern as make_css_chunks. chunk_kind is embedded into entity_name
+    as ``<kind>:<entity_name>`` so ANN results can be filtered by kind
+    (e.g. find only mixin definitions across versions) without schema changes.
+    model_name is always None — SCSS has no model binding.
+    """
+    chunks: list[EmbeddingChunk] = []
+    for c in scss_chunks:
+        entity = f"{c.chunk_kind}:{c.entity_name}"
+        chunks.append(EmbeddingChunk(
+            chunk_type="scss",
+            module=c.module,
+            odoo_version=c.odoo_version,
+            entity_name=entity,
+            model_name=None,
+            file_path=c.file_path,
+            chunk_idx=c.chunk_idx,
+            content=c.content,
+        ))
     return chunks
 
 
