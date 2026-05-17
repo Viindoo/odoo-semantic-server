@@ -154,9 +154,11 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.4.1 (2026-05-16) — M9 follow-up complete. Web UI parity for repo & profile management. M9 Coverage Fill in progress: CSS/SCSS parser + v8 era1 field gap fix + PatternExample v9-v15 + LintRule/CLIFlag curation v8-v19.
+**Latest release:** v0.4.1 (2026-05-16) — M9 follow-up complete. Web UI parity for repo & profile management.
 
-**Active work:** M9 Coverage Fill batch (CSS parser, static spec data curation, pattern backfill, docs hygiene).
+**Production deploy:** 2026-05-17 — PR #119 go-live batch deployed (writer profile stub fix eliminating 5,988 NULL nodes, MFA flag sync, backup CLI docker-exec fallback + nightly systemd timer, `/api/health` auth-exempt endpoint, ADR-0016 D7 stub policy). PR #117 (migration 0004 self-contained SQL rescue) + PR #118 (CSP + Permissions-Policy headers) also live. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state.
+
+**Active work:** M9 Coverage Fill batch (PR #120 merged 2026-05-17, pending prod deploy) — CSS/SCSS parser, v8 era1 field gap fix, PatternExample v9-v15, LintRule/CLIFlag static curation v8-v19. Plus go-live followups: OWLComp v14 guard for JSPatch era3 (239 anachronistic stubs), Neo4j online backup (replace neo4j-admin dump with Cypher export), §6 tools 15-21 prod smoke (deferred next session).
 
 **Next milestones (roadmap):**
 - **M10 "Billing Wow"** — Stripe subscription + plan tiers + coverage-fill follow-ups: MCP Stylesheet tools (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` metric, M10 Quick Wins (magic fields, `from_module` param, `noqa` support, CLI batch audit), nonce-based CSP.

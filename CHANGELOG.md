@@ -2,22 +2,109 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-## [Unreleased] — 2026-05-17 — M9 Coverage Fill batch
+## [Unreleased] — 2026-05-17 — Post-0.4.1 hardening + go-live deploy + M9 Coverage Fill
 
-6 WIs landed: CSS/SCSS parser, v8 era1 field gap fix, pattern backfill, lint/CLI curation.
+5 PRs merged after v0.4.1. Production deployed at PR #119 / commit `3f081b9` (admin-invite signup model active). PR #120 (M9 Coverage Fill) + PR #121 (docs signoff) merged but not yet deployed to prod.
 
-### Added
+### Migration 0004 self-contained SQL rescue (PR #117)
+
+#### Added
+- `migrations/0004_add_missing_version_profiles.sql` seeds all 12 root CE profiles (`odoo_8` through `odoo_19`) with `ON CONFLICT (name) DO NOTHING`. SQL is self-contained for DBA-only rescue paths (no Python required).
+- `src/db/seed_master_data.py` remains source of truth and still covers Viindoo addon profiles (`standard_viindoo_*`, `viindoo_internal_*`) which require 2-pass FK inserts.
+
+#### Tests
+- Profile-touching tests migrated to distinct test names (`test_root_99`, `test_mid_99`, `test_leaf_99` at version 99.0) or switched to `standard_viindoo_17` (Python-seeder only) for conflict-test scenarios.
+- Seed count assertion in `test_master_data_seed.py` bumped 5 → 12.
+
+### Security headers — CSP + Permissions-Policy (PR #118)
+
+#### Added — closes M9 CSP gap (memory: m9_csp_permissions_policy_gap.md)
+- FastAPI `_SecurityHeadersMiddleware` injects `Content-Security-Policy: default-src 'none'` + `Permissions-Policy` on every JSON-API response (ADR-0015 — JSON-only, never serves HTML).
+- Astro SSR `_addSecurityHeaders()` emits per-path tighter CSP on every SSR response (`/admin/*`, `/signup`, `/verify-email`, `/reset-password`). `script-src 'self' 'unsafe-inline'` because Astro inlines small page scripts.
+- Edge nginx/Caddy emits permissive superset CSP that covers prerendered static pages (`/`, `/pricing`, `/bootstrap`, `/benchmarks`).
+- 8 regression tests in `TestSecurityHeadersFastAPI` replace nginx-placeholder `TestNginxHeadersDocumented`.
+
+#### Notes
+- Nonce-based CSP migration tracked as M10 followup.
+
+### Go-live batch — writer profile + MFA sync + backup CLI + /api/health (PR #119)
+
+5 commits squashed: 4 WIs (Pattern 1 orchestration) + 1 followup commit (Opus review HIGH fixes + boil-the-lake findings + sanitization). Verified end-to-end on production 2026-05-17 (deploy + post-deploy ops phase). See PR description + `docs/deploy/pre-launch-checklist.md` followups #12-#15 for known gaps.
+
+#### Fixed — WI-1 indexer writer + parser_js + ADR-0016 D7
+- `src/indexer/writer_neo4j.py`: 6 placeholder MERGE sites (Module dep, Model INHERITS, Model DELEGATES_TO, View INHERITS_VIEW, QWebTmpl EXTENDS_TMPL, OWLComp PATCHES) now inherit the referencing module's profile array:
+  - `ON CREATE SET <node>.profile = $profiles` on first MERGE.
+  - `ON MATCH SET <node>.profile = [x IN coalesce(<node>.profile, []) WHERE NOT x IN $profiles] + $profiles` on subsequent MERGEs — UNION semantics mirroring real-node pattern from commit `4ff56a8` (prevents clobber when profile B references a stub previously created for profile A).
+- `src/indexer/writer_neo4j.py`: 3 resolver MATCH sites (INHERITS Model, DELEGATES_TO Model, PATCHES OWLComp) now exclude `__unresolved__` stubs via `WHERE NOT coalesce(<var>.unresolved, false)` — symmetric with existing INHERITS_VIEW + EXTENDS_TMPL pattern. Without this, second referencer would resolve INHERITS to first referencer's stub and skip the union write.
+- `src/indexer/parser_js.py`: `_extract_era3_components()` returns early when `int(odoo_version.split('.')[0]) < 14` — OWL framework only exists v14+.
+- `docs/adr/0016-profile-hierarchy-and-neo4j-isolation.md`: new section **D7 — Stub node ownership policy** documenting the UNION pattern + 6 writer sites + future-contributor guidance.
+
+#### Fixed — WI-2 webui auth MFA sync
+- `src/web_ui/routes/totp.py`: `_enable_totp()` and `_delete_totp()` now also `UPDATE webui_users SET mfa_enabled = TRUE/FALSE WHERE id = %s` in the same transaction as the `totp_secrets` write. Login still gates on `totp_secrets.enabled`; users column is now authoritative for queries.
+- `migrations/m9_009_backfill_mfa_enabled.sql`: idempotent symmetric reconciliation — sets TRUE for users with `totp_secrets.enabled=TRUE`, FALSE for any user `mfa_enabled=TRUE` without a matching TOTP row. Followup commit added the FALSE-reset half (boil-the-lake F).
+
+#### Added — WI-3 backup CLI + systemd + runbook
+- `src/cli.py` `_get_pg_dsn()`: refactored to use `config.from_env_or_ini("PG_DSN", "database", "pg_dsn")` helper (consistent with rest of codebase).
+- `src/cli.py` `_resolve_postgres_tool(tool)`: new helper returns `[tool]` if `shutil.which` finds it locally, else `["docker", "exec", "-i", "-e", "PGPASSWORD", container, tool]` (PGPASSWORD forwarded via `-e VAR` syntax — host env propagates into container). Container name from `POSTGRES_CONTAINER` env, default `odoo-semantic-mcp-postgres-1`.
+- `src/cli.py` `_resolve_neo4j_tool(tool)`: parallel helper for Neo4j tools (`neo4j-admin database dump`). Container env `NEO4J_CONTAINER`, default `odoo-semantic-mcp-neo4j-1`. No PGPASSWORD bleed.
+- `src/cli.py` `_cmd_backup` pg_dump: stdout redirect (`stdout=open(pg_out, "wb")`) instead of `-f <host_path>` so docker-exec'd pg_dump pipes output back to host. psql restore paths already use stdin redirect (no change needed).
+- `docs/deploy/odoo-semantic-backup.service` + `.timer` + extended `logrotate.d/odoo-semantic` + bilingual `backup-runbook.md`. Systemd unit uses canonical placeholders (`User=odoo-semantic` + `/opt/odoo-semantic-mcp`) per public-repo convention; `ExecStart` wraps in `/bin/sh -c '... $(date +%Y%m%d-%H%M%S) ...'` so timestamp expands per run (systemd `%` specifiers don't include strftime).
+- 4 new docker-fallback tests in `test_backup_cli_docker_fallback.py` + 4 new Neo4j docker-fallback tests in `test_neo4j_cli_docker_fallback.py` + 5 existing CLI tests patched to mock `shutil.which` (environment-sensitive baseline).
+- `migrations/m9_007_totp_secrets.sql` stale comment ("no mfa_enabled needed in webui_users") replaced with reference to WI-2 m9_009 sync.
+
+#### Added — WI-4 /api/health auth-exempt endpoint
+- `src/web_ui/app.py` `GET /api/health` returns `{"status": "ok", "version": "<__version__>"}` HTTP 200.
+- `src/web_ui/middleware.py` `_EXEMPT_EXACT` set includes `/api/health` so unauthenticated requests bypass `AuthRequiredMiddleware`. Loopback-only + security header middlewares still apply.
+- `src/_version.py`: new single-source version reader via `importlib.metadata.version("odoo-semantic-mcp")` with `PackageNotFoundError` fallback (no hardcoded duplication of `pyproject.toml`).
+- 1 new TestClient test asserting unauthenticated 200 + `status` + `version` keys.
+
+#### Fixed — Followup commit consolidates Opus review HIGH findings + 6 boil-the-lake fixes
+- Docker-exec pg_dump no longer writes `-f <host_path>` inside container (loses output). Now uses stdout redirect.
+- PGPASSWORD forwarded into container via `docker exec -e PGPASSWORD` (host env override didn't reach pg_dump inside).
+- systemd `osm-%%Y%%m%%d-%%H%%M%%S.tar.gz` placeholder fixed: ExecStart wraps `/bin/sh -c '… $(date +%Y%m%d-%H%M%S) …'` (systemd specifiers don't expand strftime; nightly runs now produce distinct files).
+- psql call sites switched from `text=True` to bytes mode for consistency with pg_dump fix; stderr decoded with `errors='replace'` for human-readable errors.
+- `tests/test_writer_neo4j_stub_profile.py`: module-level `pytestmark = pytest.mark.neo4j` per CLAUDE.md convention; pure-unit OWL era guard test moved to `tests/test_parser_js.py`.
+- `_version.py` deduplication (importlib.metadata).
+- m9_009 migration symmetric backfill (also resets FALSE for users without active TOTP).
+- Neo4j docker-exec fallback (parallel to Postgres helper).
+- `src/web_ui/middleware.py` module docstring updated with `/api/health` in exempt-paths list.
+
+#### Tests
+- 11 new tests across 4 new files (writer stub profile, MFA sync, backup CLI docker, /api/health) + Neo4j docker fallback tests (post-followup).
+
+#### Sanitization
+- Initial commit history had host-specific paths (`/home/<user>/...`) and prod state in PR body; force-pushed to clean 1-commit branch using canonical `/opt/odoo-semantic-mcp` + `User=odoo-semantic` placeholders matching existing `docs/deploy/odoo-semantic-mcp.service`. Memory: `feedback_public_repo_sanitize.md`.
+
+### M9 Coverage Fill batch (PR #120)
+
+7 WIs landed: CSS/SCSS parser, v8 era1 field gap fix, pattern backfill, lint/CLI curation, deferred items absorption.
+
+#### Added
 - CSS/SCSS indexing: new `parser_css.py` + `parser_scss.py` with tree-sitter-css backend (regex fallback). Creates `:Stylesheet` Neo4j nodes (composite key `(file_path, module, odoo_version)`) + `:DEFINED_IN` + `:IMPORTS` edges. Pgvector chunk_types `css`/`scss`. (WI-A1, ADR-0025)
 - PatternExample catalogue v9-v15: 30 curated patterns from real Odoo sources (`patterns.json` 83→113). (WI-A3)
 - LintRule static curation v8-v19: 12 `spec_data/lint_rules_X.json` populated with ~270 rules + schema. (WI-A4)
 - CLIFlag static curation v8-v19: 12 `spec_data/cli_flags_X.json` populated with ~880 flags + schema + cross-version deprecation tracking. (WI-A5)
 
-### Fixed
+#### Fixed
 - v8 era1 `_columns` extraction: string-aware brace scan no longer truncates blocks at `{` inside string literals. `FieldInfo.source_definition` now populated for era1. (WI-A2)
 
-### Notes
+#### Notes
 - Post-deploy ops B1-B11 (CoreSymbol/LintRule/CLI ingestion runs, OBS-1 reindex, viindoo_internal_19 registration, full reindex for CSS/SCSS embeddings) tracked in plan `streamed-cuddling-phoenix.md`.
 - WI-A7 (deferred items absorption into TASKS.md M10/M10.5/M11 + ADR follow-up sections) pending Opus dispatch.
+
+### Pre-launch checklist signoff (PR #121, docs only)
+
+#### Changed
+- `docs/deploy/pre-launch-checklist.md` items §4.1, §5.1, §8.6, §10.5 `/api/health` flipped to `[x]` post PR #119 deploy. §4.2, §5.2 marked `[~]` partial with followup references. §11 sign-off table filled (9 of 11 sections `[x]`).
+- Known followups appended: #12 OWLComp v14 anachronism (239 stubs from JSPatch era3 in pre-v14 modules — read-side era guard already protects user output), #13 Neo4j online backup (Cypher export OR Enterprise backup cmd), #14 logrotate `/var/log` perms (pre-existing stanza), #15 §6 tools 15-21 prod smoke (deferred next session).
+
+### Production state at time of [Unreleased] cut
+
+- Production HEAD: PR #119 / commit `3f081b9` deployed 2026-05-17 (PR #120 + #121 not yet deployed to prod).
+- Neo4j: 0 NULL profile nodes (down from 5,988 pre-cleanup); 0 pre-v14 OWLComp anachronisms among NULL-profile set; 239 `__unresolved__` v8-v13 OWLComp stubs remain (have profile set; tracked as followup #12).
+- Backup automation: systemd nightly timer scheduled 03:00:00; first manual run produced 2.55 GB postgres bundle (Neo4j component skipped — followup #13).
+- Webui crash sim: passed (SIGKILL → 5s auto-restart).
+- Embeddings: 528,577 across all profiles (unchanged from pre-deploy; `--no-embed` verify pass did not touch pgvector).
 
 ---
 
