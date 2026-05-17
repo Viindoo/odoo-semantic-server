@@ -1,0 +1,25 @@
+# odoo-semantic-backup.service — systemd oneshot unit cho nightly backup
+# Đặt tại: /etc/systemd/system/odoo-semantic-backup.service
+# Sau khi copy:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable odoo-semantic-backup.timer
+#   sudo systemctl start odoo-semantic-backup.timer
+#
+# Adjust User=, WorkingDirectory=, EnvironmentFile=, ExecStart venv path for
+# your deployment. Defaults below mirror docs/deploy/odoo-semantic-mcp.service
+# (user `odoo-semantic`, working dir `/opt/odoo-semantic-mcp`).
+
+[Unit]
+Description=OSM nightly backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=odoo-semantic
+WorkingDirectory=/opt/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
+EnvironmentFile=-/opt/odoo-semantic-mcp/.env
+ExecStart=/bin/sh -c 'exec /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli backup --output /var/backups/odoo-semantic/osm-$(date +%%Y%%m%%d-%%H%%M%%S).tar.gz'
+StandardOutput=journal
+StandardError=journal

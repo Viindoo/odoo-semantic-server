@@ -6,3 +6,11 @@
     notifempty
     create 640 odoo-semantic odoo-semantic
 }
+
+/var/log/odoo-semantic/*.log /var/backups/odoo-semantic/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+}

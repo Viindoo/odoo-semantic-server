@@ -51,10 +51,11 @@ def _run_backup(
     args = _build_parser().parse_args(args_list)
 
     def _fake_pg_dump(cmd, **kwargs):
-        # Write a minimal SQL stub to -f <output>
-        out_idx = cmd.index("-f") + 1
-        Path(cmd[out_idx]).write_text("-- pg_dump stub\n")
-        return MagicMock(returncode=0, stderr="")
+        # pg_dump writes to stdout now (no -f); write stub bytes to the stdout handle
+        stdout = kwargs.get("stdout")
+        if stdout and hasattr(stdout, "write"):
+            stdout.write(b"-- pg_dump stub\n")
+        return MagicMock(returncode=0, stderr=b"")
 
     def _fake_neo4j_dump(cmd, **kwargs):
         if neo4j_success:
@@ -79,8 +80,9 @@ def _run_backup(
         return MagicMock(returncode=0, stderr="")
 
     with patch("psycopg2.connect", return_value=mock_conn):
-        with patch("subprocess.run", side_effect=_fake_run):
-            rc = _cmd_backup(args)
+        with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+            with patch("subprocess.run", side_effect=_fake_run):
+                rc = _cmd_backup(args)
 
     return rc, output_path
 
@@ -291,17 +293,20 @@ class TestNeo4jMissingLogsWarningNotFatal:
 
         def _fake_run(cmd, **kwargs):
             if "pg_dump" in cmd[0]:
-                out_idx = cmd.index("-f") + 1
-                Path(cmd[out_idx]).write_text("-- pg_dump stub\n")
-                return MagicMock(returncode=0, stderr="")
+                # pg_dump writes to stdout (no -f); write stub bytes to the stdout handle
+                stdout = kwargs.get("stdout")
+                if stdout and hasattr(stdout, "write"):
+                    stdout.write(b"-- pg_dump stub\n")
+                return MagicMock(returncode=0, stderr=b"")
             if "neo4j-admin" in cmd[0]:
                 raise FileNotFoundError("neo4j-admin not found")
             return MagicMock(returncode=0)
 
         with caplog.at_level(logging.WARNING, logger="src.cli"):
             with patch("psycopg2.connect", return_value=mock_conn):
-                with patch("subprocess.run", side_effect=_fake_run):
-                    rc = _cmd_backup(args)
+                with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+                    with patch("subprocess.run", side_effect=_fake_run):
+                        rc = _cmd_backup(args)
 
         assert rc == 0, "Backup should succeed even when neo4j-admin is missing"
         assert out.exists()

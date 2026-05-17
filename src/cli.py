@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -28,16 +29,31 @@ log = logging.getLogger(__name__)
 
 def _get_pg_dsn() -> str:
     """Return PG_DSN from env or INI config. Empty string if not configured."""
-    # Try env var first (production override), then INI config
-    val = os.getenv("PG_DSN", "")
-    if val:
-        return val
-    try:
-        from src import config
-        dsn = config.get("database", "pg_dsn", fallback=None)
-        return dsn or ""
-    except (ImportError, KeyError, AttributeError):
-        return ""
+    from src import config
+    return config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback="") or ""
+
+
+def _resolve_postgres_tool(tool: str) -> list[str]:
+    """Return command prefix: local binary if available on PATH, else docker exec wrapper."""
+    if shutil.which(tool):
+        return [tool]
+    container = os.getenv("POSTGRES_CONTAINER", "odoo-semantic-mcp-postgres-1")
+    # -e PGPASSWORD forwards the host env var by name into the container (no value = forward by ref)
+    return ["docker", "exec", "-i", "-e", "PGPASSWORD", container, tool]
+
+
+def _resolve_neo4j_tool(tool: str) -> list[str]:
+    """Return command prefix for a Neo4j tool: local binary if on PATH, else docker exec.
+
+    Parallel to _resolve_postgres_tool. When neo4j-admin is only available inside
+    the Neo4j container (typical Docker-Compose deployments), docker exec is used
+    so the dump is written to a path mounted or accessible inside the container.
+    Set NEO4J_CONTAINER to override the default container name.
+    """
+    if shutil.which(tool):
+        return [tool]
+    container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
+    return ["docker", "exec", "-i", container, tool]
 
 
 def _dsn_to_pg_args_and_env(dsn: str) -> tuple[list[str], dict[str, str]]:
@@ -224,35 +240,43 @@ def _cmd_backup(args) -> int:
                 components: list[dict] = []
 
                 # 1. pg_dump → postgres.sql
+                # Use stdout redirect (not -f) so docker exec pipes output back to host.
+                # With -f the file would be written inside the container, causing
+                # FileNotFoundError on subsequent pg_out.read_bytes().
                 pg_out = tmpdir / "postgres.sql"
                 env = {**os.environ, **env_overrides}
-                pg_cmd = ["pg_dump", *pg_args, "-F", "plain", "-f", str(pg_out)]
-                result = subprocess.run(
-                    pg_cmd,
-                    capture_output=True,
-                    text=True,
-                    env=env,
-                    shell=False,
-                )
+                pg_cmd = _resolve_postgres_tool("pg_dump") + [
+                    *pg_args, "-F", "plain"
+                ]
+                with pg_out.open("wb") as pg_out_handle:
+                    result = subprocess.run(
+                        pg_cmd,
+                        stdout=pg_out_handle,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                        shell=False,
+                    )
                 if result.returncode != 0:
-                    print(f"pg_dump failed: {result.stderr}", file=sys.stderr)
+                    stderr_msg = result.stderr.decode(errors="replace")
+                    print(f"pg_dump failed: {stderr_msg}", file=sys.stderr)
                     return result.returncode
                 pg_sha = hashlib.sha256(pg_out.read_bytes()).hexdigest()
                 components.append({"file": "postgres.sql", "sha256": pg_sha})
                 print(f"  postgres.sql: {pg_out.stat().st_size} bytes")
 
                 # 2. neo4j-admin dump → neo4j.dump (optional)
+                # Uses _resolve_neo4j_tool so docker exec fallback is available
+                # when neo4j-admin is only inside the container (typical deployment).
                 neo4j_out = tmpdir / "neo4j.dump"
                 try:
-                    neo4j_cmd = [
-                        "neo4j-admin", "database", "dump",
+                    neo4j_cmd = _resolve_neo4j_tool("neo4j-admin") + [
+                        "database", "dump",
                         "--to-path", str(tmpdir),
                         "neo4j",
                     ]
                     neo4j_result = subprocess.run(
                         neo4j_cmd,
                         capture_output=True,
-                        text=True,
                         shell=False,
                     )
                     if neo4j_result.returncode == 0 and neo4j_out.exists():
@@ -333,12 +357,15 @@ def _restore_sql_plaintext(path: Path, args) -> int:
         return 1
 
     env = {**os.environ, **env_overrides}
-    cmd = ["psql", *pg_args]
+    cmd = _resolve_postgres_tool("psql") + [*pg_args]
 
+    # stdin from file opened in bytes mode; capture_output=True gives bytes stdout/stderr.
+    # No text=True: consistent with pg_dump (bytes mode) to avoid decode errors on
+    # non-UTF-8 SQL comments or BYTEA literals.
     with path.open("rb") as f:
-        result = subprocess.run(cmd, stdin=f, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, stdin=f, capture_output=True, env=env)
     if result.returncode != 0:
-        print(f"psql failed: {result.stderr}", file=sys.stderr)
+        print(f"psql failed: {result.stderr.decode(errors='replace')}", file=sys.stderr)
         return result.returncode
     print(f"Restore complete from: {path}")
     return 0
@@ -421,7 +448,7 @@ def _restore_bundle(path: Path, args) -> int:
         backup_dir.mkdir(parents=True, exist_ok=True)
         safety_path = backup_dir / f"pre-restore-{int(time.time())}.sql"
         env = {**os.environ, **env_overrides}
-        safety_cmd = ["pg_dump", *pg_args, "-F", "plain"]
+        safety_cmd = _resolve_postgres_tool("pg_dump") + [*pg_args, "-F", "plain"]
         log.info("Writing pre-restore safety backup to: %s", safety_path)
         try:
             with safety_path.open("wb") as sf:
@@ -446,13 +473,18 @@ def _restore_bundle(path: Path, args) -> int:
         print(f"Pre-restore safety backup: {safety_path}")
 
         # --- Restore PostgreSQL ---
-        psql_cmd = ["psql", *pg_args]
+        # Bytes mode (no text=True) — consistent with pg_dump bytes mode to avoid
+        # decode errors on non-UTF-8 SQL content.
+        psql_cmd = _resolve_postgres_tool("psql") + [*pg_args]
         with pg_dump.open("rb") as f:
             pg_result = subprocess.run(
-                psql_cmd, stdin=f, capture_output=True, text=True, env=env
+                psql_cmd, stdin=f, capture_output=True, env=env
             )
         if pg_result.returncode != 0:
-            print(f"ERROR: psql restore failed: {pg_result.stderr}", file=sys.stderr)
+            print(
+                f"ERROR: psql restore failed: {pg_result.stderr.decode(errors='replace')}",
+                file=sys.stderr,
+            )
             print(f"  Safety backup preserved at: {safety_path}", file=sys.stderr)
             return 1
 

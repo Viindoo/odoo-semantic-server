@@ -54,8 +54,12 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
         tx.run(f"""
             MATCH (m:Module {{name: $name, odoo_version: $v}})
             MERGE (d:Module {{name: $dep, odoo_version: $v}})
+            ON CREATE SET d.profile = $profiles
+            ON MATCH  SET d.profile =
+                [x IN coalesce(d.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (m)-[:{REL_DEPENDS_ON}]->(d)
-        """, name=module.name, v=module.odoo_version, dep=dep)
+        """, name=module.name, v=module.odoo_version, dep=dep,
+             profiles=profiles)
 
     for model in result.models:
         tx.run(f"""
@@ -107,6 +111,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 rec = tx.run(f"""
                     MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
                     MATCH (parent:Model {{name: $parent_name, odoo_version: $v}})
+                    WHERE NOT coalesce(parent.unresolved, false)
                     MERGE (m)-[r:{REL_INHERITS}]->(parent)
                     SET r.order = $order
                     RETURN 1 AS ok
@@ -123,17 +128,22 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                         MERGE (placeholder:Model {{name: $parent_name,
                                                   module: '__unresolved__', odoo_version: $v}})
                         ON CREATE SET placeholder.unresolved = true,
-                                      placeholder.is_definition = false
+                                      placeholder.is_definition = false,
+                                      placeholder.profile = $profiles
+                        ON MATCH  SET placeholder.profile =
+                            [x IN coalesce(placeholder.profile, [])
+                             WHERE NOT x IN $profiles] + $profiles
                         MERGE (m)-[r:{REL_INHERITS} {{unresolved: true}}]->(placeholder)
                         SET r.order = $order
                     """, model_name=model.name, mod=model.module,
                          v=model.odoo_version, parent_name=parent_name,
-                         order=idx)
+                         order=idx, profiles=profiles)
 
         for delegated_model, via_field in model.inherits.items():
             rec = tx.run("""
                 MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                 MATCH (d:Model {name: $delegated, odoo_version: $v})
+                WHERE NOT coalesce(d.unresolved, false)
                 MERGE (m)-[:DELEGATES_TO {via_field: $via_field}]->(d)
                 RETURN 1 AS ok
             """, name=model.name, mod=model.module, v=model.odoo_version,
@@ -148,11 +158,16 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     MERGE (placeholder:Model {name: $delegated,
                                               module: '__unresolved__', odoo_version: $v})
                     ON CREATE SET placeholder.unresolved = true,
-                                  placeholder.is_definition = false
+                                  placeholder.is_definition = false,
+                                  placeholder.profile = $profiles
+                    ON MATCH  SET placeholder.profile =
+                        [x IN coalesce(placeholder.profile, [])
+                         WHERE NOT x IN $profiles] + $profiles
                     MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]
                           ->(placeholder)
                 """, name=model.name, mod=model.module, v=model.odoo_version,
-                     delegated=delegated_model, via_field=via_field)
+                     delegated=delegated_model, via_field=via_field,
+                     profiles=profiles)
 
         for fld in model.fields:
             tx.run("""
@@ -255,10 +270,14 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     MATCH (ext:View {{xmlid: $xmlid, odoo_version: $ver}})
                     MERGE (placeholder:View {{xmlid: $inherit_xmlid,
                                              module: '__unresolved__', odoo_version: $ver}})
-                    ON CREATE SET placeholder.unresolved = true
+                    ON CREATE SET placeholder.unresolved = true,
+                                  placeholder.profile = $profiles
+                    ON MATCH  SET placeholder.profile =
+                        [x IN coalesce(placeholder.profile, [])
+                         WHERE NOT x IN $profiles] + $profiles
                     MERGE (ext)-[:{REL_INHERITS_VIEW} {{unresolved: true}}]->(placeholder)
                 """, xmlid=view.xmlid, ver=view.odoo_version,
-                     inherit_xmlid=view.inherit_xmlid)
+                     inherit_xmlid=view.inherit_xmlid, profiles=profiles)
 
     for qweb in result.qweb:
         tx.run("""
@@ -293,10 +312,14 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
                     MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid,
                                                  module: '__unresolved__', odoo_version: $ver})
-                    ON CREATE SET placeholder.unresolved = true
+                    ON CREATE SET placeholder.unresolved = true,
+                                  placeholder.profile = $profiles
+                    ON MATCH  SET placeholder.profile =
+                        [x IN coalesce(placeholder.profile, [])
+                         WHERE NOT x IN $profiles] + $profiles
                     MERGE (ext)-[:EXTENDS_TMPL {unresolved: true}]->(placeholder)
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
-                     inherit_xmlid=qweb.inherit_xmlid)
+                     inherit_xmlid=qweb.inherit_xmlid, profiles=profiles)
 
 
 def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> None:
@@ -354,6 +377,7 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             MATCH (j:JSPatch {target: $target, patch_name: $pn,
                               module: $mod, odoo_version: $v})
             MATCH (c:OWLComp {name: $target, odoo_version: $v})
+            WHERE NOT coalesce(c.unresolved, false)
             MERGE (j)-[:PATCHES]->(c)
             RETURN 1
         """, target=patch.target, pn=patch.patch_name,
@@ -364,10 +388,14 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
                                   module: $mod, odoo_version: $v})
                 MERGE (placeholder:OWLComp {name: $target,
                                             module: '__unresolved__', odoo_version: $v})
-                ON CREATE SET placeholder.unresolved = true
+                ON CREATE SET placeholder.unresolved = true,
+                              placeholder.profile = $profiles
+                ON MATCH  SET placeholder.profile =
+                    [x IN coalesce(placeholder.profile, []) WHERE NOT x IN $profiles] + $profiles
                 MERGE (j)-[:PATCHES {unresolved: true}]->(placeholder)
             """, target=patch.target, pn=patch.patch_name,
-                 mod=patch.module, v=patch.odoo_version)
+                 mod=patch.module, v=patch.odoo_version,
+                 profiles=profiles)
 
 
 def _chunked(items, size):

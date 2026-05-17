@@ -183,6 +183,10 @@ def _enable_totp(user_id: int, backup_codes_hashed: list[dict]) -> None:
                 """,
                 (json.dumps(backup_codes_hashed), user_id),
             )
+            cur.execute(
+                "UPDATE webui_users SET mfa_enabled = TRUE WHERE id = %s",
+                (user_id,),
+            )
         conn.commit()
 
 
@@ -194,6 +198,10 @@ def _delete_totp(user_id: int) -> None:
     with pool.checkout() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM totp_secrets WHERE user_id = %s", (user_id,))
+            cur.execute(
+                "UPDATE webui_users SET mfa_enabled = FALSE WHERE id = %s",
+                (user_id,),
+            )
         conn.commit()
 
 

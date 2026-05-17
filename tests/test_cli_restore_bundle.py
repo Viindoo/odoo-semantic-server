@@ -151,8 +151,9 @@ def test_bundle_restore_happy_path(tmp_path, monkeypatch):
         # psql restore
         return MagicMock(returncode=0, stderr="", stdout="")
 
-    with patch("subprocess.run", side_effect=mock_run):
-        result = _cmd_restore(args)
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            result = _cmd_restore(args)
 
     assert result == 0
     # Safety backup (pg_dump) must come BEFORE psql restore
@@ -179,8 +180,9 @@ def test_bundle_safety_backup_failure_aborts(tmp_path, monkeypatch):
             return MagicMock(returncode=1, stderr=b"pg_dump: connection refused")
         return MagicMock(returncode=0, stderr="", stdout="")
 
-    with patch("subprocess.run", side_effect=mock_run):
-        result = _cmd_restore(args)
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            result = _cmd_restore(args)
 
     assert result != 0
     assert "psql" not in call_order, "psql must NOT be called if safety backup fails"

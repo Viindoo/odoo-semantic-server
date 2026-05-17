@@ -108,21 +108,26 @@ def test_backup_calls_pg_dump(monkeypatch, tmp_path):
 
     def _fake_run(cmd, **kwargs):
         if "pg_dump" in cmd[0]:
-            out_idx = cmd.index("-f") + 1
-            from pathlib import Path
-            Path(cmd[out_idx]).write_text("-- stub\n")
-            return MagicMock(returncode=0, stderr="")
+            # pg_dump writes to stdout (no -f); write stub bytes to the stdout handle
+            stdout = kwargs.get("stdout")
+            if stdout and hasattr(stdout, "write"):
+                stdout.write(b"-- stub\n")
+            return MagicMock(returncode=0, stderr=b"")
         return MagicMock(returncode=0, stderr="")
 
     with patch("psycopg2.connect", return_value=mock_conn):
-        with patch("subprocess.run", side_effect=_fake_run) as mock_run:
-            result = _cmd_backup(args)
+        with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+            with patch("subprocess.run", side_effect=_fake_run) as mock_run:
+                result = _cmd_backup(args)
     assert result == 0
     # Verify pg_dump was called with password in env, not argv
     pg_calls = [c for c in mock_run.call_args_list if "pg_dump" in c[0][0][0]]
     assert pg_calls, "pg_dump was not called"
     called_cmd = pg_calls[0][0][0]
     assert "pg_dump" in called_cmd[0]
+    # -f must NOT be in argv (stdout redirect used instead)
+    # With -f, docker exec would write the file inside the container, not on the host.
+    assert "-f" not in called_cmd, "pg_dump must not use -f"
     # Password must NOT be in argv
     assert "pw" not in " ".join(called_cmd)
     # Password must be in env
@@ -160,9 +165,10 @@ def test_restore_calls_psql(monkeypatch, tmp_path):
     dump = tmp_path / "dump.sql"
     dump.write_text("-- SQL dump")
     args = _build_parser().parse_args(["restore", str(dump)])
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        result = _cmd_restore(args)
+    with patch("src.cli.shutil.which", return_value="/usr/bin/psql"):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            result = _cmd_restore(args)
     assert result == 0
     called_cmd = mock_run.call_args[0][0]
     assert "psql" in called_cmd[0]
@@ -179,7 +185,8 @@ def test_restore_psql_failure(monkeypatch, tmp_path):
     dump.write_text("-- bad SQL")
     args = _build_parser().parse_args(["restore", str(dump)])
     with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=1, stderr="syntax error")
+        # stderr is bytes (no text=True) — consistent with pg_dump bytes mode
+        mock_run.return_value = MagicMock(returncode=1, stderr=b"syntax error")
         result = _cmd_restore(args)
     assert result == 1
 

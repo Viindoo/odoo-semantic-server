@@ -14,6 +14,7 @@ Exempt paths (no auth required):
     /api/auth/logout       POST
     /api/auth/verify       GET
     /api/auth/totp/login   POST (second-factor MFA step — no full session yet)
+    /api/health            Uptime monitoring (pre-launch checklist §10.5)
     /health                Health probe (if present on this port)
     /openapi.json          FastAPI schema (intentionally public — used by
                            tests/browser/conftest.py api_server fixture for
@@ -47,8 +48,9 @@ MFA_GRACE_DAYS = 7
 # matching interactive UIs. Keeping these out of the auth scope is required for
 # the api_server fixture in tests/browser/conftest.py to poll readiness — the
 # wait would otherwise see 401 and time out before the subprocess is healthy.
+# /api/health is exempt for uptime monitoring (pre-launch checklist §10.5).
 _EXEMPT_PREFIXES = ("/api/auth/",)
-_EXEMPT_EXACT = {"/health", "/openapi.json", "/docs", "/redoc"}
+_EXEMPT_EXACT = {"/health", "/api/health", "/openapi.json", "/docs", "/redoc"}
 
 # API paths that deliver MFA setup — exempt from MFA enforcement check
 # to avoid a redirect loop when the admin is trying to enroll.

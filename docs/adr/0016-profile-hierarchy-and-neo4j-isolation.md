@@ -167,6 +167,39 @@ the same `odoo_version`. Operators requiring strict profile isolation for
 semantic search should add a `profile` column to the `embeddings` table
 and extend the ANN WHERE clause in a future migration.
 
+### D7 — Stub node ownership policy
+
+Cross-module reference stubs (nodes with `module='__unresolved__'`) are created
+by the writer when a referent module hasn't been scanned yet (forward reference).
+These stubs MUST take the profile array of the REFERENCING module — written via:
+
+- `ON CREATE SET placeholder.profile = $profiles` — sets the array on first MERGE
+- `ON MATCH SET placeholder.profile = [x IN coalesce(placeholder.profile, []) WHERE NOT x IN $profiles] + $profiles` — UNIONs the array on subsequent MERGEs
+
+The MATCH-side union is critical: a stub may be referenced from multiple
+profiles sharing the same `(name, module='__unresolved__', odoo_version)`
+MERGE key. Without union semantics, the second referencer would CLOBBER the
+first referencer's profile entry, making the stub invisible to the first
+referencer's profile-scoped queries. This mirrors the union pattern applied
+to real nodes in commit `4ff56a8`.
+
+If the stub is later resolved (the referenced module is indexed), the real
+node lives at a different composite key (`module=<real_module>`, not
+`__unresolved__`), so the stub remains as a separate node carrying the
+union of all referencer profiles.
+
+Writer sites where this policy applies:
+- `writer_neo4j.py` ~line 53 (Module dep stub `d`)
+- `writer_neo4j.py` ~line 125 (Model INHERITS placeholder)
+- `writer_neo4j.py` ~line 150 (Model DELEGATES_TO placeholder)
+- `writer_neo4j.py` ~line 261 (View INHERITS_VIEW placeholder)
+- `writer_neo4j.py` ~line 300 (QWebTmpl EXTENDS_TMPL placeholder)
+- `writer_neo4j.py` ~line 372 (OWLComp PATCHES placeholder)
+
+Additionally, `_extract_era3_components()` in `parser_js.py` now guards on
+`int(odoo_version.split('.')[0]) < 14` and returns early — the OWL component
+framework only exists from Odoo v14 onwards.
+
 ## Consequences
 
 **Positive:**

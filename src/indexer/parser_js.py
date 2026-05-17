@@ -478,6 +478,10 @@ def _extract_era3_components(
     Dynamic expressions (this.props.model, variables) are not resolved → bound_model = None.
     Full static analysis via F4 USES_FIELD edge is deferred to M5.
     """
+    major_version = int(module_info.odoo_version.split(".")[0])
+    if major_version < 14:
+        return  # OWL framework only exists in v14+
+
     for node in _walk(tree.root_node):
         if node.type not in ("class_declaration", "class"):
             continue

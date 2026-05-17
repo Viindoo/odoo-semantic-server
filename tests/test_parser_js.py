@@ -1,7 +1,12 @@
 """Tests for JS parser — era detection and chunking."""
 
-from src.indexer.models import ModuleInfo
-from src.indexer.parser_js import _detect_era, parse_file, parse_module_graph
+from src.indexer.models import JSGraphResult, ModuleInfo
+from src.indexer.parser_js import (
+    _detect_era,
+    _extract_era3_components,
+    parse_file,
+    parse_module_graph,
+)
 
 
 def _module(tmp_path, name="sale", version="17.0"):
@@ -329,4 +334,43 @@ def test_parse_module_graph_era3_bound_model_none_when_dynamic(tmp_path):
     assert comp is not None, "Expected OWLCompInfo named 'DynamicModelList'"
     assert comp.bound_model is None, (
         f"Dynamic model reference should not be resolved, got bound_model={comp.bound_model!r}"
+    )
+
+
+# --- OWL era guard (v9 / pre-v14 protection) ---
+
+def test_owl_component_skipped_for_v9(tmp_path):
+    """_extract_era3_components must produce no OWLCompInfo for v9 modules.
+
+    OWL framework only exists from v14+. Pre-v14 JS files using class syntax
+    (rare but possible) must not generate OWLComp nodes.
+
+    This is a pure unit test — does not require Neo4j.
+    Moved from test_writer_neo4j_stub_profile.py so that file can carry a
+    clean module-level pytestmark = pytest.mark.neo4j (CLAUDE.md convention).
+    """
+    import tree_sitter_javascript as tsjs
+    from tree_sitter import Language, Parser
+
+    JS_LANGUAGE = Language(tsjs.language())
+    parser = Parser(JS_LANGUAGE)
+
+    source_code = b"""
+/** @odoo-module **/
+class MyComponent extends Component {
+    static template = "my_module.MyComponent";
+}
+"""
+    tree = parser.parse(source_code)
+
+    v9_module = ModuleInfo(
+        name="some_v9_module", odoo_version="9.0",
+        repo="v9_repo", path=str(tmp_path), depends=[], version_raw="",
+    )
+    result = JSGraphResult(module=v9_module)
+
+    _extract_era3_components(tree, source_code, v9_module, str(tmp_path / "test.js"), result)
+
+    assert result.components == [], (
+        "_extract_era3_components must return early for v9 — OWL does not exist pre-v14"
     )

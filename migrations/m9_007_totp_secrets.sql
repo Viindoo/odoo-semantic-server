@@ -9,7 +9,8 @@
 --   * `enabled = FALSE` after enrollment until the user verifies their first
 --     code — prevents locking out a user who scanned the wrong QR code.
 --   * MFA status check: row EXISTS AND enabled = TRUE → MFA active.
---     No duplicate `mfa_enabled` column needed in webui_users.
+--     Note: `webui_users.mfa_enabled` is synced from `totp_secrets.enabled`
+--     via the application layer; see migration m9_009.
 --   * `backup_codes_hash` is a JSONB array of objects:
 --       [{"hash": "<hmac-sha256>", "used_at": null}, ...]
 --     Application verifies against hash; records used_at on redemption.

@@ -217,4 +217,14 @@ def create_app() -> FastAPI:
 
     app.include_router(admin_migrations.router)
 
+    # Health endpoint — auth-exempt (pre-launch checklist §10.5)
+    @app.get("/api/health")
+    async def health() -> dict[str, str]:
+        """Auth-exempt health endpoint for uptime monitoring (pre-launch checklist §10.5)."""
+        try:
+            from src._version import __version__
+        except ImportError:
+            __version__ = "unknown"
+        return {"status": "ok", "version": __version__}
+
     return app

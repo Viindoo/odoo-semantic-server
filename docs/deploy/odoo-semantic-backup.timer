@@ -1,0 +1,12 @@
+# odoo-semantic-backup.timer — chạy backup.service mỗi đêm lúc 03:00
+# Đặt tại: /etc/systemd/system/odoo-semantic-backup.timer
+
+[Unit]
+Description=Run OSM backup nightly
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
