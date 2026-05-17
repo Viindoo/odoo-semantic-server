@@ -137,12 +137,12 @@ CSS has no `@mixin` concept. The `mixin_count` property is always 0 for `:Styles
 
 ## Future Work
 
-The following items are deferred and tracked in `TASKS.md`:
+The following items are deferred and tracked in `TASKS.md` (WI-A7 absorption from plan `streamed-cuddling-phoenix.md`):
 
-1. **MCP tool surface for Stylesheet** (`resolve_stylesheet`, `find_style_override`) — M10 milestone. After B8 re-index populates `:Stylesheet` nodes, expose `resolve_stylesheet(module, version)` returning the stylesheet chain and variable list. `find_style_override(variable_name, version)` to trace which module last re-declares a CSS custom property.
+1. **MCP tool surface for Stylesheet** (`resolve_stylesheet`, `find_style_override`) — **M10** (tracked in `TASKS.md` Milestone 10 § "Coverage-fill follow-ups"). After B8 re-index populates `:Stylesheet` nodes, expose `resolve_stylesheet(module, odoo_version)` returning the stylesheet chain and variable list, and `find_style_override(selector_or_variable, odoo_version)` tracing which module last re-declares a CSS custom property / overrides a selector. Both tools must follow ADR-0023 tree-grammar contract (§1 header, §1.3 sublist indent, §4 Next-step hint) and update `docs/reference/mcp-tool-routing.md`.
 
-2. **Pattern catalogue CSS/SCSS entries** — Pattern backfill (WI-A3 + ADR-0009). Curate 5-10 CSS/SCSS patterns per Odoo era: Bootstrap SCSS variable override (v12+), OWL component scoped CSS (v16+), legacy LESS-to-SCSS migration patterns (v10-v11).
+2. **Pattern catalogue CSS/SCSS entries** — **M11** community contribution track per ADR-0009 (tracked in `TASKS.md` Milestone 11 § "Pattern catalogue expansion 35 → 100+"). Curate 5–10 CSS/SCSS patterns per Odoo era: Bootstrap SCSS variable override (v12+), OWL component scoped CSS (v16+), legacy LESS-to-SCSS migration patterns (v10-v11). Counted toward the ≥100 patterns target.
 
-3. **`:OVERRIDES` edge** for `@extend` chains — requires resolving the extended selector to the originating `:Stylesheet` node. Tree-sitter-css provides `extend_statement` nodes with the target selector; resolution requires a lookup by selector text across all indexed stylesheets.
+3. **`:OVERRIDES` edge** for `@extend` chains — not yet scheduled to a milestone (no production demand surfaced). Requires resolving the extended selector to the originating `:Stylesheet` node. Tree-sitter-css provides `extend_statement` nodes with the target selector; resolution requires a lookup by selector text across all indexed stylesheets. When demand arrives, file a new ADR (or extend this one) before implementation — the schema addition touches `:Stylesheet` cardinality assumptions.
 
-4. **Static spec deepening** — After WI-A4 populates `lint_rules_v{N}.json`, add ESLint SCSS rules (e.g. `scss/no-duplicate-dollar-variables`) to the LintRule catalogue.
+4. **Static spec deepening — ESLint SCSS rules** — **M11** (tracked in `TASKS.md` Milestone 11 § "Static spec_data deepening — lint rules 50+/version"). After WI-A4 baseline (per-version lint rules curated) is production-validated, add ESLint SCSS rules (e.g. `scss/no-duplicate-dollar-variables`, `scss/dollar-variable-pattern`) to the LintRule catalogue, counted toward the ≥50 rules per major version target.

@@ -562,6 +562,12 @@ Release notes + version highlights: **[`CHANGELOG.md`](../CHANGELOG.md)**.
 
 ADR list cho architectural decisions: **[`docs/adr/`](adr/)**.
 
+### Milestone narrative — M10 / M10.5 / M11 (post-M9 Coverage Fill)
+
+- **M10 "Billing Wow" + Coverage-fill follow-ups** — Stripe subscription + plan tiers. Also absorbs WI-A7 follow-ups: MCP Stylesheet surface (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` histogram (extends ADR-0010 §D7), M10 Quick Wins from `osm_vs_odoo-ls.md` (magic fields auto-injection, `from_module` param, `noqa` lint suppression, `audit-repo` CLI), nonce-based CSP (PR #118 follow-up), pgvector re-embed cleanup pass, Reseed Patterns Web UI wiring.
+- **M10.5 "ORM Intelligence Wow"** — 4 new MCP tools (`validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`) for static ORM-graph validation. All tools follow ADR-0023 tree-grammar contract; routing matrix extended; integration tests against `viindoo_17` fixture.
+- **M11 "Architectural Wow" + Curation Depth** — parser hooks `(min_version, max_version, fn)` registry refactor (new ADR-0026 required; supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue 35 → 100+ via ADR-0009 community track, static lint rules curation 10-30 → 50+/version.
+
 ---
 
 ## Cấu Trúc Thư Mục Dự Án
