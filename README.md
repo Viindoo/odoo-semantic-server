@@ -42,7 +42,9 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **21 tools** (M1–M5 + M9 Wave 1): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`, `describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches` — Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
+MCP server expose **21 tools** (M1–M5 + M9 Wave 1): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`, `describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches` — Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) + CSS/SCSS stylesheet indexing across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
+
+Indexer also covers **CSS/SCSS files** (M9 Coverage Fill): `:Stylesheet` Neo4j nodes with composite key `(file_path, module, odoo_version)`, `IMPORTS` edge chain for SCSS `@import` resolution, and pgvector semantic chunks (selector groups, variable definitions, media queries, mixin definitions) for stylesheet override analysis + branding/theme discovery.
 
 → [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
 
@@ -152,9 +154,14 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.4.0 (2026-05-15) — M9 Auth Wow complete. OAuth Google/GitHub, MFA TOTP, public signup + email verify + hCaptcha, multi-user admin, backup/restore UI, audit log, 30+ security findings closed.
+**Latest release:** v0.4.1 (2026-05-16) — M9 follow-up complete. Web UI parity for repo & profile management. M9 Coverage Fill in progress: CSS/SCSS parser + v8 era1 field gap fix + PatternExample v9-v15 + LintRule/CLIFlag curation v8-v19.
 
-**Active milestone:** M10 "Billing Wow" — Stripe, plan tiers.
+**Active work:** M9 Coverage Fill batch (CSS parser, static spec data curation, pattern backfill, docs hygiene).
+
+**Next milestones (roadmap):**
+- **M10 "Billing Wow"** — Stripe subscription + plan tiers + coverage-fill follow-ups: MCP Stylesheet tools (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` metric, M10 Quick Wins (magic fields, `from_module` param, `noqa` support, CLI batch audit), nonce-based CSP.
+- **M10.5 "ORM Intelligence Wow"** — 4 new MCP tools (`validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`) for static ORM validation before AI client suggests a domain/depends.
+- **M11 "Architectural Wow"** — parser hooks `(min_version, max_version, fn)` registry refactor (supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue expansion 35 → 100+, lint rules curation 10-30 → 50+/version.
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 

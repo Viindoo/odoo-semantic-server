@@ -166,6 +166,52 @@ class JSGraphResult:
     components: list[OWLCompInfo] = field(default_factory=list)
 
 
+# --- CSS/SCSS layer (WI-A1, per ADR-0025) -----------------------------------
+
+
+@dataclass
+class CSSChunk:
+    """A semantic chunk from a CSS file — variable block, selector group, or @media query."""
+    module: str
+    odoo_version: str
+    file_path: str
+    chunk_kind: str     # 'variable' | 'selector' | 'media' | 'import' | 'raw'
+    entity_name: str    # e.g. selector text, variable group prefix, or file stem
+    chunk_idx: int
+    content: str        # raw CSS snippet (~2048 chars)
+
+
+@dataclass
+class SCSSChunk:
+    """A semantic chunk from a SCSS file — mixin, variable block, selector, or @extend."""
+    module: str
+    odoo_version: str
+    file_path: str
+    chunk_kind: str     # 'mixin' | 'variable' | 'selector' | 'extend' | 'media' | 'import' | 'raw'
+    entity_name: str    # mixin name, selector text, variable group prefix, or file stem
+    chunk_idx: int
+    content: str        # raw SCSS snippet (~2048 chars)
+
+
+@dataclass
+class StylesheetInfo:
+    """Metadata summary for a CSS or SCSS file in an Odoo module.
+
+    Composite Neo4j key: (file_path, module, odoo_version).
+    Written as :Stylesheet node with :DEFINED_IN -> :Module edge.
+    :Stylesheet -[:IMPORTS]-> :Stylesheet edges represent @import chains.
+    """
+    file_path: str          # absolute path to the .css or .scss file
+    module: str             # Odoo module name
+    odoo_version: str
+    language: str           # 'css' | 'scss'
+    selector_count: int = 0
+    variable_count: int = 0
+    import_count: int = 0
+    mixin_count: int = 0    # SCSS only; always 0 for CSS
+    imports: list[str] = field(default_factory=list)  # resolved file_paths of @import targets
+
+
 # --- Pattern layer (M4.6, per ADR-0003) -------------------------------------
 
 

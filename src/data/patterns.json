@@ -1160,5 +1160,462 @@
     "odoo_version_min": "16.0",
     "language": "python",
     "core_symbol_names": []
+  },
+  {
+    "pattern_id": "osv-osv-columns-dict-v9",
+    "intent_keywords": ["osv", "_columns", "fields.char", "old-style", "v9", "legacy", "orm1"],
+    "file_ref": "addons/stock/stock.py:26",
+    "snippet_text": "from openerp.osv import fields, osv\n\nclass stock_incoterms(osv.osv):\n    _name = \"stock.incoterms\"\n    _description = \"Incoterms\"\n    _columns = {\n        'name': fields.char('Name', required=True),\n        'code': fields.char('Code', size=3, required=True),\n        'active': fields.boolean('Active'),\n    }\n    _defaults = {\n        'active': True,\n    }",
+    "gotchas": [
+      "v9 mixed ORM1 and ORM2 — `osv.osv` inherits from `models.Model` transparently; you can mix both styles in the same addon but NOT in the same class",
+      "`_defaults` dict is Py2 era — in ORM2 (v10+) use `default=` kwarg on the field declaration directly",
+      "`fields.char` with `size=` is silently ignored in PostgreSQL (VARCHAR(n) → VARCHAR); the size= kwarg was removed in ORM2 and causes ruff warning E501 in linting",
+      "In v9, the class name (`stock_incoterms`) is unrelated to `_name` — module-level `pool.get('stock.incoterms')` still works; v10+ uses the `env['stock.incoterms']` API"
+    ],
+    "odoo_version_min": "9.0",
+    "odoo_version_max": "9.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "osv-constraints-tuple-v9",
+    "intent_keywords": ["_constraints", "constraint", "tuple", "validation", "osv", "v9", "legacy"],
+    "file_ref": "addons/account/partner.py:57",
+    "snippet_text": "def _check_country(self, cr, uid, ids, context=None):\n    obj = self.browse(cr, uid, ids[0], context=context)\n    if obj.country_id and obj.country_group_id:\n        return False\n    return True\n\n_constraints = [\n    (_check_country,\n     'You cannot select both a country and a country group',\n     ['country_id', 'country_group_id']),\n]",
+    "gotchas": [
+      "`_constraints` tuples are `(method, message_string, [field_names])` — the third element must be a list of field names (not just one string), even for a single field",
+      "The constraint method MUST return `True` for valid data and `False` to trigger the error — raising an exception inside a `_constraints` method is unsupported and causes a generic 'Integrity Error' instead of your message",
+      "In v10+ use `@api.constrains('field')` decorator on a method that raises `ValidationError` — `_constraints` list is deprecated and produces a migration warning in v10+",
+      "The `cr, uid, ids, context=None` method signature is mandatory for ORM1 constraint functions — missing `context` causes silent failures when called from async workers"
+    ],
+    "odoo_version_min": "9.0",
+    "odoo_version_max": "9.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "fields-function-store-v9",
+    "intent_keywords": ["fields.function", "store", "computed", "legacy", "v9", "fnct_inv", "multi"],
+    "file_ref": "addons/sale_order_dates/sale_order_dates.py:60",
+    "snippet_text": "def _get_commitment_date(self, cr, uid, ids, name, arg, context=None):\n    res = {}\n    for order in self.browse(cr, uid, ids, context=context):\n        dates = []\n        for line in order.order_line:\n            dates.append(line.customer_lead or 0.0)\n        res[order.id] = min(dates) if dates else False\n    return res\n\n_columns = {\n    'commitment_date': fields.function(\n        _get_commitment_date,\n        store=True,\n        type='datetime',\n        string='Commitment Date',\n    ),\n}",
+    "gotchas": [
+      "The function must return a dict `{id: value}` keyed by record ID — returning a plain value silently stores `None` for all records",
+      "`store=True` triggers a recompute on write to fields listed in `store={'model': (fn, ['fields'], priority)}` — without `store` the field is recomputed every read (no cache)",
+      "`fnct_inv` (inverse function) has the signature `(self, cr, uid, id, name, value, arg, context)` — note singular `id` not `ids`; forgetting this causes TypeError on field set",
+      "The `multi='key'` kwarg groups multiple `fields.function` entries under one compute call for efficiency — all fields sharing the same `multi` key must be returned in the same dict from the compute function"
+    ],
+    "odoo_version_min": "9.0",
+    "odoo_version_max": "9.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "openerp-py-defaults-v9",
+    "intent_keywords": ["_defaults", "default", "v9", "osv", "callable", "context"],
+    "file_ref": "addons/account/account.py:72",
+    "snippet_text": "class account_payment_term(osv.osv):\n    _name = \"account.payment.term\"\n    _description = \"Payment Term\"\n    _columns = {\n        'name': fields.char('Payment Term', translate=True, required=True),\n        'active': fields.boolean('Active'),\n        'line_ids': fields.one2many(\n            'account.payment.term.line', 'payment_id', 'Terms'),\n    }\n    _defaults = {\n        'active': 1,\n    }\n    _order = \"name\"",
+    "gotchas": [
+      "`_defaults` values can be a plain Python literal OR a callable with signature `(self, cr, uid, context)` — using a lambda with wrong arity causes silent `None` defaults",
+      "In ORM2 (v10+) use `default=True` kwarg on the field declaration — `_defaults` is ignored if the class also uses ORM2-style field declarations",
+      "`fields.one2many` in `_columns` requires `copy=True` to be inherited when the parent is duplicated; the default in ORM1 is NOT to copy o2m lines",
+      "`_order` attribute on the class uses SQL column names (same as field names in ORM1 `_columns`) — cross-join with a computed field name that has no DB column will cause a SQL error at record fetch"
+    ],
+    "odoo_version_min": "9.0",
+    "odoo_version_max": "9.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "manifest-transition-v10",
+    "intent_keywords": ["__manifest__", "__openerp__", "manifest", "module", "v10", "transition", "addon descriptor"],
+    "file_ref": "addons/sale/__manifest__.py:1",
+    "snippet_text": "# v10+ uses __manifest__.py (replaces __openerp__.py)\n{\n    'name': 'Sales',\n    'version': '1.0',\n    'category': 'Sales',\n    'summary': 'Quotations, Sales Orders, Invoicing',\n    'depends': ['sales_team', 'account', 'procurement'],\n    'data': [\n        'security/sale_security.xml',\n        'security/ir.model.access.csv',\n        'views/sale_views.xml',\n    ],\n    'installable': True,\n    'auto_install': False,\n    'application': True,\n}",
+    "gotchas": [
+      "In v9, the descriptor file is `__openerp__.py`; in v10+ it MUST be `__manifest__.py` — having BOTH files in the same addon causes the scanner to pick up `__manifest__.py` and silently ignore `__openerp__.py`",
+      "The `'version'` key in `__manifest__.py` should be `'<odoo_major>.<addon_minor>'` (e.g. `'10.0.1.0.0'`) per OCA convention — omitting the Odoo prefix causes version sort anomalies in upgrade scripts",
+      "`'auto_install': True` triggers auto-install when ALL `depends` modules are present — setting it on a module with broad depends (like `base`) causes unexpected mass installs on fresh databases",
+      "The `'css'` key at top level is v9 syntax (`'css': ['static/src/css/...']`) — in v10+ use `'assets'` dict with asset bundles; the `'css'` key is silently ignored in v10+"
+    ],
+    "odoo_version_min": "10.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "api-depends-dotted-path-v10",
+    "intent_keywords": ["api.depends", "dotted path", "computed", "related field", "v10", "Many2one"],
+    "file_ref": "addons/sale/models/sale.py:21",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrder(models.Model):\n    _name = 'sale.order'\n    _inherit = ['mail.thread', 'ir.needaction_mixin']\n\n    @api.depends('order_line.price_total')\n    def _amount_all(self):\n        for order in self:\n            amount_untaxed = amount_tax = 0.0\n            for line in order.order_line:\n                amount_untaxed += line.price_subtotal\n                amount_tax += line.price_tax\n            order.update({\n                'amount_untaxed': amount_untaxed,\n                'amount_tax': amount_tax,\n                'amount_total': amount_untaxed + amount_tax,\n            })",
+    "gotchas": [
+      "`@api.depends('order_line.price_total')` triggers recompute when any o2m line's `price_total` changes — missing this causes stale totals until a manual save",
+      "In v10 the `odoo` package replaces `openerp` everywhere: `from odoo import api, fields, models` — using `from openerp import` in v10 addons raises ImportError",
+      "`ir.needaction_mixin` provides the 'To Do' sidebar counter (v10); it was removed in v11 — code using it in v11+ must be removed or will cause an installation error",
+      "`order.update({...})` is preferred over repeated `order.field = value` assignments inside a loop because it batches a single write call per record instead of N writes"
+    ],
+    "odoo_version_min": "10.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "inherit-extension-pattern-v10",
+    "intent_keywords": ["_inherit", "extension", "mixin", "sale.order", "v10", "model extension"],
+    "file_ref": "addons/sale/views/sale_views.xml:368",
+    "snippet_text": "<record id=\"view_order_form_editable_list\" model=\"ir.ui.view\">\n    <field name=\"name\">sale.order.form.editable.list</field>\n    <field name=\"model\">sale.order</field>\n    <field name=\"inherit_id\" ref=\"sale.view_order_form\"/>\n    <field name=\"arch\" type=\"xml\">\n        <xpath expr=\"//field[@name='order_line']/tree\"\n               position=\"attributes\">\n            <attribute name=\"editable\"/>\n        </xpath>\n    </field>\n</record>",
+    "gotchas": [
+      "`position=\"attributes\"` lets you add or remove attributes on the target node without replacing its content — use this instead of `position=\"replace\"` when only changing a tree's `editable` attribute",
+      "The `ref` attribute in `<field name=\"inherit_id\" ref=\"sale.view_order_form\"/>` uses the full `module.xml_id` form — omitting the module prefix causes silent failure if another module defines the same xml_id",
+      "View inheritance priority is determined by `priority` field on `ir.ui.view` (default 16) — when two extensions conflict, the one with higher priority wins; specify `priority` explicitly to control ordering",
+      "`<attribute name=\"editable\"/>` with no value REMOVES the attribute — to set a value use `<attribute name=\"editable\">bottom</attribute>`"
+    ],
+    "odoo_version_min": "10.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "python3-super-no-args-v11",
+    "intent_keywords": ["super", "Python 3", "v11", "create", "write", "override", "no-args"],
+    "file_ref": "addons/payment_sips/tests/test_sips.py:7",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrder(models.Model):\n    _inherit = 'sale.order'\n\n    def action_confirm(self):\n        # Python 3: super() with no arguments\n        result = super().action_confirm()\n        for order in self:\n            order._send_custom_notification()\n        return result",
+    "gotchas": [
+      "Python 3 `super()` with no arguments is the correct form for v11+ — `super(SaleOrder, self)` still works but is redundant boilerplate and triggers ruff UP008 warning",
+      "Exception: `super(ClassName, self.with_context(...))` is still required when you need to rebind `self` with a modified context before calling the parent method — bare `super()` does not allow context rebinding",
+      "v11 dropped Python 2 support — any `print` statement (without parentheses), `unicode()`, `basestring`, `xrange()` in addon code causes SyntaxError at module import",
+      "`@api.multi` decorator was removed in v14 (noqa in v11-v13) — code that still uses `@api.multi` in v11 emits deprecation warnings and breaks in v14"
+    ],
+    "odoo_version_min": "11.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "ir-sequence-lambda-default-v11",
+    "intent_keywords": ["ir.sequence", "lambda", "default", "next_by_code", "v11", "sequential name"],
+    "file_ref": "addons/stock/models/stock_production_lot.py:13",
+    "snippet_text": "class ProductionLot(models.Model):\n    _name = 'stock.production.lot'\n    _inherit = ['mail.thread']\n\n    name = fields.Char(\n        'Lot/Serial Number',\n        default=lambda self: self.env['ir.sequence'].next_by_code(\n            'stock.lot.serial'\n        ),\n        required=True,\n    )\n    product_id = fields.Many2one(\n        'product.product', 'Product', required=True\n    )",
+    "gotchas": [
+      "`default=lambda self: self.env['ir.sequence'].next_by_code('code')` runs at record creation time, not at class definition — accessing `self.env` inside a module-level function (not lambda) causes an error because `env` is not available outside a transaction",
+      "If `next_by_code('code')` returns `None` (sequence not installed), the field will be `None` — always chain `or _('New')` or raise a `UserError` to avoid silent NULL names",
+      "Sequence codes are company-specific in multi-company mode — if your model has `company_id`, call `with_company(company_id)` before `next_by_code` to get the correct per-company sequence",
+      "Lambda defaults are NOT copied when the record is duplicated by default — if your sequence should be regenerated on copy, also override `copy()` or add `copy=False` to the field"
+    ],
+    "odoo_version_min": "11.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "api-depends-context-lang-v11",
+    "intent_keywords": ["depends_context", "lang", "translate", "translatable", "compute", "v11"],
+    "file_ref": "addons/account/models/account_move.py:2057",
+    "snippet_text": "from odoo import api, fields, models\n\nclass AccountFullReconcile(models.Model):\n    _name = 'account.full.reconcile'\n\n    name = fields.Char(\n        string='Number',\n        required=True,\n        copy=False,\n        default=lambda self: self.env['ir.sequence'].next_by_code(\n            'account.reconcile'\n        ),\n    )\n\n    # On a computed translatable field:\n    @api.depends_context('lang')\n    @api.depends('name')\n    def _compute_display_name(self):\n        for rec in self:\n            rec.display_name = rec.name",
+    "gotchas": [
+      "`@api.depends_context('lang')` was introduced in v11 — using it on v9/v10 code causes AttributeError; use `self.env.context.get('lang')` manually in those versions",
+      "Without `@api.depends_context('lang')`, a translatable computed field is cached once per recordset regardless of the current user's language — causing wrong translations for multi-language environments",
+      "`@api.depends_context` must come BEFORE `@api.depends` in decorator stack — reverse order causes `@api.depends` to not register its dependency chain correctly",
+      "Only add `@api.depends_context('lang')` when the compute method actually reads a translated field or calls `_()` — adding it unnecessarily disables caching and degrades performance"
+    ],
+    "odoo_version_min": "11.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends_context"]
+  },
+  {
+    "pattern_id": "mail-thread-mixin-v11",
+    "intent_keywords": ["mail.thread", "mail.activity.mixin", "portal.mixin", "mixin", "chatter", "v11", "tracking"],
+    "file_ref": "addons/sale/models/sale.py:20",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrder(models.Model):\n    _name = 'sale.order'\n    _inherit = ['mail.thread', 'mail.activity.mixin', 'portal.mixin']\n    _description = 'Quotation'\n\n    state = fields.Selection(\n        [...],\n        tracking=True,\n    )\n    partner_id = fields.Many2one(\n        'res.partner', string='Customer',\n        tracking=True,\n    )",
+    "gotchas": [
+      "`tracking=True` on a field (v12+ syntax) replaces `track_visibility='onchange'` — in v11 use `track_visibility='onchange'` or `'always'`; the `tracking` kwarg is silently ignored in v11",
+      "`mail.activity.mixin` adds the Activities tab to the form — it requires `mail.thread` to also be in `_inherit`; adding `mail.activity.mixin` alone causes a MRO error",
+      "`portal.mixin` provides `access_url` and `_compute_access_warning` — include it only on top-level business documents (sale.order, purchase.order), not on line models, to avoid portal performance overhead",
+      "The order in `_inherit` list matters for MRO — put `mail.thread` before `mail.activity.mixin` to avoid method resolution conflicts in the chatter setup hooks"
+    ],
+    "odoo_version_min": "11.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "inherits-delegation-v12",
+    "intent_keywords": ["_inherits", "delegation", "Many2one", "auto-delegation", "v12", "fleet", "compose"],
+    "file_ref": "addons/fleet/models/fleet_vehicle_cost.py:79",
+    "snippet_text": "class FleetVehicleLogContract(models.Model):\n    _name = 'fleet.vehicle.log.contract'\n    _inherit = ['mail.thread', 'mail.activity.mixin']\n    _inherits = {'fleet.vehicle.cost': 'cost_id'}\n    _description = 'Contract information on a vehicle'\n    _order = 'state desc, expiration_date'\n\n    cost_id = fields.Many2one(\n        'fleet.vehicle.cost',\n        string='Cost',\n        required=True,\n        ondelete='cascade',\n    )",
+    "gotchas": [
+      "`_inherits` delegates field reads AND writes to the parent model via the FK (`cost_id`) — the parent record is auto-created on `create()` if not supplied; do NOT supply both `cost_id` and parent fields in the same `vals` dict or you get a duplicate record",
+      "The delegation FK field (`cost_id`) MUST be `required=True` and `ondelete='cascade'` — missing `required=True` allows orphan child records; missing `cascade` leaves dangling parent rows after child delete",
+      "`_inherits` vs `_inherit`: `_inherits` creates a SEPARATE table with a FK (composition); `_inherit` extends the SAME table (extension) — confusing them causes the wrong table structure",
+      "Fields on the parent model appear on the child as if declared locally — you can override them in `_columns`/class body, but the ORM may still write to the parent table; always test with `ir.model.fields` inspection after override"
+    ],
+    "odoo_version_min": "12.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "api-model-class-method-v12",
+    "intent_keywords": ["api.model", "class method", "default_get", "context", "v12", "factory"],
+    "file_ref": "addons/account/models/account_invoice.py:80",
+    "snippet_text": "from odoo import api, fields, models\n\nclass AccountInvoice(models.Model):\n    _name = 'account.invoice'\n\n    @api.model\n    def _default_journal(self):\n        if self._context.get('default_journal_id'):\n            return self.env['account.journal'].browse(\n                self._context['default_journal_id']\n            )\n        inv_type = self._context.get('type', 'out_invoice')\n        domain = [('type', 'in', ['sale', 'general'])]\n        return self.env['account.journal'].search(domain, limit=1)\n\n    journal_id = fields.Many2one(\n        'account.journal',\n        default=_default_journal,\n    )",
+    "gotchas": [
+      "`@api.model` methods receive `self` as the model class (no records) — never iterate `self` or call `self.ensure_one()` inside an `@api.model` method",
+      "Using `@api.model` as a `default=` value: pass the method reference without calling it (`default=_default_journal`, NOT `default=_default_journal()`)",
+      "In v13+ `@api.model` is still valid for class-level factory methods, but `@api.model_create_multi` must be used for `create()` overrides — using `@api.model` on `create()` in v13+ causes a deprecation warning and breaks batch import",
+      "`self._context` inside `@api.model` is a frozen dict — never mutate it; use `self.with_context(key=val)` to create a new environment with an extended context"
+    ],
+    "odoo_version_min": "12.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.model"]
+  },
+  {
+    "pattern_id": "compute-inverse-editable-field-v12",
+    "intent_keywords": ["compute", "inverse", "editable", "store", "v12", "write-back", "computed field"],
+    "file_ref": "addons/stock/models/stock_picking.py:215",
+    "snippet_text": "from odoo import api, fields, models\n\nclass StockPicking(models.Model):\n    _name = 'stock.picking'\n\n    priority = fields.Selection(\n        [('0', 'Normal'), ('1', 'Urgent')],\n        string='Priority',\n        compute='_compute_priority',\n        inverse='_set_priority',\n        store=True,\n    )\n\n    def _compute_priority(self):\n        for picking in self:\n            priorities = picking.move_lines.mapped('priority')\n            picking.priority = max(priorities) if priorities else '0'\n\n    def _set_priority(self):\n        for picking in self:\n            picking.move_lines.write({'priority': picking.priority})",
+    "gotchas": [
+      "`inverse=` method is called when the user writes to the computed field directly — without it the field is read-only in both UI and ORM; the UI will show it as non-editable even with `readonly=False`",
+      "The `inverse` method receives `self` as a recordset and must update the underlying source fields — do NOT call `self.write({'priority': ...})` inside `_set_priority` as this creates infinite recursion",
+      "`store=True` on a computed field creates a DB column and triggers recompute via triggers — without `store=True`, the `inverse` method still works but the value is never persisted to the DB",
+      "`@api.one` decorator (v12 pattern) was removed in v13 — rewrite `_compute_priority` to loop `for picking in self:` explicitly if migrating to v13+"
+    ],
+    "odoo_version_min": "12.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "super-py3-create-v12",
+    "intent_keywords": ["super", "create", "vals_list", "Python 3", "v12", "override", "batch"],
+    "file_ref": "addons/sale/models/sale.py:1110",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrderLine(models.Model):\n    _inherit = 'sale.order.line'\n\n    def create(self, vals_list):\n        for values in vals_list:\n            if values.get('display_type'):\n                values.update(\n                    product_id=False,\n                    price_unit=0,\n                    product_uom_qty=0,\n                )\n        lines = super().create(vals_list)\n        for line in lines:\n            if line.product_id and line.order_id.state == 'sale':\n                line.order_id.message_post(\n                    body=f\"Extra line: {line.product_id.display_name}\"\n                )\n        return lines",
+    "gotchas": [
+      "In v12 `create()` already accepts `vals_list` (list of dicts) — the `@api.model_create_multi` decorator backport from v13 is NOT needed in v12; use the bare `def create(self, vals_list):` signature",
+      "Always `return super().create(vals_list)` and use the returned recordset — modifying `vals_list` items in-place before `super()` is correct; never call `super()` inside the loop per-item",
+      "Accessing `line.order_id.state` AFTER `super().create()` triggers a separate SQL query per line — batch the post-create logic with `lines.filtered(...)` and `mapped()` to minimise N+1 queries",
+      "f-strings require Python 3.6+ — v12 runs Python 3.6; v11 runs Python 3.5 where f-strings are also available; but v9-v10 are Python 2/3 hybrid so f-strings are NOT safe in addons targeting those versions"
+    ],
+    "odoo_version_min": "12.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "check-company-constrains-v13",
+    "intent_keywords": ["_check_company_auto", "api.constrains", "company_id", "multi-company", "v13", "ValidationError"],
+    "file_ref": "addons/sale/models/sale.py:19",
+    "snippet_text": "from odoo import api, fields, models\nfrom odoo.exceptions import ValidationError\n\nclass SaleOrder(models.Model):\n    _name = 'sale.order'\n    _check_company_auto = True\n\n    company_id = fields.Many2one('res.company', required=True)\n    order_line = fields.One2many('sale.order.line', 'order_id')\n\n    @api.constrains('company_id', 'order_line')\n    def _check_order_line_company_id(self):\n        for order in self:\n            bad = order.order_line.product_id.filtered(\n                lambda p: p.company_id and p.company_id != order.company_id\n            )\n            if bad:\n                raise ValidationError(\n                    f'Products from wrong company: {bad.mapped(\"name\")}'\n                )",
+    "gotchas": [
+      "`_check_company_auto = True` on the model auto-validates Many2one fields that have `check_company=True` kwarg — without it you must write the constraint manually for every relational field",
+      "`@api.constrains` fires AFTER write/create, not before — you cannot cancel the operation inside; raise `ValidationError` to rollback the transaction",
+      "`@api.constrains` is NOT called by `_sql_constraints` — both run independently; use `_sql_constraints` for DB-level uniqueness and `@api.constrains` for Python-level cross-field logic",
+      "`force_company` context key (v13) sets the company context for journal/sequence lookups — it was replaced by `allowed_company_ids` in v14; using `force_company` in v14+ code silently falls back to the user's primary company"
+    ],
+    "odoo_version_min": "13.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "force-company-context-v13",
+    "intent_keywords": ["force_company", "with_context", "multi-company", "v13", "context", "company-aware"],
+    "file_ref": "addons/sale/models/sale.py:552",
+    "snippet_text": "def _create_invoices(self, grouped=False, final=False):\n    self.ensure_one()\n    # Switch company context for journal/sequence resolution\n    self = self.with_context(\n        default_company_id=self.company_id.id,\n        force_company=self.company_id.id,\n    )\n    journal = self.env['account.move'].with_context(\n        default_type='out_invoice'\n    )._get_default_journal()\n    if not journal:\n        raise UserError(\n            f'No accounting journal for company {self.company_id.name}'\n        )\n    return journal",
+    "gotchas": [
+      "`force_company` in v13 switches the active company for `ir.sequence` numbering, journal selection, and `company_id` defaults — it does NOT switch the security context (access rights still use `allowed_company_ids`)",
+      "In v14+, `force_company` is deprecated — use `self.with_company(company_id)` instead; `with_company()` updates both `force_company` and `allowed_company_ids` atomically",
+      "`self = self.with_context(...)` rebinds the local variable but does NOT mutate the caller's `self` — any code in the caller that uses its own `self` after calling this method still operates under the original context",
+      "When `with_context(force_company=X)` is used inside a `create()` override, the child records created by `super()` do NOT automatically inherit the context — you must pass the context explicitly to nested `env[model].create()`"
+    ],
+    "odoo_version_min": "13.0",
+    "odoo_version_max": "13.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "api-constrains-validation-v13",
+    "intent_keywords": ["api.constrains", "ValidationError", "constraint", "v13", "decorator", "validation"],
+    "file_ref": "addons/sale/models/product_template.py:66",
+    "snippet_text": "from odoo import api, fields, models\nfrom odoo.exceptions import ValidationError\n\nclass ProductTemplate(models.Model):\n    _inherit = 'product.template'\n\n    @api.constrains('company_id')\n    def _check_sale_ok(self):\n        for template in self:\n            if template.sale_ok and not template.company_id:\n                raise ValidationError(\n                    'Products available for sale must belong to a company '\n                    'in multi-company mode.'\n                )",
+    "gotchas": [
+      "`@api.constrains` must list ALL fields whose change should trigger the check — missing a field means the constraint is skipped on that write even if the field's value invalidates the constraint",
+      "Raising `ValidationError` inside `@api.constrains` triggers a full transaction rollback — any changes made before the constraint method ran are also rolled back",
+      "`@api.constrains` is NOT triggered by `_sql_constraints` violations — `_sql_constraints` raises `IntegrityError` (psycopg2); both are caught by Odoo and shown as user-friendly errors but are independent",
+      "Do NOT call `self.write()` or `self.create()` inside `@api.constrains` — it risks infinite recursion if the written field is in the constraint trigger list"
+    ],
+    "odoo_version_min": "13.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "model-extension-mail-thread-v14",
+    "intent_keywords": ["mail.thread", "utm.mixin", "portal.mixin", "track_visibility", "tracking", "v14", "chatter"],
+    "file_ref": "addons/sale/models/sale.py:19",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrder(models.Model):\n    _name = 'sale.order'\n    _inherit = [\n        'portal.mixin',\n        'mail.thread',\n        'mail.activity.mixin',\n        'utm.mixin',\n    ]\n    _description = 'Sales Order'\n    _check_company_auto = True\n\n    state = fields.Selection(\n        [('draft', 'Quotation'), ('sale', 'Sales Order')],\n        default='draft',\n        tracking=True,\n    )",
+    "gotchas": [
+      "`tracking=True` field kwarg was introduced in v13 and is the v14+ standard — `track_visibility='onchange'` still works in v14 but emits deprecation warnings; remove it in new code",
+      "`utm.mixin` adds campaign/source/medium tracking fields — include it on top-level marketing documents only; it adds 3 Many2one fields and an index per record which can impact bulk create performance",
+      "`_check_company_auto = True` requires all Many2one fields that need company scoping to declare `check_company=True` — without it the auto-check only covers fields with the domain `[('company_id', '=', company_id)]`",
+      "In v14, the `@api.multi` decorator is removed — any addon importing it from `odoo.api` will get an `ImportError`; remove all `@api.multi` decorators when upgrading to v14"
+    ],
+    "odoo_version_min": "14.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "legacy-widget-extend-v14",
+    "intent_keywords": ["Widget.extend", "odoo.define", "require", "legacy widget", "js", "v14", "systray"],
+    "file_ref": "addons/web/static/src/js/widgets/switch_company_menu.js:18",
+    "snippet_text": "odoo.define('web.SwitchCompanyMenu', function(require) {\n\"use strict\";\n\nvar config = require('web.config');\nvar core = require('web.core');\nvar SystrayMenu = require('web.SystrayMenu');\nvar Widget = require('web.Widget');\n\nvar SwitchCompanyMenu = Widget.extend({\n    template: 'SwitchCompanyMenu',\n    events: {\n        'click .log_into': '_onSwitchCompanyClick',\n    },\n    init: function () {\n        this._super.apply(this, arguments);\n        this.isMobile = config.device.isMobile;\n    },\n});\n\nSystrayMenu.Items.push(SwitchCompanyMenu);\nreturn SwitchCompanyMenu;\n});",
+    "gotchas": [
+      "`odoo.define('module.Name', function(require) {...})` is the v14 legacy module system — in v15+ use `/** @odoo-module **/` with ES6 `import`; the legacy system still works in v15 via a compatibility shim but is deprecated",
+      "`this._super.apply(this, arguments)` is the legacy prototype chain method (Owl-less) — in OWL components use `super.setup()` and `super.methodName()` instead",
+      "`Widget.extend({template: 'XmlId'})` requires the QWeb template to be loaded via `<template>` in the manifest — if the template XML id doesn't exist, the widget silently renders nothing",
+      "SystrayMenu registration (`SystrayMenu.Items.push(...)`) is v14 legacy pattern — in v15+ use the systray registry: `registry.category('systray').add('name', Component, {sequence: 1})`"
+    ],
+    "odoo_version_min": "14.0",
+    "odoo_version_max": "14.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-abstract-field-v14",
+    "intent_keywords": ["owl", "AbstractFieldOwl", "hooks", "OWL 1", "v14", "field component", "inception"],
+    "file_ref": "addons/web/static/src/js/fields/abstract_field_owl.js:1",
+    "snippet_text": "odoo.define('web.AbstractFieldOwl', function (require) {\n    \"use strict\";\n\n    const field_utils = require('web.field_utils');\n    const { useListener } = require('web.custom_hooks');\n    const { onMounted, onPatched } = owl.hooks;\n\n    // OWL 1 field base (v14 inception pattern)\n    class AbstractFieldOwl extends owl.Component {\n        setup() {\n            onMounted(() => this._mounted());\n            onPatched(() => this._patched());\n        }\n        get value() {\n            return this.props.value;\n        }\n    }\n    return AbstractFieldOwl;\n});",
+    "gotchas": [
+      "v14 uses OWL 1 (`owl.hooks.onMounted`, `owl.Component`) wrapped inside the legacy `odoo.define` module system — in v15+ use `/** @odoo-module **/` with `import { onMounted } from \"@web/core/utils/hooks\"`",
+      "`owl.hooks` (v14) was split into individual imports in v15 — `const { onMounted } = owl.hooks` becomes `import { onMounted } from '@odoo/owl'` in v16+; v15 is the bridge using `const { ... } = owl;`",
+      "The `useListener` helper from `web.custom_hooks` (v14) is removed in v15 — replace with `useExternalListener(target, event, handler)` from `@web/core/utils/hooks`",
+      "OWL 1 (v14) components cannot use `useService()` directly — they must access services via `this.env.services.service_name`; the `useService` hook from `@web/core/utils/hooks` is a v15+ API"
+    ],
+    "odoo_version_min": "14.0",
+    "odoo_version_max": "14.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "odoo-module-owl2-component-v15",
+    "intent_keywords": ["@odoo-module", "Component", "owl", "v15", "ES6 import", "setup", "useState"],
+    "file_ref": "addons/web/static/src/core/dropdown/dropdown.js:1",
+    "snippet_text": "/** @odoo-module **/\n\nimport { useBus, useEffect, useService } from \"@web/core/utils/hooks\";\nimport { usePosition } from \"../position/position_hook\";\n\nconst { Component, useState, QWeb } = owl;\nconst { onWillStart, useRef, useSubEnv } = owl.hooks;\n\nexport class Dropdown extends Component {\n    setup() {\n        this.state = useState({\n            open: this.props.startOpen || false,\n        });\n        onWillStart(async () => {\n            if (this.state.open && this.props.beforeOpen) {\n                await this.props.beforeOpen();\n            }\n        });\n    }\n}\n\nDropdown.props = { startOpen: { type: Boolean, optional: true } };\nDropdown.template = 'web.Dropdown';",
+    "gotchas": [
+      "`/** @odoo-module **/` (with double asterisks) is required — `/* @odoo-module */` (single asterisk) is silently ignored and the file stays in the legacy module system, causing import errors at runtime",
+      "In v15, `Component` and `useState` are accessed via `const { Component, useState } = owl;` — in v16+ they are imported directly: `import { Component, useState } from \"@odoo/owl\"`; mixing the two styles causes undefined errors",
+      "`QWeb.registerComponent('Name', MyComponent)` is v15 OWL 1 registration — in v16+ components are registered via the component registry or used directly in templates without registration",
+      "`Dropdown.props` must be declared as a static property for prop validation — omitting it in v15 silently accepts any props; in strict mode (v16+) missing prop declarations cause runtime warnings"
+    ],
+    "odoo_version_min": "15.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "use-position-hook-v15",
+    "intent_keywords": ["usePosition", "popover", "positioning", "hook", "v15", "OWL", "dropdown"],
+    "file_ref": "addons/web/static/src/core/position/position_hook.js:241",
+    "snippet_text": "/** @odoo-module */\n\nimport { onDestroyed, useEffect } from \"@web/core/utils/hooks\";\n\nconst { useComponent, useRef, useSubEnv } = owl.hooks;\n\nexport function usePosition(reference, options) {\n    options = { margin: 0, position: 'bottom', ...options };\n    const { popper } = options;\n    const popperRef = popper ? useRef(popper) : useComponent();\n    const getReference = typeof reference === 'function'\n        ? reference\n        : () => reference;\n    const update = () => {\n        const ref = getReference();\n        if (popperRef.el && ref) {\n            reposition(ref, popperRef.el, options);\n        }\n    };\n    useEffect(() => bus.trigger('update'));\n}",
+    "gotchas": [
+      "`usePosition(reference, { popper: 'refName' })` — the `popper` option is a `useRef` NAME string, not an element; the hook looks up `useRef(popper).el` internally; passing an HTMLElement directly silently breaks",
+      "The `reference` argument can be an HTMLElement OR a function returning one — use a function when the reference element is not yet in the DOM at hook setup time (e.g. inside an `onMounted`)",
+      "`usePosition` is a v15-specific internal hook — it was refactored in v16 to use CSS `position: fixed` + `useFloating`; copying v15 hook code verbatim into a v16 addon causes positioning glitches",
+      "The position bus (`POSITION_BUS`) is shared within the component subtree via `useSubEnv` — multiple nested popovers reuse the same bus; triggering 'update' on parent also repositions all children"
+    ],
+    "odoo_version_min": "15.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "odoo-module-view-extension-v15",
+    "intent_keywords": ["@odoo-module", "view", "registry", "OWL", "v15", "patch", "list view"],
+    "file_ref": "addons/web/static/src/main.js:1",
+    "snippet_text": "/** @odoo-module **/\n\nimport { patch } from \"@web/core/utils/patch\";\nimport { ListRenderer } from \"@web/views/list/list_renderer\";\n\n// v15 OWL view patching via patch() utility\npatch(ListRenderer.prototype, 'my_module.ListRendererPatch', {\n    setup() {\n        this._super();\n        // Custom setup logic\n    },\n    get columns() {\n        const cols = this._super();\n        return cols.filter(col => col.name !== 'hidden_field');\n    },\n});",
+    "gotchas": [
+      "`patch(Class.prototype, 'unique.identifier', {...})` in v15 takes a THREE-argument form with a string identifier — in v16+ the identifier argument was REMOVED: `patch(Class.prototype, {...})`; using the v15 form in v16 raises TypeError",
+      "Always call `this._super()` (v15 patch) or `super.method()` (v16 OWL patch) inside patched methods — skipping super breaks the original method chain and can cause the component to malfunction silently",
+      "In v15, `patch()` is from `@web/core/utils/patch`; the `Class.include({...})` Odoo legacy method was removed in v16 — ensure the import path is correct before patching",
+      "Patching a getter (like `get columns()`) via `patch()` works in v15 but requires the patch object to define it as a getter too — defining it as a regular method makes it return the function instead of calling it"
+    ],
+    "odoo_version_min": "15.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "view-inherit-xpath-v10",
+    "intent_keywords": ["xpath", "inherit_id", "view", "form", "v10", "position", "after"],
+    "file_ref": "addons/sale/views/sale_views.xml:407",
+    "snippet_text": "<record id=\"view_sale_order_custom_filter\" model=\"ir.ui.view\">\n    <field name=\"name\">sale.order.search.custom</field>\n    <field name=\"model\">sale.order</field>\n    <field name=\"inherit_id\" ref=\"sale.view_sales_order_filter\"/>\n    <field name=\"arch\" type=\"xml\">\n        <xpath expr=\"//filter[@name='my_sale_orders_filter']\"\n               position=\"after\">\n            <filter name=\"custom_filter\"\n                    string=\"Custom\"\n                    domain=\"[('state', '=', 'draft')]\"/>\n        </xpath>\n    </field>\n</record>",
+    "gotchas": [
+      "Search view filters use `domain=` attribute as a Python string (evaluated server-side) — do NOT use JSON syntax or Odoo boolean literals; use Python list syntax: `\"[('field', '=', value)]\"",
+      "The `expr` in `<xpath>` for search views targets filter/separator/group elements by their `name` attribute — targeting by position index (`//filter[2]`) breaks when other modules insert filters before yours",
+      "In v10, `<filter>` nodes inside a search view `<xpath position=\"after\">` must be complete filter declarations — you cannot inject partial attributes; the entire `<filter>` element must be provided",
+      "`position=\"after\"` inserts the new node as the NEXT sibling — if the target filter is the last in its group, the new filter appears correctly; but if there's a `<separator/>` after the target, your filter appears between the target and the separator"
+    ],
+    "odoo_version_min": "10.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "computed-field-stored-v10",
+    "intent_keywords": ["computed", "store", "related", "depends", "v10", "field", "amount"],
+    "file_ref": "addons/sale/models/sale.py:21",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrder(models.Model):\n    _name = 'sale.order'\n\n    order_line = fields.One2many('sale.order.line', 'order_id')\n    amount_untaxed = fields.Monetary(\n        string='Untaxed Amount',\n        store=True,\n        compute='_amount_all',\n        track_visibility='onchange',\n    )\n    amount_total = fields.Monetary(\n        string='Total',\n        store=True,\n        compute='_amount_all',\n    )\n\n    @api.depends('order_line.price_total')\n    def _amount_all(self):\n        for order in self:\n            total = sum(line.price_total for line in order.order_line)\n            order.amount_total = total",
+    "gotchas": [
+      "Multiple stored fields sharing one `compute=` method must ALL be declared with `store=True` and `compute='_method'` — if only one is `store=True`, the others are recomputed on every read (no caching), causing N+1 queries",
+      "`track_visibility='onchange'` (v10 syntax) was renamed to `tracking=True` in v13 — keep using the old form only if the codebase targets v10/v11/v12 specifically; mixed usage causes migration tool confusion",
+      "`@api.depends('order_line.price_total')` — the dotted path traverses the o2m relation; if `price_total` is itself a computed field, it must also have `store=True` or the dependency chain breaks and the parent field is never recomputed",
+      "When `store=True` fields are recomputed, Odoo runs a SQL UPDATE for each record in the batch — for large recordsets (>1000 records) this can cause table locks; use `--limit-time-cpu` and batch manually if running manual recomputes"
+    ],
+    "odoo_version_min": "10.0",
+    "language": "python",
+    "core_symbol_names": ["odoo.api.depends"]
+  },
+  {
+    "pattern_id": "xml-qweb-report-template-v11",
+    "intent_keywords": ["qweb", "report", "template", "t-foreach", "t-field", "v11", "invoice"],
+    "file_ref": "addons/account/views/report_invoice.xml:1",
+    "snippet_text": "<template id=\"report_invoice_document\">\n    <t t-foreach=\"docs\" t-as=\"o\">\n        <div class=\"page\">\n            <div class=\"row\">\n                <div class=\"col-6\">\n                    <span t-field=\"o.partner_id.name\"/>\n                </div>\n                <div class=\"col-6 text-end\">\n                    <h2>\n                        <span t-field=\"o.name\"/>\n                    </h2>\n                </div>\n            </div>\n            <t t-foreach=\"o.invoice_line_ids\" t-as=\"line\">\n                <span t-field=\"line.name\"/>\n                <span t-field=\"line.price_subtotal\"/>\n            </t>\n        </div>\n    </t>\n</template>",
+    "gotchas": [
+      "`t-field` uses the ORM field's widget for rendering (date formatting, currency symbol, etc.) — `t-esc` or `t-out` outputs the raw Python repr; never use `t-esc` for Monetary fields in reports",
+      "QWeb report templates registered as `ir.actions.report` must have `report_type='qweb-pdf'` for PDF output — omitting it defaults to HTML preview and the report engine skips wkhtmltopdf",
+      "In v11, `docs` is the standard variable name for the record batch passed to the report template — renaming it requires updating the `binding_model_id` action AND the template variable reference",
+      "`t-foreach` without `t-as` is a syntax error in strict QWeb — always provide both attributes; the `t-as` variable is available as both `var_name` (value) and `var_name_index` (0-based index)"
+    ],
+    "odoo_version_min": "11.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "security-access-csv-v12",
+    "intent_keywords": ["ir.model.access", "csv", "security", "group", "access rights", "v12", "acl"],
+    "file_ref": "addons/sale/security/ir.model.access.csv:1",
+    "snippet_text": "id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\naccess_sale_order_user,sale.order.user,model_sale_order,sales_team.group_sale_salesman,1,1,1,0\naccess_sale_order_manager,sale.order.manager,model_sale_order,sales_team.group_sale_salesman_all_leads,1,1,1,1\naccess_sale_order_portal,sale.order.portal,model_sale_order,base.group_portal,1,0,0,0",
+    "gotchas": [
+      "`model_id:id` uses the auto-generated external ID `model_<model_name_with_dots_as_underscores>` — for `sale.order` the ID is `model_sale_order`; wrong model ID causes a silent access record that references nothing",
+      "Leaving `group_id:id` empty grants access to ALL users including public portal — always specify a group unless you explicitly want world-readable/writable access",
+      "`perm_unlink=1` for a salesman group is almost always wrong — salespeople should not delete confirmed orders; use `0` and create a dedicated manager rule",
+      "CSV header must be exactly `id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink` in that order — Odoo parses by column index, not header name; wrong column order silently assigns wrong permissions"
+    ],
+    "odoo_version_min": "12.0",
+    "language": "xml",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "one2many-domain-v13",
+    "intent_keywords": ["One2many", "domain", "related", "v13", "field", "filter", "o2m"],
+    "file_ref": "addons/sale/models/sale.py:1055",
+    "snippet_text": "from odoo import api, fields, models\n\nclass SaleOrderLine(models.Model):\n    _name = 'sale.order.line'\n    _check_company_auto = True\n\n    order_id = fields.Many2one(\n        'sale.order',\n        string='Order Reference',\n        required=True,\n        ondelete='cascade',\n        index=True,\n    )\n    product_id = fields.Many2one(\n        'product.product',\n        string='Product',\n        domain=\"[('sale_ok', '=', True)]\",\n        check_company=True,\n    )",
+    "gotchas": [
+      "`domain=` on a Many2one field filters the dropdown selection — it does NOT enforce a database-level constraint; users can bypass it via direct RPC; add `@api.constrains` if enforcement is required",
+      "`check_company=True` (v13+) auto-validates the Many2one against the record's `company_id` when `_check_company_auto = True` is set on the parent model — without it, cross-company product links are silently allowed",
+      "`ondelete='cascade'` on `order_id` means deleting a `sale.order` also deletes all its lines — if you override `unlink()` on the parent to prevent deletion, lines are still cascade-deleted before your check runs",
+      "`index=True` on a Many2one FK is almost always correct — without it, filtering or grouping by `order_id` does a full table scan; Odoo does NOT add FK indexes automatically unlike most ORMs"
+    ],
+    "odoo_version_min": "13.0",
+    "language": "python",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "xml-tree-optional-column-v15",
+    "intent_keywords": ["tree", "list view", "optional", "column", "v15", "xml", "optional_default"],
+    "file_ref": "addons/sale/views/sale_views.xml:1",
+    "snippet_text": "<record id=\"view_order_tree\" model=\"ir.ui.view\">\n    <field name=\"name\">sale.order.tree</field>\n    <field name=\"model\">sale.order</field>\n    <field name=\"arch\" type=\"xml\">\n        <tree string=\"Quotations\">\n            <field name=\"name\"/>\n            <field name=\"partner_id\"/>\n            <field name=\"amount_total\"\n                   optional=\"show\"/>\n            <field name=\"date_order\"\n                   optional=\"hide\"/>\n        </tree>\n    </field>\n</record>",
+    "gotchas": [
+      "`optional=\"show\"` makes the column visible by default but user-hideable; `optional=\"hide\"` makes it hidden by default but user-showable — columns without `optional` are always visible and cannot be hidden by the user",
+      "The optional column visibility state is saved per user/view in `ir.ui.view.custom` — in multi-user environments changes by one user do not affect others; system administrators cannot force a global default via UI",
+      "`optional` attribute was introduced in v14 — using it in views targeting v12/v13 causes a server-side QWeb rendering error; guard with `<field name=\"optional\">show</field>` approach for mixed-version addons",
+      "When adding `optional` to an existing column via `<xpath position=\"attributes\">`, the attribute must be added BEFORE the view is cached — a server restart or module upgrade is needed to see the change"
+    ],
+    "odoo_version_min": "15.0",
+    "language": "xml",
+    "core_symbol_names": []
   }
 ]

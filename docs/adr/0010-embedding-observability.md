@@ -137,3 +137,31 @@ Rationale for `dict` return in JSON (not list of tuples):
 - `/health` response size grows by ~100 bytes (8 chunk types × ~10 chars each).
 - Tests verify: (1) endpoint structure, (2) sum invariant, (3) graceful degradation
   when pgvector unavailable.
+
+## Follow-up (M10 ops) — WI-A7 absorption
+
+### D7 (planned) — `embedder_batch_duration_seconds` Prometheus histogram
+
+**Context:** D1's thread-safe `call_count` provides a per-run counter, and D3
+deferred Prometheus/OpenTelemetry to "a dedicated observability milestone". M10
+ops is that milestone — Stripe billing requires per-tenant usage metering and
+the natural unit is "embed call latency", which feeds both billing (per-call
+cost projection) and SRE alerting (Ollama timeout regression).
+
+**Decision (when implemented):**
+- Histogram metric `embedder_batch_duration_seconds` recorded once per `embed()`
+  batch call, labelled by `embedder_type` ∈ `{fake, qwen3}`.
+- Bucket boundaries `[0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0]` — chosen
+  from production indexer logs showing median batch ≈1.5s and P99 ≈8s.
+- Exposed via FastAPI `/metrics` endpoint (new route, mounted on the existing
+  app — no separate Prometheus exporter sidecar).
+- Reuses D1's `threading.Lock` pattern for thread-safety under
+  `--max-workers > 1`; observation is taken inside the same critical section
+  as `call_count += 1`.
+
+**Tracked in:** `TASKS.md` Milestone 10 § "Coverage-fill follow-ups" item
+"Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram".
+
+**Not invalidating D3:** D3 deferred Prometheus "for now"; M10 is the lift that
+adds it. The `/health` endpoint and log line from D1/D2 remain — D7 is additive,
+not replacement.

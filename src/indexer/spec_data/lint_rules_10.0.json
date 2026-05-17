@@ -1,6 +1,191 @@
 {
-  "_curate_status": "pending",
-  "_generated_at": "2026-05-08",
-  "_note": "Placeholder per ADR-0002 §4. Curate manually or via M6 community contribution.",
-  "rules": []
+  "_curate_status": "complete",
+  "_generated_at": "2026-05-17",
+  "_note": "Curated from pylint-odoo v3.x for Odoo v10. v10 introduced __manifest__.py replacing __openerp__.py, Python 3 compatibility. Rules from OCA/pylint-odoo v3.x historical tags.",
+  "rules": [
+    {
+      "rule_id": "W8101",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing required key `name`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Add `'name': 'My Module'` to the __manifest__.py dict."
+    },
+    {
+      "rule_id": "W8102",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing required key `version`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Add `'version': '10.0.1.0.0'` following OCA version convention."
+    },
+    {
+      "rule_id": "W8103",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing recommended key `author`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Add `'author': 'Your Company'` to the manifest."
+    },
+    {
+      "rule_id": "W8104",
+      "kind": "pylint-odoo",
+      "message": "Manifest file is missing recommended key `license`.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Add `'license': 'LGPL-3'` or `'AGPL-3'`."
+    },
+    {
+      "rule_id": "W8105",
+      "kind": "pylint-odoo",
+      "message": "Manifest file `installable` key should be a boolean.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py",
+      "fix_template": "Set `'installable': True` (boolean, not string)."
+    },
+    {
+      "rule_id": "W8106",
+      "kind": "pylint-odoo",
+      "message": "`__openerp__.py` is deprecated in v10; rename to `__manifest__.py`.",
+      "severity": "warning",
+      "file_pattern": "**/__openerp__.py",
+      "fix_template": "Rename `__openerp__.py` to `__manifest__.py` — Odoo 10+ only recognizes __manifest__.py."
+    },
+    {
+      "rule_id": "W8110",
+      "kind": "pylint-odoo",
+      "message": "Use of deprecated `_columns` dict; `fields.*` class attributes required in v10+.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Replace `_columns = {'field': fields.Char(...)}` with class attribute `field = fields.Char(...)`."
+    },
+    {
+      "rule_id": "W8111",
+      "kind": "pylint-odoo",
+      "message": "Use of deprecated `_constraints` list; use `@api.constrains` decorator.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use `@api.constrains('field1', 'field2')` on the validation method."
+    },
+    {
+      "rule_id": "W8112",
+      "kind": "pylint-odoo",
+      "message": "Old API method signature `(cr, uid, ids, context)` — v10 requires new API `(self)`.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Switch to `@api.multi` or `@api.model` with `def my_method(self, ...)`."
+    },
+    {
+      "rule_id": "W8114",
+      "kind": "pylint-odoo",
+      "message": "`@api.multi` method with return value should return a recordset, not a plain scalar.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8120",
+      "kind": "pylint-odoo",
+      "message": "ir.model.access entry missing from security CSV — model may be inaccessible.",
+      "severity": "warning",
+      "file_pattern": "**/security/*.csv",
+      "fix_template": "Ensure `security/ir.model.access.csv` lists all models defined in the module."
+    },
+    {
+      "rule_id": "W8121",
+      "kind": "pylint-odoo",
+      "message": "XML id reference does not match any declared id in the module or its dependencies.",
+      "severity": "error",
+      "file_pattern": "**/*.xml",
+      "fix_template": "Verify the `ref='module.xml_id'` attribute points to a valid record id."
+    },
+    {
+      "rule_id": "W8122",
+      "kind": "pylint-odoo",
+      "message": "Translation string uses positional `%s` formatting — use named `%(name)s`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8130",
+      "kind": "pylint-odoo",
+      "message": "File declared in manifest `data` list does not exist.",
+      "severity": "error",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8131",
+      "kind": "pylint-odoo",
+      "message": "Demo data file declared in manifest `demo` list does not exist.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8140",
+      "kind": "pylint-odoo",
+      "message": "SQL injection risk: `cr.execute` called with string interpolation instead of parameterized query.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use parameterized query: `cr.execute('SELECT ... WHERE id = %s', (record_id,))`."
+    },
+    {
+      "rule_id": "W8141",
+      "kind": "pylint-odoo",
+      "message": "Built-in dynamic expression interpreter used with external input — use `odoo.tools.safe_eval` module instead.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Import safe_eval from odoo.tools.safe_eval and use it to sandbox expression execution."
+    },
+    {
+      "rule_id": "W8150",
+      "kind": "pylint-odoo",
+      "message": "Hardcoded database ID used in code — use `env.ref()` instead.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Replace hardcoded integer id with `self.env.ref('module.xml_id').id`."
+    },
+    {
+      "rule_id": "W8160",
+      "kind": "pylint-odoo",
+      "message": "`_rec_name` field not present in model fields.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8161",
+      "kind": "pylint-odoo",
+      "message": "`copy()` override does not call `super()` — may break duplication.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Ensure `res = super().copy(default)` is called first."
+    },
+    {
+      "rule_id": "W8163",
+      "kind": "pylint-odoo",
+      "message": "`create()` override does not call `super()` — record will not be created.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Ensure `record = super().create(vals)` then `return record`."
+    },
+    {
+      "rule_id": "no-var",
+      "kind": "eslint",
+      "message": "Unexpected `var`. Use `let` or `const` instead.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-console",
+      "kind": "eslint",
+      "message": "Unexpected `console` statement in production JS.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-undef",
+      "kind": "eslint",
+      "message": "Reference to undeclared variable.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    }
+  ]
 }

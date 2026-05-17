@@ -8,6 +8,7 @@ from src.constants import (
     REL_CHECKS,
     REL_DEFINED_IN,
     REL_DEPENDS_ON,
+    REL_IMPORTS,
     REL_INHERITS,
     REL_INHERITS_VIEW,
     REL_OF_COMMAND,
@@ -25,6 +26,7 @@ from .models import (
     LintRuleInfo,
     ParseResult,
     PatternExample,
+    StylesheetInfo,
     ViewParseResult,
 )
 
@@ -522,6 +524,73 @@ def _write_cli_flag_replacements(tx, replaced: list[tuple[str, str]],
              vfrom=from_version, vto=to_version)
 
 
+# ---------------------------------------------------------------------------
+# CSS/SCSS stylesheet writer (WI-A1, ADR-0025)
+# ---------------------------------------------------------------------------
+
+def _write_stylesheets_batch(
+    tx, stylesheets: list[StylesheetInfo], profiles: list[str]
+) -> None:
+    """MERGE :Stylesheet nodes + :DEFINED_IN -> :Module + :IMPORTS edges.
+
+    Composite MERGE key: (file_path, module, odoo_version) per ADR-0025 §D1.
+    Properties written:
+      - language ∈ {css, scss}
+      - selector_count, variable_count, import_count, mixin_count
+      - profile[] — ancestor profile name array (per ADR-0016 Option Y)
+
+    Relationships:
+      - :Stylesheet -[:DEFINED_IN]-> :Module  (always written)
+      - :Stylesheet -[:IMPORTS]-> :Stylesheet  (only when import target is indexed)
+        Silent skip when the imported file_path is not found in Neo4j (per ADR-0025 §D3).
+
+    The DEFINED_IN target Module is written with MERGE (not MATCH) and the
+    profile-union pattern from ADR-0016 §D7 — if the Module hasn't been
+    written yet (forward-reference race in parallel indexing), we create a
+    stub so the Stylesheet is never orphaned.  The real Module write later
+    in the same batch idempotently fills in repo/path/version_raw/etc.
+    """
+    for s in stylesheets:
+        # MERGE the Stylesheet node + set properties + DEFINED_IN edge.
+        # Module is MERGE'd (not MATCH'd) to avoid orphan Stylesheet nodes
+        # if the host Module is written by a later batch (parallel-indexer
+        # ordering not guaranteed) — see ADR-0016 §D7 stub-ownership policy.
+        tx.run(f"""
+            MERGE (ss:Stylesheet {{file_path: $fp, module: $mod, odoo_version: $v}})
+            ON CREATE SET ss.language = $lang,
+                          ss.selector_count = $sel,
+                          ss.variable_count = $var,
+                          ss.import_count = $imp,
+                          ss.mixin_count = $mix,
+                          ss.profile = $profiles
+            ON MATCH  SET ss.language = $lang,
+                          ss.selector_count = $sel,
+                          ss.variable_count = $var,
+                          ss.import_count = $imp,
+                          ss.mixin_count = $mix,
+                          ss.profile =
+                              [x IN coalesce(ss.profile, []) WHERE NOT x IN $profiles]
+                              + $profiles
+            WITH ss
+            MERGE (mod:Module {{name: $mod, odoo_version: $v}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+            MERGE (ss)-[:{REL_DEFINED_IN}]->(mod)
+        """, fp=s.file_path, mod=s.module, v=s.odoo_version,
+             lang=s.language, sel=s.selector_count, var=s.variable_count,
+             imp=s.import_count, mix=s.mixin_count, profiles=profiles)
+
+        # Write IMPORTS edges — silent skip when target Stylesheet not yet indexed
+        for import_path in s.imports:
+            tx.run(f"""
+                MATCH (src:Stylesheet {{file_path: $src_fp, module: $mod, odoo_version: $v}})
+                MATCH (tgt:Stylesheet {{file_path: $tgt_fp, odoo_version: $v}})
+                MERGE (src)-[:{REL_IMPORTS}]->(tgt)
+            """, src_fp=s.file_path, mod=s.module, v=s.odoo_version,
+                 tgt_fp=import_path)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -560,6 +629,11 @@ class Neo4jWriter:
                 " ON (n.pattern_id)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
                 " ON (n.language, n.odoo_version_min)",
+                # WI-A1 stylesheet layer (per ADR-0025):
+                "CREATE INDEX IF NOT EXISTS FOR (n:Stylesheet)"
+                " ON (n.file_path, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Stylesheet)"
+                " ON (n.module, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -764,6 +838,25 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for batch in _chunked(patterns, 200):
                 session.execute_write(_write_pattern_examples_batch, batch)
+
+    def write_stylesheets(
+        self,
+        stylesheets: list[StylesheetInfo],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist :Stylesheet nodes + :DEFINED_IN + :IMPORTS edges.
+
+        Idempotent MERGE on composite key (file_path, module, odoo_version).
+        *profiles* is the ancestor profile name array (per ADR-0016 Option Y).
+        Batched at NEO4J_WRITE_BATCH_SIZE per transaction.
+        IMPORTS edge write silently skips when the target file_path is not indexed.
+        """
+        if not stylesheets:
+            return
+        _profiles = profiles if profiles is not None else []
+        with self.driver.session() as session:
+            for batch in _chunked(stylesheets, NEO4J_WRITE_BATCH_SIZE):
+                session.execute_write(_write_stylesheets_batch, batch, _profiles)
 
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
         """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.

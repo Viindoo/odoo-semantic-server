@@ -553,12 +553,56 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 
 ---
 
-## Milestone 10 — "Billing Wow"
+## Milestone 9 Coverage Fill — 2026-05-17
+
+**Batch name:** `coverage-fill-batch` (6 WIs orchestrated via plan `internal-plan.md`)
+
+- [x] **WI-A1** CSS/SCSS parser + `:Stylesheet` node + `:IMPORTS` edge + ADR-0025 (commit 6db163e)
+  - New `src/indexer/parser_css.py` (430 LoC) + `parser_scss.py` (441 LoC) — tree-sitter-css backend + regex fallback
+  - `:Stylesheet` node with composite MERGE key `(file_path, module, odoo_version)`, properties: `language ∈ {css, scss}`, `selector_count`, `import_count`, `variable_count`, `mixin_count`
+  - `:DEFINED_IN` + `:IMPORTS` relationships; pgvector chunk_types `css`/`scss` for semantic search
+  - 18 tests pass (8 CSS + 10 SCSS)
+
+- [x] **WI-A2** v8 era1 `_columns` balanced-paren extraction fix (commit 1d0e8dd)
+  - Fixed string-aware brace scan — no longer truncates at `{` inside string literals
+  - Closes the v8 era1 field extraction gap (previously truncated when help text contained `{`)
+  - `FieldInfo.source_definition` now populated for era1 fields
+  - 9 new tests
+
+- [x] **WI-A3** PatternExample v9-v15 backfill (commit d6a2406)
+  - 30 patterns appended (83 → 113 total)
+  - Per-version: v9=4, v10=5, v11=5, v12=5, v13=4, v14=3, v15=4 patterns
+  - All snippets from real `~/git/odoo_{9..15}.0/` sources; stable-API focus
+  - 2 tests pass + schema validation OK
+
+- [x] **WI-A4** LintRule static curation v8-v19 (commit a1b0298)
+  - 12 `spec_data/lint_rules_X.0.json` populated (v8 to v19), `_curate_status: "complete"`
+  - Per-version: v8=20, v9=21, v10=24, v11=23, v12=22, v13=22, v14=23, v15=21, v16=21, v17=24, v18=24, v19=26 rules
+  - New `lint_rule.schema.json`; 49 tests pass
+
+- [x] **WI-A5** CLIFlag static curation v8-v19 (commit 0abd715)
+  - 12 `spec_data/cli_flags_X.0.json` populated (v8 to v19), `_curate_status: "complete"`
+  - Per-version: v8=72, v9=66, v10=67, v11=71, v12=70, v13=72, v14=73, v15=76, v16=78, v17=80, v18=85, v19=72 flags
+  - Cross-version deprecation tracking (--xmlrpc-interface → --http-interface, etc.)
+  - New `cli_flag.schema.json`; 144 parametrized tests pass
+
+- [x] **WI-A6** Docs hygiene transcribe (this commit)
+  - Mechanical update: README + TASKS + CHANGELOG + architecture docs reflect A1-A5 implementation facts
+  - No schema changes, no new ADRs (ADR-0025 landed with A1)
+
+- [ ] **WI-A7** Deferred items absorption (pending Opus dispatch)
+  - Reason: requires cross-document reasoning for milestone placement + ADR follow-up sections
+
+**Post-deploy ops (B1–B11) tracked separately — see plan section "Group B".**
+
+---
+
+## Milestone 10 — "Billing Wow" + Coverage-Fill Follow-ups
 
 **Status:** `[ ]` Not started.
 
-**Intent:** Monetize the platform — Stripe subscription integration, plan tiers, usage metering.  
-**Outcome:** Public users can self-subscribe to a paid plan; admin can see MRR dashboard.
+**Intent:** Monetize the platform — Stripe subscription integration, plan tiers, usage metering. Also absorb coverage-fill follow-ups (MCP Stylesheet surface, ops metrics, Quick Wins from `osm_vs_odoo-ls.md`).
+**Outcome:** Public users can self-subscribe to a paid plan; admin can see MRR dashboard. CSS/SCSS index addressable via dedicated MCP tools. Indexer pipeline emits Prometheus-scrape histogram for embed latency.
 
 **Carry-over from M9 (deferred):**
 - [ ] Pricing page payment integration (`/pricing/` waitlist teaser → live Stripe checkout).
@@ -567,6 +611,102 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 - [ ] `lint_json_response.sh` 127 legacy `JSONResponse(dict)` violations — dedicated cleanup PR.
 - [ ] W-UM legacy columns (`actor_id`, `target_id`, `detail_text`) deprecation drop migration.
 - [ ] v8 era1 CLI parser enhancement (`parser_cli.py` — 0 CLIFlag for v8).
+
+### Coverage-fill follow-ups (absorbed by WI-A7 from `internal-plan.md` + `peaceful-orbiting-dongarra.md`)
+
+- [ ] **MCP tool surface for Stylesheet** — HIGH
+  - Source: `internal-plan.md` § "Out of scope" item 1 (WI-A7 absorption).
+  - Scope: 2 new MCP tools — `resolve_stylesheet(module, odoo_version)` returns the stylesheet chain + variable list for a module; `find_style_override(selector_or_variable, odoo_version)` traces which module last re-declares a CSS custom property / overrides a selector.
+  - Acceptance: tools registered in `src/mcp/server.py`; output follows ADR-0023 tree-grammar contract (§1 header, §1.3 sublist indent, §4 Next-step hint); routing matrix `docs/reference/mcp-tool-routing.md` lists both tools with TRIGGER phrases; per-tool integration test against fixture profile.
+  - Dependency: WI-A1 (`:Stylesheet` node landed via ADR-0025) + B8 reindex must populate stylesheet nodes for production profiles before tool ships.
+
+- [ ] **Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram** — MED
+  - Source: `internal-plan.md` § "Out of scope" item 3 (WI-A7 absorption); extends ADR-0010 §D7 follow-up.
+  - Scope: histogram metric exposed at `/metrics` Prometheus endpoint, recording one observation per `embed()` batch call. Bucket boundaries: 0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0 (median observed batch ~1.5s per investigation logs).
+  - Acceptance: `GET /metrics` returns valid Prometheus text-format payload including `embedder_batch_duration_seconds_bucket` + `_count` + `_sum` series; metric tagged by `embedder_type` label (`fake`, `qwen3`); thread-safe under `--max-workers > 1` (mirrors ADR-0010 D1 lock contract).
+  - Dependency: ADR-0010 D1 (`call_count` thread-safe lock) already provides the locking pattern to reuse.
+
+- [ ] **M10 Quick Wins from `osm_vs_odoo-ls.md`** — HIGH
+  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
+  - 4 sub-tasks (each independently shippable):
+    - [ ] **Magic fields auto-injection** — `resolve_model`/`list_fields`/`resolve_field` include `id`, `display_name`, `create_uid`, `create_date`, `write_uid`, `write_date` as synthetic Field rows when the model is a `models.Model` subclass. Source-of-truth: hard-coded list in `src/constants.py::MAGIC_FIELDS`; not written to Neo4j (synthetic at query time only).
+    - [ ] **`from_module` param** for `resolve_model` + `resolve_field` — restrict inheritance chain / field declarations to those originating from a specific module (e.g. `resolve_field("sale.order", "amount_total", "17.0", from_module="sale_management")` returns only the `sale_management` override row).
+    - [ ] **`noqa` support in `lint_check`** — `# noqa: <rule_id>` inline comment suppresses the matching rule for that line, mirroring ruff/flake8 convention.
+    - [ ] **CLI batch audit** — `python -m src.indexer audit-repo --profile <name> --output audit.json` emits a JSON file with per-module coverage stats (fields/methods/views/JS chunks/stylesheets/lint violations) for executive reporting.
+  - Acceptance: each sub-task has its own unit test + snapshot test; output schemas documented in `docs/reference/mcp-tool-routing.md` for the 3 MCP-facing changes (magic fields, `from_module`, noqa).
+  - Dependency: none — quick wins are intentionally orthogonal to other M10 work.
+
+- [ ] **Pgvector re-embed for cleaned-up stubs** — MED
+  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
+  - Scope: post-launch overnight job (or incremental indexer pass) that re-embeds modules whose `field_count > 0` but `embeddings_count == 0` — caught up modules that were skipped due to historical embedder errors / stub field rows now backfilled by WI-A2.
+  - Acceptance: `python -m src.indexer reembed-stubs --profile <name>` enumerates affected modules via `LEFT JOIN embeddings`, re-runs `make_chunks` + `write_module_embeddings` for those modules only; idempotent (re-running is a no-op when no stubs remain); log line summarizes count and total embed calls per ADR-0010 D2.
+  - Dependency: WI-A2 (era1 field-gap fix) must be deployed in production so historical stubs are no longer regenerated.
+
+- [ ] **Wire up "Reseed Patterns" Web UI button** — LOW
+  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
+  - Scope: existing Astro admin page renders the button but onClick is a no-op. Wire it to `POST /api/admin/indexer/reseed-patterns` which internally spawns `subprocess.Popen([python, '-m', 'src.indexer', '--reseed-patterns'])` and returns a job-id polled by the front-end (5s interval, same pattern as `clone_status` per ADR-0008).
+  - Acceptance: button triggers detached background process; UI shows status `pending` → `running` → `done`/`error`; backend route protected by `@audit_action` decorator (per ADR-0021) + admin-only check.
+  - Dependency: existing reseed CLI flag (already implemented in `__main__.py`) — task is the wiring layer only.
+
+- [ ] **Nonce-based CSP** — MED (PR #118 follow-up)
+  - Source: `internal-plan.md` § "Out of scope" item 10 (WI-A7 absorption); also tracked in MEMORY note `m9_csp_permissions_policy_gap`.
+  - Scope: replace `'unsafe-inline'` script/style sources with per-request nonces. nginx generates nonce via `$request_id`; Astro middleware reads `X-CSP-Nonce` request header and emits `<script nonce="...">` for SSR-rendered scripts; FastAPI Jinja-less responses inject nonce into `<style nonce="...">` for any embedded CSS.
+  - Acceptance: production CSP header includes `script-src 'nonce-<random>' 'self'` (no `'unsafe-inline'`); browser console clean of CSP violations on `/admin/*` + `/install/`; CI test verifies nonce uniqueness across 10 sequential requests.
+  - Dependency: PR #118 (dual-layer CSP foundation) merged — already done as of commit `a69cb7c`.
+
+---
+
+## Milestone 10.5 — "ORM Intelligence Wow"
+
+**Status:** `[ ]` Not started.
+
+**Intent:** New MCP tool family for ORM-level validation — domains, depends graphs, relation chains. Sits between drill-down tools (M1–M5) and architectural impact (M4 `impact_analysis`).
+**Outcome:** AI client validates an ORM domain (`[('partner_id.country_id', '=', 'VN')]`) against the actual model graph before suggesting it to the user — no more hallucinated fields in domain expressions.
+
+- [ ] **ORM Intelligence MCP tools** — HIGH (4 tools shipped together as a family)
+  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
+  - 4 new MCP tools:
+    - [ ] **`validate_domain(model, domain, odoo_version)`** — parse the domain string/list, walk each `('field.subfield...', op, value)` term against the Neo4j Field graph, return `ok` or list of `{term, error: 'field not found' | 'invalid operator' | 'comodel mismatch'}`.
+    - [ ] **`resolve_orm_chain(model, dotted_path, odoo_version)`** — traverse a dotted path (`partner_id.country_id.code`) returning the terminal field type + the intermediate Many2one comodels. Errors out at the first broken hop with `{step: N, model: X, field: Y, reason: 'missing'}`.
+    - [ ] **`validate_depends(model, method, odoo_version)`** — read the `@api.depends('field.subfield')` decorator on the method, validate each dependency via `resolve_orm_chain`, return violations + suggested corrections (e.g. typo distance ≤ 2 → "did you mean X?").
+    - [ ] **`validate_relation(model, field, target_model, odoo_version)`** — assert that `model.field` is a Many2one/One2many/Many2many pointing at `target_model` (or any of its ancestors via INHERITS). Returns `ok` or `{actual_comodel, expected_comodel, suggestion}`.
+  - Acceptance: each tool follows ADR-0023 tree-grammar contract (§1 header + §4 Next-step hint mapping); routing matrix `docs/reference/mcp-tool-routing.md` lists all 4 tools with TRIGGER phrases EN + VI; integration tests against `viindoo_17` fixture profile; snapshot tests for tree-text output.
+  - Dependency: requires `:Field.comodel_name` property to be reliably populated (verify via `MATCH (f:Field {ttype: 'many2one'}) WHERE f.comodel_name IS NULL RETURN count(f)` — should be near zero for v10+). v8/v9 era1 may have partial coverage (best-effort).
+  - ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; section "Follow-up (M10/M10.5)" added).
+
+---
+
+## Milestone 11 — "Architectural Wow" + Curation Depth
+
+**Status:** `[ ]` Not started.
+
+**Intent:** Architectural refactors (parser hook registry, RelaxNG XML validation) + curation depth (lint rules 10-30 → 50+/version, pattern catalogue 35 → 100+). M11 is the milestone where OSM transitions from "covers Odoo" to "rivals/exceeds Odoo LS for static analysis".
+**Outcome:** Parser pipeline replaces hard-coded era branches with a `(min_version, max_version, fn)` registry — adding v20 support becomes a single registry append. RelaxNG schema validation catches malformed XML in view inheritance chains. Pattern catalogue absorbs community contributions per ADR-0009.
+
+- [ ] **Pattern catalogue expansion 35 → 100+** — MED (community track)
+  - Source: `internal-plan.md` § "Out of scope" item 2 (WI-A7 absorption); extends ADR-0009 community contribution policy.
+  - Scope: per ADR-0009, accept community PRs to `patterns.json` with curator review. Target: ≥100 patterns total (current ~83 + 30 from WI-A3 backfill = 113 once batch lands; aim ≥100 retained after curation prune).
+  - Acceptance: pattern count test `test_patterns_minimum_count.py::test_minimum_100_patterns` passes; new patterns include CSS/SCSS entries per ADR-0025 Future Work item 2 (Bootstrap variable overrides, OWL scoped CSS, mixin reuse).
+  - Dependency: ADR-0009 community contribution flow already documented; needs marketing push to attract PRs.
+
+- [ ] **Static spec_data deepening — lint rules 50+/version** — MED
+  - Source: `internal-plan.md` § "Out of scope" item 4 (WI-A7 absorption).
+  - Scope: extend `spec_data/lint_rules_X.0.json` from current baseline (per WI-A4: v8=20, v9=21, ..., v19=26) to ≥50 rules per major version. Prioritize rules with high frequency in real Odoo deprecation warnings; add ESLint SCSS rules (e.g. `scss/no-duplicate-dollar-variables`) per ADR-0025 Future Work item 4.
+  - Acceptance: `test_lint_rules_minimum_count.py::test_minimum_50_per_version` passes for v10+ (v8/v9 may stay at curation baseline due to scarce source data); new rules categorized via existing `category` field (`deprecated_api`, `security`, `performance`, `style`).
+  - Dependency: WI-A4 baseline must be deployed and production-validated (i.e. real usage logs reveal high-value gaps).
+
+- [ ] **Parser hooks registry refactor** — HIGH (architectural)
+  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
+  - Scope: replace hard-coded era branches in `parser_python.py`, `parser_js.py`, `parser_odoo_core.py` with a `(min_version, max_version, fn)` registry. Adding v20 support becomes a single registry append (`PARSER_REGISTRY.append((20, None, parse_v20_style))`) instead of a new `if major >= 20:` branch in 3 files.
+  - Acceptance: regression test — all existing era1/era2/era3 fixtures pass via the new registry without behavioral change; new entry registered for v8/v9 era1 (`parse_legacy_columns`); registry sorts by `min_version` and short-circuits on first match (no fall-through bug).
+  - **ADR impact: invalidates parts of ADR-0005 (era-aware path resolution).** New ADR required — `ADR-0026 parser hooks registry` — documenting (a) registry data structure, (b) the parser_python/parser_js/parser_odoo_core unification, (c) version overlap policy when two registry entries match (highest `min_version` wins). ADR-0005 to be retained as historical record; superseded section added on land.
+  - Dependency: must land BEFORE any v20 work to avoid duplicating the era-branch debt.
+
+- [ ] **RelaxNG XML schema validation port from Odoo LS** — MED
+  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
+  - Scope: port Odoo Language Server's RelaxNG schema files for v15+ view XML; integrate into `parser_xml.py` post-parse step that validates each `<record>`/`<template>` against the schema; surfaces errors as new `:LintViolation` rows tied to the View node.
+  - Acceptance: `validate_xml.py` script runs against `viindoo_17` profile producing a violations report; `lint_check(language='xml')` MCP tool returns RelaxNG errors alongside existing Python lint output.
+  - Dependency: requires `lxml` (already in `pyproject.toml`) and Odoo LS schema files (vendored under `src/indexer/schemas/odoo_xml/v15+.rng`). Licence-check Odoo LS LGPL terms before vendoring.
 
 ---
 

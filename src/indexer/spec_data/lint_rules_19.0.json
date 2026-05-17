@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-17",
-  "_note": "Curated from pylint-odoo v9.x for Odoo v17. Rules merged with live-extracted pylint-odoo/ESLint/ruff rules (per parser_lint_rules.py). v17: `name_get()` removed (use `_compute_display_name`), `group_operator` still valid (renamed v18), `UserError` lazy args, `active_test` context, new asset bundling stable.",
+  "_note": "Curated from pylint-odoo v9.x for Odoo v19. v19 adds: `@api.deprecated` decorator for marking deprecated symbols, `ruff.toml` at repo root (new lint layer), OWL v3 incremental adoption, `_compute_display_name` canonical. Rules merged with live-extracted rules when odoo_source_root provided.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -16,7 +16,7 @@
       "message": "Manifest file is missing required key `version`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py",
-      "fix_template": "Add `'version': '17.0.1.0.0'`."
+      "fix_template": "Add `'version': '19.0.1.0.0'`."
     },
     {
       "rule_id": "W8103",
@@ -99,35 +99,41 @@
     {
       "rule_id": "W8201",
       "kind": "pylint-odoo",
-      "message": "String formatting used in UserError/ValidationError — use lazy args or named placeholders instead of %-interpolation.",
+      "message": "String formatting used in UserError/ValidationError — use lazy args or named placeholders.",
       "severity": "warning",
-      "file_pattern": "**/*.py",
-      "fix_template": "raise UserError(_('Hello %(name)s') % {'name': name})  # acceptable\nraise UserError(_('Hello %s', name))  # preferred (Odoo 16+ lazy format)"
+      "file_pattern": "**/*.py"
     },
     {
       "rule_id": "W8202",
       "kind": "pylint-odoo",
-      "message": "`name_get()` override is removed in v17 — use `_compute_display_name()` instead.",
+      "message": "`name_get()` is removed in v17+ — use `_compute_display_name()` instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace `def name_get(self):` with `def _compute_display_name(self):` setting `rec.display_name = ...`.",
       "core_symbol_qname": "odoo.models.BaseModel.name_get"
     },
     {
-      "rule_id": "W8203",
+      "rule_id": "W8210",
       "kind": "pylint-odoo",
-      "message": "`active` field defined without `active_test` context consideration — filtered domains may behave unexpectedly.",
-      "severity": "info",
-      "file_pattern": "**/*.py",
-      "fix_template": "When searching archived records, use `self.with_context(active_test=False).search([...])`."
-    },
-    {
-      "rule_id": "W8204",
-      "kind": "pylint-odoo",
-      "message": "`_sql_constraints` entry uses invalid constraint type.",
+      "message": "`group_operator` renamed to `aggregator` in v18 — update field definition.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Valid PostgreSQL constraint: `('unique_field', 'UNIQUE(field)', 'Error message')`."
+      "fix_template": "Replace `group_operator='sum'` with `aggregator='sum'`.",
+      "core_symbol_qname": "odoo.fields.Field.group_operator"
+    },
+    {
+      "rule_id": "W8211",
+      "kind": "pylint-odoo",
+      "message": "`read_group()` signature changed — `lazy` parameter removed.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "core_symbol_qname": "odoo.models.BaseModel.read_group"
+    },
+    {
+      "rule_id": "W8220",
+      "kind": "pylint-odoo",
+      "message": "Use of non-deprecated symbol annotated with `@api.deprecated` in v19.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
     },
     {
       "rule_id": "no-var",
@@ -160,7 +166,7 @@
     {
       "rule_id": "BLE001",
       "kind": "ruff-builtin",
-      "message": "Blind exception: do not catch `Exception` without re-raising or logging — catches too broadly.",
+      "message": "Blind exception: do not catch `Exception` without re-raising or logging.",
       "severity": "warning",
       "file_pattern": "**/*.py"
     },
@@ -176,8 +182,14 @@
       "kind": "ruff-builtin",
       "message": "Import block is unsorted or has wrong grouping.",
       "severity": "warning",
-      "file_pattern": "**/*.py",
-      "fix_template": "Run `ruff check --fix` to auto-sort imports."
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "UP",
+      "kind": "ruff-builtin",
+      "message": "Use modern Python syntax (pyupgrade rules).",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
     }
   ]
 }
