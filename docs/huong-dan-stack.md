@@ -631,6 +631,7 @@ Web UI `POST /repos/{id}/clone` auto-clone SSH repos với FERNET-decrypted key.
 | Pin fastmcp version | API thay đổi giữa 2.x và 3.x | `fastmcp>=2.3,<3.0` |
 | Tên folder cho Odoo version | Chỉ là quy ước viindoo-clone.sh | Dùng `git symbolic-ref --short HEAD` |
 | Upgrade authlib lên 1.7.0+ | 1.7.0 thêm `AuthlibDeprecationWarning` ở import time | Pin `authlib>=1.6.5,<1.7.0` |
+| tree-sitter-css parse fail | CSS/SCSS file không compile — fallback regex bỏ qua? | M9: tree-sitter-css ≥0.21 + regex fallback (xem `parser_css.py`), silent-skip nếu không install |
 
 ---
 

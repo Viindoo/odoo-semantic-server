@@ -234,9 +234,26 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:JSPatch  { target, patch_name, odoo_version, module, era })
                                                     // era: extend | include | patch
 (:OWLComp  { name, odoo_version, module, template })
+(:Stylesheet { file_path, module, odoo_version, language, selector_count,
+               variable_count, import_count, mixin_count })
+                                                    // KEY = (file_path, module, odoo_version)
+                                                    // language: css|scss
+                                                    // mixin_count always 0 for CSS
 ```
 
 **M4.5 (live) + M4.6 (planned) — see [ADR-0002](adr/0002-spec-schema-policy.md), [ADR-0003](adr/0003-pattern-example-storage.md):**
+
+**M9 Coverage Fill (live):**
+
+```
+// M9 — CSS/SCSS stylesheet indexing
+(:Stylesheet { file_path, module, odoo_version, language, selector_count,
+               variable_count, import_count, mixin_count })
+                                  // KEY = (file_path, module, odoo_version)
+                                  // language ∈ {css, scss}
+                                  // Embedding vectors ở pgvector embeddings table
+                                  // (chunk_type ∈ {css, scss}, module, odoo_version)
+```
 
 ```
 // M4.5 — Odoo upstream specs (per-version, lifecycle qua edge)
@@ -301,6 +318,10 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 (:JSPatch )-[:PATCHES   ]->(:JSPatch)               // legacy patch chain
 (:OWLComp )-[:EXTENDS   ]->(:OWLComp)
 (:OWLComp )-[:BOUND_TO  ]->(:Model)
+
+// Lớp Stylesheet (M9 Coverage Fill)
+(:Stylesheet)-[:DEFINED_IN]->(:Module)
+(:Stylesheet)-[:IMPORTS   ]->(:Stylesheet)          // SCSS @import chain; unresolved silent-skip
 ```
 
 **M4.5 + M4.6 (live):**

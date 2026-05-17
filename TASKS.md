@@ -553,6 +553,50 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 
 ---
 
+## Milestone 9 Coverage Fill — 2026-05-17
+
+**Batch name:** `coverage-fill-batch` (6 WIs orchestrated via plan `streamed-cuddling-phoenix.md`)
+
+- [x] **WI-A1** CSS/SCSS parser + `:Stylesheet` node + `:IMPORTS` edge + ADR-0025 (commit 6db163e)
+  - New `src/indexer/parser_css.py` (430 LoC) + `parser_scss.py` (441 LoC) — tree-sitter-css backend + regex fallback
+  - `:Stylesheet` node with composite MERGE key `(file_path, module, odoo_version)`, properties: `language ∈ {css, scss}`, `selector_count`, `import_count`, `variable_count`, `mixin_count`
+  - `:DEFINED_IN` + `:IMPORTS` relationships; pgvector chunk_types `css`/`scss` for semantic search
+  - 18 tests pass (8 CSS + 10 SCSS)
+
+- [x] **WI-A2** v8 era1 `_columns` balanced-paren extraction fix (commit 1d0e8dd)
+  - Fixed string-aware brace scan — no longer truncates at `{` inside string literals
+  - Recovers ~1,158 missing fields (Neo4j 8,341 vs pgvector 7,183 gap closed)
+  - `FieldInfo.source_definition` now populated for era1 fields
+  - 9 new tests
+
+- [x] **WI-A3** PatternExample v9-v15 backfill (commit d6a2406)
+  - 30 patterns appended (83 → 113 total)
+  - Per-version: v9=4, v10=5, v11=5, v12=5, v13=4, v14=3, v15=4 patterns
+  - All snippets from real `~/git/odoo_{9..15}.0/` sources; stable-API focus
+  - 2 tests pass + schema validation OK
+
+- [x] **WI-A4** LintRule static curation v8-v19 (commit a1b0298)
+  - 12 `spec_data/lint_rules_X.0.json` populated (v8 to v19), `_curate_status: "complete"`
+  - Per-version: v8=20, v9=21, v10=24, v11=23, v12=22, v13=22, v14=23, v15=21, v16=21, v17=24, v18=24, v19=26 rules
+  - New `lint_rule.schema.json`; 49 tests pass
+
+- [x] **WI-A5** CLIFlag static curation v8-v19 (commit 0abd715)
+  - 12 `spec_data/cli_flags_X.0.json` populated (v8 to v19), `_curate_status: "complete"`
+  - Per-version: v8=72, v9=66, v10=67, v11=71, v12=70, v13=72, v14=73, v15=76, v16=78, v17=80, v18=85, v19=72 flags
+  - Cross-version deprecation tracking (--xmlrpc-interface → --http-interface, etc.)
+  - New `cli_flag.schema.json`; 144 parametrized tests pass
+
+- [x] **WI-A6** Docs hygiene transcribe (this commit)
+  - Mechanical update: README + TASKS + CHANGELOG + architecture docs reflect A1-A5 implementation facts
+  - No schema changes, no new ADRs (ADR-0025 landed with A1)
+
+- [ ] **WI-A7** Deferred items absorption (pending Opus dispatch)
+  - Reason: requires cross-document reasoning for milestone placement + ADR follow-up sections
+
+**Post-deploy ops (B1–B11) tracked separately — see plan section "Group B".**
+
+---
+
 ## Milestone 10 — "Billing Wow"
 
 **Status:** `[ ]` Not started.
