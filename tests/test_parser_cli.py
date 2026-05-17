@@ -9,12 +9,14 @@ Notes:
   - Odoo uses optparse (not argparse) — `group.add_option('--longpolling-port', ...)`.
   - We accept both add_option and add_argument shapes for forward compat.
 """
+import json
 from pathlib import Path
 
 import pytest
 
 from src.indexer.models import CLIFlagInfo
 from src.indexer.parser_cli import (
+    _load_static_cli_flags,
     _parse_cli_module,
     _parse_options_calls,
     compute_cli_flag_diff,
@@ -141,3 +143,28 @@ def test_parse_cli_flags_smoke_real_v17_picks_up_http_port():
     flags = parse_cli_flags("/home/tuan/git/odoo17", "17.0")
     flag_names = {f.flag_name for f in flags}
     assert "--http-port" in flag_names
+
+
+def test_load_static_cli_flags_coalesces_null_command_to_server(tmp_path):
+    """Static JSON with `command_name: null` (global flag) must coalesce to "server".
+
+    Regression: WI-A5 curated 12 spec_data files with `command_name: null` for
+    global flags like --config. Neo4j MERGE rejects null property values in
+    node identity keys (`Cannot merge ... null property value for 'command_name'`),
+    so the loader must coerce null to the live-parser default "server" before
+    handing CLIFlagInfo to the writer.
+    """
+    static_dir = tmp_path
+    (static_dir / "cli_flags_99.0.json").write_text(json.dumps({
+        "_curate_status": "complete",
+        "flags": [
+            {"flag_name": "--config", "command_name": None, "help": "global flag"},
+            {"flag_name": "--http-port", "command_name": "server", "help": "scoped"},
+            {"flag_name": "--save"},  # key missing entirely → also "server"
+        ],
+    }))
+    out = _load_static_cli_flags("99.0", static_dir)
+    by_name = {f.flag_name: f.command_name for f in out}
+    assert by_name["--config"] == "server", "explicit null must coalesce"
+    assert by_name["--http-port"] == "server", "explicit server preserved"
+    assert by_name["--save"] == "server", "missing key default unchanged"

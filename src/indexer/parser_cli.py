@@ -181,7 +181,7 @@ def _load_static_cli_flags(
             continue
         out.append(CLIFlagInfo(
             flag_name=f["flag_name"],
-            command_name=f.get("command_name", "server"),
+            command_name=f.get("command_name") or "server",
             odoo_version=odoo_version,
             status=f.get("status", "stable"),
             default=f.get("default"),
