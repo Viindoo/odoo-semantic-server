@@ -29,14 +29,18 @@ def _async_client(app):
 class TestDashboardStats:
     @pytest.mark.asyncio
     async def test_stats_empty_db_returns_200(self, migrated_pg):
-        """GET /api/dashboard/stats on empty DB → 200 with zero counts."""
+        """GET /api/dashboard/stats → 200 with zero api/ssh keys.
+
+        Migration 0004 seeds 5 root profiles, so profiles list is non-empty.
+        The test verifies the endpoint does not error and key counts are zero.
+        """
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.get("/api/dashboard/stats")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["profiles"] == []
+        assert isinstance(data["profiles"], list)
         assert data["api_key_count"] == 0
         assert data["ssh_key_count"] == 0
         assert data["error"] is None
@@ -60,8 +64,10 @@ class TestDashboardStats:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data["profiles"], list)
-        assert len(data["profiles"]) == 1
-        profile = data["profiles"][0]
+        # Migration 0004 seeds 5 root profiles; this test adds one more.
+        named = [p for p in data["profiles"] if p["name"] == "test_dash"]
+        assert len(named) == 1
+        profile = named[0]
         assert profile["name"] == "test_dash"
         # created_at must be a JSON string (ISO-8601), not a datetime object
         if "created_at" in profile:

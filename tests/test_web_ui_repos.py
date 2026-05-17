@@ -35,12 +35,13 @@ class TestProfilesEndpoint:
 
     @pytest.mark.asyncio
     async def test_get_profiles_shows_no_profiles_initially(self, migrated_pg):
+        # Migration 0004 seeds 5 root profiles; endpoint is non-empty from the start.
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.get("/api/repos/profiles")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["profiles"] == []
+        assert isinstance(body["profiles"], list)
 
     @pytest.mark.asyncio
     async def test_create_profile_returns_ok(self, migrated_pg):
@@ -65,9 +66,10 @@ class TestProfilesEndpoint:
                 json={"name": "viindoo17", "version": "17.0", "description": "test"},
             )
         profiles = repo_store().list_profiles()
-        assert len(profiles) == 1
-        assert profiles[0]["name"] == "viindoo17"
-        assert profiles[0]["odoo_version"] == "17.0"
+        # Migration 0004 seeds 5 root profiles; filter to verify the created one.
+        named = [p for p in profiles if p["name"] == "viindoo17"]
+        assert len(named) == 1
+        assert named[0]["odoo_version"] == "17.0"
 
     @pytest.mark.asyncio
     async def test_get_profiles_shows_profile_after_create(self, migrated_pg):
@@ -570,9 +572,11 @@ class TestStatusBadge:
         assert resp.status_code == 200
         body = resp.json()
         profiles = body.get("profiles", [])
-        assert len(profiles) == 1
+        # Migration 0004 seeds 5 root profiles; filter to the one we created.
+        badge_profiles = [p for p in profiles if p["name"] == "badge_profile"]
+        assert len(badge_profiles) == 1
         # Profile should contain repos
-        profile = profiles[0]
+        profile = badge_profiles[0]
         repos = profile.get("repos", [])
         assert len(repos) == 1
         # last_job should be attached
@@ -600,8 +604,10 @@ class TestStatusBadge:
 
         body = resp.json()
         profiles = body.get("profiles", [])
-        assert len(profiles) == 1
-        repos = profiles[0].get("repos", [])
+        # Migration 0004 seeds 5 root profiles; filter to the one we created.
+        nobadge_profiles = [p for p in profiles if p["name"] == "nobadge_profile"]
+        assert len(nobadge_profiles) == 1
+        repos = nobadge_profiles[0].get("repos", [])
         assert len(repos) == 1
         last_job = repos[0].get("last_job")
         assert last_job is None
@@ -621,16 +627,16 @@ class TestProfileHierarchyWebUI:
         """POST /api/repos/profiles with parent_id creates profile with FK set."""
         from src.db.pg import repo_store
 
-        # Create the parent profile first
-        parent_id = repo_store().add_profile("odoo_17", "17.0")
+        # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+        parent_id = repo_store().add_profile("test_root_99", "99.0")
 
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.post(
                 "/api/repos/profiles",
                 json={
-                    "name": "standard_viindoo_17",
-                    "version": "17.0",
+                    "name": "test_mid_99",
+                    "version": "99.0",
                     "description": "",
                     "parent_id": parent_id,
                 },
@@ -642,7 +648,7 @@ class TestProfileHierarchyWebUI:
         # Verify FK was set in DB
         profiles = repo_store().list_profiles()
         child = next(
-            (p for p in profiles if p["name"] == "standard_viindoo_17"), None
+            (p for p in profiles if p["name"] == "test_mid_99"), None
         )
         assert child is not None
         assert child["parent_profile_id"] == parent_id
@@ -692,8 +698,9 @@ class TestProfileHierarchyWebUI:
         """PATCH /api/repos/profiles/{id}/parent updates parent_profile_id."""
         from src.db.pg import repo_store
 
-        parent_id = repo_store().add_profile("odoo_17", "17.0")
-        child_id = repo_store().add_profile("standard_viindoo_17", "17.0")
+        # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+        parent_id = repo_store().add_profile("test_root_99", "99.0")
+        child_id = repo_store().add_profile("test_mid_99", "99.0")
 
         app = create_app()
         async with _async_client(app) as client:
@@ -717,8 +724,9 @@ class TestProfileHierarchyWebUI:
         """PATCH with parent_id=null clears the parent (root again)."""
         from src.db.pg import repo_store
 
-        parent_id = repo_store().add_profile("odoo_17", "17.0")
-        child_id = repo_store().add_profile("standard_viindoo_17", "17.0")
+        # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+        parent_id = repo_store().add_profile("test_root_99", "99.0")
+        child_id = repo_store().add_profile("test_mid_99", "99.0")
         repo_store().set_profile_parent(child_id, parent_id)
 
         app = create_app()
@@ -738,9 +746,10 @@ class TestProfileHierarchyWebUI:
         """PATCH with cycle returns 422 + error message (was 400 before W-RC)."""
         from src.db.pg import repo_store
 
+        # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
         # Build A → B, then try B.parent = A (cycle)
-        a_id = repo_store().add_profile("odoo_17", "17.0")
-        b_id = repo_store().add_profile("standard_viindoo_17", "17.0")
+        a_id = repo_store().add_profile("test_root_99", "99.0")
+        b_id = repo_store().add_profile("test_mid_99", "99.0")
         repo_store().set_profile_parent(b_id, a_id)  # B's parent = A
 
         app = create_app()
@@ -833,8 +842,9 @@ class TestProfileHierarchyWebUI:
         """DELETE on parent profile with children is blocked (ON DELETE RESTRICT)."""
         from src.db.pg import repo_store
 
-        parent_id = repo_store().add_profile("odoo_17", "17.0")
-        child_id = repo_store().add_profile("standard_viindoo_17", "17.0")
+        # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
+        parent_id = repo_store().add_profile("test_root_99", "99.0")
+        child_id = repo_store().add_profile("test_mid_99", "99.0")
         repo_store().set_profile_parent(child_id, parent_id)
 
         # Mock Neo4j + indexer_is_running so delete_profile doesn't fail on infra

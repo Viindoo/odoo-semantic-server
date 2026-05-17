@@ -411,8 +411,9 @@ def test_two_profiles_neo4j_isolation_at_version_boundary(
     with patch("src.indexer.pipeline.open_production_pg", side_effect=_open_test_pg):
         result = index_all(clean_pg, profile_workers=2)
 
-    # Both profiles must succeed
-    assert result["profiles_ok"] == 2, (
+    # Both test profiles must succeed (migration 0004 seeds 5 root profiles with no repos,
+    # which also succeed — so profiles_ok >= 2).
+    assert result["profiles_ok"] >= 2, (
         f"Expected both profiles indexed OK; got profiles_failed={result['profiles_failed']}"
     )
     assert result["profiles_failed"] == [], (
