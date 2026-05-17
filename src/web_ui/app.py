@@ -52,6 +52,28 @@ class _LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Inject security headers on every FastAPI response (M9 CSP hardening).
+
+    FastAPI is a JSON-only API (ADR-0015) — strictest CSP applies:
+    `default-src 'none'` forbids all resource loading; browsers never
+    render HTML from this layer.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        # https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        )
+        # https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy
+        response.headers["Permissions-Policy"] = (
+            "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
+            "magnetometer=(), microphone=(), payment=(), usb=()"
+        )
+        return response
+
+
 class _MaintenanceModeMiddleware(BaseHTTPMiddleware):
     """Return 503 for non-restore requests while a restore is in progress.
 
@@ -97,13 +119,14 @@ def create_app() -> FastAPI:
     )
 
     # Middleware ordering (FastAPI/Starlette add_middleware is LIFO):
-    # Last added = outermost (runs first in request chain).
+    # Last added = outermost (runs first on request, last on response).
     # Required order (outermost → innermost):
-    #   1. LoopbackOnly       — reject non-loopback (I6 CSRF mitigation) before anything else.
-    #   2. MaintenanceMode    — block all non-restore requests during restore (M9 W-RS).
-    #   3. SessionMiddleware  — populate request.session from signed cookie.
-    #   4. AuthRequiredMiddleware — check request.session for valid login.
-    #   5. CORSMiddleware     — documented no-op (see comment below).
+    #   1. SecurityHeaders    — inject CSP/Permissions-Policy on every response.
+    #   2. LoopbackOnly       — reject non-loopback (I6 CSRF mitigation) before anything else.
+    #   3. MaintenanceMode    — block all non-restore requests during restore (M9 W-RS).
+    #   4. SessionMiddleware  — populate request.session from signed cookie.
+    #   5. AuthRequiredMiddleware — check request.session for valid login.
+    #   6. CORSMiddleware     — documented no-op (see comment below).
     # Add in REVERSE order so the last add_middleware call = outermost.
 
     # Innermost: CORS (added first → innermost).
@@ -142,8 +165,11 @@ def create_app() -> FastAPI:
     # Middle: maintenance mode (blocks non-restore requests during restore)
     app.add_middleware(_MaintenanceModeMiddleware)
 
-    # Outermost: loopback IP check (added last → runs first)
+    # Outermost-1: loopback IP check
     app.add_middleware(_LoopbackOnlyMiddleware)
+
+    # Outermost: security headers — added last so they wrap every response
+    app.add_middleware(_SecurityHeadersMiddleware)
 
     # Auth endpoints (exempt from AuthRequiredMiddleware via /api/auth/ prefix)
     from src.web_ui.routes import login, oauth, signup
