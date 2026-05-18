@@ -49,12 +49,10 @@ async def list_api_keys(request: Request):
     error = None
     try:
         from src.db.pg import auth_store
-        from src.web_ui.auth import current_user_id
+        from src.web_ui.auth import current_user_id, is_admin_session
 
         uid = current_user_id(request)
-        # Determine if caller is admin: admin keys have user_id=NULL; if uid is None
-        # (no session / CLI context) we treat as admin for backward compat.
-        is_admin = uid is None or request.session.get("is_admin", False)
+        is_admin = is_admin_session(request)
         keys = auth_store().list_api_keys(user_id=uid, admin=is_admin)
     except Exception as e:
         error = str(e)
@@ -77,7 +75,7 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
 
     try:
         from src.db.pg import auth_store
-        from src.web_ui.auth import current_user_id
+        from src.web_ui.auth import current_user_id, is_admin_session
 
         uid = current_user_id(request)
 
@@ -97,7 +95,7 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
         )
         new_raw_key = raw_key
 
-        is_admin = uid is None or request.session.get("is_admin", False)
+        is_admin = is_admin_session(request)
         keys = auth_store().list_api_keys(user_id=uid, admin=is_admin)
     except Exception as e:
         error = str(e)
@@ -115,13 +113,29 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
 @router.post("/{key_id}/deactivate")
 @audit_action("api_key.deactivate", target_param="key_id")
 async def deactivate_api_key(request: Request, key_id: int):
-    """Deactivate an API key."""
-    try:
-        from src.db.pg import auth_store
-        from src.mcp.middleware import _cache_invalidate_by_key_id
+    """Deactivate an API key.
 
-        auth_store().deactivate_api_key(key_id)
-        _cache_invalidate_by_key_id(key_id)  # B1: immediate in-process cache clear
+    Admin: unconditional deactivate (any key).
+    Non-admin: ownership-guarded — only keys owned by the caller (403 otherwise).
+    Unauthenticated (uid=None in non-admin context): 401.
+    """
+    from src.db.pg import auth_store
+    from src.mcp.middleware import _cache_invalidate_by_key_id
+    from src.web_ui.auth import current_user_id, is_admin_session
+
+    uid = current_user_id(request)
+    store = auth_store()
+
+    try:
+        if is_admin_session(request):
+            store.deactivate_api_key(key_id)  # admin → unconditional
+        else:
+            if uid is None:
+                return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
+            rows = store.deactivate_api_key_for_user(key_id, uid)
+            if rows == 0:
+                return JSONResponse(_json_safe({"error": "not_owner"}), status_code=403)
+        _cache_invalidate_by_key_id(key_id)
         _logger.info("API key %s deactivated", key_id)
     except Exception as e:
         _logger.warning("Deactivate key %s failed: %s", key_id, e)

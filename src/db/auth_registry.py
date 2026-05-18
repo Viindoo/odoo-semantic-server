@@ -122,17 +122,19 @@ class AuthStore:
 
         Returns:
             List of dicts with keys: id, name, key_prefix, active, created_at,
-            last_used_at, user_id, expires_at.
+            last_used_at, user_id, expires_at, owner_username (None for system keys).
         """
         select = (
-            "SELECT id, name, key_prefix, active, created_at, last_used_at, "
-            "user_id, expires_at FROM api_keys"
+            "SELECT k.id, k.name, k.key_prefix, k.active, k.created_at, k.last_used_at, "
+            "k.user_id, k.expires_at, u.username AS owner_username "
+            "FROM api_keys k "
+            "LEFT JOIN webui_users u ON u.id = k.user_id"
         )
         if admin or user_id is None:
-            query = select + " ORDER BY id"
+            query = select + " ORDER BY k.id"
             params: tuple = ()
         else:
-            query = select + " WHERE user_id = %s ORDER BY id"
+            query = select + " WHERE k.user_id = %s ORDER BY k.id"
             params = (user_id,)
 
         with self._pool.checkout() as conn:
@@ -149,6 +151,26 @@ class AuthStore:
                 conn,
                 "UPDATE api_keys SET active = FALSE WHERE id = %s",
                 (key_id,),
+            )
+
+    def deactivate_api_key_for_user(self, key_id: int, user_id: int) -> int:
+        """Deactivate an API key only if it belongs to the given user.
+
+        Ownership-safe variant: adds ``AND user_id = %s`` so a non-admin user
+        cannot deactivate keys they do not own.
+
+        Args:
+            key_id: The api_key id to deactivate.
+            user_id: The webui_users.id that must own the key.
+
+        Returns:
+            Number of rows updated (1 if found + owned, 0 if not found or not owned).
+        """
+        with self._pool.checkout() as conn:
+            return self._pool.execute(
+                conn,
+                "UPDATE api_keys SET active = FALSE WHERE id = %s AND user_id = %s",
+                (key_id, user_id),
             )
 
     # ------------------------------------------------------------------

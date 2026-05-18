@@ -125,6 +125,23 @@ def current_user_id(request: Request) -> int | None:
         return None
 
 
+def is_admin_session(request: Request) -> bool:
+    """DB-sourced admin check (per ADR-0011 — never trust session for privilege).
+
+    Returns True for CLI/no-session context (backward compat with prior
+    global-key behavior where user_id IS NULL keys were treated as admin).
+    """
+    from src.db.pg import auth_store
+
+    uid = current_user_id(request)
+    if uid is None:
+        return True
+    try:
+        return bool(auth_store().get_user_field(uid, "is_admin"))
+    except Exception:
+        return False
+
+
 async def require_admin(request: Request) -> int:
     """FastAPI Depends: return user_id if session user is an admin.
 
