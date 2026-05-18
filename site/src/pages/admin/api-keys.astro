@@ -20,9 +20,12 @@ let keysData: {
   error?: string | null;
 } = { keys: [] };
 
-// Fetch admin users for the assign-owner dropdown
-type AdminUser = { id: number; username: string; is_admin: boolean };
-let adminUsers: AdminUser[] = [];
+// Fetch active users for the assign-owner dropdown.
+// Per ADR-0026 §Decision 2: all active (non-deactivated) webui_users are
+// valid owners — not just admins. System (NULL-owner) keys can be claimed
+// by any active user, including non-admins.
+type AssignableUser = { id: number; username: string; is_admin: boolean; is_active: boolean };
+let assignableUsers: AssignableUser[] = [];
 
 try {
   const res = await fetch(`${FASTAPI_BASE}/api/api-keys`, {
@@ -39,7 +42,7 @@ try {
   });
   if (res.ok) {
     const data = await res.json();
-    adminUsers = (data.users ?? []).filter((u: AdminUser) => u.is_admin);
+    assignableUsers = (data.users ?? []).filter((u: AssignableUser) => u.is_active !== false);
   }
 } catch {
   // silently ignore — dropdown will be empty
@@ -164,14 +167,14 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
                 <td class="px-4 py-3 text-gray-500 text-xs">{key.last_used_at?.slice(0, 16).replace('T', ' ') ?? 'Never'}</td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-2 flex-wrap">
-                    {key.user_id === null && adminUsers.length > 0 && (
+                    {key.user_id === null && assignableUsers.length > 0 && (
                       <div class="flex items-center gap-1 assign-owner-row" data-key-id={String(key.id)}>
                         <select
                           class="text-xs border border-gray-300 rounded px-2 py-1 assign-owner-select"
                           aria-label={`Assign owner for key ${key.name}`}
                         >
                           <option value="">— assign owner —</option>
-                          {adminUsers.map((u) => (
+                          {assignableUsers.map((u) => (
                             <option value={String(u.id)}>{u.username}</option>
                           ))}
                         </select>

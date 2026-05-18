@@ -304,15 +304,10 @@ class TestRbacRegressions:
         # User 2 key
         auth_store().create_api_key("user2-key", user_id=2)
 
-        # Patch current_user_id to return 2 (non-admin) instead of bypass sentinel 1
-        monkeypatch.setattr(
-            "src.web_ui.routes.api_keys.current_user_id",
-            lambda _req: 2,
-        )
-        # Also patch is_admin_session to use real DB path (it calls current_user_id
-        # internally via the auth module — we need the route-level call to use uid=2).
-        # The is_admin_session in the route re-imports from auth, not the patched symbol,
-        # so patch the auth module directly.
+        # Patch the canonical current_user_id in the auth module — api_keys.py
+        # imports it lazily inside each handler, so resolution happens at call time
+        # against the auth module namespace (the route module never gets the symbol
+        # at top level).
         monkeypatch.setattr(
             "src.web_ui.auth.current_user_id",
             lambda _req: 2,
