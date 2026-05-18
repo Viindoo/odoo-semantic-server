@@ -91,6 +91,19 @@ mcp = FastMCP("odoo-semantic")
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
+# All 21 OSM tools are read-only queries against a statically-indexed graph.
+# Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
+# ChatGPT) so they can auto-approve and skip confirmation gates. See Pattern 1
+# in docs/research/mcp-design-patterns-research.md.
+READONLY_TOOL_KWARGS = {
+    "annotations": {
+        "readOnlyHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+        "destructiveHint": False,
+    }
+}
+
 _driver = None
 _embedder_instance = None
 _version_checked = False
@@ -757,7 +770,7 @@ def _find_examples(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def resolve_model(
     model_name: str,
     odoo_version: str = "auto",
@@ -800,7 +813,7 @@ def resolve_model(
     return _resolve_model(model_name, odoo_version, profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def resolve_field(
     model_name: str,
     field_name: str,
@@ -842,7 +855,7 @@ def resolve_field(
     return _resolve_field(model_name, field_name, odoo_version, profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def resolve_method(
     model_name: str,
     method_name: str,
@@ -882,7 +895,7 @@ def resolve_method(
     return _resolve_method(model_name, method_name, odoo_version, profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def resolve_view(
     xmlid: str,
     odoo_version: str = "auto",
@@ -923,7 +936,7 @@ def resolve_view(
     return _resolve_view(xmlid, odoo_version, profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def find_examples(
     query: str,
     odoo_version: str = "auto",
@@ -1243,7 +1256,7 @@ def _impact_analysis(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def impact_analysis(
     entity_type: str,
     entity_name: str,
@@ -1437,7 +1450,7 @@ def _api_version_diff(
     return _format_api_diff(sym_old, sym_new, symbol, from_version, to_version)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     """Look up an Odoo core API symbol: signature, status, replacement.
 
@@ -1647,7 +1660,7 @@ def _lint_check(
     return result
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def find_deprecated_usage(
     odoo_version: str = "auto",
     kind: str | None = None,
@@ -1686,7 +1699,7 @@ def find_deprecated_usage(
     return _find_deprecated_usage(odoo_version, kind=kind, profile_name=profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
@@ -1870,7 +1883,7 @@ def _cli_help(
     return result
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def cli_help(
     command: str | None = None,
     flag: str | None = None,
@@ -1907,7 +1920,7 @@ def cli_help(
     return _cli_help(command, flag, odoo_version)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     """Diff a single Odoo core API symbol between two indexed versions.
 
@@ -3376,7 +3389,7 @@ def _format_find_override_point(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def suggest_pattern(
     intent: str,
     odoo_version: str = "auto",
@@ -3416,7 +3429,7 @@ def suggest_pattern(
     return _suggest_pattern(intent, odoo_version, language, limit)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def check_module_exists(
     name: str,
     odoo_version: str = "auto",
@@ -3457,7 +3470,7 @@ def check_module_exists(
     return _check_module_exists(name, odoo_version, profile_name=profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def find_override_point(
     model: str, method: str, odoo_version: str = "auto", to_version: str = "",
 ) -> str:
@@ -3498,12 +3511,12 @@ def find_override_point(
 
 
 # ---------------------------------------------------------------------------
-# Wave 1 — @mcp.tool() wrappers for the 7 new tools (ADR-0023 §5).
+# Wave 1 — @mcp.tool(**READONLY_TOOL_KWARGS) wrappers for the 7 new tools (ADR-0023 §5).
 # TRIGGER docstrings keep EN + VI for router accuracy (ADR-0012 §2 exception).
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def describe_module(
     name: str,
     odoo_version: str = "auto",
@@ -3547,7 +3560,7 @@ def describe_module(
     return _describe_module(name, odoo_version, profile_name)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def list_fields(
     model: str,
     odoo_version: str = "auto",
@@ -3591,7 +3604,7 @@ def list_fields(
     )
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def list_methods(
     model: str,
     odoo_version: str = "auto",
@@ -3632,7 +3645,7 @@ def list_methods(
     return _list_methods(model, odoo_version, module, profile_name, limit)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def list_views(
     model: str,
     odoo_version: str = "auto",
@@ -3669,7 +3682,7 @@ def list_views(
     return _list_views(model, odoo_version, view_type, profile_name, limit)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def list_owl_components(
     module: str,
     odoo_version: str = "auto",
@@ -3716,7 +3729,7 @@ def list_owl_components(
     )
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def list_qweb_templates(
     module: str,
     odoo_version: str = "auto",
@@ -3753,7 +3766,7 @@ def list_qweb_templates(
     return _list_qweb_templates(module, odoo_version, profile_name, limit)
 
 
-@mcp.tool()
+@mcp.tool(**READONLY_TOOL_KWARGS)
 def list_js_patches(
     odoo_version: str = "auto",
     target: str | None = None,
