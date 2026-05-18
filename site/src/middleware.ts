@@ -136,6 +136,25 @@ export const onRequest = defineMiddleware(async (context, next) => {
     return response;
   }
 
+  // /account/* is an authenticated self-service surface (My API Keys, etc.).
+  // Anonymous users must be sent to /admin/login (single global login flow —
+  // there is no separate /account/login). Authenticated users (admin OR
+  // non-admin) pass through. Without this gate, anon hits /account/api-keys,
+  // sees an empty self-service page, and clicks Generate Key only to get a
+  // confusing 401 — a UX regression introduced when WI5 shipped /account/*.
+  if (path === '/account' || path.startsWith('/account/')) {
+    const cookieHeader = context.request.headers.get('cookie') ?? '';
+    const sessionPayload = await verifySession(cookieHeader);
+    if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+    context.locals.user = {
+      username: sessionPayload.username ?? 'unknown',
+      is_admin: sessionPayload.is_admin ?? false,
+    };
+    const response = await next();
+    _addSecurityHeaders(response, path);
+    return response;
+  }
+
   // /admin (no trailing slash) is a valid admin entry point too; the bare
   // `path.startsWith('/admin/')` test would let it through unauthenticated
   // and render the dashboard from SSR fallback data.
