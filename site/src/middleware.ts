@@ -128,7 +128,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
   };
 
   // Public pages: never require admin auth — but always inject security headers.
+  // Set locals.user = null for unauthenticated/public paths.
   if (_PUBLIC_PATHS.has(path)) {
+    context.locals.user = null;
     const response = await next();
     _addSecurityHeaders(response, path);
     return response;
@@ -138,11 +140,23 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // `path.startsWith('/admin/')` test would let it through unauthenticated
   // and render the dashboard from SSR fallback data.
   if (path !== '/admin' && !path.startsWith('/admin/')) {
+    // Non-admin routes outside /admin/*: populate locals.user if authenticated.
+    const cookieHeader = context.request.headers.get('cookie') ?? '';
+    const sessionPayload = await verifySession(cookieHeader);
+    if (sessionPayload && sessionPayload.ok && sessionPayload.username) {
+      context.locals.user = {
+        username: sessionPayload.username,
+        is_admin: sessionPayload.is_admin ?? false,
+      };
+    } else {
+      context.locals.user = null;
+    }
     const response = await next();
     _addSecurityHeaders(response, path);
     return response;
   }
-  if (path === '/admin/login') {
+  if (path === '/admin/login' || path === '/admin/logout') {
+    context.locals.user = null;
     const response = await next();
     _addSecurityHeaders(response, path);
     return response;
@@ -160,6 +174,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
       // Authenticated but not admin → dashboard with a flash (query param for UX)
       return _redirectWithHeaders('/admin?error=admin_required');
     }
+    context.locals.user = {
+      username: adminPayload.username!,
+      is_admin: true,
+    };
     const response = await next();
     _addSecurityHeaders(response, path);
     return response;
@@ -171,7 +189,24 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // refused, so we wrap in try/catch and treat failure as "unauthenticated".
   const sessionPayload = await verifySession(cookieHeader);
   if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+
+  // Populate locals.user from the verify payload.
+  context.locals.user = {
+    username: sessionPayload.username ?? 'unknown',
+    is_admin: sessionPayload.is_admin ?? false,
+  };
+
+  // Non-admin users hitting /admin/* (except auth pages and /admin/users/* handled above)
+  // are redirected to their own account page rather than seeing an admin-only UI.
+  if (
+    sessionPayload.is_admin === false &&
+    path.startsWith('/admin/') &&
+    !path.startsWith('/admin/auth/')
+  ) {
+    return _redirectWithHeaders('/account/api-keys');
+  }
+
   const response = await next();
-  _addSecurityHeaders(response);
+  _addSecurityHeaders(response, path);
   return response;
 });
