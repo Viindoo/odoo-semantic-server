@@ -29,6 +29,10 @@ from src.constants import (
     SNIPPET_PREVIEW_MAX_LINES,
     VALID_CHUNK_TYPES,
 )
+from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for external consumers)
+    format_next_step,
+    hints_for,
+)
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 
 
@@ -70,19 +74,8 @@ def _render_capped(
     return lines
 
 
-def _format_next_step(hints: list[str]) -> str:
-    """Render the trailing "└─ Next: ..." footer per ADR-0023 §4.
-
-    Accepts up to 2 hint strings; joins with " | ". Returns a single line
-    ready to append as the last branch of a tree. Empty list returns "".
-    Caller is responsible for ADR-0023 §4 alignment rule (hints must not
-    violate the calling tool's own SKIP clause — i.e., no self-reference).
-    """
-    if not hints:
-        return ""
-    if len(hints) > 2:
-        hints = hints[:2]
-    return f"└─ Next: {' | '.join(hints)}"
+# `format_next_step` + `hints_for` relocated to src/mcp/hints.py per ADR-0023 §4
+# SSOT (WI-A2). Imported below alongside the FastMCP setup.
 
 
 mcp = FastMCP("odoo-semantic")
@@ -348,7 +341,7 @@ def _resolve_model(
 
     lines.append(f"├─ Fields:         {fields_count}")
     lines.append(f"├─ Methods:        {methods_count}")
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
         " for full field list",
         f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
@@ -408,7 +401,7 @@ def _resolve_field(
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
         connector = "└─" if i == last_idx else "├─"
         lines.append(f"│   {connector} {repo_str}{r['module_name']}")
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"find_examples(query='{model_name}.{field_name} usage'"
         f", odoo_version='{odoo_version}') for real-world patterns",
         f"impact_analysis(entity_type='field'"
@@ -468,7 +461,7 @@ def _resolve_method(
             f"│   {connector} {repo_str}{r['module_name']}"
             f" — {super_info} — decorators: {decs}"
         )
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"find_override_point(model='{model_name}', method='{method_name}'"
         f", odoo_version='{odoo_version}') for safe hook spot",
         f"impact_analysis(entity_type='method'"
@@ -614,7 +607,7 @@ def _resolve_view(
                         )
         elif kind == "next":
             hints = payload  # type: ignore[assignment]
-            lines.append(_format_next_step(hints))
+            lines.append(format_next_step(hints))
 
     return "\n".join(lines)
 
@@ -763,7 +756,7 @@ def _find_examples(
         lines.append("")
     # Wave 5: Next-step footer per ADR-0023 §4. find_examples is a drill-down
     # entry-point; suggest moving to curated patterns or the canonical method.
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"suggest_pattern(intent='{query}', odoo_version='{odoo_version}')"
         " for curated patterns",
     ]))
@@ -1252,7 +1245,7 @@ def _impact_analysis(
             f"find_deprecated_usage(odoo_version='{odoo_version}')"
             " to widen for deprecated calls",
         ]
-    lines.append(_format_next_step(next_hints))
+    lines.append(format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -1335,7 +1328,7 @@ def _format_core_symbol(rec: dict, version: str) -> str:
         f"find_deprecated_usage(odoo_version='{version}')"
         " to scan for deprecated calls",
     ]
-    lines.append(_format_next_step(next_hints))
+    lines.append(format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -1361,7 +1354,7 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
             LIMIT 1
         """, name=name, v=odoo_version).single()
     if rec is None:
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"find_examples(query='{name}', odoo_version='{odoo_version}')"
             " for in-the-wild usage patterns",
         ])
@@ -1489,7 +1482,7 @@ def _format_deprecated_usage(
     header = f"find_deprecated_usage(Odoo {version}) — {hit_count} hits"
     # Wave 5: Next-step footer per ADR-0023 §4. Even the empty branch still
     # gets a Next: hint (replacement search) when no hits are found.
-    next_line = _format_next_step([
+    next_line = format_next_step([
         f"find_examples(query='replacement', odoo_version='{version}')"
         " for replacement search",
     ])
@@ -2035,7 +2028,7 @@ def _suggest_pattern(
             ranked = cur.fetchall()
 
     if not ranked:
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"find_examples(query='{intent}', odoo_version='{v}')"
             " for real-world variants",
         ])
@@ -2109,7 +2102,7 @@ def _format_suggest_pattern(
             # Gotchas is the last child → sublist indent is "    " (4 spaces).
             for g in gotchas:
                 lines.append(f"{prefix}    • {g}")
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"find_examples(query='{intent}', odoo_version='{version}')"
         " for real-world variants",
     ]))
@@ -2205,7 +2198,7 @@ def _format_check_module_exists(
         )
         return "\n".join(lines)
     # Wave 5: YES branch emits Next: footer (ADR-0023 §4).
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"describe_module(name='{name}', odoo_version='{version}')"
         " for full overview",
     ]))
@@ -2214,7 +2207,7 @@ def _format_check_module_exists(
 
 # ---------------------------------------------------------------------------
 # Wave 1 — new list_* / describe_module / UI tools (ADR-0023 §5).
-# Read-only Cypher; share the _render_capped / _format_next_step helpers.
+# Read-only Cypher; share the _render_capped / format_next_step helpers.
 # All tree text English-only per ADR-0023 §2.
 # ---------------------------------------------------------------------------
 
@@ -2391,7 +2384,7 @@ def _describe_module(
     else:
         # No models defined or extended — skip footer entirely (no useful drill-down).
         next_hints = []
-    if footer := _format_next_step(next_hints):
+    if footer := format_next_step(next_hints):
         lines.append(footer)
 
     return "\n".join(lines)
@@ -2459,7 +2452,7 @@ def _list_fields(
     header = f"Fields of {model} (Odoo {odoo_version})"
     if total == 0:
         # Wave 5: Next-step footer (empty result still gets a sensible hint).
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"list_methods(model='{model}', odoo_version='{odoo_version}')"
             " for behavior",
         ])
@@ -2525,7 +2518,7 @@ def _list_fields(
         f"list_methods(model='{model}', odoo_version='{odoo_version}')"
         " for behavior",
     )
-    lines.append(_format_next_step(next_hints))
+    lines.append(format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -2597,7 +2590,7 @@ def _list_methods(
 
     header = f"Methods of {model} (Odoo {odoo_version})"
     if total == 0:
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"list_fields(model='{model}', odoo_version='{odoo_version}')"
             " for shape",
         ])
@@ -2652,7 +2645,7 @@ def _list_methods(
             f"find_override_point(model='{model}', method='{first_method}'"
             f", odoo_version='{odoo_version}') for hook spot",
         )
-    if footer := _format_next_step(next_hints):
+    if footer := format_next_step(next_hints):
         lines.append(footer)
     return "\n".join(lines)
 
@@ -2710,7 +2703,7 @@ def _list_views(
 
     header = f"Views of {model} (Odoo {odoo_version})"
     if total == 0:
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"list_methods(model='{model}', odoo_version='{odoo_version}')"
             " for behavior",
         ])
@@ -2764,7 +2757,7 @@ def _list_views(
         f"find_examples(query='{model} view', odoo_version='{odoo_version}')"
         " for inheritance patterns",
     )
-    lines.append(_format_next_step(next_hints))
+    lines.append(format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -2794,7 +2787,7 @@ def _list_owl_components(
         if major and major <= 13:
             # Wave 5: still emit Next: footer suggesting list_js_patches for
             # era1 widget extensions (the natural era-aware drill-down).
-            next_line = _format_next_step([
+            next_line = format_next_step([
                 f"list_js_patches(module='{module}', era='era1'"
                 f", odoo_version='{odoo_version}') for legacy widget extends",
             ])
@@ -2844,7 +2837,7 @@ def _list_owl_components(
             )
         lines.append("├─ (none)")
         # Wave 5: suggest list_qweb_templates / list_js_patches as siblings.
-        lines.append(_format_next_step([
+        lines.append(format_next_step([
             f"list_qweb_templates(module='{module}'"
             f", odoo_version='{odoo_version}') for QWeb templates",
             f"list_js_patches(module='{module}', odoo_version='{odoo_version}')"
@@ -2883,7 +2876,7 @@ def _list_owl_components(
             f", odoo_version='{odoo_version}', limit={max(limit * 2, total)}))"
         )
     # Wave 5: Next-step footer per ADR-0023 §4.
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"list_qweb_templates(module='{module}', odoo_version='{odoo_version}')"
         " for QWeb templates",
         f"list_js_patches(module='{module}', odoo_version='{odoo_version}')"
@@ -2934,7 +2927,7 @@ def _list_qweb_templates(
 
     header = f"QWeb templates of {module} (Odoo {odoo_version})"
     if total == 0:
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
             " for OWL components",
             f"describe_module(name='{module}', odoo_version='{odoo_version}')"
@@ -2968,7 +2961,7 @@ def _list_qweb_templates(
             f", odoo_version='{odoo_version}', limit={max(limit * 2, total)}))"
         )
     # Wave 5: Next-step footer per ADR-0023 §4.
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
         " for OWL components",
         f"find_examples(query='QWeb {module}', odoo_version='{odoo_version}')"
@@ -3060,12 +3053,12 @@ def _list_js_patches(
         # Wave 5: Next-step footer per ADR-0023 §4 — suggest OWL components
         # when module is known (era3 drill-down).
         if module:
-            next_line = _format_next_step([
+            next_line = format_next_step([
                 f"list_owl_components(module='{module}'"
                 f", odoo_version='{odoo_version}') for v15+ components",
             ])
         else:
-            next_line = _format_next_step([
+            next_line = format_next_step([
                 f"find_examples(query='JS patch', odoo_version='{odoo_version}')"
                 " for patch patterns",
             ])
@@ -3123,7 +3116,7 @@ def _list_js_patches(
             f"find_examples(query='JS patch', odoo_version='{odoo_version}')"
             " for patch patterns",
         ]
-    lines.append(_format_next_step(next_hints))
+    lines.append(format_next_step(next_hints))
     return "\n".join(lines)
 
 
@@ -3229,7 +3222,7 @@ def _diff_method_across_versions(
             " (model/method may not be indexed)"
         )
         lines.append(f"├─ Status:           {presence_label}")
-        lines.append(_format_next_step([
+        lines.append(format_next_step([
             f"list_methods(model='{model}', odoo_version='{to_version}')"
             " to verify the method name",
         ]))
@@ -3290,7 +3283,7 @@ def _diff_method_across_versions(
         lines.append(f"├─ Super safety:      unchanged ({from_ss})")
 
     # Wave 5: Next-step footer per ADR-0023 §4.
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"resolve_method(model_name='{model}', method_name='{method}'"
         f", odoo_version='{to_version}') for full chain detail",
         f"find_examples(query='{method} override', odoo_version='{to_version}')"
@@ -3331,7 +3324,7 @@ def _find_override_point(
         """, method=method, model=model, v=v).data()
 
     if not records:
-        next_line = _format_next_step([
+        next_line = format_next_step([
             f"list_methods(model='{model}', odoo_version='{v}')"
             " to find the actual method name",
         ])
@@ -3380,7 +3373,7 @@ def _format_find_override_point(
         connector = "└─" if i == len(anti_patterns) - 1 else "├─"
         lines.append(f"│   {connector} {ap}")
     # Wave 5: Next-step footer per ADR-0023 §4.
-    lines.append(_format_next_step([
+    lines.append(format_next_step([
         f"resolve_method(model_name='{model}', method_name='{method}'"
         f", odoo_version='{version}') for full chain detail",
         f"find_examples(query='{method} override', odoo_version='{version}')"
