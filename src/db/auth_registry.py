@@ -11,6 +11,18 @@ from src.db.pg import PgPool
 logger = logging.getLogger(__name__)
 
 
+class LastAdminProtectedError(Exception):
+    """Raised when an operation would remove the last active admin."""
+
+
+class UserNotFoundError(Exception):
+    """Raised when a user_id does not exist in webui_users."""
+
+
+class KeyNotFoundError(Exception):
+    """Raised when a key_id does not exist in api_keys."""
+
+
 class AuthStore:
     """Encapsulates all auth / key / SSH / feedback SQL operations."""
 
@@ -486,13 +498,132 @@ class AuthStore:
 
 
     def set_user_active(self, user_id: int, *, is_active: bool) -> None:
-        """Set is_active flag for a user by id."""
+        """Set is_active flag for a user by id.
+
+        When deactivating an admin, verifies that at least one other active admin
+        remains. Raises LastAdminProtectedError if the user is the last active admin.
+
+        Raises:
+            LastAdminProtectedError: Deactivating the last active admin is blocked.
+        """
         with self._pool.checkout() as conn:
-            self._pool.execute(
+            conn.autocommit = False
+            try:
+                # Last-admin protection when deactivating
+                if not is_active:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT count(*) FROM webui_users "
+                            "WHERE is_admin = TRUE AND is_active = TRUE AND id != %s",
+                            (user_id,),
+                        )
+                        other_admin_count = cur.fetchone()[0]
+                    # Only raise if the user being deactivated is actually an admin
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT is_admin FROM webui_users WHERE id = %s",
+                            (user_id,),
+                        )
+                        row = cur.fetchone()
+                    if row is not None and row[0] and other_admin_count == 0:
+                        raise LastAdminProtectedError(
+                            "Cannot deactivate the last active admin"
+                        )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE webui_users SET is_active = %s WHERE id = %s",
+                        (is_active, user_id),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+
+    def set_user_admin(self, user_id: int, is_admin: bool) -> None:
+        """Set is_admin flag for a user by id.
+
+        When demoting (is_admin=False), verifies that at least one other active admin
+        remains. Raises LastAdminProtectedError if this user is the last active admin.
+
+        Raises:
+            LastAdminProtectedError: Demoting the last active admin is blocked.
+            UserNotFoundError: user_id does not exist.
+        """
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                if not is_admin:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT count(*) FROM webui_users "
+                            "WHERE is_admin = TRUE AND is_active = TRUE AND id != %s",
+                            (user_id,),
+                        )
+                        other_admin_count = cur.fetchone()[0]
+                    if other_admin_count == 0:
+                        raise LastAdminProtectedError(
+                            "Cannot demote the last active admin"
+                        )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE webui_users SET is_admin = %s WHERE id = %s",
+                        (is_admin, user_id),
+                    )
+                    rowcount = cur.rowcount
+                if rowcount == 0:
+                    raise UserNotFoundError(f"User id={user_id} not found")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+
+    def assign_key_owner(self, key_id: int, new_user_id: int | None) -> None:
+        """Reassign ownership of an API key to a different user (or clear it).
+
+        Args:
+            key_id: The api_keys.id to reassign.
+            new_user_id: The webui_users.id to assign, or None to clear ownership
+                (system/global key).
+
+        Raises:
+            UserNotFoundError: new_user_id is not None and the user does not exist.
+            KeyNotFoundError: key_id does not exist in api_keys.
+        """
+        with self._pool.checkout() as conn:
+            if new_user_id is not None:
+                row = self._pool.fetch_one(
+                    conn,
+                    "SELECT 1 FROM webui_users WHERE id = %s",
+                    (new_user_id,),
+                )
+                if row is None:
+                    raise UserNotFoundError(f"User id={new_user_id} not found")
+            rowcount = self._pool.execute(
                 conn,
-                "UPDATE webui_users SET is_active = %s WHERE id = %s",
-                (is_active, user_id),
+                "UPDATE api_keys SET user_id = %s WHERE id = %s",
+                (new_user_id, key_id),
             )
+            if rowcount == 0:
+                raise KeyNotFoundError(f"API key id={key_id} not found")
+
+    def count_api_keys_per_user(self) -> dict[int | None, int]:
+        """Return count of active API keys grouped by user_id.
+
+        Returns:
+            Dict mapping user_id (int or None for system/global keys) to
+            the number of active keys owned by that user.
+        """
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                "SELECT user_id, count(*) AS cnt FROM api_keys "
+                "WHERE active GROUP BY user_id",
+            )
+        return {r["user_id"]: int(r["cnt"]) for r in rows}
 
     def revoke_all_sessions(self, user_id: int) -> None:
         """Delete all active_sessions for user_id (instant logout).

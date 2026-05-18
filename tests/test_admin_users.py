@@ -473,3 +473,131 @@ class TestResetPasswordConsume:
 
         assert resp.status_code == 404
         assert resp.json().get("error") == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Promote / demote admin (PATCH /api/admin/users/{user_id}/admin)
+# ---------------------------------------------------------------------------
+
+
+class TestSetUserAdmin:
+    @pytest.mark.asyncio
+    async def test_promote_non_admin_to_admin(self, migrated_pg):
+        """PATCH /api/admin/users/{id}/admin with is_admin=true promotes the user."""
+        user_id = _seed_user(migrated_pg, username="promote_me", is_admin=False)
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/admin/users/{user_id}/admin",
+                json={"is_admin": True},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data["user"]["is_admin"] is True
+
+        from src.db.pg import auth_store
+        user = auth_store().get_user_by_id(user_id)
+        assert user["is_admin"] is True
+
+    @pytest.mark.asyncio
+    async def test_demote_admin_to_non_admin(self, migrated_pg):
+        """PATCH .../admin with is_admin=false demotes when a second admin exists."""
+        # Second admin ensures last-admin guard does not fire
+        _seed_user(migrated_pg, username="other_admin", is_admin=True, is_active=True)
+        user_id = _seed_user(migrated_pg, username="demote_me", is_admin=True, is_active=True)
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/admin/users/{user_id}/admin",
+                json={"is_admin": False},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data["user"]["is_admin"] is False
+
+    @pytest.mark.asyncio
+    async def test_demote_last_admin_returns_422(self, migrated_pg):
+        """PATCH .../admin with is_admin=false → 422 when only one active admin."""
+        user_id = _seed_user(migrated_pg, username="sole_admin", is_admin=True, is_active=True)
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/admin/users/{user_id}/admin",
+                json={"is_admin": False},
+            )
+
+        assert resp.status_code == 422
+        assert resp.json().get("error") == "last_admin_protected"
+
+    @pytest.mark.asyncio
+    async def test_deactivate_last_admin_returns_422(self, migrated_pg):
+        """POST /api/admin/users/{id}/deactivate → 422 when user is the last active admin."""
+        # Bypass actor_id=1; seed a placeholder for bypass, then seed the sole admin separately
+        _seed_user(migrated_pg, username="_bypass_actor_2", is_admin=True, is_active=True)
+        sole_admin_id = _seed_user(
+            migrated_pg, username="sole_admin2", is_admin=True, is_active=True
+        )
+
+        app = create_app()
+        async with _async_client(app) as client:
+            # First demote _bypass_actor_2 so sole_admin2 is the last active admin
+            # (The bypass returns actor_id=1 which is _bypass_actor_2)
+            # Actually, the bypass actor (id auto-assigned) may not be predictable;
+            # instead directly deactivate _bypass_actor_2 via DB so sole_admin_id is last.
+            pass
+
+        # Set _bypass_actor_2 to non-admin via DB to make sole_admin_id the last admin
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "UPDATE webui_users SET is_admin = FALSE WHERE username = '_bypass_actor_2'"
+            )
+
+        async with _async_client(create_app()) as client:
+            resp = await client.post(
+                f"/api/admin/users/{sole_admin_id}/deactivate",
+                headers={"Content-Type": "application/json"},
+            )
+
+        assert resp.status_code == 422
+        assert resp.json().get("error") == "last_admin_protected"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/users includes api_key_count
+# ---------------------------------------------------------------------------
+
+
+class TestListUsersApiKeyCount:
+    @pytest.mark.asyncio
+    async def test_get_admin_users_includes_api_key_count(self, migrated_pg):
+        """GET /api/admin/users includes api_key_count field for each user."""
+        user_id = _seed_user(migrated_pg, username="key_owner", is_admin=False)
+
+        # Insert 2 active api_keys owned by key_owner
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO api_keys (name, key_hash, key_prefix, active, user_id)"
+                " VALUES (%s, %s, %s, TRUE, %s), (%s, %s, %s, TRUE, %s)",
+                (
+                    "key_a", "hash_a", "osm_key_a____", user_id,
+                    "key_b", "hash_b", "osm_key_b____", user_id,
+                ),
+            )
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.get("/api/admin/users")
+
+        assert resp.status_code == 200
+        users = resp.json()["users"]
+        owner = next((u for u in users if u["username"] == "key_owner"), None)
+        assert owner is not None
+        assert "api_key_count" in owner
+        assert owner["api_key_count"] == 2
