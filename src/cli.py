@@ -49,11 +49,71 @@ def _resolve_neo4j_tool(tool: str) -> list[str]:
     the Neo4j container (typical Docker-Compose deployments), docker exec is used
     so the dump is written to a path mounted or accessible inside the container.
     Set NEO4J_CONTAINER to override the default container name.
+
+    NOTE: For `neo4j-admin database dump` specifically, the database must be
+    OFFLINE. The backup CLI uses _backup_neo4j_via_compose() instead of this
+    resolver. This helper remains available for online tools (e.g., cypher-shell).
     """
     if shutil.which(tool):
         return [tool]
     container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
     return ["docker", "exec", "-i", container, tool]
+
+
+def _wait_neo4j_healthy(timeout_seconds: int = 60) -> bool:
+    """Poll the Neo4j container's docker Health.Status until 'healthy' or timeout."""
+    container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            r = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Health.Status}}", container],
+                capture_output=True, text=True, shell=False,
+            )
+        except FileNotFoundError:
+            return False
+        if r.returncode == 0 and r.stdout.strip() == "healthy":
+            return True
+        time.sleep(2)
+    log.warning("Neo4j did not return healthy within %ds after dump", timeout_seconds)
+    return False
+
+
+def _backup_neo4j_via_compose(host_tmpdir: Path) -> subprocess.CompletedProcess:
+    """Dump Neo4j using stop-dump-start against a docker-compose deployment.
+
+    Required because `neo4j-admin database dump` cannot run against a serving
+    Neo4j 5.x database — the previous `docker exec` approach always failed with
+    exit 1 ("database in use"). We stop the running container, run a one-off
+    `docker compose run` container that mounts the same neo4j_data volume plus
+    a bind-mounted /backups directory, then ALWAYS restart the service.
+
+    ~30 s downtime per invocation. The neo4j service is expected to be running
+    when this is called; the ``finally`` clause restores it even on dump failure.
+    Returns the CompletedProcess from the dump step (returncode + stderr).
+    """
+    subprocess.run(
+        ["docker", "compose", "stop", "neo4j"],
+        capture_output=True, shell=False,
+    )
+    try:
+        return subprocess.run(
+            [
+                "docker", "compose", "run", "--rm", "-T",
+                "-v", f"{host_tmpdir}:/backups",
+                "neo4j",
+                "neo4j-admin", "database", "dump",
+                "--to-path=/backups",
+                "neo4j",
+            ],
+            capture_output=True, shell=False,
+        )
+    finally:
+        subprocess.run(
+            ["docker", "compose", "start", "neo4j"],
+            capture_output=True, shell=False,
+        )
+        _wait_neo4j_healthy(timeout_seconds=60)
 
 
 def _dsn_to_pg_args_and_env(dsn: str) -> tuple[list[str], dict[str, str]]:
@@ -264,32 +324,29 @@ def _cmd_backup(args) -> int:
                 components.append({"file": "postgres.sql", "sha256": pg_sha})
                 print(f"  postgres.sql: {pg_out.stat().st_size} bytes")
 
-                # 2. neo4j-admin dump → neo4j.dump (optional)
-                # Uses _resolve_neo4j_tool so docker exec fallback is available
-                # when neo4j-admin is only inside the container (typical deployment).
+                # 2. neo4j.dump (docker-compose stop-dump-start)
+                # neo4j-admin database dump requires the database OFFLINE
+                # (Neo4j 5.x). _backup_neo4j_via_compose stops the service,
+                # runs a one-off dump container with a bind-mounted /backups
+                # dir so the dump lands on the host, and ALWAYS restarts.
                 neo4j_out = tmpdir / "neo4j.dump"
                 try:
-                    neo4j_cmd = _resolve_neo4j_tool("neo4j-admin") + [
-                        "database", "dump",
-                        "--to-path", str(tmpdir),
-                        "neo4j",
-                    ]
-                    neo4j_result = subprocess.run(
-                        neo4j_cmd,
-                        capture_output=True,
-                        shell=False,
-                    )
+                    neo4j_result = _backup_neo4j_via_compose(tmpdir)
                     if neo4j_result.returncode == 0 and neo4j_out.exists():
                         neo4j_sha = hashlib.sha256(neo4j_out.read_bytes()).hexdigest()
                         components.append({"file": "neo4j.dump", "sha256": neo4j_sha})
                         print(f"  neo4j.dump: {neo4j_out.stat().st_size} bytes")
                     else:
+                        stderr = neo4j_result.stderr
+                        if isinstance(stderr, bytes):
+                            stderr = stderr.decode(errors="replace")
                         log.warning(
-                            "neo4j-admin dump failed (exit %d) — skipping",
+                            "neo4j dump failed (exit %d): %s — bundle missing neo4j.dump",
                             neo4j_result.returncode,
+                            (stderr or "")[:500],
                         )
                 except FileNotFoundError:
-                    log.warning("neo4j-admin not found in PATH — skipping Neo4j backup")
+                    log.warning("docker not found in PATH — skipping Neo4j backup")
 
                 # 3. Encrypt FERNET key with passphrase (REQUIRED if flag provided)
                 if args.bundle_passphrase_env:
