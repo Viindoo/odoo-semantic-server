@@ -248,3 +248,61 @@ class TestAssignKeyOwner:
 
         assert resp.status_code == 404
         assert resp.json().get("error") == "user_not_found"
+
+    @pytest.mark.asyncio
+    async def test_assign_owner_audit_log_includes_old_and_new_user_id(self, migrated_pg):
+        """PATCH /api/admin/api-keys/{id}/owner audit row must contain old_user_id + new_user_id.
+
+        Verifies the forensic detail capture added by the Opus post-review fix:
+        the route fetches the current owner before reassigning so the audit record
+        captures the before→after transition.
+        """
+        import json
+
+        old_user_id = _seed_user(migrated_pg, username="old_owner_audit")
+        new_user_id = _seed_user(migrated_pg, username="new_owner_audit")
+        key_id = _seed_key(migrated_pg, name="audit_trail_key", user_id=old_user_id)
+
+        # Also seed the api_keys table (key_id already inserted above).
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/admin/api-keys/{key_id}/owner",
+                json={"user_id": new_user_id},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+
+        # Read audit log — `detail` is stored as JSONB by write_audit_log (canonical schema
+        # from m9_003_admin_audit_log.sql). Cast to text for Python-side JSON parse.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT detail::text FROM admin_audit_log "
+                "WHERE action = %s AND target = %s "
+                "ORDER BY created_at DESC LIMIT 1",
+                ("api_key.assign_owner", str(key_id)),
+            )
+            row = cur.fetchone()
+
+        assert row is not None, "audit log must contain a row for api_key.assign_owner"
+        detail_text = row[0]
+        assert detail_text is not None, "detail must not be NULL"
+
+        try:
+            detail = json.loads(detail_text)
+        except json.JSONDecodeError:
+            pytest.fail(f"detail is not valid JSON: {detail_text!r}")
+
+        assert "old_user_id" in detail, (
+            f"audit detail must contain old_user_id (before→after traceability). Got: {detail}"
+        )
+        assert "new_user_id" in detail, (
+            f"audit detail must contain new_user_id. Got: {detail}"
+        )
+        assert detail["old_user_id"] == old_user_id, (
+            f"old_user_id mismatch: expected {old_user_id}, got {detail['old_user_id']}"
+        )
+        assert detail["new_user_id"] == new_user_id, (
+            f"new_user_id mismatch: expected {new_user_id}, got {detail['new_user_id']}"
+        )

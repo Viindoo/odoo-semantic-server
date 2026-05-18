@@ -306,9 +306,31 @@ async def assign_key_owner_route(
 
     Pass ``user_id: null`` in the body to clear ownership (system key).
     Returns 404 if the target user does not exist.
+
+    Audit detail includes old_user_id → new_user_id for forensic traceability.
     """
+    store = _auth_store()
+
+    # Fetch current owner before reassigning — for audit trail.
+    existing_keys = store.list_api_keys(admin=True)
+    old_user_id: int | None = None
+    for k in existing_keys:
+        if k["id"] == key_id:
+            old_user_id = k.get("user_id")
+            break
+
     try:
-        _auth_store().assign_key_owner(key_id, body.user_id)
+        store.assign_key_owner(key_id, body.user_id)
     except UserNotFoundError:
         return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
+
+    # Attach old→new owner detail so @audit_action merges it into the audit row.
+    try:
+        request.state.audit_detail.update({
+            "old_user_id": old_user_id,
+            "new_user_id": body.user_id,
+        })
+    except Exception:
+        pass
+
     return JSONResponse(_json_safe({"ok": True}))

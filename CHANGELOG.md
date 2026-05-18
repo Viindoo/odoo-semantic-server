@@ -138,6 +138,13 @@ All notable changes to Odoo Semantic MCP are documented here.
 #### Tests
 - 28 new backend + frontend tests (WI-1 through WI-5).
 
+#### Fixed — post-Opus-review follow-ups (committed after PR #127 initial review)
+- **browser-tests-admin admin seed**: `set_user_password(TEST_ADMIN_USERNAME, ..., is_admin=True)` — the test admin was seeded with `is_admin=False` (default), causing WI3 middleware to redirect the "admin" browser to `/account/api-keys` and all 70+ admin browser tests to time out (25-min wall clock in CI).
+- **ADR-0026 doc drift**: last-admin protection status corrected 409→422 (matches `admin_users.py:285`); `/account/index` described as thin redirect not a dashboard (matches `account/index.astro`); audit action names corrected to `user.set_admin` + `api_key.assign_owner` (matches `@audit_action` decorators).
+- **`is_admin_session` fail-closed**: `uid=None` now returns `False` instead of `True`. Malformed session cookie or SessionMiddleware crash no longer grants implicit admin privilege.
+- **`set_user_admin` / `set_user_active` concurrent demote serialisation**: added `SELECT ... FOR UPDATE` on the target row before the admin-count check, preventing TOCTOU race where two concurrent demotes could both pass the guard and leave 0 admins.
+- **`assign_key_owner_route` audit detail**: old_user_id → new_user_id transition now captured in `request.state.audit_detail` before the PATCH call, giving forensic before/after in the audit log.
+
 #### Docs
 - ADR-0026 — RBAC + key ownership (5 design decisions, 2 consequences sections, alternatives considered).
 - TASKS.md Stream J (6 WIs + completion note).

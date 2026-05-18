@@ -601,3 +601,120 @@ class TestListUsersApiKeyCount:
         assert owner is not None
         assert "api_key_count" in owner
         assert owner["api_key_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU / SELECT FOR UPDATE — set_user_admin serialisation
+# ---------------------------------------------------------------------------
+
+
+class TestSetUserAdminToctou:
+    """Verify that set_user_admin uses SELECT ... FOR UPDATE to serialise concurrent demotes.
+
+    A true concurrency test would require threads; instead we verify the SQL
+    contains the FOR UPDATE clause by inspecting a psycopg2 log capture.
+    """
+
+    def test_set_user_admin_executes_select_for_update_on_demote(self, migrated_pg):
+        """set_user_admin(demote) must execute SELECT ... FOR UPDATE on the target row."""
+        import re
+        import threading
+
+        from src.db.pg import auth_store
+
+        # Seed two admins so the demote guard passes (other_admin_count=1).
+        _seed_user(migrated_pg, username="admin_other_toctou", is_admin=True, is_active=True)
+        target_id = _seed_user(
+            migrated_pg, username="admin_target_toctou", is_admin=True, is_active=True
+        )
+
+        executed_queries: list[str] = []
+        lock = threading.Lock()
+
+        # Wrap the pool's checkout to capture SQL via a psycopg2 cursor wrapper.
+        store = auth_store()
+        orig_checkout = store._pool.checkout
+
+        class _CapturingCtx:
+            """Context manager that wraps a real connection and records executed SQL."""
+            def __init__(self, real_conn):
+                self._conn = real_conn
+
+            def __enter__(self):
+                real_enter = self._conn.__enter__()
+                return _CapturingConn(real_enter, executed_queries, lock)
+
+            def __exit__(self, *args):
+                return self._conn.__exit__(*args)
+
+        class _CapturingConn:
+            def __init__(self, conn, queries, q_lock):
+                self._conn = conn
+                self._queries = queries
+                self._lock = q_lock
+
+            def cursor(self):
+                return _CapturingCursor(self._conn.cursor(), self._queries, self._lock)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        class _CapturingCursor:
+            def __init__(self, cur, queries, q_lock):
+                self._cur = cur
+                self._queries = queries
+                self._lock = q_lock
+
+            def execute(self, sql, params=None):
+                with self._lock:
+                    self._queries.append(sql)
+                if params is not None:
+                    return self._cur.execute(sql, params)
+                return self._cur.execute(sql)
+
+            def fetchone(self):
+                return self._cur.fetchone()
+
+            def fetchall(self):
+                return self._cur.fetchall()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self._cur.__exit__(*args)
+
+            def __getattr__(self, name):
+                return getattr(self._cur, name)
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def _capturing_checkout():
+            with orig_checkout() as conn:
+                yield _CapturingConn(conn, executed_queries, lock)
+
+        store._pool.checkout = _capturing_checkout
+
+        try:
+            store.set_user_admin(target_id, is_admin=False)
+        finally:
+            store._pool.checkout = orig_checkout
+
+        # At least one query must contain both "SELECT" and "FOR UPDATE"
+        for_update_queries = [
+            q for q in executed_queries
+            if re.search(r"FOR\s+UPDATE", q, re.IGNORECASE)
+        ]
+        assert for_update_queries, (
+            "set_user_admin(demote) must execute SELECT ... FOR UPDATE to prevent TOCTOU. "
+            f"Observed queries: {executed_queries}"
+        )
+
+        # Cleanup
+        _seed_user(migrated_pg, username="_noop_cleanup")  # no-op; real cleanup via fixture
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "DELETE FROM webui_users WHERE username IN (%s, %s)",
+                ("admin_other_toctou", "admin_target_toctou"),
+            )

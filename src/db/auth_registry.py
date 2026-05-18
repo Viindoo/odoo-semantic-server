@@ -503,6 +503,9 @@ class AuthStore:
         When deactivating an admin, verifies that at least one other active admin
         remains. Raises LastAdminProtectedError if the user is the last active admin.
 
+        TOCTOU safety: the target row is locked with SELECT ... FOR UPDATE before the
+        admin-count check, matching the pattern in set_user_admin().
+
         Raises:
             LastAdminProtectedError: Deactivating the last active admin is blocked.
         """
@@ -511,24 +514,26 @@ class AuthStore:
             try:
                 # Last-admin protection when deactivating
                 if not is_active:
+                    # Lock the target row to serialise concurrent deactivations.
                     with conn.cursor() as cur:
                         cur.execute(
-                            "SELECT count(*) FROM webui_users "
-                            "WHERE is_admin = TRUE AND is_active = TRUE AND id != %s",
-                            (user_id,),
-                        )
-                        other_admin_count = cur.fetchone()[0]
-                    # Only raise if the user being deactivated is actually an admin
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT is_admin FROM webui_users WHERE id = %s",
+                            "SELECT is_admin FROM webui_users WHERE id = %s FOR UPDATE",
                             (user_id,),
                         )
                         row = cur.fetchone()
-                    if row is not None and row[0] and other_admin_count == 0:
-                        raise LastAdminProtectedError(
-                            "Cannot deactivate the last active admin"
-                        )
+                    is_this_user_admin = row is not None and bool(row[0])
+                    if is_this_user_admin:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT count(*) FROM webui_users "
+                                "WHERE is_admin = TRUE AND is_active = TRUE AND id != %s",
+                                (user_id,),
+                            )
+                            other_admin_count = cur.fetchone()[0]
+                        if other_admin_count == 0:
+                            raise LastAdminProtectedError(
+                                "Cannot deactivate the last active admin"
+                            )
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE webui_users SET is_active = %s WHERE id = %s",
@@ -547,6 +552,10 @@ class AuthStore:
         When demoting (is_admin=False), verifies that at least one other active admin
         remains. Raises LastAdminProtectedError if this user is the last active admin.
 
+        TOCTOU safety: the target row is locked with SELECT ... FOR UPDATE before the
+        admin-count check. This serialises concurrent demote calls so two callers
+        cannot both pass the guard simultaneously and leave 0 admins.
+
         Raises:
             LastAdminProtectedError: Demoting the last active admin is blocked.
             UserNotFoundError: user_id does not exist.
@@ -555,6 +564,13 @@ class AuthStore:
             conn.autocommit = False
             try:
                 if not is_admin:
+                    # Lock the target row first — prevents concurrent demotes from
+                    # both passing the "other admin count > 0" guard simultaneously.
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id FROM webui_users WHERE id = %s FOR UPDATE",
+                            (user_id,),
+                        )
                     with conn.cursor() as cur:
                         cur.execute(
                             "SELECT count(*) FROM webui_users "

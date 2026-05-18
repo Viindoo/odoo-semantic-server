@@ -374,3 +374,79 @@ class TestRbacRegressions:
         target = next((k for k in keys if k["id"] == key_id), None)
         assert target is not None
         assert not target["active"], "key must be deactivated in DB"
+
+
+# ---------------------------------------------------------------------------
+# is_admin_session fail-closed: uid=None must return False, not True
+# ---------------------------------------------------------------------------
+
+class TestIsAdminSessionFailClosed:
+    """Verify is_admin_session(request) returns False when uid=None (malformed/absent session).
+
+    Prior behaviour (True on None) was a security backdoor: a malformed cookie
+    or crashed SessionMiddleware would grant implicit admin privilege to any
+    caller of is_admin_session().  The fix makes it fail-closed.
+    """
+
+    def test_is_admin_session_returns_false_when_uid_is_none(self):
+        """is_admin_session must return False when current_user_id returns None."""
+        from starlette.requests import Request as StarletteRequest
+
+        import src.web_ui.auth as auth_mod
+
+        # Fake a minimal ASGI request scope — no actual Starlette session needed.
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [],
+            "query_string": b"",
+        }
+        fake_request = StarletteRequest(scope)
+
+        # Patch is_test_bypass_active → False (so bypass sentinel uid=1 doesn't apply)
+        # and current_user_id → None (simulates missing/malformed session).
+        orig_bypass = auth_mod.is_test_bypass_active
+        orig_cuid = auth_mod.current_user_id
+        try:
+            auth_mod.is_test_bypass_active = lambda: False
+            auth_mod.current_user_id = lambda _req: None
+            result = auth_mod.is_admin_session(fake_request)
+        finally:
+            auth_mod.is_test_bypass_active = orig_bypass
+            auth_mod.current_user_id = orig_cuid
+
+        assert result is False, (
+            "is_admin_session must return False (fail-closed) when uid is None; "
+            "got True (fail-open backdoor)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_deactivate_key_returns_401_when_no_session(
+        self, web_app_rbac, pg_conn, monkeypatch
+    ):
+        """Deactivating a key with uid=None (unauthenticated) must return 401, not 200.
+
+        With the old fail-open is_admin_session, uid=None → is_admin=True → unconditional
+        deactivate path → 200.  After the fix, uid=None → is_admin=False → else branch
+        → uid is None check → 401.
+        """
+        import httpx
+
+        from src.db.pg import auth_store
+
+        _, _, key_id = auth_store().create_api_key("no-session-key")
+
+        # Bypass off, uid=None → simulates malformed/absent session
+        monkeypatch.setattr("src.web_ui.auth.is_test_bypass_active", lambda: False)
+        monkeypatch.setattr("src.web_ui.auth.current_user_id", lambda _req: None)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=web_app_rbac), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/api-keys/{key_id}/deactivate")
+
+        assert resp.status_code == 401, (
+            f"Expected 401 (unauthenticated), got {resp.status_code}. "
+            "is_admin_session must fail-closed when uid=None."
+        )

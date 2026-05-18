@@ -128,14 +128,17 @@ def current_user_id(request: Request) -> int | None:
 def is_admin_session(request: Request) -> bool:
     """DB-sourced admin check (per ADR-0011 — never trust session for privilege).
 
-    Returns True for CLI/no-session context (backward compat with prior
-    global-key behavior where user_id IS NULL keys were treated as admin).
+    Fails CLOSED: returns False when uid is None (unauthenticated or malformed
+    session cookie).  This function is called only from HTTP handlers; CLI paths
+    never call it.  The prior True-on-None was a backward-compat backdoor — if
+    SessionMiddleware crashed or the cookie was malformed, callers would receive
+    admin privilege silently.  Fail-closed eliminates that path.
     """
     from src.db.pg import auth_store
 
     uid = current_user_id(request)
     if uid is None:
-        return True
+        return False
     try:
         return bool(auth_store().get_user_field(uid, "is_admin"))
     except Exception:
