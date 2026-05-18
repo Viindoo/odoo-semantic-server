@@ -91,7 +91,27 @@ def _backup_neo4j_via_compose(host_tmpdir: Path) -> subprocess.CompletedProcess:
     ~30 s downtime per invocation. The neo4j service is expected to be running
     when this is called; the ``finally`` clause restores it even on dump failure.
     Returns the CompletedProcess from the dump step (returncode + stderr).
+
+    Two operational details that matter on first deploy:
+
+    - ``chmod 0o777`` on the host tmpdir. ``tempfile.TemporaryDirectory``
+      defaults to mode 0700 owned by the calling user (UID 1000 in our prod
+      setup). The neo4j image's default ``USER neo4j`` (UID 7474) cannot
+      write to a 0700 tmpdir owned by 1000, so the bind-mounted /backups
+      target needs world-write before the dump container starts. The
+      directory is in /tmp and gets unlinked on context exit, so the
+      window is bounded.
+    - ``--verbose`` on neo4j-admin so the next failure shows the real cause
+      instead of the generic "Dump failed for databases" one-liner.
     """
+    try:
+        os.chmod(host_tmpdir, 0o777)
+    except OSError as e:
+        log.warning(
+            "chmod 0o777 on %s failed: %s — dump may fail if container UID differs",
+            host_tmpdir, e,
+        )
+
     subprocess.run(
         ["docker", "compose", "stop", "neo4j"],
         capture_output=True, shell=False,
@@ -103,6 +123,7 @@ def _backup_neo4j_via_compose(host_tmpdir: Path) -> subprocess.CompletedProcess:
                 "-v", f"{host_tmpdir}:/backups",
                 "neo4j",
                 "neo4j-admin", "database", "dump",
+                "--verbose",
                 "--to-path=/backups",
                 "neo4j",
             ],
@@ -340,10 +361,18 @@ def _cmd_backup(args) -> int:
                         stderr = neo4j_result.stderr
                         if isinstance(stderr, bytes):
                             stderr = stderr.decode(errors="replace")
+                        stdout = neo4j_result.stdout
+                        if isinstance(stdout, bytes):
+                            stdout = stdout.decode(errors="replace")
+                        # neo4j-admin writes the --verbose detail to either
+                        # stderr or stdout depending on the failure stage,
+                        # so surface both up to 2 KB each.
                         log.warning(
-                            "neo4j dump failed (exit %d): %s — bundle missing neo4j.dump",
+                            "neo4j dump failed (exit %d) stderr=%s stdout=%s"
+                            " — bundle missing neo4j.dump",
                             neo4j_result.returncode,
-                            (stderr or "")[:500],
+                            (stderr or "")[:2000],
+                            (stdout or "")[:2000],
                         )
                 except FileNotFoundError:
                     log.warning("docker not found in PATH — skipping Neo4j backup")
