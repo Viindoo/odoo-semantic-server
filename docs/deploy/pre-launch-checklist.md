@@ -291,12 +291,16 @@ Items left unchecked after 2026-05-16 read-only verification sweep. Each needs a
 11. **§10 WEBUI_SESSION_SECRET production env path** — `WEBUI_SESSION_SECRET` is set in `~/git/odoo-semantic-mcp/.env` but the checklist references `/etc/odoo-semantic/webui.env` which does not exist. Admin: confirm the running service loads the secret from `.env`, or create the canonical `/etc/odoo-semantic/webui.env` per `docs/deploy.md`.
 
 12. **OWLComp pre-v14 anachronism (NEW 2026-05-17)** — Post-reindex verification on PR #119 shows 239 `__unresolved__` OWLComp nodes at v8-v13 (OWL framework only exists from v14+). The v14 guard added in `_extract_era3_components` only covers REAL OWLComp creation; JSPatch era3 detection in pre-v14 modules still triggers the PATCHES placeholder MERGE in `writer_neo4j.py:~372`. Fix: add symmetric v14 guard to the `_extract_era3_patches` (or equivalent JSPatch era3) function in `parser_js.py`, OR add belt-and-suspenders v14 check at the writer PATCHES placeholder site. Plus one Cypher cleanup to delete the 239 current anachronisms. Non-blocking — read-side `list_owl_components` MCP tool already has an era guard that skips v<14, so user-facing output is correct; impact is only raw-graph pollution.
+    > Tracked at TASKS.md → M10C "OWLComp pre-v14 anachronism guard".
 
 13. **Neo4j online backup (NEW 2026-05-17)** — `neo4j-admin database dump` requires an offline DB; fails on the running container with exit 1 ("skipped" during backup run). Backup bundle is currently postgres-only (manifest.json + postgres.sql). Fix: replace neo4j-admin dump with either (a) Cypher-driver-based export via `CALL apoc.export.cypher.all`, or (b) `neo4j-admin database backup` if upgrading to Enterprise. Update `src/cli.py` + ADR-0018 bundle contract. Non-blocking — Neo4j data is rebuildable from indexed git repos via `index-repo --all --no-embed` (~75min).
+    > Tracked at TASKS.md → M9 Stream I followup #13 (carried forward; no M10 reassignment).
 
 14. **Logrotate /var/log perms (PRE-EXISTING, surfaced 2026-05-17)** — `/etc/logrotate.d/odoo-semantic` stanza 1 (`/var/log/odoo-semantic-reindex.log`) fails because `/var/log/` is world-writable. Stanza 1 was installed by an earlier deploy, NOT by WI-3. Stanza 2 (added by WI-3 — `/var/log/odoo-semantic/*.log` + `/var/backups/odoo-semantic/*.log`) rotates cleanly. Fix: add `su root syslog` directive to stanza 1, or change the reindex log location to `/var/log/odoo-semantic/`.
+    > Tracked at TASKS.md → M9 Stream I followup #14 (carried forward; operational fix).
 
 15. **§6 Tools 15-21 prod smoke (PENDING 2026-05-17)** — The 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) need an end-to-end smoke against the production MCP endpoint via Claude Code or another MCP client. Deferred to next session per go-live decision. All 7 tools are code-complete + unit-tested; no expected failures.
+    > Tracked at TASKS.md → M10A "§6 tools 15-21 prod smoke".
 
 ---
 

@@ -108,6 +108,12 @@ All notable changes to Odoo Semantic MCP are documented here.
 - M9 Coverage Fill curated `cli_flags_*.json` files (12 versions × ~70-88 flags each) declared `command_name: null` for global flags like `--config`, `--init`, `--update`. Neo4j 5.x rejects null property values in MERGE identity keys (`Cannot merge ... null property value for 'command_name'`), aborting every `index-core` invocation before any CLIFlag node was written.
 - Regression test covers explicit null, explicit "server", and missing key.
 
+### Documentation
+
+- Closed 4 de-facto-done backlog items in TASKS.md: M11 pattern catalogue target met (113 patterns), lint_json_response.sh advisory clean (0 violations), Reseed Patterns Web UI button verified wired end-to-end, M7.5-P2-SEED production seeding completed in B10 ops phase.
+- Deduplicated 9 redundant TASKS.md backlog entries (NAMEGET, v8 era1 CLI, VN translation, pricing, nonce CSP) — each item now lives in exactly one canonical milestone location.
+- Split Milestone 10 into M10A (Tool Surface Expansion) + M10B (Billing Wow Core) + M10C (Polish + Observability) for clearer scope.
+
 ### Production state at time of [Unreleased] cut
 
 - Production HEAD: PR #119 / commit `3f081b9` deployed 2026-05-17 (PR #120 + #121 not yet deployed to prod).

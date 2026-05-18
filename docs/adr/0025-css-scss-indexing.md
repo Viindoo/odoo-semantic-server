@@ -139,7 +139,9 @@ CSS has no `@mixin` concept. The `mixin_count` property is always 0 for `:Styles
 
 The following items are deferred and tracked in `TASKS.md` (WI-A7 absorption from plan `internal-plan.md`):
 
-1. **MCP tool surface for Stylesheet** (`resolve_stylesheet`, `find_style_override`) — **M10** (tracked in `TASKS.md` Milestone 10 § "Coverage-fill follow-ups"). After B8 re-index populates `:Stylesheet` nodes, expose `resolve_stylesheet(module, odoo_version)` returning the stylesheet chain and variable list, and `find_style_override(selector_or_variable, odoo_version)` tracing which module last re-declares a CSS custom property / overrides a selector. Both tools must follow ADR-0023 tree-grammar contract (§1 header, §1.3 sublist indent, §4 Next-step hint) and update `docs/reference/mcp-tool-routing.md`.
+1. **MCP tool surface for Stylesheet** (`resolve_stylesheet`, `find_style_override`) — **M10A** (tracked in `TASKS.md` Milestone 10 § M10A "Tool Surface Expansion"). After B8 re-index populates `:Stylesheet` nodes, expose `resolve_stylesheet(module, odoo_version)` returning the stylesheet chain and variable list, and `find_style_override(selector_or_variable, odoo_version)` tracing which module last re-declares a CSS custom property / overrides a selector. Both tools must follow ADR-0023 tree-grammar contract (§1 header, §1.3 sublist indent, §4 Next-step hint) and update `docs/reference/mcp-tool-routing.md`.
+   
+   > **Tracking:** Implementation tracked at `TASKS.md` → M10A "Stylesheet MCP tools (resolve_stylesheet, find_style_override)".
 
 2. **Pattern catalogue CSS/SCSS entries** — **M11** community contribution track per ADR-0009 (tracked in `TASKS.md` Milestone 11 § "Pattern catalogue expansion 35 → 100+"). Curate 5–10 CSS/SCSS patterns per Odoo era: Bootstrap SCSS variable override (v12+), OWL component scoped CSS (v16+), legacy LESS-to-SCSS migration patterns (v10-v11). Counted toward the ≥100 patterns target.
 
