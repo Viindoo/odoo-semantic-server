@@ -20,6 +20,15 @@ let stats: {
   error: null,
 };
 
+type UserWithKeyCount = {
+  id: number;
+  username: string;
+  api_key_count: number;
+  is_admin: boolean;
+  is_active: boolean;
+};
+let usersWithKeys: UserWithKeyCount[] = [];
+
 try {
   const res = await fetch(`${FASTAPI_BASE}/api/dashboard/stats`, {
     headers: { cookie: cookieHeader },
@@ -31,7 +40,23 @@ try {
   stats.error = 'Could not connect to API server.';
 }
 
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/users`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    usersWithKeys = (data.users ?? []).filter((u: UserWithKeyCount) => u.api_key_count > 0);
+  }
+} catch {
+  // silently ignore — panel will be skipped
+}
+
 const totalRepos = stats.profiles.reduce((sum, p) => sum + (p.repos?.length ?? 0), 0);
+
+// Compute unassigned (NULL-owner) key count: total api_key_count minus sum of per-user counts
+const assignedCount = usersWithKeys.reduce((sum, u) => sum + u.api_key_count, 0);
+const unassignedCount = stats.api_key_count - assignedCount;
 ---
 
 <AdminLayout title="Dashboard — Admin">
@@ -115,13 +140,45 @@ const totalRepos = stats.profiles.reduce((sum, p) => sum + (p.repos?.length ?? 0
     )}
   </div>
 
+  <!-- Keys per user panel -->
+  {(usersWithKeys.length > 0 || unassignedCount > 0) && (
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
+      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <h2 class="text-base font-semibold text-gray-800">Keys per User</h2>
+        <a href="/admin/api-keys" class="text-sm text-viindoo-primary hover:text-viindoo-primary-bright font-medium">
+          Manage →
+        </a>
+      </div>
+      <div class="divide-y divide-gray-100">
+        {usersWithKeys.map((u) => (
+          <div class="px-5 py-3 flex items-center justify-between text-sm hover:bg-gray-50">
+            <span class="font-medium text-gray-800">
+              {u.username}
+              {u.is_admin && (
+                <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700">Admin</span>
+              )}
+            </span>
+            <span class="text-gray-500 text-xs">{u.api_key_count} key{u.api_key_count !== 1 ? 's' : ''}</span>
+          </div>
+        ))}
+        {unassignedCount > 0 && (
+          <div class="px-5 py-3 flex items-center justify-between text-sm hover:bg-gray-50">
+            <span class="text-slate-500 italic">(system / unassigned)</span>
+            <span class="text-gray-500 text-xs">{unassignedCount} key{unassignedCount !== 1 ? 's' : ''}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  )}
+
   <!-- Quick links -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+  <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
     {[
       { href: '/admin/repos', icon: '📦', label: 'Repositories' },
       { href: '/admin/api-keys', icon: '🔑', label: 'API Keys' },
       { href: '/admin/ssh-keys', icon: '🔐', label: 'SSH Keys' },
       { href: '/admin/operations', icon: '⚙️', label: 'Operations' },
+      { href: '/admin/users', icon: '👤', label: 'Users' },
     ].map((link) => (
       <a
         href={link.href}

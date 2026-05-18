@@ -1,6 +1,6 @@
 ---
 // UserTable.astro — renders the users management table (M9 W-UM)
-// Columns: username, email, is_admin badge, is_active toggle, MFA status, created_at, actions.
+// Columns: username, email, is_admin badge, is_active toggle, MFA status, api_key_count, created_at, actions.
 
 export interface UserRow {
   id: number;
@@ -9,6 +9,7 @@ export interface UserRow {
   is_admin: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
+  api_key_count: number;
   created_at: string | null;
 }
 
@@ -22,6 +23,9 @@ function fmtDate(ts: string | null | undefined): string {
   if (!ts) return '—';
   return ts.slice(0, 16).replace('T', ' ');
 }
+
+// Count active admins for client-side last-admin guard (passed via data attr)
+const adminCount = users.filter((u) => u.is_admin && u.is_active).length;
 ---
 
 {users.length === 0 ? (
@@ -30,7 +34,7 @@ function fmtDate(ts: string | null | undefined): string {
     <p class="font-medium">No users found.</p>
   </div>
 ) : (
-  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden" data-admin-count={String(adminCount)}>
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
@@ -40,12 +44,15 @@ function fmtDate(ts: string | null | undefined): string {
             <th class="px-4 py-3 text-left">Role</th>
             <th class="px-4 py-3 text-left">Status</th>
             <th class="px-4 py-3 text-left">MFA</th>
+            <th class="px-4 py-3 text-left">API Keys</th>
             <th class="px-4 py-3 text-left">Created</th>
             <th class="px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
-          {users.map((user) => (
+          {users.map((user) => {
+            const isLastAdmin = user.is_admin && adminCount === 1;
+            return (
             <tr
               data-testid="user-row"
               data-testid-id={`user-row-${user.id}`}
@@ -105,6 +112,11 @@ function fmtDate(ts: string | null | undefined): string {
                 )}
               </td>
 
+              <!-- API Key count -->
+              <td class="px-4 py-3 text-gray-500 text-xs">
+                <span data-testid={`api-key-count-${user.id}`}>{user.api_key_count ?? 0}</span>
+              </td>
+
               <!-- Created at -->
               <td class="px-4 py-3 text-gray-400 text-xs">
                 {fmtDate(user.created_at)}
@@ -112,7 +124,34 @@ function fmtDate(ts: string | null | undefined): string {
 
               <!-- Actions -->
               <td class="px-4 py-3 text-right">
-                <div class="flex items-center justify-end gap-2">
+                <div class="flex items-center justify-end gap-2 flex-wrap">
+                  <!-- Promote / Demote toggle -->
+                  {isLastAdmin ? (
+                    <button
+                      data-testid={`demote-user-button-${user.id}`}
+                      disabled
+                      title="Last admin — cannot demote"
+                      class="text-xs bg-gray-50 text-gray-400 px-3 py-1.5 rounded-lg cursor-not-allowed border border-gray-200"
+                    >
+                      Demote to User
+                    </button>
+                  ) : (
+                    <button
+                      data-testid={`toggle-admin-button-${user.id}`}
+                      data-action-admin={user.is_admin ? 'demote' : 'promote'}
+                      data-user-id={String(user.id)}
+                      data-username={user.username}
+                      data-is-admin={String(user.is_admin)}
+                      class={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
+                        user.is_admin
+                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-700'
+                          : 'bg-violet-50 hover:bg-violet-100 text-violet-700'
+                      }`}
+                    >
+                      {user.is_admin ? 'Demote to User' : 'Promote to Admin'}
+                    </button>
+                  )}
+
                   {user.is_active ? (
                     <button
                       data-testid={`deactivate-user-button-${user.id}`}
@@ -146,7 +185,8 @@ function fmtDate(ts: string | null | undefined): string {
                 </div>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

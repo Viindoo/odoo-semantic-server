@@ -14,6 +14,7 @@ type User = {
   is_admin: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
+  api_key_count: number;
   created_at: string | null;
 };
 
@@ -92,6 +93,37 @@ try {
       if (res.ok) {
         showFlash(`User "${username}" ${action === 'deactivate' ? 'deactivated' : 'reactivated'}.`);
         setTimeout(() => location.reload(), 800);
+      } else {
+        showFlash(data.detail ?? data.error ?? `${action} failed.`, 'error');
+      }
+    });
+  });
+
+  // Promote / Demote admin toggle
+  document.querySelectorAll('[data-action-admin]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const el = btn as HTMLElement;
+      const action = el.dataset.actionAdmin as string; // 'promote' | 'demote'
+      const userId = el.dataset.userId as string;
+      const username = el.dataset.username ?? userId;
+      const newIsAdmin = action === 'promote';
+
+      const confirmMsg = newIsAdmin
+        ? `Promote "${username}" to Admin? They will gain full admin access.`
+        : `Demote "${username}" to regular User? They will lose admin access.`;
+      if (!confirm(confirmMsg)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/admin`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_admin: newIsAdmin }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFlash(`User "${username}" ${newIsAdmin ? 'promoted to Admin' : 'demoted to User'}.`);
+        setTimeout(() => location.reload(), 800);
+      } else if (res.status === 422) {
+        showFlash('Cannot demote last admin.', 'error');
       } else {
         showFlash(data.detail ?? data.error ?? `${action} failed.`, 'error');
       }

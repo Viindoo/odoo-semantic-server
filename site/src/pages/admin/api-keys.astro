@@ -5,10 +5,24 @@ import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
+type Key = {
+  id: number;
+  name: string;
+  active: boolean;
+  created_at: string;
+  last_used_at?: string | null;
+  owner_username: string | null;
+  user_id: number | null;
+};
+
 let keysData: {
-  keys: { id: number; name: string; active: boolean; created_at: string; last_used_at?: string | null }[];
+  keys: Key[];
   error?: string | null;
 } = { keys: [] };
+
+// Fetch admin users for the assign-owner dropdown
+type AdminUser = { id: number; username: string; is_admin: boolean };
+let adminUsers: AdminUser[] = [];
 
 try {
   const res = await fetch(`${FASTAPI_BASE}/api/api-keys`, {
@@ -19,8 +33,21 @@ try {
   keysData.error = 'Could not connect to API server.';
 }
 
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/users`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    adminUsers = (data.users ?? []).filter((u: AdminUser) => u.is_admin);
+  }
+} catch {
+  // silently ignore — dropdown will be empty
+}
+
 const activeKeys = keysData.keys.filter((k) => k.active);
 const inactiveKeys = keysData.keys.filter((k) => !k.active);
+const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
 ---
 
 <AdminLayout title="API Keys — Admin">
@@ -92,6 +119,13 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
     </div>
   )}
 
+  <!-- Unowned-key warning banner -->
+  {nullOwnerCount > 0 && (
+    <div class="rounded-lg bg-amber-50 border border-amber-200 p-4 mb-4 text-sm">
+      <strong>{nullOwnerCount} key(s) have no owner</strong> — assign each below to track ownership.
+    </div>
+  )}
+
   <!-- Active keys -->
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
     <div class="px-5 py-4 border-b border-gray-100">
@@ -110,6 +144,7 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
           <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
             <tr>
               <th class="px-4 py-3 text-left">Name</th>
+              <th class="px-4 py-3 text-left">Owner</th>
               <th class="px-4 py-3 text-left">Created</th>
               <th class="px-4 py-3 text-left">Last Used</th>
               <th class="px-4 py-3 text-right">Action</th>
@@ -119,16 +154,43 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
             {activeKeys.map((key) => (
               <tr data-testid="api-key-row" data-testid-id={`api-key-row-${key.id}`} class="hover:bg-gray-50">
                 <td class="px-4 py-3 font-medium text-gray-800">{key.name}</td>
+                <td class="px-4 py-3 text-gray-500 text-xs">
+                  {key.owner_username !== null && key.owner_username !== undefined
+                    ? key.owner_username
+                    : <em class="text-slate-400">(system)</em>
+                  }
+                </td>
                 <td class="px-4 py-3 text-gray-500 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
                 <td class="px-4 py-3 text-gray-500 text-xs">{key.last_used_at?.slice(0, 16).replace('T', ' ') ?? 'Never'}</td>
                 <td class="px-4 py-3 text-right">
-                  <button
-                    data-testid={`deactivate-key-button-${key.id}`}
-                    data-key-id={String(key.id)}
-                    class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors deactivate-key-btn"
-                  >
-                    Deactivate
-                  </button>
+                  <div class="flex items-center justify-end gap-2 flex-wrap">
+                    {key.user_id === null && adminUsers.length > 0 && (
+                      <div class="flex items-center gap-1 assign-owner-row" data-key-id={String(key.id)}>
+                        <select
+                          class="text-xs border border-gray-300 rounded px-2 py-1 assign-owner-select"
+                          aria-label={`Assign owner for key ${key.name}`}
+                        >
+                          <option value="">— assign owner —</option>
+                          {adminUsers.map((u) => (
+                            <option value={String(u.id)}>{u.username}</option>
+                          ))}
+                        </select>
+                        <button
+                          class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-2 py-1.5 rounded-lg transition-colors assign-owner-btn"
+                          data-key-id={String(key.id)}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
+                    <button
+                      data-testid={`deactivate-key-button-${key.id}`}
+                      data-key-id={String(key.id)}
+                      class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors deactivate-key-btn"
+                    >
+                      Deactivate
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -149,10 +211,23 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       </summary>
       <div class="border-t border-gray-100">
         <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+            <tr>
+              <th class="px-4 py-3 text-left">Name</th>
+              <th class="px-4 py-3 text-left">Owner</th>
+              <th class="px-4 py-3 text-left">Created</th>
+            </tr>
+          </thead>
           <tbody class="divide-y divide-gray-100">
             {inactiveKeys.map((key) => (
               <tr data-testid="api-key-row-inactive" class="hover:bg-gray-50 opacity-60">
                 <td class="px-4 py-3 text-gray-500 line-through">{key.name}</td>
+                <td class="px-4 py-3 text-gray-400 text-xs">
+                  {key.owner_username !== null && key.owner_username !== undefined
+                    ? key.owner_username
+                    : <em class="text-slate-400">(system)</em>
+                  }
+                </td>
                 <td class="px-4 py-3 text-gray-400 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
               </tr>
             ))}
@@ -279,6 +354,32 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       } else {
         const data = await res.json().catch(() => ({}));
         showFlash(data.error ?? 'Deactivation failed.', 'error');
+      }
+    });
+  });
+
+  // Assign owner buttons
+  document.querySelectorAll('.assign-owner-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const keyId = (btn as HTMLElement).dataset.keyId;
+      const row = (btn as HTMLElement).closest('.assign-owner-row') as HTMLElement | null;
+      const select = row?.querySelector('.assign-owner-select') as HTMLSelectElement | null;
+      const userId = select?.value;
+      if (!userId) {
+        showFlash('Please select a user to assign.', 'error');
+        return;
+      }
+      const res = await fetch(`/api/admin/api-keys/${keyId}/owner`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: parseInt(userId, 10) }),
+      });
+      if (res.ok) {
+        showFlash('Owner assigned.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showFlash(data.detail ?? data.error ?? 'Failed to assign owner.', 'error');
       }
     });
   });
