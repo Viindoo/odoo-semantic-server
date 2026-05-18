@@ -126,15 +126,32 @@ def format_next_step(hints: list[str]) -> str:
     return f"└─ Next: {' | '.join(hints)}"
 
 
+class _SafeDict(dict):  # type: ignore[type-arg]
+    """str.format_map source that returns "" for missing placeholders.
+
+    Prevents ``KeyError`` when ``hints_for(tool, name=...)`` is called without
+    every placeholder a template uses (e.g. ``{ver}`` template but only
+    ``name`` supplied). Tradeoff: missing-placeholder bugs become silent
+    (rendered hint reads ``find_examples(query='X usage', odoo_version='')``
+    — obviously wrong to a human but the call does not 500). Accepted
+    because the alternative (KeyError → tool returns isError) is strictly
+    worse UX for the LLM than a slightly degraded hint.
+    """
+    def __missing__(self, key: str) -> str:  # type: ignore[override]
+        return ""
+
+
 def hints_for(tool_name: str, **ctx: object) -> str:
     """Look up ``tool_name`` in registry, render templates with ``ctx``, format footer.
 
     Returns ``""`` when ``tool_name`` is in ``TERMINAL_TOOLS`` (no footer per
-    ADR-0023 §4.4) or not registered. Unused ``ctx`` keys are silently dropped
-    by Python's ``str.format``.
+    ADR-0023 §4.4) or not registered. Both EXTRA and MISSING ``ctx`` keys are
+    silently tolerated via ``_SafeDict.__missing__`` — missing keys render as
+    empty string in the template.
     """
     if tool_name in TERMINAL_TOOLS:
         return ""
     templates = NEXT_STEP_HINTS.get(tool_name, [])
-    rendered = [tpl.format(**ctx) for tpl in templates]
+    safe_ctx = _SafeDict(ctx)
+    rendered = [tpl.format_map(safe_ctx) for tpl in templates]
     return format_next_step(rendered)

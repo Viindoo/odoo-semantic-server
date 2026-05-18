@@ -73,7 +73,7 @@ Successful MCP servers put the next-action instruction in the response text the 
 
 odoo-semantic already has next-step footers (per ADR-0023 §4 — 18 drill-down tools emit `└─ Next: tool_a(...) | tool_b(...)`) but the strings are inline f-strings scattered across 25+ callsites in `src/mcp/server.py`, so updating a hint means hunting and replacing.
 
-**Adopted in Wave A WI-A2** — extract scattered callsites into `src/mcp/hints.py` with `NEXT_STEP_HINTS: dict[str, list[str]]` and a `hints_for(tool, **ctx)` renderer. Text output stays byte-identical (snapshot tests gate). See plan §5 Wave A.
+**Adopted in Wave A WI-A2** — added `src/mcp/hints.py` with `NEXT_STEP_HINTS: dict[str, list[str]]` (18 entries per ADR-0023 §4.3) and a `hints_for(tool, **ctx)` registry-driven renderer with `_SafeDict` missing-key tolerance. `_format_next_step` was relocated and renamed `format_next_step` (public). Callsite migration to `hints_for()` is deferred to a Wave B follow-up so snapshot text output stays byte-identical in Wave A (template wording must match server.py inline f-strings exactly before swap). See plan §5 Wave A.
 
 ### Pattern 4 — `list_X` (compact) + `get_X` (detailed) share one formatter via a `fetchData` flag
 **Adoption:** 8 of 12 (GitHub MinimalRepository/MinimalIssue, Chrome DevTools NetworkFormatter+ConsoleFormatter, Postgres crystaldba list_objects+get_object_details, Cloudflare list_namespaces+get_namespace, GDrive, Slack channels/threads, Memory open_nodes, Filesystem read_*).

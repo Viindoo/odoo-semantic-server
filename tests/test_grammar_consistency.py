@@ -106,10 +106,12 @@ def test_next_step_no_footer_terminal_tools(tool_name: str):
     # Source-level: the tool's function body must not call format_next_step
     # or hints_for. Search the public @mcp.tool wrapper AND its private
     # underscore-prefixed implementation (e.g. `lint_check` + `_lint_check`).
+    found_at_least_one = False
     for candidate in (tool_name, f"_{tool_name}"):
         body = _function_body_source(_SERVER_PY, candidate)
         if body is None:
             continue
+        found_at_least_one = True
         assert "format_next_step(" not in body, (
             f"Terminal tool {candidate!r} body in src/mcp/server.py calls "
             "format_next_step — must not emit a Next: footer per ADR-0023 §4.4."
@@ -118,6 +120,13 @@ def test_next_step_no_footer_terminal_tools(tool_name: str):
             f"Terminal tool {candidate!r} body in src/mcp/server.py calls "
             "hints_for — must not emit a Next: footer per ADR-0023 §4.4."
         )
+    # Guard against silent no-op if BOTH `tool_name` and `_tool_name` get
+    # renamed (would previously make this test trivially pass).
+    assert found_at_least_one, (
+        f"Terminal tool {tool_name!r} — neither '{tool_name}' nor "
+        f"'_{tool_name}' found as top-level def in src/mcp/server.py. "
+        "If the tool was renamed, update TERMINAL_TOOLS in src/mcp/hints.py."
+    )
 
 
 def test_next_step_no_self_loop():
