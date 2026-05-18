@@ -34,6 +34,7 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
     hints_for,
 )
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
+from src.mcp.tree_builder import render_list_block
 
 
 def _edition_rank_cypher(node_alias: str = "mod") -> str:
@@ -334,10 +335,7 @@ def _resolve_model(
             cap=LIST_PREVIEW_MAX_ITEMS,
             more_hint=more_hint,
         )
-        last_ext = len(rendered) - 1
-        for i, row in enumerate(rendered):
-            connector = "└─" if i == last_ext else "├─"
-            lines.append(f"│   {connector} {row}")
+        lines.extend(render_list_block(rendered))
 
     lines.append(f"├─ Fields:         {fields_count}")
     lines.append(f"├─ Methods:        {methods_count}")
@@ -2481,8 +2479,8 @@ def _list_fields(
         is_last_group = i == last_g
         g_conn = "├─" if not is_last_group else "├─"  # always ├─ so footer slot stays
         lines.append(f"{g_conn} [{repo}] {mod_name}")
-        sub_indent = "│   "
-
+        # All module groups use ├─ (footer slot stays as last branch),
+        # so render_list_block's default pipe-indent prefix is correct.
         items = groups[key]
         more_hint = (
             f"list_fields(model='{model}', odoo_version='{odoo_version}'"
@@ -2497,10 +2495,7 @@ def _list_fields(
             cap=cap,
             more_hint=more_hint,
         )
-        last_r = len(rendered) - 1
-        for j, row in enumerate(rendered):
-            r_conn = "└─" if j == last_r else "├─"
-            lines.append(f"{sub_indent}{r_conn} {row}")
+        lines.extend(render_list_block(rendered))
 
     if total > len(rows):
         # Cypher LIMIT trimmed — emit a tree-level disclosure as a sibling
