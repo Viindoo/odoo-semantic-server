@@ -5,6 +5,8 @@ import threading
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
+from mcp.types import TextContent
 from neo4j import GraphDatabase
 from starlette.requests import Request
 
@@ -28,6 +30,20 @@ from src.constants import (
     REL_USES_CORE_SYMBOL,
     SNIPPET_PREVIEW_MAX_LINES,
     VALID_CHUNK_TYPES,
+)
+from src.mcp.dto import (
+    DescribeModuleOutput,
+    FieldRef,
+    ListFieldsOutput,
+    ListMethodsOutput,
+    MethodRef,
+    ModelRef,
+    ModuleRef,
+    ResolveFieldOutput,
+    ResolveMethodOutput,
+    ResolveModelOutput,
+    ResolveViewOutput,
+    ViewRef,
 )
 from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for external consumers)
     format_next_step,
@@ -760,7 +776,7 @@ def resolve_model(
     model_name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
-) -> str:
+) -> ToolResult:
     """Return full inheritance chain, field count, and method count for an Odoo model.
 
     TRIGGER when: "show inheritance chain of sale.order", "what fields does
@@ -795,7 +811,12 @@ def resolve_model(
           ├─ Fields: 47
           └─ Methods: 23
     """
-    return _resolve_model(model_name, odoo_version, profile_name)
+    text = _resolve_model(model_name, odoo_version, profile_name)
+    structured = _resolve_model_structured(model_name, odoo_version, profile_name)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -804,7 +825,7 @@ def resolve_field(
     field_name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
-) -> str:
+) -> ToolResult:
     """Return type, compute/related metadata, and declaring modules for one field.
 
     TRIGGER when: "what type is amount_total field", "is this field computed or
@@ -837,7 +858,12 @@ def resolve_field(
           └─ Declared in:
               └─ [odoo] sale
     """
-    return _resolve_field(model_name, field_name, odoo_version, profile_name)
+    text = _resolve_field(model_name, field_name, odoo_version, profile_name)
+    structured = _resolve_field_structured(model_name, field_name, odoo_version, profile_name)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -846,7 +872,7 @@ def resolve_method(
     method_name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
-) -> str:
+) -> ToolResult:
     """Return the full override chain of a method, ordered base to top.
 
     TRIGGER when: "show override chain of action_confirm", "which modules
@@ -877,7 +903,12 @@ def resolve_method(
               ├─ [odoo] viin_sale — ✓ calls super() — decorators: —
               └─ [odoo] to_sale_workflow — ✓ calls super() — decorators: —
     """
-    return _resolve_method(model_name, method_name, odoo_version, profile_name)
+    text = _resolve_method(model_name, method_name, odoo_version, profile_name)
+    structured = _resolve_method_structured(model_name, method_name, odoo_version, profile_name)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -885,7 +916,7 @@ def resolve_view(
     xmlid: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
-) -> str:
+) -> ToolResult:
     """Return view inheritance chain and XPath modifications from all extension modules.
 
     TRIGGER when: "show xpath overrides for sale.order form", "which modules
@@ -918,7 +949,12 @@ def resolve_view(
               ├─ viin_sale.view_order_form_custom → [odoo] viin_sale
               └─ to_sale_custom.view_form_ext → [odoo] to_sale_custom
     """
-    return _resolve_view(xmlid, odoo_version, profile_name)
+    text = _resolve_view(xmlid, odoo_version, profile_name)
+    structured = _resolve_view_structured(xmlid, odoo_version, profile_name)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -3499,6 +3535,510 @@ def find_override_point(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dual-channel companion functions (M10.5 WI-B3, Option A — independent Cypher).
+#
+# Each _X_structured() mirrors the data fetched by its _X() counterpart and
+# returns a typed *Output DTO (or None when the entity is not found).  They
+# intentionally re-issue the same Cypher queries so the text channel (_X)
+# remains byte-identical and unmodified (AC-B3-3).  The 2x DB cost is
+# accepted for this PoC wave; a future wave can collapse to Option B (shared
+# rows).
+#
+# next_step_hint is populated via hints_for() using the same ctx keys that
+# the NEXT_STEP_HINTS registry templates use (see src/mcp/hints.py).
+# ---------------------------------------------------------------------------
+
+
+def _resolve_model_structured(
+    model_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> ResolveModelOutput | None:
+    """Structured companion for _resolve_model. Returns None when not found."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        layers = session.run(
+            f"""
+            MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
+            WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
+            WITH m, mod,
+                 CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
+                 COUNT {{
+                     (:Field {{model: $name, module: m.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN m.module AS module_name, mod.repo AS repo,
+                   coalesce(m.is_definition, false) AS is_definition,
+                   mod.edition AS edition,
+                   COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
+                   COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
+            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                     edition_rank ASC, mod_name ASC
+            """,
+            name=model_name, v=odoo_version, profile_name=profile_name,
+        ).data()
+
+        if not layers:
+            return None
+
+        parents = session.run(f"""
+            MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
+            WHERE p.name <> $name
+              AND NOT coalesce(r.unresolved, false)
+            RETURN DISTINCT p.name AS pname
+            ORDER BY pname
+        """, name=model_name, v=odoo_version).data()
+
+    base = layers[0]
+    extensions = layers[1:]
+
+    defined_in = ModuleRef(
+        name=base["module_name"],
+        odoo_version=odoo_version,
+        profile=None,
+    )
+    extended_by = [
+        ModuleRef(name=ext["module_name"], odoo_version=odoo_version, profile=None)
+        for ext in extensions
+    ]
+    inherits_from = [p["pname"] for p in parents]
+
+    return ResolveModelOutput(
+        ref=ModelRef(name=model_name, module=base["module_name"], odoo_version=odoo_version),
+        is_definition=bool(base.get("is_definition", False)),
+        defined_in=defined_in,
+        extended_by=extended_by,
+        inherits_from=inherits_from,
+        field_count=base["fields_count"],
+        method_count=base["methods_count"],
+        next_step_hint=hints_for("resolve_model", name=model_name, ver=odoo_version),
+    )
+
+
+def _resolve_field_structured(
+    model_name: str,
+    field_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> ResolveFieldOutput | None:
+    """Structured companion for _resolve_field. Returns None when not found."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        records = session.run(f"""
+            MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
+            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
+            OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
+            WITH f, mod, m_node,
+                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
+                      AS is_def_rank,
+                 COUNT {{
+                     (:Field {{model: $mn, module: f.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN f, f.module AS module_name
+            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                     edition_rank ASC, mod_name ASC
+        """, fn=field_name, mn=model_name, v=odoo_version, profile_name=profile_name).data()
+
+    if not records:
+        return None
+
+    base_f = records[0]["f"]
+    declared_in = [
+        FieldRef(
+            model=model_name,
+            name=field_name,
+            module=r["module_name"],
+            odoo_version=odoo_version,
+        )
+        for r in records
+    ]
+
+    return ResolveFieldOutput(
+        ref=FieldRef(
+            model=model_name,
+            name=field_name,
+            module=records[0]["module_name"],
+            odoo_version=odoo_version,
+        ),
+        ttype=base_f.get("ttype") or "?",
+        computed=bool(base_f.get("compute")),
+        compute_method=base_f.get("compute") or None,
+        stored=bool(base_f.get("stored", True)),
+        required=bool(base_f.get("required", False)),
+        related=base_f.get("related") or None,
+        declared_in=declared_in,
+        next_step_hint=hints_for("resolve_field", name=field_name, ver=odoo_version),
+    )
+
+
+def _resolve_method_structured(
+    model_name: str,
+    method_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> ResolveMethodOutput | None:
+    """Structured companion for _resolve_method. Returns None when not found."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        records = session.run(f"""
+            MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
+            OPTIONAL MATCH (m_node:Model {{name: $model, module: mth.module, odoo_version: $v}})
+            WITH mth, mod, m_node,
+                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
+                      AS is_def_rank,
+                 COUNT {{
+                     (:Field {{model: $model, module: mth.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN mth.module AS module_name
+            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                     edition_rank ASC, mod_name ASC
+        """, mn=method_name, model=model_name, v=odoo_version, profile_name=profile_name).data()
+
+    if not records:
+        return None
+
+    override_chain = [
+        MethodRef(
+            model=model_name,
+            name=method_name,
+            module=r["module_name"],
+            odoo_version=odoo_version,
+        )
+        for r in records
+    ]
+
+    return ResolveMethodOutput(
+        ref=MethodRef(
+            model=model_name,
+            name=method_name,
+            module=records[0]["module_name"],
+            odoo_version=odoo_version,
+        ),
+        override_chain=override_chain,
+        next_step_hint=hints_for(
+            "resolve_method", model=model_name, name=method_name, ver=odoo_version
+        ),
+    )
+
+
+def _resolve_view_structured(
+    xmlid: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> ResolveViewOutput | None:
+    """Structured companion for _resolve_view. Returns None when not found."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        view_rec = session.run("""
+            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
+            WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+            OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
+            RETURN v, mod.name AS module_name
+        """, xmlid=xmlid, ver=odoo_version, profile_name=profile_name).single()
+
+        if not view_rec:
+            return None
+
+        extensions = session.run(f"""
+            MATCH (ext:View {{odoo_version: $ver}})-[:{REL_INHERITS_VIEW}]->
+                  (v:View {{xmlid: $xmlid, odoo_version: $ver}})
+            WHERE NOT coalesce(ext.unresolved, false)
+            AND ($profile_name IS NULL OR $profile_name IN ext.profile)
+            RETURN ext.xmlid AS ext_xmlid,
+                   ext.model AS ext_model,
+                   coalesce(ext.xpaths_exprs, []) AS xpaths_exprs
+        """, xmlid=xmlid, ver=odoo_version, profile_name=profile_name).data()
+
+        parent_rec = session.run(f"""
+            MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
+                  -[r:{REL_INHERITS_VIEW}]->(parent:View {{odoo_version: $ver}})
+            WHERE NOT coalesce(r.unresolved, false)
+            AND ($profile_name IS NULL OR $profile_name IN v.profile)
+            RETURN parent.xmlid AS parent_xmlid
+        """, xmlid=xmlid, ver=odoo_version, profile_name=profile_name).single()
+
+    v_props = view_rec["v"]
+    own_exprs = list(v_props.get("xpaths_exprs") or [])
+
+    extended_by = [
+        ViewRef(
+            xmlid=ext["ext_xmlid"],
+            model=ext.get("ext_model"),
+            odoo_version=odoo_version,
+        )
+        for ext in extensions
+    ]
+
+    return ResolveViewOutput(
+        ref=ViewRef(
+            xmlid=xmlid,
+            model=v_props.get("model"),
+            odoo_version=odoo_version,
+        ),
+        view_type=v_props.get("type") or "?",
+        module=view_rec.get("module_name") or "?",
+        mode=v_props.get("mode") or None,
+        inherits_from=parent_rec["parent_xmlid"] if parent_rec else None,
+        xpath_count=len(own_exprs),
+        extended_by=extended_by,
+        next_step_hint=hints_for(
+            "resolve_view", name=xmlid, model=v_props.get("model") or "", ver=odoo_version
+        ),
+    )
+
+
+def _describe_module_structured(
+    name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> DescribeModuleOutput | None:
+    """Structured companion for _describe_module. Returns None when not found."""
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        mod_rec = session.run(
+            """
+            MATCH (m:Module {name: $n, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
+            RETURN m.edition AS edition, m.version_raw AS version_raw
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).single()
+
+        if not mod_rec:
+            return None
+
+        depends = session.run(
+            f"""
+            MATCH (m:Module {{name: $n, odoo_version: $v}})
+                  -[:{REL_DEPENDS_ON}]->(d:Module)
+            RETURN d.name AS name ORDER BY d.name ASC
+            """,
+            n=name, v=odoo_version,
+        ).data()
+
+        defines = session.run(
+            """
+            MATCH (model:Model {module: $n, odoo_version: $v})
+            WHERE coalesce(model.is_definition, false) = true
+              AND model.module <> '__unresolved__'
+              AND ($profile_name IS NULL OR $profile_name IN model.profile)
+            RETURN model.name AS name ORDER BY model.name ASC
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).data()
+
+        extends = session.run(
+            """
+            MATCH (model:Model {module: $n, odoo_version: $v})
+            WHERE coalesce(model.is_definition, false) = false
+              AND model.module <> '__unresolved__'
+              AND ($profile_name IS NULL OR $profile_name IN model.profile)
+            RETURN model.name AS name ORDER BY model.name ASC
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).data()
+
+        view_total_rec = session.run(
+            """
+            MATCH (view:View {module: $n, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN view.profile)
+            RETURN count(view) AS c
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).single()
+
+        js_count_rec = session.run(
+            """
+            MATCH (j:JSPatch {module: $n, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN j.profile)
+            RETURN count(j) AS c
+            """,
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).single()
+
+    return DescribeModuleOutput(
+        ref=ModuleRef(name=name, odoo_version=odoo_version, profile=None),
+        edition=mod_rec.get("edition") or "community",
+        version_raw=mod_rec.get("version_raw") or None,
+        depends=[d["name"] for d in depends],
+        defines_models=[d["name"] for d in defines],
+        extends_models=[e["name"] for e in extends],
+        view_total=view_total_rec["c"] if view_total_rec else 0,
+        js_patch_count=js_count_rec["c"] if js_count_rec else 0,
+        next_step_hint=hints_for("describe_module", name=name, module=name, ver=odoo_version),
+    )
+
+
+def _list_fields_structured(
+    model: str,
+    odoo_version: str = "auto",
+    module: str | None = None,
+    kind: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> ListFieldsOutput | None:
+    """Structured companion for _list_fields. Returns None when model has no fields."""
+    cap = LIST_PREVIEW_FIELDS_MAX
+    effective_limit = min(limit, cap)
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (f:Field {{model: $m, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
+              AND ($module IS NULL OR f.module = $module)
+              AND ($kind IS NULL OR f.ttype = $kind)
+              AND f.module <> '__unresolved__'
+            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
+            WITH f, mod,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN f.name AS name, f.ttype AS ttype, f.module AS module_name,
+                   edition_rank, mod_name
+            ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
+            LIMIT $limit
+            """,
+            m=model, v=odoo_version, module=module, kind=kind,
+            profile_name=profile_name, limit=effective_limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (f:Field {model: $m, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
+              AND ($module IS NULL OR f.module = $module)
+              AND ($kind IS NULL OR f.ttype = $kind)
+              AND f.module <> '__unresolved__'
+            RETURN count(f) AS c
+            """,
+            m=model, v=odoo_version, module=module, kind=kind,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    fields = [
+        FieldRef(
+            model=model,
+            name=r["name"],
+            module=r["module_name"],
+            odoo_version=odoo_version,
+        )
+        for r in rows
+    ]
+
+    first_field = rows[0]["name"] if rows else ""
+    return ListFieldsOutput(
+        model=model,
+        odoo_version=odoo_version,
+        total=total,
+        shown=len(fields),
+        fields=fields,
+        next_step_hint=hints_for("list_fields", model=model, name=first_field, ver=odoo_version),
+    )
+
+
+def _list_methods_structured(
+    model: str,
+    odoo_version: str = "auto",
+    module: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+) -> ListMethodsOutput | None:
+    """Structured companion for _list_methods. Returns None when model has no methods."""
+    cap = LIST_PREVIEW_MAX_ITEMS
+    effective_limit = min(limit, cap)
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (mth:Method {{model: $m, odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+              AND ($module IS NULL OR mth.module = $module)
+              AND mth.module <> '__unresolved__'
+            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
+            WITH mth, mod,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN mth.name AS name, mth.module AS module_name,
+                   edition_rank, mod_name
+            ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
+            LIMIT $limit
+            """,
+            m=model, v=odoo_version, module=module,
+            profile_name=profile_name, limit=effective_limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (mth:Method {model: $m, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+              AND ($module IS NULL OR mth.module = $module)
+              AND mth.module <> '__unresolved__'
+            RETURN count(mth) AS c
+            """,
+            m=model, v=odoo_version, module=module,
+            profile_name=profile_name,
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+        override_rec = session.run(
+            """
+            MATCH (mth:Method {model: $m, odoo_version: $v})
+            WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+              AND mth.module <> '__unresolved__'
+            WITH mth.name AS name, count(DISTINCT mth.module) AS modcount
+            WHERE modcount >= 2
+            RETURN collect(name) AS overrides
+            """,
+            m=model, v=odoo_version, profile_name=profile_name,
+        ).single()
+        override_names = sorted(override_rec["overrides"]) if override_rec else []
+
+    methods = [
+        MethodRef(
+            model=model,
+            name=r["name"],
+            module=r["module_name"],
+            odoo_version=odoo_version,
+        )
+        for r in rows
+    ]
+
+    first_method = rows[0]["name"] if rows else ""
+    return ListMethodsOutput(
+        model=model,
+        odoo_version=odoo_version,
+        total=total,
+        shown=len(methods),
+        methods=methods,
+        override_names=override_names,
+        next_step_hint=hints_for(
+            "list_methods", model=model, name=first_method, ver=odoo_version
+        ),
+    )
+
+
 # Wave 1 — @mcp.tool(**READONLY_TOOL_KWARGS) wrappers for the 7 new tools (ADR-0023 §5).
 # TRIGGER docstrings keep EN + VI for router accuracy (ADR-0012 §2 exception).
 # ---------------------------------------------------------------------------
@@ -3509,7 +4049,7 @@ def describe_module(
     name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
-) -> str:
+) -> ToolResult:
     """Return a full architecture overview of an Odoo module (manifest +
     model/view/JS counts).
 
@@ -3545,7 +4085,12 @@ def describe_module(
           ├─ Views: 12 (8 form, 3 tree, 1 search)
           └─ JS patches: 3
     """
-    return _describe_module(name, odoo_version, profile_name)
+    text = _describe_module(name, odoo_version, profile_name)
+    structured = _describe_module_structured(name, odoo_version, profile_name)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -3556,7 +4101,7 @@ def list_fields(
     kind: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
-) -> str:
+) -> ToolResult:
     """Enumerate fields declared on an Odoo model, grouped by module.
 
     TRIGGER when: "list all fields of sale.order", "show fields on
@@ -3587,8 +4132,11 @@ def list_fields(
           │   ├─ partner_id : many2one
           │   └─ amount_total : monetary
     """
-    return _list_fields(
-        model, odoo_version, module, kind, profile_name, limit,
+    text = _list_fields(model, odoo_version, module, kind, profile_name, limit)
+    structured = _list_fields_structured(model, odoo_version, module, kind, profile_name, limit)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
     )
 
 
@@ -3599,7 +4147,7 @@ def list_methods(
     module: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
-) -> str:
+) -> ToolResult:
     """Enumerate methods on an Odoo model, grouped by module.
 
     Methods overridden across ≥2 modules are marked with `(*)`.
@@ -3630,7 +4178,12 @@ def list_methods(
           │   ├─ action_confirm(*) : action
           │   └─ _compute_amount : compute
     """
-    return _list_methods(model, odoo_version, module, profile_name, limit)
+    text = _list_methods(model, odoo_version, module, profile_name, limit)
+    structured = _list_methods_structured(model, odoo_version, module, profile_name, limit)
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump() if structured is not None else None,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
