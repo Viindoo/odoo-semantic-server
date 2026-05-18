@@ -58,12 +58,18 @@ def _run_backup(
         return MagicMock(returncode=0, stderr=b"")
 
     def _fake_neo4j_dump(cmd, **kwargs):
-        if neo4j_success:
-            # neo4j-admin writes to --to-path <dir>/neo4j.dump
-            to_path_idx = cmd.index("--to-path") + 1
-            (Path(cmd[to_path_idx]) / "neo4j.dump").write_bytes(b"neo4j-dump-stub")
-            return MagicMock(returncode=0, stderr="")
-        return MagicMock(returncode=1, stderr="neo4j not running")
+        # New flow: cmd is `docker compose run --rm -T -v <host_tmpdir>:/backups
+        # neo4j neo4j-admin database dump --to-path=/backups neo4j`. We resolve
+        # the host_tmpdir from the bind-mount arg and write the dump file there.
+        if not neo4j_success:
+            return MagicMock(returncode=1, stderr=b"neo4j-admin: database in use")
+        # Find the -v "<host>:/backups" arg (compose run preserves -v).
+        for i, arg in enumerate(cmd):
+            if arg == "-v" and i + 1 < len(cmd) and cmd[i + 1].endswith(":/backups"):
+                host_dir = cmd[i + 1].split(":", 1)[0]
+                (Path(host_dir) / "neo4j.dump").write_bytes(b"neo4j-dump-stub")
+                break
+        return MagicMock(returncode=0, stderr=b"")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -73,11 +79,20 @@ def _run_backup(
     mock_conn.cursor.return_value = mock_cursor
 
     def _fake_run(cmd, **kwargs):
-        if "pg_dump" in cmd[0]:
+        if cmd and "pg_dump" in cmd[0]:
             return _fake_pg_dump(cmd, **kwargs)
-        if "neo4j-admin" in cmd[0]:
+        # New Neo4j flow: docker compose stop/run/start + docker inspect.
+        if cmd[:3] == ["docker", "compose", "stop"]:
+            return MagicMock(returncode=0, stderr=b"")
+        if cmd[:3] == ["docker", "compose", "start"]:
+            return MagicMock(returncode=0, stderr=b"")
+        if cmd[:3] == ["docker", "compose", "run"] and "neo4j-admin" in cmd:
             return _fake_neo4j_dump(cmd, **kwargs)
-        return MagicMock(returncode=0, stderr="")
+        if cmd[:2] == ["docker", "inspect"]:
+            # _wait_neo4j_healthy polls this — return healthy immediately so
+            # the test does not sleep.
+            return MagicMock(returncode=0, stdout="healthy\n", stderr="")
+        return MagicMock(returncode=0, stderr=b"")
 
     with patch("psycopg2.connect", return_value=mock_conn):
         with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
@@ -274,7 +289,10 @@ class TestFernetEncryptionWithPassphrase:
 
 
 class TestNeo4jMissingLogsWarningNotFatal:
-    def test_neo4j_admin_not_found_is_non_fatal(self, tmp_path, monkeypatch, caplog):
+    def test_docker_not_found_is_non_fatal(self, tmp_path, monkeypatch, caplog):
+        """When docker is missing (compose backup unreachable) backup still
+        succeeds — postgres.sql + manifest land in the bundle, neo4j.dump is
+        skipped with a logged warning."""
         import logging
         backup_dir = _make_backup_dir(tmp_path)
         monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
@@ -292,14 +310,13 @@ class TestNeo4jMissingLogsWarningNotFatal:
         mock_conn.cursor.return_value = mock_cursor
 
         def _fake_run(cmd, **kwargs):
-            if "pg_dump" in cmd[0]:
-                # pg_dump writes to stdout (no -f); write stub bytes to the stdout handle
+            if cmd and "pg_dump" in cmd[0]:
                 stdout = kwargs.get("stdout")
                 if stdout and hasattr(stdout, "write"):
                     stdout.write(b"-- pg_dump stub\n")
                 return MagicMock(returncode=0, stderr=b"")
-            if "neo4j-admin" in cmd[0]:
-                raise FileNotFoundError("neo4j-admin not found")
+            if cmd and cmd[0] == "docker":
+                raise FileNotFoundError("docker not found")
             return MagicMock(returncode=0)
 
         with caplog.at_level(logging.WARNING, logger="src.cli"):
@@ -308,10 +325,82 @@ class TestNeo4jMissingLogsWarningNotFatal:
                     with patch("subprocess.run", side_effect=_fake_run):
                         rc = _cmd_backup(args)
 
-        assert rc == 0, "Backup should succeed even when neo4j-admin is missing"
+        assert rc == 0, "Backup should succeed even when docker is missing"
         assert out.exists()
-        # Warning should mention neo4j-admin
-        assert any("neo4j-admin" in r.message for r in caplog.records)
+        assert any("docker" in r.message.lower() for r in caplog.records)
+
+
+class TestNeo4jStopDumpStartFlow:
+    def test_dump_failure_still_restarts_neo4j(self, tmp_path, monkeypatch):
+        """If neo4j-admin dump exits non-zero, the finally clause must still
+        invoke `docker compose start neo4j` — preventing a stuck-stopped DB."""
+        backup_dir = _make_backup_dir(tmp_path)
+        monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+        monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
+        monkeypatch.setenv("FERNET_KEY", "fk")
+
+        calls: list[list[str]] = []
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: s
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.return_value = (True,)
+        mock_conn.cursor.return_value = mock_cursor
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if cmd and "pg_dump" in cmd[0]:
+                stdout = kwargs.get("stdout")
+                if stdout and hasattr(stdout, "write"):
+                    stdout.write(b"-- pg_dump stub\n")
+                return MagicMock(returncode=0, stderr=b"")
+            if cmd[:3] == ["docker", "compose", "run"]:
+                return MagicMock(returncode=1, stderr=b"database in use")
+            if cmd[:2] == ["docker", "inspect"]:
+                return MagicMock(returncode=0, stdout="healthy\n", stderr="")
+            return MagicMock(returncode=0, stderr=b"")
+
+        out = backup_dir / "out.tar.gz"
+        args = _build_parser().parse_args(["backup", "--output", str(out)])
+        with patch("psycopg2.connect", return_value=mock_conn):
+            with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+                with patch("subprocess.run", side_effect=_fake_run):
+                    rc = _cmd_backup(args)
+
+        assert rc == 0, (
+            "Backup must succeed even if dump step failed "
+            "(postgres+manifest still archived)"
+        )
+        stop_seen = any(c[:3] == ["docker", "compose", "stop"] for c in calls)
+        start_seen = any(c[:3] == ["docker", "compose", "start"] for c in calls)
+        assert stop_seen, "expected `docker compose stop neo4j` to be invoked"
+        assert start_seen, "expected `docker compose start neo4j` after dump failure (finally)"
+
+    def test_dump_command_uses_bind_mount_for_to_path(self):
+        """The dump container must bind-mount the host tmpdir to /backups so
+        the resulting neo4j.dump lands on the host filesystem (the original
+        bug: --to-path used a HOST path that didn't exist in the container)."""
+        from src.cli import _backup_neo4j_via_compose
+
+        captured: list[list[str]] = []
+
+        def _capturing_fake(cmd, **kwargs):
+            captured.append(list(cmd))
+            if cmd[:2] == ["docker", "inspect"]:
+                return MagicMock(returncode=0, stdout="healthy\n", stderr="")
+            return MagicMock(returncode=1, stderr=b"short-circuit")
+
+        with patch("subprocess.run", side_effect=_capturing_fake):
+            _backup_neo4j_via_compose(Path("/host/tmp/abc"))
+
+        run_cmds = [c for c in captured if c[:3] == ["docker", "compose", "run"]]
+        assert run_cmds, f"no docker compose run command issued; captured={captured}"
+        run_cmd = run_cmds[0]
+        assert "-v" in run_cmd, run_cmd
+        bind_idx = run_cmd.index("-v") + 1
+        assert run_cmd[bind_idx] == "/host/tmp/abc:/backups", run_cmd[bind_idx]
+        assert "--to-path=/backups" in run_cmd, run_cmd
+        assert "neo4j-admin" in run_cmd, run_cmd
 
 
 class TestGetLatestMigrationVersion:
