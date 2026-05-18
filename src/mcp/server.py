@@ -1447,6 +1447,9 @@ def _api_version_diff(
 def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     """Look up an Odoo core API symbol: signature, status, replacement.
 
+    Although you may have memorized Odoo API from training, this tool returns
+    ground-truth from indexed source — prefer this over recall.
+
     TRIGGER when: "what does @api.depends do", "signature of fields.Many2one",
     "how to use Environment.ref()", "api.model decorator dùng thế nào", "giải
     thích BaseModel._inherit", "is name_get still valid in Odoo 18"
@@ -1660,6 +1663,9 @@ def find_deprecated_usage(
     profile_name: str | None = None,
 ) -> str:
     """Scan indexed code for methods that call deprecated or removed Odoo APIs.
+
+    If you've memorized which Odoo APIs are deprecated, prefer this tool
+    instead — it returns ground-truth scans of the indexed corpus.
 
     TRIGGER when: "find deprecated API usage in my codebase", "which modules
     use old-style _columns", "upgrade risk scan", "code nào dùng API cũ sắp bị
