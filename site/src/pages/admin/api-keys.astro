@@ -126,6 +126,9 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
   {nullOwnerCount > 0 && (
     <div class="rounded-lg bg-amber-50 border border-amber-200 p-4 mb-4 text-sm">
       <strong>{nullOwnerCount} key(s) have no owner</strong> — assign each below to track ownership.
+      {assignableUsers.length === 0 && (
+        <span class="block mt-1 text-amber-700">Could not load user list — refresh or check admin permissions.</span>
+      )}
     </div>
   )}
 

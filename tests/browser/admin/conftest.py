@@ -70,7 +70,7 @@ def _seed_test_admin(api_server, pg_conn):
 
     run_migrations(pg_conn)
     auth_store().set_user_password(
-        TEST_ADMIN_USERNAME, hash_password(TEST_ADMIN_PASSWORD)
+        TEST_ADMIN_USERNAME, hash_password(TEST_ADMIN_PASSWORD), is_admin=True
     )
     return TEST_ADMIN_USERNAME
 

@@ -201,7 +201,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
   if (
     sessionPayload.is_admin === false &&
     path.startsWith('/admin/') &&
-    !path.startsWith('/admin/auth/')
+    !path.startsWith('/admin/auth/')  // forward-compat: reserved for future OAuth callback routes
   ) {
     return _redirectWithHeaders('/account/api-keys');
   }

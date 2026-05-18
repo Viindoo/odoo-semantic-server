@@ -66,7 +66,7 @@ containing only "My API Keys" + "Logout". Non-admin users are redirected from `/
 `/account/api-keys` at the middleware level (`src/web_ui/middleware.ts` Astro).
 
 Two pages:
-- `GET /account/index` — dashboard (read-only, shows "Profile access: VIEW" status).
+- `GET /account/index` — thin SSR redirect (302) to `/account/api-keys`. Not a dashboard; contains no content. Future-proofed path for account home if richer content is added later.
 - `GET /account/api-keys` — self-service key management (list + create + deactivate own keys).
 
 This provides a clear UX boundary: admins get full `/admin/*` sidebar; non-admins get slim
@@ -76,7 +76,7 @@ This provides a clear UX boundary: admins get full `/admin/*` sidebar; non-admin
 
 Before allowing `set_user_admin(user_id, is_admin=False)` or `set_user_active(user_id, is_active=False)`,
 check via SQL `COUNT(*) FROM webui_users WHERE is_admin=TRUE AND is_active=TRUE AND id != $user_id`.
-If result is 0, return an error (HTTP 409 Conflict) with a message like:
+If result is 0, return an error (HTTP 422 Unprocessable Entity) with a message like:
 "Cannot demote or deactivate the last active administrator. Promote another user first."
 
 This prevents the database from ever reaching a state with 0 admins (unrecoverable without direct DB
@@ -108,13 +108,14 @@ introduced). For now, the column is left as-is; callers must use the boolean `is
 - New `AccountLayout` with slim sidebar for non-admin users.
 - `/admin/api-keys` shows new "Owner" column; system keys (user_id IS NULL) show "Unassigned" badge + "Assign owner" button.
 - `/admin/users` shows new "Admin" toggle (UI for PATCH endpoint); gated to super-admin or self-promotion.
-- New `/account/index` dashboard + `/account/api-keys` self-service (non-admin only).
+- New `/account/index` (SSR redirect → `/account/api-keys`) + `/account/api-keys` self-service (non-admin only).
 
 ### Deactivate Endpoint Security Fix
 - `PATCH /api/api-keys/{id}/deactivate` now enforces ownership check: reject with HTTP 403 if requesting user is not the key's owner AND not an admin.
 
 ### Audit Log Extensions (ADR-0021)
-- New audit actions: `admin_promote`, `admin_demote`, `key_owner_assign`.
+- New audit actions: `user.set_admin` (covers both promote and demote — `body.is_admin` in detail),
+  `api_key.assign_owner` (key_id in target, new user_id + old user_id in detail).
 
 ---
 
