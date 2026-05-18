@@ -2,9 +2,9 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-## [Unreleased] — 2026-05-17 — Post-0.4.1 hardening + go-live deploy + M9 Coverage Fill
+## [Unreleased] — 2026-05-18 — Post-0.4.1 hardening + go-live deploy + M9 Coverage Fill + M9 RBAC follow-up
 
-5 PRs merged after v0.4.1. Production deployed at PR #119 / commit `3f081b9` (admin-invite signup model active). PR #120 (M9 Coverage Fill) + PR #121 (docs signoff) merged but not yet deployed to prod. Two post-deploy hotfixes shipped 2026-05-18 — PR #124 (`init_pool` ordering in seed_patterns CLI) and PR #125 (CLIFlag null command_name MERGE bug surfaced when running `index-core` against M9 curated spec_data).
+6 PRs merged after v0.4.1. Production deployed at PR #119 / commit `3f081b9` (admin-invite signup model active). PR #120 (M9 Coverage Fill) + PR #121 (docs signoff) merged but not yet deployed to prod. Two post-deploy hotfixes shipped 2026-05-18 — PR #124 (`init_pool` ordering in seed_patterns CLI) and PR #125 (CLIFlag null command_name MERGE bug surfaced when running `index-core` against M9 curated spec_data). PR #<TBD> (M9 RBAC follow-up) in progress.
 
 ### Migration 0004 self-contained SQL rescue (PR #117)
 
@@ -115,6 +115,34 @@ All notable changes to Odoo Semantic MCP are documented here.
 - Backup automation: systemd nightly timer scheduled 03:00:00; first manual run produced 2.55 GB postgres bundle (Neo4j component skipped — followup #13).
 - Webui crash sim: passed (SIGKILL → 5s auto-restart).
 - Embeddings: 528,577 across all profiles (unchanged from pre-deploy; `--no-embed` verify pass did not touch pgvector).
+
+### M9 RBAC + Key-Ownership Bug Fix (PR #<TBD>)
+
+6 WIs orchestrated (5 code, 1 docs). Root cause: `request.session.get("is_admin")` returned False because login never wrote that field; all 5 legacy API keys had `user_id IS NULL` → admin saw empty list. Additionally closes a security hole (unauthenticated users could not deactivate keys, but any authenticated user could deactivate any key by ID without ownership check) and completes M9 §3.4 admin user management.
+
+#### Fixed
+- **API key list filter restored for admins** — new `is_admin_session(request)` helper in `src/web_ui/auth.py` DB-sources `is_admin` per request instead of reading absent session field. Clarifies ADR-0011 rule 6 and prevents regression.
+- **API key deactivate endpoint now enforces ownership** — `PATCH /api/api-keys/{id}/deactivate` checks that requesting user owns the key OR is an admin (HTTP 403 if neither). Closes M9 security gap.
+
+#### Added
+- **Admin promote/demote** — `PATCH /api/admin/users/{id}/admin` endpoint + UI toggle on `/admin/users` with last-admin protection (refuse demote if it leaves 0 active admins). New `set_user_admin()` AuthStore method.
+- **Key→owner attribution** — `owner_username` field on `GET /api/api-keys`; Owner column + "Assign owner" banner on `/admin/api-keys` for legacy NULL-owner keys. New `PATCH /api/admin/api-keys/{id}/owner` endpoint for admin assignment. Self-service UI deactivate on `/account/api-keys`.
+- **`/account/api-keys` self-service surface for non-admin users** (slim `AccountLayout`). Non-admins hitting `/admin/*` now redirect to `/account/api-keys` (via Astro middleware). New `/account/index` dashboard (read-only, shows "Profile access: VIEW" status).
+
+#### Architecture
+- `is_admin_session(request: Request) -> bool` replaces all `request.session.get("is_admin")` calls. DB-sourced, cached 5 min per existing auth cache.
+- Web UI surface split: `/admin/*` for admins (full sidebar); `/account/*` for non-admins (slim sidebar).
+- Last-admin protection on demote/deactivate via `set_user_admin()` and `set_user_active()` SQL logic.
+- NULL-owner system keys assignable by admins interactively (modal + PATCH).
+
+#### Tests
+- 28 new backend + frontend tests (WI-1 through WI-5).
+
+#### Docs
+- ADR-0026 — RBAC + key ownership (5 design decisions, 2 consequences sections, alternatives considered).
+- TASKS.md Stream J (6 WIs + completion note).
+- CLAUDE.md new section "Auth — is_admin Source of Truth" (1 paragraph clarifying the DB-sourced rule).
+- CHANGELOG.md (this section).
 
 ---
 

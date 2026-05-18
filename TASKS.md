@@ -590,6 +590,21 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 - [ ] **#14 Logrotate /var/log stanza 1 perms:** Pre-existing `/etc/logrotate.d/odoo-semantic` stanza 1 (`/var/log/odoo-semantic-reindex.log`) fails because `/var/log/` is world-writable. Fix: add `su root syslog` directive OR change log location. NOT introduced by WI-3 (stanza 2). Operational fix.
 - [ ] **#15 §6 tools 15-21 prod smoke:** 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) need end-to-end smoke against prod MCP endpoint via Claude Code or another MCP client. Deferred to next session per go-live decision. All 7 are code-complete + unit-tested.
 
+### Stream J — M9 RBAC + Key-Ownership Bug Fix (M9 follow-up, PR #<TBD>)
+
+**Status:** `[x]` DONE — 2026-05-18 (6 WIs orchestrated, code + docs).
+
+**ADR:** ADR-0026 — RBAC + key ownership (fixes session bug, closes deactivate authz hole, adds admin promote/demote, `/account` self-service surface).
+
+**Root cause of regression:** `src/web_ui/routes/api_keys.py:57` reads `request.session.get("is_admin", False)`, but login never wrote that field. All 5 legacy keys had `user_id IS NULL` → filter `WHERE user_id = <admin_uid>` returned 0 rows.
+
+- [x] **WI-1 — Backend session bug fix + ownership-guarded deactivate:** `is_admin_session()` helper (DB-sourced, clarifies ADR-0011). Ownership check on `PATCH /api/api-keys/{id}/deactivate`.
+- [x] **WI-2 — Backend RBAC methods + routes:** `set_user_admin()`, `set_user_active()` with last-admin protection. `PATCH /api/admin/users/{id}/admin` endpoint. `PATCH /api/admin/api-keys/{id}/owner` for NULL-key assignment.
+- [x] **WI-3 — Frontend middleware + layout:** Astro middleware redirects non-admin users from `/admin/*` to `/account/api-keys`. New `AccountLayout` component.
+- [x] **WI-4 — Admin UI enhancements:** Owner column + "Assign owner" banner for legacy NULL keys. Admin promote/demote toggle on `/admin/users` with last-admin protection.
+- [x] **WI-5 — Account self-service surface:** `/account/index` dashboard + `/account/api-keys` (list/create/deactivate own keys). Non-admin UX.
+- [x] **WI-6 — Documentation:** ADR-0026 + TASKS.md + CHANGELOG.md + CLAUDE.md note on `is_admin` source-of-truth rule.
+
 ---
 
 ## Milestone 9 Coverage Fill — 2026-05-17
