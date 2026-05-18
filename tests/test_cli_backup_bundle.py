@@ -401,6 +401,28 @@ class TestNeo4jStopDumpStartFlow:
         assert run_cmd[bind_idx] == "/host/tmp/abc:/backups", run_cmd[bind_idx]
         assert "--to-path=/backups" in run_cmd, run_cmd
         assert "neo4j-admin" in run_cmd, run_cmd
+        # --verbose pinned so future failures surface the real error instead
+        # of the generic "Dump failed for databases" one-liner.
+        assert "--verbose" in run_cmd, run_cmd
+
+    def test_tmpdir_is_chmod_world_writable_before_dump(self, tmp_path):
+        """The bind-mounted tmpdir must be chmod 0o777 before the container
+        starts so neo4j-admin (running as container's default user, UID 7474
+        for the official image) can write neo4j.dump back through the bind
+        mount. Without this the dump exits 1 with a generic 'Dump failed'
+        message and the bundle silently ships incomplete."""
+        from src.cli import _backup_neo4j_via_compose
+
+        host_tmpdir = tmp_path / "bm"
+        host_tmpdir.mkdir(mode=0o700)
+        assert (host_tmpdir.stat().st_mode & 0o777) == 0o700
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr=b"")):
+            _backup_neo4j_via_compose(host_tmpdir)
+
+        assert (host_tmpdir.stat().st_mode & 0o777) == 0o777, (
+            "host_tmpdir must be chmod 0o777 before bind-mount to /backups"
+        )
 
 
 class TestGetLatestMigrationVersion:
