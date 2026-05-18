@@ -129,7 +129,6 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
 | [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 21 tools, trigger conditions, persona mapping |
-| [`docs/orchestration-workflow.md`](docs/orchestration-workflow.md) | Multi-subagent orchestration workflow (9-phase pattern) |
 
 ---
 
