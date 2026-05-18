@@ -1,0 +1,283 @@
+---
+// My API Keys — self-service page for non-admin users.
+// Backend (WI1) scopes GET /api/api-keys to own keys for non-admin sessions.
+import AccountLayout from '../../layouts/AccountLayout.astro';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+let keysData: {
+  keys: { id: number; name: string; active: boolean; created_at: string; last_used_at?: string | null }[];
+  error?: string | null;
+} = { keys: [] };
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/api-keys`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) keysData = await res.json();
+} catch {
+  keysData.error = 'Could not connect to API server.';
+}
+
+const activeKeys = keysData.keys.filter((k) => k.active);
+const inactiveKeys = keysData.keys.filter((k) => !k.active);
+---
+
+<AccountLayout title="My API Keys">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <!-- New key reveal panel (hidden by default). Persists until manual page
+       reload — the raw key is not stored server-side and cannot be re-shown. -->
+  <div data-testid="new-key-banner" hidden class="mb-4 bg-green-50 border border-green-300 rounded-xl px-5 py-4">
+    <p class="text-sm font-semibold text-green-800 mb-1">New API key created — copy it now. It will not be shown again.</p>
+    <div class="flex items-stretch gap-2">
+      <code data-testid="new-key-value" class="flex-1 text-sm font-mono bg-white border border-green-200 rounded-lg px-3 py-2 select-all text-green-900 break-all"></code>
+      <button
+        type="button"
+        data-testid="copy-key-button"
+        aria-label="Copy API key to clipboard"
+        class="shrink-0 inline-flex items-center gap-1.5 bg-white hover:bg-green-100 border border-green-300 text-green-800 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span data-testid="copy-key-button-label">Copy</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">My API Keys</h1>
+      <p class="text-sm text-gray-500 mt-1">Manage your MCP server access keys</p>
+    </div>
+    <button
+      data-testid="generate-key-button"
+      class="bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+    >
+      + Generate Key
+    </button>
+  </div>
+
+  <!-- Generate key form (hidden, toggle via button) -->
+  <div data-testid="generate-key-form-container" hidden class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
+    <h2 class="text-base font-semibold text-gray-800 mb-4">Generate New API Key</h2>
+    <form data-testid="generate-key-form" class="flex gap-3 items-end">
+      <div class="flex-1">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Key Name</label>
+        <input
+          name="name"
+          type="text"
+          placeholder="my-tool-key"
+          data-testid="api-key-name-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          required
+        />
+      </div>
+      <button
+        type="submit"
+        data-testid="create-key-button"
+        class="bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+      >
+        Create
+      </button>
+    </form>
+  </div>
+
+  {keysData.error && (
+    <div data-testid="api-keys-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      ⚠️ {keysData.error}
+    </div>
+  )}
+
+  <!-- Active keys -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">Active Keys ({activeKeys.length})</h2>
+    </div>
+
+    {activeKeys.length === 0 ? (
+      <div data-testid="api-keys-empty-state" class="py-12 text-center text-gray-500">
+        <p class="text-3xl mb-2">🔑</p>
+        <p class="font-medium">No active API keys.</p>
+        <p class="text-sm mt-1">Click "Generate Key" to create one.</p>
+      </div>
+    ) : (
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+            <tr>
+              <th class="px-4 py-3 text-left">Name</th>
+              <th class="px-4 py-3 text-left">Created</th>
+              <th class="px-4 py-3 text-left">Last Used</th>
+              <th class="px-4 py-3 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {activeKeys.map((key) => (
+              <tr data-testid="api-key-row" data-testid-id={`api-key-row-${key.id}`} class="hover:bg-gray-50">
+                <td class="px-4 py-3 font-medium text-gray-800">{key.name}</td>
+                <td class="px-4 py-3 text-gray-500 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
+                <td class="px-4 py-3 text-gray-500 text-xs">{key.last_used_at?.slice(0, 16).replace('T', ' ') ?? 'Never'}</td>
+                <td class="px-4 py-3 text-right">
+                  <button
+                    data-testid={`deactivate-key-button-${key.id}`}
+                    data-key-id={String(key.id)}
+                    class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors deactivate-key-btn"
+                  >
+                    Deactivate
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+
+  <!-- Inactive keys -->
+  {inactiveKeys.length > 0 && (
+    <details open class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <summary class="px-5 py-4 cursor-pointer text-sm font-medium text-gray-500 hover:text-gray-800 list-none flex items-center gap-2">
+        <span>▶ Deactivated Keys ({inactiveKeys.length})</span>
+      </summary>
+      <div class="border-t border-gray-100">
+        <table class="w-full text-sm">
+          <tbody class="divide-y divide-gray-100">
+            {inactiveKeys.map((key) => (
+              <tr data-testid="api-key-row-inactive" class="hover:bg-gray-50 opacity-60">
+                <td class="px-4 py-3 text-gray-500 line-through">{key.name}</td>
+                <td class="px-4 py-3 text-gray-400 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  )}
+</AccountLayout>
+
+<script>
+  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
+    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
+    if (!banner) return;
+    banner.textContent = msg;
+    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
+      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
+    }`;
+    banner.removeAttribute('hidden');
+    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
+  }
+
+  // Toggle generate form
+  document.querySelector('[data-testid="generate-key-button"]')?.addEventListener('click', () => {
+    const container = document.querySelector('[data-testid="generate-key-form-container"]') as HTMLElement | null;
+    if (!container) return;
+    if (container.hasAttribute('hidden')) container.removeAttribute('hidden');
+    else container.setAttribute('hidden', '');
+  });
+
+  // Generate key form submit
+  document.querySelector('[data-testid="generate-key-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const res = await fetch('/api/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fd.get('name') }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.raw_key) {
+      const banner = document.querySelector('[data-testid="new-key-banner"]') as HTMLElement | null;
+      const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
+      if (banner && keyVal) {
+        keyVal.textContent = data.raw_key;
+        banner.removeAttribute('hidden');
+        banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      // No auto-reload: the banner stays until the user manually reloads.
+      // The Active Keys table is therefore stale until then — acceptable
+      // tradeoff so the raw key isn't lost to a 3-second timeout.
+    } else {
+      showFlash(data.error ?? 'Failed to create key.', 'error');
+    }
+  });
+
+  // Copy-to-clipboard for the freshly revealed key.
+  // Primary: navigator.clipboard.writeText (modern browsers on https/loopback).
+  // Fallback: hidden <textarea> + document.execCommand('copy') — required for
+  // older browsers and some non-secure contexts (e.g. http loopback in Firefox).
+  async function copyTextCrossBrowser(text: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // fall through to execCommand fallback
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  document.querySelector('[data-testid="copy-key-button"]')?.addEventListener('click', async () => {
+    const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
+    const label = document.querySelector('[data-testid="copy-key-button-label"]') as HTMLElement | null;
+    const text = (keyVal?.textContent ?? '').trim();
+    if (!text) return;
+    const ok = await copyTextCrossBrowser(text);
+    if (ok) {
+      if (label) {
+        const prev = label.textContent ?? 'Copy';
+        label.textContent = 'Copied!';
+        setTimeout(() => { label.textContent = prev; }, 1500);
+      }
+    } else {
+      showFlash('Copy failed — select the key manually and press Ctrl+C.', 'error');
+    }
+  });
+
+  // Deactivate key buttons
+  document.querySelectorAll('.deactivate-key-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const keyId = (btn as HTMLElement).dataset.keyId;
+      if (!confirm('Deactivate this API key? All tools using it will lose access.')) return;
+      // Content-Type: application/json is required to bypass Astro's default
+      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
+      // form-like content types (none, urlencoded, multipart, text/plain) as
+      // "Cross-site form submission". JSON requests are exempt from that check.
+      const res = await fetch(`/api/api-keys/${keyId}/deactivate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        showFlash('API key deactivated.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showFlash(data.error ?? 'Deactivation failed.', 'error');
+      }
+    });
+  });
+</script>
