@@ -159,9 +159,11 @@ cost projection) and SRE alerting (Ollama timeout regression).
   `--max-workers > 1`; observation is taken inside the same critical section
   as `call_count += 1`.
 
-**Tracked in:** `TASKS.md` Milestone 10 § "Coverage-fill follow-ups" item
+**Tracked in:** `TASKS.md` Milestone 10 § M10C item
 "Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram".
 
 **Not invalidating D3:** D3 deferred Prometheus "for now"; M10 is the lift that
 adds it. The `/health` endpoint and log line from D1/D2 remain — D7 is additive,
 not replacement.
+
+> **Tracking:** Implementation tracked at `TASKS.md` → M10C "Prometheus `embedder_batch_duration_seconds` histogram".
