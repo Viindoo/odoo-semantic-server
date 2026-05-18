@@ -110,14 +110,6 @@ TEST_VERSION = "99.0"
 
 Unit tests không cần Docker. Integration tests dùng testcontainers tự spin-up — không cần `docker compose up` thủ công.
 
-## Orchestrated Multi-Subagent Workflow
-
-Khi ≥4 WIs có dependencies → 9-phase pattern (investigation → worktree topology → dispatch → integration → CI → merge → review → cleanup).
-
-**Chi tiết đầy đủ:** [`docs/orchestration-workflow.md`](docs/orchestration-workflow.md).
-
-**Skip khi:** 1-3 WI changes / pure docs change / bug hotfix without investigation.
-
 ## Upstream Warnings — Không Dùng suppress
 
 Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ authlib (via fastmcp) là upstream issues. **Không dùng `filterwarnings`/`suppress`/`ignore`** — fix root cause hoặc chờ upstream fix. Đã documented trong `CONTRIBUTING.md`.
