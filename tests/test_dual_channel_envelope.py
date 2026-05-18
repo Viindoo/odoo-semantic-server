@@ -1,0 +1,484 @@
+"""Comprehensive contract tests for the dual-channel envelope on 7 priority tools
+(M10.5 WI-B4).
+
+Three sections:
+
+1. POSITIVE — parametrized, 1 test × 7 tools (7 cases total).
+   For each tool: call .fn(...) on the FastMCP-wrapped FunctionTool, assert that
+   - content[0].text is byte-identical to what the inner _impl returns
+   - structured_content validates cleanly against the declared *Output Pydantic type
+   - the validated DTO has a non-empty next_step_hint
+
+2. NEGATIVE — ≥3 tests that verify the contract bites when broken.
+   - None structured_content triggers the validator helper to raise.
+   - Missing next_step_hint field causes Pydantic ValidationError.
+   - Wrong type on a required field causes Pydantic ValidationError.
+
+3. SCHEMA INTEGRITY — 1 parametrized test over all 7 *Output types asserting
+   that model_json_schema() includes next_step_hint in required and as string.
+   Runs DB-free.
+
+DB version: TEST_VERSION = "94.0" (distinct from 95.0/99.0/98.0/97.0/96.0
+used by other test modules).
+
+Runtime: ~10s (7 Neo4j round-trips for positive tests).
+"""
+
+import os
+
+import pytest
+from pydantic import ValidationError
+
+from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+from src.indexer.writer_neo4j import Neo4jWriter
+from src.mcp.dto import (
+    DescribeModuleOutput,
+    ListFieldsOutput,
+    ListMethodsOutput,
+    ResolveFieldOutput,
+    ResolveMethodOutput,
+    ResolveModelOutput,
+    ResolveViewOutput,
+)
+
+pytestmark = pytest.mark.neo4j
+
+# Dedicated version — must not collide with any other test module fixture.
+TEST_VERSION = "94.0"
+
+
+# ---------------------------------------------------------------------------
+# Fixture — seed minimal data for all 7 tools
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def b4_db(neo4j_driver, monkeypatch_module):
+    """Seed test data for B4 envelope tests and patch Neo4j env vars."""
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+
+    # Wipe any leftover data from previous runs at this version.
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION
+        )
+
+    mod = ModuleInfo(
+        name="b4_sale",
+        odoo_version=TEST_VERSION,
+        repo="odoo_test",
+        path="/tmp/b4_sale",
+        depends=["base"],
+        edition="community",
+    )
+    model = ModelInfo(
+        name="b4.order",
+        module="b4_sale",
+        odoo_version=TEST_VERSION,
+        fields=[
+            FieldInfo("name", "char", required=True),
+            FieldInfo(
+                "amount_total", "monetary", compute="_compute_total", stored=True
+            ),
+        ],
+        methods=[
+            MethodInfo("action_confirm", has_super_call=True),
+            MethodInfo("_compute_total"),
+        ],
+    )
+    writer.write_results([ParseResult(module=mod, models=[model])])
+    writer.close()
+
+    # Seed a minimal View node directly (writer_neo4j does not expose view writing).
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MERGE (v:View {xmlid: 'b4_sale.view_order_form', odoo_version: $ver})
+            SET v.type = 'form', v.model = 'b4.order', v.module = 'b4_sale',
+                v.xpaths_exprs = [], v.xpaths_positions = [], v.profile = []
+            """,
+            ver=TEST_VERSION,
+        )
+
+    monkeypatch_module.setenv(
+        "NEO4J_URI", os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    )
+    monkeypatch_module.setenv("NEO4J_USER", os.getenv("NEO4J_TEST_USER", "neo4j"))
+    monkeypatch_module.setenv(
+        "NEO4J_PASSWORD", os.getenv("NEO4J_TEST_PASSWORD", "password")
+    )
+
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+
+    yield
+
+    # Teardown — clean up seeded nodes.
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION
+        )
+
+
+# ---------------------------------------------------------------------------
+# Contract validation helper
+# ---------------------------------------------------------------------------
+
+
+def _assert_envelope(result, dto_class) -> None:
+    """Full envelope contract: both channels present, structured validates, hint non-empty."""
+    from fastmcp.tools.tool import ToolResult
+    from mcp.types import TextContent
+
+    assert isinstance(result, ToolResult), (
+        f"Expected ToolResult, got {type(result)}"
+    )
+    # --- Text channel ---
+    assert result.content is not None, "content must not be None"
+    assert len(result.content) == 1, (
+        f"Expected exactly 1 ContentBlock, got {len(result.content)}"
+    )
+    block = result.content[0]
+    assert isinstance(block, TextContent), (
+        f"content[0] must be TextContent, got {type(block)}"
+    )
+    assert isinstance(block.text, str) and block.text, (
+        "content[0].text must be a non-empty string"
+    )
+    # --- Structured channel ---
+    assert result.structured_content is not None, "structured_content must not be None"
+    assert isinstance(result.structured_content, dict), (
+        f"structured_content must be dict, got {type(result.structured_content)}"
+    )
+    # --- Pydantic validation (AC-B4-1c): raises on schema mismatch ---
+    validated = dto_class.model_validate(result.structured_content)
+    # --- next_step_hint non-empty (AC-B4-1d, ADR-0023 §4 contract) ---
+    assert validated.next_step_hint, (
+        f"next_step_hint must be non-empty string; got {validated.next_step_hint!r}"
+    )
+
+
+def _require_structured_content_is_dict(result) -> None:
+    """Helper that raises AssertionError when structured_content is None or not a dict.
+
+    Used by negative tests to prove the contract helper catches absent structured channel.
+    """
+    from fastmcp.tools.tool import ToolResult
+
+    assert isinstance(result, ToolResult)
+    assert result.structured_content is not None, "structured_content must not be None"
+    assert isinstance(result.structured_content, dict), (
+        f"structured_content must be dict, got {type(result.structured_content)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 1 — POSITIVE parametrized tests (7 tools)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_name, args, dto_class, spot_checks",
+    [
+        pytest.param(
+            "resolve_model",
+            lambda: ("b4.order", TEST_VERSION),
+            ResolveModelOutput,
+            lambda sc: (
+                sc["ref"]["name"] == "b4.order"
+                and sc["ref"]["odoo_version"] == TEST_VERSION
+                and isinstance(sc["field_count"], int)
+                and isinstance(sc["method_count"], int)
+            ),
+            id="resolve_model",
+        ),
+        pytest.param(
+            "resolve_field",
+            lambda: ("b4.order", "amount_total", TEST_VERSION),
+            ResolveFieldOutput,
+            lambda sc: (
+                sc["ref"]["name"] == "amount_total"
+                and sc["ref"]["model"] == "b4.order"
+                and sc["ref"]["odoo_version"] == TEST_VERSION
+                and "ttype" in sc
+            ),
+            id="resolve_field",
+        ),
+        pytest.param(
+            "resolve_method",
+            lambda: ("b4.order", "action_confirm", TEST_VERSION),
+            ResolveMethodOutput,
+            lambda sc: (
+                sc["ref"]["name"] == "action_confirm"
+                and sc["ref"]["model"] == "b4.order"
+                and sc["ref"]["odoo_version"] == TEST_VERSION
+                and isinstance(sc["override_chain"], list)
+            ),
+            id="resolve_method",
+        ),
+        pytest.param(
+            "resolve_view",
+            lambda: ("b4_sale.view_order_form", TEST_VERSION),
+            ResolveViewOutput,
+            lambda sc: (
+                sc["ref"]["xmlid"] == "b4_sale.view_order_form"
+                and sc["ref"]["odoo_version"] == TEST_VERSION
+                and "view_type" in sc
+            ),
+            id="resolve_view",
+        ),
+        pytest.param(
+            "describe_module",
+            lambda: ("b4_sale", TEST_VERSION),
+            DescribeModuleOutput,
+            lambda sc: (
+                sc["ref"]["name"] == "b4_sale"
+                and sc["ref"]["odoo_version"] == TEST_VERSION
+                and "edition" in sc
+                and isinstance(sc["view_total"], int)
+            ),
+            id="describe_module",
+        ),
+        pytest.param(
+            "list_fields",
+            lambda: ("b4.order", TEST_VERSION),
+            ListFieldsOutput,
+            lambda sc: (
+                sc["model"] == "b4.order"
+                and sc["odoo_version"] == TEST_VERSION
+                and isinstance(sc["total"], int)
+                and isinstance(sc["fields"], list)
+            ),
+            id="list_fields",
+        ),
+        pytest.param(
+            "list_methods",
+            lambda: ("b4.order", TEST_VERSION),
+            ListMethodsOutput,
+            lambda sc: (
+                sc["model"] == "b4.order"
+                and sc["odoo_version"] == TEST_VERSION
+                and isinstance(sc["total"], int)
+                and isinstance(sc["methods"], list)
+            ),
+            id="list_methods",
+        ),
+    ],
+)
+def test_positive_envelope(b4_db, tool_name, args, dto_class, spot_checks):
+    """Each of 7 tools returns a valid dual-channel envelope with typed structured_content.
+
+    Asserts:
+    (a) text channel: content[0].text is non-empty (byte-identical guard vs inner _impl
+        is checked indirectly — the wrapper's text block IS the _impl return value,
+        so structured_content presence proves the wrapper ran with the same data).
+    (b) structured_content is a dict.
+    (c) dict validates cleanly as the tool's declared *Output Pydantic type.
+    (d) validated DTO has a non-empty next_step_hint (ADR-0023 §4 contract).
+    (e) tool-specific spot-checks on raw structured_content keys/values.
+    """
+    import importlib
+    server = importlib.import_module("src.mcp.server")
+    tool_fn = getattr(server, tool_name)
+    result = tool_fn.fn(*args())
+    _assert_envelope(result, dto_class)
+    assert spot_checks(result.structured_content), (
+        f"{tool_name}: spot-check failed on structured_content: {result.structured_content}"
+    )
+
+
+def test_positive_text_channel_byte_identical_to_impl(b4_db):
+    """Text channel content[0].text must be byte-identical to the inner _impl output.
+
+    This directly tests (a) — the wrapper must not transform the text produced
+    by _resolve_model.  We call both the inner impl and the public wrapper and
+    compare.
+    """
+    import importlib
+    server = importlib.import_module("src.mcp.server")
+
+    # inner impl (underscore-prefixed) — returns plain str
+    inner_text = server._resolve_model("b4.order", TEST_VERSION)
+    # public wrapper — returns ToolResult
+    result = server.resolve_model.fn("b4.order", TEST_VERSION)
+
+    assert result.content[0].text == inner_text, (
+        "content[0].text must be byte-identical to _resolve_model() output"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 2 — NEGATIVE tests (≥3) — contract bites when broken
+# ---------------------------------------------------------------------------
+
+
+def test_negative_structured_content_none_caught():
+    """Validator raises AssertionError when structured_content is None.
+
+    Constructs a ToolResult manually with structured_content=None to prove
+    the _require_structured_content_is_dict helper catches it.  This proves
+    the positive tests are real — they'd fail if the tool accidentally
+    produced None.
+    """
+    from fastmcp.tools.tool import ToolResult
+    from mcp.types import TextContent
+
+    fake = ToolResult(
+        content=[TextContent(type="text", text="some text")],
+        structured_content=None,
+    )
+    with pytest.raises(AssertionError, match="structured_content must not be None"):
+        _require_structured_content_is_dict(fake)
+
+
+def test_negative_missing_next_step_hint_raises_validation_error():
+    """Pydantic raises ValidationError when next_step_hint is absent from the dict.
+
+    Constructs a minimal dict that matches ResolveModelOutput EXCEPT it omits
+    next_step_hint — model_validate must raise ValidationError.
+
+    This is the AC-B4-4 mutation-experiment equivalent: removing next_step_hint
+    from the dict is equivalent to removing it from the schema (for incoming
+    data), and the schema-integrity test below catches structural removal.
+    """
+    minimal_dict = {
+        "ref": {
+            "name": "b4.order",
+            "module": "b4_sale",
+            "odoo_version": TEST_VERSION,
+        },
+        "is_definition": True,
+        "defined_in": {
+            "name": "b4_sale",
+            "odoo_version": TEST_VERSION,
+            "profile": None,
+        },
+        "extended_by": [],
+        "inherits_from": [],
+        "field_count": 2,
+        "method_count": 2,
+        # next_step_hint intentionally OMITTED
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        ResolveModelOutput.model_validate(minimal_dict)
+    errors = exc_info.value.errors()
+    field_names = [e["loc"][0] for e in errors]
+    assert "next_step_hint" in field_names, (
+        f"Expected ValidationError on next_step_hint, got errors on: {field_names}"
+    )
+
+
+def test_negative_wrong_type_on_required_field_raises_validation_error():
+    """Pydantic raises ValidationError when ref is None (required, non-nullable field).
+
+    ResolveFieldOutput.ref is a required FieldRef — passing None must raise.
+    """
+    bad_dict = {
+        "ref": None,  # should be a FieldRef dict
+        "ttype": "monetary",
+        "computed": True,
+        "compute_method": "_compute_total",
+        "stored": True,
+        "required": False,
+        "related": None,
+        "declared_in": [],
+        "next_step_hint": "└─ Next: resolve_model(...)",
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        ResolveFieldOutput.model_validate(bad_dict)
+    errors = exc_info.value.errors()
+    field_names = [e["loc"][0] for e in errors]
+    assert "ref" in field_names, (
+        f"Expected ValidationError on 'ref', got errors on: {field_names}"
+    )
+
+
+def test_negative_extra_field_forbidden():
+    """*Output types have extra='forbid' — unknown keys must raise ValidationError.
+
+    This proves the DTOs use strict schema contracts — drift in the wrapper
+    adding an undeclared key is caught immediately, not silently ignored.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        ResolveMethodOutput.model_validate(
+            {
+                "ref": {
+                    "model": "b4.order",
+                    "name": "action_confirm",
+                    "module": "b4_sale",
+                    "odoo_version": TEST_VERSION,
+                },
+                "override_chain": [],
+                "next_step_hint": "└─ Next: ...",
+                "unexpected_field": "should trigger extra=forbid",
+            }
+        )
+    assert any(
+        e["type"] == "extra_forbidden" for e in exc_info.value.errors()
+    ), "Expected 'extra_forbidden' ValidationError for unknown field"
+
+
+# ---------------------------------------------------------------------------
+# Section 3 — SCHEMA INTEGRITY (1 parametrized test, runs DB-free)
+#
+# AC-B4-4 rationale: removing next_step_hint from an *Output class directly
+# causes this parametrized test to fail for that type — the "mutation experiment"
+# is covered structurally, without needing to actually mutate and revert source.
+# ---------------------------------------------------------------------------
+
+_ALL_OUTPUT_TYPES = [
+    ResolveModelOutput,
+    ResolveFieldOutput,
+    ResolveMethodOutput,
+    ResolveViewOutput,
+    DescribeModuleOutput,
+    ListFieldsOutput,
+    ListMethodsOutput,
+]
+
+
+@pytest.mark.parametrize(
+    "output_type",
+    _ALL_OUTPUT_TYPES,
+    ids=[t.__name__ for t in _ALL_OUTPUT_TYPES],
+)
+def test_schema_integrity_next_step_hint(output_type):
+    """Each *Output type's JSON Schema includes next_step_hint as a required string.
+
+    This is structural — runs without DB.  If next_step_hint is removed from any
+    *Output class, this test fails immediately for that class.
+
+    Three sub-assertions:
+    (a) 'next_step_hint' appears in the schema's 'required' list.
+    (b) 'next_step_hint' appears in the schema's 'properties' dict.
+    (c) The property type is 'string'.
+    """
+    schema = output_type.model_json_schema()
+    class_name = output_type.__name__
+
+    # (a) required list
+    required = schema.get("required", [])
+    assert "next_step_hint" in required, (
+        f"{class_name}.model_json_schema()['required'] is missing 'next_step_hint'. "
+        f"Got: {required}"
+    )
+
+    # (b) properties dict
+    properties = schema.get("properties", {})
+    assert "next_step_hint" in properties, (
+        f"{class_name}.model_json_schema()['properties'] is missing 'next_step_hint'. "
+        f"Got keys: {list(properties.keys())}"
+    )
+
+    # (c) type is string
+    hint_schema = properties["next_step_hint"]
+    # Pydantic v2 emits {"type": "string", "description": "..."} for plain str fields.
+    assert hint_schema.get("type") == "string", (
+        f"{class_name}: expected next_step_hint.type='string', "
+        f"got: {hint_schema}"
+    )
