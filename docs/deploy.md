@@ -323,6 +323,16 @@ sudo -u odoo-semantic -H bash -c '
 sudo -u odoo-semantic ls /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
 ```
 
+> **uv venv — no `bin/pip`:** `make install` uses `uv` to create the venv. The resulting venv has
+> **no** `<venv>/bin/pip`. To add or re-install packages after a `git pull`, use:
+> ```bash
+> uv pip install \
+>     --python /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+>     -e ".[dev]"
+> ```
+> The `.[all]` extra does not exist — use `.[dev]` (development deps) or `.[integration]`
+> (integration-test deps). See ADR-0027 §5.
+
 ### 3.2 Đặt config file
 
 ```bash
@@ -1233,6 +1243,23 @@ Daily automated backup cho cả Neo4j + PostgreSQL. Cron schedule + retention po
 → **[`docs/deploy/disaster-recovery.md`](deploy/disaster-recovery.md)** — Backup strategy, restore commands, RTO estimate, validation queries.
 
 §2.4 trong file này có snippet backup thủ công cho ad-hoc use; DR runbook là canonical cho production cron + restore.
+
+### Backup tmpdir — required on tmpfs hosts
+
+On hosts where `/tmp` is a RAM-backed tmpfs (common systemd default), the backup CLI stages two
+large files: a full `pg_dump` output and the resulting `.tar.gz` archive. Both compete for the
+same tmpfs, which can exhaust available memory or space on production DBs exceeding a few GB.
+
+**Fix:** add `Environment="TMPDIR=/var/tmp"` to `odoo-semantic-backup.service`:
+
+```ini
+[Service]
+Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
+Environment="TMPDIR=/var/tmp"
+```
+
+`/var/tmp` is disk-backed and survives reboots — appropriate for large backup intermediates.
+See also ADR-0027 §4.
 
 → **[`docs/deploy/m7.5-production-fixes.md`](deploy/m7.5-production-fixes.md)** — Hotfix runbook cho 5 P1 issues phát hiện M7.5 verification (2026-05-14): HSTS header, Ollama SSL, CoreSymbol re-index, CLICommand re-index, Web UI 404.
 

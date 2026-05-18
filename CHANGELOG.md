@@ -151,6 +151,13 @@ All notable changes to Odoo Semantic MCP are documented here.
 - CLAUDE.md new section "Auth — is_admin Source of Truth" (1 paragraph clarifying the DB-sourced rule).
 - CHANGELOG.md (this section).
 
+### [OPS] System-user migration + ADR-0027 (docs only, 2026-05-18)
+
+- ADR-0027 — System-user deployment layout: system user `odoo-semantic`, `ProtectHome=read-only` rationale, `TMPDIR=/var/tmp` for backup unit on tmpfs hosts, uv venv `bin/pip` absence, Docker Compose project-name basename behaviour, and `repos.local_path` DB update requirement after clone migration.
+- `docs/deploy.md` §3.1: callout for uv venv (no `bin/pip`, use `uv pip install --python`).
+- `docs/deploy.md` §13: "Backup tmpdir" subsection documenting `Environment=TMPDIR=/var/tmp`.
+- `TASKS.md`: system-user migration completion bullet under M9 Group B post-deploy section.
+
 ---
 
 ## [0.4.1] — 2026-05-16 — M9 follow-up: Web UI parity for repo & profile management

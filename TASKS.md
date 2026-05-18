@@ -689,6 +689,10 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
   - Acceptance: when at least 1 repo (typically `odoo-api`) has `19.0` branch cut, create the profile via `python -m src.manager add-profile viindoo_internal_19 --version 19.0 --description "Viindoo internal infrastructure for v19"`, then register repos by DB insert + cloner per the B5 runbook in `streamed-cuddling-phoenix.md`.
   - Dependency: Viindoo upstream branch cuts (external).
 
+### System-user migration (2026-05-18, ops — no code change)
+
+- [x] Production service migrated from personal login user to dedicated system user `odoo-semantic` — app at `/home/odoo-semantic/odoo-semantic-mcp/`, venv at `/home/odoo-semantic/.venv/odoo-semantic-mcp/`, configs at `/home/odoo-semantic/etc/` (mode 700 dir, mode 600 files). Indexed clones rsync'd + `repos.local_path` updated. Backup unit gained `TMPDIR=/var/tmp` to avoid OOM on tmpfs `/tmp`. ADR-0027 documents the layout, ProtectHome=read-only rationale, uv pip gotcha, compose project-name behaviour, and repos.local_path migration step.
+
 ---
 
 ## Milestone 10 — "Billing Wow" + Coverage-Fill Follow-ups
