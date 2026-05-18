@@ -434,7 +434,7 @@ Every list-tool body call goes through `_render_capped`. Specifically:
 
 The following tools are planned and MUST adopt this ADR's grammar contract (§1 tree text, §2 English-only output, §3 truncation, §4 Next-step hints):
 
-- **Stylesheet surface (M10)** — `resolve_stylesheet(module, odoo_version)`, `find_style_override(selector_or_variable, odoo_version)`. From WI-A1 (`:Stylesheet` node landed via ADR-0025); tracked in `TASKS.md` Milestone 10 § "Coverage-fill follow-ups".
+- **Stylesheet surface (M10A)** — `resolve_stylesheet(module, odoo_version)`, `find_style_override(selector_or_variable, odoo_version)`. From WI-A1 (`:Stylesheet` node landed via ADR-0025); tracked in `TASKS.md` Milestone 10 § M10A "Tool Surface Expansion".
 - **ORM Intelligence (M10.5)** — `validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`. From `peaceful-orbiting-dongarra.md` deferred list (WI-A7 absorption); tracked in `TASKS.md` Milestone 10.5.
 
 When these tools land, the integrator MUST:
@@ -445,6 +445,8 @@ When these tools land, the integrator MUST:
 4. Re-run `tests/test_grammar_consistency.py` to ensure the new tools pass the language-policy + truncation-disclosure + no-self-loop tests by construction.
 
 This ADR is **not invalidated** by the new tools — it is the contract they must conform to. The contract's "Boil the Lake" intent is precisely that the next 6 tools cost zero design rounds.
+
+> **Tracking:** ORM Intelligence tools tracked at `TASKS.md` → M10.5 (Phase 1 comodel_name data layer + Phase 2 four MCP tools).
 
 ---
 
