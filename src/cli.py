@@ -337,10 +337,8 @@ def _cmd_backup(args) -> int:
 
     dsn = _get_pg_dsn()
     if not dsn:
-        print(
-            "ERROR: PG_DSN not configured. Set [database] pg_dsn in config or PG_DSN env var.",
-            file=sys.stderr,
-        )
+        from src import config
+        print(config.dsn_missing_hint(), file=sys.stderr)
         return 1
     try:
         pg_args, env_overrides = _dsn_to_pg_args_and_env(dsn)
@@ -510,7 +508,8 @@ def _restore_sql_plaintext(path: Path, args) -> int:
     """Restore PostgreSQL from a SQL plaintext dump file."""
     dsn = _get_pg_dsn()
     if not dsn:
-        print("ERROR: PG_DSN not configured.", file=sys.stderr)
+        from src import config
+        print(config.dsn_missing_hint(), file=sys.stderr)
         return 1
     try:
         pg_args, env_overrides = _dsn_to_pg_args_and_env(dsn)
@@ -554,7 +553,8 @@ def _restore_bundle(path: Path, args) -> int:
     """
     dsn = _get_pg_dsn()
     if not dsn:
-        print("ERROR: PG_DSN not configured.", file=sys.stderr)
+        from src import config
+        print(config.dsn_missing_hint(), file=sys.stderr)
         return 1
     try:
         pg_args, env_overrides = _dsn_to_pg_args_and_env(dsn)
@@ -750,7 +750,8 @@ def _cmd_rotate_fernet(args) -> int:
 
     dsn = _get_pg_dsn()
     if not dsn:
-        print("ERROR: PG_DSN not configured.", file=sys.stderr)
+        from src import config
+        print(config.dsn_missing_hint(), file=sys.stderr)
         return 1
 
     actor = os.getenv("USER") or os.getenv("LOGNAME") or "unknown"

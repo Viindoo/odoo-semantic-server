@@ -11,14 +11,23 @@ Resolution order for INDIVIDUAL VALUE (per `from_env_or_ini`):
   2. INI file [section]/key
   3. Caller-provided fallback (or None)
 
-This keeps the `.env` file (read by docker-compose + shells) and
-`odoo-semantic.conf` (read by Python app) consistent: env vars always win,
-INI file is canonical default. See README §Configuration.
+`.env` auto-load (issue #141, ADR-0031): on import we call
+`dotenv.load_dotenv(override=False)` so that interactive CLI invocations
+pick up `.env` automatically. `override=False` guarantees that env vars
+injected by systemd (`EnvironmentFile=`) or the operator's shell still
+win — `.env` only fills in *missing* slots.
 """
 import configparser
 import os
 import pathlib
 import re
+
+from dotenv import load_dotenv
+
+# Auto-load .env from CWD (and walk-up) without clobbering existing env vars.
+# Idempotent: safe to call multiple times. No-op under systemd (env vars
+# pre-populated by EnvironmentFile= already win because override=False).
+load_dotenv(override=False)
 
 _conf: configparser.ConfigParser | None = None
 
@@ -82,3 +91,20 @@ def mask_dsn(dsn: str) -> str:
     if not dsn:
         return dsn
     return _DSN_PASSWORD_RE.sub(r"\1:***@", dsn)
+
+
+def dsn_missing_hint(env_var: str = "PG_DSN") -> str:
+    """Multi-line error message for missing DSN, surfacing the 3 fix options.
+
+    Use this in every CLI entry point that fails when PG_DSN is absent,
+    instead of inlining a short one-liner. Issue #141 — operators kept
+    rediscovering the `set -a; . .env; set +a` workaround on every fresh
+    deploy.
+    """
+    return (
+        f"✗ PostgreSQL DSN missing.\n"
+        f"  Option 1 (dev):  set -a; . .env; set +a  # source .env then retry\n"
+        f"  Option 2 (dev):  export {env_var}=postgresql://user:pass@localhost:5432/db\n"
+        f"  Option 3 (prod): add `pg_dsn = ...` to [database] section of odoo-semantic.conf\n"
+        f"  See docs/deploy.md §3 for full setup."
+    )

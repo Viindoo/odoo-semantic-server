@@ -38,11 +38,7 @@ _VERSION_RE = re.compile(r"^\d{1,2}\.\d+$")
 def _open_conn():
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
     if not dsn:
-        print(
-            "✗ PostgreSQL DSN missing. Set PG_DSN env var OR `pg_dsn` in "
-            "[database] section of odoo-semantic.conf.",
-            file=sys.stderr,
-        )
+        print(config.dsn_missing_hint(), file=sys.stderr)
         sys.exit(1)
     try:
         conn = psycopg2.connect(dsn)

@@ -35,10 +35,10 @@ def _init_pg() -> None:
         pass
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
     if not dsn:
-        logger.error(
-            "PostgreSQL DSN missing. Set PG_DSN env var or pg_dsn in "
-            "[database] section of odoo-semantic.conf."
-        )
+        # Print to stderr (multi-line, operator-facing); also log a single-line
+        # summary so journalctl tail stays readable when run under systemd.
+        print(config.dsn_missing_hint(), file=sys.stderr)
+        logger.error("PostgreSQL DSN missing (see stderr for fix options)")
         sys.exit(2)
     try:
         init_pool(dsn, min_conn=1, max_conn=3)
