@@ -137,6 +137,30 @@ _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
 _REF_PATTERN = re.compile(r"^[fmvxp]\d{1,5}$")
 
 
+# ---------------------------------------------------------------------------
+# Deprecation banner helper (WI-D4) — for 10 legacy tools redirecting to
+# supersets (model_inspect, module_inspect, entity_lookup)
+# ---------------------------------------------------------------------------
+
+
+def _deprecation_banner(new_tool: str, args: str) -> str:
+    """Return a deprecation banner for legacy tools.
+
+    Args:
+        new_tool: Name of the new superset tool (e.g. 'model_inspect').
+        args: Example arguments (e.g. "model='X', method='summary'").
+
+    Returns:
+        A banner string formatted as:
+            "DEPRECATED: use <new_tool>(<args>) instead. Will be removed in
+             v0.6 — see ADR-0028.\n\n"
+    """
+    return (
+        f"DEPRECATED: use {new_tool}({args}) instead. Will be removed in "
+        "v0.6 — see ADR-0028.\n\n"
+    )
+
+
 def _looks_like_ref(s: str) -> bool:
     """Return True when *s* looks like a ref minted by list_* tools (e.g. 'f12')."""
     return bool(_REF_PATTERN.match(s))
@@ -861,6 +885,8 @@ def resolve_model(
     hallucinated fields or phantom modules
     SKIP when: user wants detail on one specific field → use resolve_field;
     user wants a method override chain → use resolve_method
+    SKIP when (NEW): you want multi-faceted model inspection in one tool →
+        prefer model_inspect(model='...', method='summary') (M11 superset, v0.5+)
 
     Args:
         target: Opaque ref ID (e.g. 'm5') OR canonical model name
@@ -929,6 +955,7 @@ def resolve_model(
 
     text = _resolve_model(effective_model, odoo_version, profile_name)
     structured = _resolve_model_structured(effective_model, odoo_version, profile_name)
+    text = _deprecation_banner("model_inspect", "model='...', method='summary'") + text
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -945,12 +972,9 @@ def resolve_field(
 ) -> ToolResult:
     """Return type, compute/related metadata, and declaring modules for one field.
 
-    TRIGGER when: "what type is amount_total field", "is this field computed or
-    stored", "where is field X defined", "field X có related không", "kiểu dữ
-    liệu của field X là gì", "is partner_id required on sale.order"
-    PREFER over: resolve_model — more detail on one field; grep — gives semantic
-    context (compute method, related path, store flag) not just code location
-    SKIP when: user wants all fields of a model → use resolve_model
+    TRIGGER when: "what type is amount_total field", "is field X computed"
+    PREFER over: resolve_model (more detail)
+    SKIP when: user wants all fields (model_inspect superset for M11+)
 
     Args:
         target: Opaque ref ID (e.g. 'f12') OR canonical dotted path
@@ -1030,6 +1054,10 @@ def resolve_field(
     structured = _resolve_field_structured(
         effective_model, effective_field, odoo_version, profile_name
     )
+    text = _deprecation_banner(
+        "model_inspect",
+        "model='...', method='field', field='...'"
+    ) + text
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -1046,13 +1074,10 @@ def resolve_method(
 ) -> ToolResult:
     """Return the full override chain of a method, ordered base to top.
 
-    TRIGGER when: "show override chain of action_confirm", "which modules
-    override write()", "where is method X defined", "method nào super() lên
-    model kia", "ai override method X", "does viin_sale call super on write"
-    PREFER over: grep — shows full override chain with super() linkage and
-    decorator info, not just code occurrences
-    SKIP when: user wants field overrides → use resolve_field; user wants
-    view overrides → use resolve_view
+    TRIGGER when: "show override chain of action_confirm", "where is method X
+    defined"
+    PREFER over: grep (full chain with super() linkage)
+    SKIP when: user wants all methods (model_inspect superset for M11+)
 
     Args:
         target: Opaque ref ID (e.g. 'm3') OR canonical dotted path
@@ -1127,6 +1152,10 @@ def resolve_method(
     structured = _resolve_method_structured(
         effective_model, effective_method, odoo_version, profile_name
     )
+    text = _deprecation_banner(
+        "model_inspect",
+        "model='...', method='method', method_name='...'"
+    ) + text
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -1149,6 +1178,8 @@ def resolve_view(
     overrides into one merged skeleton, ordered by application
     SKIP when: user wants Python logic → use resolve_method; user wants field
     info → use resolve_field
+    SKIP when (NEW): you want view detail via entity_lookup →
+        prefer entity_lookup(kind='view', xmlid='...') (M11 superset, v0.5+)
 
     Args:
         target: Opaque ref ID (e.g. 'v3') OR canonical XML external ID
@@ -1216,6 +1247,7 @@ def resolve_view(
 
     text = _resolve_view(effective_xmlid, odoo_version, profile_name)
     structured = _resolve_view_structured(effective_xmlid, odoo_version, profile_name)
+    text = _deprecation_banner("entity_lookup", "kind='view', xmlid='...'") + text
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -4736,6 +4768,8 @@ def list_fields(
     list_fields returns the full enumerated list with type per row.
     SKIP when: caller wants one field's detail → use resolve_field. When the
     caller asks "how many fields" only, resolve_model is cheaper.
+    SKIP when (NEW): you want field enumeration with model context in one tool →
+        prefer model_inspect(model='...', method='fields') (M11 superset, v0.5+)
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
@@ -4767,6 +4801,7 @@ def list_fields(
         model, odoo_version, module, kind, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+    text = _deprecation_banner("model_inspect", "model='...', method='fields'") + text
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -4794,6 +4829,8 @@ def list_methods(
     list_methods enumerates every method on the model.
     SKIP when: caller wants one method's override chain → use resolve_method.
     When the caller asks "best override point" → use find_override_point.
+    SKIP when (NEW): you want method enumeration with model context in one tool →
+        prefer model_inspect(model='...', method='methods') (M11 superset, v0.5+)
 
     Args:
         model: Odoo model dotted name.
@@ -4823,6 +4860,7 @@ def list_methods(
         model, odoo_version, module, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+    text = _deprecation_banner("model_inspect", "model='...', method='methods'") + text
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -4847,6 +4885,9 @@ def list_views(
     list_views enumerates every view targeting the model.
     SKIP when: caller wants one view's xpath chain → use resolve_view. Use
     list_qweb_templates when the caller wants QWeb (not ir.ui.view) records.
+    SKIP when (NEW): you want view enumeration with model/module context in one tool →
+        prefer model_inspect(model='...', method='views') or
+        module_inspect(name='...', method='views') (M11 superset, v0.5+)
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
@@ -4865,10 +4906,12 @@ def list_views(
           ├─ [odoo] sale
           │   └─ [ref=v1] sale.view_order_form : form
     """
-    return _list_views(
+    text = _list_views(
         model, odoo_version, view_type, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+    text = _deprecation_banner("model_inspect", "model='...', method='views'") + text
+    return text
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -4896,6 +4939,8 @@ def list_owl_components(
     SKIP when: caller wants legacy Widget (v8-v13) → use list_js_patches
     with era='era1'. Use list_qweb_templates when the caller asks about
     QWeb templates, not OWL components.
+    SKIP when (NEW): you want OWL component enumeration with module context in one tool →
+        prefer module_inspect(name='...', method='owl') (M11 superset, v0.5+)
 
     Args:
         module: Module name to search within.
@@ -4915,10 +4960,12 @@ def list_owl_components(
           ├─ [ref=f1] SaleOrderKanban : sale.order
           └─ [ref=f2] SaleSidebar : (unbound)
     """
-    return _list_owl_components(
+    text = _list_owl_components(
         module, odoo_version, bound_model, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+    text = _deprecation_banner("module_inspect", "name='...', method='owl'") + text
+    return text
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -4940,6 +4987,8 @@ def list_qweb_templates(
     SKIP when: caller wants OWL components (v15+ JS classes) → use
     list_owl_components. Use resolve_view when the template IS an
     ir.ui.view (not a pure QWeb-portal template).
+    SKIP when (NEW): you want QWeb template enumeration with module context in one tool →
+        prefer module_inspect(name='...', method='qweb') (M11 superset, v0.5+)
 
     Args:
         module: Module name to search within.
@@ -4957,10 +5006,12 @@ def list_qweb_templates(
           ├─ [ref=v1] website_sale.product : t-inherit=(root)
           └─ [ref=v2] website_sale.cart_lines : t-inherit=website_sale.cart
     """
-    return _list_qweb_templates(
+    text = _list_qweb_templates(
         module, odoo_version, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+    text = _deprecation_banner("module_inspect", "name='...', method='qweb'") + text
+    return text
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -4987,6 +5038,8 @@ def list_js_patches(
     SKIP when: caller wants OWL component declarations (not patches) →
     use list_owl_components. Use find_examples when the caller wants
     code-level usage patterns instead of inventory.
+    SKIP when (NEW): you want JS patch enumeration with module context in one tool →
+        prefer module_inspect(name='...', method='js') (M11 superset, v0.5+)
 
     Args:
         odoo_version: '17.0' / '18.0' / 'auto'.
@@ -5009,10 +5062,12 @@ def list_js_patches(
           ├─ [odoo] sale_management
           │   └─ [ref=x1] ListController.applyFilters : era=patch
     """
-    return _list_js_patches(
+    text = _list_js_patches(
         odoo_version, target, module, era, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+    text = _deprecation_banner("module_inspect", "name='...', method='js'") + text
+    return text
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
