@@ -159,6 +159,61 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ---
 
+## [0.5.0] — 2026-05-19 — Tool UX + Architecture (M10.5 + M11)
+
+6 waves + 8 patterns landed in a single worktree via the `feat/m10-5-m11-tool-ux-architecture` branch (33 commits over Waves A–F + F-FINAL). Plan: `.claude/plans/peaceful-orbiting-dongarra.md`. Research artifact: `docs/research/mcp-design-patterns-research.md` (12 MCP design patterns evaluated, 8 adopted). 3 new ADRs (0028/0029/0030) + ADR-0023 amended.
+
+### Wave A — Quick Wins (M10.5)
+
+- **Tool annotations** (WI-A1): `READONLY_TOOL_KWARGS = {"read_only_hint": True, "idempotent_hint": True}` applied to all 21 existing `@mcp.tool()` decorators. Signals to MCP hosts that no write side-effects occur. ADR-0023 §2 docstring language policy re-affirmed.
+- **Next-step hints SSOT** (WI-A2): centralized into `src/mcp/hints.py` — single dict maps tool name → hint string. All 18 drill-down tools import from there; 4 CI assertions added.
+- **Grammar consistency tests** (WI-A3): `tests/test_grammar_consistency.py` — 4 tests (language-policy regex, no-self-loop, truncation-disclosure, next-step-present).
+- **Self-mythology docstrings** (WI-A4): `lookup_core_api` and `find_deprecated_usage` TRIGGER/PREFER/SKIP blocks updated with accurate self-description.
+
+### Wave B — Output Envelope (M10.5)
+
+- **Shared TreeBuilder** (WI-B1): `src/mcp/tree_builder.py` — `TreeBuilder` class with `add_branch`, `add_sublist`, `add_next` methods. `_resolve_model` and `_list_fields` migrated as PoC.
+- **Pydantic DTOs** (WI-B2): `src/mcp/dto.py` — 6 `*Ref` + 7 `*Output` Pydantic models. `ModelRef`, `FieldRef`, `MethodRef`, `ViewRef`, `ModuleRef`, `PatternRef`; `ModelOutput`, `FieldOutput`, etc.
+- **Dual-channel ToolResult** (WI-B3): 7 priority tools (`resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `describe_module`, `list_fields`, `list_methods`) return `{"content": tree_text, "structuredContent": dto.model_dump()}`. AI clients that support `structuredContent` get machine-parseable data; others fall back to tree text.
+- **Dual-channel tests** (WI-B4): `tests/test_dual_channel_envelope.py` — 8 tests asserting both channels non-empty + DTO schema round-trips.
+
+### Wave C — Drill-down Cohesion (M10.5)
+
+- **Opaque ref IDs** (WI-C1/C2/C3): `src/mcp/refs.py` — per-call ref minter with API-key tenancy + 5min TTL. 6 `_list_*` tools emit `[ref=fN]` row tokens; 4 `_resolve_*` tools accept `target=<ref>` OR canonical `model+field+version` — backward compatible. Pagination: `start_index: int = 0` added to all 6 list tools.
+- **Ref drilldown tests** (WI-C4): `tests/test_drilldown_refs.py` — 8 tests (ref lifecycle, cross-tenant isolation, ref→resolve round-trip).
+
+### Wave D — Discriminator Consolidation (M11)
+
+- **3 superset tools** (WI-D1): `model_inspect(target, odoo_version, kind)`, `module_inspect(target, odoo_version, kind)`, `entity_lookup(target, odoo_version)` implemented in `src/mcp/inspect.py`. Discriminator field in `structuredContent` signals which sub-tool was invoked.
+- **10 deprecation shims** (WI-D4): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view` + 6 `list_*` tools wrapped with `DeprecationWarning` footer + ADR-0028 migration hint. `@deprecated` decorator in `src/mcp/server.py` adds `[DEPRECATED: v0.5 → v0.6]` prefix to tool description.
+- **Tests** (WI-D5): `tests/test_mcp_inspect_router.py` (12 tests) + `tests/test_mcp_deprecation_shims.py` (8 tests).
+- **ADR-0028** (`docs/adr/0028-discriminator-consolidation.md`): discriminator field contract, deprecation timeline (v0.5 shim → v0.6 removal), migration guide for callers.
+
+### Wave E — Implicit Context (M11)
+
+- **Session state migration** (WI-E1): `migrations/0005_api_key_session_state.sql` — `api_key_session_state` table with `api_key_id PK`, `active_version`, `active_profile`, `updated_at`.
+- **Session module** (WI-E2): `src/mcp/session.py` — `read_session()`, `write_session()`, `normalize_version_arg()`, `resolve_version_v2()`. 60s in-process cache per `api_key_id`. 6 sentinel strings collapse to per-key active version.
+- **4 session tools + resolver patches** (WI-E3): `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` registered in `server.py`. All 21 existing tool wrappers patched to call `resolve_version_v2` so sentinels work transparently.
+- **Session tests** (WI-E4): `tests/test_mcp_session_state.py` — 11 tests (read/write round-trip, sentinel collapse, 60s cache, 24h TTL, concurrent tenant isolation).
+- **ADR-0029** (`docs/adr/0029-implicit-session-context.md`): 6 sentinels, 3-tier resolution (explicit → session → latest-indexed), TTL policy, concurrent-tenant isolation guarantee.
+
+### Wave F — MCP Resources (M11)
+
+- **7 resource handlers** (WI-F1): `src/mcp/resources.py` — `register_resources(mcp_instance)` wires `@mcp.resource` for 7 `odoo://` URI templates. LRU cache 1000/300s. Cache key formed from **resolved** version (not raw sentinel) — prevents tenant leakage when two API keys with different active versions read `odoo://auto/model/X`.
+- **Top-100 popular models** (WI-F2): `src/mcp/resources_index.py` — `odoo://index/popular_models` resource returns top-100 models by field+method count across all indexed versions; cached 1h.
+- **Server wiring + docstring hints** (WI-F3): `register_resources(mcp)` called at startup; 7 `_render_*` functions referenced in their respective tool docstrings as "→ available as `odoo://{version}/kind/...`".
+- **Tests** (WI-F4): `tests/test_mcp_resources.py` (6 tests), `tests/test_mcp_resource_cache.py` (5 tests), `tests/test_mcp_resources_auth.py` (4 tests including tenant-leakage regression).
+- **ADR-0030** (`docs/adr/0030-mcp-resources-uri-scheme.md`): URI scheme rationale, 7 kinds, MIME-native content negotiation, cache architecture, sentinel handling.
+
+### F-FINAL gate followups
+
+- **Pre-launch checklist** (AC-6): §6 updated to 28 tools, §6.5 added (7 MCP Resources sign-off table).
+- **ADR-0023 pagination amendment** (AC-7): `start_index` parameter contract, continuation hint grammar (plain text, not `<error>` tag), `[ref=fN]` row token alignment.
+- **README + CHANGELOG** (AC-8): MCP section updated to 28 tools + 7 Resources table; this entry.
+- **Tenant leakage fix** (latent bug): All 7 resource handlers now resolve version sentinel before forming cache key; regression test `test_two_keys_different_active_versions_get_their_own_bodies` added to `tests/test_mcp_resources_auth.py`.
+
+---
+
 ## [0.4.1] — 2026-05-16 — M9 follow-up: Web UI parity for repo & profile management
 
 5 WIs merged via PR #116.
