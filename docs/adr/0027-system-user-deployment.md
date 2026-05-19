@@ -51,7 +51,7 @@ All service processes (`odoo-semantic-mcp.service`, `odoo-semantic-webui.service
 | Main config | `/home/odoo-semantic/etc/odoo-semantic.conf` (mode 600) |
 | Web UI env | `/home/odoo-semantic/etc/webui.env` (mode 600) |
 | Indexed repo clones | `/home/odoo-semantic/repos/` |
-| Backup output | `/var/backups/odoo-semantic/` |
+| Backup output | `/var/backups/odoo-semantic/` (mode 0750, owned by `odoo-semantic:odoo-semantic`) |
 | Backup tmpdir | `/var/tmp` (via `Environment=TMPDIR=/var/tmp` in backup unit) |
 
 Config directory at `/home/odoo-semantic/etc/` (mode 700 dir, mode 600 files) is chosen over
@@ -175,6 +175,9 @@ layout:
 6. Update `repos.local_path` in the database (§7).
 7. Update and reload systemd unit files (`User=odoo-semantic`, updated paths).
 8. Update Docker Compose project name if the app directory basename changed (§6).
+9. Fix backup directory ownership (otherwise `odoo-semantic-backup.service` fails with
+   `PermissionError` on first run — see issue #139):
+   `sudo chown odoo-semantic:odoo-semantic /var/backups/odoo-semantic && sudo chmod 0750 /var/backups/odoo-semantic`
 
 Full step-by-step deploy runbook: [`docs/deploy.md §3`](../deploy.md#3-app-tier).
 

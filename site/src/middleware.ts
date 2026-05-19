@@ -159,7 +159,19 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // `path.startsWith('/admin/')` test would let it through unauthenticated
   // and render the dashboard from SSR fallback data.
   if (path !== '/admin' && !path.startsWith('/admin/')) {
-    // Non-admin routes outside /admin/*: populate locals.user if authenticated.
+    // Prerendered routes (export const prerender = true) have no request
+    // headers at build time — reading context.request.headers triggers an
+    // Astro build warning. These public pages never render locals.user, so
+    // skip the cookie/session lookup entirely. Security headers (_addSecurityHeaders)
+    // are response headers, so they still apply via the early-return path.
+    // See issue #140.
+    if (context.isPrerendered) {
+      context.locals.user = null;
+      const response = await next();
+      _addSecurityHeaders(response, path);
+      return response;
+    }
+    // Non-admin SSR routes: populate locals.user if authenticated.
     const cookieHeader = context.request.headers.get('cookie') ?? '';
     const sessionPayload = await verifySession(cookieHeader);
     if (sessionPayload && sessionPayload.ok && sessionPayload.username) {

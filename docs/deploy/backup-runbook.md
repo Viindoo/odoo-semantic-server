@@ -73,8 +73,12 @@ sudo systemctl start odoo-semantic-backup.service
 sudo journalctl -u odoo-semantic-backup.service -n 50
 
 # Hoặc chạy trực tiếp (debug)
-mkdir -p /var/backups/odoo-semantic
-~/.venv/odoo-semantic-mcp/bin/python -m src.cli backup \
+# (Cần sudo vì /var/backups/odoo-semantic phải owned by odoo-semantic service user
+#  — xem ADR-0027 §2 Directory layout)
+sudo mkdir -p /var/backups/odoo-semantic
+sudo chown odoo-semantic:odoo-semantic /var/backups/odoo-semantic
+sudo chmod 0750 /var/backups/odoo-semantic
+sudo -u odoo-semantic /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli backup \
     --output /var/backups/odoo-semantic/osm-manual-$(date +%Y%m%d-%H%M%S).tar.gz
 ```
 
