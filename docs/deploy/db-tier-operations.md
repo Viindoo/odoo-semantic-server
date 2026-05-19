@@ -137,7 +137,9 @@ Sanity test (no real failure needed):
 sudo systemctl daemon-reload
 sudo systemctl start osm-alert@dummy.service
 journalctl -u osm-alert@dummy.service --no-pager | tail
-# Expect: a single WARNING line tagged `osm-alert: unit=dummy.service ...`
+# Expect a journal line matching:
+#   osm-alert: unit=dummy state=failed host=<hostname>
+# (`%i` resolves to the instance name `dummy`, not `dummy.service`.)
 ```
 
 ## Degraded mode

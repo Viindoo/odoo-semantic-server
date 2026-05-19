@@ -540,7 +540,7 @@ sudo bash install.sh --systemd
 # Dev workstation (single user, không cần tạo user odoo-semantic):
 bash install.sh --systemd
 # → in summary + lưu file vào /tmp/; copy thủ công nếu cần quyền root:
-#   sudo cp /tmp/odoo-semantic-*.service /etc/systemd/system/
+#   sudo cp /tmp/odoo-semantic-*.service '/tmp/osm-alert@.service' /etc/systemd/system/
 #   sudo systemctl daemon-reload
 ```
 
@@ -623,7 +623,9 @@ sudo systemctl enable --now odoo-semantic-backup
 # Sanity test alert template (không cần wait main service failure):
 sudo systemctl start 'osm-alert@dummy.service'
 sudo journalctl -u 'osm-alert@dummy.service' --no-pager | tail
-# → Expect: "osm-alert: unit=dummy.service failed at <timestamp>"
+# → Expect a line matching: osm-alert: unit=dummy state=failed host=<hostname>
+#   (printed by ExecStart= in osm-alert@.service; `%i` resolves to `dummy`,
+#   not `dummy.service` — systemd's %i is the instance name without suffix)
 ```
 
 > `install.sh --systemd` glob `*.service` tự động pick up cả 5 unit (4
