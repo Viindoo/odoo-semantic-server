@@ -1,0 +1,20 @@
+# osm-ttl-cleanup.timer — fires osm-ttl-cleanup.service daily at 00:10
+# Đặt tại: /etc/systemd/system/osm-ttl-cleanup.timer
+#
+# Time 00:10 (not 00:00) gives a 10-minute grace window for any
+# overnight maintenance / image upgrade that might restart Postgres
+# right after midnight.
+#
+# Persistent=true: if the host was offline when the timer should have
+# fired, run once on next boot instead of skipping the cleanup window.
+
+[Unit]
+Description=Daily OSM TTL cleanup (login_attempts/email_verifications/active_sessions)
+
+[Timer]
+OnCalendar=*-*-* 00:10:00
+Persistent=true
+Unit=osm-ttl-cleanup.service
+
+[Install]
+WantedBy=timers.target

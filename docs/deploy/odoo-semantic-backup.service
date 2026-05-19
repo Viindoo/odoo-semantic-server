@@ -8,6 +8,13 @@
 # Adjust User=, WorkingDirectory=, EnvironmentFile=, ExecStart venv path for
 # your deployment. Defaults below mirror docs/deploy/odoo-semantic-mcp.service
 # (user `odoo-semantic`, working dir `/opt/odoo-semantic-mcp`).
+#
+# IMPORTANT: the backup output directory must be owned by the service user.
+# Create it (or fix ownership if migrating from a personal-user deployment):
+#   sudo mkdir -p /var/backups/odoo-semantic
+#   sudo chown odoo-semantic:odoo-semantic /var/backups/odoo-semantic
+#   sudo chmod 0750 /var/backups/odoo-semantic
+# Without this, the unit fails with `PermissionError: [Errno 13]` on first run.
 
 [Unit]
 Description=OSM nightly backup

@@ -20,6 +20,7 @@ dependencies = [
     "neo4j>=5.0,<6.0",
     "pgvector>=0.3,<0.5",
     "psycopg2-binary>=2.9",
+    "python-dotenv>=1.0",       # issue #141 — auto-load .env in CLI/migrate (override=False so systemd env still wins)
     "python-multipart>=0.0.9",
     "tqdm>=4.66",
     "tree-sitter>=0.21",

@@ -209,7 +209,7 @@ ls -ld /home/odoo-semantic
 
 ### 2.1 Cấu hình
 
-**`.env`** — secrets cho Docker Compose (KHÔNG đọc bởi Python apps):
+**`.env`** — secrets cho Docker Compose (cũng được Python apps auto-load với `override=False`, xem ADR-0031):
 
 ```bash
 # Bắt buộc điền:
@@ -234,7 +234,10 @@ pg_dsn = postgresql://odoo_semantic:<PG_PASSWORD>@localhost:5432/odoo_semantic
 > **Quy tắc hai lớp config:**
 > - `.env` → Docker Compose đọc khi `docker compose up`
 > - `odoo-semantic.conf` → Python apps đọc (indexer, manager, migrate, mcp server)
-> - Python apps **không** đọc `.env`. Secrets cần khai báo ở **cả hai** file.
+> - Python apps **cũng auto-load `.env`** qua `python-dotenv` với `override=False`
+>   (ADR-0031, issue #141) — env vars do systemd `EnvironmentFile=` hoặc shell
+>   inject vẫn thắng, `.env` chỉ điền slot còn trống. Production thường khai
+>   báo secrets trong `odoo-semantic.conf` + systemd env, không phụ thuộc `.env`.
 
 ### 2.2 Khởi động DB
 
