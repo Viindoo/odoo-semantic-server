@@ -607,6 +607,30 @@ sudo systemctl status odoo-semantic-astro
 # → ExecStart sẽ chạy: node dist/server/entry.mjs
 ```
 
+Cài backup unit + alert template (PR #134 resilience wiring):
+
+```bash
+sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-backup.service \
+        /etc/systemd/system/
+sudo cp "/opt/odoo-semantic-mcp/docs/deploy/osm-alert@.service" \
+        /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now odoo-semantic-backup
+# Template unit không enable trực tiếp — systemd tự instance khi
+# `OnFailure=osm-alert@%n` chain fires từ 4 main unit.
+
+# Sanity test alert template (không cần wait main service failure):
+sudo systemctl start 'osm-alert@dummy.service'
+sudo journalctl -u 'osm-alert@dummy.service' --no-pager | tail
+# → Expect: "osm-alert: unit=dummy.service failed at <timestamp>"
+```
+
+> `install.sh --systemd` glob `*.service` tự động pick up cả 5 unit (4
+> main + 1 template). Bước manual ở trên chỉ cần khi không dùng
+> `install.sh`. Xem [`docs/deploy/db-tier-operations.md §Alert wiring`](deploy/db-tier-operations.md#alert-wiring-onfailureosm-alertn)
+> để cấu hình notifier (email, Slack, PagerDuty).
+
 ⚠️ **Backup `webui.env` an toàn (vd password manager).** Nếu mất
 FERNET_KEY → mọi SSH private key đã lưu trong DB không giải mã được.
 Nếu mất WEBUI_SESSION_SECRET → mọi session đang đăng nhập bị invalidate (vô hại nhưng gây đăng xuất đột ngột).
