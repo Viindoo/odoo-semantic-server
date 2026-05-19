@@ -2923,3 +2923,27 @@ def test_list_available_versions_returns_tree(seeded_neo4j):
         f"Got: {text[:300]!r}"
     )
     assert "Indexed Odoo versions" in text
+
+
+def test_mcp_resources_registered(seeded_neo4j):
+    """Smoke test: MCP resources are registered on server.mcp instance (WI-F3)."""
+    srv = _import_server_module()
+    # Check that _resource_manager has templates for the 7 resources
+    assert hasattr(srv.mcp, "_resource_manager"), "FastMCP should have _resource_manager"
+    templates = srv.mcp._resource_manager._templates
+    assert len(templates) == 7, (
+        f"Expected 7 resource templates, got {len(templates)}: "
+        f"{list(templates.keys())}"
+    )
+    # Verify each URI pattern is present
+    expected_uris = [
+        "odoo://{version}/model/{name}",
+        "odoo://{version}/field/{model}/{field}",
+        "odoo://{version}/method/{model}/{method}",
+        "odoo://{version}/module/{name}",
+        "odoo://{version}/view/{xmlid}",
+        "odoo://{version}/pattern/{pattern_id}",
+        "odoo://{version}/stylesheet/{module}/{file_path*}",
+    ]
+    for uri in expected_uris:
+        assert uri in templates, f"Expected resource URI {uri!r} not registered"
