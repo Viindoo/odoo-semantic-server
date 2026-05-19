@@ -162,7 +162,7 @@ Different roles get the most value from different tools. Quick-start guides:
 **Next milestones (roadmap):**
 - **M10 "Billing Wow"** — Stripe subscription + plan tiers + coverage-fill follow-ups: MCP Stylesheet tools (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` metric, M10 Quick Wins (magic fields, `from_module` param, `noqa` support, CLI batch audit), nonce-based CSP.
 - **M10.5 "ORM Intelligence Wow"** — 4 new MCP tools (`validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`) for static ORM validation before AI client suggests a domain/depends.
-- **M11 "Architectural Wow"** — parser hooks `(min_version, max_version, fn)` registry refactor (supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue expansion 35 → 100+, lint rules curation 10-30 → 50+/version.
+- **M11 "Architectural Wow"** — discriminator consolidation: `model_inspect`/`module_inspect`/`entity_lookup` supersets replace 10 flat tools with 1-major-release deprecation timeline (ADR-0028); parser hooks `(min_version, max_version, fn)` registry refactor (supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue expansion 35 → 100+, lint rules curation 10-30 → 50+/version.
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 
