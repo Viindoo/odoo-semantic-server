@@ -187,7 +187,7 @@ def _require_structured_content_is_dict(result) -> None:
     [
         pytest.param(
             "resolve_model",
-            lambda: ("b4.order", TEST_VERSION),
+            lambda: {"target": "b4.order", "odoo_version": TEST_VERSION},
             ResolveModelOutput,
             lambda sc: (
                 sc["ref"]["name"] == "b4.order"
@@ -199,7 +199,7 @@ def _require_structured_content_is_dict(result) -> None:
         ),
         pytest.param(
             "resolve_field",
-            lambda: ("b4.order", "amount_total", TEST_VERSION),
+            lambda: {"target": "b4.order.amount_total", "odoo_version": TEST_VERSION},
             ResolveFieldOutput,
             lambda sc: (
                 sc["ref"]["name"] == "amount_total"
@@ -211,7 +211,7 @@ def _require_structured_content_is_dict(result) -> None:
         ),
         pytest.param(
             "resolve_method",
-            lambda: ("b4.order", "action_confirm", TEST_VERSION),
+            lambda: {"target": "b4.order.action_confirm", "odoo_version": TEST_VERSION},
             ResolveMethodOutput,
             lambda sc: (
                 sc["ref"]["name"] == "action_confirm"
@@ -223,7 +223,7 @@ def _require_structured_content_is_dict(result) -> None:
         ),
         pytest.param(
             "resolve_view",
-            lambda: ("b4_sale.view_order_form", TEST_VERSION),
+            lambda: {"target": "b4_sale.view_order_form", "odoo_version": TEST_VERSION},
             ResolveViewOutput,
             lambda sc: (
                 sc["ref"]["xmlid"] == "b4_sale.view_order_form"
@@ -281,11 +281,18 @@ def test_positive_envelope(b4_db, tool_name, args, dto_class, spot_checks):
     (c) dict validates cleanly as the tool's declared *Output Pydantic type.
     (d) validated DTO has a non-empty next_step_hint (ADR-0023 §4 contract).
     (e) tool-specific spot-checks on raw structured_content keys/values.
+
+    The args lambda may return either a tuple (positional) or a dict (keyword).
+    resolve_* tools use dict form after WI-C3 target= refactor.
     """
     import importlib
     server = importlib.import_module("src.mcp.server")
     tool_fn = getattr(server, tool_name)
-    result = tool_fn.fn(*args())
+    raw_args = args()
+    if isinstance(raw_args, dict):
+        result = tool_fn.fn(**raw_args)
+    else:
+        result = tool_fn.fn(*raw_args)
     _assert_envelope(result, dto_class)
     assert spot_checks(result.structured_content), (
         f"{tool_name}: spot-check failed on structured_content: {result.structured_content}"
@@ -304,8 +311,8 @@ def test_positive_text_channel_byte_identical_to_impl(b4_db):
 
     # inner impl (underscore-prefixed) — returns plain str
     inner_text = server._resolve_model("b4.order", TEST_VERSION)
-    # public wrapper — returns ToolResult
-    result = server.resolve_model.fn("b4.order", TEST_VERSION)
+    # public wrapper — returns ToolResult; use target= (new preferred form, WI-C3)
+    result = server.resolve_model.fn(target="b4.order", odoo_version=TEST_VERSION)
 
     assert result.content[0].text == inner_text, (
         "content[0].text must be byte-identical to _resolve_model() output"
@@ -557,10 +564,10 @@ def test_tool_advertises_dto_outputschema(tool_name, dto):
 # ---------------------------------------------------------------------------
 
 _HINT_PARITY_ARGS = [
-    ("resolve_model", lambda: ("b4.order", TEST_VERSION)),
-    ("resolve_field", lambda: ("b4.order", "amount_total", TEST_VERSION)),
-    ("resolve_method", lambda: ("b4.order", "action_confirm", TEST_VERSION)),
-    ("resolve_view", lambda: ("b4_sale.view_order_form", TEST_VERSION)),
+    ("resolve_model", lambda: {"target": "b4.order", "odoo_version": TEST_VERSION}),
+    ("resolve_field", lambda: {"target": "b4.order.amount_total", "odoo_version": TEST_VERSION}),
+    ("resolve_method", lambda: {"target": "b4.order.action_confirm", "odoo_version": TEST_VERSION}),
+    ("resolve_view", lambda: {"target": "b4_sale.view_order_form", "odoo_version": TEST_VERSION}),
     ("describe_module", lambda: ("b4_sale", TEST_VERSION)),
     ("list_fields", lambda: ("b4.order", TEST_VERSION)),
     ("list_methods", lambda: ("b4.order", TEST_VERSION)),
@@ -586,7 +593,11 @@ def test_next_step_hint_matches_text_footer(b4_db, tool_name, args_fn):
 
     server = importlib.import_module("src.mcp.server")
     tool = getattr(server, tool_name)
-    result = tool.fn(*args_fn())
+    raw = args_fn()
+    if isinstance(raw, dict):
+        result = tool.fn(**raw)
+    else:
+        result = tool.fn(*raw)
 
     text = result.content[0].text
     # The footer is the last line of the text channel.

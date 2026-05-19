@@ -160,7 +160,7 @@ def test_resolve_model_dual_channel(b3_db):
     """resolve_model wrapper returns both text and structured ResolveModelOutput."""
     from src.mcp.server import resolve_model
 
-    result = resolve_model.fn("b3.order", TEST_VERSION)
+    result = resolve_model.fn(target="b3.order", odoo_version=TEST_VERSION)
     _assert_dual_channel(result, ResolveModelOutput)
     # Spot-check structured payload fields.
     sc = result.structured_content
@@ -175,7 +175,9 @@ def test_resolve_field_dual_channel(b3_db):
     """resolve_field wrapper returns both text and structured ResolveFieldOutput."""
     from src.mcp.server import resolve_field
 
-    result = resolve_field.fn("b3.order", "amount_total", TEST_VERSION)
+    result = resolve_field.fn(
+        target="b3.order.amount_total", odoo_version=TEST_VERSION
+    )
     _assert_dual_channel(result, ResolveFieldOutput)
     sc = result.structured_content
     assert sc["ref"]["name"] == "amount_total"
@@ -189,7 +191,9 @@ def test_resolve_method_dual_channel(b3_db):
     """resolve_method wrapper returns both text and structured ResolveMethodOutput."""
     from src.mcp.server import resolve_method
 
-    result = resolve_method.fn("b3.order", "action_confirm", TEST_VERSION)
+    result = resolve_method.fn(
+        target="b3.order.action_confirm", odoo_version=TEST_VERSION
+    )
     _assert_dual_channel(result, ResolveMethodOutput)
     sc = result.structured_content
     assert sc["ref"]["name"] == "action_confirm"
@@ -203,7 +207,9 @@ def test_resolve_view_dual_channel(b3_db):
     """resolve_view wrapper returns both text and structured ResolveViewOutput."""
     from src.mcp.server import resolve_view
 
-    result = resolve_view.fn("b3_sale.view_order_form", TEST_VERSION)
+    result = resolve_view.fn(
+        target="b3_sale.view_order_form", odoo_version=TEST_VERSION
+    )
     _assert_dual_channel(result, ResolveViewOutput)
     sc = result.structured_content
     assert sc["ref"]["xmlid"] == "b3_sale.view_order_form"

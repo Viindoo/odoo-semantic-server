@@ -1,7 +1,9 @@
 # src/mcp/server.py
 import math
 import os
+import re
 import threading
+import warnings
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 
 from fastmcp import FastMCP
@@ -49,7 +51,7 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
     format_next_step,
     hints_for,
 )
-from src.mcp.refs import mint_refs
+from src.mcp.refs import RefError, mint_refs, resolve_ref
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 from src.mcp.tree_builder import render_list_block
 
@@ -123,6 +125,51 @@ _driver = None
 _embedder_instance = None
 _version_checked = False
 _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
+
+# ---------------------------------------------------------------------------
+# Dual-mode ref helpers (WI-C3) — resolve_ref or canonical parse
+# ---------------------------------------------------------------------------
+
+# Regex for opaque ref IDs minted by list_* tools: f1, m12, v3, x99, p5.
+# Max length ≤ 6 chars (1 prefix + up to 5 digits) to avoid false positives
+# on canonical names that happen to start with f/m/v/x/p.
+_REF_PATTERN = re.compile(r"^[fmvxp]\d{1,5}$")
+
+
+def _looks_like_ref(s: str) -> bool:
+    """Return True when *s* looks like a ref minted by list_* tools (e.g. 'f12')."""
+    return bool(_REF_PATTERN.match(s))
+
+
+def _get_api_key_id() -> str:
+    """Return the API key ID for the current sync context.
+
+    Sync MCP tool wrappers run outside Starlette request context, so we
+    cannot extract the real API key from the request.  Return a stable
+    sentinel so all sync callers share one ref namespace — per-call refs
+    minted by list_* tools (which DO have request context) are stored under
+    the real api_key_id, while resolve_* tools look up under the same key.
+    In production, the middleware writes the api_key_id into a thread-local;
+    fall back to 'default' when not set (unit tests, CLI invocations).
+    """
+    return getattr(_api_key_id_local, "value", "default")
+
+
+# Thread-local storage for API key ID — populated by middleware when available.
+_api_key_id_local = threading.local()
+
+
+def _format_stale_ref_error(entity: str, ref: str, err: RefError) -> str:
+    """Return a friendly error string for a stale or unknown ref.
+
+    The error is returned as a tree-formatted string matching the not-found
+    convention of other resolve_* tools (plain text, no exception raised).
+    """
+    hint = err.recovery_hint or f"Re-run the list_{entity}s(...) call that minted it."
+    return (
+        f"resolve_{entity}: Ref {ref!r} is unknown or expired.\n"
+        f"└─ Recovery: {hint}"
+    )
 
 # find_examples rerank coefficients — extracted so calibration harness can
 # monkey-patch them. See _find_examples + tests/test_calibration_eval.py.
@@ -784,7 +831,8 @@ def _find_examples(
 
 @mcp.tool(output_schema=ResolveModelOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_model(
-    model_name: str,
+    target: str | None = None,
+    model_name: str | None = None,
     odoo_version: str = "auto",
     profile_name: str | None = None,
 ) -> ToolResult:
@@ -800,7 +848,11 @@ def resolve_model(
     user wants a method override chain → use resolve_method
 
     Args:
-        model_name: Odoo dotted name, e.g. 'sale.order', 'res.partner'.
+        target: Opaque ref ID (e.g. 'm5' minted by list_fields/resolve_model)
+            OR canonical model dotted name (e.g. 'sale.order', 'res.partner').
+            Preferred over legacy model_name kwarg.
+        model_name: DEPRECATED — use target= instead. Odoo dotted model name.
+            Kept for backward compatibility; issues DeprecationWarning when used.
         odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
         profile_name: Optional profile filter (e.g. 'internal_profile_17').
             When provided, only returns nodes whose profile array includes
@@ -822,8 +874,52 @@ def resolve_model(
           ├─ Fields: 47
           └─ Methods: 23
     """
-    text = _resolve_model(model_name, odoo_version, profile_name)
-    structured = _resolve_model_structured(model_name, odoo_version, profile_name)
+    # --- dual-mode dispatch ---
+    if target is not None and model_name is not None:
+        warnings.warn(
+            "resolve_model: ignoring legacy model_name=; target= takes precedence.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if model_name is not None and target is None:
+        warnings.warn(
+            "resolve_model: model_name= is deprecated; use target='ref' or"
+            " target='sale.order' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    effective_model: str | None = None
+
+    if target is not None:
+        if _looks_like_ref(target):
+            try:
+                canonical = resolve_ref(target, _get_api_key_id())
+                effective_model = canonical.get("model") or canonical.get("name")
+            except RefError as err:
+                err_text = _format_stale_ref_error("model", target, err)
+                return ToolResult(
+                    content=[TextContent(type="text", text=err_text)],
+                    structured_content=None,
+                )
+        else:
+            # canonical name: "sale.order"
+            effective_model = target
+    elif model_name is not None:
+        effective_model = model_name
+
+    if not effective_model:
+        err_text = (
+            "resolve_model: target= or model_name= required.\n"
+            "└─ Example: resolve_model(target='sale.order', odoo_version='17.0')"
+        )
+        return ToolResult(
+            content=[TextContent(type="text", text=err_text)],
+            structured_content=None,
+        )
+
+    text = _resolve_model(effective_model, odoo_version, profile_name)
+    structured = _resolve_model_structured(effective_model, odoo_version, profile_name)
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -832,8 +928,9 @@ def resolve_model(
 
 @mcp.tool(output_schema=ResolveFieldOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_field(
-    model_name: str,
-    field_name: str,
+    target: str | None = None,
+    model_name: str | None = None,
+    field_name: str | None = None,
     odoo_version: str = "auto",
     profile_name: str | None = None,
 ) -> ToolResult:
@@ -847,8 +944,13 @@ def resolve_field(
     SKIP when: user wants all fields of a model → use resolve_model
 
     Args:
-        model_name: e.g. 'sale.order'.
-        field_name: e.g. 'amount_total'.
+        target: Opaque ref ID (e.g. 'f12' minted by list_fields) OR canonical
+            dotted path (e.g. 'sale.order.amount_total'). Preferred over legacy
+            model_name + field_name kwargs.
+        model_name: DEPRECATED — use target= instead. e.g. 'sale.order'.
+            Issues DeprecationWarning when supplied.
+        field_name: DEPRECATED — use target= instead. e.g. 'amount_total'.
+            Issues DeprecationWarning when supplied.
         odoo_version: e.g. '17.0'. Default 'auto'.
         profile_name: Optional profile filter (e.g. 'internal_profile_17').
             Filters to nodes whose profile array includes this name.
@@ -869,8 +971,62 @@ def resolve_field(
           └─ Declared in:
               └─ [odoo] sale
     """
-    text = _resolve_field(model_name, field_name, odoo_version, profile_name)
-    structured = _resolve_field_structured(model_name, field_name, odoo_version, profile_name)
+    # --- dual-mode dispatch ---
+    has_legacy = model_name is not None or field_name is not None
+    if target is not None and has_legacy:
+        warnings.warn(
+            "resolve_field: ignoring legacy model_name=/field_name=; target= takes precedence.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if has_legacy and target is None:
+        warnings.warn(
+            "resolve_field: model_name=/field_name= are deprecated; use"
+            " target='ref_id' or target='model.field_name' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    effective_model: str | None = model_name
+    effective_field: str | None = field_name
+
+    if target is not None:
+        if _looks_like_ref(target):
+            try:
+                canonical = resolve_ref(target, _get_api_key_id())
+                effective_model = canonical.get("model")
+                effective_field = canonical.get("field_name") or canonical.get("name")
+            except RefError as err:
+                err_text = _format_stale_ref_error("field", target, err)
+                return ToolResult(
+                    content=[TextContent(type="text", text=err_text)],
+                    structured_content=None,
+                )
+        else:
+            # canonical: "sale.order.amount_total" — split on last dot boundary
+            # to separate model (may contain dots) from field name.
+            parts = target.rsplit(".", 1)
+            if len(parts) == 2:
+                effective_model, effective_field = parts[0], parts[1]
+            else:
+                # No dot — treat whole string as field name, model unknown.
+                effective_field = target
+
+    if not (effective_model and effective_field):
+        err_text = (
+            "resolve_field: target= or model_name= + field_name= required.\n"
+            "└─ Example: resolve_field(target='sale.order.amount_total')"
+            " or resolve_field(model_name='sale.order', field_name='amount_total')"
+        )
+        return ToolResult(
+            content=[TextContent(type="text", text=err_text)],
+            structured_content=None,
+        )
+
+    text = _resolve_field(effective_model, effective_field, odoo_version, profile_name)
+    structured = _resolve_field_structured(
+        effective_model, effective_field, odoo_version, profile_name
+    )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -879,8 +1035,9 @@ def resolve_field(
 
 @mcp.tool(output_schema=ResolveMethodOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_method(
-    model_name: str,
-    method_name: str,
+    target: str | None = None,
+    model_name: str | None = None,
+    method_name: str | None = None,
     odoo_version: str = "auto",
     profile_name: str | None = None,
 ) -> ToolResult:
@@ -895,8 +1052,13 @@ def resolve_method(
     view overrides → use resolve_view
 
     Args:
-        model_name: e.g. 'sale.order'.
-        method_name: e.g. 'action_confirm'.
+        target: Opaque ref ID (e.g. 'm3' minted by list_methods) OR canonical
+            dotted path (e.g. 'sale.order.action_confirm'). Preferred over
+            legacy model_name + method_name kwargs.
+        model_name: DEPRECATED — use target= instead. e.g. 'sale.order'.
+            Issues DeprecationWarning when supplied.
+        method_name: DEPRECATED — use target= instead. e.g. 'action_confirm'.
+            Issues DeprecationWarning when supplied.
         odoo_version: e.g. '17.0'. Default 'auto'.
         profile_name: Optional profile filter (e.g. 'internal_profile_17').
             Filters to nodes whose profile array includes this name.
@@ -914,8 +1076,60 @@ def resolve_method(
               ├─ [odoo] viin_sale — ✓ calls super() — decorators: —
               └─ [odoo] to_sale_workflow — ✓ calls super() — decorators: —
     """
-    text = _resolve_method(model_name, method_name, odoo_version, profile_name)
-    structured = _resolve_method_structured(model_name, method_name, odoo_version, profile_name)
+    # --- dual-mode dispatch ---
+    has_legacy = model_name is not None or method_name is not None
+    if target is not None and has_legacy:
+        warnings.warn(
+            "resolve_method: ignoring legacy model_name=/method_name=; target= takes precedence.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if has_legacy and target is None:
+        warnings.warn(
+            "resolve_method: model_name=/method_name= are deprecated; use"
+            " target='ref_id' or target='model.method_name' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    effective_model: str | None = model_name
+    effective_method: str | None = method_name
+
+    if target is not None:
+        if _looks_like_ref(target):
+            try:
+                canonical = resolve_ref(target, _get_api_key_id())
+                effective_model = canonical.get("model")
+                effective_method = canonical.get("method_name") or canonical.get("name")
+            except RefError as err:
+                err_text = _format_stale_ref_error("method", target, err)
+                return ToolResult(
+                    content=[TextContent(type="text", text=err_text)],
+                    structured_content=None,
+                )
+        else:
+            # canonical: "sale.order.action_confirm" — rsplit on last dot
+            parts = target.rsplit(".", 1)
+            if len(parts) == 2:
+                effective_model, effective_method = parts[0], parts[1]
+            else:
+                effective_method = target
+
+    if not (effective_model and effective_method):
+        err_text = (
+            "resolve_method: target= or model_name= + method_name= required.\n"
+            "└─ Example: resolve_method(target='sale.order.action_confirm')"
+            " or resolve_method(model_name='sale.order', method_name='action_confirm')"
+        )
+        return ToolResult(
+            content=[TextContent(type="text", text=err_text)],
+            structured_content=None,
+        )
+
+    text = _resolve_method(effective_model, effective_method, odoo_version, profile_name)
+    structured = _resolve_method_structured(
+        effective_model, effective_method, odoo_version, profile_name
+    )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -924,7 +1138,8 @@ def resolve_method(
 
 @mcp.tool(output_schema=ResolveViewOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_view(
-    xmlid: str,
+    target: str | None = None,
+    xmlid: str | None = None,
     odoo_version: str = "auto",
     profile_name: str | None = None,
 ) -> ToolResult:
@@ -939,7 +1154,11 @@ def resolve_view(
     info → use resolve_field
 
     Args:
-        xmlid: External ID of the view, e.g. 'sale.view_order_form'.
+        target: Opaque ref ID (e.g. 'v3' minted by list_views) OR canonical
+            XML external ID (e.g. 'sale.view_order_form'). Preferred over
+            legacy xmlid kwarg.
+        xmlid: DEPRECATED — use target= instead. External ID of the view,
+            e.g. 'sale.view_order_form'. Issues DeprecationWarning when used.
         odoo_version: e.g. '17.0'. Default 'auto'.
         profile_name: Optional profile filter (e.g. 'internal_profile_17').
             When set, only nodes whose profile array contains this name are
@@ -960,8 +1179,51 @@ def resolve_view(
               ├─ viin_sale.view_order_form_custom → [odoo] viin_sale
               └─ to_sale_custom.view_form_ext → [odoo] to_sale_custom
     """
-    text = _resolve_view(xmlid, odoo_version, profile_name)
-    structured = _resolve_view_structured(xmlid, odoo_version, profile_name)
+    # --- dual-mode dispatch ---
+    if target is not None and xmlid is not None:
+        warnings.warn(
+            "resolve_view: ignoring legacy xmlid=; target= takes precedence.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if xmlid is not None and target is None:
+        warnings.warn(
+            "resolve_view: xmlid= is deprecated; use target='ref' or"
+            " target='sale.view_order_form' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    effective_xmlid: str | None = xmlid
+
+    if target is not None:
+        if _looks_like_ref(target):
+            try:
+                canonical = resolve_ref(target, _get_api_key_id())
+                effective_xmlid = canonical.get("xmlid")
+            except RefError as err:
+                err_text = _format_stale_ref_error("view", target, err)
+                return ToolResult(
+                    content=[TextContent(type="text", text=err_text)],
+                    structured_content=None,
+                )
+        else:
+            # canonical xmlid: "sale.view_order_form"
+            effective_xmlid = target
+
+    if not effective_xmlid:
+        err_text = (
+            "resolve_view: target= or xmlid= required.\n"
+            "└─ Example: resolve_view(target='sale.view_order_form')"
+            " or resolve_view(xmlid='sale.view_order_form')"
+        )
+        return ToolResult(
+            content=[TextContent(type="text", text=err_text)],
+            structured_content=None,
+        )
+
+    text = _resolve_view(effective_xmlid, odoo_version, profile_name)
+    structured = _resolve_view_structured(effective_xmlid, odoo_version, profile_name)
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
