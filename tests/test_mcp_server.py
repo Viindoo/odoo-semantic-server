@@ -1786,11 +1786,102 @@ def test_list_fields_truncation(neo4j_driver):
 
         srv = _import_server_module()
         out = srv._list_fields("big.model", W6_LIST_FIELDS_VERSION)
-        # cap = LIST_PREVIEW_FIELDS_MAX (50); 60 total → "and 10 more".
-        assert "and 10 more (use" in out
-        assert "list_fields" in out  # more_hint references the same tool
+        # cap = LIST_PREVIEW_FIELDS_MAX (50); 60 total → continuation hint appears.
+        # Pagination hint format: "Showing rows 0-49 of 60. Call list_fields(...)"
+        assert "Showing rows 0-49 of 60" in out
+        assert "list_fields" in out  # continuation hint references the same tool
+        assert "start_index=50" in out  # next-page cursor is disclosed
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_FIELDS_VERSION)
+
+
+# AC-C2-7: pagination smoke — two pages cover all 247 rows without gaps.
+W6_LIST_FIELDS_PAGER_VERSION = "85.0"
+
+
+def test_list_fields_pagination_smoke(neo4j_driver):
+    """Two consecutive start_index calls cover all 247 fixture rows without gaps.
+
+    AC-C2-7: list_fields(limit=50, start_index=0) + list_fields(limit=50, start_index=50)
+    both include refs; second call does NOT include a continuation hint (start_index+shown==total).
+    """
+    _cleanup_version(neo4j_driver, W6_LIST_FIELDS_PAGER_VERSION)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo(
+            "pager_mod", W6_LIST_FIELDS_PAGER_VERSION, "odoo_test", "/tmp", [], "17.0",
+        )
+        pager_model = ModelInfo(
+            name="pager.model", module="pager_mod",
+            odoo_version=W6_LIST_FIELDS_PAGER_VERSION,
+            fields=[FieldInfo(f"field_{i:03d}", "char") for i in range(247)],
+        )
+        writer.write_results([ParseResult(module=mod, models=[pager_model])])
+        writer.close()
+
+        srv = _import_server_module()
+
+        # Page 1: rows 0-49 of 247.
+        out1 = srv._list_fields(
+            "pager.model", W6_LIST_FIELDS_PAGER_VERSION, limit=50, start_index=0,
+        )
+        assert "[ref=f" in out1, "Page 1 must include refs"
+        assert "Showing rows 0-49 of 247" in out1, "Page 1 must show continuation hint"
+        assert "start_index=50" in out1, "Page 1 continuation hint must point to start_index=50"
+        # Extract field names from page 1.
+        page1_lines = [ln for ln in out1.splitlines() if "[ref=" in ln]
+        assert len(page1_lines) == 50, f"Page 1 should render 50 field rows, got {len(page1_lines)}"
+
+        # Page 2: rows 50-99 of 247.
+        out2 = srv._list_fields(
+            "pager.model", W6_LIST_FIELDS_PAGER_VERSION, limit=50, start_index=50,
+        )
+        assert "[ref=f" in out2, "Page 2 must include refs"
+        # Page 2 still has more (247 > 100) → continuation hint.
+        assert "Showing rows 50-99 of 247" in out2
+        assert "start_index=100" in out2
+
+        # Final page: rows 200-246 (47 items) of 247 — no continuation hint.
+        out_final = srv._list_fields(
+            "pager.model", W6_LIST_FIELDS_PAGER_VERSION, limit=50, start_index=200,
+        )
+        assert "[ref=f" in out_final, "Final page must include refs"
+        # Final page: shown=47, end_index=247 == total → no "Showing rows ... Call" hint.
+        assert "Showing rows 200-246 of 247 (last page)" in out_final
+        assert "start_index=247" not in out_final, "Final page must NOT include a continuation hint"
+
+        # Verify no gaps: collect all field names across three pages.
+        def _extract_field_names(out: str) -> set[str]:
+            names = set()
+            for line in out.splitlines():
+                if "[ref=f" in line and "field_" in line:
+                    # Extract "field_NNN" from lines like "│   ├─ [ref=f1] field_000 : char"
+                    for part in line.split():
+                        if part.startswith("field_"):
+                            names.add(part.rstrip(":"))
+            return names
+
+        # Collect all 247 names by paginating 50 at a time.
+        all_names: set[str] = set()
+        for page_start in range(0, 247, 50):
+            page_out = srv._list_fields(
+                "pager.model", W6_LIST_FIELDS_PAGER_VERSION,
+                limit=50, start_index=page_start,
+            )
+            all_names |= _extract_field_names(page_out)
+
+        expected_names = {f"field_{i:03d}" for i in range(247)}
+        assert all_names == expected_names, (
+            f"Pagination gap detected: got {len(all_names)} unique field names, "
+            f"expected 247. Missing: {expected_names - all_names}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_LIST_FIELDS_PAGER_VERSION)
 
 
 # --- list_methods -----------------------------------------------------------
@@ -1866,8 +1957,11 @@ def test_list_methods_truncation(neo4j_driver):
 
         srv = _import_server_module()
         out = srv._list_methods("many.model", W6_LIST_METHODS_VERSION)
-        # cap = 20; 30 total → "and 10 more"
-        assert "and 10 more (use" in out
+        # cap = 20; 30 total → continuation hint appears.
+        # Pagination hint format: "Showing rows 0-19 of 30. Call list_methods(...)"
+        assert "Showing rows 0-19 of 30" in out
+        assert "list_methods" in out  # continuation hint references the same tool
+        assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_METHODS_VERSION)
 
@@ -1958,7 +2052,10 @@ def test_list_views_truncation(neo4j_driver):
 
         srv = _import_server_module()
         out = srv._list_views("big.model", W6_LIST_VIEWS_VERSION)
-        assert "and 5 more (use" in out
+        # cap = 20; 25 total → continuation hint appears.
+        assert "Showing rows 0-19 of 25" in out
+        assert "list_views" in out
+        assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_VIEWS_VERSION)
 
@@ -2023,8 +2120,10 @@ def test_list_owl_components_truncation(neo4j_driver):
         out = srv._list_owl_components(
             "big_owl_mod", W6_LIST_OWL_VERSION,
         )
-        # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → "and 5 more"
-        assert "and 5 more (use" in out
+        # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → continuation hint appears.
+        assert "Showing rows 0-19 of 25" in out
+        assert "list_owl_components" in out
+        assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_OWL_VERSION)
 
@@ -2104,7 +2203,10 @@ def test_list_qweb_templates_truncation(neo4j_driver):
         out = srv._list_qweb_templates(
             "big_qweb_mod", W6_LIST_QWEB_VERSION,
         )
-        assert "and 5 more (use" in out
+        # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → continuation hint appears.
+        assert "Showing rows 0-19 of 25" in out
+        assert "list_qweb_templates" in out
+        assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_QWEB_VERSION)
 
@@ -2161,8 +2263,10 @@ def test_list_js_patches_truncation(neo4j_driver):
         )
         srv = _import_server_module()
         out = srv._list_js_patches(W6_LIST_JS_VERSION, module="patchy_mod")
-        # cap = LIST_PREVIEW_PATCHES_MAX (10); 15 total → "and 5 more"
-        assert "and 5 more (use" in out
+        # cap = LIST_PREVIEW_PATCHES_MAX (10); 15 total → continuation hint appears.
+        assert "Showing rows 0-9 of 15" in out
+        assert "list_js_patches" in out
+        assert "start_index=10" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_JS_VERSION)
 
