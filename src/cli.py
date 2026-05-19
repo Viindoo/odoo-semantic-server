@@ -1001,6 +1001,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    from src import config
+    config.init_dotenv()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "backup":

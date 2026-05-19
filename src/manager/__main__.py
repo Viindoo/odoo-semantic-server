@@ -565,6 +565,7 @@ def _cmd_apply_preset_write(
 
 
 def main(argv: list[str] | None = None) -> int:
+    config.init_dotenv()
     parser = argparse.ArgumentParser(prog="python -m src.manager")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

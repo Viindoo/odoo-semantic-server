@@ -5389,6 +5389,9 @@ async def health_check(request: Request):
 if __name__ == "__main__":
     import logging as _logging
 
+    from src import config as _config
+    _config.init_dotenv()
+
     from src.logging_config import configure_logging as _configure_logging
     _configure_logging(level=_logging.INFO)
 

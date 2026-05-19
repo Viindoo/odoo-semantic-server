@@ -49,6 +49,7 @@ def _init_pg() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    config.init_dotenv()
     parser = argparse.ArgumentParser(
         prog="src.cloner",
         description="Background clone job: clone a repo registered in the DB.",

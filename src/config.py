@@ -11,11 +11,15 @@ Resolution order for INDIVIDUAL VALUE (per `from_env_or_ini`):
   2. INI file [section]/key
   3. Caller-provided fallback (or None)
 
-`.env` auto-load (issue #141, ADR-0031): on import we call
-`dotenv.load_dotenv(override=False)` so that interactive CLI invocations
-pick up `.env` automatically. `override=False` guarantees that env vars
-injected by systemd (`EnvironmentFile=`) or the operator's shell still
-win — `.env` only fills in *missing* slots.
+`.env` auto-load (issue #141, ADR-0031): CLI entry points call
+`init_dotenv()` from inside their `main()` so that interactive
+invocations pick up `.env` automatically. We do NOT call `load_dotenv`
+at module import — pytest imports `src.config` to test config helpers,
+and an import-time `.env` load would inject stale or template values
+(e.g. `.env.example`'s `PG_DSN=postgresql://...:<PASSWORD>@...`) into
+the test environment before fixtures get a chance to set theirs.
+`override=False` still guarantees that env vars injected by systemd
+(`EnvironmentFile=`) or the operator's shell always win.
 """
 import configparser
 import os
@@ -24,12 +28,26 @@ import re
 
 from dotenv import load_dotenv
 
-# Auto-load .env from CWD (and walk-up) without clobbering existing env vars.
-# Idempotent: safe to call multiple times. No-op under systemd (env vars
-# pre-populated by EnvironmentFile= already win because override=False).
-load_dotenv(override=False)
-
 _conf: configparser.ConfigParser | None = None
+_dotenv_initialized: bool = False
+
+
+def init_dotenv() -> None:
+    """Load `.env` from CWD walking up, idempotently.
+
+    Call this from CLI `main()` entry points. Do NOT call from module
+    scope or from test code — pytest fixtures inject env explicitly and
+    should not see whatever `.env` happens to be in CWD.
+
+    `override=False` ensures values already present in `os.environ`
+    (systemd `EnvironmentFile=`, operator's `export`, pytest fixtures)
+    are never clobbered; `.env` fills only missing slots.
+    """
+    global _dotenv_initialized
+    if _dotenv_initialized:
+        return
+    load_dotenv(override=False)
+    _dotenv_initialized = True
 
 # Match the password segment in a postgres-style DSN: scheme://user:PASSWORD@host
 # Example: postgresql://odoo_semantic:supersecret@localhost:5432/db

@@ -493,6 +493,7 @@ def _run_yoyo(dsn_uri: str, existing_conn: PgConn | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    config.init_dotenv()
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)
     if not dsn:
         print(config.dsn_missing_hint(), file=sys.stderr)

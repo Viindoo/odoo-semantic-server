@@ -31,26 +31,50 @@ this assumption became material.
 
 ## Decision
 
-`src/config.py` calls `python-dotenv`'s `load_dotenv(override=False)` at
-import time. The call:
+`src/config.py` exposes a callable `init_dotenv()` that wraps
+`python-dotenv`'s `load_dotenv(override=False)` with a one-shot
+idempotency guard. The call:
 
 - Walks up from CWD to find `.env` (python-dotenv default).
 - `override=False` guarantees that env vars already present in
   `os.environ` are **not** clobbered. Systemd's `EnvironmentFile=` and
   the operator's explicit `export FOO=bar` both still win.
-- Is idempotent — safe to call multiple times across re-imports.
+- Is idempotent — `_dotenv_initialized` sentinel skips repeated calls.
 - Adds one new pinned dependency: `python-dotenv>=1.0`.
 
-Centralizing the call in `src/config.py` (which is imported by every
-CLI/server entry point) means all 6 known entry points pick it up
-without per-call-site edits:
+**`init_dotenv()` is invoked only from CLI `main()` entry points**, not
+at module import time. Each of the 5 known entry points calls it as
+its first action:
 
-- `src/db/migrate.py`
-- `src/manager/__main__.py`
-- `src/cloner/__main__.py`
-- `src/mcp/server.py`
-- `src/cli.py`
-- (future entry points that already import `src.config`)
+- `src/db/migrate.py:main()`
+- `src/manager/__main__.py:main()`
+- `src/cloner/__main__.py:main()`
+- `src/cli.py:main()`
+- `src/mcp/server.py` (`if __name__ == "__main__":` block)
+
+**Why not module-import time?** PR #143's first iteration placed
+`load_dotenv()` at module scope in `src/config.py`. CI immediately
+broke on three jobs (`smoke-tests`, `integration-tests`,
+`browser-tests-admin` — run id 26103956677): CI workflows do
+`cp .env.example .env` before pytest, and `.env.example` shipped
+`PG_DSN=postgresql://odoo_semantic:<PASSWORD>@localhost:5432/...`
+with a literal `<PASSWORD>` placeholder. At test import time, every
+test that touched `src.config` (transitively, almost all of them)
+fired `load_dotenv` and injected the placeholder DSN into
+`os.environ` — before pytest fixtures could set a real test DSN.
+Subprocesses spawned by tests (e.g. `python -m src.manager` in
+`test_manager_cli.py`) inherited the bogus DSN and failed
+Postgres auth with `FATAL: password authentication failed`.
+
+Moving the call inside `main()` makes the .env load fire **only for
+operator/service invocations**, not for `pytest`. Tests already
+inject env via fixtures or workflow `env:` blocks, and now see no
+interference from whatever `.env` happens to be in CWD.
+
+**Defense-in-depth**: `.env.example` was also sanitized in the same PR
+to ship `PG_DSN=` blank (like `NEO4J_PASSWORD` and `PG_PASSWORD`),
+preventing any future `.env` consumer from accidentally inheriting
+a placeholder DSN.
 
 In addition we introduce `config.dsn_missing_hint()` — a helper that
 returns a multi-line error message surfacing the three fix paths
