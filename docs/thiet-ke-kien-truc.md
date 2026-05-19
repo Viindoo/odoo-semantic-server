@@ -610,7 +610,15 @@ odoo-semantic-mcp/
 │   ├── cloner/                     -- SSH auto-clone subprocess orchestrator (M6 W4)
 │   │   └── __main__.py             -- spawn from web_ui, decrypt key, git clone
 │   ├── mcp/
-│   │   └── server.py               -- MCP server + 21 tools (M9 W-OSM Wave 1)
+│   │   ├── server.py               -- MCP server + 28 tools + 7 Resources (M10.5+M11, v0.5.0)
+│   │   ├── hints.py                -- next-step hint mapping for drill-down tools (ADR-0023)
+│   │   ├── tree_builder.py         -- canonical tree grammar renderer with truncation (_render_capped)
+│   │   ├── dto.py                  -- shared response DTOs across supersets (ADR-0028 discriminator)
+│   │   ├── refs.py                 -- opaque ref encoding for entity drill-down (ADR-0030 resource URIs)
+│   │   ├── inspect.py              -- model_inspect/module_inspect/entity_lookup supersets (M11 Wave D)
+│   │   ├── session.py              -- set_active_version/profile + sticky 24h TTL store (M11 Wave E, ADR-0029)
+│   │   ├── resources.py            -- 7 `odoo://` URI scheme resource handlers (M11 Wave F, ADR-0030)
+│   │   └── resources_index.py      -- thread-safe URI → handler dispatch (M11 Wave F)
 │   ├── web_ui/                     -- dashboard + API key mgmt + SSH UI (M5 + M6 W4)
 │   │   ├── app.py                  -- FastAPI app
 │   │   └── templates/              -- Jinja2 templates

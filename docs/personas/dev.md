@@ -1,21 +1,36 @@
 # Odoo Semantic — Developer Guide
 
-<!-- This persona intentionally uses the full 21-tool table instead of the "Most Useful Tools" template variant — devs need the full surface area. -->
+<!-- This persona intentionally enumerates the full 28-tool arsenal (v0.5.0) instead of the "Most Useful Tools" template variant — devs need the full surface area, including the 3 M11 supersets and 4 session-context tools. -->
 
 > **Get started (Claude Code):** `claude plugin marketplace add Viindoo/claude-plugins` → `claude plugin install odoo-semantic@viindoo-plugins` → `/odoo-semantic:connect`. Chi tiết + AI tools khác: [client setup](../client-setup.md).
 
-The full 21-tool arsenal, optimized for development workflows. From understanding inheritance to safely extending core methods to enumerating fields/methods/views and UI-layer artefacts (OWL, QWeb, JS patches), this guide covers the daily patterns.
+The full **28-tool arsenal (v0.5.0)**, optimized for development workflows. From understanding inheritance to safely extending core methods to enumerating fields/methods/views and UI-layer artefacts (OWL, QWeb, JS patches), this guide covers the daily patterns. v0.5 introduces three discriminator-routed **supersets** (`model_inspect`, `module_inspect`, `entity_lookup`) plus four **session-context** tools that let you pin an Odoo version once and drop the `odoo_version=` arg from every subsequent call.
 
 ---
 
-## All Tools Available to Developers
+## All Tools Available to Developers (v0.5.0)
+
+### Supersets (★ M11 Wave D — preferred over legacy siblings)
 
 | Tool | Use case |
 |------|----------|
-| `resolve_model` | Full inheritance chain + fields + methods for any model |
-| `resolve_field` | Field type, compute/related details, extension chain |
-| `resolve_method` | Override chain, super() call graph |
-| `resolve_view` | XPath inheritance chain for any XML view |
+| `model_inspect(model, method='fields'\|'methods'\|'views'\|'all', ...)` | One call returns the model's field list, method list, view inventory, or all three together. **Replaces** `resolve_model` + `list_fields` + `list_methods` + `list_views`. |
+| `module_inspect(module, method='describe'\|'fields'\|'views'\|'owl'\|'qweb'\|'patches', ...)` | Module-level inventory across manifest, models, views, OWL, QWeb, JS patches. **Replaces** `describe_module` + `list_views` (module-scoped) + `list_owl_components` + `list_qweb_templates` + `list_js_patches`. |
+| `entity_lookup(kind='field'\|'method'\|'view', ...)` | One entity drill-down by ID. **Replaces** `resolve_field` + `resolve_method` + `resolve_view`. |
+
+### Session context (☆ M11 Wave E — sticky 24h TTL per API key)
+
+| Tool | Use case |
+|------|----------|
+| `set_active_version(odoo_version)` | Pin the Odoo version for this session. Subsequent calls without `odoo_version=` fall back to this value. **Use once per debugging/exploration session** to drop ~10 chars of boilerplate from every call. |
+| `set_active_profile(profile_name)` | Pin the tenant profile for cross-profile MCP deployments. |
+| `list_available_versions()` | Discover which Odoo versions the server has indexed. |
+| `list_available_profiles()` | Discover which profiles exist. |
+
+### Existing tools (M1–M9, unchanged)
+
+| Tool | Use case |
+|------|----------|
 | `find_examples` | Semantic code search across indexed repos |
 | `impact_analysis` | Risk assessment before changing a field or method |
 | `lookup_core_api` | Verify an API symbol exists and is not deprecated |
@@ -27,26 +42,53 @@ The full 21-tool arsenal, optimized for development workflows. From understandin
 | `find_override_point` | Locate the safest method to override |
 | `cli_help` | Look up `odoo-bin` flags and options |
 | `describe_module` | Module architecture overview — manifest + defines/extends models + view/JS counts |
-| `list_fields` | Enumerate every field on a model, grouped by module (drill-down from `resolve_model` count) |
-| `list_methods` | Enumerate every method on a model with override marker `(*)`, grouped by module |
-| `list_views` | Enumerate every XML view targeting a model, grouped by module |
-| `list_owl_components` | Inventory OWL components in a module (Odoo v14+) |
-| `list_qweb_templates` | Inventory QWeb templates in a module with `t-inherit` parent |
-| `list_js_patches` | Inventory JS patches across all eras — era1 (Widget extend v8-v13), era2 (mixin include v14-v16), era3 (OWL patch v15+) |
+
+### Legacy tools († DEPRECATED in v0.5 — removed in v0.6)
+
+| Legacy tool | Replacement | Notes |
+|-------------|-------------|-------|
+| `resolve_model` | `model_inspect(method='all')` | Still callable; returns `DEPRECATED` banner pointing at the superset. |
+| `resolve_field` | `entity_lookup(kind='field')` | Still callable; deprecated banner. |
+| `resolve_method` | `entity_lookup(kind='method')` | Still callable; deprecated banner. |
+| `resolve_view` | `entity_lookup(kind='view')` | Still callable; deprecated banner. |
+| `list_fields` | `model_inspect(method='fields')` | Still callable; deprecated banner. |
+| `list_methods` | `model_inspect(method='methods')` | Still callable; deprecated banner. |
+| `list_views` | `model_inspect(method='views')` or `module_inspect(method='views')` | Still callable; deprecated banner. |
+| `list_owl_components` | `module_inspect(method='owl')` | Still callable; deprecated banner. |
+| `list_qweb_templates` | `module_inspect(method='qweb')` | Still callable; deprecated banner. |
+| `list_js_patches` | `module_inspect(method='patches')` | Still callable; deprecated banner. |
+
+See [`docs/upgrade/v0.4-to-v0.5-migration.md`](../upgrade/v0.4-to-v0.5-migration.md) for side-by-side examples.
+
+### MCP Resources (M11 Wave F — `odoo://` URI scheme)
+
+Read-only handles for bookmark-stable access. Use these when you already know the entity ID and want the canonical record without a tool call: `odoo://{version}/{kind}/{id}` where `kind` is one of `model`, `field`, `method`, `view`, `module`, `pattern`, `stylesheet`. See [ADR-0030](../adr/0030-mcp-resources-uri-scheme.md).
 
 ---
 
 ## Standard Development Workflow
+
+### 0. Pin the version once (v0.5+)
+
+Before any exploration session, set the version so you can drop `odoo_version=` from every subsequent call:
+
+```
+set_active_version("17.0")
+```
+
+TTL is 24h per API key. Run `list_available_versions()` first if you're not sure which versions are indexed.
 
 ### 1. Understand before touching
 
 Before adding logic to a model:
 
 ```
-resolve_model("sale.order", "17.0")
+model_inspect(model="sale.order", method="all")
 ```
 
-Get the full inheritance chain, field count, method list, and which modules have already extended this model. Know what you're stepping into before writing a single line.
+Get the full inheritance chain, field count, method list, view inventory, and which modules have already extended this model — all in one call. Know what you're stepping into before writing a single line.
+
+> Need one specific entity? Drill down with `entity_lookup(kind="field", model="sale.order", field="amount_total")` (or `kind="method"` / `kind="view"`).
 
 ### 2. Find the right extension point
 
@@ -93,8 +135,8 @@ find_deprecated_usage("17.0")
 
 Copy these prompts into your AI tool:
 
-1. **Model exploration:**
-   > "Using odoo-semantic, resolve model account.move in Odoo 17.0. Show me the full inheritance chain and list fields added by each module."
+1. **Model exploration (v0.5 superset):**
+   > "Using odoo-semantic, inspect account.move with method=all in Odoo 17.0. Show the inheritance chain and group fields by module."
 
 2. **Safe extension:**
    > "Using odoo-semantic, find_override_point for account.move action_post in Odoo 17.0. Is it safe to override? What is the super_ratio?"
@@ -105,8 +147,11 @@ Copy these prompts into your AI tool:
 4. **Pre-upgrade audit:**
    > "Using odoo-semantic, find_deprecated_usage for Odoo 17.0 in our codebase. List all HIGH risk items with file locations."
 
-5. **View override:**
-   > "Using odoo-semantic, resolve_view for sale.view_order_form in Odoo 17.0. Show the full XPath chain so I know exactly where to inject my override."
+5. **View override (v0.5 superset):**
+   > "Using odoo-semantic, entity_lookup kind=view xmlid=sale.view_order_form in Odoo 17.0. Show the full XPath chain so I know exactly where to inject my override."
+
+6. **Session pin (v0.5):**
+   > "Using odoo-semantic, set_active_version 17.0 for this session. Then inspect sale.order method=all — no need to repeat the version on follow-up calls."
 
 ---
 
