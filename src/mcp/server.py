@@ -159,13 +159,27 @@ def _get_api_key_id() -> str:
 _api_key_id_local = threading.local()
 
 
+_STALE_REF_RECOVERY: dict[str, str] = {
+    "model": (
+        "describe_module(name=<module>, odoo_version='X')"
+        " or find_examples(query='model name')"
+    ),
+    "field": "list_fields(model='X', odoo_version='Y') to re-mint field refs",
+    "method": "list_methods(model='X', odoo_version='Y') to re-mint method refs",
+    "view": "list_views(model='X', odoo_version='Y') to re-mint view refs",
+}
+
+
 def _format_stale_ref_error(entity: str, ref: str, err: RefError) -> str:
     """Return a friendly error string for a stale or unknown ref.
 
     The error is returned as a tree-formatted string matching the not-found
     convention of other resolve_* tools (plain text, no exception raised).
     """
-    hint = err.recovery_hint or f"Re-run the list_{entity}s(...) call that minted it."
+    hint = (
+        err.recovery_hint
+        or _STALE_REF_RECOVERY.get(entity, f"Re-run the list_{entity}s(...) call that minted it.")
+    )
     return (
         f"resolve_{entity}: Ref {ref!r} is unknown or expired.\n"
         f"└─ Recovery: {hint}"
@@ -848,17 +862,13 @@ def resolve_model(
     user wants a method override chain → use resolve_method
 
     Args:
-        target: Opaque ref ID (e.g. 'm5' minted by list_fields/resolve_model)
-            OR canonical model dotted name (e.g. 'sale.order', 'res.partner').
-            Preferred over legacy model_name kwarg.
-        model_name: DEPRECATED — use target= instead. Odoo dotted model name.
-            Kept for backward compatibility; issues DeprecationWarning when used.
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto' = latest indexed.
+        target: Opaque ref ID (e.g. 'm5') OR canonical model name
+            (e.g. 'sale.order'). Preferred over legacy model_name kwarg.
+        model_name: DEPRECATED — use target=. Issues DeprecationWarning.
+        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
         profile_name: Optional profile filter (e.g. 'internal_profile_17').
-            When provided, only returns nodes whose profile array includes
-            this name — supports delta-repo hierarchy so a query for the
-            deepest child profile also returns nodes from parent profiles.
-            Default None = no filter (all profiles).
+            Limits results to nodes in this profile's hierarchy.
+            Default None = all profiles.
 
     Returns:
         Tree text: Defined in, Inherits from, Extended by, Fields count,
@@ -868,9 +878,7 @@ def resolve_model(
         resolve_model("sale.order", "17.0")
         → sale.order (Odoo 17.0)
           ├─ Defined in: [odoo] sale
-          ├─ Extended by:
-          │   ├─ [odoo] viin_sale
-          │   └─ [odoo] to_sale_custom
+          ├─ Extended by: [odoo] viin_sale, [odoo] to_sale_custom
           ├─ Fields: 47
           └─ Methods: 23
     """
@@ -944,32 +952,26 @@ def resolve_field(
     SKIP when: user wants all fields of a model → use resolve_model
 
     Args:
-        target: Opaque ref ID (e.g. 'f12' minted by list_fields) OR canonical
-            dotted path (e.g. 'sale.order.amount_total'). Preferred over legacy
-            model_name + field_name kwargs.
-        model_name: DEPRECATED — use target= instead. e.g. 'sale.order'.
-            Issues DeprecationWarning when supplied.
-        field_name: DEPRECATED — use target= instead. e.g. 'amount_total'.
-            Issues DeprecationWarning when supplied.
+        target: Opaque ref ID (e.g. 'f12') OR canonical dotted path
+            (e.g. 'sale.order.amount_total'). Preferred over legacy kwargs.
+        model_name: DEPRECATED — use target=. Issues DeprecationWarning.
+        field_name: DEPRECATED — use target=. Issues DeprecationWarning.
         odoo_version: e.g. '17.0'. Default 'auto'.
-        profile_name: Optional profile filter (e.g. 'internal_profile_17').
-            Filters to nodes whose profile array includes this name.
-            Default None = no filter.
+        profile_name: Optional profile filter. Default None = all profiles.
 
     Returns:
         Tree text: Type, Computed, Stored, Required, Related, Declared in
         (all modules that declare this field).
 
     Example:
-        resolve_field("sale.order", "amount_total", "17.0")
+        resolve_field("sale.order.amount_total", "17.0")
         → sale.order.amount_total (Odoo 17.0)
           ├─ Type:     monetary
           ├─ Computed: Yes (_compute_amounts)
           ├─ Stored:   Yes
           ├─ Required: No
           ├─ Related:  —
-          └─ Declared in:
-              └─ [odoo] sale
+          └─ Declared in: [odoo] sale
     """
     # --- dual-mode dispatch ---
     has_legacy = model_name is not None or field_name is not None
@@ -1052,29 +1054,23 @@ def resolve_method(
     view overrides → use resolve_view
 
     Args:
-        target: Opaque ref ID (e.g. 'm3' minted by list_methods) OR canonical
-            dotted path (e.g. 'sale.order.action_confirm'). Preferred over
-            legacy model_name + method_name kwargs.
-        model_name: DEPRECATED — use target= instead. e.g. 'sale.order'.
-            Issues DeprecationWarning when supplied.
-        method_name: DEPRECATED — use target= instead. e.g. 'action_confirm'.
-            Issues DeprecationWarning when supplied.
+        target: Opaque ref ID (e.g. 'm3') OR canonical dotted path
+            (e.g. 'sale.order.action_confirm'). Preferred over legacy kwargs.
+        model_name: DEPRECATED — use target=. Issues DeprecationWarning.
+        method_name: DEPRECATED — use target=. Issues DeprecationWarning.
         odoo_version: e.g. '17.0'. Default 'auto'.
-        profile_name: Optional profile filter (e.g. 'internal_profile_17').
-            Filters to nodes whose profile array includes this name.
-            Default None = no filter.
+        profile_name: Optional profile filter. Default None = all profiles.
 
     Returns:
-        Tree text: override chain ordered base→top, each entry shows module,
-        super() call status, and decorators.
+        Tree text: override chain base→top with super() status and decorators.
 
     Example:
-        resolve_method("sale.order", "action_confirm", "17.0")
+        resolve_method("sale.order.action_confirm", "17.0")
         → sale.order.action_confirm() (Odoo 17.0)
           └─ Override chain (3):
               ├─ [odoo] sale — ✗ no super() — decorators: —
               ├─ [odoo] viin_sale — ✓ calls super() — decorators: —
-              └─ [odoo] to_sale_workflow — ✓ calls super() — decorators: —
+              └─ [odoo] to_sale_workflow — ✓ calls super()
     """
     # --- dual-mode dispatch ---
     has_legacy = model_name is not None or method_name is not None
@@ -1154,20 +1150,15 @@ def resolve_view(
     info → use resolve_field
 
     Args:
-        target: Opaque ref ID (e.g. 'v3' minted by list_views) OR canonical
-            XML external ID (e.g. 'sale.view_order_form'). Preferred over
-            legacy xmlid kwarg.
-        xmlid: DEPRECATED — use target= instead. External ID of the view,
-            e.g. 'sale.view_order_form'. Issues DeprecationWarning when used.
+        target: Opaque ref ID (e.g. 'v3') OR canonical XML external ID
+            (e.g. 'sale.view_order_form'). Preferred over legacy xmlid kwarg.
+        xmlid: DEPRECATED — use target=. Issues DeprecationWarning.
         odoo_version: e.g. '17.0'. Default 'auto'.
-        profile_name: Optional profile filter (e.g. 'internal_profile_17').
-            When set, only nodes whose profile array contains this name are
-            returned — isolates results to the given deployment profile.
-            Default None returns nodes across all profiles.
+        profile_name: Optional profile filter. Default None = all profiles.
 
     Returns:
         Tree text: view type, model, defining module, parent view (if
-        extension), own XPath ops, and list of extending views per module.
+        extension), own XPath ops, extending views per module.
 
     Example:
         resolve_view("sale.view_order_form", "17.0")
@@ -4668,11 +4659,11 @@ def list_fields(
     """
     text = _list_fields(
         model, odoo_version, module, kind, profile_name, limit, start_index,
-        api_key_id=_ANONYMOUS_API_KEY_ID,
+        api_key_id=_get_api_key_id(),
     )
     structured = _list_fields_structured(
         model, odoo_version, module, kind, profile_name, limit, start_index,
-        api_key_id=_ANONYMOUS_API_KEY_ID,
+        api_key_id=_get_api_key_id(),
     )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
@@ -4724,11 +4715,11 @@ def list_methods(
     """
     text = _list_methods(
         model, odoo_version, module, profile_name, limit, start_index,
-        api_key_id=_ANONYMOUS_API_KEY_ID,
+        api_key_id=_get_api_key_id(),
     )
     structured = _list_methods_structured(
         model, odoo_version, module, profile_name, limit, start_index,
-        api_key_id=_ANONYMOUS_API_KEY_ID,
+        api_key_id=_get_api_key_id(),
     )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
@@ -4774,6 +4765,7 @@ def list_views(
     """
     return _list_views(
         model, odoo_version, view_type, profile_name, limit, start_index,
+        api_key_id=_get_api_key_id(),
     )
 
 
@@ -4823,6 +4815,7 @@ def list_owl_components(
     """
     return _list_owl_components(
         module, odoo_version, bound_model, profile_name, limit, start_index,
+        api_key_id=_get_api_key_id(),
     )
 
 
@@ -4862,7 +4855,10 @@ def list_qweb_templates(
           ├─ [ref=v1] website_sale.product : t-inherit=(root)
           └─ [ref=v2] website_sale.cart_lines : t-inherit=website_sale.cart
     """
-    return _list_qweb_templates(module, odoo_version, profile_name, limit, start_index)
+    return _list_qweb_templates(
+        module, odoo_version, profile_name, limit, start_index,
+        api_key_id=_get_api_key_id(),
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -4913,6 +4909,7 @@ def list_js_patches(
     """
     return _list_js_patches(
         odoo_version, target, module, era, profile_name, limit, start_index,
+        api_key_id=_get_api_key_id(),
     )
 
 

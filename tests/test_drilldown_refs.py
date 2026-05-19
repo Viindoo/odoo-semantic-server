@@ -451,3 +451,86 @@ def test_scenario8_gapless_pagination(c4_db, server):
         f"Missing: {sorted(expected_names - all_names)[:10]}\n"
         f"Extra: {sorted(all_names - expected_names)[:10]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 9 — Wrapper-to-wrapper E2E without thread-local mocking (AC-CFIX-4)
+# ---------------------------------------------------------------------------
+
+
+def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
+    """list_fields.fn → resolve_field.fn without injecting thread-local.
+
+    AC-CFIX-4: This test reproduces HIGH-1 from the Opus review.  It calls
+    the public @mcp.tool wrapper (list_fields.fn), then calls resolve_field.fn
+    with the extracted ref — WITHOUT manually setting _api_key_id_local.value.
+
+    Before the fix both wrappers shared different namespaces ('anonymous' vs
+    'default') so the resolve step would return a stale-ref error.  After the
+    fix, both wrappers call _get_api_key_id() which returns 'default' for unit
+    tests (no middleware active), giving consistent namespace behaviour.
+    """
+    # Call the public wrapper — it now calls _get_api_key_id() which returns
+    # 'default' (no middleware active in unit test context).
+    list_result = server.list_fields.fn(
+        model=_MODEL_SMALL,
+        odoo_version=C4_VERSION,
+    )
+    list_text = list_result.content[0].text
+
+    # Extract the first ref from the output.
+    ref = _first_ref(list_text)
+    assert ref is not None, (
+        f"list_fields.fn produced no [ref=fN] markers:\n{list_text!r}"
+    )
+
+    # Call resolve_field.fn with the ref — NO thread-local injection.
+    resolve_result = server.resolve_field.fn(
+        target=ref,
+        odoo_version=C4_VERSION,
+    )
+    resolve_text = resolve_result.content[0].text
+
+    # Must NOT be a stale-ref error — both wrappers must share the same namespace.
+    assert "unknown or expired" not in resolve_text, (
+        f"HIGH-1 regression: resolve_field got stale-ref error after list_fields.fn call.\n"
+        f"  ref={ref!r}\n"
+        f"  list output: {list_text[:200]!r}\n"
+        f"  resolve output: {resolve_text!r}"
+    )
+
+    # Must contain actual field data (a field name from _MODEL_SMALL).
+    field_names = {"amount_total", "partner_id", "state", "name", "date_order"}
+    assert any(fn in resolve_text for fn in field_names), (
+        f"resolve_field output does not reference any known field name:\n{resolve_text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 10 — _format_stale_ref_error model entity (AC-CFIX-5)
+# ---------------------------------------------------------------------------
+
+
+def test_scenario10_stale_ref_model_no_list_models(c4_db, server):
+    """_format_stale_ref_error for entity='model' must NOT reference list_models.
+
+    AC-CFIX-5: list_models does not exist as an MCP tool; the error recovery
+    hint must steer to describe_module or find_examples instead.
+    """
+    from src.mcp.refs import RefError
+
+    fake_err = RefError("ref expired", recovery_hint=None)
+    msg = server._format_stale_ref_error("model", "m99", fake_err)
+
+    # Must not mention list_models (non-existent tool).
+    assert "list_models" not in msg, (
+        f"_format_stale_ref_error('model', ...) mentions 'list_models' which "
+        f"is not a real tool:\n{msg!r}"
+    )
+
+    # Must reference a real tool instead.
+    real_tools = ("describe_module", "find_examples")
+    assert any(t in msg for t in real_tools), (
+        f"_format_stale_ref_error('model', ...) should reference one of "
+        f"{real_tools} in recovery hint:\n{msg!r}"
+    )
