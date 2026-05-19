@@ -50,23 +50,29 @@ FastMCP 2.14.7 (the version in use at the time of this ADR) does not expose a `_
 
 Three new superset tools are registered in `src/mcp/server.py` (implemented via routers in `src/mcp/inspect.py`):
 
-1. **`model_inspect(model, method, odoo_version, profile_name, ...)`**
+1. **`model_inspect(model, method, odoo_version, profile_name, field, method_name)`**
    - `model`: dotted model name, e.g., `"sale.order"`.
-   - `method`: discriminator enum — `"fields"` | `"methods"` | `"views"` | `"owl"`.
-   - Routes to the corresponding `_list_*` core function for enumeration.
+   - `method`: discriminator enum — `"summary"` | `"fields"` | `"methods"` | `"views"` | `"field"` | `"method"`.
+     - `"summary"` routes to `_resolve_model` (overview + field count).
+     - `"fields"` / `"methods"` / `"views"` route to the corresponding `_list_*` enumeration function.
+     - `"field"` requires `field=<field_name>`; routes to `_resolve_field`.
+     - `"method"` requires `method_name=<method_name>`; routes to `_resolve_method`.
    - Scope: model-scoped reads. Never requires a `module` parameter.
 
-2. **`module_inspect(name, method, odoo_version, profile_name, ...)`**
+2. **`module_inspect(name, method, odoo_version, profile_name)`**
    - `name`: Odoo module technical name, e.g., `"sale"`.
-   - `method`: discriminator enum — `"overview"` | `"views"` | `"qweb"` | `"patches"` | `"owl"`.
-   - Routes to `_describe_module` for `"overview"` or the corresponding `_list_*` core function for the enumeration methods.
+   - `method`: discriminator enum — `"summary"` | `"fields"` | `"methods"` | `"views"` | `"owl"` | `"qweb"` | `"js"`.
+     - `"summary"` routes to `_describe_module`.
+     - `"views"` routes to `_list_views_by_module`.
+     - `"owl"` / `"qweb"` / `"js"` route to the corresponding `_list_*` enumeration function.
+     - `"fields"` and `"methods"` return an informative stub (module-scoped field/method listing requires a model argument, which `module_inspect` does not accept).
    - Scope: module-scoped reads. Never requires a `model` parameter.
 
-3. **`entity_lookup(kind, odoo_version, profile_name, model, field, method_name, xmlid, ...)`**
-   - `kind`: discriminator enum — `"model"` | `"field"` | `"method"` | `"view"`.
-   - `model`, `field`, `method_name`, `xmlid`: typed explicit args; caller supplies only the args relevant to `kind`.
-   - Routes to the corresponding `_resolve_*` function.
-   - Accepts `target` (opaque ref or canonical string) as a dual-mode shortcut per Wave C's ref minter (ADR-0023 + `src/mcp/refs.py`).
+3. **`entity_lookup(kind, odoo_version, profile_name, model, field, method_name, xmlid, name)`**
+   - `kind`: discriminator enum — `"model"` | `"field"` | `"method"` | `"view"` | `"module"` | `"pattern"`.
+   - `model`, `field`, `method_name`, `xmlid`, `name`: typed explicit args; caller supplies only the args relevant to `kind`.
+   - Routes to `_resolve_model` / `_resolve_field` / `_resolve_method` / `_resolve_view` / `_describe_module` / `_suggest_pattern`.
+   - Does **not** accept a `target` (opaque ref) parameter — use `resolve_field(target=ref)` or the appropriate `resolve_*` tool for ref-based lookup.
 
 ### Deprecation of 10 flat tools
 
