@@ -1,16 +1,50 @@
 """API key authentication middleware for MCP server."""
 import asyncio
+import json as _json
 import logging
 import threading
 import time
 from collections import deque
 
+import psycopg2
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 from src.auth import hash_key as _hash_key
-from src.constants import DEFAULT_RATE_LIMIT_RPM
+from src.constants import DEFAULT_RATE_LIMIT_RPM, PG_BG_RETRY_INTERVAL_SECONDS
+from src.db.exceptions import PoolNotInitializedError
+
+
+def _degraded_response() -> Response:
+    """Build the canonical 503 response when the DB tier is unavailable.
+
+    Incident 2026-05-19 root cause: a single OperationalError during auth
+    propagated to a 500, which gave callers no way to distinguish "your
+    request was bad" from "the service is in degraded mode". A 503 with a
+    machine-readable JSON body lets clients/proxies retry intelligently.
+
+    Body is STATIC — no exception payload echoed to the unauthenticated
+    caller. `psycopg2.OperationalError.__str__` from libpq routinely
+    includes internal hostnames, private IPs, DB usernames, and database
+    names (everything except the password, which libpq strips). Exposing
+    that on a public endpoint during a DB outage is CWE-209 info
+    disclosure for any service that is internet-facing. Diagnostics live
+    in the server-side log only (see callers of this helper).
+    """
+    body = _json.dumps({
+        "status": "degraded",
+        "pg": "unavailable",
+    })
+    return Response(
+        body,
+        status_code=503,
+        media_type="application/json",
+        # Retry-After is HTTP-string per RFC 7231 §7.1.3; derive from the
+        # integer SSOT so it stays in lockstep with the background retry
+        # cadence in src/mcp/server.py._bg_retry_init_pool.
+        headers={"Retry-After": str(PG_BG_RETRY_INTERVAL_SECONDS)},
+    )
 
 _logger = logging.getLogger(__name__)
 
@@ -135,7 +169,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 from src.db.pg import auth_store
                 return auth_store().verify_api_key(raw_key)
 
-            key_id = await asyncio.to_thread(_do_verify)
+            try:
+                key_id = await asyncio.to_thread(_do_verify)
+            except (PoolNotInitializedError, psycopg2.OperationalError) as e:
+                # Degraded mode: pool not initialised (lifespan retry still
+                # running) OR a transient DB outage. Return 503 with a
+                # static body — see _degraded_response docstring re CWE-209.
+                # Public paths (/health, /install) already bypassed this
+                # branch above.
+                #
+                # Narrowed to PoolNotInitializedError (not bare RuntimeError)
+                # so unrelated runtime errors from auth_store / framework
+                # surface as 500, not silently get masked as degraded.
+                _logger.warning(
+                    "auth path degraded — returning 503 to %s %s. Cause: %s",
+                    request.method, request.url.path, str(e)[:300],
+                )
+                return _degraded_response()
             _cache_set(raw_key, key_id)
 
         if key_id is None:

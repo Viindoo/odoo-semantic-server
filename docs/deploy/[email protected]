@@ -1,0 +1,32 @@
+# [email protected] — fan-out alert pattern triggered by OnFailure=
+# Đặt tại: /etc/systemd/system/[email protected]
+#
+# Hook: any unit with `OnFailure=osm-alert@%n.service` will instance this
+# template, passing its own unit name as `%i`. Example: when
+# `odoo-semantic-mcp.service` enters `failed` state, systemd starts
+# `[email protected]`.
+#
+# Default behaviour: write a structured WARNING line to journald
+# (`journalctl -u 'osm-alert@*'` shows the full alert history). This is
+# zero-dependency and works on any host. To wire real notifications
+# (email, Slack webhook, PagerDuty), edit ExecStart= below to call your
+# notifier script — keep the prefix `osm-alert:` so log scrapers can find
+# the line. See docs/deploy/db-tier-operations.md §Alerts.
+#
+# Sanity test (no real failure required):
+#   sudo systemctl start [email protected]
+#   journalctl -u [email protected] --no-pager | tail
+# You should see a single WARNING line with unit=dummy.service.
+
+[Unit]
+Description=OSM alert hook for %i
+
+[Service]
+Type=oneshot
+# Best-effort: never let the alert itself fail loud and pile up more alerts.
+ExecStart=/bin/sh -c 'printf "osm-alert: unit=%%s state=failed host=%%s\\n" "%i" "$(hostname)" >&2'
+StandardOutput=journal
+StandardError=journal
+# Belt-and-braces: even if the script exits non-zero, mark success so we
+# do not recursively re-fire OnFailure= on the alert itself.
+SuccessExitStatus=0 1

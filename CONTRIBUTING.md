@@ -290,6 +290,39 @@ make neo4j-logs    # xem logs nếu có vấn đề
 
 ---
 
+## Operating the DB tier safely
+
+Quy tắc vàng cho mọi thao tác lên `docker-compose.yml` và DB tier:
+
+> **Không bao giờ chạy `docker compose` bằng `sudo` từ cwd sai.** Docker
+> daemon (root) sẽ silently auto-create empty directory tại bind-mount
+> source path — biến mỗi wrong-cwd invocation thành bom hẹn giờ cho lần
+> container start kế tiếp. Sự cố thật 2026-05-19 đã khiến MCP service
+> crash-loop 11k+ lần trong 26h vì lý do này.
+
+Sau bất kỳ thay đổi nào trong `docker-compose.yml` (bind mount path,
+image version, volume mapping):
+
+```bash
+make recreate-db    # down → up postgres → wait-pg-healthy
+```
+
+`down` (không phải `restart`) bắt buộc vì container metadata được tạo
+lại chỉ khi `down → up` — một `up -d` đơn thuần sau khi edit compose
+sẽ giữ nguyên bind-mount path CŨ trong container metadata.
+
+Full runbook (dev → service migration, alert wiring, degraded mode
+behaviour): [`docs/deploy/db-tier-operations.md`](docs/deploy/db-tier-operations.md).
+
+Diagnostic CLI khi nghi có incident:
+
+```bash
+python -m src.cli diagnose          # human-readable
+python -m src.cli diagnose --json   # for alert pipelines
+```
+
+---
+
 ## Workflow Khi Thêm Tính Năng
 
 ```

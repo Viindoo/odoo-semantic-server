@@ -160,6 +160,22 @@ DEFAULT_EMBEDDER_DIM: int = 1024
 
 PG_POOL_MIN_CONN: int = 1
 PG_POOL_MAX_CONN: int = 10
+# Bound psycopg2.connect() so a dead/unreachable PG fails fast (TCP RST or
+# the timeout) instead of hanging the caller. Used by every init_pool() call.
+PG_CONNECT_TIMEOUT_SECONDS: int = 5
+# Background reconnect cadence for the MCP lifespan handler when the pool
+# failed to initialise at startup. Also drives the `Retry-After` header
+# returned by AuthMiddleware in degraded mode — clients re-poll on this
+# cadence and the next attempt has a high chance of seeing pool ready.
+PG_BG_RETRY_INTERVAL_SECONDS: int = 30
+
+# ---------------------------------------------------------------------------
+# CLI diagnostics
+# ---------------------------------------------------------------------------
+
+# urllib timeout for `python -m src.cli diagnose` probing the MCP /health
+# endpoint. Distinct from PG timeout so HTTP probe semantics stay decoupled.
+MCP_HEALTH_PROBE_TIMEOUT_SECONDS: int = 5
 
 # ---------------------------------------------------------------------------
 # Rate limiting

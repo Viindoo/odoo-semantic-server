@@ -180,7 +180,7 @@ bỏ qua hoàn toàn — không ảnh hưởng gì đến loopback / VPC setups.
 
 > **pgvector extension**: phải có trước khi indexer ghi embeddings.
 > Docker compose của project tự init pgvector qua
-> `docker/postgres-init.sql` khi volume mới. Nếu volume `pg_data` đã
+> `docker/initdb.d/01-pgvector.sql` khi volume mới. Nếu volume `pg_data` đã
 > tồn tại từ trước (vd test với `--no-embed` rồi mới setup embedder),
 > rerun migrations là đủ:
 > ```bash

@@ -30,7 +30,11 @@ services:
 
   postgres:
     image: ${PG_IMAGE:-pgvector/pgvector:0.8.2-pg16}  # canonical version in .env.example
-    restart: unless-stopped
+    # `on-failure:5` (not `unless-stopped`) so a non-transient error — e.g. a
+    # bind-mount type mismatch after wrong-cwd `docker compose up` — stops
+    # after 5 attempts instead of crash-looping forever. See incident
+    # 2026-05-19 (docs/deploy/db-tier-operations.md) for context.
+    restart: on-failure:5
     environment:
       POSTGRES_DB: odoo_semantic
       POSTGRES_USER: odoo_semantic
@@ -40,7 +44,14 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
+      # Mount the WHOLE initdb.d/ directory, not a single file. Single-file
+      # bind mounts are fragile: if cwd is wrong at `docker compose up`, the
+      # Docker daemon (root) silently auto-creates an empty *directory* at
+      # the source path, and the next container start fails with
+      # `not a directory: Are you trying to mount a directory onto a file ...?`
+      # With a directory mount the worst case is "init scripts not found" —
+      # the container still starts. See db-tier-operations.md.
+      - ./docker/initdb.d:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U odoo_semantic"]
       interval: 10s
