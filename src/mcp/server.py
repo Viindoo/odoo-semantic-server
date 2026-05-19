@@ -2997,8 +2997,10 @@ def _list_methods(
     return "\n".join(lines)
 
 
-def _list_views(
-    model: str,
+def _list_views_core(
+    *,
+    model: str | None = None,
+    module: str | None = None,
     odoo_version: str = "auto",
     view_type: str | None = None,
     profile_name: str | None = None,
@@ -3006,59 +3008,111 @@ def _list_views(
     start_index: int = 0,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
-    """Layer-5 — enumerate XML views targeting a model.
+    """Shared core for view listing — takes EITHER model OR module filter (not both).
 
     `view_type` filters by View.type (form/tree/kanban/search/...).
     `start_index` is a zero-based pagination cursor (Cypher SKIP).
     `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
+    if (model is None) == (module is None):
+        raise ValueError(
+            "_list_views_core requires exactly one of model= / module= (not both, not neither)"
+        )
+
     cap = LIST_PREVIEW_MAX_ITEMS
-    # Fetch at most cap rows via Cypher with SKIP for pagination.
     effective_limit = min(limit, cap)
+
+    is_model_scoped = model is not None
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        rows = session.run(
-            f"""
-            MATCH (v:View {{model: $m, odoo_version: $ver}})
-            WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
-              AND ($view_type IS NULL OR v.type = $view_type)
-              AND v.module <> '__unresolved__'
-            OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
-            WITH v, mod,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN v.xmlid AS xmlid, v.type AS type,
-                   v.module AS module, mod.repo AS repo,
-                   edition_rank, mod_name
-            ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
-            SKIP $skip
-            LIMIT $limit
-            """,
-            m=model, ver=odoo_version, view_type=view_type,
-            profile_name=profile_name, skip=start_index, limit=effective_limit,
-        ).data()
+        if is_model_scoped:
+            rows = session.run(
+                f"""
+                MATCH (v:View {{model: $filter_val, odoo_version: $ver}})
+                WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND v.module <> '__unresolved__'
+                OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
+                WITH v, mod,
+                     {_edition_rank_cypher("mod")},
+                     mod.name AS mod_name
+                RETURN v.xmlid AS xmlid, v.type AS type,
+                       v.module AS module, mod.repo AS repo,
+                       edition_rank, mod_name
+                ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
+                SKIP $skip
+                LIMIT $limit
+                """,
+                filter_val=model, ver=odoo_version, view_type=view_type,
+                profile_name=profile_name, skip=start_index, limit=effective_limit,
+            ).data()
 
-        total_rec = session.run(
-            """
-            MATCH (v:View {model: $m, odoo_version: $ver})
-            WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
-              AND ($view_type IS NULL OR v.type = $view_type)
-              AND v.module <> '__unresolved__'
-            RETURN count(v) AS c
-            """,
-            m=model, ver=odoo_version, view_type=view_type,
-            profile_name=profile_name,
-        ).single()
+            total_rec = session.run(
+                """
+                MATCH (v:View {model: $filter_val, odoo_version: $ver})
+                WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND v.module <> '__unresolved__'
+                RETURN count(v) AS c
+                """,
+                filter_val=model, ver=odoo_version, view_type=view_type,
+                profile_name=profile_name,
+            ).single()
+        else:
+            rows = session.run(
+                f"""
+                MATCH (v:View {{module: $filter_val, odoo_version: $ver}})
+                WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND v.module <> '__unresolved__'
+                OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
+                WITH v, mod,
+                     {_edition_rank_cypher("mod")},
+                     mod.name AS mod_name
+                RETURN v.xmlid AS xmlid, v.type AS type,
+                       v.module AS module, mod.repo AS repo,
+                       edition_rank, mod_name
+                ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
+                SKIP $skip
+                LIMIT $limit
+                """,
+                filter_val=module, ver=odoo_version, view_type=view_type,
+                profile_name=profile_name, skip=start_index, limit=effective_limit,
+            ).data()
+
+            total_rec = session.run(
+                """
+                MATCH (v:View {module: $filter_val, odoo_version: $ver})
+                WHERE ($profile_name IS NULL OR $profile_name IN v.profile)
+                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND v.module <> '__unresolved__'
+                RETURN count(v) AS c
+                """,
+                filter_val=module, ver=odoo_version, view_type=view_type,
+                profile_name=profile_name,
+            ).single()
+
         total = total_rec["c"] if total_rec else 0
 
-    header = f"Views of {model} (Odoo {odoo_version})"
-    if total == 0:
-        next_line = format_next_step([
+    if is_model_scoped:
+        header = f"Views of {model} (Odoo {odoo_version})"
+        empty_hint = (
             f"list_methods(model='{model}', odoo_version='{odoo_version}')"
-            " for behavior",
-        ])
+            " for behavior"
+        )
+        pager_tool = f"list_views(model='{model}', odoo_version='{odoo_version}'"
+    else:
+        header = f"Views in module '{module}' (Odoo {odoo_version})"
+        empty_hint = (
+            f"list_fields(module='{module}', odoo_version='{odoo_version}')"
+            " for model fields"
+        )
+        pager_tool = f"list_views(module='{module}', odoo_version='{odoo_version}'"
+
+    if total == 0:
+        next_line = format_next_step([empty_hint])
         return f"{header}\n├─ (none)\n{next_line}"
 
     # Mint opaque refs for each returned row (view kind).
@@ -3081,8 +3135,7 @@ def _list_views(
         sub_indent = "│   "
         sub_items = groups[key]
         more_hint = (
-            f"list_views(model='{model}', odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}) for full list"
+            f"{pager_tool}, limit={max(limit * 2, total)}) for full list"
         )
         raw_rows = [r for r, _ in sub_items]
         rendered = _render_capped(
@@ -3114,7 +3167,7 @@ def _list_views(
     if has_more:
         lines.append(
             f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
-            f" Call list_views(model='{model}', odoo_version='{odoo_version}',"
+            f" Call {pager_tool},"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
@@ -3130,12 +3183,60 @@ def _list_views(
             f"resolve_view(xmlid='{first_xmlid}', odoo_version='{odoo_version}')"
             " for full xpath chain",
         )
-    next_hints.append(
-        f"find_examples(query='{model} view', odoo_version='{odoo_version}')"
-        " for inheritance patterns",
-    )
+    if is_model_scoped:
+        next_hints.append(
+            f"find_examples(query='{model} view', odoo_version='{odoo_version}')"
+            " for inheritance patterns",
+        )
+    else:
+        next_hints.append(
+            f"find_examples(query='{module} view', odoo_version='{odoo_version}')"
+            " for inheritance patterns",
+        )
     lines.append(format_next_step(next_hints))
     return "\n".join(lines)
+
+
+def _list_views(
+    model: str,
+    odoo_version: str = "auto",
+    view_type: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
+) -> str:
+    """Facade: model-scoped view listing (existing API — backward-compatible)."""
+    return _list_views_core(
+        model=model,
+        odoo_version=odoo_version,
+        view_type=view_type,
+        profile_name=profile_name,
+        limit=limit,
+        start_index=start_index,
+        api_key_id=api_key_id,
+    )
+
+
+def _list_views_by_module(
+    module: str,
+    odoo_version: str = "auto",
+    view_type: str | None = None,
+    profile_name: str | None = None,
+    limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
+) -> str:
+    """Facade: module-scoped view listing (new API for module_inspect router)."""
+    return _list_views_core(
+        module=module,
+        odoo_version=odoo_version,
+        view_type=view_type,
+        profile_name=profile_name,
+        limit=limit,
+        start_index=start_index,
+        api_key_id=api_key_id,
+    )
 
 
 def _list_owl_components(

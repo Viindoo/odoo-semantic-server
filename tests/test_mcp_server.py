@@ -2060,6 +2060,59 @@ def test_list_views_truncation(neo4j_driver):
         _cleanup_version(neo4j_driver, W6_LIST_VIEWS_VERSION)
 
 
+W6_LIST_VIEWS_BY_MODULE_VERSION = "82.1"
+
+
+def test_list_views_by_module_smoke(neo4j_driver):
+    """_list_views_by_module returns views grouped by module, with ref markers."""
+    _cleanup_version(neo4j_driver, W6_LIST_VIEWS_BY_MODULE_VERSION)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        sale_mod = ModuleInfo(
+            "sale", W6_LIST_VIEWS_BY_MODULE_VERSION, "odoo_test", "/tmp", [], "17.0",
+        )
+        views = [
+            ViewInfo(
+                xmlid="sale.view_order_form", name="form",
+                model="sale.order", module="sale",
+                odoo_version=W6_LIST_VIEWS_BY_MODULE_VERSION,
+                view_type="form", mode="primary", inherit_xmlid=None,
+            ),
+            ViewInfo(
+                xmlid="sale.view_order_tree", name="tree",
+                model="sale.order", module="sale",
+                odoo_version=W6_LIST_VIEWS_BY_MODULE_VERSION,
+                view_type="tree", mode="primary", inherit_xmlid=None,
+            ),
+        ]
+        writer.write_view_results(
+            [ViewParseResult(module=sale_mod, views=views)],
+        )
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._list_views_by_module("sale", W6_LIST_VIEWS_BY_MODULE_VERSION)
+
+        # AC-D2-2: header uses "Views in module 'X'" form.
+        assert out.startswith(
+            f"Views in module 'sale' (Odoo {W6_LIST_VIEWS_BY_MODULE_VERSION})",
+        )
+        # Both seeded views appear.
+        assert "sale.view_order_form : form" in out
+        assert "sale.view_order_tree : tree" in out
+        # AC-D2-4: ref markers present.
+        assert "[ref=" in out
+        # AC-D2-5: Next-step footer present.
+        assert out.rstrip().splitlines()[-1].startswith("└─ Next:")
+    finally:
+        _cleanup_version(neo4j_driver, W6_LIST_VIEWS_BY_MODULE_VERSION)
+
+
 # --- list_owl_components ----------------------------------------------------
 
 
