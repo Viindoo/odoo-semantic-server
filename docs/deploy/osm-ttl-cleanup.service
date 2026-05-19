@@ -1,0 +1,45 @@
+# osm-ttl-cleanup.service — systemd oneshot for nightly TTL table pruning
+# Đặt tại: /etc/systemd/system/osm-ttl-cleanup.service
+# Companion timer: /etc/systemd/system/osm-ttl-cleanup.timer
+#
+# After copying both files:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable osm-ttl-cleanup.timer
+#   sudo systemctl start osm-ttl-cleanup.timer
+#
+# Three M9-introduced tables pruned nightly:
+#   login_attempts       — rows older than 30 days (rate-limiting + audit)
+#   email_verifications  — rows where expires_at < NOW() - 7 days
+#   active_sessions      — rows where expires_at < NOW()
+#
+# Resilience (issue #142): up to 3 retries spaced 30s apart within a
+# 10-minute window. ExecStartPre polls `pg_isready` for up to 30s before
+# each attempt so transient container startup does not waste a retry slot.
+# After 3 failures the unit enters `failed` state and fires OnFailure=.
+#
+# Override the container name via $POSTGRES_CONTAINER in
+# /opt/odoo-semantic-mcp/.env if the Docker Compose project basename differs
+# (default: odoo-semantic-mcp-postgres-1, per ADR-0027).
+
+[Unit]
+Description=OSM nightly TTL cleanup (login_attempts/email_verifications/active_sessions)
+After=docker.service
+Requires=docker.service
+StartLimitBurst=3
+StartLimitIntervalSec=600
+OnFailure=osm-alert@%n
+
+[Service]
+Type=oneshot
+User=odoo-semantic
+WorkingDirectory=/opt/odoo-semantic-mcp
+EnvironmentFile=-/opt/odoo-semantic-mcp/.env
+# Pre-flight: wait up to 30s for Postgres to be ready. Exits non-zero on
+# timeout, which triggers Restart= below.
+ExecStartPre=/bin/sh -c 'timeout 30 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
+# Main cleanup: single psql session, three DELETE statements.
+ExecStart=/bin/sh -c 'docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} psql -U odoo_semantic -d odoo_semantic -v ON_ERROR_STOP=1 -c "DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL '"'"'30 days'"'"'; DELETE FROM email_verifications WHERE expires_at < NOW() - INTERVAL '"'"'7 days'"'"'; DELETE FROM active_sessions WHERE expires_at < NOW();"'
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal

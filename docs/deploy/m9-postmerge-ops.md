@@ -184,36 +184,45 @@ psql -d odoo_semantic -c "
 
 ---
 
-## 6. Optional: Cron Setup for Cleanup Jobs (2 min)
+## 6. Systemd Timer for TTL Cleanup (2 min)
 
-M9 added three TTL-tracked tables (`login_attempts`, `email_verifications`, `active_sessions`). Add periodic cleanup to avoid unbounded growth.
+M9 added three TTL-tracked tables (`login_attempts`, `email_verifications`, `active_sessions`). These are pruned nightly by a systemd timer + oneshot service pair (replaced the prior cron job per issue #142 — cron had no retry layer and silently skipped cleanup when Postgres was mid-startup).
 
-**Create daily cleanup cron job:**
+**Install the timer and service:**
 ```bash
-sudo tee /etc/cron.daily/odoo-semantic-cleanup > /dev/null <<'CRON_EOF'
-#!/bin/bash
-set -e
-export PG_DSN="postgresql://tuan@localhost:5432/odoo_semantic"
-# Purge login attempts older than 30 days
-psql -d odoo_semantic -c \
-    "DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL '30 days';"
-# Purge expired email verification tokens
-psql -d odoo_semantic -c \
-    "DELETE FROM email_verifications WHERE expires_at < NOW() - INTERVAL '7 days';"
-# Purge expired sessions
-psql -d odoo_semantic -c \
-    "DELETE FROM active_sessions WHERE expires_at < NOW();"
-CRON_EOF
-
-sudo chmod +x /etc/cron.daily/odoo-semantic-cleanup
+sudo cp docs/deploy/osm-ttl-cleanup.service /etc/systemd/system/
+sudo cp docs/deploy/osm-ttl-cleanup.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable osm-ttl-cleanup.timer
+sudo systemctl start osm-ttl-cleanup.timer
 ```
 
-**Verify installation:**
+**Verify timer schedule:**
 ```bash
-ls -la /etc/cron.daily/odoo-semantic-cleanup
+systemctl list-timers osm-ttl-cleanup.timer
+# Expected: one row with NEXT set to tonight at 00:10
 ```
 
-**Result:** [ ] _____ cron job installed (optional, for cleanup)
+**Smoke-test immediate run:**
+```bash
+sudo systemctl start osm-ttl-cleanup.service
+sudo journalctl -u osm-ttl-cleanup.service --no-pager -n 20
+# Expected: 3 × DELETE row counts and unit exits `active (exited)`
+```
+
+**Migration from cron (if upgrading from pre-issue-#142 deploy):**
+Only after the timer is confirmed active, remove the legacy cron file:
+```bash
+sudo rm -f /etc/cron.daily/odoo-semantic-cleanup
+```
+`Persistent=true` on the timer guarantees no cleanup cycle is lost during the cutover.
+
+**Resilience built in:**
+- `ExecStartPre` polls `pg_isready` up to 30s before each run (handles container mid-startup)
+- 3 retries with 30s spacing within a 10-minute window
+- Alert fires via `OnFailure=osm-alert@%n` after 3 failures (same wiring as backup unit)
+
+**Result:** [ ] _____ TTL cleanup timer active + smoke-test clean
 
 ---
 
@@ -239,7 +248,7 @@ ls -la /etc/cron.daily/odoo-semantic-cleanup
 | Pattern catalogue ≥ 80 rows | [ ] | ____________ |
 | Admin user bootstrap/repair | [ ] | ____________ |
 | Audit log populated after 1h | [ ] | ____________ |
-| (Optional) Cron cleanup job installed | [ ] | ____________ |
+| TTL cleanup timer enabled (osm-ttl-cleanup.timer) | [ ] | ____________ |
 | Astro UI responsive (spot-check) | [ ] | ____________ |
 | MCP tools return valid responses (smoke test) | [ ] | ____________ |
 
