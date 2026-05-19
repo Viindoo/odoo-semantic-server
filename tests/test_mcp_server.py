@@ -1787,8 +1787,8 @@ def test_list_fields_truncation(neo4j_driver):
         srv = _import_server_module()
         out = srv._list_fields("big.model", W6_LIST_FIELDS_VERSION)
         # cap = LIST_PREVIEW_FIELDS_MAX (50); 60 total → continuation hint appears.
-        # Pagination hint format: "Showing rows 0-49 of 60. Call list_fields(...)"
-        assert "Showing rows 0-49 of 60" in out
+        # Pagination hint format: "Showing rows 1–50 of 60. Call list_fields(...)"
+        assert "Showing rows 1–50 of 60" in out
         assert "list_fields" in out  # continuation hint references the same tool
         assert "start_index=50" in out  # next-page cursor is disclosed
     finally:
@@ -1831,7 +1831,7 @@ def test_list_fields_pagination_smoke(neo4j_driver):
             "pager.model", W6_LIST_FIELDS_PAGER_VERSION, limit=50, start_index=0,
         )
         assert "[ref=f" in out1, "Page 1 must include refs"
-        assert "Showing rows 0-49 of 247" in out1, "Page 1 must show continuation hint"
+        assert "Showing rows 1–50 of 247" in out1, "Page 1 must show continuation hint"
         assert "start_index=50" in out1, "Page 1 continuation hint must point to start_index=50"
         # Extract field names from page 1.
         page1_lines = [ln for ln in out1.splitlines() if "[ref=" in ln]
@@ -1843,7 +1843,7 @@ def test_list_fields_pagination_smoke(neo4j_driver):
         )
         assert "[ref=f" in out2, "Page 2 must include refs"
         # Page 2 still has more (247 > 100) → continuation hint.
-        assert "Showing rows 50-99 of 247" in out2
+        assert "Showing rows 51–100 of 247" in out2
         assert "start_index=100" in out2
 
         # Final page: rows 200-246 (47 items) of 247 — no continuation hint.
@@ -1852,7 +1852,7 @@ def test_list_fields_pagination_smoke(neo4j_driver):
         )
         assert "[ref=f" in out_final, "Final page must include refs"
         # Final page: shown=47, end_index=247 == total → no "Showing rows ... Call" hint.
-        assert "Showing rows 200-246 of 247 (last page)" in out_final
+        assert "Showing rows 201–247 of 247 (last page)" in out_final
         assert "start_index=247" not in out_final, "Final page must NOT include a continuation hint"
 
         # Verify no gaps: collect all field names across three pages.
@@ -1958,8 +1958,8 @@ def test_list_methods_truncation(neo4j_driver):
         srv = _import_server_module()
         out = srv._list_methods("many.model", W6_LIST_METHODS_VERSION)
         # cap = 20; 30 total → continuation hint appears.
-        # Pagination hint format: "Showing rows 0-19 of 30. Call list_methods(...)"
-        assert "Showing rows 0-19 of 30" in out
+        # Pagination hint format: "Showing rows 1–20 of 30. Call list_methods(...)"
+        assert "Showing rows 1–20 of 30" in out
         assert "list_methods" in out  # continuation hint references the same tool
         assert "start_index=20" in out
     finally:
@@ -2053,7 +2053,7 @@ def test_list_views_truncation(neo4j_driver):
         srv = _import_server_module()
         out = srv._list_views("big.model", W6_LIST_VIEWS_VERSION)
         # cap = 20; 25 total → continuation hint appears.
-        assert "Showing rows 0-19 of 25" in out
+        assert "Showing rows 1–20 of 25" in out
         assert "list_views" in out
         assert "start_index=20" in out
     finally:
@@ -2174,7 +2174,7 @@ def test_list_owl_components_truncation(neo4j_driver):
             "big_owl_mod", W6_LIST_OWL_VERSION,
         )
         # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → continuation hint appears.
-        assert "Showing rows 0-19 of 25" in out
+        assert "Showing rows 1–20 of 25" in out
         assert "list_owl_components" in out
         assert "start_index=20" in out
     finally:
@@ -2257,7 +2257,7 @@ def test_list_qweb_templates_truncation(neo4j_driver):
             "big_qweb_mod", W6_LIST_QWEB_VERSION,
         )
         # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → continuation hint appears.
-        assert "Showing rows 0-19 of 25" in out
+        assert "Showing rows 1–20 of 25" in out
         assert "list_qweb_templates" in out
         assert "start_index=20" in out
     finally:
@@ -2317,7 +2317,7 @@ def test_list_js_patches_truncation(neo4j_driver):
         srv = _import_server_module()
         out = srv._list_js_patches(W6_LIST_JS_VERSION, module="patchy_mod")
         # cap = LIST_PREVIEW_PATCHES_MAX (10); 15 total → continuation hint appears.
-        assert "Showing rows 0-9 of 15" in out
+        assert "Showing rows 1–10 of 15" in out
         assert "list_js_patches" in out
         assert "start_index=10" in out
     finally:
