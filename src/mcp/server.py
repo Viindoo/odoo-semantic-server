@@ -33,6 +33,7 @@ from src.constants import (
     SNIPPET_PREVIEW_MAX_LINES,
     VALID_CHUNK_TYPES,
 )
+from src.mcp import session as _session
 from src.mcp.dto import (
     DescribeModuleOutput,
     FieldRef,
@@ -116,6 +117,18 @@ mcp.add_middleware(_UsageLogMiddleware())
 READONLY_TOOL_KWARGS = {
     "annotations": {
         "readOnlyHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+        "destructiveHint": False,
+    }
+}
+
+# Session-mutating tools (set_active_version, set_active_profile) — write session
+# state but are idempotent and non-destructive.  readOnlyHint=False because they
+# perform a DB write (UPSERT into api_key_session_state).
+MUTATING_TOOL_KWARGS = {
+    "annotations": {
+        "readOnlyHint": False,
         "idempotentHint": True,
         "openWorldHint": False,
         "destructiveHint": False,
@@ -350,19 +363,22 @@ def _latest_version(session) -> str | None:
 
 
 def _resolve_version(version_arg: str, session) -> str:
-    """Translate a user-facing version arg ('auto' or explicit) into a concrete version.
+    """Session-aware version resolution — 3-tier order per ADR-0029.
 
-    Raises ValueError when 'auto' is requested but the index is empty.
-    Explicit versions pass through unchanged.
+    Resolution order (delegated to session.resolve_version_v2):
+      1. Explicit *version_arg* after sentinel normalization (auto/default/
+         latest/version/any/"" all treated as sentinel → None).
+      2. Per-API-key session state (api_key_session_state table, 24h TTL).
+      3. Latest indexed version via _latest_version() Neo4j query.
+
+    Raises ValueError when all three tiers fail (empty index + no session
+    + no explicit version).
+
+    All 24 existing call sites are unchanged — this function's external
+    signature is preserved.
     """
-    if version_arg != "auto":
-        return version_arg
-    v = _latest_version(session)
-    if v is None:
-        raise ValueError(
-            "No data indexed. Run `python -m src.indexer index-repo --profile <name>` first."
-        )
-    return v
+    api_key_id = _get_api_key_id()
+    return _session.resolve_version_v2(version_arg, api_key_id, session)
 
 
 def _resolve_model(
@@ -5204,6 +5220,176 @@ def entity_lookup(
         api_key_id=_get_api_key_id(),
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
+
+
+# ---------------------------------------------------------------------------
+# Wave E — Session-context tools (ADR-0029, M11 WI-E3)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(**MUTATING_TOOL_KWARGS)
+def set_active_version(odoo_version: str) -> ToolResult:
+    """Pin the active Odoo version for this API key (ADR-0029 implicit context).
+
+    TRIGGER when: starting a work session focused on a specific Odoo version
+    and you want to drop odoo_version= from every subsequent tool call.
+    PREFER over: passing odoo_version='17.0' to every individual tool call;
+    this scopes the version once per session with a 24h sliding TTL.
+    SKIP when: hopping between multiple versions mid-session — pass
+    odoo_version= explicitly to each call instead to avoid confusion.
+
+    Args:
+        odoo_version: Concrete version string, e.g. '17.0', '16.0', '18.0'.
+            Sentinel values ('auto', 'default', 'latest', 'any', '') are
+            rejected — pass a real version number.
+
+    Returns:
+        Confirmation receipt with the pinned version and TTL duration.
+    """
+    normalized = _session.normalize_version_arg(odoo_version)
+    if normalized is None:
+        return ToolResult(content=[TextContent(type="text",
+            text=(
+                f"Error: '{odoo_version}' is a sentinel placeholder, not a real version.\n"
+                "Pass a concrete version like '17.0' or '16.0'.\n"
+                "Use list_available_versions() to see what is indexed."
+            )
+        )])
+    try:
+        _session.set_active_version_db(_get_api_key_id(), normalized)
+    except Exception as exc:
+        return ToolResult(content=[TextContent(type="text",
+            text=f"Error persisting session version: {exc}")])
+    return ToolResult(content=[TextContent(type="text",
+        text=(
+            f"Active version set to '{normalized}' for this API key (TTL 24h).\n"
+            "Subsequent tool calls that omit odoo_version= will resolve to this version."
+        )
+    )])
+
+
+@mcp.tool(**MUTATING_TOOL_KWARGS)
+def set_active_profile(profile_name: str | None) -> ToolResult:
+    """Pin the active profile for this API key (ADR-0029 implicit context).
+
+    TRIGGER when: working exclusively within one customer profile and you
+    want profile filtering applied automatically to all subsequent queries.
+    PREFER over: passing profile_name='my-erp-prod' to every tool call;
+    this scopes the profile once per session with a 24h sliding TTL.
+    SKIP when: comparing across multiple profiles mid-session — pass
+    profile_name= explicitly to each call instead.
+
+    Args:
+        profile_name: Profile name such as 'viindoo_internal_17' or
+            'my-erp-prod'. Pass null / None to clear the active profile
+            (subsequent calls revert to cross-profile queries).
+
+    Returns:
+        Confirmation receipt with the pinned profile name and TTL duration.
+    """
+    try:
+        _session.set_active_profile_db(_get_api_key_id(), profile_name)
+    except Exception as exc:
+        return ToolResult(content=[TextContent(type="text",
+            text=f"Error persisting session profile: {exc}")])
+    if profile_name is None:
+        msg = (
+            "Active profile cleared for this API key.\n"
+            "Subsequent tool calls will query across all profiles."
+        )
+    else:
+        msg = (
+            f"Active profile set to '{profile_name}' for this API key (TTL 24h).\n"
+            "Subsequent tool calls that omit profile_name= will filter to this profile."
+        )
+    return ToolResult(content=[TextContent(type="text", text=msg)])
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def list_available_versions() -> ToolResult:
+    """List all Odoo versions indexed in this knowledge base.
+
+    TRIGGER when: unsure which Odoo versions are available, before calling
+    set_active_version(), or to validate a version string before querying.
+    PREFER over: guessing a version and getting an empty result; use this
+    first to confirm what is indexed before running model/field queries.
+    SKIP when: the version is already known (e.g. from a prior set_active_version
+    confirmation or from a resolve_model result header).
+
+    Returns:
+        Sorted list of indexed Odoo versions (newest first), e.g.:
+        Indexed Odoo versions (3 total):
+        ├─ 17.0
+        ├─ 16.0
+        └─ 15.0
+    """
+    with _get_driver().session() as neo4j_session:
+        rows = neo4j_session.run("""
+            MATCH (m:Module)
+            WITH DISTINCT m.odoo_version AS v
+            WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
+            RETURN v
+            ORDER BY toInteger(split(v, '.')[0]) DESC,
+                     toInteger(split(v, '.')[1]) DESC
+        """).data()
+
+    if not rows:
+        return ToolResult(content=[TextContent(type="text",
+            text=(
+                "No Odoo versions indexed yet.\n"
+                "Run `python -m src.indexer index-repo --profile <name>` to index a repo."
+            )
+        )])
+
+    versions = [r["v"] for r in rows]
+    lines = [f"Indexed Odoo versions ({len(versions)} total):"]
+    for i, v in enumerate(versions):
+        prefix = "└─" if i == len(versions) - 1 else "├─"
+        lines.append(f"{prefix} {v}")
+    return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def list_available_profiles() -> ToolResult:
+    """List all profiles registered in this knowledge base.
+
+    TRIGGER when: unsure which profiles exist, before calling set_active_profile(),
+    or to enumerate tenants/customers before running profile-scoped queries.
+    PREFER over: guessing a profile name and getting an empty result; use this
+    first to confirm available profiles before filtering queries.
+    SKIP when: the profile name is already known (e.g. from a prior
+    set_active_profile confirmation or from admin documentation).
+
+    Returns:
+        Tree listing of registered profiles with their Odoo version, e.g.:
+        Registered profiles (2 total):
+        ├─ viindoo_internal_17  (17.0)
+        └─ customer_erp_16      (16.0)
+    """
+    sql = "SELECT name, odoo_version FROM profiles ORDER BY name"
+    try:
+        with _checkout_pg() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+    except Exception as exc:
+        return ToolResult(content=[TextContent(type="text",
+            text=f"Error querying profiles: {exc}")])
+
+    if not rows:
+        return ToolResult(content=[TextContent(type="text",
+            text=(
+                "No profiles registered yet.\n"
+                "Use the admin UI or `manager` CLI to register a profile."
+            )
+        )])
+
+    lines = [f"Registered profiles ({len(rows)} total):"]
+    for i, (name, odoo_version) in enumerate(rows):
+        prefix = "└─" if i == len(rows) - 1 else "├─"
+        ver_str = f"  ({odoo_version})" if odoo_version else ""
+        lines.append(f"{prefix} {name}{ver_str}")
+    return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
 
 
 def _mcp_host() -> str:

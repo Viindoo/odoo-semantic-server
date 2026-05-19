@@ -38,6 +38,11 @@ _TOOL_NAMES = [
     "model_inspect",
     "module_inspect",
     "entity_lookup",
+    # E3 session-context tools (ADR-0029)
+    "set_active_version",
+    "set_active_profile",
+    "list_available_versions",
+    "list_available_profiles",
 ]
 
 _REQUIRED_BLOCKS = ("TRIGGER when:", "PREFER over:", "SKIP when:")
