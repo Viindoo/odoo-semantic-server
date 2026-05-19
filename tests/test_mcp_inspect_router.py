@@ -51,6 +51,7 @@ def _make_srv_mock() -> MagicMock:
     srv._list_js_patches.return_value = _STUB_RETURN
     srv._describe_module.return_value = _STUB_RETURN
     srv._suggest_pattern.return_value = _STUB_RETURN
+    srv._list_views_by_module.return_value = _STUB_RETURN
     return srv
 
 
@@ -210,12 +211,13 @@ def test_model_inspect_happy_path(method, extra_kwargs, impl_name):
 
 # ---------------------------------------------------------------------------
 # AC-D1-4: Happy-path parametrized — module_inspect
-# (excluding 'views' which raises NotImplementedError per D2 stub)
+# (D2 landed: 'views' now routes to _list_views_by_module)
 # ---------------------------------------------------------------------------
 
 
 _MODULE_HAPPY_CASES = [
     ("summary", "_describe_module"),
+    ("views", "_list_views_by_module"),
     ("owl", "_list_owl_components"),
     ("qweb", "_list_qweb_templates"),
     ("js", "_list_js_patches"),
@@ -232,11 +234,12 @@ def test_module_inspect_happy_path(method, impl_name):
     assert not result.startswith("Error:"), f"Unexpected error: {result!r}"
 
 
-def test_module_inspect_views_raises_not_implemented():
-    """module_inspect(method='views') raises NotImplementedError (WI-D2 pending)."""
-    with _patch_server(_make_srv_mock()):
-        with pytest.raises(NotImplementedError, match="D2 pending"):
-            _module_inspect("sale", method="views")
+def test_module_inspect_views_routes_to_list_views_by_module():
+    """module_inspect(method='views') routes to _list_views_by_module (D2 landed)."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _module_inspect("sale", method="views")
+    assert result == _STUB_RETURN
+    srv_mock._list_views_by_module.assert_called_once()
 
 
 def test_module_inspect_fields_returns_stub_string():
