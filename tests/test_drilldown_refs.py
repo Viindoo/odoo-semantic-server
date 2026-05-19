@@ -534,3 +534,58 @@ def test_scenario10_stale_ref_model_no_list_models(c4_db, server):
         f"_format_stale_ref_error('model', ...) should reference one of "
         f"{real_tools} in recovery hint:\n{msg!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 11 — Superset drill-down E2E via model_inspect (AC-DFIX-3)
+# ---------------------------------------------------------------------------
+
+
+def test_scenario11_superset_drilldown_e2e(c4_db, server):
+    """model_inspect(method='fields') → extract ref → resolve_field(target=ref).
+
+    AC-DFIX-3: Verifies that the api_key_id is correctly threaded from
+    model_inspect wrapper through _model_inspect router to _list_fields, so
+    that refs minted by model_inspect are resolvable by resolve_field using
+    the same namespace (_get_api_key_id() returns 'default' in both calls
+    when no middleware is active).
+    """
+    # Step A: call model_inspect superset with method='fields'.
+    # Both wrappers call _get_api_key_id() which returns 'default' in tests.
+    inspect_result = server.model_inspect.fn(
+        model=_MODEL_SMALL,
+        method="fields",
+        odoo_version=C4_VERSION,
+    )
+    inspect_text = inspect_result.content[0].text
+
+    # Step B: extract the first [ref=fN] from the output.
+    ref = _first_ref(inspect_text)
+    assert ref is not None, (
+        f"model_inspect(method='fields') produced no [ref=fN] markers:\n"
+        f"{inspect_text!r}"
+    )
+
+    # Step C: resolve via resolve_field — NO thread-local injection needed.
+    resolve_result = server.resolve_field.fn(
+        target=ref,
+        odoo_version=C4_VERSION,
+    )
+    resolve_text = resolve_result.content[0].text
+
+    # Must NOT be a stale-ref error — both wrappers share the same api_key
+    # namespace ('default') so the ref must resolve successfully.
+    assert "unknown or expired" not in resolve_text, (
+        f"AC-DFIX-3 regression: resolve_field got stale-ref error after "
+        f"model_inspect(method='fields').\n"
+        f"  ref={ref!r}\n"
+        f"  inspect output: {inspect_text[:200]!r}\n"
+        f"  resolve output: {resolve_text!r}"
+    )
+
+    # Must contain actual field data (a field name from _MODEL_SMALL).
+    field_names = {"amount_total", "partner_id", "state", "name", "date_order"}
+    assert any(fn in resolve_text for fn in field_names), (
+        f"resolve_field output does not reference any known field name:\n"
+        f"{resolve_text!r}"
+    )

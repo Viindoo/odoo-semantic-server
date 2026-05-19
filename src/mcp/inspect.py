@@ -160,12 +160,6 @@ def _module_inspect(
     str
         Same shape as the routed ``_impl`` function. On invalid discriminator,
         returns ``"Error: ..."`` listing valid methods.
-
-    Notes
-    -----
-    ``method='views'`` is not yet implemented — WI-D2 owns the
-    ``_list_views_by_module`` facade. Until that lands, this branch raises
-    ``NotImplementedError``.
     """
     if method not in _MODULE_METHODS:
         return _invalid_method_error("module_inspect", method, _MODULE_METHODS)

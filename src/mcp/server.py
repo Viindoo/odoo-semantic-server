@@ -974,7 +974,9 @@ def resolve_field(
 
     TRIGGER when: "what type is amount_total field", "is field X computed"
     PREFER over: resolve_model (more detail)
-    SKIP when: user wants all fields (model_inspect superset for M11+)
+    SKIP when: user wants all fields → use list_fields or model_inspect.
+    SKIP when (NEW): prefer model_inspect(model='...', method='field',
+        field='...') to inspect one field with full model context (M11+)
 
     Args:
         target: Opaque ref ID (e.g. 'f12') OR canonical dotted path
@@ -1077,7 +1079,9 @@ def resolve_method(
     TRIGGER when: "show override chain of action_confirm", "where is method X
     defined"
     PREFER over: grep (full chain with super() linkage)
-    SKIP when: user wants all methods (model_inspect superset for M11+)
+    SKIP when: user wants all methods → use list_methods or model_inspect.
+    SKIP when (NEW): prefer model_inspect(model='...', method='method',
+        method_name='...') to inspect one method with full model context (M11+)
 
     Args:
         target: Opaque ref ID (e.g. 'm3') OR canonical dotted path
@@ -4761,37 +4765,34 @@ def list_fields(
     """Enumerate fields declared on an Odoo model, grouped by module.
 
     TRIGGER when: "list all fields of sale.order", "show fields on
-    account.move", "what fields does res.partner have", "liệt kê field của
-    model X", "tất cả field trên sale.order", "all monetary fields on
-    account.move", "fields added by viin_sale to sale.order"
+    account.move", "what fields does res.partner have", "all monetary
+    fields on account.move", "fields added by viin_sale to sale.order"
     PREFER over: resolve_model — that tool only returns the field count;
     list_fields returns the full enumerated list with type per row.
-    SKIP when: caller wants one field's detail → use resolve_field. When the
-    caller asks "how many fields" only, resolve_model is cheaper.
-    SKIP when (NEW): you want field enumeration with model context in one tool →
-        prefer model_inspect(model='...', method='fields') (M11 superset, v0.5+)
+    SKIP when: caller wants one field's detail → use resolve_field. When
+    the caller asks "how many fields" only, resolve_model is cheaper.
+    SKIP when (NEW): prefer model_inspect(model='...', method='fields')
+        for field enumeration with model context in one call (M11+, v0.5+)
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
         odoo_version: '17.0' / '18.0' / 'auto'.
-        module: Optional module filter — only fields declared in this module.
+        module: Optional module filter — only fields in this module.
         kind: Optional ttype filter (e.g. 'monetary', 'many2one').
         profile_name: Optional profile filter.
-        limit: Cypher LIMIT (default 200). Render cap is 50 per ADR-0023 §5.5.
-        start_index: Zero-based pagination cursor. Use the value from the
-            continuation hint to fetch the next page (default 0 = first page).
+        limit: Cypher LIMIT (default 200). Render cap is 50.
+        start_index: Zero-based pagination cursor (default 0 = first page).
 
     Returns:
-        Tree text: header + per-module subtree of `[ref=fN] name : ttype` rows.
-        When more pages exist, the last ├─ branch carries a continuation hint.
+        Tree text: header + per-module subtree of `[ref=fN] name : ttype`.
+        When more pages exist, the last row carries a continuation hint.
 
     Example:
         list_fields("sale.order", "17.0", module="sale")
         → Fields of sale.order (Odoo 17.0)
           ├─ [odoo] sale
           │   ├─ [ref=f1] name : char
-          │   ├─ [ref=f2] partner_id : many2one
-          │   └─ [ref=f3] amount_total : monetary
+          │   └─ [ref=f2] amount_total : monetary
     """
     text = _list_fields(
         model, odoo_version, module, kind, profile_name, limit, start_index,
@@ -4925,28 +4926,23 @@ def list_owl_components(
 ) -> str:
     """Enumerate OWL components declared in a module (Odoo v14+).
 
-    Era-aware: returns empty + warning for Odoo v8-v13 (Widget era — no OWL).
-    When `bound_model` filter is set, output includes a warning that
-    bound_model resolution is heuristic (parser_js.py:415) and may miss
-    components that resolve the model dynamically via this.props.resModel.
+    Era-aware: returns empty + warning for Odoo v8-v13 (Widget era).
+    bound_model filter is heuristic — may miss dynamic resModel lookups.
 
     TRIGGER when: "list OWL components in sale_management", "what OWL
-    components does website_sale define", "OWL components for sale.order",
-    "OWL component nào trong module X", "tất cả OWL component bound to
-    res.partner"
+    components does website_sale define", "OWL components for sale.order"
     PREFER over: find_examples — that tool returns code snippets;
     list_owl_components gives the structured component inventory.
     SKIP when: caller wants legacy Widget (v8-v13) → use list_js_patches
-    with era='era1'. Use list_qweb_templates when the caller asks about
-    QWeb templates, not OWL components.
-    SKIP when (NEW): you want OWL component enumeration with module context in one tool →
-        prefer module_inspect(name='...', method='owl') (M11 superset, v0.5+)
+    with era='era1'. Use list_qweb_templates for QWeb templates.
+    SKIP when (NEW): prefer module_inspect(name='...', method='owl')
+        for OWL enumeration with module context in one call (M11+, v0.5+)
 
     Args:
         module: Module name to search within.
         odoo_version: '17.0' / '18.0' / 'auto'.
-        bound_model: Optional filter — only components whose bound_model
-            heuristic matches this name. Triggers heuristic warning footer.
+        bound_model: Optional filter — components whose bound_model
+            heuristic matches this name. Triggers heuristic warning.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
         start_index: Zero-based pagination cursor (default 0 = first page).
@@ -5024,30 +5020,26 @@ def list_js_patches(
     limit: int = 200,
     start_index: int = 0,
 ) -> str:
-    """Enumerate JS patches across all eras (Widget extend, mixin include,
-    OWL patch).
+    """Enumerate JS patches across all eras (Widget extend, mixin, OWL patch).
 
-    `era` accepts era1 / era2 / era3 (preferred — ADR-0023 §5.3) or the
-    stored values extend / include / patch.
+    `era` accepts era1 / era2 / era3 or the stored values extend /
+    include / patch (ADR-0023 §5.3).
 
     TRIGGER when: "list JS patches on hr.employee", "all OWL patches in
-    Odoo 17", "Widget extends in v12", "JS patch nào trên model X",
-    "tất cả patch() trong module Y", "legacy widget extensions in v11"
+    Odoo 17", "Widget extends in v12", "legacy widget extensions in v11"
     PREFER over: find_examples — that tool returns code snippets;
     list_js_patches gives the structured per-target inventory.
     SKIP when: caller wants OWL component declarations (not patches) →
-    use list_owl_components. Use find_examples when the caller wants
-    code-level usage patterns instead of inventory.
-    SKIP when (NEW): you want JS patch enumeration with module context in one tool →
-        prefer module_inspect(name='...', method='js') (M11 superset, v0.5+)
+    use list_owl_components. Use find_examples for code-level patterns.
+    SKIP when (NEW): prefer module_inspect(name='...', method='js')
+        for JS patch enumeration with module context in one call (M11+)
 
     Args:
         odoo_version: '17.0' / '18.0' / 'auto'.
         target: Optional filter on patched widget/component name.
         module: Optional filter on patching module.
-        era: Optional filter — 'era1' (Widget extend, v8-v13),
-            'era2' (mixin include, v14-v16), 'era3' (OWL patch, v15+).
-            Also accepts the stored values extend/include/patch.
+        era: Optional — 'era1' (Widget extend, v8-v13), 'era2' (mixin,
+            v14-v16), 'era3' (OWL patch, v15+); or extend/include/patch.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 10.
         start_index: Zero-based pagination cursor (default 0 = first page).
@@ -5114,6 +5106,7 @@ def model_inspect(
         profile_name=profile_name,
         field=field,
         method_name=method_name,
+        api_key_id=_get_api_key_id(),
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
@@ -5154,6 +5147,7 @@ def module_inspect(
         method=method,
         odoo_version=odoo_version,
         profile_name=profile_name,
+        api_key_id=_get_api_key_id(),
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
@@ -5207,6 +5201,7 @@ def entity_lookup(
         method_name=method_name,
         xmlid=xmlid,
         name=name,
+        api_key_id=_get_api_key_id(),
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
