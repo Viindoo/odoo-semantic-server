@@ -11,6 +11,12 @@
 Description=Odoo Semantic MCP — Web UI admin (LAN-only :8003)
 After=network.target docker.service odoo-semantic-mcp.service
 Wants=network.target
+# DB tier lives in docker containers; hard dep matches mcp.service.
+Requires=docker.service
+# Stop runaway crash-loop after 5 failures in 60s window.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+OnFailure=osm-alert@%n.service
 
 [Service]
 Type=simple

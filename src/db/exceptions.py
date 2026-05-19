@@ -37,3 +37,17 @@ class ProfileIndexedError(ValueError):
 
     HTTP mapping: 409 Conflict.
     """
+
+
+class PoolNotInitializedError(RuntimeError):
+    """Raised by `src.db.pg.get_pool()` when the module-level pool singleton
+    has not been initialised yet (e.g. lifespan handler hasn't run, or PG was
+    unreachable at startup and the background retry hasn't recovered).
+
+    Inherits from RuntimeError so existing `except RuntimeError` paths keep
+    working — but allows downstream callers (notably AuthMiddleware) to
+    narrow their except to THIS specific failure instead of swallowing every
+    unrelated RuntimeError (config errors, version checks, etc.).
+
+    HTTP mapping: 503 Service Unavailable + Retry-After header.
+    """

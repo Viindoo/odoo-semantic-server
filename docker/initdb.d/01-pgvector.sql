@@ -1,0 +1,12 @@
+-- Bootstrap pgvector extension (requires superuser).
+-- Mounted into postgres container via docker-compose initdb volume.
+-- Must run before run_migrations() which creates the embeddings table.
+--
+-- Location note: this file lives in `docker/initdb.d/` and is mounted as a
+-- DIRECTORY (not a single file) at `/docker-entrypoint-initdb.d/`. Compose
+-- mounting a single file is fragile — if cwd is wrong at `docker compose up`,
+-- Docker daemon (root) silently auto-creates an empty DIRECTORY at the
+-- bind-mount source, causing the next container start to fail with
+-- `not a directory: Are you trying to mount a directory onto a file ...?`
+-- See incident report 2026-05-19 + ADR for full context.
+CREATE EXTENSION IF NOT EXISTS vector;

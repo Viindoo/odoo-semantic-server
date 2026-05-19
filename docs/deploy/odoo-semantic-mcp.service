@@ -7,6 +7,18 @@
 [Unit]
 Description=Odoo Semantic MCP Server
 After=network.target docker.service
+# Hard dependency on docker — if docker is not up, this service must not
+# attempt to start (DB tier lives in compose containers). Without this,
+# After= only orders boot but does not block on docker availability.
+Requires=docker.service
+# Rate-limit the restart loop: at most 5 failures within a 60s window,
+# then systemd parks the unit in `failed` state instead of `activating
+# (auto-restart)` for hours. OnFailure= below fires when this limit is hit.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+# Fire alert unit when the service enters `failed` (after StartLimit* trips
+# or any hard exit not auto-retried). `%n` resolves to this unit's full name.
+OnFailure=osm-alert@%n.service
 
 [Service]
 Type=simple

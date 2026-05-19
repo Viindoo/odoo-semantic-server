@@ -14,7 +14,9 @@ Anywhere else::
     with pool.checkout() as conn:
         row = pool.fetch_one(conn, "SELECT id FROM profiles WHERE name = %s", (name,))
 """
+import logging
 import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -24,6 +26,7 @@ import psycopg2.extras
 import psycopg2.pool
 from psycopg2.extras import RealDictCursor, execute_values
 
+from src.constants import PG_CONNECT_TIMEOUT_SECONDS
 from src.db._types import PgConn
 
 if TYPE_CHECKING:
@@ -32,11 +35,28 @@ if TYPE_CHECKING:
     from src.db.repo_registry import RepoStore
 
 
+_log = logging.getLogger(__name__)
+
+
 class PgPool:
     """Centralizes psycopg2 connection pool + safe parameterized-query helpers."""
 
-    def __init__(self, dsn: str, *, min_conn: int = 2, max_conn: int = 10) -> None:
-        self._pool = psycopg2.pool.SimpleConnectionPool(min_conn, max_conn, dsn)
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        min_conn: int = 2,
+        max_conn: int = 10,
+        connect_timeout: int = PG_CONNECT_TIMEOUT_SECONDS,
+    ) -> None:
+        # connect_timeout is forwarded to psycopg2.connect() so an unreachable
+        # PG fails fast (within connect_timeout seconds) instead of hanging
+        # the caller. SimpleConnectionPool eagerly opens min_conn connections
+        # at construction, so a missing PG raises here — callers that want to
+        # tolerate a transient outage should use init_pool_with_retry().
+        self._pool = psycopg2.pool.SimpleConnectionPool(
+            min_conn, max_conn, dsn, connect_timeout=connect_timeout,
+        )
 
     # ------------------------------------------------------------------
     # Connection checkout
@@ -124,16 +144,82 @@ class PgPool:
 _pool: PgPool | None = None
 
 
-def init_pool(dsn: str, *, min_conn: int = 2, max_conn: int = 10) -> None:
+def init_pool(
+    dsn: str,
+    *,
+    min_conn: int = 2,
+    max_conn: int = 10,
+    connect_timeout: int = PG_CONNECT_TIMEOUT_SECONDS,
+) -> None:
     """Initialize module-level pool singleton. Call once at app startup."""
     global _pool
-    _pool = PgPool(dsn, min_conn=min_conn, max_conn=max_conn)
+    _pool = PgPool(
+        dsn, min_conn=min_conn, max_conn=max_conn, connect_timeout=connect_timeout,
+    )
+
+
+def is_pool_initialized() -> bool:
+    """Predicate for the degraded-mode startup path. True once init_pool() succeeded."""
+    return _pool is not None
+
+
+def init_pool_with_retry(
+    dsn: str,
+    *,
+    min_conn: int = 2,
+    max_conn: int = 10,
+    connect_timeout: int = PG_CONNECT_TIMEOUT_SECONDS,
+    max_attempts: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+) -> None:
+    """Initialize pool with exponential backoff retry.
+
+    For callers that need a working pool before doing useful work (CLI
+    subcommands, indexer, migration). MCP server lifespan uses a different
+    pattern (try once → schedule background retry → enter degraded mode)
+    so startup is not blocked by an unreachable DB tier.
+
+    Raises the last exception when `max_attempts` are exhausted.
+    """
+    delay = base_delay
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            init_pool(
+                dsn, min_conn=min_conn, max_conn=max_conn,
+                connect_timeout=connect_timeout,
+            )
+            if attempt > 1:
+                _log.info("PG pool init succeeded on attempt %d/%d", attempt, max_attempts)
+            return
+        except Exception as e:  # noqa: BLE001 — re-raised below if budget exhausted
+            last_error = e
+            _log.warning(
+                "PG pool init attempt %d/%d failed: %s (retry in %.1fs)",
+                attempt, max_attempts, str(e)[:200], delay,
+            )
+            if attempt == max_attempts:
+                break
+            time.sleep(delay)
+            delay = min(delay * 2, max_delay)
+    # Re-raise the most recent error so callers see the actual psycopg2/network cause.
+    assert last_error is not None  # invariant: loop ran ≥1 attempt
+    raise last_error
 
 
 def get_pool() -> PgPool:
-    """Return the initialized pool. Raises RuntimeError if init_pool() not called."""
+    """Return the initialized pool.
+
+    Raises `PoolNotInitializedError` (which IS-A RuntimeError, so legacy
+    `except RuntimeError` callers are unaffected) when the module-level pool
+    singleton has not been created yet. Use the typed exception in new code
+    so handlers can distinguish "pool down" from unrelated RuntimeErrors.
+    """
     if _pool is None:
-        raise RuntimeError(
+        from src.db.exceptions import PoolNotInitializedError  # noqa: PLC0415
+
+        raise PoolNotInitializedError(
             "PostgreSQL pool is not initialized. Call init_pool(dsn) at startup."
         )
     return _pool

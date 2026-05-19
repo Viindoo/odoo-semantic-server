@@ -148,7 +148,13 @@ def _get_driver():
 
 
 def _ensure_pg() -> None:
-    """Initialize centralized PG pool on first call. No-op if already initialized."""
+    """Initialize centralized PG pool on first call. No-op if already initialized.
+
+    Single-attempt with `connect_timeout` (default 5s) — fails fast on an
+    unreachable PG instead of hanging. The lifespan handler is responsible
+    for tolerating the failure (degraded mode + background retry) so the
+    MCP server keeps serving /health even when the DB tier is down.
+    """
     from src.db.pg import get_pool, init_pool
     try:
         get_pool()
@@ -3834,20 +3840,64 @@ if __name__ == "__main__":
         middleware=[_Middleware(AuthMiddleware)],
     )
 
-    # --- P0 fix: initialize PG pool before the first request reaches middleware ---
+    # --- Resilient PG startup: degraded mode + background retry (incident 2026-05-19) ---
     # AuthMiddleware.dispatch calls auth_store() → get_pool() on every authenticated
-    # request.  Without this startup hook, get_pool() raises RuntimeError because
-    # init_pool() was never called, and every MCP request returns HTTP 500.
+    # request. If init_pool() never ran, get_pool() raises RuntimeError. Previously
+    # we blocked startup on _ensure_pg() — but that turned any DB blip into uvicorn
+    # exit(3), and systemd Restart=on-failure happily looped the process forever
+    # (~11k restarts in 26h during the May 2026 incident).
     #
-    # We wrap the app's existing lifespan so that _ensure_pg() runs during ASGI
-    # startup — before uvicorn accepts any connections.  _ensure_pg() is idempotent:
-    # if the pool was already initialised (e.g. by a test harness) it is a no-op.
+    # New behaviour: try once with a short timeout. On failure, log a warning,
+    # schedule a background retry every 30s, and let startup complete. The
+    # AuthMiddleware returns 503 {"status":"degraded","pg":"unavailable"} for
+    # any non-public request until the pool comes up; /health (public) keeps
+    # reporting accurate status the whole time.
     _existing_lifespan = _app.router.lifespan_context
 
     @asynccontextmanager
     async def _lifespan_with_pg(app):
         import asyncio as _asyncio
-        await _asyncio.to_thread(_ensure_pg)
+
+        from src.constants import PG_BG_RETRY_INTERVAL_SECONDS
+        from src.db.pg import is_pool_initialized as _is_pool_initialized
+
+        _log = _logging.getLogger(__name__)
+        retry_task: _asyncio.Task | None = None
+
+        try:
+            await _asyncio.to_thread(_ensure_pg)
+            _log.info("PG pool initialized at startup")
+        except Exception as e:  # noqa: BLE001 — any failure → degraded mode
+            _log.warning(
+                "PG pool init failed at startup — entering DEGRADED mode."
+                " Service stays UP; /health returns degraded; non-public requests"
+                " return 503 until the pool recovers. Cause: %s",
+                str(e)[:300],
+            )
+
+            async def _bg_retry_init_pool():
+                # Retry on a fixed cadence until the pool comes up OR we get
+                # canceled by the lifespan-exit finally block below.
+                while not _is_pool_initialized():
+                    await _asyncio.sleep(PG_BG_RETRY_INTERVAL_SECONDS)
+                    try:
+                        await _asyncio.to_thread(_ensure_pg)
+                        _log.info(
+                            "PG pool initialized after background retry"
+                            " — degraded mode cleared",
+                        )
+                        return
+                    except Exception as bg_e:  # noqa: BLE001
+                        _log.warning(
+                            "PG background retry still failing: %s", str(bg_e)[:300],
+                        )
+
+            # Hold a strong reference so the task is not GC'd before completion,
+            # AND so the finally block below can cancel + await it on shutdown.
+            # Without this, the task is fire-and-forget: ASGI lifespan exit
+            # (rapid restart, hot reload) silently cancels it mid-flight.
+            retry_task = _asyncio.create_task(_bg_retry_init_pool())
+
         # Best-effort: warn ops team about legacy Neo4j nodes lacking `profile`
         # property so they know a full reindex is required (per ADR-0016).
         try:
@@ -3871,8 +3921,21 @@ if __name__ == "__main__":
                     )
         except Exception:
             pass  # startup warning is best-effort — never block startup
-        async with _existing_lifespan(app):
-            yield
+
+        try:
+            async with _existing_lifespan(app):
+                yield
+        finally:
+            # Cancel + await the background retry task on shutdown. Skip if
+            # the task already completed naturally (PG came back up). Catch
+            # CancelledError so the cancel itself doesn't propagate; any
+            # other exception is genuine and re-raised by the framework.
+            if retry_task is not None and not retry_task.done():
+                retry_task.cancel()
+                try:
+                    await retry_task
+                except _asyncio.CancelledError:
+                    pass
 
     _app.router.lifespan_context = _lifespan_with_pg
     # --------------------------------------------------------------------------

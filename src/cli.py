@@ -4,6 +4,7 @@ Usage:
     python -m src.cli backup --output backup/dump.tar.gz [--bundle-passphrase-env ENV_NAME]
     python -m src.cli restore <bundle.tar.gz | dump.sql>
     python -m src.cli rotate-fernet --old-key-env OLD_FERNET_KEY --new-key-env NEW_FERNET_KEY
+    python -m src.cli diagnose [--json]
 """
 import argparse
 import base64
@@ -58,6 +59,47 @@ def _resolve_neo4j_tool(tool: str) -> list[str]:
         return [tool]
     container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
     return ["docker", "exec", "-i", container, tool]
+
+
+def _is_pg_container_running() -> bool | None:
+    """Return True if the PG container reports `State.Running=true`, False if it
+    explicitly reports `false`, None if `docker` is unavailable, the container
+    is unknown, OR the output is ambiguous.
+
+    Used as a pre-check by the backup command so a nightly run reports
+    "skipped — PG container is not running" (exit 0, log WARNING) instead
+    of crashing with `psycopg2.OperationalError: Connection refused` and
+    being marked `failed` in systemd. Honours $POSTGRES_CONTAINER override
+    so split-tier deploys can swap the container name.
+
+    Returning None on ambiguous output (anything other than "true"/"false")
+    is deliberate: callers should fall through to the direct connection
+    attempt rather than incorrectly skipping. Past mocks in the test suite
+    return generic MagicMock objects for `docker inspect`, which must be
+    treated as "unknown", not "container down".
+    """
+    container = os.getenv("POSTGRES_CONTAINER", "odoo-semantic-mcp-postgres-1")
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container],
+            capture_output=True, text=True, shell=False,
+        )
+    except FileNotFoundError:
+        # No docker in PATH — caller can fall back to a direct PG_DSN attempt.
+        return None
+    if r.returncode != 0:
+        # Container does not exist (e.g. split-tier where PG is not in compose).
+        return None
+    stdout = r.stdout
+    if not isinstance(stdout, str):
+        # Mocked subprocess returning MagicMock — treat as unknown.
+        return None
+    out = stdout.strip()
+    if out == "true":
+        return True
+    if out == "false":
+        return False
+    return None
 
 
 def _wait_neo4j_healthy(timeout_seconds: int = 60) -> bool:
@@ -306,8 +348,42 @@ def _cmd_backup(args) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
+    # Pre-check: skip-gracefully when the PG container is known-not-running.
+    # During the May 2026 incident the nightly backup unit ran while postgres
+    # was Exited (127), producing a misleading "psycopg2.OperationalError"
+    # which marked the systemd unit `failed` and noisy-paged with no signal
+    # about the real upstream cause. Now we exit 0 with a WARNING line that
+    # log scrapers can route to a different channel.
+    container_running = _is_pg_container_running()
+    if container_running is False:
+        container_name = os.getenv("POSTGRES_CONTAINER", "odoo-semantic-mcp-postgres-1")
+        log.warning(
+            "Backup skipped: postgres container %r is not running."
+            " Start the DB tier (e.g. `make recreate-db`) and re-run.",
+            container_name,
+        )
+        print(
+            f"SKIPPED: postgres container {container_name!r} is not running — backup not taken.",
+            file=sys.stderr,
+        )
+        return 0
+    # container_running is True OR None (docker absent / container unknown):
+    # try the direct connection so split-tier deploys still work.
+
     import psycopg2
-    conn = psycopg2.connect(dsn)
+
+    from src.constants import PG_CONNECT_TIMEOUT_SECONDS
+    try:
+        conn = psycopg2.connect(dsn, connect_timeout=PG_CONNECT_TIMEOUT_SECONDS)
+    except psycopg2.OperationalError as e:
+        # `Connection refused`, `timeout expired`, etc. Same skip-gracefully
+        # path as container-not-running so the nightly unit does not page.
+        log.warning("Backup skipped: PG connection failed — %s", str(e)[:300])
+        print(
+            f"SKIPPED: PG connection failed — backup not taken. Cause: {str(e)[:300]}",
+            file=sys.stderr,
+        )
+        return 0
     try:
         with _backup_advisory_lock(conn) as lock_acquired:
             if not lock_acquired:
@@ -746,6 +822,123 @@ def _cmd_rotate_fernet(args) -> int:
     return 0
 
 
+def _diagnose_initdb_dir() -> Path:
+    """Resolve `docker/initdb.d` against `src/cli.py`'s location (NOT runtime cwd).
+
+    Same pattern as `src/db/migrate.py`'s `_MIGRATIONS_DIR`: anchor to
+    `__file__` so the check works under systemd (`WorkingDirectory=/`), cron,
+    or any caller. Exposed as a function (rather than a module constant) so
+    tests can monkeypatch it cleanly.
+    """
+    return Path(__file__).resolve().parent.parent / "docker" / "initdb.d"
+
+
+def _cmd_diagnose(args) -> int:
+    """Cross-tier health diagnostic. Reports PG container, Neo4j container,
+    MCP /health endpoint, and bind-mount source types declared in compose.
+
+    Output: human-readable text by default; `--json` emits a single object
+    suitable for piping into a remote alert pipeline.
+
+    Exit codes:
+        0  all checks passed (or all checks skipped because docker absent)
+        1  at least one check FAILED — see output for which
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    checks: list[dict] = []
+
+    # Check 1: PG container running
+    pg_container = os.getenv("POSTGRES_CONTAINER", "odoo-semantic-mcp-postgres-1")
+    pg_running = _is_pg_container_running()
+    if pg_running is None:
+        checks.append({"check": "pg_container_running", "status": "skipped",
+                       "detail": "docker not available or container unknown"})
+    elif pg_running:
+        checks.append({"check": "pg_container_running", "status": "ok",
+                       "detail": pg_container})
+    else:
+        checks.append({"check": "pg_container_running", "status": "fail",
+                       "detail": f"{pg_container} not running"})
+
+    # Check 2: Neo4j container healthy
+    neo4j_container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Health.Status}}", neo4j_container],
+            capture_output=True, text=True, shell=False,
+        )
+        if r.returncode != 0:
+            checks.append({"check": "neo4j_container_healthy", "status": "skipped",
+                           "detail": f"{neo4j_container} not found"})
+        elif r.stdout.strip() == "healthy":
+            checks.append({"check": "neo4j_container_healthy", "status": "ok",
+                           "detail": neo4j_container})
+        else:
+            checks.append({"check": "neo4j_container_healthy", "status": "fail",
+                           "detail": f"{neo4j_container} state={r.stdout.strip() or 'unknown'}"})
+    except FileNotFoundError:
+        checks.append({"check": "neo4j_container_healthy", "status": "skipped",
+                       "detail": "docker not in PATH"})
+
+    # Check 3: MCP /health endpoint reachable
+    from src.constants import MCP_HEALTH_PROBE_TIMEOUT_SECONDS
+    mcp_url = os.getenv("MCP_HEALTH_URL", "http://127.0.0.1:8002/health")
+    try:
+        with urllib.request.urlopen(
+            mcp_url, timeout=MCP_HEALTH_PROBE_TIMEOUT_SECONDS,
+        ) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed = _json.loads(body)
+                health_status = parsed.get("status", "unknown")
+            except _json.JSONDecodeError:
+                health_status = "unparseable"
+            if resp.status == 200 and health_status == "ok":
+                checks.append({"check": "mcp_health", "status": "ok",
+                               "detail": f"HTTP {resp.status} status={health_status}"})
+            else:
+                checks.append({"check": "mcp_health", "status": "fail",
+                               "detail": f"HTTP {resp.status} status={health_status}"})
+    except urllib.error.URLError as e:
+        checks.append({"check": "mcp_health", "status": "fail",
+                       "detail": f"unreachable: {str(e)[:200]}"})
+    except Exception as e:
+        checks.append({"check": "mcp_health", "status": "fail",
+                       "detail": f"unexpected: {str(e)[:200]}"})
+
+    # Check 4: bind-mount source declared in compose is a directory
+    # (regression guard for the May 2026 incident — Docker daemon auto-creates
+    # an empty *file* as a directory if it doesn't exist before the next `up`,
+    # so we verify the declared source path is intact and the correct type).
+    init_dir = _diagnose_initdb_dir()
+    if init_dir.exists():
+        if init_dir.is_dir():
+            checks.append({"check": "compose_initdb_mount_type", "status": "ok",
+                           "detail": f"{init_dir} is a directory"})
+        else:
+            checks.append({"check": "compose_initdb_mount_type", "status": "fail",
+                           "detail": f"{init_dir} exists but is NOT a directory — fix immediately"})
+    else:
+        checks.append({"check": "compose_initdb_mount_type", "status": "skipped",
+                       "detail": f"{init_dir} missing (repo not deployed here?)"})
+
+    failures = [c for c in checks if c["status"] == "fail"]
+
+    if getattr(args, "json", False):
+        print(_json.dumps({"checks": checks, "failures": len(failures)}, indent=2))
+    else:
+        print("=== osm diagnose ===")
+        for c in checks:
+            symbol = {"ok": "✓", "fail": "✗", "skipped": "~"}[c["status"]]
+            print(f"  {symbol} {c['check']:<30} {c['detail']}")
+        print(f"\n{len(failures)} failure(s) of {len(checks)} checks")
+
+    return 1 if failures else 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m src.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -793,6 +986,16 @@ def _build_parser() -> argparse.ArgumentParser:
     rot.add_argument("--old-key", help=argparse.SUPPRESS)
     rot.add_argument("--new-key", help=argparse.SUPPRESS)
 
+    diag = sub.add_parser(
+        "diagnose",
+        help="Cross-tier health check (PG, Neo4j, MCP /health, bind-mount types).",
+    )
+    diag.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of human-readable text (for alert pipelines).",
+    )
+
     return parser
 
 
@@ -805,6 +1008,8 @@ def main(argv=None) -> int:
         return _cmd_restore(args)
     elif args.cmd == "rotate-fernet":
         return _cmd_rotate_fernet(args)
+    elif args.cmd == "diagnose":
+        return _cmd_diagnose(args)
     return 0
 
 

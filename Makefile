@@ -7,7 +7,8 @@ COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
 .PHONY: help install test test-unit test-integration test-browser test-all \
-        neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell validate-plugin
+        neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell validate-plugin \
+        recreate-db
 
 help:
 	@echo "Targets:"
@@ -19,6 +20,7 @@ help:
 	@echo "  neo4j-up          Start Neo4j container"
 	@echo "  neo4j-down        Stop Neo4j container"
 	@echo "  neo4j-logs        Xem log Neo4j"
+	@echo "  recreate-db       down → up postgres → wait-healthy (use sau khi compose đổi)"
 	@echo "  lint              Chạy ruff + shell lint (strict)"
 
 install:
@@ -78,6 +80,20 @@ neo4j-down:
 
 neo4j-logs:
 	$(COMPOSE) logs -f neo4j
+
+# --- DB tier lifecycle ---
+
+# Atomically recreate the DB tier. Run this AFTER any change to docker-compose.yml
+# (bind-mount paths, image versions, volume mappings) — a bare `docker compose up -d`
+# is not enough because existing containers remember the OLD bind-mount metadata
+# (resolved from the cwd they were first created in) and the `up` command does
+# NOT re-resolve unless the container is recreated. See incident 2026-05-19
+# (docs/deploy/db-tier-operations.md).
+recreate-db:
+	$(COMPOSE) down
+	$(COMPOSE) up -d postgres
+	@echo "Đợi PostgreSQL healthy..."
+	@bash scripts/wait-pg-healthy.sh
 
 # --- Lint ---
 

@@ -13,6 +13,7 @@
 Description=OSM nightly backup
 After=docker.service
 Requires=docker.service
+OnFailure=osm-alert@%n.service
 
 [Service]
 Type=oneshot
