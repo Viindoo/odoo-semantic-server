@@ -3,7 +3,7 @@
 Implements Wave E (M11) implicit-context design from ADR-0029:
 - ``get_session_state`` / ``set_active_version_db`` / ``set_active_profile_db`` —
   read and write the ``api_key_session_state`` table.
-- ``normalize_version_arg`` — collapses 5 sentinel strings to ``None``.
+- ``normalize_version_arg`` — collapses 6 sentinel strings to ``None``.
 - ``resolve_version_v2`` — resolution order: explicit → session DB → latest fallback.
 
 Cache:
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 # Constants
 # ---------------------------------------------------------------------------
 
-_SENTINELS: frozenset[str] = frozenset({"default", "latest", "version", "any", ""})
+_SENTINELS: frozenset[str] = frozenset({"auto", "default", "latest", "version", "any", ""})
 _CACHE_TTL_SEC: float = 60.0
 _SESSION_TTL_HOURS: int = 24
 
@@ -99,9 +99,9 @@ def _cache_invalidate(api_key_id: str) -> None:
 def normalize_version_arg(version: str | None) -> str | None:
     """Collapse LLM-hallucinated sentinel strings to ``None``.
 
-    The 5 sentinels are: ``"default"``, ``"latest"``, ``"version"``,
-    ``"any"``, and the empty string ``""``.  Comparison is
-    case-insensitive and strips surrounding whitespace.
+    The 6 sentinels are: ``"auto"``, ``"default"``, ``"latest"``,
+    ``"version"``, ``"any"``, and the empty string ``""``.  Comparison
+    is case-insensitive and strips surrounding whitespace.
 
     Args:
         version: Version string from an MCP tool call argument.
@@ -296,6 +296,14 @@ def resolve_version_v2(
     if state is not None and state.odoo_version:
         return state.odoo_version
 
-    # Tier 3: latest-version fallback via Neo4j index
-    from src.mcp.server import _resolve_version  # noqa: PLC0415
-    return _resolve_version("auto", session)
+    # Tier 3: latest-version fallback via Neo4j index.
+    # Import _latest_version (not _resolve_version) to avoid infinite recursion:
+    # _resolve_version now delegates back to resolve_version_v2, so calling it
+    # here would loop.  _latest_version is a pure Neo4j query with no recursion.
+    from src.mcp.server import _latest_version  # noqa: PLC0415
+    v = _latest_version(session)
+    if v is None:
+        raise ValueError(
+            "No data indexed. Run `python -m src.indexer index-repo --profile <name>` first."
+        )
+    return v

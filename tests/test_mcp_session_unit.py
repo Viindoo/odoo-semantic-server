@@ -53,7 +53,7 @@ def _clear_cache() -> None:
 class TestNormalizeVersionArg:
     """AC-E2-2 — 5 sentinels collapse to None; real versions pass through."""
 
-    @pytest.mark.parametrize("sentinel", ["default", "latest", "version", "any", ""])
+    @pytest.mark.parametrize("sentinel", ["auto", "default", "latest", "version", "any", ""])
     def test_sentinels_collapse_to_none(self, sentinel: str) -> None:
         assert normalize_version_arg(sentinel) is None
 
@@ -133,31 +133,31 @@ class TestResolveVersionV2:
         assert result == "14.0"
 
     def test_no_session_falls_to_latest_fallback(self) -> None:
-        """Tier 3: no explicit + no session state → _resolve_version('auto', session)."""
+        """Tier 3: no explicit + no session state → _latest_version(session) fallback."""
         mock_session = self._mock_neo4j_session()
 
         with (
             patch("src.mcp.session.get_session_state", return_value=None),
-            patch("src.mcp.server._resolve_version", return_value="17.0") as mock_rv,
+            patch("src.mcp.server._latest_version", return_value="17.0") as mock_lv,
         ):
             result = resolve_version_v2(None, "key1", mock_session)
 
         assert result == "17.0"
-        mock_rv.assert_called_once_with("auto", mock_session)
+        mock_lv.assert_called_once_with(mock_session)
 
     def test_session_state_version_none_falls_to_fallback(self) -> None:
-        """Tier 3: session exists but odoo_version is None → fallback."""
+        """Tier 3: session exists but odoo_version is None → _latest_version fallback."""
         mock_session = self._mock_neo4j_session()
         state = SessionState(api_key_id="key1", odoo_version=None, profile_name=None)
 
         with (
             patch("src.mcp.session.get_session_state", return_value=state),
-            patch("src.mcp.server._resolve_version", return_value="17.0") as mock_rv,
+            patch("src.mcp.server._latest_version", return_value="17.0") as mock_lv,
         ):
             result = resolve_version_v2(None, "key1", mock_session)
 
         assert result == "17.0"
-        mock_rv.assert_called_once_with("auto", mock_session)
+        mock_lv.assert_called_once_with(mock_session)
 
 
 # ---------------------------------------------------------------------------
