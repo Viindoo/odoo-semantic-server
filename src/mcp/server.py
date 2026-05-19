@@ -49,8 +49,13 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
     format_next_step,
     hints_for,
 )
+from src.mcp.refs import mint_refs
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 from src.mcp.tree_builder import render_list_block
+
+# Sentinel api_key_id for direct _impl calls (tests, CLI) — refs are scoped
+# to this namespace and do not collide with production tenant refs.
+_ANONYMOUS_API_KEY_ID = "anonymous"
 
 
 def _edition_rank_cypher(node_alias: str = "mod") -> str:
@@ -2437,17 +2442,19 @@ def _list_fields(
     kind: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
     """Layer-2 — enumerate fields on a model, grouped by module.
 
     `kind` filters by Field.ttype (e.g. 'monetary', 'many2one').
     `module` restricts to one declaring module.
     `limit` caps the Cypher query size; the render cap is LIST_PREVIEW_FIELDS_MAX.
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
     cap = LIST_PREVIEW_FIELDS_MAX
-    # Fetch at most cap rows via Cypher; total count comes from separate query.
-    # This avoids double-disclosure: _render_capped handles cap-level cutoff,
-    # the count query drives the "and N more" top-level banner.
+    # Fetch at most cap rows via Cypher with SKIP for pagination.
     effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
@@ -2468,13 +2475,14 @@ def _list_fields(
                    f.module AS module, mod.repo AS repo,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
+            SKIP $skip
             LIMIT $limit
             """,
             m=model, v=odoo_version, module=module, kind=kind,
-            profile_name=profile_name, limit=effective_limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
-        # Separate count query so we know the true total when Cypher LIMIT trims.
+        # Separate count query so we know the true total when Cypher SKIP/LIMIT trims.
         total_rec = session.run(
             """
             MATCH (f:Field {model: $m, odoo_version: $v})
@@ -2498,48 +2506,65 @@ def _list_fields(
         ])
         return f"{header}\n├─ (none)\n{next_line}"
 
+    # Mint opaque refs for each returned row (field kind).
+    field_items = [{"field_name": r["name"], "model": model} for r in rows]
+    ref_ids = mint_refs(field_items, api_key_id, kind="field")
+
     # Group rows by (repo, module) preserving order.
-    groups: dict[tuple[str, str], list[dict]] = {}
+    groups: dict[tuple[str, str], list[tuple[dict, str]]] = {}
     order: list[tuple[str, str]] = []
-    for r in rows:
+    for r, ref_id in zip(rows, ref_ids):
         key = (r.get("repo") or "?", r.get("module") or "?")
         if key not in groups:
             groups[key] = []
             order.append(key)
-        groups[key].append(r)
+        groups[key].append((r, ref_id))
 
     lines = [header]
-    last_g = len(order) - 1
-    for i, key in enumerate(order):
+    for key in order:
         repo, mod_name = key
-        is_last_group = i == last_g
-        g_conn = "├─" if not is_last_group else "├─"  # always ├─ so footer slot stays
-        lines.append(f"{g_conn} [{repo}] {mod_name}")
-        # All module groups use ├─ (footer slot stays as last branch),
-        # so render_list_block's default pipe-indent prefix is correct.
-        items = groups[key]
+        lines.append(f"├─ [{repo}] {mod_name}")
+        sub_items = groups[key]
         more_hint = (
             f"list_fields(model='{model}', odoo_version='{odoo_version}'"
             f", limit={max(limit * 2, total)}) for full list"
         )
-        # Cap per-group based on the global cap proportional split is overkill;
-        # for simplicity cap each group at the global cap and rely on the
-        # explicit total disclosure below.
-        rendered = _render_capped(
-            items,
+        # Build rendered strings with inline refs.
+        raw_rows = [r for r, _ in sub_items]
+        rendered_strs = _render_capped(
+            raw_rows,
             lambda r: f"{r['name']} : {r['ttype']}",
             cap=cap,
             more_hint=more_hint,
         )
-        lines.extend(render_list_block(rendered))
+        # Inject [ref=fN] prefix for non-hint rows.
+        ref_iter = iter([ref_id for _, ref_id in sub_items])
+        tagged: list[str] = []
+        for row_str in rendered_strs:
+            if row_str.startswith("... and "):
+                tagged.append(row_str)
+            else:
+                ref_id = next(ref_iter, None)
+                prefix = f"[ref={ref_id}] " if ref_id else ""
+                tagged.append(f"{prefix}{row_str}")
+        lines.extend(render_list_block(tagged))
 
-    if total > len(rows):
-        # Cypher LIMIT trimmed — emit a tree-level disclosure as a sibling
-        # branch (├─) so Wave 5 Next: footer can still be the final └─.
+    shown = len(rows)
+    end_index = start_index + shown
+    has_more = total > end_index
+
+    if has_more:
+        # Pagination continuation hint (plain text, NOT <error> tag — ADR-0023
+        # §Appendix B item #2: pagination is routine, not failure).
         lines.append(
-            f"├─ ... and {total - len(rows)} more"
-            f" (use list_fields(model='{model}', odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}))"
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f" Call list_fields(model='{model}', odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {min(cap, total - end_index)}."
+        )
+    elif start_index > 0:
+        # Final page of a paginated sequence — disclose position.
+        lines.append(
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4. Drill into the first
@@ -2565,14 +2590,18 @@ def _list_methods(
     module: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
     """Layer-4 — enumerate methods on a model, grouped by module.
 
     Methods appearing in ≥2 modules for the same model are marked with `(*)`
     per ADR-0023 §5.3 to flag override-points.
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
     cap = LIST_PREVIEW_MAX_ITEMS
-    # Fetch at most cap rows via Cypher; total count comes from separate query.
+    # Fetch at most cap rows via Cypher with SKIP for pagination.
     effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
@@ -2592,10 +2621,11 @@ def _list_methods(
                    mth.module AS module, mod.repo AS repo,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
+            SKIP $skip
             LIMIT $limit
             """,
             m=model, v=odoo_version, module=module,
-            profile_name=profile_name, limit=effective_limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -2633,43 +2663,70 @@ def _list_methods(
         ])
         return f"{header}\n├─ (none)\n{next_line}"
 
-    groups: dict[tuple[str, str], list[dict]] = {}
+    # Mint opaque refs for each returned row (method kind).
+    method_items = [{"method_name": r["name"], "model": model} for r in rows]
+    ref_ids = mint_refs(method_items, api_key_id, kind="method")
+
+    groups: dict[tuple[str, str], list[tuple[dict, str]]] = {}
     order: list[tuple[str, str]] = []
-    for r in rows:
+    for r, ref_id in zip(rows, ref_ids):
         key = (r.get("repo") or "?", r.get("module") or "?")
         if key not in groups:
             groups[key] = []
             order.append(key)
-        groups[key].append(r)
+        groups[key].append((r, ref_id))
 
     lines = [header]
-    for i, key in enumerate(order):
+    for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
         sub_indent = "│   "
-        items = groups[key]
+        sub_items = groups[key]
         more_hint = (
             f"list_methods(model='{model}', odoo_version='{odoo_version}'"
             f", limit={max(limit * 2, total)}) for full list"
         )
+
+        raw_rows = [r for r, _ in sub_items]
 
         def _fmt_method(r):
             marker = "(*)" if r["name"] in override_names else ""
             kind_str = r.get("kind") or "private"
             return f"{r['name']}{marker} : {kind_str}"
 
-        rendered = _render_capped(items, _fmt_method, cap=cap, more_hint=more_hint)
-        last_r = len(rendered) - 1
-        for j, row in enumerate(rendered):
+        rendered = _render_capped(raw_rows, _fmt_method, cap=cap, more_hint=more_hint)
+        # Inject [ref=mN] prefix for non-hint rows.
+        ref_iter = iter([ref_id for _, ref_id in sub_items])
+        tagged: list[str] = []
+        for row_str in rendered:
+            if row_str.startswith("... and "):
+                tagged.append(row_str)
+            else:
+                ref_id = next(ref_iter, None)
+                prefix = f"[ref={ref_id}] " if ref_id else ""
+                tagged.append(f"{prefix}{row_str}")
+
+        last_r = len(tagged) - 1
+        for j, row in enumerate(tagged):
             r_conn = "└─" if j == last_r else "├─"
             lines.append(f"{sub_indent}{r_conn} {row}")
 
-    if total > len(rows):
+    shown = len(rows)
+    end_index = start_index + shown
+    has_more = total > end_index
+
+    if has_more:
+        # Pagination continuation hint (plain text, NOT <error> tag).
         lines.append(
-            f"├─ ... and {total - len(rows)} more"
-            f" (use list_methods(model='{model}', odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}))"
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f" Call list_methods(model='{model}', odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
+    elif start_index > 0:
+        lines.append(
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+        )
+
     # Wave 5: Next-step footer per ADR-0023 §4.
     first_method = rows[0]["name"] if rows else None
     next_hints: list[str] = []
@@ -2693,13 +2750,17 @@ def _list_views(
     view_type: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
     """Layer-5 — enumerate XML views targeting a model.
 
     `view_type` filters by View.type (form/tree/kanban/search/...).
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
     cap = LIST_PREVIEW_MAX_ITEMS
-    # Fetch at most cap rows via Cypher; total count comes from separate query.
+    # Fetch at most cap rows via Cypher with SKIP for pagination.
     effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
@@ -2719,10 +2780,11 @@ def _list_views(
                    v.module AS module, mod.repo AS repo,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
+            SKIP $skip
             LIMIT $limit
             """,
             m=model, ver=odoo_version, view_type=view_type,
-            profile_name=profile_name, limit=effective_limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -2746,42 +2808,67 @@ def _list_views(
         ])
         return f"{header}\n├─ (none)\n{next_line}"
 
-    groups: dict[tuple[str, str], list[dict]] = {}
+    # Mint opaque refs for each returned row (view kind).
+    view_items = [{"xmlid": r["xmlid"]} for r in rows]
+    ref_ids = mint_refs(view_items, api_key_id, kind="view")
+
+    groups: dict[tuple[str, str], list[tuple[dict, str]]] = {}
     order: list[tuple[str, str]] = []
-    for r in rows:
+    for r, ref_id in zip(rows, ref_ids):
         key = (r.get("repo") or "?", r.get("module") or "?")
         if key not in groups:
             groups[key] = []
             order.append(key)
-        groups[key].append(r)
+        groups[key].append((r, ref_id))
 
     lines = [header]
-    for i, key in enumerate(order):
+    for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
         sub_indent = "│   "
-        items = groups[key]
+        sub_items = groups[key]
         more_hint = (
             f"list_views(model='{model}', odoo_version='{odoo_version}'"
             f", limit={max(limit * 2, total)}) for full list"
         )
+        raw_rows = [r for r, _ in sub_items]
         rendered = _render_capped(
-            items,
+            raw_rows,
             lambda r: f"{r['xmlid']} : {r.get('type') or 'unknown'}",
             cap=cap,
             more_hint=more_hint,
         )
-        last_r = len(rendered) - 1
-        for j, row in enumerate(rendered):
+        # Inject [ref=vN] prefix for non-hint rows.
+        ref_iter = iter([ref_id for _, ref_id in sub_items])
+        tagged: list[str] = []
+        for row_str in rendered:
+            if row_str.startswith("... and "):
+                tagged.append(row_str)
+            else:
+                ref_id = next(ref_iter, None)
+                prefix = f"[ref={ref_id}] " if ref_id else ""
+                tagged.append(f"{prefix}{row_str}")
+
+        last_r = len(tagged) - 1
+        for j, row in enumerate(tagged):
             r_conn = "└─" if j == last_r else "├─"
             lines.append(f"{sub_indent}{r_conn} {row}")
 
-    if total > len(rows):
+    shown = len(rows)
+    end_index = start_index + shown
+    has_more = total > end_index
+
+    if has_more:
         lines.append(
-            f"├─ ... and {total - len(rows)} more"
-            f" (use list_views(model='{model}', odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}))"
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f" Call list_views(model='{model}', odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
+    elif start_index > 0:
+        lines.append(
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+        )
+
     # Wave 5: Next-step footer per ADR-0023 §4.
     first_xmlid = rows[0]["xmlid"] if rows else None
     next_hints: list[str] = []
@@ -2804,14 +2891,19 @@ def _list_owl_components(
     bound_model: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
     """Layer-5b — enumerate OWL components declared in a module.
 
     Era-aware: returns empty + warning for Odoo majors <= 13 (Widget era,
     no OWL components). When `bound_model` filter is set, emits a warning
     footer because parser_js.py:415 bound_model resolution is heuristic.
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
     cap = LIST_PREVIEW_MAX_ITEMS
+    effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
@@ -2845,10 +2937,11 @@ def _list_owl_components(
             RETURN c.name AS name, c.bound_model AS bound_model,
                    c.template AS template
             ORDER BY c.name ASC
+            SKIP $skip
             LIMIT $limit
             """,
             mod=module, v=odoo_version, bound_model=bound_model,
-            profile_name=profile_name, limit=limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -2882,18 +2975,37 @@ def _list_owl_components(
         ]))
         return "\n".join(lines)
 
+    # Mint opaque refs for each returned row.
+    # Use field_name key so _infer_kind detects 'field' (prefix 'f').
+    # OWL components have no native kind in PREFIX_BY_KIND; 'field' prefix
+    # is acceptable for non-model-entity refs (future wave can add 'owl' kind).
+    comp_items = [{"field_name": r["name"], "module": module} for r in rows]
+    ref_ids = mint_refs(comp_items, api_key_id, kind="field")
+
     lines = [header]
     more_hint = (
         f"list_owl_components(module='{module}'"
         f", odoo_version='{odoo_version}', limit={max(limit * 2, total)})"
         " for full list"
     )
+    raw_rows = rows
     rendered = _render_capped(
-        rows,
+        raw_rows,
         lambda r: f"{r['name']} : {r.get('bound_model') or '(unbound)'}",
         cap=cap,
         more_hint=more_hint,
     )
+    # Inject [ref=fN] prefix for non-hint rows.
+    ref_iter = iter(ref_ids)
+    tagged: list[str] = []
+    for row_str in rendered:
+        if row_str.startswith("... and "):
+            tagged.append(row_str)
+        else:
+            ref_id = next(ref_iter, None)
+            prefix = f"[ref={ref_id}] " if ref_id else ""
+            tagged.append(f"{prefix}{row_str}")
+
     # If bound_model filter used, the warning must precede the data (as ├─)
     # so the final data branch can still terminate cleanly.
     if bound_model is not None:
@@ -2902,16 +3014,26 @@ def _list_owl_components(
             " — may miss components using dynamic this.props.resModel"
         )
 
-    for row in rendered:
+    for row in tagged:
         # Wave 5: All rows are ├─; Next: footer becomes the final └─.
         lines.append(f"├─ {row}")
 
-    if total > len(rows):
+    shown = len(rows)
+    end_index = start_index + shown
+    has_more = total > end_index
+
+    if has_more:
         lines.append(
-            f"├─ ... and {total - len(rows)} more"
-            f" (use list_owl_components(module='{module}'"
-            f", odoo_version='{odoo_version}', limit={max(limit * 2, total)}))"
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f" Call list_owl_components(module='{module}',"
+            f" odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
+    elif start_index > 0:
+        lines.append(
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+        )
+
     # Wave 5: Next-step footer per ADR-0023 §4.
     lines.append(format_next_step([
         f"list_qweb_templates(module='{module}', odoo_version='{odoo_version}')"
@@ -2927,12 +3049,17 @@ def _list_qweb_templates(
     odoo_version: str = "auto",
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
     """Layer-5c — enumerate QWeb templates declared in a module.
 
     Renders `xmlid : t-inherit=<parent or (root)>` per ADR-0023 §5.3.
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
     cap = LIST_PREVIEW_MAX_ITEMS
+    effective_limit = min(limit, cap)
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
@@ -2946,9 +3073,11 @@ def _list_qweb_templates(
             WHERE NOT coalesce(parent.unresolved, false)
             RETURN t.xmlid AS xmlid, parent.xmlid AS parent_xmlid
             ORDER BY t.xmlid ASC
+            SKIP $skip
             LIMIT $limit
             """,
-            mod=module, v=odoo_version, profile_name=profile_name, limit=limit,
+            mod=module, v=odoo_version, profile_name=profile_name,
+            skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -2972,6 +3101,11 @@ def _list_qweb_templates(
         ])
         return f"{header}\n├─ (none)\n{next_line}"
 
+    # Mint opaque refs for each returned row.
+    # QWeb templates have xmlid — use view kind (prefix 'v').
+    tmpl_items = [{"xmlid": r["xmlid"]} for r in rows]
+    ref_ids = mint_refs(tmpl_items, api_key_id, kind="view")
+
     lines = [header]
     more_hint = (
         f"list_qweb_templates(module='{module}'"
@@ -2987,16 +3121,32 @@ def _list_qweb_templates(
         cap=cap,
         more_hint=more_hint,
     )
-    for row in rendered:
-        # Wave 5: All rows are ├─; Next: footer becomes the final └─.
-        lines.append(f"├─ {row}")
+    # Inject [ref=vN] prefix for non-hint rows.
+    ref_iter = iter(ref_ids)
+    for row_str in rendered:
+        if row_str.startswith("... and "):
+            lines.append(f"├─ {row_str}")
+        else:
+            ref_id = next(ref_iter, None)
+            prefix = f"[ref={ref_id}] " if ref_id else ""
+            lines.append(f"├─ {prefix}{row_str}")
 
-    if total > len(rows):
+    shown = len(rows)
+    end_index = start_index + shown
+    has_more = total > end_index
+
+    if has_more:
         lines.append(
-            f"├─ ... and {total - len(rows)} more"
-            f" (use list_qweb_templates(module='{module}'"
-            f", odoo_version='{odoo_version}', limit={max(limit * 2, total)}))"
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f" Call list_qweb_templates(module='{module}',"
+            f" odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
+    elif start_index > 0:
+        lines.append(
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+        )
+
     # Wave 5: Next-step footer per ADR-0023 §4.
     lines.append(format_next_step([
         f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
@@ -3026,14 +3176,19 @@ def _list_js_patches(
     era: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> str:
     """Layer-5d — enumerate JS patches across eras (Widget extend, mixin
     include, OWL patch).
 
     `era` accepts era1/era2/era3 (preferred) or extend/include/patch (stored
     values). `target` filters by patched component/widget name.
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
     cap = LIST_PREVIEW_PATCHES_MAX
+    effective_limit = min(limit, cap)
 
     era_filter: str | None = None
     if era is not None:
@@ -3063,10 +3218,11 @@ def _list_js_patches(
                    j.era AS era, j.module AS module, mod.repo AS repo,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, j.target ASC, j.patch_name ASC
+            SKIP $skip
             LIMIT $limit
             """,
             v=odoo_version, target=target, module=module, era=era_filter,
-            profile_name=profile_name, limit=limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -3101,44 +3257,73 @@ def _list_js_patches(
             ])
         return f"{header}\n├─ (none)\n{next_line}"
 
-    groups: dict[tuple[str, str], list[dict]] = {}
+    # Mint opaque refs for each returned row.
+    # JS patches have module_name key → 'module' kind (prefix 'x').
+    patch_items = [
+        {"module_name": r.get("module") or "?", "target": r.get("target") or "?"}
+        for r in rows
+    ]
+    ref_ids = mint_refs(patch_items, api_key_id, kind="module")
+
+    groups: dict[tuple[str, str], list[tuple[dict, str]]] = {}
     order: list[tuple[str, str]] = []
-    for r in rows:
+    for r, ref_id in zip(rows, ref_ids):
         key = (r.get("repo") or "?", r.get("module") or "?")
         if key not in groups:
             groups[key] = []
             order.append(key)
-        groups[key].append(r)
+        groups[key].append((r, ref_id))
 
     lines = [header]
     for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
         sub_indent = "│   "
-        items = groups[key]
+        sub_items = groups[key]
         more_hint = (
             f"list_js_patches(odoo_version='{odoo_version}'"
             f", limit={max(limit * 2, total)}) for full list"
         )
+        raw_rows = [r for r, _ in sub_items]
         rendered = _render_capped(
-            items,
+            raw_rows,
             lambda r: (
                 f"{r['target']}.{r['patch_name']} : era={r.get('era') or '?'}"
             ),
             cap=cap,
             more_hint=more_hint,
         )
-        last_r = len(rendered) - 1
-        for j, row in enumerate(rendered):
+        # Inject [ref=xN] prefix for non-hint rows.
+        ref_iter = iter([ref_id for _, ref_id in sub_items])
+        tagged: list[str] = []
+        for row_str in rendered:
+            if row_str.startswith("... and "):
+                tagged.append(row_str)
+            else:
+                ref_id = next(ref_iter, None)
+                prefix = f"[ref={ref_id}] " if ref_id else ""
+                tagged.append(f"{prefix}{row_str}")
+
+        last_r = len(tagged) - 1
+        for j, row in enumerate(tagged):
             r_conn = "└─" if j == last_r else "├─"
             lines.append(f"{sub_indent}{r_conn} {row}")
 
-    if total > len(rows):
+    shown = len(rows)
+    end_index = start_index + shown
+    has_more = total > end_index
+
+    if has_more:
         lines.append(
-            f"├─ ... and {total - len(rows)} more"
-            f" (use list_js_patches(odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}))"
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f" Call list_js_patches(odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
+    elif start_index > 0:
+        lines.append(
+            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+        )
+
     # Wave 5: Next-step footer per ADR-0023 §4. Prefer module-scoped OWL
     # drill-down when module is known; otherwise suggest find_examples.
     if module:
@@ -3942,6 +4127,8 @@ def _list_fields_structured(
     kind: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> ListFieldsOutput | None:
     """Structured companion for _list_fields. Returns None when model has no fields."""
     cap = LIST_PREVIEW_FIELDS_MAX
@@ -3964,10 +4151,11 @@ def _list_fields_structured(
             RETURN f.name AS name, f.ttype AS ttype, f.module AS module_name,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
+            SKIP $skip
             LIMIT $limit
             """,
             m=model, v=odoo_version, module=module, kind=kind,
-            profile_name=profile_name, limit=effective_limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -3984,14 +4172,19 @@ def _list_fields_structured(
         ).single()
         total = total_rec["c"] if total_rec else 0
 
+    # Mint refs for the structured channel — same api_key_id as text channel.
+    field_items = [{"field_name": r["name"], "model": model} for r in rows]
+    ref_ids = mint_refs(field_items, api_key_id, kind="field")
+
     fields = [
         FieldRef(
             model=model,
             name=r["name"],
             module=r["module_name"],
             odoo_version=odoo_version,
+            ref=ref_id,
         )
-        for r in rows
+        for r, ref_id in zip(rows, ref_ids)
     ]
 
     first_field = rows[0]["name"] if rows else None
@@ -4021,6 +4214,8 @@ def _list_methods_structured(
     module: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
 ) -> ListMethodsOutput | None:
     """Structured companion for _list_methods. Returns None when model has no methods."""
     cap = LIST_PREVIEW_MAX_ITEMS
@@ -4042,10 +4237,11 @@ def _list_methods_structured(
             RETURN mth.name AS name, mth.module AS module_name,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
+            SKIP $skip
             LIMIT $limit
             """,
             m=model, v=odoo_version, module=module,
-            profile_name=profile_name, limit=effective_limit,
+            profile_name=profile_name, skip=start_index, limit=effective_limit,
         ).data()
 
         total_rec = session.run(
@@ -4074,14 +4270,19 @@ def _list_methods_structured(
         ).single()
         override_names = sorted(override_rec["overrides"]) if override_rec else []
 
+    # Mint refs for the structured channel — same api_key_id as text channel.
+    method_items = [{"method_name": r["name"], "model": model} for r in rows]
+    ref_ids = mint_refs(method_items, api_key_id, kind="method")
+
     methods = [
         MethodRef(
             model=model,
             name=r["name"],
             module=r["module_name"],
             odoo_version=odoo_version,
+            ref=ref_id,
         )
-        for r in rows
+        for r, ref_id in zip(rows, ref_ids)
     ]
 
     first_method = rows[0]["name"] if rows else None
@@ -4168,6 +4369,7 @@ def list_fields(
     kind: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
 ) -> ToolResult:
     """Enumerate fields declared on an Odoo model, grouped by module.
 
@@ -4187,20 +4389,29 @@ def list_fields(
         kind: Optional ttype filter (e.g. 'monetary', 'many2one').
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 50 per ADR-0023 §5.5.
+        start_index: Zero-based pagination cursor. Use the value from the
+            continuation hint to fetch the next page (default 0 = first page).
 
     Returns:
-        Tree text: header + per-module subtree of `name : ttype` rows.
+        Tree text: header + per-module subtree of `[ref=fN] name : ttype` rows.
+        When more pages exist, the last ├─ branch carries a continuation hint.
 
     Example:
         list_fields("sale.order", "17.0", module="sale")
         → Fields of sale.order (Odoo 17.0)
           ├─ [odoo] sale
-          │   ├─ name : char
-          │   ├─ partner_id : many2one
-          │   └─ amount_total : monetary
+          │   ├─ [ref=f1] name : char
+          │   ├─ [ref=f2] partner_id : many2one
+          │   └─ [ref=f3] amount_total : monetary
     """
-    text = _list_fields(model, odoo_version, module, kind, profile_name, limit)
-    structured = _list_fields_structured(model, odoo_version, module, kind, profile_name, limit)
+    text = _list_fields(
+        model, odoo_version, module, kind, profile_name, limit, start_index,
+        api_key_id=_ANONYMOUS_API_KEY_ID,
+    )
+    structured = _list_fields_structured(
+        model, odoo_version, module, kind, profile_name, limit, start_index,
+        api_key_id=_ANONYMOUS_API_KEY_ID,
+    )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -4214,6 +4425,7 @@ def list_methods(
     module: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
 ) -> ToolResult:
     """Enumerate methods on an Odoo model, grouped by module.
 
@@ -4234,19 +4446,28 @@ def list_methods(
         module: Optional module filter.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
+        start_index: Zero-based pagination cursor. Use the value from the
+            continuation hint to fetch the next page (default 0 = first page).
 
     Returns:
-        Tree text: header + per-module subtree of `name[(*)] : kind` rows.
+        Tree text: header + per-module subtree of `[ref=mN] name[(*)] : kind` rows.
+        When more pages exist, the last ├─ branch carries a continuation hint.
 
     Example:
         list_methods("sale.order", "17.0")
         → Methods of sale.order (Odoo 17.0)
           ├─ [odoo] sale
-          │   ├─ action_confirm(*) : action
-          │   └─ _compute_amount : compute
+          │   ├─ [ref=m1] action_confirm(*) : action
+          │   └─ [ref=m2] _compute_amount : compute
     """
-    text = _list_methods(model, odoo_version, module, profile_name, limit)
-    structured = _list_methods_structured(model, odoo_version, module, profile_name, limit)
+    text = _list_methods(
+        model, odoo_version, module, profile_name, limit, start_index,
+        api_key_id=_ANONYMOUS_API_KEY_ID,
+    )
+    structured = _list_methods_structured(
+        model, odoo_version, module, profile_name, limit, start_index,
+        api_key_id=_ANONYMOUS_API_KEY_ID,
+    )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured.model_dump() if structured is not None else None,
@@ -4260,6 +4481,7 @@ def list_views(
     view_type: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
 ) -> str:
     """Enumerate XML views targeting an Odoo model, grouped by module.
 
@@ -4277,17 +4499,20 @@ def list_views(
         view_type: Optional filter (form/tree/kanban/search/...).
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
+        start_index: Zero-based pagination cursor (default 0 = first page).
 
     Returns:
-        Tree text: header + per-module subtree of `xmlid : type` rows.
+        Tree text: header + per-module subtree of `[ref=vN] xmlid : type` rows.
 
     Example:
         list_views("sale.order", "17.0", view_type="form")
         → Views of sale.order (Odoo 17.0)
           ├─ [odoo] sale
-          │   └─ sale.view_order_form : form
+          │   └─ [ref=v1] sale.view_order_form : form
     """
-    return _list_views(model, odoo_version, view_type, profile_name, limit)
+    return _list_views(
+        model, odoo_version, view_type, profile_name, limit, start_index,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -4297,6 +4522,7 @@ def list_owl_components(
     bound_model: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
 ) -> str:
     """Enumerate OWL components declared in a module (Odoo v14+).
 
@@ -4322,18 +4548,19 @@ def list_owl_components(
             heuristic matches this name. Triggers heuristic warning footer.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
+        start_index: Zero-based pagination cursor (default 0 = first page).
 
     Returns:
-        Tree text: header + `component_name : bound_model` rows.
+        Tree text: header + `[ref=fN] component_name : bound_model` rows.
 
     Example:
         list_owl_components("sale_management", "17.0")
         → OWL components of sale_management (Odoo 17.0)
-          ├─ SaleOrderKanban : sale.order
-          └─ SaleSidebar : (unbound)
+          ├─ [ref=f1] SaleOrderKanban : sale.order
+          └─ [ref=f2] SaleSidebar : (unbound)
     """
     return _list_owl_components(
-        module, odoo_version, bound_model, profile_name, limit,
+        module, odoo_version, bound_model, profile_name, limit, start_index,
     )
 
 
@@ -4343,6 +4570,7 @@ def list_qweb_templates(
     odoo_version: str = "auto",
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
 ) -> str:
     """Enumerate QWeb templates declared in a module.
 
@@ -4361,17 +4589,18 @@ def list_qweb_templates(
         odoo_version: '17.0' / '18.0' / 'auto'.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
+        start_index: Zero-based pagination cursor (default 0 = first page).
 
     Returns:
-        Tree text: header + `xmlid : t-inherit=<parent or (root)>` rows.
+        Tree text: header + `[ref=vN] xmlid : t-inherit=<parent or (root)>` rows.
 
     Example:
         list_qweb_templates("website_sale", "17.0")
         → QWeb templates of website_sale (Odoo 17.0)
-          ├─ website_sale.product : t-inherit=(root)
-          └─ website_sale.cart_lines : t-inherit=website_sale.cart
+          ├─ [ref=v1] website_sale.product : t-inherit=(root)
+          └─ [ref=v2] website_sale.cart_lines : t-inherit=website_sale.cart
     """
-    return _list_qweb_templates(module, odoo_version, profile_name, limit)
+    return _list_qweb_templates(module, odoo_version, profile_name, limit, start_index)
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
@@ -4382,6 +4611,7 @@ def list_js_patches(
     era: str | None = None,
     profile_name: str | None = None,
     limit: int = 200,
+    start_index: int = 0,
 ) -> str:
     """Enumerate JS patches across all eras (Widget extend, mixin include,
     OWL patch).
@@ -4407,19 +4637,20 @@ def list_js_patches(
             Also accepts the stored values extend/include/patch.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 10.
+        start_index: Zero-based pagination cursor (default 0 = first page).
 
     Returns:
         Tree text: header + per-module subtree of
-        `target.patch_name : era=<era>` rows.
+        `[ref=xN] target.patch_name : era=<era>` rows.
 
     Example:
         list_js_patches(odoo_version="17.0", target="ListController")
         → JS patches on ListController (Odoo 17.0)
           ├─ [odoo] sale_management
-          │   └─ ListController.applyFilters : era=patch
+          │   └─ [ref=x1] ListController.applyFilters : era=patch
     """
     return _list_js_patches(
-        odoo_version, target, module, era, profile_name, limit,
+        odoo_version, target, module, era, profile_name, limit, start_index,
     )
 
 

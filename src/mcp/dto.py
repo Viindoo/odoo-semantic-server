@@ -48,7 +48,12 @@ class ModelRef(BaseModel):
 
 
 class FieldRef(BaseModel):
-    """Composite key for a Field node — (model, name, module, odoo_version)."""
+    """Composite key for a Field node — (model, name, module, odoo_version).
+
+    ``ref`` carries the opaque short ID minted by ``mint_refs()`` (e.g. ``'f3'``).
+    It is ``None`` when the FieldRef is constructed outside a list_fields call
+    (e.g. in resolve_field's declared_in list or in Wave-B tests).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -56,10 +61,22 @@ class FieldRef(BaseModel):
     name: str = Field(description="Field technical name, e.g. 'amount_total'")
     module: str = Field(description="Declaring module name")
     odoo_version: str = Field(description="Odoo version string, e.g. '17.0'")
+    ref: str | None = Field(
+        default=None,
+        description=(
+            "Opaque ref ID minted by list_fields (e.g. 'f3'). "
+            "Pass as target= to resolve_field for a frictionless drill-down. "
+            "None when this FieldRef was not produced by list_fields."
+        ),
+    )
 
 
 class MethodRef(BaseModel):
-    """Composite key for a Method node — (model, name, module, odoo_version)."""
+    """Composite key for a Method node — (model, name, module, odoo_version).
+
+    ``ref`` carries the opaque short ID minted by ``mint_refs()`` (e.g. ``'m2'``).
+    It is ``None`` when the MethodRef is constructed outside a list_methods call.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -67,6 +84,14 @@ class MethodRef(BaseModel):
     name: str = Field(description="Method name, e.g. 'action_confirm'")
     module: str = Field(description="Declaring module name")
     odoo_version: str = Field(description="Odoo version string, e.g. '17.0'")
+    ref: str | None = Field(
+        default=None,
+        description=(
+            "Opaque ref ID minted by list_methods (e.g. 'm2'). "
+            "Pass as target= to resolve_method for a frictionless drill-down. "
+            "None when this MethodRef was not produced by list_methods."
+        ),
+    )
 
 
 class ViewRef(BaseModel):
