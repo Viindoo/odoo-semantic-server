@@ -26,6 +26,14 @@ _TOOL_NAMES = [
     "suggest_pattern",
     "check_module_exists",
     "find_override_point",
+    # M9 Wave 1 entity-enumeration tools (ADR-0023)
+    "describe_module",
+    "list_fields",
+    "list_methods",
+    "list_views",
+    "list_owl_components",
+    "list_qweb_templates",
+    "list_js_patches",
     # D3 superset tools (ADR-0028)
     "model_inspect",
     "module_inspect",
