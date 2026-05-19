@@ -26,6 +26,10 @@ _TOOL_NAMES = [
     "suggest_pattern",
     "check_module_exists",
     "find_override_point",
+    # D3 superset tools (ADR-0028)
+    "model_inspect",
+    "module_inspect",
+    "entity_lookup",
 ]
 
 _REQUIRED_BLOCKS = ("TRIGGER when:", "PREFER over:", "SKIP when:")

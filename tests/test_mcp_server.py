@@ -2758,3 +2758,74 @@ def test_list_owl_components_bound_model_warning(neo4j_driver):
         )
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_OWL_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# WI-D3: @mcp.tool wrappers — model_inspect / module_inspect / entity_lookup
+# ---------------------------------------------------------------------------
+
+
+def test_model_inspect_routes_to_resolve_model(seeded_neo4j):
+    """model_inspect(method='summary') output must start with same header as
+    _resolve_model for the same model + version (AC-D3-5)."""
+    srv = _import_server_module()
+    direct = srv._resolve_model("account.move", TEST_VERSION)
+    result = srv.model_inspect.fn(
+        model="account.move",
+        method="summary",
+        odoo_version=TEST_VERSION,
+    )
+    # Wrapper returns ToolResult; extract text content
+    assert result.content, "model_inspect returned empty content"
+    wrapper_text = result.content[0].text
+    # The first line (header) must match between direct call and wrapper
+    direct_header = direct.split("\n")[0]
+    wrapper_header = wrapper_text.split("\n")[0]
+    assert direct_header == wrapper_header, (
+        f"model_inspect header mismatch.\n"
+        f"  direct:  {direct_header!r}\n"
+        f"  wrapper: {wrapper_header!r}"
+    )
+    assert "account.move" in wrapper_text
+    assert TEST_VERSION in wrapper_text
+
+
+def test_model_inspect_invalid_method(seeded_neo4j):
+    """model_inspect with an unknown method returns an Error: string."""
+    srv = _import_server_module()
+    result = srv.model_inspect.fn(
+        model="account.move",
+        method="nonexistent",
+        odoo_version=TEST_VERSION,
+    )
+    text = result.content[0].text
+    assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
+    assert "nonexistent" in text
+
+
+def test_entity_lookup_routes_to_resolve_model(seeded_neo4j):
+    """entity_lookup(kind='model') output must match _resolve_model (AC-D3-5)."""
+    srv = _import_server_module()
+    direct = srv._resolve_model("account.move", TEST_VERSION)
+    result = srv.entity_lookup.fn(
+        kind="model",
+        model="account.move",
+        odoo_version=TEST_VERSION,
+    )
+    wrapper_text = result.content[0].text
+    direct_header = direct.split("\n")[0]
+    wrapper_header = wrapper_text.split("\n")[0]
+    assert direct_header == wrapper_header, (
+        f"entity_lookup header mismatch.\n"
+        f"  direct:  {direct_header!r}\n"
+        f"  wrapper: {wrapper_header!r}"
+    )
+
+
+def test_entity_lookup_invalid_kind(seeded_neo4j):
+    """entity_lookup with an unknown kind returns an Error: string."""
+    srv = _import_server_module()
+    result = srv.entity_lookup.fn(kind="bogus")
+    text = result.content[0].text
+    assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
+    assert "bogus" in text

@@ -51,6 +51,7 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
     format_next_step,
     hints_for,
 )
+from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect
 from src.mcp.refs import RefError, mint_refs, resolve_ref
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 from src.mcp.tree_builder import render_list_block
@@ -5012,6 +5013,147 @@ def list_js_patches(
         odoo_version, target, module, era, profile_name, limit, start_index,
         api_key_id=_get_api_key_id(),
     )
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def model_inspect(
+    model: str,
+    method: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+    *,
+    field: str | None = None,
+    method_name: str | None = None,
+) -> ToolResult:
+    """Method-discriminator superset for model-scoped reads. See ADR-0028.
+
+    TRIGGER when: you need to inspect one model from multiple angles in
+    succession — summary then fields then methods — to reduce round trips
+    vs calling resolve_model / list_fields / list_methods separately.
+    PREFER over: chaining resolve_model + list_fields + list_methods when
+    you already know which sub-view you want; one call with method= is
+    friendlier for LLM context windows.
+    SKIP when: you need a single specific drill-down — call the specific
+    tool directly (resolve_field, list_methods) for a cleaner trace.
+
+    Args:
+        model: Dotted model name, e.g. 'sale.order', 'res.partner'.
+        method: One of summary | fields | methods | views | field | method.
+            'field' requires field=. 'method' requires method_name=.
+        odoo_version: e.g. '17.0', '18.0'. 'auto' = latest indexed.
+        profile_name: Optional profile filter.
+        field: Required when method='field'. Field technical name.
+        method_name: Required when method='method'. Method name.
+
+    Returns:
+        Tree text identical to the underlying tool's output.
+
+    Example:
+        model_inspect("sale.order", "fields", "17.0")
+        → same as list_fields(model="sale.order", odoo_version="17.0")
+    """
+    text = _model_inspect(
+        model=model,
+        method=method,
+        odoo_version=odoo_version,
+        profile_name=profile_name,
+        field=field,
+        method_name=method_name,
+    )
+    return ToolResult(content=[TextContent(type="text", text=text)])
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def module_inspect(
+    name: str,
+    method: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> ToolResult:
+    """Method-discriminator superset for module-scoped reads. See ADR-0028.
+
+    TRIGGER when: you need to inspect one module from multiple angles —
+    summary then views then OWL components — reducing round trips vs
+    calling describe_module / list_views / list_owl_components separately.
+    PREFER over: chaining describe_module + list_views + list_owl_components
+    when the discriminator method= captures the exact sub-view needed.
+    SKIP when: you need a single entity type — call describe_module,
+    list_qweb_templates, or list_js_patches directly for a cleaner trace.
+
+    Args:
+        name: Technical module name, e.g. 'sale', 'website_sale'.
+        method: One of summary | views | owl | qweb | js.
+            'fields' and 'methods' return a guidance stub (model required).
+        odoo_version: e.g. '17.0', '18.0'. 'auto' = latest indexed.
+        profile_name: Optional profile filter.
+
+    Returns:
+        Tree text identical to the underlying tool's output.
+
+    Example:
+        module_inspect("sale_management", "owl", "17.0")
+        → same as list_owl_components(module="sale_management", odoo_version="17.0")
+    """
+    text = _module_inspect(
+        name=name,
+        method=method,
+        odoo_version=odoo_version,
+        profile_name=profile_name,
+    )
+    return ToolResult(content=[TextContent(type="text", text=text)])
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def entity_lookup(
+    kind: str,
+    *,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+    model: str | None = None,
+    field: str | None = None,
+    method_name: str | None = None,
+    xmlid: str | None = None,
+    name: str | None = None,
+) -> ToolResult:
+    """Unified single-entity lookup by kind discriminator. See ADR-0028.
+
+    TRIGGER when: kind of entity is known but the specific tool name is
+    unclear — use kind= to dispatch to the right resolver without knowing
+    whether to call resolve_model, resolve_field, resolve_view, etc.
+    PREFER over: guessing the right tool name; entity_lookup normalises the
+    dispatch and returns the same tree text as the underlying tool.
+    SKIP when: the specific tool name is already known — call resolve_model,
+    resolve_field, resolve_method, resolve_view, describe_module, or
+    suggest_pattern directly for a cleaner trace and less cognitive overhead.
+
+    Args:
+        kind: One of model | field | method | view | module | pattern.
+        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
+        profile_name: Optional profile filter.
+        model: Required for kind in {model, field, method}.
+        field: Required for kind='field'.
+        method_name: Required for kind='method'.
+        xmlid: Required for kind='view'.
+        name: Required for kind in {module, pattern}.
+
+    Returns:
+        Tree text identical to the underlying tool's output.
+
+    Example:
+        entity_lookup("field", model="sale.order", field="amount_total")
+        → same as resolve_field("sale.order", "amount_total")
+    """
+    text = _entity_lookup(
+        kind=kind,
+        odoo_version=odoo_version,
+        profile_name=profile_name,
+        model=model,
+        field=field,
+        method_name=method_name,
+        xmlid=xmlid,
+        name=name,
+    )
+    return ToolResult(content=[TextContent(type="text", text=text)])
 
 
 def _mcp_host() -> str:

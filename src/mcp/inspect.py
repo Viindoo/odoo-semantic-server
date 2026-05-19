@@ -198,8 +198,12 @@ def _module_inspect(
         ).format(name=name)
 
     if method == "views":
-        # TODO(WI-D2): replace with srv._list_views_by_module(name, ...) once D2 lands.
-        raise NotImplementedError("D2 pending: _list_views_by_module not yet available.")
+        return srv._list_views_by_module(
+            module=name,
+            odoo_version=odoo_version,
+            profile_name=profile_name,
+            api_key_id=api_key_id,
+        )
 
     if method == "owl":
         return srv._list_owl_components(
