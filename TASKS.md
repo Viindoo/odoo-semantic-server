@@ -826,6 +826,71 @@ ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; sect
 
 ---
 
+## Milestone 12 — "v0.6 Shim Removal + M11 Hardening"
+
+**Status:** `[ ]` Not started.
+
+> Tracked as v0.6 follow-up after v0.5 ships in PR #133 (commit `9ae3732`, `feat/m10-5-m11-tool-ux-architecture`). Two streams: Stream A executes the deprecation timeline promised by [ADR-0028](docs/adr/0028-discriminator-consolidation.md) (one-major-release removal of the 10 legacy shims); Stream B absorbs the three functional/hardening observations surfaced by the M11 security review of PR #133 (zero HIGH/MEDIUM security findings — these are UX / correctness gaps, not vulnerabilities).
+
+**Intent:** Cut the legacy 28-tool surface down to the 18-tool target codified in ADR-0028 + close three M11 review observations against `set_active_*` session state and `resources/read` middleware coverage.
+**Outcome:** Fresh `tools/list` reports 18 tools (3 supersets + 4 session + 7 inspection + 4 ORM-validation when M10.5 lands); `resources/read` honours `set_active_version`; bogus version/profile pins return a clear error tree instead of silent fallback; the authz model around `set_active_profile` is documented unambiguously.
+
+**Plans liên quan:**
+- ADR cross-refs: [`docs/adr/0028-discriminator-consolidation.md`](docs/adr/0028-discriminator-consolidation.md) §Deprecation timeline + Timeline table; [`docs/adr/0029-implicit-session-context.md`](docs/adr/0029-implicit-session-context.md) §Profile-as-convenience-not-authz amendment (Stream B WI-3); [`docs/adr/0030-mcp-resources-uri-scheme.md`](docs/adr/0030-mcp-resources-uri-scheme.md) (resource handler contract).
+- Source PR: #133 (v0.5.0 — 28 MCP tools + 7 Resources + per-API-key session state).
+
+### Stream A — v0.6 Shim Removal (mechanical, ship first)
+
+ADR-0028 §Timeline promises "one major release between deprecation banner and removal". v0.5.x shipped the `DEPRECATED:` banners; v0.6 retires the wrappers. Persona skills under `dist/odoo-semantic-plugin/skills/` already migrated to supersets in PR #133 commit `4ba1432` (verified: 0 legacy refs, 15/15 use supersets + `set_active_version`) — no skill changes required.
+
+- [ ] **WI-A1 — Delete the 10 `@mcp.tool()` shim wrappers** in `src/mcp/server.py`:
+  - `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`
+  - `list_fields`, `list_methods`, `list_views`
+  - `list_owl_components`, `list_qweb_templates`, `list_js_patches`
+  - Keep the `_resolve_*` / `_list_*` implementation functions intact — they are called by the supersets (`model_inspect` / `module_inspect` / `entity_lookup`) via `src/mcp/inspect.py` routers.
+- [ ] **WI-A2 — Delete `tests/test_mcp_deprecation_shims.py`** (shim-banner equivalence tests no longer applicable).
+- [ ] **WI-A3 — Update tool count from 28 → 18 across docs + UI:**
+  - [ ] `README.md` (every "28 tools" / "28 MCP tools" reference → 18)
+  - [ ] [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) (28-tool matrix → 18-tool)
+  - [ ] [`docs/personas/dev.md`](docs/personas/dev.md) ("28-tool arsenal" phrasing → 18-tool)
+  - [ ] [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) (`server.py + 28 tools` → `+ 18 tools`)
+  - [ ] [`docs/client-setup.md`](docs/client-setup.md) — remove "Tool Surface Change — v0.4 → v0.5" section (legacy no longer callable); keep "Session Context" + "MCP Resources" sections (still applicable).
+  - [ ] [`dist/cursor-rules.md`](dist/cursor-rules.md), [`dist/gemini-gem-instructions.md`](dist/gemini-gem-instructions.md), [`dist/openai-gpt-instructions.md`](dist/openai-gpt-instructions.md) — drop DEPRECATED legacy tool blocks.
+  - [ ] `site/src/pages/index.astro` — TOOLS array: remove legacy entries; "28" → "18".
+  - [ ] `site/src/components/Hero.astro` — tag pill + stats "28" → "18".
+- [ ] **WI-A4 — Version bump:** `pyproject.toml` `0.5.0 → 0.6.0`; CHANGELOG.md entry for v0.6 documenting shim removal + the Stream B fixes shipping alongside.
+- [ ] **WI-A5 — Smoke gate before tag:** `pytest -m "(postgres or neo4j or ...)"` full integration sweep + manual `tools/list` length check against running MCP server (= 18). `grep -r 'resolve_model\|list_fields' src/mcp/` returns 0 hits outside `inspect.py` / `_resolve_*` impl.
+
+### Stream B — M11 Hardening (security-review follow-ups, PR #133)
+
+Three observations surfaced during the M11 security review of PR #133. All three are NOT security vulnerabilities (data is global Odoo codebase intelligence with no tenant-private content) — they are functional / UX gaps that should not be carried into v0.6 unfixed.
+
+- [ ] **WI-B1 — `resources/read` honours `set_active_version`** — MED
+  - Symptom: `UsageLogMiddleware` (`src/mcp/tool_log_middleware.py:49-92`) hooks `on_call_tool` only, not `resources/read`. After `set_active_version('17.0')`, calling `odoo://auto/model/sale.order` bypasses the sticky session — `_get_api_key_id()` returns `"default"`, `int("default")` fails in `_fetch_from_db`, fallback to `_latest_version()`.
+  - Fix direction: extend `UsageLogMiddleware` to also hook `on_read_resource` and set the same thread-local. Alternative: make `_resolved_version_for` accept an explicit `api_key_id` arg threaded by the FastMCP resource framework.
+  - Acceptance: integration test verifies `set_active_version('17.0')` then `resources/read odoo://auto/model/sale.order` returns the v17.0 rendering (NOT `_latest_version()` output); covers both `odoo://auto/*` and any future per-version resource URIs.
+  - Cross-ref: [ADR-0029](docs/adr/0029-implicit-session-context.md) §Session resolution; [ADR-0030](docs/adr/0030-mcp-resources-uri-scheme.md) §URI grammar.
+
+- [ ] **WI-B2 — Validate `set_active_version` / `set_active_profile` inputs** — LOW
+  - Symptom: `src/mcp/session.py` `set_active_version_db` / `set_active_profile_db` accept any string. Pinning to `'99.0'` (non-indexed) or `'nonexistent_profile'` silently falls back or returns empty trees — poor UX, no error surface.
+  - Fix direction: in `set_active_version_db`, run a sanity Cypher (`MATCH (m:Module {odoo_version: $v}) RETURN m LIMIT 1`) — empty result raises `ValueError("version not indexed: <v>")` propagated up the tool surface. Same pattern for `set_active_profile_db` against the `profiles` table.
+  - Acceptance: `set_active_version('999.0')` returns an error tree naming the available versions; `set_active_profile('does_not_exist')` returns an error tree naming valid profiles. Existing happy-path tests stay green.
+  - Note: NOT a security finding — values are parameter-bound everywhere; no injection possible.
+
+- [ ] **WI-B3 — Profile-as-convenience-not-authz documentation amendment** — LOW (decision-only)
+  - Symptom: per `src/db/migrate.py:139-147` (`api_keys` schema), any authenticated key can query any profile via the `profile_name` parameter. Resource handlers in `src/mcp/resources.py` deliberately omit `profile_name` from underlying `_resolve_*` calls. v0.5's introduction of `set_active_profile` could mislead users into expecting authz.
+  - Decision required, pick one of:
+    - **(a) Status quo + documentation (recommended, lowest-effort):** Amend [ADR-0029](docs/adr/0029-implicit-session-context.md) + [`docs/client-setup.md`](docs/client-setup.md) with explicit note that `set_active_profile` is convenience for default-arg-injection, NOT an access control mechanism. Profile boundary remains data segmentation only.
+    - **(b) True profile authz (higher-effort):** Add `allowed_profile_ids JSONB` column to `api_keys`; filter all Cypher queries in resources + tools by this list. Open a separate RFC / ADR before implementing — needs customer demand signal first (i.e. customer-A's index hidden from customer-B).
+  - Acceptance: written decision committed — either ADR-0029 amendment (path a) OR new RFC ticket linking to a draft ADR-0031 (path b).
+  - Note: by design today, NOT a security finding per se; flagged because v0.5 surface could mislead.
+
+### Sequencing note
+
+Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B1 and WI-B2 may bundle into the same v0.6 PR if bandwidth allows; WI-B3 is decision-first (path-a amendment is trivial; path-b spawns its own milestone). v0.6 author chooses the bundle based on review capacity.
+
+---
+
 ## Pre-launch Signoff
 
 Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 21 MCP tool sign-off table.
