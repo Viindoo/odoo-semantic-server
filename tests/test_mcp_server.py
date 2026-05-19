@@ -2829,3 +2829,97 @@ def test_entity_lookup_invalid_kind(seeded_neo4j):
     text = result.content[0].text
     assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
     assert "bogus" in text
+
+
+# ===========================================================================
+# Wave E — Session-context tools smoke tests (AC-E3-7)
+# ===========================================================================
+
+
+def test_set_active_version_sentinel_rejected(seeded_neo4j):
+    """set_active_version with a sentinel string returns an Error: message (AC-E3-5)."""
+    srv = _import_server_module()
+    for sentinel in ("auto", "default", "latest", "version", "any", ""):
+        result = srv.set_active_version.fn(odoo_version=sentinel)
+        text = result.content[0].text
+        assert "Error" in text or "sentinel" in text.lower(), (
+            f"Expected sentinel rejection for {sentinel!r}, got: {text[:120]!r}"
+        )
+
+
+def test_set_active_version_persists_then_resolve_model_uses_it(seeded_neo4j):
+    """AC-E3-7: set_active_version('99.0') + resolve_model(odoo_version='auto') → '99.0'.
+
+    Mocks PG write (set_active_version_db) and PG/cache read (get_session_state)
+    so the round-trip exercises _resolve_version delegation without real DB.
+    """
+    from unittest.mock import patch
+
+    from src.mcp.session import SessionState
+
+    srv = _import_server_module()
+
+    # --- Phase 1: set_active_version via wrapper --------------------------------
+    with patch("src.mcp.session.set_active_version_db") as mock_set:
+        result = srv.set_active_version.fn(odoo_version=TEST_VERSION)
+        text = result.content[0].text
+        assert TEST_VERSION in text, (
+            f"set_active_version confirmation should contain the version. Got: {text!r}"
+        )
+        mock_set.assert_called_once_with(srv._get_api_key_id(), TEST_VERSION)
+
+    # --- Phase 2: resolve_model with odoo_version='auto' uses session state -----
+    # Simulate the DB returning the stored session (as if set_active_version had
+    # written it). resolve_model → _resolve_version → resolve_version_v2 → Tier 2.
+    stored_state = SessionState(
+        api_key_id=srv._get_api_key_id(),
+        odoo_version=TEST_VERSION,
+        profile_name=None,
+    )
+    with patch("src.mcp.session.get_session_state", return_value=stored_state):
+        text = srv._resolve_model("account.move", "auto")
+
+    assert TEST_VERSION in text, (
+        f"resolve_model with 'auto' should use session-stored version {TEST_VERSION!r}.\n"
+        f"Output: {text[:300]!r}"
+    )
+    assert "account.move" in text
+
+
+def test_set_active_profile_returns_confirmation(seeded_neo4j):
+    """set_active_profile stores profile name and returns confirmation."""
+    from unittest.mock import patch
+
+    srv = _import_server_module()
+
+    with patch("src.mcp.session.set_active_profile_db") as mock_set:
+        result = srv.set_active_profile.fn(profile_name="my-erp-prod")
+        text = result.content[0].text
+        assert "my-erp-prod" in text, f"Expected profile name in confirmation: {text!r}"
+        mock_set.assert_called_once_with(srv._get_api_key_id(), "my-erp-prod")
+
+
+def test_set_active_profile_clear(seeded_neo4j):
+    """set_active_profile(None) clears the active profile."""
+    from unittest.mock import patch
+
+    srv = _import_server_module()
+
+    with patch("src.mcp.session.set_active_profile_db") as mock_set:
+        result = srv.set_active_profile.fn(profile_name=None)
+        text = result.content[0].text
+        assert "cleared" in text.lower(), f"Expected 'cleared' in response: {text!r}"
+        mock_set.assert_called_once_with(srv._get_api_key_id(), None)
+
+
+def test_list_available_versions_returns_tree(seeded_neo4j):
+    """list_available_versions returns a tree of indexed versions (AC-E3-1)."""
+    srv = _import_server_module()
+    result = srv.list_available_versions.fn()
+    text = result.content[0].text
+    # seeded_neo4j uses TEST_VERSION = "99.0" — it must appear in the list
+    assert TEST_VERSION in text, (
+        f"Expected {TEST_VERSION!r} in list_available_versions output.\n"
+        f"Got: {text[:300]!r}"
+    )
+    assert "Indexed Odoo versions" in text
