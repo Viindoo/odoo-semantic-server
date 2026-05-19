@@ -54,6 +54,7 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
 )
 from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect
 from src.mcp.refs import RefError, mint_refs, resolve_ref
+from src.mcp.resources import register_resources
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 from src.mcp.tree_builder import render_list_block
 
@@ -105,6 +106,8 @@ def _render_capped(
 
 
 mcp = FastMCP("odoo-semantic")
+# Register 7 MCP resources (odoo:// URIs) — Pattern 8, Wave F.
+register_resources(mcp)
 # Register FastMCP-layer usage logging middleware so that on_call_tool has
 # access to context.message.name (the real tool name) — see F5 fix in
 # src/mcp/tool_log_middleware.py.
@@ -894,36 +897,31 @@ def resolve_model(
     """Return full inheritance chain, field count, and method count for an Odoo model.
 
     TRIGGER when: "show inheritance chain of sale.order", "what fields does
-    account.move have", "which modules extend res.partner", "liệt kê các field
-    của model X", "module nào extend model Y", "where is sale.order defined",
-    "how many modules override res.partner"
-    PREFER over: asking LLM from training data — returns real indexed data, not
-    hallucinated fields or phantom modules
-    SKIP when: user wants detail on one specific field → use resolve_field;
-    user wants a method override chain → use resolve_method
-    SKIP when (NEW): you want multi-faceted model inspection in one tool →
-        prefer model_inspect(model='...', method='summary') (M11 superset, v0.5+)
+    account.move have", "which modules extend res.partner"
+    PREFER over: asking LLM from training data — returns real indexed data
+    SKIP when: user wants detail on one field → use resolve_field;
+    or method chain → use resolve_method
+    SKIP when (NEW): you want multi-faceted model inspection →
+        use model_inspect(model='...', method='summary') (M11+)
 
     Args:
-        target: Opaque ref ID (e.g. 'm5') OR canonical model name
-            (e.g. 'sale.order'). Preferred over legacy model_name kwarg.
-        model_name: DEPRECATED — use target=. Issues DeprecationWarning.
-        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
-        profile_name: Optional profile filter (e.g. 'viindoo_internal_17').
-            Limits results to nodes in this profile's hierarchy.
-            Default None = all profiles.
+        target: Opaque ref ID (e.g. 'm5') or canonical model name
+            (e.g. 'sale.order'). Preferred over legacy model_name.
+        model_name: DEPRECATED — use target=.
+        odoo_version: e.g. '17.0'. Default 'auto'.
+        profile_name: Optional profile filter.
 
     Returns:
-        Tree text: Defined in, Inherits from, Extended by, Fields count,
-        Methods count.
+        Tree: Defined in, Inherits from, Extended by, Fields count, Methods count.
 
     Example:
         resolve_model("sale.order", "17.0")
-        → sale.order (Odoo 17.0)
-          ├─ Defined in: [odoo] sale
+        → Defined in: [odoo] sale
           ├─ Extended by: [odoo] viin_sale, [odoo] to_sale_custom
           ├─ Fields: 47
           └─ Methods: 23
+
+    See also: odoo://{version}/model/{name}
     """
     # --- dual-mode dispatch ---
     if target is not None and model_name is not None:
@@ -988,33 +986,27 @@ def resolve_field(
 ) -> ToolResult:
     """Return type, compute/related metadata, and declaring modules for one field.
 
-    TRIGGER when: "what type is amount_total field", "is field X computed"
-    PREFER over: resolve_model (more detail)
-    SKIP when: user wants all fields → use list_fields or model_inspect.
-    SKIP when (NEW): prefer model_inspect(model='...', method='field',
-        field='...') to inspect one field with full model context (M11+)
+    TRIGGER when: "what type is amount_total", "is field X computed"
+    PREFER over: resolve_model for detail
+    SKIP when: user wants all fields → use list_fields or model_inspect
 
     Args:
-        target: Opaque ref ID (e.g. 'f12') OR canonical dotted path
-            (e.g. 'sale.order.amount_total'). Preferred over legacy kwargs.
-        model_name: DEPRECATED — use target=. Issues DeprecationWarning.
-        field_name: DEPRECATED — use target=. Issues DeprecationWarning.
+        target: Opaque ref ID (e.g. 'f12') or canonical dotted path
+            (e.g. 'sale.order.amount_total'). Preferred over legacy args.
+        model_name: DEPRECATED — use target=.
+        field_name: DEPRECATED — use target=.
         odoo_version: e.g. '17.0'. Default 'auto'.
-        profile_name: Optional profile filter. Default None = all profiles.
+        profile_name: Optional profile filter.
 
     Returns:
-        Tree text: Type, Computed, Stored, Required, Related, Declared in
-        (all modules that declare this field).
+        Tree: Type, Computed, Stored, Required, Related, Declared in modules.
 
     Example:
         resolve_field("sale.order.amount_total", "17.0")
-        → sale.order.amount_total (Odoo 17.0)
-          ├─ Type:     monetary
-          ├─ Computed: Yes (_compute_amounts)
-          ├─ Stored:   Yes
-          ├─ Required: No
-          ├─ Related:  —
+        → Type: monetary | Computed: Yes | Stored: Yes | Required: No
           └─ Declared in: [odoo] sale
+
+    See also: odoo://{version}/field/{model}/{field}
     """
     # --- dual-mode dispatch ---
     has_legacy = model_name is not None or field_name is not None
@@ -1092,31 +1084,29 @@ def resolve_method(
 ) -> ToolResult:
     """Return the full override chain of a method, ordered base to top.
 
-    TRIGGER when: "show override chain of action_confirm", "where is method X
-    defined"
-    PREFER over: grep (full chain with super() linkage)
-    SKIP when: user wants all methods → use list_methods or model_inspect.
-    SKIP when (NEW): prefer model_inspect(model='...', method='method',
-        method_name='...') to inspect one method with full model context (M11+)
+    TRIGGER when: "show override chain of action_confirm", "where is method X"
+    PREFER over: grep — returns full chain with super() linkage
+    SKIP when: user wants all methods → use list_methods or model_inspect
 
     Args:
-        target: Opaque ref ID (e.g. 'm3') OR canonical dotted path
-            (e.g. 'sale.order.action_confirm'). Preferred over legacy kwargs.
-        model_name: DEPRECATED — use target=. Issues DeprecationWarning.
-        method_name: DEPRECATED — use target=. Issues DeprecationWarning.
+        target: Opaque ref ID (e.g. 'm3') or canonical dotted path
+            (e.g. 'sale.order.action_confirm'). Preferred over legacy args.
+        model_name: DEPRECATED — use target=.
+        method_name: DEPRECATED — use target=.
         odoo_version: e.g. '17.0'. Default 'auto'.
-        profile_name: Optional profile filter. Default None = all profiles.
+        profile_name: Optional profile filter.
 
     Returns:
-        Tree text: override chain base→top with super() status and decorators.
+        Tree: Override chain base→top with super() status and decorators.
 
     Example:
         resolve_method("sale.order.action_confirm", "17.0")
-        → sale.order.action_confirm() (Odoo 17.0)
-          └─ Override chain (3):
-              ├─ [odoo] sale — ✗ no super() — decorators: —
-              ├─ [odoo] viin_sale — ✓ calls super() — decorators: —
-              └─ [odoo] to_sale_workflow — ✓ calls super()
+        → Override chain (3):
+            ├─ [odoo] sale — ✗ no super()
+            ├─ [odoo] viin_sale — ✓ super()
+            └─ [odoo] to_sale_workflow — ✓ super()
+
+    See also: odoo://{version}/method/{model}/{method}
     """
     # --- dual-mode dispatch ---
     has_legacy = model_name is not None or method_name is not None
@@ -1192,35 +1182,30 @@ def resolve_view(
     """Return view inheritance chain and XPath modifications from all extension modules.
 
     TRIGGER when: "show xpath overrides for sale.order form", "which modules
-    modify view X", "what does the merged XML look like", "view bị override bởi
-    module nào", "XPath chain của view X", "is view Y patched by viin_sale"
-    PREFER over: searching XML files manually — aggregates cross-module XPath
-    overrides into one merged skeleton, ordered by application
-    SKIP when: user wants Python logic → use resolve_method; user wants field
-    info → use resolve_field
-    SKIP when (NEW): you want view detail via entity_lookup →
-        prefer entity_lookup(kind='view', xmlid='...') (M11 superset, v0.5+)
+    modify view X"
+    PREFER over: searching XML files — aggregates cross-module XPath
+    overrides into one merged skeleton
+    SKIP when: user wants Python logic → resolve_method; field info → resolve_field
 
     Args:
-        target: Opaque ref ID (e.g. 'v3') OR canonical XML external ID
-            (e.g. 'sale.view_order_form'). Preferred over legacy xmlid kwarg.
-        xmlid: DEPRECATED — use target=. Issues DeprecationWarning.
+        target: Opaque ref ID (e.g. 'v3') or canonical XML ID
+            (e.g. 'sale.view_order_form'). Preferred over legacy xmlid.
+        xmlid: DEPRECATED — use target=.
         odoo_version: e.g. '17.0'. Default 'auto'.
-        profile_name: Optional profile filter. Default None = all profiles.
+        profile_name: Optional profile filter.
 
     Returns:
-        Tree text: view type, model, defining module, parent view (if
-        extension), own XPath ops, extending views per module.
+        Tree: Type, model, defining module, parent view (if extension),
+        XPath ops, extending views per module.
 
     Example:
         resolve_view("sale.view_order_form", "17.0")
-        → sale.view_order_form (Odoo 17.0)
-          ├─ Type:   form
-          ├─ Model:  sale.order
-          ├─ Module: [odoo] sale
-          └─ Extended by (2 modules):
-              ├─ viin_sale.view_order_form_custom → [odoo] viin_sale
-              └─ to_sale_custom.view_form_ext → [odoo] to_sale_custom
+        → Type: form | Model: sale.order | Module: [odoo] sale
+          └─ Extended by (2):
+              ├─ [odoo] viin_sale
+              └─ [odoo] to_sale_custom
+
+    See also: odoo://{version}/view/{xmlid}
     """
     # --- dual-mode dispatch ---
     if target is not None and xmlid is not None:
@@ -4728,37 +4713,33 @@ def describe_module(
     """Return a full architecture overview of an Odoo module (manifest +
     model/view/JS counts).
 
-    TRIGGER when: "what does module viin_sale do", "describe sale_management
-    module", "overview of website_sale", "module X làm gì", "tóm tắt module
-    Y", "show me the manifest and counts for module Z", "what's inside this
-    module"
+    TRIGGER when: "what does module viin_sale do", "describe sale_management",
+    "overview of website_sale"
     PREFER over: check_module_exists when caller needs module contents
-    (models, views, JS), not just YES/NO existence. Also prefer over
-    resolve_model when the question is about a module, not a model.
-    SKIP when: caller only needs fast YES/NO + edition badge — use
-    check_module_exists (1 Cypher query vs 5). Use list_fields / list_views /
-    list_methods when caller wants the full per-entity enumeration.
+    (models, views, JS), not just YES/NO. Also prefer over resolve_model
+    when the question is about a module, not a model.
+    SKIP when: caller only needs YES/NO — use check_module_exists (faster).
 
     Args:
         name: Module technical name (e.g. 'sale', 'viin_sale').
         odoo_version: '17.0' / '18.0' / 'auto'.
-        profile_name: Optional profile filter (e.g. 'viindoo_internal_17').
+        profile_name: Optional profile filter.
 
     Returns:
-        Tree text: Manifest (Depends, Edition, Version), Defines models,
+        Tree: Manifest (Depends, Edition, Version), Defines models,
         Extends models, Views (by type), JS patches.
 
     Example:
         describe_module("viin_sale", "17.0")
-        → viin_sale (Odoo 17.0)
-          ├─ Manifest:
-          │   ├─ Depends: sale, account, viin_base
-          │   ├─ Edition: viindoo
-          │   └─ Version: 17.0.1.2.3
-          ├─ Defines models: 2 (sale.report.custom, viin.sale.config)
-          ├─ Extends models: 5 (sale.order, sale.order.line, ...)
-          ├─ Views: 12 (8 form, 3 tree, 1 search)
-          └─ JS patches: 3
+        → Manifest:
+            ├─ Depends: sale, account, viin_base
+            ├─ Edition: viindoo
+            ├─ Defines models: 2
+            ├─ Extends models: 5
+            ├─ Views: 12 (8 form, 3 tree, 1 search)
+            └─ JS patches: 3
+
+    See also: odoo://{version}/module/{name}
     """
     text = _describe_module(name, odoo_version, profile_name)
     structured = _describe_module_structured(name, odoo_version, profile_name)
@@ -4780,35 +4761,31 @@ def list_fields(
 ) -> ToolResult:
     """Enumerate fields declared on an Odoo model, grouped by module.
 
-    TRIGGER when: "list all fields of sale.order", "show fields on
-    account.move", "what fields does res.partner have", "all monetary
-    fields on account.move", "fields added by viin_sale to sale.order"
-    PREFER over: resolve_model — that tool only returns the field count;
-    list_fields returns the full enumerated list with type per row.
-    SKIP when: caller wants one field's detail → use resolve_field. When
-    the caller asks "how many fields" only, resolve_model is cheaper.
-    SKIP when (NEW): prefer model_inspect(model='...', method='fields')
-        for field enumeration with model context in one call (M11+, v0.5+)
+    TRIGGER when: "list all fields of sale.order", "show fields on account.move",
+    "what fields does res.partner have"
+    PREFER over: resolve_model — returns full enumerated list with type per row
+    SKIP when: caller wants one field's detail → resolve_field. When asking
+    "how many fields", resolve_model is cheaper.
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
         odoo_version: '17.0' / '18.0' / 'auto'.
-        module: Optional module filter — only fields in this module.
-        kind: Optional ttype filter (e.g. 'monetary', 'many2one').
+        module: Optional module filter.
+        kind: Optional ttype filter (e.g. 'monetary').
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 50.
-        start_index: Zero-based pagination cursor (default 0 = first page).
+        start_index: Pagination cursor (default 0).
 
     Returns:
-        Tree text: header + per-module subtree of `[ref=fN] name : ttype`.
-        When more pages exist, the last row carries a continuation hint.
+        Tree: header + per-module subtree of `[ref=fN] name : ttype`.
 
     Example:
         list_fields("sale.order", "17.0", module="sale")
-        → Fields of sale.order (Odoo 17.0)
-          ├─ [odoo] sale
-          │   ├─ [ref=f1] name : char
-          │   └─ [ref=f2] amount_total : monetary
+        → [odoo] sale
+            ├─ [ref=f1] name : char
+            └─ [ref=f2] amount_total : monetary
+
+    See also: odoo://{version}/field/{model}/{field}
     """
     text = _list_fields(
         model, odoo_version, module, kind, profile_name, limit, start_index,
@@ -4839,15 +4816,10 @@ def list_methods(
     Methods overridden across ≥2 modules are marked with `(*)`.
 
     TRIGGER when: "list methods of sale.order", "all methods on res.partner",
-    "what behavior does account.move have", "method nào trên model X",
-    "tất cả method của sale.order", "what are the action_* methods on
-    sale.order"
-    PREFER over: resolve_method — that tool shows one method's chain;
-    list_methods enumerates every method on the model.
-    SKIP when: caller wants one method's override chain → use resolve_method.
-    When the caller asks "best override point" → use find_override_point.
-    SKIP when (NEW): you want method enumeration with model context in one tool →
-        prefer model_inspect(model='...', method='methods') (M11 superset, v0.5+)
+    "what behavior does account.move have"
+    PREFER over: resolve_method — enumerates every method on the model
+    SKIP when: caller wants one method's override chain → resolve_method.
+    For best override point → use find_override_point.
 
     Args:
         model: Odoo model dotted name.
@@ -4855,19 +4827,18 @@ def list_methods(
         module: Optional module filter.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
-        start_index: Zero-based pagination cursor. Use the value from the
-            continuation hint to fetch the next page (default 0 = first page).
+        start_index: Pagination cursor (default 0).
 
     Returns:
-        Tree text: header + per-module subtree of `[ref=mN] name[(*)] : kind` rows.
-        When more pages exist, the last ├─ branch carries a continuation hint.
+        Tree: header + per-module subtree of `[ref=mN] name[(*)] : kind`.
 
     Example:
         list_methods("sale.order", "17.0")
-        → Methods of sale.order (Odoo 17.0)
-          ├─ [odoo] sale
-          │   ├─ [ref=m1] action_confirm(*) : action
-          │   └─ [ref=m2] _compute_amount : compute
+        → [odoo] sale
+            ├─ [ref=m1] action_confirm(*) : action
+            └─ [ref=m2] _compute_amount : compute
+
+    See also: odoo://{version}/method/{model}/{method}
     """
     text = _list_methods(
         model, odoo_version, module, profile_name, limit, start_index,
