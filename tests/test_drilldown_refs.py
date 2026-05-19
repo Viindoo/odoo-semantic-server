@@ -386,8 +386,8 @@ def test_scenario7_cursor_continuation(c4_db, server):
     assert "[ref=f" in out, f"Expected [ref=fN] on first page:\n{out!r}"
 
     # Continuation hint must appear (247 > 50).
-    assert "Showing rows 0-49 of 247" in out, (
-        f"Expected 'Showing rows 0-49 of 247' in output:\n{out!r}"
+    assert "Showing rows 1–50 of 247" in out, (
+        f"Expected 'Showing rows 1–50 of 247' in output:\n{out!r}"
     )
     assert "start_index=50" in out, (
         f"Expected 'start_index=50' in continuation hint:\n{out!r}"
@@ -403,8 +403,8 @@ def test_scenario7_cursor_continuation(c4_db, server):
     out2 = server._list_fields(
         _MODEL_FAT, C4_VERSION, limit=50, start_index=50, api_key_id=api_key,
     )
-    assert "Showing rows 50-99 of 247" in out2, (
-        f"Expected 'Showing rows 50-99 of 247' in page-2 output:\n{out2!r}"
+    assert "Showing rows 51–100 of 247" in out2, (
+        f"Expected 'Showing rows 51–100 of 247' in page-2 output:\n{out2!r}"
     )
     assert "start_index=100" in out2, (
         f"Expected 'start_index=100' in page-2 continuation hint:\n{out2!r}"

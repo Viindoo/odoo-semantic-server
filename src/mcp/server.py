@@ -897,7 +897,8 @@ def resolve_model(
     """Return full inheritance chain, field count, and method count for an Odoo model.
 
     TRIGGER when: "show inheritance chain of sale.order", "what fields does
-    account.move have", "which modules extend res.partner"
+    account.move have", "which modules extend res.partner", "liệt kê các field
+    của model X", "module nào extend model Y"
     PREFER over: asking LLM from training data — returns real indexed data
     SKIP when: user wants detail on one field → use resolve_field;
     or method chain → use resolve_method
@@ -986,7 +987,8 @@ def resolve_field(
 ) -> ToolResult:
     """Return type, compute/related metadata, and declaring modules for one field.
 
-    TRIGGER when: "what type is amount_total", "is field X computed"
+    TRIGGER when: "what type is amount_total", "is field X computed",
+    "field X có related không", "kiểu dữ liệu của field X là gì"
     PREFER over: resolve_model for detail
     SKIP when: user wants all fields → use list_fields or model_inspect
 
@@ -1084,7 +1086,8 @@ def resolve_method(
 ) -> ToolResult:
     """Return the full override chain of a method, ordered base to top.
 
-    TRIGGER when: "show override chain of action_confirm", "where is method X"
+    TRIGGER when: "show override chain of action_confirm", "where is method X",
+    "method nào super() lên model kia", "ai override method X"
     PREFER over: grep — returns full chain with super() linkage
     SKIP when: user wants all methods → use list_methods or model_inspect
 
@@ -1182,7 +1185,7 @@ def resolve_view(
     """Return view inheritance chain and XPath modifications from all extension modules.
 
     TRIGGER when: "show xpath overrides for sale.order form", "which modules
-    modify view X"
+    modify view X", "view bị override bởi module nào", "XPath chain của view X"
     PREFER over: searching XML files — aggregates cross-module XPath
     overrides into one merged skeleton
     SKIP when: user wants Python logic → resolve_method; field info → resolve_field
@@ -2848,14 +2851,14 @@ def _list_fields(
         # Pagination continuation hint (plain text, NOT <error> tag — ADR-0023
         # §Appendix B item #2: pagination is routine, not failure).
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call list_fields(model='{model}', odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
         # Final page of a paginated sequence — disclose position.
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4. Drill into the first
@@ -3009,13 +3012,13 @@ def _list_methods(
     if has_more:
         # Pagination continuation hint (plain text, NOT <error> tag).
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call list_methods(model='{model}', odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4.
@@ -3204,13 +3207,13 @@ def _list_views_core(
 
     if has_more:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call {pager_tool},"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4.
@@ -3416,14 +3419,14 @@ def _list_owl_components(
 
     if has_more:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call list_owl_components(module='{module}',"
             f" odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4.
@@ -3529,14 +3532,14 @@ def _list_qweb_templates(
 
     if has_more:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call list_qweb_templates(module='{module}',"
             f" odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4.
@@ -3707,13 +3710,13 @@ def _list_js_patches(
 
     if has_more:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total}."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call list_js_patches(odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
         lines.append(
-            f"├─ Showing rows {start_index}-{end_index - 1} of {total} (last page)."
+            f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4. Prefer module-scoped OWL
@@ -4714,7 +4717,7 @@ def describe_module(
     model/view/JS counts).
 
     TRIGGER when: "what does module viin_sale do", "describe sale_management",
-    "overview of website_sale"
+    "overview of website_sale", "module X làm gì", "tóm tắt module Y"
     PREFER over: check_module_exists when caller needs module contents
     (models, views, JS), not just YES/NO. Also prefer over resolve_model
     when the question is about a module, not a model.
@@ -4762,7 +4765,8 @@ def list_fields(
     """Enumerate fields declared on an Odoo model, grouped by module.
 
     TRIGGER when: "list all fields of sale.order", "show fields on account.move",
-    "what fields does res.partner have"
+    "what fields does res.partner have", "liệt kê field của model X",
+    "tất cả field trên sale.order"
     PREFER over: resolve_model — returns full enumerated list with type per row
     SKIP when: caller wants one field's detail → resolve_field. When asking
     "how many fields", resolve_model is cheaper.
@@ -4816,7 +4820,8 @@ def list_methods(
     Methods overridden across ≥2 modules are marked with `(*)`.
 
     TRIGGER when: "list methods of sale.order", "all methods on res.partner",
-    "what behavior does account.move have"
+    "what behavior does account.move have", "method nào trên model X",
+    "tất cả method của sale.order"
     PREFER over: resolve_method — enumerates every method on the model
     SKIP when: caller wants one method's override chain → resolve_method.
     For best override point → use find_override_point.
@@ -4913,26 +4918,26 @@ def list_owl_components(
 ) -> str:
     """Enumerate OWL components declared in a module (Odoo v14+).
 
-    Era-aware: returns empty + warning for Odoo v8-v13 (Widget era).
-    bound_model filter is heuristic — may miss dynamic resModel lookups.
+    Era-aware: empty + warning for v8-v13 (Widget era, no OWL).
+    bound_model filter is heuristic — may miss dynamic resModel bindings.
 
     TRIGGER when: "list OWL components in sale_management", "what OWL
-    components does website_sale define", "OWL components for sale.order"
+    components does website_sale define", "OWL components for sale.order",
+    "OWL component nào trong module X", "tất cả OWL component bound to model Y"
     PREFER over: find_examples — that tool returns code snippets;
     list_owl_components gives the structured component inventory.
     SKIP when: caller wants legacy Widget (v8-v13) → use list_js_patches
     with era='era1'. Use list_qweb_templates for QWeb templates.
     SKIP when (NEW): prefer module_inspect(name='...', method='owl')
-        for OWL enumeration with module context in one call (M11+, v0.5+)
+        for OWL enumeration with module context in one call (M11+)
 
     Args:
         module: Module name to search within.
         odoo_version: '17.0' / '18.0' / 'auto'.
-        bound_model: Optional filter — components whose bound_model
-            heuristic matches this name. Triggers heuristic warning.
+        bound_model: Optional filter — components matching this model name.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 20.
-        start_index: Zero-based pagination cursor (default 0 = first page).
+        start_index: Zero-based pagination cursor (default 0).
 
     Returns:
         Tree text: header + `[ref=fN] component_name : bound_model` rows.
@@ -5013,7 +5018,8 @@ def list_js_patches(
     include / patch (ADR-0023 §5.3).
 
     TRIGGER when: "list JS patches on hr.employee", "all OWL patches in
-    Odoo 17", "Widget extends in v12", "legacy widget extensions in v11"
+    Odoo 17", "Widget extends in v12", "JS patch nào trên model X",
+    "tất cả patch() trong module Y"
     PREFER over: find_examples — that tool returns code snippets;
     list_js_patches gives the structured per-target inventory.
     SKIP when: caller wants OWL component declarations (not patches) →
@@ -5025,11 +5031,11 @@ def list_js_patches(
         odoo_version: '17.0' / '18.0' / 'auto'.
         target: Optional filter on patched widget/component name.
         module: Optional filter on patching module.
-        era: Optional — 'era1' (Widget extend, v8-v13), 'era2' (mixin,
-            v14-v16), 'era3' (OWL patch, v15+); or extend/include/patch.
+        era: Optional — 'era1' (Widget extend), 'era2' (mixin),
+            'era3' (OWL patch); or extend/include/patch.
         profile_name: Optional profile filter.
         limit: Cypher LIMIT (default 200). Render cap is 10.
-        start_index: Zero-based pagination cursor (default 0 = first page).
+        start_index: Zero-based pagination cursor (default 0).
 
     Returns:
         Tree text: header + per-module subtree of
@@ -5064,6 +5070,7 @@ def model_inspect(
     TRIGGER when: you need to inspect one model from multiple angles in
     succession — summary then fields then methods — to reduce round trips
     vs calling resolve_model / list_fields / list_methods separately.
+    Also: "kiểm tra một model nhiều mặt", "xem mọi thông tin của model X"
     PREFER over: chaining resolve_model + list_fields + list_methods when
     you already know which sub-view you want; one call with method= is
     friendlier for LLM context windows.
@@ -5110,6 +5117,7 @@ def module_inspect(
     TRIGGER when: you need to inspect one module from multiple angles —
     summary then views then OWL components — reducing round trips vs
     calling describe_module / list_views / list_owl_components separately.
+    Also: "khám phá nội dung module X", "module X chứa những gì"
     PREFER over: chaining describe_module + list_views + list_owl_components
     when the discriminator method= captures the exact sub-view needed.
     SKIP when: you need a single entity type — call describe_module,
@@ -5156,6 +5164,7 @@ def entity_lookup(
     TRIGGER when: kind of entity is known but the specific tool name is
     unclear — use kind= to dispatch to the right resolver without knowing
     whether to call resolve_model, resolve_field, resolve_view, etc.
+    Also: "tra cứu một entity cụ thể khi biết kind", "tìm field/method/view"
     PREFER over: guessing the right tool name; entity_lookup normalises the
     dispatch and returns the same tree text as the underlying tool.
     SKIP when: the specific tool name is already known — call resolve_model,
