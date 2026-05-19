@@ -31,6 +31,13 @@ const TOOLS = [
   { num: '19', name: 'list_owl_components', desc: 'List OWL components in a module (Odoo v15+); era-aware.', group: 'quality' },
   { num: '20', name: 'list_qweb_templates', desc: 'List QWeb templates in a module with inheritance hints.', group: 'quality' },
   { num: '21', name: 'list_js_patches', desc: 'List JS patches (Widget/odoo.define/OWL.patch) by target/module/era.', group: 'quality' },
+  { num: '22', name: 'model_inspect', desc: 'Superset of resolve_model/list_fields/list_methods — discriminator-based.', group: 'superset' },
+  { num: '23', name: 'module_inspect', desc: 'Superset for module-scoped queries — fields/views/owl/qweb/patches.', group: 'superset' },
+  { num: '24', name: 'entity_lookup', desc: 'Superset of resolve_field/resolve_method/resolve_view.', group: 'superset' },
+  { num: '25', name: 'set_active_version', desc: 'Sticky version for the session — call once, every tool uses it.', group: 'session' },
+  { num: '26', name: 'set_active_profile', desc: 'Sticky profile for the session.', group: 'session' },
+  { num: '27', name: 'list_available_versions', desc: 'What versions are indexed.', group: 'session' },
+  { num: '28', name: 'list_available_profiles', desc: 'What profiles you can switch to.', group: 'session' },
 ];
 ---
 
@@ -93,7 +100,7 @@ const TOOLS = [
         <span class="opacity-40" aria-hidden="true">&middot;</span>
         <span>v8 &rarr; v19+</span>
         <span class="opacity-40" aria-hidden="true">&middot;</span>
-        <span><strong class="text-viindoo-primary-bright font-semibold">21 MCP tools</strong></span>
+        <span><strong class="text-viindoo-primary-bright font-semibold">28 MCP tools</strong></span>
       </div>
     </div>
   </section>
@@ -139,20 +146,20 @@ const TOOLS = [
         03 &middot; THE TOOLBOX
       </div>
       <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
-        21 specialized tools.<br />One MCP endpoint.
+        28 specialized tools.<br />One MCP endpoint.
       </h2>
       <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
-        Resolve models, fields, methods, views. Find examples, measure impact. Version diffs, deprecation scans, pattern suggestions — all atomic.
+        Resolve models, fields, methods, views. Find examples, measure impact. Version diffs, deprecation scans, pattern suggestions — all atomic. Plus supersets and session-state tools for streamlined AI agent workflows.
       </p>
 
-      <!-- 21-tool grid -->
+      <!-- 28-tool grid -->
       <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
         {TOOLS.map((tool) => (
           <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[120px]" data-tool-group={tool.group}>
             <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
             <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
             <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
-            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
+            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : tool.group === 'superset' ? 'bg-viindoo-success' : tool.group === 'session' ? 'bg-viindoo-info' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
           </div>
         ))}
       </div>
@@ -162,7 +169,60 @@ const TOOLS = [
         <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-primary"></span>Resolve (14)</span>
         <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary"></span>Version (2)</span>
         <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-warning"></span>Quality (5)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-success"></span>Supersets (3)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-info"></span>Session (4)</span>
       </div>
+    </div>
+  </section>
+
+  <!-- 03b · Resources -->
+  <section id="resources" class="py-24 bg-viindoo-bg-0">
+    <div class="mx-auto max-w-7xl px-6" data-section="03b">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true" />
+        03B &middot; RESOURCES
+      </div>
+      <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
+        7 MCP Resources.<br />Bookmark any entity.
+      </h2>
+      <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Stable <code class="font-mono text-viindoo-primary-bright">odoo://&#123;version&#125;/&#123;kind&#125;/&#123;path&#125;</code> URIs for direct entity reads. Bookmark-stable across sessions — works as native pinned context in VS Code, Claude, and any MCP-aware client.
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/model/&#123;name&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Snapshot of a model — fields, methods, inheritance, defining module.</p>
+        </div>
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/module/&#123;name&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Module manifest, depends, defined+extended models, view counts.</p>
+        </div>
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/field/&#123;model&#125;/&#123;name&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Field record — type, defaults, compute, related, overrides.</p>
+        </div>
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/method/&#123;model&#125;/&#123;name&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Method record — signature, decorators, override chain across modules.</p>
+        </div>
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/view/&#123;xml_id&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">View + its XPath inheritance order, by xml_id.</p>
+        </div>
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/owl/&#123;module&#125;/&#123;name&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">OWL component record (Odoo v15+).</p>
+        </div>
+        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/qweb/&#123;xml_id&#125;</div>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">QWeb template — inheritance hints + render context.</p>
+        </div>
+      </div>
+
+      <p class="text-xs text-viindoo-on-dark-dim mt-6 font-mono text-center">
+        Resources are read-only · per-tenant cache · same auth as tools (X-API-Key).
+      </p>
     </div>
   </section>
 
