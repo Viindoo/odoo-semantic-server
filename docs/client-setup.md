@@ -302,6 +302,69 @@ add allow-list pattern `mcp(odoo-semantic.*)` để pre-approve tất cả tool.
 
 ---
 
+## Session Context Setup (v0.5+) — `set_active_version` / `set_active_profile`
+
+Starting in v0.5.0 the MCP server supports **sticky session context** so you stop repeating `odoo_version="17.0"` on every call. Run `set_active_version` once and the value is remembered for 24h per API key. Similarly `set_active_profile` pins the tenant profile.
+
+**Recommended startup flow** for any AI client (Claude Code, Codex, Gemini, VS Code, Antigravity):
+
+```
+1. list_available_versions()    # see which Odoo versions the server has data for
+2. set_active_version("17.0")   # pin the version for this session (24h TTL)
+3. list_available_profiles()    # see which tenant profiles exist (optional)
+4. set_active_profile("viindoo-internal")   # pin tenant profile (optional)
+5. <any tool call with odoo_version omitted>   # falls back to the pinned value
+```
+
+After step 2, calling `model_inspect(model="sale.order", method="all")` (no `odoo_version=` arg) returns results for `17.0`. Override at any time by passing `odoo_version=` explicitly on a single call (one-off; does **not** clear the sticky value).
+
+> See [ADR-0029](adr/0029-implicit-session-context.md) for the TTL design and per-key keying rationale.
+
+---
+
+## MCP Resources (`odoo://` URI scheme, v0.5+)
+
+In addition to the 28 tool calls, the server exposes **7 MCP Resources** addressable via stable URIs — preferred when the caller already knows the entity ID and just wants the canonical record (read-only, bookmark-friendly, no parameters):
+
+| URI template | Returns |
+|--------------|---------|
+| `odoo://{version}/model/{name}` | Model record (inheritance, field/method counts, modules) |
+| `odoo://{version}/field/{model}/{field}` | Field record (type, compute, definition module) |
+| `odoo://{version}/method/{model}/{method}` | Method record (override chain, super_ratio) |
+| `odoo://{version}/module/{name}` | Module record (manifest, defines/extends counts) |
+| `odoo://{version}/view/{xmlid}` | View record (xpath chain, inherit_id) |
+| `odoo://{version}/pattern/{name}` | Pattern catalogue entry (code snippet + gotchas) |
+| `odoo://{version}/stylesheet/{file_path}` | Stylesheet record (selectors, imports, variables) |
+
+**Example:**
+
+```
+odoo://17.0/model/sale.order
+odoo://17.0/field/sale.order/amount_total
+odoo://17.0/view/sale.view_order_form
+```
+
+Clients that implement the MCP `resources/list` and `resources/read` flows surface these as bookmark-style references. See [ADR-0030](adr/0030-mcp-resources-uri-scheme.md) for the URI grammar and authorization model (same `X-API-Key` header as tool calls).
+
+---
+
+## Tool Surface Change — v0.4 → v0.5 (Read Before You Update Snippets)
+
+v0.5.0 ships **28 tools** (was 21 in v0.4.x). Three new **supersets** consolidate the legacy `resolve_*` and `list_*` tools:
+
+| If your prompt/snippet currently calls | Switch to | Status of old tool |
+|----------------------------------------|-----------|--------------------|
+| `resolve_model` | `model_inspect(method='all')` | DEPRECATED in v0.5, removed in v0.6 |
+| `resolve_field` / `resolve_method` / `resolve_view` | `entity_lookup(kind='field'\|'method'\|'view')` | DEPRECATED in v0.5, removed in v0.6 |
+| `list_fields` / `list_methods` / `list_views` | `model_inspect(method='fields'\|'methods'\|'views')` | DEPRECATED in v0.5, removed in v0.6 |
+| `list_owl_components` / `list_qweb_templates` / `list_js_patches` | `module_inspect(method='owl'\|'qweb'\|'patches')` | DEPRECATED in v0.5, removed in v0.6 |
+
+The 10 legacy tools still respond in v0.5 — they just emit a `DEPRECATED:` banner in the first line of the response pointing to the superset. Existing snippets keep working, but please plan the swap before v0.6 ships.
+
+**Full side-by-side migration guide:** [`docs/upgrade/v0.4-to-v0.5-migration.md`](upgrade/v0.4-to-v0.5-migration.md).
+
+---
+
 ## Verify After Install — Natural-Language Prompts
 
 Sau khi add xong, **gõ prompt tự nhiên** dưới đây vào AI tool — agent phải tự pick MCP `odoo-semantic` và gọi `resolve_model` (hoặc tool tương đương). Nếu agent trả lời chung chung kiểu textbook về `sale.order` thay vì cite được module name + odoo_version từ index → MCP **chưa load đúng**, quay lại section của client tương ứng.

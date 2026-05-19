@@ -1,6 +1,8 @@
 # MCP Tool × Persona × Adapter Routing Matrix
 
-> **Status (2026-05-16):** Canonical source for tool routing logic. Adapter files (cursor/gemini/openai/odoo-router) duplicate this content manually. Generator script deferred to M9+ — see [ADR-0012](../adr/0012-persona-skill-architecture.md). 21-tool surface area as of M9 W-OSM Wave 1 (7 enumeration / module overview / UI-layer tools added — see [ADR-0023](../adr/proposed/0023-tool-output-completeness.md)).
+> **Status (2026-05-19):** Canonical source for tool routing logic. Adapter files (cursor/gemini/openai/odoo-router) duplicate this content manually. Generator script deferred to M9+ — see [ADR-0012](../adr/0012-persona-skill-architecture.md). **28-tool surface (v0.5.0, M10.5+M11)**: 14 (M1–M5) + 7 (M9 W-OSM Wave 1) + 3 inspect supersets (M11 Wave D) + 4 session-context tools (M11 Wave E). Plus 7 MCP Resources (`odoo://` URI scheme) for read-only bookmarks (M11 Wave F, [ADR-0030](../adr/0030-mcp-resources-uri-scheme.md)). See [ADR-0023](../adr/0023-tool-output-completeness.md), [ADR-0028](../adr/0028-discriminator-consolidation.md), [ADR-0029](../adr/0029-implicit-session-context.md).
+>
+> **Deprecation timeline:** 10 legacy tools — `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches` — still callable in v0.5 with a `DEPRECATED` banner pointing to their superset replacement. **Removed in v0.6.** See [`docs/upgrade/v0.4-to-v0.5-migration.md`](../upgrade/v0.4-to-v0.5-migration.md).
 
 ## Purpose
 
@@ -16,37 +18,132 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 
 ## 1. Tool × Persona Matrix
 
-| MCP Tool              | CEO | Dev | Consultant | Marketer | Sales |
-|-----------------------|:---:|:---:|:---:|:---:|:---:|
-| resolve_model         |     | ●  | ○ | ○ | ○ |
-| resolve_field         |     | ●  |   |   |   |
-| resolve_method        |     | ●  |   |   |   |
-| resolve_view          |     | ●  |   |   |   |
-| find_examples         |     | ○  | ● | ● | ● |
-| impact_analysis       | ●  | ○  |   |   |   |
-| lookup_core_api       |     | ●  | ○ |   |   |
-| api_version_diff      |     | ●  |   | ● | ○ |
-| find_deprecated_usage | ●  | ●  |   |   |   |
-| lint_check            |     | ●  |   |   |   |
-| cli_help              |     | ●  |   |   |   |
-| suggest_pattern       |     | ●  | ○ |   |   |
-| check_module_exists   | ●  | ○  | ● | ● | ● |
-| find_override_point   |     | ●  |   |   |   |
-| describe_module       | ○  | ●  | ● | ○ | ○ |
-| list_fields           |     | ●  | ○ |   |   |
-| list_methods          |     | ●  |   |   |   |
-| list_views            |     | ●  |   |   |   |
-| list_owl_components   |     | ●  |   |   |   |
-| list_qweb_templates   |     | ●  |   |   |   |
-| list_js_patches       |     | ●  |   |   |   |
+| MCP Tool                  | CEO | Dev | Consultant | Marketer | Sales |
+|---------------------------|:---:|:---:|:---:|:---:|:---:|
+| **model_inspect** ★       |     | ●  | ○ | ○ | ○ |
+| **module_inspect** ★      | ○  | ●  | ● | ○ | ○ |
+| **entity_lookup** ★       |     | ●  |   |   |   |
+| find_examples             |     | ○  | ● | ● | ● |
+| impact_analysis           | ●  | ○  |   |   |   |
+| lookup_core_api           |     | ●  | ○ |   |   |
+| api_version_diff          |     | ●  |   | ● | ○ |
+| find_deprecated_usage     | ●  | ●  |   |   |   |
+| lint_check                |     | ●  |   |   |   |
+| cli_help                  |     | ●  |   |   |   |
+| suggest_pattern           |     | ●  | ○ |   |   |
+| check_module_exists       | ●  | ○  | ● | ● | ● |
+| find_override_point       |     | ●  |   |   |   |
+| describe_module           | ○  | ●  | ● | ○ | ○ |
+| **set_active_version** ☆  | ○  | ●  | ○ | ○ | ○ |
+| **set_active_profile** ☆  | ○  | ●  | ○ | ○ | ○ |
+| **list_available_versions** ☆ | ○ | ● | ○ | ○ | ○ |
+| **list_available_profiles** ☆ | ○ | ● | ○ | ○ | ○ |
+| _resolve_model_ † (legacy)        |     | ●  | ○ | ○ | ○ |
+| _resolve_field_ † (legacy)        |     | ●  |   |   |   |
+| _resolve_method_ † (legacy)       |     | ●  |   |   |   |
+| _resolve_view_ † (legacy)         |     | ●  |   |   |   |
+| _list_fields_ † (legacy)          |     | ●  | ○ |   |   |
+| _list_methods_ † (legacy)         |     | ●  |   |   |   |
+| _list_views_ † (legacy)           |     | ●  |   |   |   |
+| _list_owl_components_ † (legacy)  |     | ●  |   |   |   |
+| _list_qweb_templates_ † (legacy)  |     | ●  |   |   |   |
+| _list_js_patches_ † (legacy)      |     | ●  |   |   |   |
 
-**Legend:** ● = primary (default first choice), ○ = secondary (related context)
+**Legend:** ● = primary (default first choice), ○ = secondary (related context).
+★ = M11 Wave D superset (discriminator-routed; preferred over legacy siblings).
+☆ = M11 Wave E session-context tool (sticky 24h TTL per API key — see [ADR-0029](../adr/0029-implicit-session-context.md)).
+† = legacy tool: still callable in v0.5 but returns a `DEPRECATED` banner pointing to its superset. Removed in v0.6.
+
+### MCP Resources (M11 Wave F, [ADR-0030](../adr/0030-mcp-resources-uri-scheme.md))
+
+Read-only bookmark-stable handles addressable via the `odoo://` URI scheme — preferred over a tool call when the caller already knows the entity ID and just wants the canonical record:
+
+| URI template                                       | Returns                                            |
+|----------------------------------------------------|----------------------------------------------------|
+| `odoo://{version}/model/{name}`                    | Model record (inheritance, field count, modules)   |
+| `odoo://{version}/field/{model}/{field}`           | Field record (type, compute, definition module)    |
+| `odoo://{version}/method/{model}/{method}`         | Method record (override chain, super_ratio)        |
+| `odoo://{version}/module/{name}`                   | Module record (manifest, defines/extends counts)   |
+| `odoo://{version}/view/{xmlid}`                    | View record (xpath chain, inherit_id)              |
+| `odoo://{version}/pattern/{name}`                  | Pattern catalogue entry (code, gotchas)            |
+| `odoo://{version}/stylesheet/{file_path}`          | Stylesheet record (selectors, imports, variables)  |
 
 ---
 
 ## 2. Tool Trigger Phrases
 
-### resolve_model
+### model_inspect ★ (M11 Wave D — supersedes `resolve_model` + `list_fields` + `list_methods` + `list_views`)
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "inspect model sale.order", "show me sale.order with fields and methods", "everything about res.partner in v17", "full structure of model X" |
+| **Primary VI** | "inspect model X", "cho tôi tất cả thông tin model X", "model X full structure", "đầy đủ field+method+view của X" |
+| **Args** | `model` (required), `method` (required, one of `fields` / `methods` / `views` / `all`), `odoo_version` (optional — falls back to session active version or auto-latest), `module` (optional filter), `kind` (optional, when `method='fields'`), `view_type` (optional, when `method='views'`), `limit` (optional, default 200), `profile_name` (optional) |
+| **Prefer when** | Any model-scoped enumeration question — `model_inspect(method='all')` returns one consolidated tree replacing what previously required 3+ legacy calls |
+| **Skip when** | Caller asks about a *specific* field/method/view ID → `entity_lookup`; or module-level rather than model-level (→ `module_inspect`) |
+
+### module_inspect ★ (M11 Wave D — supersedes `describe_module` + `list_views` (module-scoped) + `list_owl_components` + `list_qweb_templates` + `list_js_patches`)
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "inspect module sale_management", "what does viin_sale ship — views, OWL, QWeb, patches", "describe module website_sale with all UI artefacts", "full module inventory for X" |
+| **Primary VI** | "inspect module X", "module X có gì — view/OWL/QWeb/patch", "tổng quan module X kèm UI", "module X tổng thể là gì" |
+| **Args** | `module` (required), `method` (required, one of `describe` / `fields` / `views` / `owl` / `qweb` / `patches`), `odoo_version` (optional — session-aware), `profile_name` (optional), `bound_model` (optional, when `method='owl'`), `era` (optional, when `method='patches'`: era1/era2/era3), `limit` (optional, default 200) |
+| **Prefer when** | Caller wants the module-level architecture overview *plus* UI-layer artefacts in one round-trip |
+| **Skip when** | Caller only needs YES/NO + edition badge (→ `check_module_exists`, 1 Cypher vs many) |
+
+### entity_lookup ★ (M11 Wave D — supersedes `resolve_field` + `resolve_method` + `resolve_view`)
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "lookup field amount_total on sale.order", "find method action_confirm on sale.order", "lookup view sale.view_order_form" |
+| **Primary VI** | "lookup field/method/view X", "tra cứu method action_confirm trên sale.order", "tra cứu view sale.view_order_form" |
+| **Args** | `kind` (required, one of `field` / `method` / `view`), `odoo_version` (optional — session-aware), plus discriminator-specific args: for `field`/`method` → `model` + `field` or `method`; for `view` → `xmlid` |
+| **Prefer when** | Caller knows the exact ID and wants one entity's full record — drill-down from a `model_inspect`/`module_inspect` enumeration |
+| **Skip when** | Caller wants the full model tree (→ `model_inspect`) or the override chain across modules (→ `resolve_method` legacy still works in v0.5, but prefer `entity_lookup(kind='method', ...)`) |
+
+### set_active_version ☆ (M11 Wave E — sticky session context, [ADR-0029](../adr/0029-implicit-session-context.md))
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "use Odoo 17 for this session", "set active version to 16.0", "pin session to v18" |
+| **Primary VI** | "set version 17", "dùng Odoo 17 cho phiên này", "pin session sang v18" |
+| **Args** | `odoo_version` (required, e.g., `"17.0"`) |
+| **Prefer when** | Caller will make ≥2 tool calls in a row against the same Odoo version — avoid repeating `odoo_version=` on every call |
+| **Skip when** | One-off cross-version comparison (→ `api_version_diff`) — pass `odoo_version` explicitly per call instead |
+| **TTL** | 24h per API key (key+session_id keyed); subsequent calls without `odoo_version` fall back to this value |
+
+### set_active_profile ☆ (M11 Wave E)
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "switch to profile viindoo-internal", "use profile X for this session", "set active profile" |
+| **Primary VI** | "set profile X", "dùng profile X", "đổi sang profile Y" |
+| **Args** | `profile_name` (required) |
+| **Prefer when** | Caller is investigating a specific tenant/profile and wants subsequent calls to scope to it |
+| **Skip when** | Cross-profile audit (→ leave profile arg explicit per call) |
+
+### list_available_versions ☆ (M11 Wave E)
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "what versions are indexed", "list indexed Odoo versions", "available versions in this MCP" |
+| **Primary VI** | "version nào đã index", "MCP này có version Odoo nào", "list version có sẵn" |
+| **Args** | _(none)_ |
+| **Prefer when** | Caller is unsure which Odoo versions the server has data for, before picking one for `set_active_version` |
+
+### list_available_profiles ☆ (M11 Wave E)
+
+| Attribute | Value |
+|-----------|-------|
+| **Primary EN** | "what profiles exist", "list indexed profiles", "available tenant profiles" |
+| **Primary VI** | "profile nào có sẵn", "MCP có profile nào", "list profile của tenant" |
+| **Args** | _(none)_ |
+| **Prefer when** | Caller is picking a profile for `set_active_profile` and needs the canonical list |
+
+---
+
+### resolve_model † _(DEPRECATED in v0.5 — use `model_inspect(method='all', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -56,7 +153,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Any question about a model's overall structure, fields list, inheritance chain, or which modules extend it |
 | **Skip when** | Question is about a specific field (→ resolve_field) or method (→ resolve_method) or view (→ resolve_view) |
 
-### resolve_field
+### resolve_field † _(DEPRECATED in v0.5 — use `entity_lookup(kind='field', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -66,7 +163,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Question about one specific field's type, compute method, related path, required flag, or which modules declare it |
 | **Skip when** | Question is about entire model (→ resolve_model) or method (→ resolve_method) |
 
-### resolve_method
+### resolve_method † _(DEPRECATED in v0.5 — use `entity_lookup(kind='method', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -76,7 +173,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Question about a method's override chain, super() linkage, decorators, or which modules override it in what order |
 | **Skip when** | Question is about field (→ resolve_field) or view structure (→ resolve_view) |
 
-### resolve_view
+### resolve_view † _(DEPRECATED in v0.5 — use `entity_lookup(kind='view', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -196,7 +293,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Caller needs module contents (models, views, JS) and counts in one round-trip — module-level architecture overview |
 | **Skip when** | Caller only needs YES/NO + edition badge (→ check_module_exists, 1 Cypher vs 5) or wants enumerated entities (→ list_fields / list_views / list_methods) |
 
-### list_fields
+### list_fields † _(DEPRECATED in v0.5 — use `model_inspect(method='fields', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -206,7 +303,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Caller needs the enumerated field list grouped by module — `resolve_model` only returns the count |
 | **Skip when** | Caller wants one field's detail (→ resolve_field) or only "how many fields" (→ resolve_model is cheaper) |
 
-### list_methods
+### list_methods † _(DEPRECATED in v0.5 — use `model_inspect(method='methods', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -216,7 +313,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Caller needs the enumerated method list grouped by module; methods overridden in ≥2 modules are marked `(*)` |
 | **Skip when** | Caller wants one method's override chain (→ resolve_method) or the best override point (→ find_override_point) |
 
-### list_views
+### list_views † _(DEPRECATED in v0.5 — use `model_inspect(method='views', ...)` or `module_inspect(method='views', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -226,7 +323,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Caller needs the per-model view inventory grouped by module |
 | **Skip when** | Caller wants one view's xpath chain (→ resolve_view) or QWeb portal templates (→ list_qweb_templates) |
 
-### list_owl_components
+### list_owl_components † _(DEPRECATED in v0.5 — use `module_inspect(method='owl', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -236,7 +333,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Caller needs the OWL component inventory of a module (Odoo v14+) |
 | **Skip when** | Caller wants legacy Widget extensions (v8-v13) (→ list_js_patches with `era='era1'`) or QWeb templates (→ list_qweb_templates). Returns empty + warning for Odoo v8-v13 (no OWL). |
 
-### list_qweb_templates
+### list_qweb_templates † _(DEPRECATED in v0.5 — use `module_inspect(method='qweb', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -246,7 +343,7 @@ When adding a new MCP tool or persona, update **this file first**, then propagat
 | **Prefer when** | Caller needs the QWeb template inventory of a module with `t-inherit` parent info |
 | **Skip when** | Caller wants OWL components (v15+ JS classes) (→ list_owl_components) or the template IS an `ir.ui.view` (→ resolve_view) |
 
-### list_js_patches
+### list_js_patches † _(DEPRECATED in v0.5 — use `module_inspect(method='patches', ...)`; removed in v0.6)_
 
 | Attribute | Value |
 |-----------|-------|
@@ -357,10 +454,9 @@ Plugin skills can claim overlapping trigger keywords. Resolution policy:
 
 | Tool | Cursor | Gemini | OpenAI | Router | Plugin Skill |
 |------|:------:|:------:|:------:|:------:|:------:|
-| resolve_model | ✓ | ✓ | ✓ | ✓ | odoo-coder |
-| resolve_field | ✓ | ✓ | ✓ | ✓ | odoo-coder |
-| resolve_method | ✓ | ✓ | ✓ | ✓ | odoo-override-finder |
-| resolve_view | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| **model_inspect** ★ | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| **module_inspect** ★ | ✓ | ✓ | ✓ | ✓ | odoo-customization-inventory |
+| **entity_lookup** ★ | ✓ | ✓ | ✓ | ✓ | odoo-coder |
 | find_examples | ✓ | ✓ | ✓ | ✓ | odoo-coder |
 | impact_analysis | ✓ | ✓ | ✓ | ✓ | odoo-risk-overview |
 | lookup_core_api | ✓ | ✓ | ✓ | ✓ | odoo-coder |
@@ -372,11 +468,19 @@ Plugin skills can claim overlapping trigger keywords. Resolution policy:
 | check_module_exists | ✓ | ✓ | ✓ | ✓ | odoo-addon-diff |
 | find_override_point | ✓ | ✓ | ✓ | ✓ | odoo-override-finder |
 | describe_module | ✓ | ✓ | ✓ | ✓ | odoo-customization-inventory |
-| list_fields | ✓ | ✓ | ✓ | ✓ | odoo-coder |
-| list_methods | ✓ | ✓ | ✓ | ✓ | odoo-coder |
-| list_views | ✓ | ✓ | ✓ | ✓ | odoo-coder |
-| list_owl_components | ✓ | ✓ | ✓ | ✓ | odoo-owl-coder |
-| list_qweb_templates | ✓ | ✓ | ✓ | ✓ | odoo-coder |
-| list_js_patches | ✓ | ✓ | ✓ | ✓ | odoo-js-coder |
+| **set_active_version** ☆ | ✓ | ✓ | ✓ | ✓ | _(session-context, no skill)_ |
+| **set_active_profile** ☆ | ✓ | ✓ | ✓ | ✓ | _(session-context, no skill)_ |
+| **list_available_versions** ☆ | ✓ | ✓ | ✓ | ✓ | _(session-context, no skill)_ |
+| **list_available_profiles** ☆ | ✓ | ✓ | ✓ | ✓ | _(session-context, no skill)_ |
+| _resolve_model_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _resolve_field_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _resolve_method_ † | ✓ | ✓ | ✓ | ✓ | odoo-override-finder |
+| _resolve_view_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _list_fields_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _list_methods_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _list_views_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _list_owl_components_ † | ✓ | ✓ | ✓ | ✓ | odoo-owl-coder |
+| _list_qweb_templates_ † | ✓ | ✓ | ✓ | ✓ | odoo-coder |
+| _list_js_patches_ † | ✓ | ✓ | ✓ | ✓ | odoo-js-coder |
 
-> **Note:** Each adapter implements these tools via HTTP MCP protocol to `odoo-semantic-mcp` server; no duplication of logic, only routing/routing heuristics. Tool count: 14 (M1–M5) + 7 (M9 W-OSM Wave 1) = 21.
+> **Note:** Each adapter implements these tools via HTTP MCP protocol to `odoo-semantic-mcp` server; no duplication of logic, only routing heuristics. **28 MCP tools** (v0.5.0, M10.5+M11): 14 (M1–M5) + 7 (M9 W-OSM Wave 1) + 3 inspect supersets (M11 Wave D) + 4 session-context tools (M11 Wave E). Plus 7 MCP Resources (`odoo://` URI scheme, M11 Wave F). The 10 legacy `resolve_*`/`list_*` tools (†) still respond in v0.5 with a `DEPRECATED` banner and are scheduled for removal in v0.6 — see [`docs/upgrade/v0.4-to-v0.5-migration.md`](../upgrade/v0.4-to-v0.5-migration.md).
