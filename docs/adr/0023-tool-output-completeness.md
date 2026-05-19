@@ -485,3 +485,60 @@ This ADR is **not invalidated** by the new tools — it is the contract they mus
 ## Notes on this ADR's status
 
 This file is parked in `docs/adr/proposed/` until Wave 1 lands. On merge of the Wave 1 PR, the main session moves it to `docs/adr/0023-tool-output-completeness.md`. Number 0023 is reserved because ADR-0022 was claimed by MFA TOTP (merged in PR #100 on 2026-05-15). If a concurrent ADR claims 0023 before Wave 1 lands, this file is renamed to the next free number with no content changes.
+
+---
+
+## Amendment 2026-05-19 (M10.5 Wave C — pagination contract)
+
+**Scope:** Extends §5 (list-tool tree grammar) with a server-side cursor contract for large result sets. Does not change §1–§4.
+
+### What changed
+
+Six `_list_*` implementations in `src/mcp/server.py` gained a `start_index: int = 0` parameter (`_list_fields`, `_list_methods`, `_list_views`, `_list_owl_components`, `_list_qweb_templates`, `_list_js_patches`). The parameter is an integer offset into the full sorted result set; `start_index=0` (default) reproduces original behaviour.
+
+### Continuation hint grammar
+
+When a `list_*` tool returns a page that is not the last page, the `Next:` footer MUST include a continuation hint using **plain text** in the following form:
+
+```
+Showing rows X–Y of Z. Call list_X(..., start_index=Y) for next N.
+```
+
+Where:
+- `X` = `start_index + 1` (1-based, human-readable)
+- `Y` = `start_index + len(page)` (last row on this page, 1-based)
+- `Z` = total count (from a separate `COUNT(...)` Cypher query)
+- `N` = `min(cap, Z - Y)` (rows remaining on next page)
+
+Example (list_fields with 72 fields, cap=50, start_index=0):
+
+```
+Fields of sale.order (Odoo 17.0)
+├─ [odoo_17.0] sale
+│   ├─ name : char
+│   └─ ... (48 more rows on this page)
+└─ Next: resolve_field(...) for one field's full chain | Showing rows 1–50 of 72. Call list_fields(model='sale.order', odoo_version='17.0', start_index=50) for next 22.
+```
+
+### `[ref=fN]` row token
+
+Each row in a paginated `list_*` response MUST carry an opaque ref token appended after the row content:
+
+```
+{name} : {ttype} [ref=f3]
+```
+
+The `[ref=fN]` suffix is a Wave C per-row opaque ref ID (per `src/mcp/refs.py`) that allows a subsequent `resolve_field(target="f3")` call to address the specific field without re-specifying model + version. This aligns with ADR-0023 §3 truncation + total disclosure spirit — each visible row is individually addressable.
+
+### Rejection rationale for `<error>` tag framing
+
+An earlier design proposal embedded the continuation hint inside an `<error>...</error>` XML tag to leverage existing client error-detection paths. This was rejected for two reasons:
+
+1. **Semantic mismatch.** Pagination is a routine event, not an error state. Clients that inspect `<error>` tags for alerting would incorrectly flag every paginated response as a tool failure.
+2. **Grammar purity.** §1 of this ADR defines the tree grammar contract as plain text with Unicode box-drawing connectors. Embedding XML tags breaks the contract and would require every downstream parser to handle mixed-mode output.
+
+The plain-text continuation hint appended to the `Next:` line is the canonical form. Clients that want to detect pagination do so by matching the substring `"start_index="` in the `Next:` line.
+
+### Backward compatibility
+
+`start_index=0` is the default; callers that do not pass the parameter receive the same first-page output as before the amendment. The new `[ref=fN]` row tokens are additive — clients that do not parse them see harmless bracketed suffixes.

@@ -20,9 +20,10 @@ The ``{version}`` segment accepts any of the 6 sentinel strings (``auto``,
 per-API-key session version via :mod:`src.mcp.session` (ADR-0029, Wave E).
 
 A module-level :class:`ResourceCache` (1000 entries, 300s TTL, thread-safe LRU)
-short-circuits repeat reads.  api_key_id is read inside each handler via
-:func:`src.mcp.server._get_api_key_id` so the cache key still reflects URL-only
-content (per-tenant version resolution happens before cache lookup).
+short-circuits repeat reads.  Each handler resolves the ``{version}`` sentinel
+via :func:`_resolved_version_for` **before** forming the cache key, so two
+callers with different session versions (e.g., A→17.0, B→16.0) reading
+``odoo://auto/model/sale.order`` receive correctly distinct cached bodies.
 
 See ``docs/adr/0030-mcp-resources-uri-scheme.md`` for the design rationale and
 ``docs/research/mcp-design-patterns-research.md`` Pattern 8 for cross-server
@@ -428,9 +429,12 @@ def register_resources(mcp_instance) -> None:
         ),
     )
     def _model_resource(version: str, name: str) -> str:
-        uri = f"odoo://{version}/model/{name}"
+        # Resolve sentinel (e.g. "auto") BEFORE forming the cache key so
+        # two callers with different session versions never share a body.
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/model/{name}"
         return cache.get_or_compute(
-            uri, lambda: _render_model(version, name),
+            uri, lambda: _render_model(resolved, name),
         )[0]
 
     # ---- field ----------------------------------------------------------
@@ -443,9 +447,10 @@ def register_resources(mcp_instance) -> None:
         ),
     )
     def _field_resource(version: str, model: str, field: str) -> str:
-        uri = f"odoo://{version}/field/{model}/{field}"
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/field/{model}/{field}"
         return cache.get_or_compute(
-            uri, lambda: _render_field(version, model, field),
+            uri, lambda: _render_field(resolved, model, field),
         )[0]
 
     # ---- method ---------------------------------------------------------
@@ -458,9 +463,10 @@ def register_resources(mcp_instance) -> None:
         ),
     )
     def _method_resource(version: str, model: str, method: str) -> str:
-        uri = f"odoo://{version}/method/{model}/{method}"
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/method/{model}/{method}"
         return cache.get_or_compute(
-            uri, lambda: _render_method(version, model, method),
+            uri, lambda: _render_method(resolved, model, method),
         )[0]
 
     # ---- module ---------------------------------------------------------
@@ -473,9 +479,10 @@ def register_resources(mcp_instance) -> None:
         ),
     )
     def _module_resource(version: str, name: str) -> str:
-        uri = f"odoo://{version}/module/{name}"
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/module/{name}"
         return cache.get_or_compute(
-            uri, lambda: _render_module(version, name),
+            uri, lambda: _render_module(resolved, name),
         )[0]
 
     # ---- view -----------------------------------------------------------
@@ -488,9 +495,10 @@ def register_resources(mcp_instance) -> None:
         ),
     )
     def _view_resource(version: str, xmlid: str) -> str:
-        uri = f"odoo://{version}/view/{xmlid}"
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/view/{xmlid}"
         return cache.get_or_compute(
-            uri, lambda: _render_view(version, xmlid),
+            uri, lambda: _render_view(resolved, xmlid),
         )[0]
 
     # ---- pattern --------------------------------------------------------
@@ -503,9 +511,10 @@ def register_resources(mcp_instance) -> None:
         ),
     )
     def _pattern_resource(version: str, pattern_id: str) -> str:
-        uri = f"odoo://{version}/pattern/{pattern_id}"
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/pattern/{pattern_id}"
         return cache.get_or_compute(
-            uri, lambda: _render_pattern(version, pattern_id),
+            uri, lambda: _render_pattern(resolved, pattern_id),
         )[0]
 
     # ---- stylesheet -----------------------------------------------------
@@ -523,7 +532,8 @@ def register_resources(mcp_instance) -> None:
     def _stylesheet_resource(
         version: str, module: str, file_path: str,
     ) -> str:
-        uri = f"odoo://{version}/stylesheet/{module}/{file_path}"
+        resolved = _resolved_version_for(version)
+        uri = f"odoo://{resolved}/stylesheet/{module}/{file_path}"
         return cache.get_or_compute(
-            uri, lambda: _render_stylesheet(version, module, file_path),
+            uri, lambda: _render_stylesheet(resolved, module, file_path),
         )[0]

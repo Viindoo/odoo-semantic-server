@@ -293,3 +293,160 @@ def test_two_api_keys_reading_same_uri_get_same_body(
     assert uri_count == 1, (
         f"Cache must hold exactly one entry for URI {uri!r}; found {uri_count}"
     )
+
+
+# ===========================================================================
+# AC-FFIX-4: No tenant leakage on sentinel URI — two keys with different
+# active versions must get version-distinct bodies, not share the first body.
+# ===========================================================================
+
+
+def test_two_keys_different_active_versions_get_their_own_bodies(
+    mcp_with_resources, fresh_resources_module,
+) -> None:
+    """Sentinel odoo://auto/* resolves per-tenant before cache key is formed.
+
+    Regression test for the cache-key tenant leakage bug identified in the
+    Wave F Opus final gate review:
+
+        BUG: handlers formed the cache key from the raw ``version`` segment
+        (``"auto"``) THEN called ``_render_*(version, ...)`` which resolved
+        internally.  First caller's body (resolved to 17.0) was stored under
+        key ``odoo://auto/model/X``.  Second caller (active_version=16.0) hit
+        the same cache entry and received 17.0 content.
+
+        FIX: each handler now calls ``_resolved_version_for(version)`` first,
+        then forms the cache key from the resolved concrete version
+        (``odoo://17.0/model/X`` vs ``odoo://16.0/model/X``).
+
+    Test strategy:
+        * Seed two distinct Model nodes (same name, different fake versions
+          FA_99A.0 and FA_99B.0) so we can tell which version body we got.
+        * Mock ``_resolved_version_for`` to return different versions for the
+          two "tenants" without touching real session state.
+        * Assert body_A contains FA_99A.0 and body_B contains FA_99B.0 — if
+          the bug were present, body_B would still contain FA_99A.0.
+    """
+    import src.mcp.server as _srv
+
+    FA_VER_A = "FA_99A.0"
+    FA_VER_B = "FA_99B.0"
+
+    # ------------------------------------------------------------------
+    # Seed two distinct Module + Model nodes at FA_VER_A and FA_VER_B.
+    # ------------------------------------------------------------------
+    import os
+
+    from src.indexer.models import FieldInfo, ModelInfo, ModuleInfo, ParseResult
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    try:
+        for ver in (FA_VER_A, FA_VER_B):
+            mod = ModuleInfo(
+                name="fa_leak_module",
+                odoo_version=ver,
+                repo="odoo_test",
+                path="/tmp/fa_leak",
+                depends=["base"],
+                edition="community",
+            )
+            mdl = ModelInfo(
+                name="fa.leak.model",
+                module="fa_leak_module",
+                odoo_version=ver,
+                fields=[FieldInfo("name", "char")],
+                methods=[],
+            )
+            writer.write_results([ParseResult(module=mod, models=[mdl])])
+    finally:
+        writer.close()
+
+    # ------------------------------------------------------------------
+    # Clear the module cache and patch _resolved_version_for to return
+    # distinct concrete versions for our two "tenants".
+    # ------------------------------------------------------------------
+    cache = fresh_resources_module.get_cache()
+    cache.clear()
+
+    # Patch _resolved_version_for to return version keyed on the current
+    # thread-local api_key_id so each tenant gets the right version
+    # without touching real session state.
+    _TENANT_VERSIONS = {
+        "api-key-tenant-a-7701": FA_VER_A,
+        "api-key-tenant-b-7702": FA_VER_B,
+    }
+
+    def _patched_resolve(version: str) -> str:
+        # Peek at which api_key_id is active in this thread.
+        key_id = getattr(_srv._api_key_id_local, "value", None)
+        return _TENANT_VERSIONS.get(key_id, FA_VER_A)
+
+    import src.mcp.resources
+    original_fn = src.mcp.resources._resolved_version_for
+    src.mcp.resources._resolved_version_for = _patched_resolve
+
+    try:
+        # Both reads use the sentinel "auto" URI — bug would collapse them.
+        uri_sentinel = "odoo://auto/model/fa.leak.model"
+
+        # Tenant A reads first.
+        _srv._api_key_id_local.value = "api-key-tenant-a-7701"
+        try:
+            body_a = _read(mcp_with_resources, uri_sentinel)
+        finally:
+            try:
+                del _srv._api_key_id_local.value
+            except AttributeError:
+                pass
+
+        # Tenant B reads second — must NOT get tenant A's cached body.
+        _srv._api_key_id_local.value = "api-key-tenant-b-7702"
+        try:
+            body_b = _read(mcp_with_resources, uri_sentinel)
+        finally:
+            try:
+                del _srv._api_key_id_local.value
+            except AttributeError:
+                pass
+    finally:
+        src.mcp.resources._resolved_version_for = original_fn
+        # Cleanup seeded nodes.
+        import neo4j as _neo4j_pkg
+        drv = _neo4j_pkg.GraphDatabase.driver(
+            os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            auth=(
+                os.getenv("NEO4J_TEST_USER", "neo4j"),
+                os.getenv("NEO4J_TEST_PASSWORD", "password"),
+            ),
+        )
+        with drv.session() as s:
+            for ver in (FA_VER_A, FA_VER_B):
+                s.run(
+                    "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=ver,
+                )
+        drv.close()
+
+    # ------------------------------------------------------------------
+    # Assertions: each tenant must see their own version in the body.
+    # ------------------------------------------------------------------
+    assert body_a, "Tenant A body must be non-empty"
+    assert body_b, "Tenant B body must be non-empty"
+
+    assert FA_VER_A in body_a, (
+        f"Tenant A body must contain {FA_VER_A!r} — "
+        f"got: {body_a[:200]!r}"
+    )
+    assert FA_VER_B in body_b, (
+        f"Tenant B body must contain {FA_VER_B!r} (not {FA_VER_A!r}) — "
+        f"got: {body_b[:200]!r}"
+    )
+    assert FA_VER_A not in body_b, (
+        f"Tenant B body must NOT contain tenant A's version {FA_VER_A!r} — "
+        f"cache-key tenant leakage detected. body_b[:200]={body_b[:200]!r}"
+    )
