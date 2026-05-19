@@ -1,10 +1,10 @@
-# [email protected] — fan-out alert pattern triggered by OnFailure=
-# Đặt tại: /etc/systemd/system/[email protected]
+# osm-alert@.service — fan-out alert pattern triggered by OnFailure=
+# Đặt tại: /etc/systemd/system/osm-alert@.service
 #
-# Hook: any unit with `OnFailure=osm-alert@%n.service` will instance this
+# Hook: any unit with `OnFailure=osm-alert@%n` will instance this
 # template, passing its own unit name as `%i`. Example: when
 # `odoo-semantic-mcp.service` enters `failed` state, systemd starts
-# `[email protected]`.
+# the instance `osm-alert@odoo-semantic-mcp.service`.
 #
 # Default behaviour: write a structured WARNING line to journald
 # (`journalctl -u 'osm-alert@*'` shows the full alert history). This is
@@ -14,9 +14,11 @@
 # the line. See docs/deploy/db-tier-operations.md §Alerts.
 #
 # Sanity test (no real failure required):
-#   sudo systemctl start [email protected]
-#   journalctl -u [email protected] --no-pager | tail
-# You should see a single WARNING line with unit=dummy.service.
+#   sudo systemctl start osm-alert@dummy.service
+#   journalctl -u osm-alert@dummy.service --no-pager | tail
+# You should see a single journal line matching:
+#   osm-alert: unit=dummy state=failed host=<hostname>
+# (`%i` is the bare instance name `dummy`, not `dummy.service`.)
 
 [Unit]
 Description=OSM alert hook for %i

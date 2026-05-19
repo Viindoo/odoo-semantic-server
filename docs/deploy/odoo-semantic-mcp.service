@@ -17,8 +17,9 @@ Requires=docker.service
 StartLimitBurst=5
 StartLimitIntervalSec=60
 # Fire alert unit when the service enters `failed` (after StartLimit* trips
-# or any hard exit not auto-retried). `%n` resolves to this unit's full name.
-OnFailure=osm-alert@%n.service
+# or any hard exit not auto-retried). `%n` resolves to this unit's full name
+# including the `.service` suffix, so do not append another one here.
+OnFailure=osm-alert@%n
 
 [Service]
 Type=simple

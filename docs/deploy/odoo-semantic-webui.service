@@ -16,7 +16,7 @@ Requires=docker.service
 # Stop runaway crash-loop after 5 failures in 60s window.
 StartLimitBurst=5
 StartLimitIntervalSec=60
-OnFailure=osm-alert@%n.service
+OnFailure=osm-alert@%n
 
 [Service]
 Type=simple
