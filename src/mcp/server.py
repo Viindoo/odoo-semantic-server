@@ -771,7 +771,7 @@ def _find_examples(
     return "\n".join(lines)
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=ResolveModelOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_model(
     model_name: str,
     odoo_version: str = "auto",
@@ -819,7 +819,7 @@ def resolve_model(
     )
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=ResolveFieldOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_field(
     model_name: str,
     field_name: str,
@@ -866,7 +866,7 @@ def resolve_field(
     )
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=ResolveMethodOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_method(
     model_name: str,
     method_name: str,
@@ -911,7 +911,7 @@ def resolve_method(
     )
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=ResolveViewOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def resolve_view(
     xmlid: str,
     odoo_version: str = "auto",
@@ -3615,7 +3615,12 @@ def _resolve_model_structured(
         inherits_from=inherits_from,
         field_count=base["fields_count"],
         method_count=base["methods_count"],
-        next_step_hint=hints_for("resolve_model", name=model_name, ver=odoo_version),
+        next_step_hint=format_next_step([
+            f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
+            " for full field list",
+            f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
+            " for behavior",
+        ]),
     )
 
 
@@ -3676,7 +3681,13 @@ def _resolve_field_structured(
         required=bool(base_f.get("required", False)),
         related=base_f.get("related") or None,
         declared_in=declared_in,
-        next_step_hint=hints_for("resolve_field", name=field_name, ver=odoo_version),
+        next_step_hint=format_next_step([
+            f"find_examples(query='{model_name}.{field_name} usage'"
+            f", odoo_version='{odoo_version}') for real-world patterns",
+            f"impact_analysis(entity_type='field'"
+            f", entity_name='{model_name}.{field_name}'"
+            f", odoo_version='{odoo_version}') for blast radius",
+        ]),
     )
 
 
@@ -3730,9 +3741,13 @@ def _resolve_method_structured(
             odoo_version=odoo_version,
         ),
         override_chain=override_chain,
-        next_step_hint=hints_for(
-            "resolve_method", model=model_name, name=method_name, ver=odoo_version
-        ),
+        next_step_hint=format_next_step([
+            f"find_override_point(model='{model_name}', method='{method_name}'"
+            f", odoo_version='{odoo_version}') for safe hook spot",
+            f"impact_analysis(entity_type='method'"
+            f", entity_name='{model_name}.{method_name}'"
+            f", odoo_version='{odoo_version}') for blast radius",
+        ]),
     )
 
 
@@ -3797,8 +3812,18 @@ def _resolve_view_structured(
         inherits_from=parent_rec["parent_xmlid"] if parent_rec else None,
         xpath_count=len(own_exprs),
         extended_by=extended_by,
-        next_step_hint=hints_for(
-            "resolve_view", name=xmlid, model=v_props.get("model") or "", ver=odoo_version
+        next_step_hint=format_next_step(
+            [
+                f"list_views(model='{v_props.get('model')}', odoo_version='{odoo_version}')"
+                " for sibling views",
+                f"find_examples(query='{xmlid} xpath', odoo_version='{odoo_version}')"
+                " for inheritance patterns",
+            ]
+            if v_props.get("model")
+            else [
+                f"find_examples(query='{xmlid} xpath', odoo_version='{odoo_version}')"
+                " for inheritance patterns",
+            ]
         ),
     )
 
@@ -3882,7 +3907,25 @@ def _describe_module_structured(
         extends_models=[e["name"] for e in extends],
         view_total=view_total_rec["c"] if view_total_rec else 0,
         js_patch_count=js_count_rec["c"] if js_count_rec else 0,
-        next_step_hint=hints_for("describe_module", name=name, module=name, ver=odoo_version),
+        next_step_hint=format_next_step(
+            [
+                f"list_fields(model='{defines[0]['name']}', module='{name}'"
+                f", odoo_version='{odoo_version}') for declared fields",
+                f"list_views(model='{defines[0]['name']}', odoo_version='{odoo_version}')"
+                " for module views",
+            ]
+            if defines
+            else (
+                [
+                    f"list_fields(model='{extends[0]['name']}', module='{name}'"
+                    f", odoo_version='{odoo_version}') for declared fields",
+                    f"list_views(model='{extends[0]['name']}', odoo_version='{odoo_version}')"
+                    " for module views",
+                ]
+                if extends
+                else []
+            )
+        ),
     )
 
 
@@ -3945,14 +3988,24 @@ def _list_fields_structured(
         for r in rows
     ]
 
-    first_field = rows[0]["name"] if rows else ""
+    first_field = rows[0]["name"] if rows else None
+    next_hints: list[str] = []
+    if first_field:
+        next_hints.append(
+            f"resolve_field(model_name='{model}', field_name='{first_field}'"
+            f", odoo_version='{odoo_version}') for full chain",
+        )
+    next_hints.append(
+        f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+        " for behavior",
+    )
     return ListFieldsOutput(
         model=model,
         odoo_version=odoo_version,
         total=total,
         shown=len(fields),
         fields=fields,
-        next_step_hint=hints_for("list_fields", model=model, name=first_field, ver=odoo_version),
+        next_step_hint=format_next_step(next_hints),
     )
 
 
@@ -4025,7 +4078,17 @@ def _list_methods_structured(
         for r in rows
     ]
 
-    first_method = rows[0]["name"] if rows else ""
+    first_method = rows[0]["name"] if rows else None
+    next_hints: list[str] = []
+    if first_method:
+        next_hints.append(
+            f"resolve_method(model_name='{model}', method_name='{first_method}'"
+            f", odoo_version='{odoo_version}') for override chain",
+        )
+        next_hints.append(
+            f"find_override_point(model='{model}', method='{first_method}'"
+            f", odoo_version='{odoo_version}') for hook spot",
+        )
     return ListMethodsOutput(
         model=model,
         odoo_version=odoo_version,
@@ -4033,9 +4096,7 @@ def _list_methods_structured(
         shown=len(methods),
         methods=methods,
         override_names=override_names,
-        next_step_hint=hints_for(
-            "list_methods", model=model, name=first_method, ver=odoo_version
-        ),
+        next_step_hint=format_next_step(next_hints),
     )
 
 
@@ -4044,7 +4105,7 @@ def _list_methods_structured(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=DescribeModuleOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def describe_module(
     name: str,
     odoo_version: str = "auto",
@@ -4093,7 +4154,7 @@ def describe_module(
     )
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=ListFieldsOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def list_fields(
     model: str,
     odoo_version: str = "auto",
@@ -4140,7 +4201,7 @@ def list_fields(
     )
 
 
-@mcp.tool(**READONLY_TOOL_KWARGS)
+@mcp.tool(output_schema=ListMethodsOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
 def list_methods(
     model: str,
     odoo_version: str = "auto",

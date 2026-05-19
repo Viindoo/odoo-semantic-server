@@ -482,3 +482,124 @@ def test_schema_integrity_next_step_hint(output_type):
         f"{class_name}: expected next_step_hint.type='string', "
         f"got: {hint_schema}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Section 4 — OUTPUT SCHEMA WIRING (AC-BFIX-1/AC-BFIX-2)
+#
+# Verify that all 7 @mcp.tool() decorators advertise the correct DTO schema
+# via output_schema= — NOT the FastMCP auto-wrap shim ({result: string}).
+# Runs DB-free.
+# ---------------------------------------------------------------------------
+
+_TOOL_DTO_PAIRS = [
+    ("resolve_model", ResolveModelOutput),
+    ("resolve_field", ResolveFieldOutput),
+    ("resolve_method", ResolveMethodOutput),
+    ("resolve_view", ResolveViewOutput),
+    ("describe_module", DescribeModuleOutput),
+    ("list_fields", ListFieldsOutput),
+    ("list_methods", ListMethodsOutput),
+]
+
+
+@pytest.mark.parametrize(
+    "tool_name,dto",
+    _TOOL_DTO_PAIRS,
+    ids=[t for t, _ in _TOOL_DTO_PAIRS],
+)
+def test_tool_advertises_dto_outputschema(tool_name, dto):
+    """Each of the 7 priority tools must expose the correct DTO schema via output_schema.
+
+    AC-BFIX-1: output_schema= is declared on the decorator — the auto-wrap shim
+    ('x-fastmcp-wrap-result' with single 'result' field) must NOT appear.
+
+    AC-BFIX-2: The advertised schema must include 'next_step_hint' in its
+    properties, proving the full DTO schema (not a narrow subset) is wired.
+
+    Runs without DB — tool.output_schema is populated at import time.
+    """
+    import importlib
+
+    server = importlib.import_module("src.mcp.server")
+    tool = getattr(server, tool_name)
+    schema = tool.output_schema
+
+    assert schema is not None, (
+        f"{tool_name}.output_schema is None — output_schema= not declared on @mcp.tool()"
+    )
+    assert "x-fastmcp-wrap-result" not in schema, (
+        f"{tool_name} still has FastMCP auto-wrap shim in output_schema — "
+        "output_schema= was not declared on the @mcp.tool() decorator"
+    )
+    props = schema.get("properties", {})
+    assert "next_step_hint" in props, (
+        f"{tool_name}: output_schema missing 'next_step_hint' in properties. "
+        f"Got keys: {list(props.keys())}"
+    )
+    # All fields from the DTO schema must be present (FastMCP may add $defs etc.).
+    dto_schema = dto.model_json_schema()
+    dto_props = set(dto_schema.get("properties", {}).keys())
+    schema_props = set(props.keys())
+    missing = dto_props - schema_props
+    assert not missing, (
+        f"{tool_name}: output_schema missing DTO fields: {missing}. "
+        f"DTO has {dto_props}, tool schema has {schema_props}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 5 — NEXT STEP HINT CHANNEL PARITY (AC-BFIX-3/AC-BFIX-4)
+#
+# For each of the 7 priority tools, call the wrapper, extract the trailing
+# footer from content[0].text, and assert it equals structured_content's
+# next_step_hint.  This gates against future drift between the two channels.
+# ---------------------------------------------------------------------------
+
+_HINT_PARITY_ARGS = [
+    ("resolve_model", lambda: ("b4.order", TEST_VERSION)),
+    ("resolve_field", lambda: ("b4.order", "amount_total", TEST_VERSION)),
+    ("resolve_method", lambda: ("b4.order", "action_confirm", TEST_VERSION)),
+    ("resolve_view", lambda: ("b4_sale.view_order_form", TEST_VERSION)),
+    ("describe_module", lambda: ("b4_sale", TEST_VERSION)),
+    ("list_fields", lambda: ("b4.order", TEST_VERSION)),
+    ("list_methods", lambda: ("b4.order", TEST_VERSION)),
+]
+
+
+@pytest.mark.parametrize(
+    "tool_name,args_fn",
+    _HINT_PARITY_ARGS,
+    ids=[t for t, _ in _HINT_PARITY_ARGS],
+)
+def test_next_step_hint_matches_text_footer(b4_db, tool_name, args_fn):
+    """Structured next_step_hint must be byte-identical to the text-channel footer.
+
+    AC-BFIX-3/4: Extract the last non-empty line of content[0].text (the
+    '└─ Next: ...' footer) and compare against structured_content['next_step_hint'].
+    Any kwarg-name drift or model-qualifier loss in the structured path will
+    cause this test to fail.
+
+    Relies on the b4_db fixture which seeds b4.order with 2 fields + 2 methods.
+    """
+    import importlib
+
+    server = importlib.import_module("src.mcp.server")
+    tool = getattr(server, tool_name)
+    result = tool.fn(*args_fn())
+
+    text = result.content[0].text
+    # The footer is the last line of the text channel.
+    # Guard: strip trailing blank lines (join/split may add one).
+    lines = text.split("\n")
+    non_empty_lines = [ln for ln in lines if ln.strip()]
+    assert non_empty_lines, f"{tool_name}: text channel produced no output lines"
+    text_footer = non_empty_lines[-1]
+
+    structured_hint = result.structured_content["next_step_hint"]
+
+    assert text_footer == structured_hint, (
+        f"{tool_name}: next_step_hint channel drift!\n"
+        f"  text footer:        {text_footer!r}\n"
+        f"  structured_content: {structured_hint!r}"
+    )
