@@ -300,22 +300,27 @@ def test_positive_envelope(b4_db, tool_name, args, dto_class, spot_checks):
 
 
 def test_positive_text_channel_byte_identical_to_impl(b4_db):
-    """Text channel content[0].text must be byte-identical to the inner _impl output.
+    """Wrapper text == DEPRECATED banner (W-D4) + inner _impl output.
 
-    This directly tests (a) — the wrapper must not transform the text produced
-    by _resolve_model.  We call both the inner impl and the public wrapper and
-    compare.
+    Wave D4 added a deprecation banner prefix to legacy tools' text channel.
+    Structured channel is unchanged. After stripping the banner, the wrapper
+    output must still be byte-identical to the inner _impl output.
     """
     import importlib
     server = importlib.import_module("src.mcp.server")
 
-    # inner impl (underscore-prefixed) — returns plain str
     inner_text = server._resolve_model("b4.order", TEST_VERSION)
-    # public wrapper — returns ToolResult; use target= (new preferred form, WI-C3)
     result = server.resolve_model.fn(target="b4.order", odoo_version=TEST_VERSION)
 
-    assert result.content[0].text == inner_text, (
-        "content[0].text must be byte-identical to _resolve_model() output"
+    wrapper_text = result.content[0].text
+    assert wrapper_text.startswith("DEPRECATED:"), (
+        "WI-D4 contract: legacy resolve_model wrapper must prefix text "
+        "with DEPRECATED banner"
+    )
+    body = wrapper_text.split("\n\n", 1)[1]
+    assert body == inner_text, (
+        "content[0].text after stripping DEPRECATED banner must be "
+        "byte-identical to _resolve_model() output"
     )
 
 
