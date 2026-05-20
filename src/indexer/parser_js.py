@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Era-aware JavaScript parser for Odoo codebases.
 
 Era 1: Widget.extend({...})  — Odoo 8–12, no module system

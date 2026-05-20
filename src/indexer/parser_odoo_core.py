@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/parser_odoo_core.py
 """Extract CoreSymbol entries from Odoo upstream Python source (M4.5 WI2.2).
 

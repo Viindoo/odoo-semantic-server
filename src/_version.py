@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Version string for Odoo Semantic MCP.
 
 Reads from package metadata (pyproject.toml ``version`` field) so that bumping

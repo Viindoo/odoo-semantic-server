@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/app.py
 """FastAPI Web UI application — pure JSON API, port 8003, localhost-only (M8 W1)."""
 

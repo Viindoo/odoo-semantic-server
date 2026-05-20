@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/models.py
 from dataclasses import dataclass, field
 

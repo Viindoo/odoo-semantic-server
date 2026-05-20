@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/logging_config.py
 """Centralised logging configuration for odoo-semantic-mcp.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Git URL detection + SSH clone helper.
 
 Per ADR-0008: project-local known_hosts, GIT_SSH_COMMAND env, tempfile 0o600,

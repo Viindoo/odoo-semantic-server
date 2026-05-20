@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """EE confusion list — Odoo Enterprise modules vắng trên stack Community/Viindoo.
 
 Source: 2026-05-08 survey 16 modules verified absent từ

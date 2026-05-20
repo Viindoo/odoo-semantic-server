@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/db/repo_registry.py
 """CRUD for profiles + repos in PostgreSQL."""
 from pathlib import Path

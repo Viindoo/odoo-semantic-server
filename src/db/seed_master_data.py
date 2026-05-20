@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/db/seed_master_data.py
 """Master data seeding for profiles + repos.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // site/src/pages/admin/auth/callback/google.ts
 // Handles the Google OAuth 2.0 callback: validates state + PKCE,
 // exchanges code, fetches user info, then calls FastAPI /api/auth/oauth-login.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/cross_repo.py
 """Cross-repo dependency change propagation (M7 W14).
 

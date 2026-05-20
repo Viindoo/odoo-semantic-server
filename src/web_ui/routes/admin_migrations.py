@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/admin_migrations.py
 """Admin migrations read-only display (M9 W-UO §3.8)."""
 import logging

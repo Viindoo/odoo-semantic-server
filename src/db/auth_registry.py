@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """CRUD for api_keys, ssh_key_pairs, usage_log, webui_users tables via AuthStore."""
 import datetime as _datetime_mod
 import hashlib

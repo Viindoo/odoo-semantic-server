@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * TotpEnrollment — React island for TOTP enrollment flow (M9 W-MF)
  *

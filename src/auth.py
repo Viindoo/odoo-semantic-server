@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """API key utilities — HMAC-SHA256 hashing and generation.
 
 HMAC key source: WEBUI_SESSION_SECRET environment variable.

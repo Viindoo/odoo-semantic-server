@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Per-API-key sticky session state for implicit MCP context (Pattern 6).
 
 Implements Wave E (M11) implicit-context design from ADR-0029:

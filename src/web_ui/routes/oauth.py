@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/oauth.py
 """OAuth login endpoint for Web UI (M9 W-OA — Google + GitHub via arctic+oslo).
 

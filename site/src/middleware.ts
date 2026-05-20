@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { defineMiddleware } from 'astro:middleware';
 import { FASTAPI_BASE } from './lib/fastapi';
 

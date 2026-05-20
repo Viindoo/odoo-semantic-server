@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Embedding client protocol + implementations.
 
 EmbedderClient — structural Protocol, any object with .embed() satisfies it.

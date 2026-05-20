@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Admin CLI for odoo-semantic-mcp.
 
 Usage:

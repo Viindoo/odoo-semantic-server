@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """One-shot CLI: load patterns.json → write Neo4j PatternExample nodes + embed pgvector.
 
 Usage:

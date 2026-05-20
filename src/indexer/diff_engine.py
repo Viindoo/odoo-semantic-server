@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/diff_engine.py
 """Cross-version CoreSymbol diff (M4.5 WI2.1, per ADR-0002 §2).
 

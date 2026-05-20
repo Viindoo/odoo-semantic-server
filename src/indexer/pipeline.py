@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/pipeline.py
 """Orchestrator: scan repos → parse → write to Neo4j.
 

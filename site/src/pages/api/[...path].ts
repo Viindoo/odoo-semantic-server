@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // SSR proxy: forwards /api/* to FastAPI when Astro is the only origin.
 //
 // In production, nginx routes /api/* directly to FastAPI per docs/deploy/nginx-m8.conf,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/admin_users.py
 """User management routes for Web UI admin (M9 W-UM).
 

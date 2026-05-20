@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/auth.py
 """Password hashing + session secret for Web UI auth (M7 W16).
 

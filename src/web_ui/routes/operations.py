@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/operations.py
 """Operations routes — backup/restore/indexer (M8 W1 + M9 W-BK + W-RS).
 

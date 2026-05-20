@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/login.py
 """Auth endpoints for Web UI session auth (M9 W-AC hardening).
 

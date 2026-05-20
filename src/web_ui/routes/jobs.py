@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/jobs.py
 """Jobs router (M8 — extracted from repos.py per Phase 8 review).
 

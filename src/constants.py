@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/constants.py — Single source of truth for all magic numbers and string constants.
 #
 # Rules:

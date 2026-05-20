@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/mcp/resources_index.py
 """Discovery index for MCP Resources — top-100 popular models per indexed version.
 

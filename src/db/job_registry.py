@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """CRUD for indexer_jobs table — track indexer subprocess lifecycle."""
 from datetime import datetime
 

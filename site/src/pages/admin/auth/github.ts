@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // site/src/pages/admin/auth/github.ts
 // Initiates the GitHub OAuth 2.0 flow (arctic 3.x).
 // GitHub does NOT support PKCE — only state (CSRF) cookie is needed.

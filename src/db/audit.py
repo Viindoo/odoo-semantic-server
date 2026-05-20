@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Admin audit log helper + decorator (M9 W-AL — ADR-0021).
 
 Single source of truth for writing to admin_audit_log table.

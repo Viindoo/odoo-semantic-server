@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """ADR-0023 §1 tree-grammar renderer.
 
 This module provides two public APIs:

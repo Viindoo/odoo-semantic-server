@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/config.py
 """INI config reader for odoo-semantic-mcp.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """FastMCP-layer middleware for usage logging with correct tool_name extraction.
 
 Background

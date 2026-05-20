@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP Resources — stable ``odoo://`` URIs for Odoo entities (Pattern 8).
 
 This module registers 7 ``@mcp.resource`` template handlers on a FastMCP

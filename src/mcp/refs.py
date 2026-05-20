@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Per-API-key opaque ref minter — Pattern 5 (Playwright e7/f1e3 style).
 
 Each call to ``mint_refs`` assigns compact stable IDs like ``f1``, ``m3``,

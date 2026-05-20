@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Pydantic v2 DTOs for dual-channel MCP responses (M10.5 Wave B, WI-B2).
 
 Two layers:
