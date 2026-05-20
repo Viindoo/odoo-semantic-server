@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/mcp/server.py
 import math
 import os
@@ -115,8 +116,8 @@ mcp.add_middleware(_UsageLogMiddleware())
 
 # All 21 OSM tools are read-only queries against a statically-indexed graph.
 # Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
-# ChatGPT) so they can auto-approve and skip confirmation gates. See Pattern 1
-# in docs/research/mcp-design-patterns-research.md.
+# ChatGPT) so they can auto-approve and skip confirmation gates.
+# (cross-server pattern: read-only annotations for auto-approval)
 READONLY_TOOL_KWARGS = {
     "annotations": {
         "readOnlyHint": True,

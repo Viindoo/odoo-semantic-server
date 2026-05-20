@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/dashboard.py
 """Dashboard route — overview of profiles, repos, and system status (M8 W1 pure JSON)."""
 from fastapi import APIRouter

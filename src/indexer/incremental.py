@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Incremental indexer helpers — git-diff based change detection (M6 W2-3).
 
 Used by pipeline._index_repo() to skip unchanged repos and filter scan

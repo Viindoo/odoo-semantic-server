@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """pgvector writer — chunk, embed, and store Odoo code in PostgreSQL embeddings table."""
 from __future__ import annotations
 

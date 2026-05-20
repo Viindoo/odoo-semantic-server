@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/mcp/inspect.py
 """Discriminator-router layer for model_inspect, module_inspect, entity_lookup.
 

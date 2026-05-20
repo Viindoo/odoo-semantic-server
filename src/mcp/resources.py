@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP Resources — stable ``odoo://`` URIs for Odoo entities (Pattern 8).
 
 This module registers 7 ``@mcp.resource`` template handlers on a FastMCP
@@ -26,8 +27,7 @@ callers with different session versions (e.g., A→17.0, B→16.0) reading
 ``odoo://auto/model/sale.order`` receive correctly distinct cached bodies.
 
 See ``docs/adr/0030-mcp-resources-uri-scheme.md`` for the design rationale and
-``docs/research/mcp-design-patterns-research.md`` Pattern 8 for cross-server
-prior art.
+internal design notes (cross-server pattern: stable URI resources) for prior art.
 """
 
 from __future__ import annotations

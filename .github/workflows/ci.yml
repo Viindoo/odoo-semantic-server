@@ -52,8 +52,6 @@ jobs:
         run: |
           pip install check-jsonschema
           check-jsonschema --schemafile src/data/patterns.schema.json src/data/patterns.json
-      - name: Validate plugin structure
-        run: pytest tests/test_plugin_structure.py -v
       - run: pytest tests/ -v -m "not neo4j and not postgres and not browser" --tb=short
 
   integration-tests:

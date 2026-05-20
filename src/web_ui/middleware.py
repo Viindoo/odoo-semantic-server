@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/middleware.py
 """Auth-required middleware for Web UI (M9 W-AC hardening).
 

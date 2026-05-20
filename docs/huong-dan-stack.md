@@ -642,4 +642,4 @@ Web UI `POST /repos/{id}/clone` auto-clone SSH repos với FERNET-decrypted key.
 | ← | [`/README.md`](../README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ← | [`/docs/thiet-ke-kien-truc.md`](thiet-ke-kien-truc.md) | Kiến trúc đầy đủ: Graph schema, pipeline, MCP tools |
 | ← | [`/TASKS.md`](../TASKS.md) | Tiến độ tổng thể — đánh dấu task khi hoàn thành |
-| ↓ | [`/docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan TDD Milestone 1 |
+| ↓ | Implementation plan TDD Milestone 1 | (archived internally) |

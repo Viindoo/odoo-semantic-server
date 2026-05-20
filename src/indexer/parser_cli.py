@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/parser_cli.py
 """Extract CLICommand + CLIFlag from Odoo upstream source (M4.5 WI4).
 

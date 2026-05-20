@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/login_attempts.py
 """Postgres-backed login attempt tracking and rate limiting (M9 W-AC — F2, F3).
 

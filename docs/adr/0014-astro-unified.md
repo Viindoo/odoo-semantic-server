@@ -89,4 +89,4 @@ Astro :4321
 
 - ADR-0011: Web UI Session Auth (bcrypt cost=12, 8h TTL, SameSite=strict cookie)
 - ADR-0015: FastAPI Pure JSON API (W1 routes — the backend this Astro frontend consumes)
-- M8 master plan: `docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md §Stream B W3`
+- M8 master plan: archived internally

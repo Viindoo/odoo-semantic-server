@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """API key authentication middleware for MCP server."""
 import asyncio
 import json as _json

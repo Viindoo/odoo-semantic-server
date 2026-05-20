@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """SCSS parser for Odoo codebases (WI-A1, ADR-0025).
 
 Extracts SCSS-specific constructs:

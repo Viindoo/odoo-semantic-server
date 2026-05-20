@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/ssh_keys.py
 """SSH key pair management — generate Ed25519 keypair, store Fernet-encrypted (M8 W1 pure JSON)."""
 import logging

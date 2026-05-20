@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // site/src/pages/admin/auth/google.ts
 // Initiates the Google OAuth 2.0 PKCE flow (arctic 3.x).
 // F5: generates state (CSRF) + code_verifier (PKCE), stores both in

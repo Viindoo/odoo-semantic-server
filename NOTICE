@@ -1,0 +1,20 @@
+Odoo Semantic MCP — NOTICE
+
+Copyright (C) 2026 Viindoo Technology JSC
+
+"Viindoo" and the Viindoo logo are trademarks of Viindoo Technology JSC.
+The AGPL-3.0 license that applies to this software covers the source code
+only, not these trademarks. You may not use the Viindoo name or logo to
+endorse or promote products derived from this software without prior written
+permission from Viindoo Technology JSC.
+
+------------------------------------------------------------------------
+
+data/common_passwords.txt
+
+This file contains a list of widely-published most-common and weak passwords
+compiled from publicly-available common-password lists (e.g. SecLists and
+similar published "most common passwords" datasets). It is used solely to
+reject weak passwords during password validation. Factual lists of common
+passwords are not subject to copyright; this file is treated as public domain.
+See data/common_passwords.txt.LICENSE for details.

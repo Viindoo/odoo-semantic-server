@@ -3,7 +3,7 @@
 Tài liệu này dành cho developer muốn contribute hoặc phát triển thêm tính năng.
 
 > 📖 **Bạn là end-user muốn kết nối AI tool (Claude Code, Codex, Gemini…) vào MCP server?**
-> Xem [docs/client-setup.md](docs/client-setup.md) thay vì tài liệu này.
+> Xem [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) thay vì tài liệu này.
 
 ---
 
@@ -505,46 +505,16 @@ Mọi quyết định kiến trúc lớn — schema policy, storage pattern, par
 
 ## Plugin Development
 
-The Claude Code plugin lives at `dist/odoo-semantic-plugin/`. It follows the [Claude Code plugin spec](https://code.claude.com/docs/en/plugins-reference).
+The Claude Code plugin has moved to the [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) repository (MIT-licensed). Skill development, plugin structure, and the release + SHA-pinning workflow are documented there.
 
-### Plugin structure
+### Skill disambiguation test
 
-```
-dist/odoo-semantic-plugin/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin manifest: userConfig, skills/agents/commands refs, mcpServers
-├── .mcp.json                 # MCP server config: HTTP transport, ${user_config.*} interpolation
-├── skills/                   # 11 SKILL.md files (one per persona skill)
-├── agents/                   # odoo-router.md (Haiku) + odoo-upgrade-planner.md (Sonnet)
-├── commands/                 # connect.md (/odoo-semantic:connect)
-└── README.md
-```
-
-### API key handling
-
-Sensitive values (API key) use `userConfig` in `plugin.json` with `"sensitive": true`. This stores the value in the system keychain (not `settings.json`) and makes it available in `.mcp.json` via `${user_config.api_key}`. **Never hardcode keys in plugin files.**
-
-### Adding a new skill
-
-1. Create `dist/odoo-semantic-plugin/skills/<skill-name>/SKILL.md`
-2. Follow the SKILL.md format: frontmatter with `persona`, `triggers`, `tools_used` + instructions + output format
-3. Add a routing case to `tests/test_skill_disambiguation.py`
-4. Run `pytest tests/test_skill_disambiguation.py` — ensure ≥80% accuracy holds
-5. Update `dist/odoo-semantic-plugin/README.md` skills table
-
-### Validating the plugin
+`tests/test_skill_disambiguation.py` tests the inline heuristic routing logic independently of the plugin package. Run it with:
 
 ```bash
-# Requires Claude Code CLI installed
-claude plugin validate dist/odoo-semantic-plugin/
-
 # Unit tests (no server needed)
 ~/.venv/odoo-semantic-mcp/bin/python -m pytest tests/test_skill_disambiguation.py tests/test_mcp_tool_descriptions.py -v
 ```
-
-### Publishing
-
-See [dist/odoo-semantic-plugin/plugin-release.md](dist/odoo-semantic-plugin/plugin-release.md) for the full release + SHA-pinning workflow.
 
 ---
 

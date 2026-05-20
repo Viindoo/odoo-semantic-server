@@ -2,6 +2,11 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — 2026-05-20 — Open-core repo split + AGPL license metadata
+
+### Changed
+- [SPLIT] Moved MIT plugin + client docs to Viindoo/odoo-mcp-client. Server repo retains AGPL-3.0 backend + Astro web UI. Added SPDX-License-Identifier: AGPL-3.0-or-later headers across all 88 `src/**/*.py` files and 42 `site/src/**` files (.ts/.tsx/.astro). Added license field to `pyproject.toml` and `site/package.json`. Added copyright + applicability notice atop `LICENSE`. Added `NOTICE` (Viindoo trademark statement + common_passwords attribution) and `data/common_passwords.txt.LICENSE`.
+
 ## [Unreleased] — 2026-05-18 — Post-0.4.1 hardening + go-live deploy + M9 Coverage Fill + M9 RBAC follow-up
 
 6 PRs merged after v0.4.1. Production deployed at PR #119 / commit `3f081b9` (admin-invite signup model active). PR #120 (M9 Coverage Fill) + PR #121 (docs signoff) merged but not yet deployed to prod. Two post-deploy hotfixes shipped 2026-05-18 — PR #124 (`init_pool` ordering in seed_patterns CLI) and PR #125 (CLIFlag null command_name MERGE bug surfaced when running `index-core` against M9 curated spec_data). PR #<TBD> (M9 RBAC follow-up) in progress.
@@ -161,7 +166,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [0.5.0] — 2026-05-19 — Tool UX + Architecture (M10.5 + M11)
 
-6 waves + 8 patterns landed in a single worktree via the `feat/m10-5-m11-tool-ux-architecture` branch (33 commits over Waves A–F + F-FINAL). Plan: `.claude/plans/peaceful-orbiting-dongarra.md`. Research artifact: `docs/research/mcp-design-patterns-research.md` (12 MCP design patterns evaluated, 8 adopted). 3 new ADRs (0028/0029/0030) + ADR-0023 amended.
+6 waves + 8 patterns landed in a single worktree via the `feat/m10-5-m11-tool-ux-architecture` branch (33 commits over Waves A–F + F-FINAL). Plan: `.claude/plans/peaceful-orbiting-dongarra.md`. Research: 12 MCP design patterns evaluated, 8 adopted (archived internally). 3 new ADRs (0028/0029/0030) + ADR-0023 amended.
 
 ### Wave A — Quick Wins (M10.5)
 

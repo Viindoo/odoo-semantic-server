@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Next-step hint registry (single source of truth per ADR-0023 §4.3).
 
 This module owns:

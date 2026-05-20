@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // /admin/logout: server-side endpoint that POSTs to FastAPI to clear the session
 // then redirects to /admin/login.
 //

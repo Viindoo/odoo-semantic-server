@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Health check endpoint for MCP server."""
 import asyncio
 import importlib.metadata

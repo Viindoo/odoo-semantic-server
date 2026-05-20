@@ -111,6 +111,6 @@ ADR-0001 cấm ALTER PostgreSQL until M6 → không thể `CREATE TABLE pattern_
 
 - ADR-0001: Schema Evolution Policy (PostgreSQL)
 - ADR-0002: Spec Schema Policy (CoreSymbol/LintRule/CLI — M4.5 dep)
-- M4.6 plan: `docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md`
+- M4.6 plan: archived internally
 - Survey: 16/16 EE confusion modules confirmed CE-absent (2026-05-08)
 - Pattern catalog: 7 base patterns + ~43 variations từ Odoo CE v17 + Viindoo addons survey

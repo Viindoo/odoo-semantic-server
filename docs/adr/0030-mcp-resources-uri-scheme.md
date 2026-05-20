@@ -15,7 +15,7 @@ Accepted
 
 The MCP protocol defines two distinct primitives for surfacing server-side data to AI clients: **tools** (callable functions that accept arguments and return computed results) and **resources** (stable, addressable content that clients can subscribe to, pre-fetch into context windows, or surface as `@`-mentions without a tool round-trip). As of v0.5.x, odoo-semantic uses only the tools primitive. All 21 tools require the LLM to construct a tool-call request, wait for a round-trip, and parse the tree-text response even when the desired content — a model's field list, a view's XML source, a method's Python implementation — is stable between reindexes.
 
-Research across 12 production MCP servers (see `docs/research/mcp-design-patterns-research.md` §Pattern 8) identified three servers that already treat content as resources rather than tool results:
+Research across 12 production MCP servers (internal design notes, Pattern 8) identified three servers that already treat content as resources rather than tool results:
 
 - **Google Drive MCP** (`gdrive:///fileId`): every file is an MCP Resource. Hosts (Claude Desktop, Cursor) pre-fetch resources into context windows; the only tool is `search`, which returns IDs. Format conversion (Docs → markdown, Sheets → CSV, Drawings → PNG) is centralised server-side.
 - **Postgres MCP (Anthropic reference)**: each table's schema is addressable at `postgres://<host>/<table>/schema`. SQL-writing LLMs get column types out-of-band without a `describe_table` tool call.
@@ -240,7 +240,7 @@ Deferred because:
 
 ## References
 
-- `docs/research/mcp-design-patterns-research.md` §Pattern 8 — MCP Resources primitive with stable URIs (Google Drive `gdrive:///fileId`, Postgres Anthropic-reference table schemas, Filesystem roots).
+- Internal design notes §Pattern 8 — MCP Resources primitive with stable URIs (Google Drive `gdrive:///fileId`, Postgres Anthropic-reference table schemas, Filesystem roots).
 - `/home/tuan/.claude/plans/rippling-greeting-tulip.md` §5 Wave F — per-WI spec for F1–F5; Appendix B item #10 (resource cache = in-memory LRU v1, Postgres deferred to M11 — now updated to M12 per scope adjustment) and item #11 (top-100 popular per version, avoid 10k-entry UI blowup).
 - `src/mcp/resources.py` — Wave F WI-F1 implementation: 7 `@mcp.resource()` handlers, LRU cache (`_cache_get`, `_cache_put`, `_lru_lock`), MIME type dispatch, `"auto"` version resolution.
 - `src/mcp/resources_index.py` — Wave F WI-F2 implementation: `list_resources()` returning top-100 most-depended-on models per version, ordered by `COUNT { ()-[:DEPENDS_ON]->(m) } DESC` with `m.name ASC` tiebreak (ADR-0013 determinism).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // site/src/pages/admin/auth/callback/github.ts
 // Handles the GitHub OAuth callback: validates state (CSRF),
 // exchanges code, fetches user + verified primary email,

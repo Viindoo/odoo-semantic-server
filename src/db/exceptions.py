@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/db/exceptions.py
 """Typed exceptions for profile validation errors.
 

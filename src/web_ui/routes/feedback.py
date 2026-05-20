@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/feedback.py
 """Pattern feedback API route — thumbs-up/down ratings for PatternExample nodes."""
 import logging

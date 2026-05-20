@@ -35,7 +35,7 @@ The TRIGGER phrases are written in the user's natural vocabulary per persona:
 
 ### 2. Claude Code plugin package — persona skills
 
-An optional plugin package (`dist/odoo-semantic-plugin/`) ships 11 persona-aware Claude Code skills. Each skill pre-wires tool routing for a specific job-to-be-done:
+An optional plugin package (now at [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client)) ships 11 persona-aware Claude Code skills. Each skill pre-wires tool routing for a specific job-to-be-done:
 
 | Skill | Persona | Tools orchestrated |
 |-------|---------|-------------------|
@@ -58,17 +58,17 @@ Each skill wraps tool calls in opinionated prompts that:
 
 ### 3. Cross-vendor adapter files
 
-Three adapter files ship in `dist/`:
+Three adapter files ship in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client):
 
-- `gemini-gem-instructions.md` — System instructions for a Gemini Gem, including TRIGGER-matched routing rules for all 14 tools and persona-mode detection
-- `openai-gpt-instructions.md` — System prompt for a Custom GPT, plus OpenAPI Action schema for the MCP endpoint
-- `cursor-rules.md` — `.cursorrules` content for Cursor IDE, with file-type-based auto-trigger rules (Odoo Python files → resolve_model; XML files → resolve_view)
+- `dist/gemini-gem-instructions.md` — System instructions for a Gemini Gem, including TRIGGER-matched routing rules for all 14 tools and persona-mode detection
+- `dist/openai-gpt-instructions.md` — System prompt for a Custom GPT, plus OpenAPI Action schema for the MCP endpoint
+- `dist/cursor-rules.md` — `.cursorrules` content for Cursor IDE, with file-type-based auto-trigger rules (Odoo Python files → resolve_model; XML files → resolve_view)
 
 These files are maintained as plain Markdown that admins can copy-paste. They do not require programmatic generation.
 
 ### 4. Persona onboarding guides
 
-Five role-specific guides in `docs/personas/`:
+Five role-specific guides in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) at `docs/personas/`:
 
 - `ceo.md` — natural-language prompts, tool table, plugin skill reference
 - `dev.md` — full tool list, development workflow, plugin skills
@@ -103,10 +103,7 @@ Guides are written in English and target a non-developer audience for all non-de
 
 ## References
 
-- `dist/gemini-gem-instructions.md` — Gem system instructions with full routing rules
-- `dist/openai-gpt-instructions.md` — Custom GPT instructions and OpenAPI schema
-- `dist/cursor-rules.md` — Cursor IDE rules
-- `docs/personas/` — Role-specific onboarding guides
+- [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) — Plugin package, cross-vendor adapters, persona guides
 - `tests/test_tool_routing_disambiguation.py` — Routing accuracy gate (target ≥80%)
 - ADR-0011 — Web UI session auth (M7 W16)
 - ADR-0009 — Pattern catalogue community contribution (M6 Wave 3)

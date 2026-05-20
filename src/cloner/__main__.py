@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Background clone job invoked by web UI.
 
 Lifecycle (per ADR-0008 D6):

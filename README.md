@@ -67,7 +67,7 @@ The `{version}` segment accepts sentinels (`auto`, `default`, `latest`) that res
 
 Indexer also covers **CSS/SCSS files** (M9 Coverage Fill): `:Stylesheet` Neo4j nodes with composite key `(file_path, module, odoo_version)`, `IMPORTS` edge chain for SCSS `@import` resolution, and pgvector semantic chunks (selector groups, variable definitions, media queries, mixin definitions) for stylesheet override analysis + branding/theme discovery.
 
-→ [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
+→ [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
 
 ---
 
@@ -77,7 +77,7 @@ Người dùng **không cài gì**. Nhận URL + API key từ admin → chọn A
 
 > 🚀 **Nhanh nhất:** truy cập **https://odoo-semantic.viindoo.com/install/**, dán API key vào, copy snippet cho tool của bạn.
 
-→ **[`docs/client-setup.md`](docs/client-setup.md)** cho config từng client: Claude Code, Codex CLI, Gemini CLI, VS Code, Antigravity (snippets + pitfalls đầy đủ).
+→ **[Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md)** cho config từng client: Claude Code, Codex CLI, Gemini CLI, VS Code, Antigravity (snippets + pitfalls đầy đủ).
 
 ### Quick install — Claude Code
 
@@ -88,7 +88,7 @@ claude plugin install odoo-semantic@viindoo-plugins --scope user
 
 Sau đó trong Claude Code session: `/odoo-semantic:connect` để nhập URL + API key.
 
-> Self-hosted hoặc không dùng plugin? Xem [manual MCP setup](docs/client-setup.md#manual-mcp-setup-advanced--self-hosted) cho `claude mcp add` flow + pitfalls.
+> Self-hosted hoặc không dùng plugin? Xem [manual MCP setup](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md#manual-mcp-setup-advanced--self-hosted) cho `claude mcp add` flow + pitfalls.
 
 ---
 
@@ -97,7 +97,7 @@ Sau đó trong Claude Code session: `/odoo-semantic:connect` để nhập URL + 
 Sau khi add xong, gõ prompt tự nhiên để verify agent pick MCP `odoo-semantic` đúng:
 - *"Dùng odoo-semantic, liệt kê inheritance chain của `sale.order` trên Odoo 17.0."*
 
-→ **[`docs/client-setup.md#verify-after-install`](docs/client-setup.md#verify-after-install)** cho prompt đầy đủ EN+VI + tín hiệu đúng/sai.
+→ **[Client setup — Verify After Install](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md#verify-after-install)** cho prompt đầy đủ EN+VI + tín hiệu đúng/sai.
 
 ---
 
@@ -140,7 +140,7 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 
 | File | Nội dung |
 |------|----------|
-| [`docs/client-setup.md`](docs/client-setup.md) | **End-user client setup** — Claude Code, Codex, Gemini, VS Code, Antigravity (snippets + pitfalls đầy đủ) |
+| [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) | **End-user client setup** — Claude Code, Codex, Gemini, VS Code, Antigravity (snippets + pitfalls đầy đủ) |
 | [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
 | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 28 MCP tool sign-off table + 7 MCP resource sign-off trước khi mở public |
 | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | **DR runbook** — backup frequency, restore order, step-by-step commands, RTO estimate |
@@ -149,7 +149,7 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
-| [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 28 tools, trigger conditions, persona mapping |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 28 tools, trigger conditions, persona mapping |
 
 ---
 
@@ -159,16 +159,16 @@ Different roles get the most value from different tools. Quick-start guides:
 
 | Persona | Primary Tools | Guide |
 |---------|--------------|-------|
-| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [→ CEO Guide](docs/personas/ceo.md) |
-| Developer | `resolve_model`, `find_override_point`, `suggest_pattern`, `lint_check` | [→ Dev Guide](docs/personas/dev.md) |
-| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [→ Consultant Guide](docs/personas/consultant.md) |
-| Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](docs/personas/marketer.md) |
-| Sales | `check_module_exists`, `find_examples`, `resolve_model` | [→ Sales Guide](docs/personas/sales.md) |
+| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [→ CEO Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/ceo.md) |
+| Developer | `resolve_model`, `find_override_point`, `suggest_pattern`, `lint_check` | [→ Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) |
+| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [→ Consultant Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/consultant.md) |
+| Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/marketer.md) |
+| Sales | `check_module_exists`, `find_examples`, `resolve_model` | [→ Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/sales.md) |
 
 > **Claude Code users:** Install the Odoo Semantic plugin — `claude plugin install odoo-semantic@viindoo-plugins` (sau khi `claude plugin marketplace add Viindoo/claude-plugins`), rồi `/odoo-semantic:connect`. Alternative: dùng [install page](https://odoo-semantic.viindoo.com/install/) → tab Claude Code → sub-tab "Plugin".
-> **Gemini users:** See [Gem instructions](dist/gemini-gem-instructions.md).
-> **ChatGPT users:** See [Custom GPT instructions](dist/openai-gpt-instructions.md).
-> **Cursor users:** See [Cursor rules](dist/cursor-rules.md).
+> **Gemini users:** See [Gem instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/gemini-gem-instructions.md).
+> **ChatGPT users:** See [Custom GPT instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/openai-gpt-instructions.md).
+> **Cursor users:** See [Cursor rules](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/cursor-rules.md).
 
 ---
 
@@ -195,5 +195,5 @@ Nếu bạn là AI agent và cần bắt đầu implement:
 
 1. Đọc [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) — hiểu toàn bộ kiến trúc
 2. Mở [`TASKS.md`](TASKS.md) — tìm milestone đầu tiên có `[ ]` hoặc `[~]`, đó là điểm vào
-3. Nếu milestone đó có plan tương ứng trong [`docs/superpowers/plans/`](docs/superpowers/plans/) — follow từng bước. Nếu chưa có plan, đề xuất plan trước khi code.
+3. Nếu milestone đó có plan tương ứng — follow từng bước. Nếu chưa có plan, đề xuất plan trước khi code.
 4. Tuân thủ hai nguyên tắc cốt lõi trong `CLAUDE.md` ở mọi quyết định

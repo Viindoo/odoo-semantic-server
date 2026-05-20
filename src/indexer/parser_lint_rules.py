@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/parser_lint_rules.py
 """Extract LintRule entries from Odoo upstream lint configs (M4.5 WI3).
 

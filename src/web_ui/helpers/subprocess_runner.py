@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Shared helper for spawning indexer subprocesses with job tracking.
 
 Extracted from src/web_ui/routes/repos.py to be reused by W3-W8 routes

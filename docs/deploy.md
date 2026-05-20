@@ -2,7 +2,7 @@
 
 Hướng dẫn này dành cho **admin** deploy server.
 - Developer xem [`CONTRIBUTING.md`](../CONTRIBUTING.md).
-- End-user kết nối AI tool xem [`docs/client-setup.md`](client-setup.md).
+- End-user kết nối AI tool xem [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md).
 
 > **System Requirements:** xem [README §System Requirements](../README.md#system-requirements-server) cho bảng CPU/RAM/SSD đầy đủ. Tóm tắt: all-in-one ≤30 users = 2 vCPU/8 GB/50 GB; full stack ≤80 users = 4 vCPU/16 GB/150 GB.
 

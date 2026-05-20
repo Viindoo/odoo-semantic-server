@@ -89,6 +89,6 @@ Cần policy rõ ràng cho composite key, version-range representation (per-vers
 ## References
 
 - ADR-0001: Schema Evolution Policy (PostgreSQL)
-- M4.5 plan: `docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md`
+- M4.5 plan: archived internally
 - Survey notes: 3 turn discovery của ~80 changes v17→v18→v19 trong CoreSymbol/LintRule/CLI
 - `CLAUDE.md` Neo4j 5.x gotcha: numeric version compare `toFloat(v) DESC`

@@ -439,7 +439,7 @@ The following tools are planned and MUST adopt this ADR's grammar contract (§1 
 
 When these tools land, the integrator MUST:
 
-1. Update routing matrix `docs/reference/mcp-tool-routing.md` with TRIGGER phrases (EN + VI per §2 docstring exception) for each new tool.
+1. Update routing matrix in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) with TRIGGER phrases (EN + VI per §2 docstring exception) for each new tool.
 2. Add Next-step hint rows for the new tools in §4.3 of this ADR (the "MUST emit footer — drill-down tools" table grows from 18 to 24 entries).
 3. Update the §4.4 "MAY skip footer — terminal tools" table only if the new tool is genuinely terminal (none of the 6 planned tools qualify — all have natural drill-downs).
 4. Re-run `tests/test_grammar_consistency.py` to ensure the new tools pass the language-policy + truncation-disclosure + no-self-loop tests by construction.

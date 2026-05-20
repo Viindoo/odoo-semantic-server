@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/repos.py
 """Profiles & Repos management routes (M8 W1 — pure JSON API).
 

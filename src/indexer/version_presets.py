@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Version presets — bundled profile + repo definitions for one-shot setup.
 
 Source date: 2026-05-10. Update when Viindoo addon repo URLs/branches change.

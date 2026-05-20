@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # src/manager/__main__.py
 """Admin CLI for profiles + repos + API keys. M2.5 — replaced by Web UI in M5.
 
