@@ -483,7 +483,7 @@ PR #87 + #88 added backend features absorbed into M8 branch. The Astro pages don
 ### Stream F — Long-tail Features (defer or kill)
 
 - [x] MFA TOTP for Web UI session auth (ADR-0011 extension — security hardening before public launch). ADR-0022.
-- [x] **W-OSM Wave 1 — Tool output completeness (2026-05-16):** 14 → 21 MCP tools. Added 7 new tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) for module architecture overview + entity enumeration + UI-layer inventory. Retrofit grammar consistency across all 14 existing tools (tree connectors, sublist indent, truncation via `_render_capped`, `Next:` footer on 18 drill-down tools). ADR-0023 codifies tree grammar contract + English-only output policy + next-step hint mapping. Plan: [`.claude/plans/swift-coalescing-kurzweil.md`](.claude/plans/swift-coalescing-kurzweil.md).
+- [x] **W-OSM Wave 1 — Tool output completeness (2026-05-16):** 14 → 21 MCP tools. Added 7 new tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) for module architecture overview + entity enumeration + UI-layer inventory. Retrofit grammar consistency across all 14 existing tools (tree connectors, sublist indent, truncation via `_render_capped`, `Next:` footer on 18 drill-down tools). ADR-0023 codifies tree grammar contract + English-only output policy + next-step hint mapping. Plan: internal plan (archived).
 
 ### Stream G — Process Discipline Learnings from M8
 
@@ -530,7 +530,7 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 
 **Status:** `[x]` DONE — 4 PRs merged 2026-05-17. PR #117/#118/#119 deployed to production same day; PR #121 docs-only.
 
-**Plan:** [`.claude/plans/peaceful-orbiting-dongarra.md`](../.claude/plans/peaceful-orbiting-dongarra.md) (orchestrated multi-subagent, 4 WIs + 1 followup commit consolidating 3 HIGH Opus findings + 6 boil-the-lake fixes + sanitization).
+**Plan:** internal plan (archived) (orchestrated multi-subagent, 4 WIs + 1 followup commit consolidating 3 HIGH Opus findings + 6 boil-the-lake fixes + sanitization).
 
 - [x] **PR #117 — Migration 0004 self-contained:** SQL rescue path for 12 root CE profiles (`odoo_8`-`odoo_19`). Idempotent `ON CONFLICT DO NOTHING`. Python seeder remains source of truth for Viindoo addon profiles. Seed count test bumped 5 → 12.
 - [x] **PR #118 — Security headers:** FastAPI `_SecurityHeadersMiddleware` (default-src 'none' for JSON API) + Astro SSR `_addSecurityHeaders()` (per-path CSP for `/admin/*`, `/signup`, `/verify-email`, `/reset-password`) + edge nginx permissive superset for prerendered pages. 8 regression tests. Closes M9 CSP gap (memory: `m9_csp_permissions_policy_gap.md`). Nonce-based CSP migration tracked as M10 followup.

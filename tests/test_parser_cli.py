@@ -10,6 +10,7 @@ Notes:
   - We accept both add_option and add_argument shapes for forward compat.
 """
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,8 @@ from src.indexer.parser_cli import (
     parse_cli_commands,
     parse_cli_flags,
 )
+
+ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
 def test_parse_cli_command_class_subclass_of_command():
@@ -122,12 +125,12 @@ def test_parse_cli_flags_returns_empty_for_nonexistent_root(tmp_path):
 
 
 @pytest.mark.skipif(
-    not Path("/home/tuan/git/odoo17/odoo/cli/server.py").exists(),
+    not Path(ODOO17_SRC + "/odoo/cli/server.py").exists(),
     reason="Real Odoo 17 cli dir not on disk",
 )
 def test_parse_cli_commands_smoke_real_v17():
     """Smoke: real Odoo 17 has at least 8 well-known cli commands."""
-    cmds = parse_cli_commands("/home/tuan/git/odoo17", "17.0")
+    cmds = parse_cli_commands(ODOO17_SRC, "17.0")
     names = {c.name for c in cmds}
     # Stable subset across v17→v19
     expected_subset = {"server", "shell", "scaffold", "db", "deploy"}
@@ -135,12 +138,12 @@ def test_parse_cli_commands_smoke_real_v17():
 
 
 @pytest.mark.skipif(
-    not Path("/home/tuan/git/odoo17/odoo/tools/config.py").exists(),
+    not Path(ODOO17_SRC + "/odoo/tools/config.py").exists(),
     reason="Real Odoo 17 config.py not on disk",
 )
 def test_parse_cli_flags_smoke_real_v17_picks_up_http_port():
     """Smoke: real Odoo 17 config.py has --http-port flag."""
-    flags = parse_cli_flags("/home/tuan/git/odoo17", "17.0")
+    flags = parse_cli_flags(ODOO17_SRC, "17.0")
     flag_names = {f.flag_name for f in flags}
     assert "--http-port" in flag_names
 

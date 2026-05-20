@@ -114,7 +114,7 @@ register_resources(mcp)
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
-# All 21 OSM tools are read-only queries against a statically-indexed graph.
+# All 28 OSM tools are read-only queries against a statically-indexed graph.
 # Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
 # ChatGPT) so they can auto-approve and skip confirmation gates.
 # (cross-server pattern: read-only annotations for auto-approval)

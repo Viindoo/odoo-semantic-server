@@ -16,7 +16,7 @@ from src.git_utils import (
 @pytest.mark.parametrize(
     "url",
     [
-        "git@github.com:Viindoo/odoo-semantic-mcp.git",
+        "git@github.com:Viindoo/odoo-semantic-server.git",
         "git@gitlab.example.com:viin/some-addon.git",
         "ssh://git@host/path/repo.git",
         "ssh://git@example.com:2222/repo.git",
@@ -29,7 +29,7 @@ def test_is_ssh_url_true(url):
 @pytest.mark.parametrize(
     "url",
     [
-        "https://github.com/Viindoo/odoo-semantic-mcp.git",
+        "https://github.com/Viindoo/odoo-semantic-server.git",
         "http://example.com/repo.git",
         "file:///tmp/local-bare.git",
         "/tmp/local-path",

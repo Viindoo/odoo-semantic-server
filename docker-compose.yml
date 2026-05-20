@@ -1,6 +1,7 @@
 # docker-compose.yml — DB TIER ONLY
 # Chạy file này trên DB server (hoặc cùng server với app khi dev).
 # App tier kết nối qua NEO4J_URI và PG_DSN trong .env — không cần sửa code.
+name: odoo-semantic-mcp  # Pin project name so volumes survive a repo rename (ADR-0027)
 services:
   neo4j:
     image: ${NEO4J_IMAGE:-neo4j:5.26.25}  # canonical version in .env.example

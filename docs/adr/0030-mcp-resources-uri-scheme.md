@@ -241,7 +241,7 @@ Deferred because:
 ## References
 
 - Internal design notes §Pattern 8 — MCP Resources primitive with stable URIs (Google Drive `gdrive:///fileId`, Postgres Anthropic-reference table schemas, Filesystem roots).
-- `/home/tuan/.claude/plans/rippling-greeting-tulip.md` §5 Wave F — per-WI spec for F1–F5; Appendix B item #10 (resource cache = in-memory LRU v1, Postgres deferred to M11 — now updated to M12 per scope adjustment) and item #11 (top-100 popular per version, avoid 10k-entry UI blowup).
+- Internal design spec (Wave F) — per-WI spec for F1–F5; Appendix B item #10 (resource cache = in-memory LRU v1, Postgres deferred to M11 — now updated to M12 per scope adjustment) and item #11 (top-100 popular per version, avoid 10k-entry UI blowup).
 - `src/mcp/resources.py` — Wave F WI-F1 implementation: 7 `@mcp.resource()` handlers, LRU cache (`_cache_get`, `_cache_put`, `_lru_lock`), MIME type dispatch, `"auto"` version resolution.
 - `src/mcp/resources_index.py` — Wave F WI-F2 implementation: `list_resources()` returning top-100 most-depended-on models per version, ordered by `COUNT { ()-[:DEPENDS_ON]->(m) } DESC` with `m.name ASC` tiebreak (ADR-0013 determinism).
 - `src/mcp/server.py` — Wave F WI-F3: `register_resources(mcp)` call; 7 priority tool docstrings updated with `See also: odoo://{version}/...` URI templates.

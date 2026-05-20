@@ -147,7 +147,7 @@ Shipping the superset tools and simultaneously removing the flat tools in the sa
 ## References
 
 - Internal design notes §Pattern 7 — Method-discriminator consolidation (source rationale, GitHub/Postgres adoption evidence).
-- `/home/tuan/.claude/plans/rippling-greeting-tulip.md` §5 Wave D — per-WI spec; Appendix B items #6 (split `model_inspect`/`module_inspect`) and #7 (typed args, not dotted-name parsing).
+- Internal design spec (Wave D) — per-WI spec; Appendix B items #6 (split `model_inspect`/`module_inspect`) and #7 (typed args, not dotted-name parsing).
 - `docs/adr/0012-persona-skill-architecture.md` — TRIGGER/PREFER/SKIP routing; docstring `SKIP` clauses on deprecated shims gate the persona router away from deprecated tool paths.
 - `docs/adr/0023-tool-output-completeness.md` — tree grammar contract, English-only output, truncation; `entity_lookup` and superset tools must conform to this grammar.
 - `docs/adr/0013-defined-in-ranking-heuristic.md` — 5-tier deterministic ranking used by `resolve_*` tools; `entity_lookup` inherits the same ranking via its `_resolve_*` delegate.

@@ -60,9 +60,9 @@ Each skill wraps tool calls in opinionated prompts that:
 
 Three adapter files ship in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client):
 
-- `dist/gemini-gem-instructions.md` — System instructions for a Gemini Gem, including TRIGGER-matched routing rules for all 14 tools and persona-mode detection
-- `dist/openai-gpt-instructions.md` — System prompt for a Custom GPT, plus OpenAPI Action schema for the MCP endpoint
-- `dist/cursor-rules.md` — `.cursorrules` content for Cursor IDE, with file-type-based auto-trigger rules (Odoo Python files → resolve_model; XML files → resolve_view)
+- [`snippets/gemini-gem-instructions.md`](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/gemini-gem-instructions.md) — System instructions for a Gemini Gem, including TRIGGER-matched routing rules for all 14 tools and persona-mode detection
+- [`snippets/openai-gpt-instructions.md`](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/openai-gpt-instructions.md) — System prompt for a Custom GPT, plus OpenAPI Action schema for the MCP endpoint
+- [`snippets/cursor-rules.md`](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/cursor-rules.md) — `.cursorrules` content for Cursor IDE, with file-type-based auto-trigger rules (Odoo Python files → resolve_model; XML files → resolve_view)
 
 These files are maintained as plain Markdown that admins can copy-paste. They do not require programmatic generation.
 

@@ -9,6 +9,7 @@ Three live sources (v17+):
 Static placeholder JSON for v8-v16 (per ADR-0002 §4): empty list, _curate_status='pending'.
 """
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,8 @@ from src.indexer.parser_lint_rules import (
     _version_has_test_lint,
     parse_lint_rules_for_version,
 )
+
+ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
 def test_parse_pylint_odoo_msgs_dict_extracts_rule_id():
@@ -148,14 +151,14 @@ def test_lint_rule_info_dataclass_minimal():
 
 
 @pytest.mark.skipif(
-    not Path("/home/tuan/git/odoo17/odoo/addons/test_lint/tests").exists(),
+    not Path(ODOO17_SRC + "/odoo/addons/test_lint/tests").exists(),
     reason="Real Odoo 17 test_lint dir not on disk",
 )
 def test_parse_lint_rules_smoke_real_v17():
     """Smoke: extract real pylint-odoo + eslint rules from Odoo 17 source."""
     rules = parse_lint_rules_for_version(
         "17.0",
-        odoo_source_root="/home/tuan/git/odoo17",
+        odoo_source_root=ODOO17_SRC,
     )
     # Real v17 has at least the gettext checker (E8502) + ESLint base rules.
     rule_ids = {r.rule_id for r in rules}

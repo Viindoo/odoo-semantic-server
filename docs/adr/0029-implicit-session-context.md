@@ -199,7 +199,7 @@ A Redis layer would provide cross-worker cache coherence and sub-millisecond rea
 ## References
 
 - Internal design notes §Pattern 6 — Implicit context via `set_active_*` tools and env-var fallback (Cloudflare, Azure, Sequential Thinking prior art).
-- `/home/tuan/.claude/plans/rippling-greeting-tulip.md` §5 Wave E — per-WI spec; Appendix B item #9 (rate-limit + usage-log granularity = per-API-key).
+- Internal design spec (Wave E) — per-WI spec; Appendix B item #9 (rate-limit + usage-log granularity = per-API-key).
 - `migrations/0005_api_key_session_state.sql` — DDL for `api_key_session_state` table.
 - `src/mcp/session.py` — Wave E WI-E2 implementation: `get_session_state`, `set_active_version_db`, `set_active_profile_db`, `normalize_version_arg`, `resolve_version_v2`, `resolve_profile_v2`, 60s in-memory cache.
 - `src/mcp/server.py` — Wave E WI-E3: 4 new `@mcp.tool()` wrappers (`set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles`); 15 resolver callsite patches.

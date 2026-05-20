@@ -5,6 +5,7 @@ Allow-list 8 file approach (per ADR-0002 §6 — KISS, no full-source walk):
     odoo/tools/safe_eval.py, query.py, sql.py
     odoo/fields.py, models.py, api.py, sql_db.py, exceptions.py
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ from src.indexer.parser_odoo_core import (
     _version_prefix,
     parse_odoo_core,
 )
+
+ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
 def test_extract_function_symbol_top_level():
@@ -113,12 +116,12 @@ def test_core_files_allowlist_has_eight_paths():
 
 
 @pytest.mark.skipif(
-    not Path("/home/tuan/git/odoo17/odoo/tools/safe_eval.py").exists(),
+    not Path(ODOO17_SRC + "/odoo/tools/safe_eval.py").exists(),
     reason="Real Odoo 17 source not on disk (skipped in CI; runs locally)",
 )
 def test_parse_odoo_core_smoke_real_v17():
     """Smoke test against real Odoo 17 source on disk — extract sane number of symbols."""
-    out = parse_odoo_core("/home/tuan/git/odoo17", "17.0")
+    out = parse_odoo_core(ODOO17_SRC, "17.0")
     # Heuristic lower bound — real Odoo 17 has hundreds of API entities across 8 files.
     assert len(out) >= 50, f"expected ≥50 symbols, got {len(out)}"
     # Must include at least the well-known safe_eval function.

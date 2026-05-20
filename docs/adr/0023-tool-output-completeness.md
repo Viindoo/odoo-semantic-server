@@ -478,7 +478,7 @@ This ADR is **not invalidated** by the new tools — it is the contract they mus
 - `src/indexer/writer_neo4j.py:263-366` — QWebTmpl/OWLComp/JSPatch node schema (read-only reference for the 3 UI list tools).
 - `src/indexer/parser_js.py:415` — `bound_model` heuristic; basis for the `list_owl_components` warning footer.
 - `CLAUDE.md` "Hai Nguyên Tắc Cốt Lõi" — Boil the Lake (codify grammar once) + Ship Wow Product (output must be readable without parsing).
-- `.claude/plans/swift-coalescing-kurzweil.md` — Wave 1 plan that drives this ADR.
+- Internal design spec (Wave 1) — Wave 1 plan that drives this ADR.
 
 ---
 

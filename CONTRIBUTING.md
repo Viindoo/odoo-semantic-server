@@ -26,8 +26,8 @@ Tài liệu này dành cho developer muốn contribute hoặc phát triển thê
 ## Setup Lần Đầu
 
 ```bash
-git clone https://github.com/Viindoo/odoo-semantic-mcp
-cd odoo-semantic-mcp
+git clone https://github.com/Viindoo/odoo-semantic-server
+cd odoo-semantic-server
 
 # 1. Tạo virtualenv bên ngoài repo (tại ~/.venv/odoo-semantic-mcp/)
 make install
@@ -525,8 +525,8 @@ Muốn test MCP local với Claude Code (không cần đợi production deploy)?
 ### 1. Clone + cài deps + bootstrap DB
 
 ```bash
-git clone https://github.com/Viindoo/odoo-semantic-mcp
-cd odoo-semantic-mcp
+git clone https://github.com/Viindoo/odoo-semantic-server
+cd odoo-semantic-server
 make install                     # tạo venv + sao .env.example, odoo-semantic.conf.example
 # Sửa .env: điền NEO4J_PASSWORD và PG_PASSWORD (replace <PASSWORD> trong PG_DSN)
 # Sửa odoo-semantic.conf: điền [neo4j] password + [postgresql] dsn (khớp với .env)

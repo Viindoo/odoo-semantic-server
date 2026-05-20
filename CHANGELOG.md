@@ -166,7 +166,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [0.5.0] — 2026-05-19 — Tool UX + Architecture (M10.5 + M11)
 
-6 waves + 8 patterns landed in a single worktree via the `feat/m10-5-m11-tool-ux-architecture` branch (33 commits over Waves A–F + F-FINAL). Plan: `.claude/plans/peaceful-orbiting-dongarra.md`. Research: 12 MCP design patterns evaluated, 8 adopted (archived internally). 3 new ADRs (0028/0029/0030) + ADR-0023 amended.
+6 waves + 8 patterns landed in a single worktree via the `feat/m10-5-m11-tool-ux-architecture` branch (33 commits over Waves A–F + F-FINAL). Plan: internal plan (archived). Research: 12 MCP design patterns evaluated, 8 adopted (archived internally). 3 new ADRs (0028/0029/0030) + ADR-0023 amended.
 
 ### Wave A — Quick Wins (M10.5)
 
