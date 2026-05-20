@@ -3,7 +3,7 @@
 > Idempotent install + upgrade procedure for the OSM systemd units.
 > Goal: **routine upstream upgrades do not lose operator customizations**.
 > Failure to follow this caused the 2026-05-19 production outage
-> documented in [issue #144](https://github.com/Viindoo/odoo-semantic-mcp/issues/144).
+> documented in [issue #144](https://github.com/Viindoo/odoo-semantic-server/issues/144).
 
 ---
 

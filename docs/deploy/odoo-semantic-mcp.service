@@ -11,7 +11,7 @@
 
 [Unit]
 Description=Odoo Semantic MCP Server
-Documentation=https://github.com/Viindoo/odoo-semantic-mcp
+Documentation=https://github.com/Viindoo/odoo-semantic-server
 # Wait for actual network connectivity (not just bringup) before starting — the
 # MCP server hits the local docker DB tier on its first request, and on slow
 # boot we have observed start failures when only `network.target` was satisfied.

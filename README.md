@@ -122,7 +122,7 @@ Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–
 Happy-path cho M9 (3 services):
 
 ```bash
-git clone https://github.com/Viindoo/odoo-semantic-mcp && cd odoo-semantic-mcp
+git clone https://github.com/Viindoo/odoo-semantic-server && cd odoo-semantic-server
 make install && docker compose up -d
 ~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
 
