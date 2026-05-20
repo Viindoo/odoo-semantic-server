@@ -1,0 +1,22 @@
+# Drop-in override for odoo-semantic-backup.service — alternate paths.
+# Install at: /etc/systemd/system/odoo-semantic-backup.service.d/local-paths.conf
+
+[Service]
+ExecStart=
+ExecStart=/bin/sh -c 'exec /path/to/alt-venv/bin/python -m src.cli backup --output ${BACKUP_DIR}/osm-$(date +%%Y%%m%%d-%%H%%M%%S).tar.gz'
+
+User=alt-user
+Group=alt-user
+WorkingDirectory=/path/to/alt-app-dir
+Environment="ODOO_SEMANTIC_CONF=/path/to/alt-config/odoo-semantic.conf"
+
+# Per ADR-0027 §4, keep TMPDIR on a disk-backed filesystem (NOT a tmpfs /tmp)
+# to avoid OOM on large pg_dump staging. Override only if you have a tested
+# alternative path with enough headroom (multi-GB).
+Environment="TMPDIR=/path/to/alt-tmpdir"
+Environment="BACKUP_DIR=/path/to/alt-backup-output"
+
+EnvironmentFile=-/path/to/alt-app-dir/.env
+
+ReadWritePaths=/path/to/alt-backup-output
+ReadWritePaths=/path/to/alt-tmpdir

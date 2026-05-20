@@ -1,16 +1,20 @@
-# odoo-semantic-webui.service — systemd unit cho Web UI admin
+# odoo-semantic-webui.service — systemd unit cho FastAPI Web UI admin
 # Đặt tại: /etc/systemd/system/odoo-semantic-webui.service
 # Sau khi copy:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now odoo-semantic-webui
 #
-# Web UI bind 127.0.0.1:8003 — KHÔNG expose ra Internet (không có auth riêng).
-# Truy cập từ xa qua SSH tunnel hoặc nginx proxy + IP allowlist.
+# FastAPI bind 127.0.0.1:8003 — KHÔNG expose ra Internet (không có auth riêng
+# layer trước Astro). Truy cập từ xa qua SSH tunnel hoặc nginx proxy + IP allowlist.
+#
+# Canonical layout = ADR-0027. Operators on non-canonical layouts use drop-in
+# overrides — see docs/deploy/install-runbook.md.
 
 [Unit]
-Description=Odoo Semantic MCP — Web UI admin (LAN-only :8003)
-After=network.target docker.service odoo-semantic-mcp.service
-Wants=network.target
+Description=Odoo Semantic MCP — FastAPI Web UI admin (LAN-only :8003)
+Documentation=https://github.com/Viindoo/odoo-semantic-mcp
+After=network-online.target docker.service odoo-semantic-mcp.service
+Wants=network-online.target
 # DB tier lives in docker containers; hard dep matches mcp.service.
 Requires=docker.service
 # Stop runaway crash-loop after 5 failures in 60s window.
@@ -21,12 +25,15 @@ OnFailure=osm-alert@%n
 [Service]
 Type=simple
 User=odoo-semantic
-WorkingDirectory=/opt/odoo-semantic-mcp
-Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
-# FERNET_KEY (cần cho SSH key encrypt/decrypt) đọc từ env var.
-# Đặt trong file riêng — KHÔNG commit vào git, mode 600, owner odoo-semantic.
-# Chỉ Web UI cần file này; MCP server không decrypt SSH key tại runtime.
-EnvironmentFile=-/etc/odoo-semantic/webui.env
+Group=odoo-semantic
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
+# Main .env first (PG_DSN, NEO4J_PASSWORD), then webui.env (FERNET_KEY,
+# WEBUI_SESSION_SECRET, MFA encryption key). Both optional via `-` prefix.
+# Without these the Web UI falls back to dev-only defaults (logged WARN).
+# Order matters: webui.env wins on conflict, since it loads last.
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+EnvironmentFile=-/home/odoo-semantic/etc/webui.env
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
 Restart=on-failure
 RestartSec=5
@@ -41,6 +48,11 @@ StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
+# Writable: app dir (audit log writes) + repos (indexer subprocess spawned
+# from Web UI). The indexer inherits this unit's cgroup + restrictions.
+ReadWritePaths=/home/odoo-semantic/odoo-semantic-mcp
+ReadWritePaths=/home/odoo-semantic/repos
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

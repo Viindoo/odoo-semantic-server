@@ -1,0 +1,20 @@
+# Drop-in override for odoo-semantic-webui.service — alternate paths.
+# Install at: /etc/systemd/system/odoo-semantic-webui.service.d/local-paths.conf
+
+[Service]
+ExecStart=
+ExecStart=/path/to/alt-venv/bin/python -m src.web_ui
+
+User=alt-user
+Group=alt-user
+WorkingDirectory=/path/to/alt-app-dir
+Environment="ODOO_SEMANTIC_CONF=/path/to/alt-config/odoo-semantic.conf"
+
+# Both env files append; load order is shipped main .env → shipped webui.env →
+# any drop-in EnvironmentFile= here. If you want to reset, prefix with an
+# empty `EnvironmentFile=` line first.
+EnvironmentFile=-/path/to/alt-app-dir/.env
+EnvironmentFile=-/path/to/alt-config/webui.env
+
+ReadWritePaths=/path/to/alt-app-dir
+ReadWritePaths=/path/to/alt-repos-dir

@@ -1,0 +1,28 @@
+# Drop-in override for odoo-semantic-mcp.service — alternate paths.
+# Install at: /etc/systemd/system/odoo-semantic-mcp.service.d/local-paths.conf
+#
+# After editing:
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart odoo-semantic-mcp.service
+#   systemctl cat odoo-semantic-mcp.service  # verify merged body
+
+[Service]
+# Reset ExecStart= before redefining (systemd requires this for list-valued
+# directives that should be replaced rather than appended).
+ExecStart=
+ExecStart=/path/to/alt-venv/bin/python -m src.mcp.server
+
+# Single-valued — last assignment wins:
+User=alt-user
+Group=alt-user
+WorkingDirectory=/path/to/alt-app-dir
+Environment="ODOO_SEMANTIC_CONF=/path/to/alt-config/odoo-semantic.conf"
+
+# List-valued — appends to the shipped unit's existing EnvironmentFile= lines.
+# Use `EnvironmentFile=` (empty) once first if you want to RESET the list
+# instead of appending. Most operators want append.
+EnvironmentFile=-/path/to/alt-app-dir/.env
+
+# ReadWritePaths also appends. Add carve-outs your alt-paths need.
+ReadWritePaths=/path/to/alt-app-dir
+ReadWritePaths=/path/to/alt-repos-dir

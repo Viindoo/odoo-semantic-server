@@ -8,7 +8,7 @@ UV      := $(shell which uv 2>/dev/null || echo "uv")
 
 .PHONY: help install test test-unit test-integration test-browser test-all \
         neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell validate-plugin \
-        recreate-db
+        recreate-db check-systemd-overrides
 
 help:
 	@echo "Targets:"
@@ -22,6 +22,7 @@ help:
 	@echo "  neo4j-logs        Xem log Neo4j"
 	@echo "  recreate-db       down → up postgres → wait-healthy (use sau khi compose đổi)"
 	@echo "  lint              Chạy ruff + shell lint (strict)"
+	@echo "  check-systemd-overrides  Drift audit installed systemd units (issue #144)"
 
 install:
 	$(UV) venv $(VENV)
@@ -111,3 +112,10 @@ lint-shell:
 
 validate-plugin:  ## Validate Claude Code plugin schema (requires claude CLI)
 	claude plugin validate dist/odoo-semantic-plugin/
+
+# Drift audit for installed systemd units (issue #144). Compares
+# /etc/systemd/system/odoo-semantic-*.service body against docs/deploy/*.service
+# and reports any in-place edits that should be moved to a drop-in override.
+# Run BEFORE deploying any release that touches docs/deploy/*.service.
+check-systemd-overrides:
+	@bash scripts/check-systemd-overrides.sh

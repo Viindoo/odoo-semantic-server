@@ -5,29 +5,69 @@
 #   sudo systemctl enable odoo-semantic-backup.timer
 #   sudo systemctl start odoo-semantic-backup.timer
 #
-# Adjust User=, WorkingDirectory=, EnvironmentFile=, ExecStart venv path for
-# your deployment. Defaults below mirror docs/deploy/odoo-semantic-mcp.service
-# (user `odoo-semantic`, working dir `/opt/odoo-semantic-mcp`).
+# Canonical layout = ADR-0027 (system-user `odoo-semantic`, app dir
+# /home/odoo-semantic/odoo-semantic-mcp, config dir /home/odoo-semantic/etc).
+# Operators on non-canonical layouts use drop-in overrides — see
+# docs/deploy/install-runbook.md.
 #
 # IMPORTANT: the backup output directory must be owned by the service user.
 # Create it (or fix ownership if migrating from a personal-user deployment):
 #   sudo mkdir -p /var/backups/odoo-semantic
 #   sudo chown odoo-semantic:odoo-semantic /var/backups/odoo-semantic
 #   sudo chmod 0750 /var/backups/odoo-semantic
-# Without this, the unit fails with `PermissionError: [Errno 13]` on first run.
+# Without this, the unit fails with `PermissionError: [Errno 13]` on first run
+# (issue #139).
+#
+# Resilience (mirrors osm-ttl-cleanup.service, issue #142): `Requires=docker.service`
+# alone only orders boot — it does NOT wait for the DB containers to become
+# ready. If the timer fires while a container is mid-startup (host reboot,
+# docker daemon restart), a bare backup would fail-fast. The ExecStartPre poll
+# below waits up to 60s for Postgres readiness; Restart=on-failure + StartLimit
+# then retry the whole oneshot (covering Neo4j-not-ready too — the backup CLI
+# touches both Postgres and Neo4j, and a not-ready Neo4j surfaces as a failed
+# attempt that the retry layer absorbs).
 
 [Unit]
 Description=OSM nightly backup
-After=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
 Requires=docker.service
+# Retry budget: at most 3 starts within a 30-min window. Wider than
+# osm-ttl-cleanup's 10-min window because a backup attempt itself can run for
+# several minutes on a mature DB, so the retry spacing must not exhaust the
+# window prematurely.
+StartLimitBurst=3
+StartLimitIntervalSec=1800
 OnFailure=osm-alert@%n
 
 [Service]
 Type=oneshot
 User=odoo-semantic
-WorkingDirectory=/opt/odoo-semantic-mcp
-Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
-EnvironmentFile=-/opt/odoo-semantic-mcp/.env
-ExecStart=/bin/sh -c 'exec /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli backup --output /var/backups/odoo-semantic/osm-$(date +%%Y%%m%%d-%%H%%M%%S).tar.gz'
+Group=odoo-semantic
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
+# ADR-0027 §4: /var/tmp (disk-backed) for backup staging — /tmp is tmpfs on
+# many hosts and a multi-GB pg_dump + tar will OOM-kill the worker.
+Environment="TMPDIR=/var/tmp"
+Environment="BACKUP_DIR=/var/backups/odoo-semantic"
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# Pre-flight: wait up to 60s for Postgres to be ready (mirrors osm-ttl-cleanup,
+# issue #142). Exits non-zero on timeout → triggers Restart= below instead of
+# a hard fail. Override container name via $POSTGRES_CONTAINER in .env.
+ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
+ExecStart=/bin/sh -c 'exec /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli backup --output ${BACKUP_DIR}/osm-$(date +%%Y%%m%%d-%%H%%M%%S).tar.gz'
+Restart=on-failure
+RestartSec=30s
 StandardOutput=journal
 StandardError=journal
+
+# Security hardening (oneshot still benefits from these)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# NOTE: ProtectSystem=strict mounts the ENTIRE filesystem read-only except
+# /dev,/proc,/sys (NOT just /usr,/boot,/etc — that is ProtectSystem=full). So
+# both carve-outs below are REQUIRED, not redundant: the backup CLI writes the
+# final archive to BACKUP_DIR and stages the pg_dump intermediate in TMPDIR.
+ReadWritePaths=/var/backups/odoo-semantic
+ReadWritePaths=/var/tmp

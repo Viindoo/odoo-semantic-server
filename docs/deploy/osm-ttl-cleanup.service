@@ -18,12 +18,17 @@
 # After 3 failures the unit enters `failed` state and fires OnFailure=.
 #
 # Override the container name via $POSTGRES_CONTAINER in
-# /opt/odoo-semantic-mcp/.env if the Docker Compose project basename differs
-# (default: odoo-semantic-mcp-postgres-1, per ADR-0027).
+# /home/odoo-semantic/odoo-semantic-mcp/.env if the Docker Compose project
+# basename differs (default: odoo-semantic-mcp-postgres-1, per ADR-0027).
+#
+# Canonical layout = ADR-0027 (system-user `odoo-semantic`, /home/odoo-semantic/...).
+# Operators on non-canonical layouts use drop-in overrides — see
+# docs/deploy/install-runbook.md.
 
 [Unit]
 Description=OSM nightly TTL cleanup (login_attempts/email_verifications/active_sessions)
-After=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
 Requires=docker.service
 StartLimitBurst=3
 StartLimitIntervalSec=600
@@ -32,8 +37,9 @@ OnFailure=osm-alert@%n
 [Service]
 Type=oneshot
 User=odoo-semantic
-WorkingDirectory=/opt/odoo-semantic-mcp
-EnvironmentFile=-/opt/odoo-semantic-mcp/.env
+Group=odoo-semantic
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
 # Pre-flight: wait up to 30s for Postgres to be ready. Exits non-zero on
 # timeout, which triggers Restart= below.
 ExecStartPre=/bin/sh -c 'timeout 30 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'

@@ -1,0 +1,26 @@
+# Drop-in override for odoo-semantic-astro.service — alternate paths.
+# Install at: /etc/systemd/system/odoo-semantic-astro.service.d/local-paths.conf
+#
+# REMEMBER: never set ProtectHome=true here. The shipped unit uses
+# ProtectHome=read-only for a reason (ADR-0027 §3 + issue #144) — setting
+# `true` hides dist/server/entry.mjs and the unit fails with CHDIR / ENOENT.
+
+[Service]
+ExecStart=
+ExecStart=/usr/bin/node /path/to/alt-app-dir/site/dist/server/entry.mjs
+
+User=alt-user
+Group=alt-user
+WorkingDirectory=/path/to/alt-app-dir/site
+
+# Override the Node bind interface or port if your nginx/reverse-proxy
+# tier needs a different upstream socket. Default = 127.0.0.1:4321.
+# Environment=HOST=127.0.0.1
+# Environment=PORT=4321
+
+# Site-level .env (e.g. PUBLIC_API_BASE for staging) — appends.
+EnvironmentFile=-/path/to/alt-app-dir/site/.env
+
+# Writable: .astro cache + dist (if redeployed at runtime).
+ReadWritePaths=/path/to/alt-app-dir/site/.astro
+ReadWritePaths=/path/to/alt-app-dir/site/dist

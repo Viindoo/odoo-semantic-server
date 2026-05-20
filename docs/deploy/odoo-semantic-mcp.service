@@ -3,10 +3,20 @@
 # Sau khi copy:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now odoo-semantic-mcp
+#
+# Canonical layout = ADR-0027 (system user `odoo-semantic`, /home/odoo-semantic/...).
+# Operators on non-canonical layouts (e.g. /opt/, personal-user) should NOT edit this
+# file directly — drop-in overrides at /etc/systemd/system/<unit>.service.d/override.conf
+# preserve upstream evolution. See docs/deploy/install-runbook.md §"Drop-in overrides".
 
 [Unit]
 Description=Odoo Semantic MCP Server
-After=network.target docker.service
+Documentation=https://github.com/Viindoo/odoo-semantic-mcp
+# Wait for actual network connectivity (not just bringup) before starting — the
+# MCP server hits the local docker DB tier on its first request, and on slow
+# boot we have observed start failures when only `network.target` was satisfied.
+After=network-online.target docker.service
+Wants=network-online.target
 # Hard dependency on docker — if docker is not up, this service must not
 # attempt to start (DB tier lives in compose containers). Without this,
 # After= only orders boot but does not block on docker availability.
@@ -24,9 +34,16 @@ OnFailure=osm-alert@%n
 [Service]
 Type=simple
 User=odoo-semantic
-WorkingDirectory=/opt/odoo-semantic-mcp
+Group=odoo-semantic
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
 # Config file nằm ngoài repo — không commit vào git
-Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
+Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
+# .env (PG_DSN, NEO4J_PASSWORD, FERNET_KEY, etc.) — optional via `-` prefix so
+# unit boots even on a fresh host that has not provisioned .env yet. The Python
+# app falls back to its built-in defaults + dotenv-from-CWD lookup, but the
+# systemd-level EnvironmentFile= remains the recommended injection point for
+# non-CWD env files.
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 Restart=on-failure
 RestartSec=5
@@ -36,10 +53,18 @@ TimeoutStartSec=60
 TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
+
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
+# `read-only` (not `true`) — service venv + app binaries live under
+# /home/odoo-semantic per ADR-0027 §3; `true` would hide them entirely.
 ProtectHome=read-only
+# Writable carve-outs under the read-only home (repos for indexer subprocess,
+# app dir for migration audit log writes + any process-local cache).
+ReadWritePaths=/home/odoo-semantic/odoo-semantic-mcp
+ReadWritePaths=/home/odoo-semantic/repos
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

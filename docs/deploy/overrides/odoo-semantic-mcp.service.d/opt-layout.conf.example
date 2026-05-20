@@ -1,0 +1,18 @@
+# Drop-in override for odoo-semantic-mcp.service — legacy /opt/ layout.
+# Use this if you cannot migrate to the ADR-0027 system-user layout yet.
+# Install at: /etc/systemd/system/odoo-semantic-mcp.service.d/opt-layout.conf
+
+[Service]
+ExecStart=
+ExecStart=/opt/odoo-semantic-mcp/.venv/bin/python -m src.mcp.server
+
+WorkingDirectory=/opt/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf"
+EnvironmentFile=-/opt/odoo-semantic-mcp/.env
+
+ReadWritePaths=/opt/odoo-semantic-mcp
+ReadWritePaths=/opt/odoo-semantic-mcp/repos
+
+# /opt/ is not under /home, so ProtectHome=true is acceptable here. The
+# shipped unit uses ProtectHome=read-only (ADR-0027 §3) which is also fine —
+# either works under /opt/. Override only if you have a specific reason.

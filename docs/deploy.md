@@ -310,6 +310,16 @@ docker compose exec neo4j neo4j-admin database load neo4j --from-path=/data/back
 > Cờ `-H` set `$HOME=/home/odoo-semantic` cho `make install`. Nếu bỏ
 > `-H`, venv sẽ tạo ở `$HOME` của user invoke `sudo` → systemd service
 > sẽ fail "No such file or directory" khi start.
+>
+> **App-dir + config-dir choice (ADR-0027 §2):** canonical layout dùng
+> `/home/odoo-semantic/odoo-semantic-mcp/` cho app + `/home/odoo-semantic/etc/`
+> cho config (consistent với systemd templates ở `docs/deploy/*.service`).
+> Snippets bên dưới dùng layout legacy `/opt/odoo-semantic-mcp` +
+> `/etc/odoo-semantic/` (vẫn valid — chỉ cần drop-in overrides cho systemd
+> units, xem [`docs/deploy/install-runbook.md`](deploy/install-runbook.md) +
+> [`docs/deploy/overrides/`](deploy/overrides/)). Khi chọn canonical
+> layout, substitute `/opt/odoo-semantic-mcp` → `/home/odoo-semantic/odoo-semantic-mcp`
+> và `/etc/odoo-semantic/` → `/home/odoo-semantic/etc/` trong mọi lệnh sau đây.
 
 ### 3.1 Cài đặt
 
@@ -529,12 +539,19 @@ Output: `INFO seed_patterns: Neo4j: wrote 54 PatternExample nodes` +
 
 Repo ship unit files ở **`docs/deploy/`** (canonical path — không có file nào ở `systemd/`).
 
-`install.sh --systemd` tự động cài đặt và điều chỉnh đường dẫn theo ngữ cảnh:
+`install.sh --systemd` tự động cài đặt và điều chỉnh đường dẫn theo ngữ cảnh.
+**Idempotent** (issue #144 fix): nếu unit body đã cài có divergence với template
+shipped, script SKIP thay vì silent overwrite. Dùng `--force-overrides` để
+override.
 
-- **Chạy với sudo (production):** giữ `User=odoo-semantic` và paths `/opt/odoo-semantic-mcp`.
-- **Chạy không sudo (dev workstation):** tự thay `User=<current-user>`, `WorkingDirectory=<cwd>`,
-  venv `~/.venv/odoo-semantic-mcp`, và `EnvironmentFile=-<cwd>/.env`.
-  File đã điều chỉnh được lưu vào `/tmp/` để review trước khi copy thủ công.
+- **Chạy với sudo (production):** dùng ADR-0027 canonical paths
+  (`User=odoo-semantic`, `/home/odoo-semantic/odoo-semantic-mcp`,
+  `/home/odoo-semantic/etc/`). Operator trên legacy `/opt/` layout dùng
+  drop-in overrides — xem [`docs/deploy/install-runbook.md`](deploy/install-runbook.md).
+- **Chạy không sudo (dev workstation):** tự thay `User=<current-user>`,
+  `WorkingDirectory=<cwd>`, venv `~/.venv/odoo-semantic-mcp`, và
+  `EnvironmentFile=-<cwd>/.env`. File đã điều chỉnh được lưu vào `/tmp/`
+  để review trước khi copy thủ công.
 
 ```bash
 # Production (cần sudo):
@@ -632,9 +649,18 @@ sudo journalctl -u 'osm-alert@dummy.service' --no-pager | tail
 ```
 
 > `install.sh --systemd` glob `*.service` tự động pick up cả 5 unit (4
-> main + 1 template). Bước manual ở trên chỉ cần khi không dùng
-> `install.sh`. Xem [`docs/deploy/db-tier-operations.md §Alert wiring`](deploy/db-tier-operations.md#alert-wiring-onfailureosm-alertn)
+> main + 1 template) và **idempotent** — nếu unit body đã cài có divergence
+> với template shipped, script SKIP thay vì silent overwrite (caused issue #144).
+> Operator có customization local phải dùng **drop-in overrides** thay vì sửa
+> body trực tiếp — xem [`docs/deploy/install-runbook.md`](deploy/install-runbook.md)
+> và [`docs/deploy/overrides/`](deploy/overrides/). Bước manual ở trên chỉ cần
+> khi không dùng `install.sh`. Xem
+> [`docs/deploy/db-tier-operations.md §Alert wiring`](deploy/db-tier-operations.md#alert-wiring-onfailureosm-alertn)
 > để cấu hình notifier (email, Slack, PagerDuty).
+>
+> **Drift audit trước deploy:** `make check-systemd-overrides` so sánh installed
+> unit body với template shipped và báo divergence. Chạy trước mọi deploy đụng
+> `docs/deploy/*.service` để tránh lặp lại outage 2026-05-19 (issue #144).
 
 ⚠️ **Backup `webui.env` an toàn (vd password manager).** Nếu mất
 FERNET_KEY → mọi SSH private key đã lưu trong DB không giải mã được.
