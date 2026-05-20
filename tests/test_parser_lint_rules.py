@@ -14,8 +14,6 @@ from pathlib import Path
 
 import pytest
 
-ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
-
 from src.indexer.models import LintRuleInfo
 from src.indexer.parser_lint_rules import (
     _parse_eslint_config,
@@ -24,6 +22,8 @@ from src.indexer.parser_lint_rules import (
     _version_has_test_lint,
     parse_lint_rules_for_version,
 )
+
+ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
 def test_parse_pylint_odoo_msgs_dict_extracts_rule_id():

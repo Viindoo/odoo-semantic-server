@@ -10,8 +10,6 @@ from pathlib import Path
 
 import pytest
 
-ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
-
 from src.indexer.parser_odoo_core import (
     _CORE_FILES,
     _extract_from_source,
@@ -19,6 +17,8 @@ from src.indexer.parser_odoo_core import (
     _version_prefix,
     parse_odoo_core,
 )
+
+ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
 def test_extract_function_symbol_top_level():

@@ -15,8 +15,6 @@ from pathlib import Path
 
 import pytest
 
-ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
-
 from src.indexer.models import CLIFlagInfo
 from src.indexer.parser_cli import (
     _load_static_cli_flags,
@@ -26,6 +24,8 @@ from src.indexer.parser_cli import (
     parse_cli_commands,
     parse_cli_flags,
 )
+
+ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
 def test_parse_cli_command_class_subclass_of_command():
