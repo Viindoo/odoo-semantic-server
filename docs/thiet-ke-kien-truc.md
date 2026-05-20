@@ -556,7 +556,7 @@ Server B  →  docker compose up -d  →  odoo-semantic restore
 
 Lộ trình milestone đang track trong **[`TASKS.md`](../TASKS.md)** với từng work-item status.
 
-Plans chi tiết per-milestone: **[`docs/superpowers/plans/`](superpowers/plans/)** — active plans không có Status header; done/superseded plans có `> **Status:**` blockquote header.
+Plans chi tiết per-milestone được archive nội bộ — xem `TASKS.md` để theo dõi trạng thái từng work-item.
 
 Release notes + version highlights: **[`CHANGELOG.md`](../CHANGELOG.md)**.
 

@@ -28,7 +28,7 @@ The odoo-semantic MCP server shipped 21 tools across M1–M9. Ten of these share
 | `list_qweb_templates` | module | enumeration |
 | `list_js_patches` | module or model | enumeration |
 
-With 21 registered tools the LLM's `tools/list` response consumes a significant portion of the context window before any user message is processed. Research across 12 production MCP servers (see `docs/research/mcp-design-patterns-research.md` §Pattern 7) shows that GitHub's MCP server collapses four `issue_read` behaviours into a single tool with a `method=get|get_comments|get_sub_issues|get_labels` discriminator enum; Postgres MCP uses a `health_type` discriminator across eight analysis modes. The pattern halves the tool count without reducing capability, and the JSON Schema enum on the discriminator self-documents the available choices to the LLM at schema-read time.
+With 21 registered tools the LLM's `tools/list` response consumes a significant portion of the context window before any user message is processed. Research across 12 production MCP servers (internal design notes, Pattern 7) shows that GitHub's MCP server collapses four `issue_read` behaviours into a single tool with a `method=get|get_comments|get_sub_issues|get_labels` discriminator enum; Postgres MCP uses a `health_type` discriminator across eight analysis modes. The pattern halves the tool count without reducing capability, and the JSON Schema enum on the discriminator self-documents the available choices to the LLM at schema-read time.
 
 odoo-semantic's 10 tools divide naturally along two scope axes — model-scoped versus module-scoped — and one entity axis — single-entity lookup versus enumeration. A naive single mega-tool would require every parameter to be optional and nullable, forcing the LLM to reason about which combinations are valid. Instead, three superset tools with well-named discriminators map cleanly onto the two scope axes:
 
@@ -146,7 +146,7 @@ Shipping the superset tools and simultaneously removing the flat tools in the sa
 
 ## References
 
-- `docs/research/mcp-design-patterns-research.md` §Pattern 7 — Method-discriminator consolidation (source rationale, GitHub/Postgres adoption evidence).
+- Internal design notes §Pattern 7 — Method-discriminator consolidation (source rationale, GitHub/Postgres adoption evidence).
 - `/home/tuan/.claude/plans/rippling-greeting-tulip.md` §5 Wave D — per-WI spec; Appendix B items #6 (split `model_inspect`/`module_inspect`) and #7 (typed args, not dotted-name parsing).
 - `docs/adr/0012-persona-skill-architecture.md` — TRIGGER/PREFER/SKIP routing; docstring `SKIP` clauses on deprecated shims gate the persona router away from deprecated tool paths.
 - `docs/adr/0023-tool-output-completeness.md` — tree grammar contract, English-only output, truncation; `entity_lookup` and superset tools must conform to this grammar.

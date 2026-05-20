@@ -100,7 +100,6 @@
 - [x] WI7: Tests + snapshots + integration
 - [x] WI8: Docs update (TASKS.md, README.md, kien-truc.md, CLAUDE.md)
 
-> Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-5-spec-wow.md)  
 > ADR: [`docs/adr/0002-spec-schema-policy.md`](docs/adr/0002-spec-schema-policy.md)
 
 ## Milestone 4.6 — "Pattern Wow"
@@ -116,7 +115,6 @@
 - [x] WI6: Tests + snapshots (+ smoke job `tests/test_smoke_pattern_wow.py`: seed CLI E2E + EE warning + super_ratio + USES_CORE_SYMBOL silent-skip — wired into `.github/workflows/ci.yml` smoke-tests job)
 - [x] WI7: Docs update (TASKS.md, README.md, kien-truc.md)
 
-> Plan: [`docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md`](docs/superpowers/plans/2026-05-08-milestone-4-6-pattern-wow.md)  
 > ADR: [`docs/adr/0003-pattern-example-storage.md`](docs/adr/0003-pattern-example-storage.md)  
 > Depends on: M4.5 (CoreSymbol node cho USES_CORE_SYMBOL edge — graceful skip nếu chưa ship)
 
@@ -124,7 +122,6 @@
 **Intent:** Đóng gói thành sản phẩm bất kỳ ai deploy được trong dưới 10 phút.
 **Outcome:** `docker compose up -d` + Web UI add repos + index. Admin tạo API key → user add vào Claude Code config → MCP tools respond. Production-ready: `GET /health` + Postgres advisory lock ngăn indexer chạy chồng.
 
-> Plan: [`docs/superpowers/plans/2026-05-09-milestone-5-product-wow.md`](docs/superpowers/plans/2026-05-09-milestone-5-product-wow.md) (rev 2 — post-Opus debate)
 > ADR: [`docs/adr/0004-auth-web-ui-ssh-policy.md`](docs/adr/0004-auth-web-ui-ssh-policy.md)
 
 **Wave 1 — Foundation (Haiku):**
@@ -160,8 +157,6 @@
 ## Milestone 5.5 — "Polish Wow"
 **Intent:** Observability + test discipline + landing zone cho tech-debt phát sinh trong M5.
 **Outcome:** Mọi long-running operation có progress feedback; mọi MCP tool có anti-drift snapshot test; deferred M5 items hoàn tất.
-
-> Plan: [`docs/superpowers/plans/2026-05-07-milestone-5-5-polish-wow.md`](docs/superpowers/plans/2026-05-07-milestone-5-5-polish-wow.md)
 
 **Section A — Indexer observability:**
 - [x] `src/indexer/__main__.py`: `--verbose` flag enable INFO logging + `tqdm` progress bar (modules processed / total)
@@ -315,19 +310,12 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - Batch 3: 8/10 observable infra items PASS (2 P1: HSTS missing, /admin 404).
 - Batch 4: M3 recall smoke blocked by P1 Ollama SSL (deferred to local replica).
 
-5 P1 issues queued for M8 production fix-ups; 7 P2 issues queued for polish. Reports:
-- `docs/m7.5-verification-issues.md` — consolidated P0/P1/P2 log
-- `docs/m7.5-batch1-mcp-signoff.md` — 14 tool per-call results
-- `docs/m7.5-pilot-results.md` — auto-route hit-rate per persona + failing queries
-- `docs/m7.5-batch3-infra.md` — curl verification §1/§2/§7/§10
+5 P1 issues queued for M8 production fix-ups; 7 P2 issues queued for polish. Verification reports archived internally.
 - `tests/eval/auto_route_125.yaml` — 125-query golden set (regression baseline)
 
 **Intent:** Make AI clients (Claude Code, Claude.ai, Gemini, ChatGPT) **proactively auto-pick** `odoo-semantic` tools across five personas (CEO, developer, consultant, marketer, sales). Currently descriptions only say WHAT tools do — non-technical users phrasing questions in business language never reach the right tool. Two-track fix: rewrite 14 tool docstrings with `TRIGGER / PREFER / SKIP` clauses (Track 1), and ship a Claude Code plugin bundling MCP config + 11 persona skills + 2 router sub-agents (Track 2). Cross-vendor adapters for Gemini Gems / OpenAI Custom GPT / Cursor sit alongside the plugin.
 
 **Outcome:** Hit-rate ≥ 80% on auto-route across 5 personas × 25 sample queries, measured on Claude Code + Gemini + ChatGPT with variance ≤ 15%. Distributed via Viindoo self-host marketplace; `/odoo-semantic:connect` slash command handles API-key prompt + `~/.claude.json` write + validation.
-
-**Plans liên quan:**
-- [`docs/superpowers/plans/2026-05-11-milestone-7.5-persona-proactive.md`](docs/superpowers/plans/2026-05-11-milestone-7.5-persona-proactive.md) — Master plan (4 tracks, 40+ WIs, worktree topology, model assignment per WI).
 
 **Track 1 — Tool docstring TRIGGER blocks:**
 - [x] T1.1–T1.14: 14 MCP tool docstrings rewritten with TRIGGER/PREFER/SKIP in `src/mcp/server.py`
@@ -335,7 +323,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [x] T1.16: `tests/test_smoke_e2e_mcp_http.py` extended — 11 stub classes for uncovered tools
 
 **Track 2 — Claude Code plugin package:**
-- [x] T2.1: `dist/odoo-semantic-plugin/` scaffold + `.claude-plugin/plugin.json` + `.mcp.json` + marketplace.json
+- [x] T2.1: plugin scaffold (moved to [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client))
 - [x] T2.2–T2.12: 11 persona SKILL.md files (CEO ×2, Dev ×3, Consultant ×2, Marketer ×2, Sales ×2)
 - [x] T2.13: `agents/odoo-router.md` — Haiku model, classify-only
 - [x] T2.14: `agents/odoo-upgrade-planner.md` — Sonnet model, multi-step orchestration
@@ -343,16 +331,13 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [x] T2.16: `tests/test_skill_disambiguation.py` — 31/31 pass, 100% routing accuracy
 
 **Track 3 — Cross-vendor adapters + persona docs:**
-- [x] T3.1: `dist/gemini-gem-instructions.md`
-- [x] T3.2: `dist/openai-gpt-instructions.md`
-- [x] T3.3: `dist/cursor-rules.md`
-- [x] T3.4: `docs/personas/{ceo,dev,consultant,marketer,sales}.md`
+- [x] T3.1–T3.4: Gemini, OpenAI, Cursor adapters + 5 persona guides (moved to [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client))
 - [x] T3.5: `README.md` — Persona Guides section added
 
 **Track 4 — Release & verification:**
 - [x] T4.1: `docs/adr/0012-persona-skill-architecture.md`
 - [x] T4.2: `docs/deploy/pre-launch-checklist.md` — 11 skill sign-off rows added
-- [x] T4.3: Internal pilot — measure auto-route hit-rate ≥80% (post-deploy) *(2026-05-14 — Claude Code static-dispatch proxy: overall 96% (120/125), CEO 100% · Dev 100% · Consultant 92% · Marketer 92% · Sales 96%; tất cả 5 personas ≥80%. Method: 125-query golden set tại `tests/eval/auto_route_125.yaml`; static prediction từ SKILL.md TRIGGER phrases. Full live LLM measurement defer M8. Report: `docs/m7.5-pilot-results.md`.)*
+- [x] T4.3: Internal pilot — measure auto-route hit-rate ≥80% (post-deploy) *(2026-05-14 — Claude Code static-dispatch proxy: overall 96% (120/125), CEO 100% · Dev 100% · Consultant 92% · Marketer 92% · Sales 96%; tất cả 5 personas ≥80%. Method: 125-query golden set tại `tests/eval/auto_route_125.yaml`; static prediction từ SKILL.md TRIGGER phrases. Full live LLM measurement defer M8. Report archived internally.)*
 - [x] T4.4: v0.2.0 release tag + changelog (post-merge) *(2026-05-14 — tag `v0.2.0` đã tồn tại tại commit `bb8f1ab` (M7.5 close-out, 2026-05-12); CHANGELOG.md có entry v0.2.0 với 4 tracks documented; README.md "Latest release" sync.)*
 
 **Resolved decisions (2026-05-11):**
@@ -372,7 +357,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **P1 production fix-ups (từ M7.5 verification 2026-05-14 — bắt buộc trước public launch):**
 
-> **2026-05-14 hotfix executed** (worktree `worktree-m7.5-hotfix`): 4/5 P1 RESOLVED, 1/5 DEFERRED → M8. Real prod root causes khác runbook ban đầu — runbook đã được sửa. Chi tiết: [`docs/m7.5-verification-issues.md`](docs/m7.5-verification-issues.md) Resolution Stamps.
+> **2026-05-14 hotfix executed** (worktree `worktree-m7.5-hotfix`): 4/5 P1 RESOLVED, 1/5 DEFERRED → M8. Real prod root causes khác runbook ban đầu — runbook đã được sửa. Chi tiết archived internally.
 
 - [x] **M7.5-P1-A:** Fix embedder URL — actual root cause: wrong port `:9999` (closed) trên remote `embed.viindoo.com`, không phải Ollama localhost TLS. Drop port → use 443. Conf line 19 edited + MCP restart. Verified: `curl https://embed.viindoo.com/api/embed` → 401 (auth required = OK). **Runbook §4.2.**
 - [x] **M7.5-P1-B:** Run `index-core --source ~/git/odoo_17.0 --version 17.0` — 501 CoreSymbol + 12 CLICommand + 80 CLIFlag + 17 LintRule populated. `name_get` indexed (status=stable per P2 quirk). **Runbook §5 Tier 1.**
@@ -390,7 +375,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [ ] **Re-register local v9-v16/v19 via webui (decide):** Currently local `~/git/odoo_<V>.0` directories exist but no Postgres profile/repo records. Either retire local clones in favor of webui-registered + auto-cloned repos (consistent topology), or keep local as mirror. **Recommendation:** re-register via webui to retire ad-hoc local layout.
 
 **P2 polish queue (đã ship code-side; production hoặc downstream pending):**
-- [x] **M7.5-P2-AR:** 5 persona TRIGGER tuning fixes shipped 2026-05-14 — `dist/odoo-semantic-plugin/skills/{odoo-feature-check,odoo-gap-analysis,odoo-feature-highlights,odoo-addon-diff,odoo-capability-proof}/SKILL.md` mở rộng description với failing-query phrases. Disambiguation regression 31/31 PASS. *Note: full live LLM re-measurement defer M8.*
+- [x] **M7.5-P2-AR:** 5 persona TRIGGER tuning fixes shipped 2026-05-14 — plugin skill TRIGGER descriptions expanded with failing-query phrases (plugin now at [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client)). Disambiguation regression 31/31 PASS. *Note: full live LLM re-measurement defer M8.*
 - [x] **M7.5-P2-LINT:** Added pylint-odoo rule **W8201** (translation-format-interpolation, "String formatting used in UserError/ValidationError — use lazy %s args or named placeholders") to `src/indexer/spec_data/lint_rules_{16.0,17.0,18.0}.json`. 11 new tests in `tests/test_parser_lint_rules.py`. Admin cần re-run `index-core` để load vào production catalogue.
 - [x] **M7.5-P2-DOCS:** Added "Ollama Setup (cho recall benchmark)" section in `CONTRIBUTING.md` (line 221) — qwen3-embedding-q5km pull + verify steps + cross-link to `docs/deploy/embedder-setup.md`.
 
@@ -417,9 +402,7 @@ nginx (port 443, prod)
 Session flow: `/admin/*` → Astro middleware → `GET /api/auth/verify` (FastAPI) → 401 → redirect `/admin/login`.
 
 **Plans liên quan:**
-- [`docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md`](docs/superpowers/plans/2026-05-12-milestone-8-astro-unified.md) — Master plan revised (4 streams, ~7-10 working days).
-- ~~[`docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md`](docs/superpowers/plans/2026-05-11-milestone-8-public-wow.md)~~ — Superseded (kiến trúc cũ: landing-only Astro, Jinja2 admin còn lại).
-- ~~[`docs/superpowers/plans/2026-05-11-webui-admin-prefix.md`](docs/superpowers/plans/2026-05-11-webui-admin-prefix.md)~~ — Superseded (FastAPI root_path refactor không cần nữa; admin prefix thuộc Astro routing).
+Plans archived internally.
 
 **Decisions locked:**
 - 2026-05-11: Astro + React Flow + baked JSON snapshot (`scripts/dump_graph_snippet.py`).
@@ -521,7 +504,7 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 - [x] CLI delete-profile / delete-repo subcommands trong `src/manager/__main__.py` (automation parity). Also: `delete-webui-user`, `list-webui-users`, `create-webui-user --admin`.
 - [x] DB migrate trigger UI (read-only display current migration version). `/admin/operations` migrations section (yoyo `_yoyo_migrations` table).
 
-**Plan file:** [`docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md`](docs/superpowers/plans/2026-05-12-milestone-9-auth-wow.md)
+*(Plan file archived internally.)*
 
 ### Stream H — Web UI Parity for Repo & Profile Management (M9 follow-up, PR #116)
 
@@ -698,7 +681,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [ ] **MCP tool surface for Stylesheet** — HIGH
   - Source: `streamed-cuddling-phoenix.md` § "Out of scope" item 1 (WI-A7 absorption).
   - Scope: 2 new MCP tools — `resolve_stylesheet(module, odoo_version)` returns stylesheet chain + variable list; `find_style_override(selector_or_variable, odoo_version)` traces which module last re-declares a CSS custom property / overrides a selector.
-  - Acceptance: tools registered in `src/mcp/server.py`; output follows ADR-0023 tree-grammar contract; routing matrix `docs/reference/mcp-tool-routing.md` lists both tools with TRIGGER phrases EN+VI; per-tool integration test against fixture profile.
+  - Acceptance: tools registered in `src/mcp/server.py`; output follows ADR-0023 tree-grammar contract; routing matrix in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) lists both tools with TRIGGER phrases EN+VI; per-tool integration test against fixture profile.
   - Dependency: WI-A1 (`:Stylesheet` node landed via ADR-0025) + B8 reindex must populate stylesheet nodes for production profiles before tool ships.
   - Cross-ref: ADR-0025 §Future Work item 1 forward-refs back to this entry.
 
@@ -708,7 +691,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
     - [ ] **`from_module` param** for `resolve_model` + `resolve_field` — restrict inheritance chain / field declarations to those originating from a specific module.
     - [ ] **`noqa` support in `lint_check`** — `# noqa: <rule_id>` inline comment suppresses the matching rule for that line.
     - [ ] **CLI batch audit** — `python -m src.indexer audit-repo --profile <name> --output audit.json` emits a JSON file with per-module coverage stats.
-  - Acceptance: each sub-task has its own unit test + snapshot test; output schemas documented in `docs/reference/mcp-tool-routing.md` for the 3 MCP-facing changes.
+  - Acceptance: each sub-task has its own unit test + snapshot test; output schemas documented in the [routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) for the 3 MCP-facing changes.
 
 - [ ] **§6 tools 15-21 prod smoke** — verify 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) end-to-end against prod MCP endpoint via Claude Code or another MCP client. All 7 are code-complete + unit-tested. Cross-ref: pre-launch-checklist.md Known follow-ups #15.
 
@@ -750,7 +733,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 - [ ] **v8 era1 CLI parser runtime extraction** — LOW priority. `parser_cli.py` writes 0 CLIFlag runtime for v8 (era1 `openerp-server` CLI structure). Static curation `spec_data/cli_flags_8.0.json` already covers (72 flags). Only matters when indexing a live v8 source tree (rare). Extend `parser_cli.py` with `openerp/` path branch for v8/v9.
 
-- [ ] **T3.4b VN translation persona docs** — Translate 5 EN-canonical persona guides (`docs/personas/{ceo,dev,consultant,marketer,sales}.md`) to Vietnamese. Format: `docs/personas/<role>.vi.md` companion files (preserves EN canonical per ADR-0023 English-only output policy for tool output). Carried from M7.5 design decision.
+- [ ] **T3.4b VN translation persona docs** — Translate 5 EN-canonical persona guides to Vietnamese. Guides now live in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) at `docs/personas/<role>.md`; add `docs/personas/<role>.vi.md` companion files there. Carried from M7.5 design decision.
 
 - [ ] **OWLComp pre-v14 anachronism guard + cleanup** — 239 `__unresolved__` OWLComp nodes at v8-v13 from JSPatch era3 detection. Fix: symmetric v14 guard in `_extract_era3_patches` (parser_js) OR writer-side PATCHES placeholder. Plus Cypher cleanup of current 239 anachronisms. Cross-ref: pre-launch-checklist.md Known follow-ups #12.
 
@@ -784,7 +767,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 - [ ] **`validate_relation(model, field, target_model, odoo_version)`** — assert that `model.field` is a Many2one/One2many/Many2many pointing at `target_model` (or any of its ancestors via INHERITS). Returns `ok` or `{actual_comodel, expected_comodel, suggestion}`.
 
-Acceptance: each tool follows ADR-0023 tree-grammar contract (§1 header + §4 Next-step hint mapping); routing matrix `docs/reference/mcp-tool-routing.md` lists all 4 tools with TRIGGER phrases EN+VI; integration tests against `viindoo_17` fixture profile; snapshot tests for tree-text output.
+Acceptance: each tool follows ADR-0023 tree-grammar contract (§1 header + §4 Next-step hint mapping); routing matrix in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) lists all 4 tools with TRIGGER phrases EN+VI; integration tests against `viindoo_17` fixture profile; snapshot tests for tree-text output.
 
 Dependency note: v8/v9 era1 may have partial comodel_name coverage (best-effort text-regex parse).
 
@@ -841,7 +824,7 @@ ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; sect
 
 ### Stream A — v0.6 Shim Removal (mechanical, ship first)
 
-ADR-0028 §Timeline promises "one major release between deprecation banner and removal". v0.5.x shipped the `DEPRECATED:` banners; v0.6 retires the wrappers. Persona skills under `dist/odoo-semantic-plugin/skills/` already migrated to supersets in PR #133 commit `4ba1432` (verified: 0 legacy refs, 15/15 use supersets + `set_active_version`) — no skill changes required.
+ADR-0028 §Timeline promises "one major release between deprecation banner and removal". v0.5.x shipped the `DEPRECATED:` banners; v0.6 retires the wrappers. Persona skills in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) already migrated to supersets in PR #133 commit `4ba1432` (verified: 0 legacy refs, 15/15 use supersets + `set_active_version`) — no skill changes required.
 
 - [ ] **WI-A1 — Delete the 10 `@mcp.tool()` shim wrappers** in `src/mcp/server.py`:
   - `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`
@@ -851,11 +834,11 @@ ADR-0028 §Timeline promises "one major release between deprecation banner and r
 - [ ] **WI-A2 — Delete `tests/test_mcp_deprecation_shims.py`** (shim-banner equivalence tests no longer applicable).
 - [ ] **WI-A3 — Update tool count from 28 → 18 across docs + UI:**
   - [ ] `README.md` (every "28 tools" / "28 MCP tools" reference → 18)
-  - [ ] [`docs/reference/mcp-tool-routing.md`](docs/reference/mcp-tool-routing.md) (28-tool matrix → 18-tool)
-  - [ ] [`docs/personas/dev.md`](docs/personas/dev.md) ("28-tool arsenal" phrasing → 18-tool)
+  - [ ] [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) (28-tool matrix → 18-tool) — update in Viindoo/odoo-mcp-client repo
+  - [ ] [docs/personas/dev.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) ("28-tool arsenal" phrasing → 18-tool) — update in Viindoo/odoo-mcp-client repo
   - [ ] [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) (`server.py + 28 tools` → `+ 18 tools`)
-  - [ ] [`docs/client-setup.md`](docs/client-setup.md) — remove "Tool Surface Change — v0.4 → v0.5" section (legacy no longer callable); keep "Session Context" + "MCP Resources" sections (still applicable).
-  - [ ] [`dist/cursor-rules.md`](dist/cursor-rules.md), [`dist/gemini-gem-instructions.md`](dist/gemini-gem-instructions.md), [`dist/openai-gpt-instructions.md`](dist/openai-gpt-instructions.md) — drop DEPRECATED legacy tool blocks.
+  - [ ] [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) — remove "Tool Surface Change — v0.4 → v0.5" section (legacy no longer callable); keep "Session Context" + "MCP Resources" sections (still applicable). Update in Viindoo/odoo-mcp-client repo.
+  - [ ] Cursor, Gemini, OpenAI adapter files in Viindoo/odoo-mcp-client — drop DEPRECATED legacy tool blocks.
   - [ ] `site/src/pages/index.astro` — TOOLS array: remove legacy entries; "28" → "18".
   - [ ] `site/src/components/Hero.astro` — tag pill + stats "28" → "18".
 - [ ] **WI-A4 — Version bump:** `pyproject.toml` `0.5.0 → 0.6.0`; CHANGELOG.md entry for v0.6 documenting shim removal + the Stream B fixes shipping alongside.
@@ -880,7 +863,7 @@ Three observations surfaced during the M11 security review of PR #133. All three
 - [ ] **WI-B3 — Profile-as-convenience-not-authz documentation amendment** — LOW (decision-only)
   - Symptom: per `src/db/migrate.py:139-147` (`api_keys` schema), any authenticated key can query any profile via the `profile_name` parameter. Resource handlers in `src/mcp/resources.py` deliberately omit `profile_name` from underlying `_resolve_*` calls. v0.5's introduction of `set_active_profile` could mislead users into expecting authz.
   - Decision required, pick one of:
-    - **(a) Status quo + documentation (recommended, lowest-effort):** Amend [ADR-0029](docs/adr/0029-implicit-session-context.md) + [`docs/client-setup.md`](docs/client-setup.md) with explicit note that `set_active_profile` is convenience for default-arg-injection, NOT an access control mechanism. Profile boundary remains data segmentation only.
+    - **(a) Status quo + documentation (recommended, lowest-effort):** Amend [ADR-0029](docs/adr/0029-implicit-session-context.md) + [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) with explicit note that `set_active_profile` is convenience for default-arg-injection, NOT an access control mechanism. Profile boundary remains data segmentation only.
     - **(b) True profile authz (higher-effort):** Add `allowed_profile_ids JSONB` column to `api_keys`; filter all Cypher queries in resources + tools by this list. Open a separate RFC / ADR before implementing — needs customer demand signal first (i.e. customer-A's index hidden from customer-B).
   - Acceptance: written decision committed — either ADR-0029 amendment (path a) OR new RFC ticket linking to a draft ADR-0031 (path b).
   - Note: by design today, NOT a security finding per se; flagged because v0.5 surface could mislead.
@@ -916,6 +899,6 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 |---|------|----------|
 | ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
-| ↓ | [`docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md`](docs/superpowers/plans/2026-05-05-milestone-1-first-wow.md) | Implementation plan chi tiết Milestone 1 — bắt đầu ở đây |
+| ↓ | Implementation plans (archived internally) | Per-milestone implementation plans |
 | → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 21 MCP tool verify |
 | → | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook — backup frequency, restore order, RTO |

@@ -123,7 +123,7 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 | 27 | `list_available_versions` | `list_available_versions()` | Lists all indexed Odoo versions for the current profile; marks current active version | `[ ]` (M11 Wave E — ADR-0029) |
 | 28 | `list_available_profiles` | `list_available_profiles()` | Lists all profiles accessible to this API key; marks current active profile | `[ ]` (M11 Wave E — ADR-0029) |
 
-**Sign-off summary 2026-05-14 (hotfix applied + client-side cross-check):** 13/14 M1–M5 tools PASS + 1 PARTIAL (#12 `suggest_pattern` operational gap: PatternExample not seeded on prod; #8 `api_version_diff` Tier 2 v16 backlog). Tools 15-21 (M9 W-OSM Wave 1) + tools 22-28 (M11 Wave D+E) pending prod smoke. Tool #5 + #12 client-side smoke completed (2-of-2 Opus + Sonnet — 3 sources agree with curl run). P1-D HSTS verified. All P1 root causes resolved except P1-E (deferred to M8 per Branch B). Full reports: [`docs/m7.5-verification-issues.md`](../m7.5-verification-issues.md) Resolution Stamps + [`docs/m7.5-batch1-mcp-signoff.md`](../m7.5-batch1-mcp-signoff.md) + [`docs/m7.5-mcp-verification.md`](../m7.5-mcp-verification.md) + [`docs/m7.5-post-fix-verification.md`](../m7.5-post-fix-verification.md).
+**Sign-off summary 2026-05-14 (hotfix applied + client-side cross-check):** 13/14 M1–M5 tools PASS + 1 PARTIAL (#12 `suggest_pattern` operational gap: PatternExample not seeded on prod; #8 `api_version_diff` Tier 2 v16 backlog). Tools 15-21 (M9 W-OSM Wave 1) + tools 22-28 (M11 Wave D+E) pending prod smoke. Tool #5 + #12 client-side smoke completed (2-of-2 Opus + Sonnet — 3 sources agree with curl run). P1-D HSTS verified. All P1 root causes resolved except P1-E (deferred to M8 per Branch B). (Detailed verification reports archived internally.)
 
 > *Tools 7–11 cần `index-core` đã chạy. Tool 12–14 cần `seed_patterns` đã chạy. Tool 5 cần Ollama + re-index không `--no-embed`.*
 
@@ -145,9 +145,9 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 | `odoo-capability-proof` | Sales | `find_examples`, `check_module_exists`, `resolve_model` | `[x]` 2026-05-14 — pilot 12/13 hits (1 P2 TRIGGER gap) |
 | `odoo-objection-handler` | Sales | `check_module_exists`, `find_examples`, `suggest_pattern` | `[x]` 2026-05-14 — pilot 12/12 hits, file exists |
 
-**Persona sign-off summary 2026-05-14:** 11/11 PASS. Overall pilot hit-rate 96% (120/125), all 5 personas ≥92%. Method: static dispatch proxy (full live LLM measurement deferred M8). Report: `docs/m7.5-pilot-results.md`. Golden set: `tests/eval/auto_route_125.yaml`.
+**Persona sign-off summary 2026-05-14:** 11/11 PASS. Overall pilot hit-rate 96% (120/125), all 5 personas ≥92%. Method: static dispatch proxy (full live LLM measurement deferred M8). Golden set: `tests/eval/auto_route_125.yaml`.
 
-> *Persona skill verification: confirm `dist/gemini-gem-instructions.md`, `dist/openai-gpt-instructions.md`, `dist/cursor-rules.md`, and `docs/personas/*.md` are present in the deployed repo. Spot-check one skill per persona using the sample questions in `docs/personas/`.*
+> *Persona skill verification: confirm adapter files and persona guides are present in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client). Spot-check one skill per persona using the sample questions in the persona guides.*
 
 ---
 

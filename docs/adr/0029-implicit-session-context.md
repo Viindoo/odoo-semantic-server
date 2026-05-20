@@ -23,7 +23,7 @@ Measurement of real session transcripts showed that in a typical 30-call session
 
 3. **Cold-start friction.** A new AI client session must discover what versions are indexed before it can issue its first meaningful query. Without `list_available_versions`, the client either hard-codes a version or uses `"auto"`, risking a mismatch against the actual indexed corpus.
 
-Research across 12 production MCP servers (see `docs/research/mcp-design-patterns-research.md` §Pattern 6) shows three prior art implementations:
+Research across 12 production MCP servers (internal design notes, Pattern 6) shows three prior art implementations:
 
 - **Cloudflare MCP** (`set_active_account`): account ID is stored in a Durable Object and retrieved by `getActiveAccountId()` inside every tool handler. Account-scoped tokens auto-set it from the API key; user tokens require an explicit `set_active_account` call.
 - **Azure MCP** (`SubscriptionCommand<T>`): resolves in three tiers — CLI flag → `AZURE_SUBSCRIPTION_ID` env var → reject. Sentinel strings `"subscription"` and `"default"` (common LLM placeholder hallucinations) are treated as empty so the env fallback fires.
@@ -198,7 +198,7 @@ A Redis layer would provide cross-worker cache coherence and sub-millisecond rea
 
 ## References
 
-- `docs/research/mcp-design-patterns-research.md` §Pattern 6 — Implicit context via `set_active_*` tools and env-var fallback (Cloudflare, Azure, Sequential Thinking prior art).
+- Internal design notes §Pattern 6 — Implicit context via `set_active_*` tools and env-var fallback (Cloudflare, Azure, Sequential Thinking prior art).
 - `/home/tuan/.claude/plans/rippling-greeting-tulip.md` §5 Wave E — per-WI spec; Appendix B item #9 (rate-limit + usage-log granularity = per-API-key).
 - `migrations/0005_api_key_session_state.sql` — DDL for `api_key_session_state` table.
 - `src/mcp/session.py` — Wave E WI-E2 implementation: `get_session_state`, `set_active_version_db`, `set_active_profile_db`, `normalize_version_arg`, `resolve_version_v2`, `resolve_profile_v2`, 60s in-memory cache.
