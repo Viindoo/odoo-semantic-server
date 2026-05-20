@@ -324,7 +324,7 @@ docker compose exec neo4j neo4j-admin database load neo4j --from-path=/data/back
 ### 3.1 Cài đặt
 
 ```bash
-sudo git clone https://github.com/Viindoo/odoo-semantic-mcp /opt/odoo-semantic-mcp
+sudo git clone https://github.com/Viindoo/odoo-semantic-server /opt/odoo-semantic-mcp
 sudo chown -R odoo-semantic:odoo-semantic /opt/odoo-semantic-mcp
 
 # make install chạy bằng user odoo-semantic — tạo venv tại

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Viindoo/odoo-semantic-mcp/src/data/patterns.schema.json",
+  "$id": "https://github.com/Viindoo/odoo-semantic-server/src/data/patterns.schema.json",
   "$comment": "JSON Schema for src/data/patterns.json. gotchas minItems=3 is enforced at this level because all 54 existing entries already have ≥3 gotchas (verified 2026-05-10). Community PRs must provide at least 3 gotchas per ADR-0009 rule 5.",
   "type": "array",
   "minItems": 1,

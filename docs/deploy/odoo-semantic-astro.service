@@ -29,7 +29,7 @@
 
 [Unit]
 Description=Odoo Semantic MCP — Astro frontend server (landing + admin SSR :4321)
-Documentation=https://github.com/Viindoo/odoo-semantic-mcp
+Documentation=https://github.com/Viindoo/odoo-semantic-server
 After=network-online.target odoo-semantic-webui.service
 Wants=network-online.target odoo-semantic-webui.service
 # Stop runaway crash-loop after 5 failures in 60s window.

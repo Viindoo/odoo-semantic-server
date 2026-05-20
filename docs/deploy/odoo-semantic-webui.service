@@ -12,7 +12,7 @@
 
 [Unit]
 Description=Odoo Semantic MCP — FastAPI Web UI admin (LAN-only :8003)
-Documentation=https://github.com/Viindoo/odoo-semantic-mcp
+Documentation=https://github.com/Viindoo/odoo-semantic-server
 After=network-online.target docker.service odoo-semantic-mcp.service
 Wants=network-online.target
 # DB tier lives in docker containers; hard dep matches mcp.service.

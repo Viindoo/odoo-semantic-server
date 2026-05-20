@@ -10,7 +10,7 @@ files in `docs/deploy/*.service` directly.
 The shipped unit files evolve with each release — new directives
 (e.g. `OnFailure=`, `ReadWritePaths=`, `TMPDIR=`), tightened security
 hardening, or fixes to bugs like the
-[issue #144 `ProtectHome=true`](https://github.com/Viindoo/odoo-semantic-mcp/issues/144)
+[issue #144 `ProtectHome=true`](https://github.com/Viindoo/odoo-semantic-server/issues/144)
 regression. If you edit the unit body in place to fit your local
 paths, the next routine upstream upgrade either:
 
