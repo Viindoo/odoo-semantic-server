@@ -3650,10 +3650,10 @@ def find_override_point(
     override point for partner creation", "how to extend method X without
     breaking OCA", "override field X ở đâu là đúng", "điểm override phù hợp
     cho method Y", "is super() required for write override"
-    PREFER over: model_inspect(method='method') — gives recommended injection
-    points with super() safety guidance and anti-patterns, not just chain listing
-    SKIP when: user wants full override chain only → use model_inspect(method='method');
-    user wants design pattern guidance → use suggest_pattern
+    PREFER over: model_inspect(method='method') — adds super() safety guidance
+    and anti-patterns, not just the chain listing
+    SKIP when: full override chain only → model_inspect(method='method');
+    design pattern guidance → suggest_pattern
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
