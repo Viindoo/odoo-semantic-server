@@ -4559,37 +4559,31 @@ def model_inspect(
     start_index: int = 0,
     limit: int = 200,
     from_module: str | None = None,
+    kind: str | None = None,
+    view_type: str | None = None,
 ) -> ToolResult:
     """Method-discriminator superset for model-scoped reads. See ADR-0028.
 
-    TRIGGER when: you need to inspect one model from multiple angles in
-    succession — summary then fields then methods — to reduce round trips
-    vs multiple separate model_inspect calls.
+    TRIGGER when: inspecting one model from multiple angles (summary, fields,
+    methods, views) — fewer round trips than separate calls.
     Also: "kiểm tra một model nhiều mặt", "xem mọi thông tin của model X"
-    PREFER over: chaining multiple separate model_inspect calls when
-    you already know which sub-view you want; one call with method= is
-    friendlier for LLM context windows.
-    SKIP when: you need cross-model entity dispatch by kind — use entity_lookup.
+    PREFER over: separate per-view calls when you know the sub-view; one call
+    with method= is friendlier for LLM context windows.
+    SKIP when: cross-model entity dispatch by kind — use entity_lookup.
 
     Args:
-        model: Dotted model name, e.g. 'sale.order', 'res.partner'.
+        model: Dotted model name, e.g. 'sale.order'.
         method: One of summary | fields | methods | views | field | method.
             'field' requires field=. 'method' requires method_name=.
-        odoo_version: e.g. '17.0', '18.0'. 'auto' = latest indexed.
+        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
-        field: Required when method='field'. Field technical name.
-        method_name: Required when method='method'. Method name.
+        field: Required when method='field'.
+        method_name: Required when method='method'.
         start_index: Pagination cursor for fields/methods/views (zero-based).
-        limit: Max rows per page for fields/methods/views (default 200).
-        from_module: Optional module filter — restrict results to rows declared
-            in this module only (summary and field sub-views).
-
-    Returns:
-        Tree text identical to the underlying tool's output.
-
-    Example:
-        model_inspect("sale.order", "fields", "17.0")
-        → same as model_inspect(model="sale.order", method="fields", odoo_version="17.0")
+        limit: Max rows per page (default 200).
+        from_module: Restrict to rows declared in this module (summary/fields/field).
+        kind: Filter fields by ttype, e.g. 'many2one' — method='fields' only.
+        view_type: Filter views by type, e.g. 'form' — method='views' only.
     """
     text = _model_inspect(
         model=model,
@@ -4602,6 +4596,8 @@ def model_inspect(
         start_index=start_index,
         limit=limit,
         from_module=from_module,
+        kind=kind,
+        view_type=view_type,
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
@@ -4614,6 +4610,10 @@ def module_inspect(
     profile_name: str | None = None,
     start_index: int = 0,
     limit: int = 200,
+    view_type: str | None = None,
+    bound_model: str | None = None,
+    era: str | None = None,
+    target: str | None = None,
 ) -> ToolResult:
     """Method-discriminator superset for module-scoped reads. See ADR-0028.
 
@@ -4633,13 +4633,10 @@ def module_inspect(
         profile_name: Optional profile filter.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
-
-    Returns:
-        Tree text identical to the underlying tool's output.
-
-    Example:
-        module_inspect("sale_management", "owl", "17.0")
-        → same as module_inspect(name="sale_management", method="owl", odoo_version="17.0")
+        view_type: Filter views by type, e.g. 'form'/'tree' — method='views' only.
+        bound_model: Filter OWL components bound to a model — method='owl' only.
+        era: era1|era2|era3 — filter JS patches by era — method='js' only.
+        target: filter JS patches by patched target — method='js' only.
     """
     text = _module_inspect(
         name=name,
@@ -4649,6 +4646,10 @@ def module_inspect(
         api_key_id=_get_api_key_id(),
         start_index=start_index,
         limit=limit,
+        view_type=view_type,
+        bound_model=bound_model,
+        era=era,
+        target=target,
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 

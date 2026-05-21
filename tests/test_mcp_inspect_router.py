@@ -365,3 +365,62 @@ def test_model_inspect_missing_method_name_arg():
     result = _model_inspect("sale.order", method="method")
     assert result.startswith("Error:")
     assert "method_name" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Filter-parity forwarding tests (v0.7.1)
+# ---------------------------------------------------------------------------
+
+
+def test_model_inspect_fields_forwards_kind():
+    """model_inspect(method='fields', kind='many2one') forwards kind= to _list_fields."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _model_inspect("sale.order", method="fields", kind="many2one")
+    assert result == _STUB_RETURN
+    srv_mock._list_fields.assert_called_once()
+    assert srv_mock._list_fields.call_args.kwargs.get("kind") == "many2one"
+
+
+def test_model_inspect_views_forwards_view_type():
+    """model_inspect(method='views', view_type='form') forwards view_type= to _list_views."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _model_inspect("sale.order", method="views", view_type="form")
+    assert result == _STUB_RETURN
+    srv_mock._list_views.assert_called_once()
+    assert srv_mock._list_views.call_args.kwargs.get("view_type") == "form"
+
+
+def test_module_inspect_views_forwards_view_type():
+    """module_inspect views+view_type forwards view_type= to _list_views_by_module."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _module_inspect("sale", method="views", view_type="tree")
+    assert result == _STUB_RETURN
+    srv_mock._list_views_by_module.assert_called_once()
+    assert srv_mock._list_views_by_module.call_args.kwargs.get("view_type") == "tree"
+
+
+def test_module_inspect_owl_forwards_bound_model():
+    """module_inspect owl+bound_model forwards bound_model= to _list_owl_components."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _module_inspect("sale", method="owl", bound_model="sale.order")
+    assert result == _STUB_RETURN
+    srv_mock._list_owl_components.assert_called_once()
+    assert srv_mock._list_owl_components.call_args.kwargs.get("bound_model") == "sale.order"
+
+
+def test_module_inspect_js_forwards_era():
+    """module_inspect(method='js', era='era3') forwards era= to _list_js_patches."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _module_inspect("sale", method="js", era="era3")
+    assert result == _STUB_RETURN
+    srv_mock._list_js_patches.assert_called_once()
+    assert srv_mock._list_js_patches.call_args.kwargs.get("era") == "era3"
+
+
+def test_module_inspect_js_forwards_target():
+    """module_inspect(method='js', target='ListController') forwards target= to _list_js_patches."""
+    with _patch_server(_make_srv_mock()) as srv_mock:
+        result = _module_inspect("sale", method="js", target="ListController")
+    assert result == _STUB_RETURN
+    srv_mock._list_js_patches.assert_called_once()
+    assert srv_mock._list_js_patches.call_args.kwargs.get("target") == "ListController"

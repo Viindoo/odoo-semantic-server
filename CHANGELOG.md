@@ -2,6 +2,14 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.7.1] — 2026-05-21
+
+### Fixed
+
+- **Superset filter parity:** `model_inspect` now forwards `kind` (method='fields') and `view_type` (method='views') to the underlying enumeration impls; `module_inspect` now forwards `view_type` (method='views'), `bound_model` (method='owl'), and `era` + `target` (method='js'). Completes the filter-forwarding started by `from_module` in 0.7.0 — the supersets now expose every filter the removed flat tools had (ADR-0028).
+
+---
+
 ## [0.7.0] — 2026-05-21 — M10A + M10.5-P1: stylesheet tools, magic fields, from_module, noqa, comodel_name
 
 ### Added

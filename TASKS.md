@@ -689,6 +689,12 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
     - [ ] **CLI batch audit** — `python -m src.indexer audit-repo --profile <name> --output audit.json` emits a JSON file with per-module coverage stats.
   - Acceptance: each sub-task has its own unit test + snapshot test; output schemas documented in the [routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) for the 3 MCP-facing changes.
 
+- [x] **Superset filter parity** — HIGH (2026-05-21, PR #157)
+  - Source: drift surfaced during the odoo-mcp-client v0.7 migration — the discriminator supersets (ADR-0028) forwarded pagination (`start_index`/`limit`) and `from_module` (v0.7.0) but silently dropped the per-method *filter* params their impl functions accept. Confirmed an incremental oversight, not intentional (ADR-0028 silent on exclusion; impl funcs `_list_*` already support all four).
+  - Scope: `model_inspect` forwards `kind` (field ttype — method='fields') + `view_type` (method='views'); `module_inspect` forwards `view_type` (method='views') + `bound_model` (method='owl') + `era` + `target` (method='js') to `_list_fields` / `_list_views` / `_list_views_by_module` / `_list_owl_components` / `_list_js_patches`. No new tools (still 20) — optional kwargs only.
+  - Acceptance: 5 forwarding unit tests in `tests/test_mcp_inspect_router.py`; `model_inspect` docstring trimmed under the 1500-char tool-description budget (ADR-0023); ADR-0028 Timeline records full filter parity. Bumps v0.7.1.
+  - Cross-ref (cross-repo): routing matrix + Cursor/Gemini/OpenAI snippets document all 5 filters at [Viindoo/odoo-mcp-client#10](https://github.com/Viindoo/odoo-mcp-client/pull/10).
+
 - [ ] **§6 tools 15-21 prod smoke** — verify 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) end-to-end against prod MCP endpoint via Claude Code or another MCP client. All 7 are code-complete + unit-tested. Cross-ref: pre-launch-checklist.md Known follow-ups #15.
 
 ### M10B — Billing Wow Core

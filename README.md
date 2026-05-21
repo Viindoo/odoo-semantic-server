@@ -175,7 +175,7 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.7.0 (2026-05-21) — M10A + M10.5-P1: 2 stylesheet tools added, magic-fields prelude, from_module param, noqa in lint_check, Field.comodel_name graph property; 20 tools, 7 MCP Resources. See CHANGELOG.md.
+**Latest release:** v0.7.1 (2026-05-21) — superset filter parity: `model_inspect`/`module_inspect` now forward `kind`/`view_type`/`era`/`bound_model` to the underlying enumerations (completes `from_module` from v0.7.0). v0.7.0 shipped M10A + M10.5-P1: 2 stylesheet tools, magic-fields prelude, `from_module` param, `noqa` in lint_check, Field.comodel_name graph property; 20 tools, 7 MCP Resources. See CHANGELOG.md.
 
 **Production deploy:** 2026-05-17 — PR #119 go-live batch deployed (writer profile stub fix eliminating 5,988 NULL nodes, MFA flag sync, backup CLI docker-exec fallback + nightly systemd timer, `/api/health` auth-exempt endpoint, ADR-0016 D7 stub policy). PR #117 (migration 0004 self-contained SQL rescue) + PR #118 (CSP + Permissions-Policy headers) also live. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state.
 

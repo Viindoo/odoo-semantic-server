@@ -49,6 +49,8 @@ def _model_inspect(
     start_index: int = 0,
     limit: int = 200,
     from_module: str | None = None,
+    kind: str | None = None,
+    view_type: str | None = None,
 ) -> str:
     """Route to a model-scoped tool by discriminator.
 
@@ -78,8 +80,15 @@ def _model_inspect(
         Max rows per page for fields/methods/views (default 200).
     from_module:
         When set, filter results to rows declared in this module only.
-        Passed through to ``_resolve_model`` (method='summary') and
+        Passed through to ``_resolve_model`` (method='summary'),
+        ``_list_fields`` (method='fields', as ``module=``) and
         ``_resolve_field`` (method='field').  Default ``None``.
+    kind:
+        Filter fields by ``Field.ttype``, e.g. ``'many2one'``.
+        Only applied when ``method='fields'``.  Default ``None``.
+    view_type:
+        Filter views by type, e.g. ``'form'`` or ``'tree'``.
+        Only applied when ``method='views'``.  Default ``None``.
 
     Returns
     -------
@@ -101,6 +110,7 @@ def _model_inspect(
             model=model,
             odoo_version=odoo_version,
             module=from_module,
+            kind=kind,
             profile_name=profile_name,
             api_key_id=api_key_id,
             limit=limit,
@@ -121,6 +131,7 @@ def _model_inspect(
         return srv._list_views(
             model=model,
             odoo_version=odoo_version,
+            view_type=view_type,
             profile_name=profile_name,
             api_key_id=api_key_id,
             limit=limit,
@@ -159,6 +170,10 @@ def _module_inspect(
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
     start_index: int = 0,
     limit: int = 200,
+    view_type: str | None = None,
+    bound_model: str | None = None,
+    era: str | None = None,
+    target: str | None = None,
 ) -> str:
     """Route to a module-scoped tool by discriminator.
 
@@ -179,6 +194,18 @@ def _module_inspect(
         Pagination cursor for views/owl/qweb/js (zero-based SKIP).
     limit:
         Max rows per page for views/owl/qweb/js (default 200).
+    view_type:
+        Filter views by type, e.g. ``'form'`` or ``'tree'``.
+        Only applied when ``method='views'``.  Default ``None``.
+    bound_model:
+        Filter OWL components bound to this model.
+        Only applied when ``method='owl'``.  Default ``None``.
+    era:
+        Filter JS patches by era: ``'era1'``, ``'era2'``, or ``'era3'``.
+        Only applied when ``method='js'``.  Default ``None``.
+    target:
+        Filter JS patches by patched target (class/widget name).
+        Only applied when ``method='js'``.  Default ``None``.
 
     Returns
     -------
@@ -222,6 +249,7 @@ def _module_inspect(
         return srv._list_views_by_module(
             module=name,
             odoo_version=odoo_version,
+            view_type=view_type,
             profile_name=profile_name,
             api_key_id=api_key_id,
             limit=limit,
@@ -232,6 +260,7 @@ def _module_inspect(
         return srv._list_owl_components(
             module=name,
             odoo_version=odoo_version,
+            bound_model=bound_model,
             profile_name=profile_name,
             api_key_id=api_key_id,
             limit=limit,
@@ -252,6 +281,8 @@ def _module_inspect(
         return srv._list_js_patches(
             odoo_version=odoo_version,
             module=name,
+            era=era,
+            target=target,
             profile_name=profile_name,
             api_key_id=api_key_id,
             limit=limit,

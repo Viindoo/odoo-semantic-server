@@ -141,6 +141,8 @@ Shipping the superset tools and simultaneously removing the flat tools in the sa
 |---|---|
 | v0.5.x | New superset tools shipped; 10 old tools become shims with `DEPRECATED:` banner |
 | v0.6 | 10 deprecated shims removed (~1 major release later) |
+| v0.7.0 | `model_inspect` / `module_inspect` gained `from_module` forwarding (first filter-parity fix) |
+| v0.7.1 | Full filter parity achieved: `model_inspect` forwards `kind` (fields) + `view_type` (views); `module_inspect` forwards `view_type` (views), `bound_model` (owl), `era` + `target` (js). The supersets now expose every filter the removed flat tools had — no capability gap vs the deprecated `list_*` tools. |
 
 ---
 
