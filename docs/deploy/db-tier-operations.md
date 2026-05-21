@@ -9,9 +9,17 @@ which Docker silently auto-created as an empty directory the next time
 MCP service crash-looped 11k+ times in 26h, and no alert fired.
 
 The defaults that make this safer are now in the repo (directory-style
-bind-mount, `restart: on-failure:5`, systemd `StartLimitBurst`, `OnFailure=`
-alert hook, app-level degraded mode). This file documents the *operating*
-discipline that goes with them.
+bind-mount, project `name:` pin per ADR-0027, systemd `StartLimitBurst`,
+`OnFailure=` alert hook, app-level degraded mode). This file documents the
+*operating* discipline that goes with them.
+
+> **Restart policy note (2026-05-21):** postgres now uses
+> `restart: unless-stopped` (was `on-failure:5`). The directory-style mount +
+> `name:` pin removed the hard-fail mode that `on-failure:5` was capping,
+> while `on-failure:N` left the DB down after a clean host reboot (a clean
+> stop is not a failure → MCP 503 for ~27 min on 2026-05-21). `unless-stopped`
+> restores reboot-survival; degraded mode + `StartLimitBurst` + the alert hook
+> still bound any pathological restart loop.
 
 ## Golden rule
 
