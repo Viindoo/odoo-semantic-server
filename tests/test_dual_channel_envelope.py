@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Comprehensive contract tests for the dual-channel envelope on 7 priority tools
-(M10.5 WI-B4).
+"""Comprehensive contract tests for the dual-channel envelope on surviving tools (M12 v0.6).
+
+After v0.6 removed the 10 flat shims, only describe_module retains a full
+dual-channel (text + structured) @mcp.tool wrapper.  The remaining *Output DTOs
+are produced by internal structured-companion functions (_resolve_*_structured,
+_list_*_structured) which still exist and must still satisfy the DTO contract.
 
 Three sections:
 
-1. POSITIVE — parametrized, 1 test × 7 tools (7 cases total).
-   For each tool: call .fn(...) on the FastMCP-wrapped FunctionTool, assert that
-   - content[0].text is byte-identical to what the inner _impl returns
-   - structured_content validates cleanly against the declared *Output Pydantic type
-   - the validated DTO has a non-empty next_step_hint
+1. POSITIVE — parametrized, tests over describe_module (dual-channel) + structured
+   companions (DTO contract only, no wrapper).
 
 2. NEGATIVE — ≥3 tests that verify the contract bites when broken.
    - None structured_content triggers the validator helper to raise.
@@ -19,10 +20,16 @@ Three sections:
    that model_json_schema() includes next_step_hint in required and as string.
    Runs DB-free.
 
+4. OUTPUT SCHEMA WIRING — verify surviving dual-channel tool (describe_module)
+   advertises the correct DTO schema via output_schema= on @mcp.tool().
+
+5. NEXT STEP HINT CHANNEL PARITY — for describe_module (the one surviving
+   full dual-channel tool), verify text footer == structured next_step_hint.
+
 DB version: TEST_VERSION = "94.0" (distinct from 95.0/99.0/98.0/97.0/96.0
 used by other test modules).
 
-Runtime: ~10s (7 Neo4j round-trips for positive tests).
+Runtime: ~10s (Neo4j round-trips for positive tests).
 """
 
 import os
@@ -184,144 +191,134 @@ def _require_structured_content_is_dict(result) -> None:
 
 
 @pytest.mark.parametrize(
-    "tool_name, args, dto_class, spot_checks",
+    "companion_fn, args, dto_class, spot_checks",
     [
         pytest.param(
-            "resolve_model",
-            lambda: {"target": "b4.order", "odoo_version": TEST_VERSION},
+            "_resolve_model_structured",
+            lambda: ("b4.order", TEST_VERSION),
             ResolveModelOutput,
-            lambda sc: (
-                sc["ref"]["name"] == "b4.order"
-                and sc["ref"]["odoo_version"] == TEST_VERSION
-                and isinstance(sc["field_count"], int)
-                and isinstance(sc["method_count"], int)
+            lambda out: (
+                out.ref.name == "b4.order"
+                and out.ref.odoo_version == TEST_VERSION
+                and isinstance(out.field_count, int)
+                and isinstance(out.method_count, int)
             ),
-            id="resolve_model",
+            id="resolve_model_companion",
         ),
         pytest.param(
-            "resolve_field",
-            lambda: {"target": "b4.order.amount_total", "odoo_version": TEST_VERSION},
+            "_resolve_field_structured",
+            lambda: ("b4.order", "amount_total", TEST_VERSION),
             ResolveFieldOutput,
-            lambda sc: (
-                sc["ref"]["name"] == "amount_total"
-                and sc["ref"]["model"] == "b4.order"
-                and sc["ref"]["odoo_version"] == TEST_VERSION
-                and "ttype" in sc
+            lambda out: (
+                out.ref.name == "amount_total"
+                and out.ref.model == "b4.order"
+                and out.ref.odoo_version == TEST_VERSION
+                and bool(out.ttype)
             ),
-            id="resolve_field",
+            id="resolve_field_companion",
         ),
         pytest.param(
-            "resolve_method",
-            lambda: {"target": "b4.order.action_confirm", "odoo_version": TEST_VERSION},
+            "_resolve_method_structured",
+            lambda: ("b4.order", "action_confirm", TEST_VERSION),
             ResolveMethodOutput,
-            lambda sc: (
-                sc["ref"]["name"] == "action_confirm"
-                and sc["ref"]["model"] == "b4.order"
-                and sc["ref"]["odoo_version"] == TEST_VERSION
-                and isinstance(sc["override_chain"], list)
+            lambda out: (
+                out.ref.name == "action_confirm"
+                and out.ref.model == "b4.order"
+                and out.ref.odoo_version == TEST_VERSION
+                and isinstance(out.override_chain, list)
             ),
-            id="resolve_method",
+            id="resolve_method_companion",
         ),
         pytest.param(
-            "resolve_view",
-            lambda: {"target": "b4_sale.view_order_form", "odoo_version": TEST_VERSION},
+            "_resolve_view_structured",
+            lambda: ("b4_sale.view_order_form", TEST_VERSION),
             ResolveViewOutput,
-            lambda sc: (
-                sc["ref"]["xmlid"] == "b4_sale.view_order_form"
-                and sc["ref"]["odoo_version"] == TEST_VERSION
-                and "view_type" in sc
+            lambda out: (
+                out.ref.xmlid == "b4_sale.view_order_form"
+                and out.ref.odoo_version == TEST_VERSION
+                and bool(out.view_type)
             ),
-            id="resolve_view",
+            id="resolve_view_companion",
         ),
         pytest.param(
-            "describe_module",
+            "_describe_module_structured",
             lambda: ("b4_sale", TEST_VERSION),
             DescribeModuleOutput,
-            lambda sc: (
-                sc["ref"]["name"] == "b4_sale"
-                and sc["ref"]["odoo_version"] == TEST_VERSION
-                and "edition" in sc
-                and isinstance(sc["view_total"], int)
+            lambda out: (
+                out.ref.name == "b4_sale"
+                and out.ref.odoo_version == TEST_VERSION
+                and bool(out.edition)
+                and isinstance(out.view_total, int)
             ),
-            id="describe_module",
+            id="describe_module_companion",
         ),
         pytest.param(
-            "list_fields",
+            "_list_fields_structured",
             lambda: ("b4.order", TEST_VERSION),
             ListFieldsOutput,
-            lambda sc: (
-                sc["model"] == "b4.order"
-                and sc["odoo_version"] == TEST_VERSION
-                and isinstance(sc["total"], int)
-                and isinstance(sc["fields"], list)
+            lambda out: (
+                out.model == "b4.order"
+                and out.odoo_version == TEST_VERSION
+                and isinstance(out.total, int)
+                and isinstance(out.fields, list)
             ),
-            id="list_fields",
+            id="list_fields_companion",
         ),
         pytest.param(
-            "list_methods",
+            "_list_methods_structured",
             lambda: ("b4.order", TEST_VERSION),
             ListMethodsOutput,
-            lambda sc: (
-                sc["model"] == "b4.order"
-                and sc["odoo_version"] == TEST_VERSION
-                and isinstance(sc["total"], int)
-                and isinstance(sc["methods"], list)
+            lambda out: (
+                out.model == "b4.order"
+                and out.odoo_version == TEST_VERSION
+                and isinstance(out.total, int)
+                and isinstance(out.methods, list)
             ),
-            id="list_methods",
+            id="list_methods_companion",
         ),
     ],
 )
-def test_positive_envelope(b4_db, tool_name, args, dto_class, spot_checks):
-    """Each of 7 tools returns a valid dual-channel envelope with typed structured_content.
+def test_positive_structured_companion(b4_db, companion_fn, args, dto_class, spot_checks):
+    """Each structured-companion function returns a valid DTO with non-empty next_step_hint.
 
     Asserts:
-    (a) text channel: content[0].text is non-empty (byte-identical guard vs inner _impl
-        is checked indirectly — the wrapper's text block IS the _impl return value,
-        so structured_content presence proves the wrapper ran with the same data).
-    (b) structured_content is a dict.
-    (c) dict validates cleanly as the tool's declared *Output Pydantic type.
-    (d) validated DTO has a non-empty next_step_hint (ADR-0023 §4 contract).
-    (e) tool-specific spot-checks on raw structured_content keys/values.
+    (a) companion function returns a non-None result.
+    (b) result validates cleanly as the *Output Pydantic type.
+    (c) validated DTO has a non-empty next_step_hint (ADR-0023 §4 contract).
+    (d) tool-specific spot-checks on the validated DTO.
 
-    The args lambda may return either a tuple (positional) or a dict (keyword).
-    resolve_* tools use dict form after WI-C3 target= refactor.
+    The args lambda returns a tuple of positional args to the companion function.
     """
     import importlib
     server = importlib.import_module("src.mcp.server")
-    tool_fn = getattr(server, tool_name)
+    fn = getattr(server, companion_fn)
     raw_args = args()
-    if isinstance(raw_args, dict):
-        result = tool_fn.fn(**raw_args)
-    else:
-        result = tool_fn.fn(*raw_args)
-    _assert_envelope(result, dto_class)
-    assert spot_checks(result.structured_content), (
-        f"{tool_name}: spot-check failed on structured_content: {result.structured_content}"
+    result = fn(*raw_args)
+    assert result is not None, f"{companion_fn} returned None"
+    output = dto_class.model_validate(result.model_dump())
+    assert output.next_step_hint, (
+        f"{companion_fn}: next_step_hint must be non-empty, got {output.next_step_hint!r}"
+    )
+    assert spot_checks(output), (
+        f"{companion_fn}: spot-check failed on validated output: {output}"
     )
 
 
 def test_positive_text_channel_byte_identical_to_impl(b4_db):
-    """Wrapper text == DEPRECATED banner (W-D4) + inner _impl output.
+    """model_inspect(method='summary') text == _resolve_model() impl output (text channel parity).
 
-    Wave D4 added a deprecation banner prefix to legacy tools' text channel.
-    Structured channel is unchanged. After stripping the banner, the wrapper
-    output must still be byte-identical to the inner _impl output.
+    The superset wrapper routes to the same impl function. The text channel must
+    be byte-identical to what _resolve_model() returns directly.
     """
     import importlib
     server = importlib.import_module("src.mcp.server")
 
     inner_text = server._resolve_model("b4.order", TEST_VERSION)
-    result = server.resolve_model.fn(target="b4.order", odoo_version=TEST_VERSION)
+    result = server.model_inspect.fn(model="b4.order", method="summary", odoo_version=TEST_VERSION)
 
     wrapper_text = result.content[0].text
-    assert wrapper_text.startswith("DEPRECATED:"), (
-        "WI-D4 contract: legacy resolve_model wrapper must prefix text "
-        "with DEPRECATED banner"
-    )
-    body = wrapper_text.split("\n\n", 1)[1]
-    assert body == inner_text, (
-        "content[0].text after stripping DEPRECATED banner must be "
-        "byte-identical to _resolve_model() output"
+    assert wrapper_text == inner_text, (
+        "model_inspect(method='summary') text must be byte-identical to _resolve_model() output"
     )
 
 
@@ -400,7 +397,7 @@ def test_negative_wrong_type_on_required_field_raises_validation_error():
         "required": False,
         "related": None,
         "declared_in": [],
-        "next_step_hint": "└─ Next: resolve_model(...)",
+        "next_step_hint": "└─ Next: model_inspect(...)",
     }
     with pytest.raises(ValidationError) as exc_info:
         ResolveFieldOutput.model_validate(bad_dict)
@@ -506,13 +503,8 @@ def test_schema_integrity_next_step_hint(output_type):
 # ---------------------------------------------------------------------------
 
 _TOOL_DTO_PAIRS = [
-    ("resolve_model", ResolveModelOutput),
-    ("resolve_field", ResolveFieldOutput),
-    ("resolve_method", ResolveMethodOutput),
-    ("resolve_view", ResolveViewOutput),
+    # Only describe_module retains a full dual-channel @mcp.tool with output_schema= in v0.6.
     ("describe_module", DescribeModuleOutput),
-    ("list_fields", ListFieldsOutput),
-    ("list_methods", ListMethodsOutput),
 ]
 
 
@@ -522,7 +514,7 @@ _TOOL_DTO_PAIRS = [
     ids=[t for t, _ in _TOOL_DTO_PAIRS],
 )
 def test_tool_advertises_dto_outputschema(tool_name, dto):
-    """Each of the 7 priority tools must expose the correct DTO schema via output_schema.
+    """Surviving dual-channel tool must expose the correct DTO schema via output_schema.
 
     AC-BFIX-1: output_schema= is declared on the decorator — the auto-wrap shim
     ('x-fastmcp-wrap-result' with single 'result' field) must NOT appear.
@@ -564,19 +556,16 @@ def test_tool_advertises_dto_outputschema(tool_name, dto):
 # ---------------------------------------------------------------------------
 # Section 5 — NEXT STEP HINT CHANNEL PARITY (AC-BFIX-3/AC-BFIX-4)
 #
-# For each of the 7 priority tools, call the wrapper, extract the trailing
-# footer from content[0].text, and assert it equals structured_content's
-# next_step_hint.  This gates against future drift between the two channels.
+# v0.6: only describe_module retains a full dual-channel (text + structured)
+# @mcp.tool wrapper, so this section tests only that one tool.
+#
+# For the surviving tool, call the wrapper, extract the trailing footer from
+# content[0].text, and assert it equals structured_content's next_step_hint.
+# This gates against future drift between the two channels.
 # ---------------------------------------------------------------------------
 
 _HINT_PARITY_ARGS = [
-    ("resolve_model", lambda: {"target": "b4.order", "odoo_version": TEST_VERSION}),
-    ("resolve_field", lambda: {"target": "b4.order.amount_total", "odoo_version": TEST_VERSION}),
-    ("resolve_method", lambda: {"target": "b4.order.action_confirm", "odoo_version": TEST_VERSION}),
-    ("resolve_view", lambda: {"target": "b4_sale.view_order_form", "odoo_version": TEST_VERSION}),
     ("describe_module", lambda: ("b4_sale", TEST_VERSION)),
-    ("list_fields", lambda: ("b4.order", TEST_VERSION)),
-    ("list_methods", lambda: ("b4.order", TEST_VERSION)),
 ]
 
 
@@ -592,6 +581,9 @@ def test_next_step_hint_matches_text_footer(b4_db, tool_name, args_fn):
     '└─ Next: ...' footer) and compare against structured_content['next_step_hint'].
     Any kwarg-name drift or model-qualifier loss in the structured path will
     cause this test to fail.
+
+    v0.6: only describe_module (the one surviving dual-channel tool) is tested
+    here. The 6 removed tools had their dual-channel wrapper deleted in v0.6.
 
     Relies on the b4_db fixture which seeds b4.order with 2 fields + 2 methods.
     """

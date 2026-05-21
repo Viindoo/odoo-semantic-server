@@ -45,8 +45,9 @@ class UsageLogMiddleware(Middleware):
     the server starts accepting connections (see server.py module-level setup).
 
     Also writes api_key_id into server._api_key_id_local so that synchronous
-    tool wrappers (list_* and resolve_*) share the same tenant namespace for
-    ref minting and resolution (fixes HIGH-1 from Wave C Opus review).
+    tool wrappers (model_inspect, module_inspect, entity_lookup, describe_module)
+    share the same tenant namespace for ref minting and resolution (fixes HIGH-1
+    from Wave C Opus review).
     """
 
     async def on_call_tool(
@@ -61,7 +62,7 @@ class UsageLogMiddleware(Middleware):
         swallowed so a logging failure never breaks the tool response.
 
         Sets server._api_key_id_local.value for the duration of the call so
-        list_* and resolve_* wrappers share the same tenant api_key_id via
+        MCP tool wrappers share the same tenant api_key_id via
         _get_api_key_id().  Cleared in finally to avoid cross-request leakage.
         """
         tool_name: str = context.message.name  # always present per MCP spec

@@ -5,8 +5,8 @@ Smoke tier: fast per-PR tests that verify MCP HTTP transport returns user-visibl
 Requires: Neo4j running (pytest.mark.neo4j)
 
 Tests:
-- resolve_model returns tree format with module names + tree connectors (├─, └─)
-- resolve_view returns XPath chain with module names
+- model_inspect(method='summary') returns tree format with module names + tree connectors (├─, └─)
+- entity_lookup(kind='view') returns XPath chain with module names
 - impact_analysis returns affected modules list
 """
 import contextlib
@@ -149,19 +149,20 @@ def seeded_neo4j_http(neo4j_driver):
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION)
 
 
-class TestMCPHTTPResolveModel:
+class TestMCPHTTPModelInspect:
     @pytest.mark.asyncio
-    async def test_resolve_model_tree_format(self, seeded_neo4j_http):
-        """resolve_model via HTTP returns tree format with module names + tree chars."""
+    async def test_model_inspect_summary_tree_format(self, seeded_neo4j_http):
+        """model_inspect(method='summary') via HTTP returns tree format with module names + tree chars."""
         # JSON-RPC 2.0 request to call tools/call
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
             "method": "tools/call",
             "params": {
-                "name": "resolve_model",
+                "name": "model_inspect",
                 "arguments": {
-                    "model_name": "sale.order",
+                    "model": "sale.order",
+                    "method": "summary",
                     "odoo_version": TEST_VERSION,
                 },
             },
@@ -199,16 +200,17 @@ class TestMCPHTTPResolveModel:
         assert "viin_sale" in text, "Extending module 'viin_sale' not visible in output"
 
     @pytest.mark.asyncio
-    async def test_resolve_model_shows_inheritance(self, seeded_neo4j_http):
-        """resolve_model shows Extended by section with extending module."""
+    async def test_model_inspect_shows_inheritance(self, seeded_neo4j_http):
+        """model_inspect(method='summary') shows Extended by section with extending module."""
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
             "method": "tools/call",
             "params": {
-                "name": "resolve_model",
+                "name": "model_inspect",
                 "arguments": {
-                    "model_name": "sale.order",
+                    "model": "sale.order",
+                    "method": "summary",
                     "odoo_version": TEST_VERSION,
                 },
             },
@@ -231,17 +233,18 @@ class TestMCPHTTPResolveModel:
         assert "viin_sale" in text, "Extending module not shown"
 
 
-class TestMCPHTTPResolveView:
+class TestMCPHTTPEntityLookupView:
     @pytest.mark.asyncio
-    async def test_resolve_view_xpath_chain(self, seeded_neo4j_http):
-        """resolve_view via HTTP returns XPath override chain with module names."""
+    async def test_entity_lookup_view_xpath_chain(self, seeded_neo4j_http):
+        """entity_lookup(kind='view') via HTTP returns XPath override chain with module names."""
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
             "method": "tools/call",
             "params": {
-                "name": "resolve_view",
+                "name": "entity_lookup",
                 "arguments": {
+                    "kind": "view",
                     "xmlid": "account.view_move_tree",
                     "odoo_version": TEST_VERSION,
                 },
@@ -273,15 +276,16 @@ class TestMCPHTTPResolveView:
         )
 
     @pytest.mark.asyncio
-    async def test_resolve_view_extensions(self, seeded_neo4j_http):
-        """resolve_view shows extended-by section when view is inherited."""
+    async def test_entity_lookup_view_extensions(self, seeded_neo4j_http):
+        """entity_lookup(kind='view') shows extended-by section when view is inherited."""
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
             "method": "tools/call",
             "params": {
-                "name": "resolve_view",
+                "name": "entity_lookup",
                 "arguments": {
+                    "kind": "view",
                     "xmlid": "account.view_move_tree",
                     "odoo_version": TEST_VERSION,
                 },
@@ -404,19 +408,20 @@ class TestMCPHTTPImpactAnalysis:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skip(reason="requires live server with indexed Odoo data")
-class TestMCPHTTPResolveField:
+class TestMCPHTTPModelInspectField:
     @pytest.mark.asyncio
-    async def test_resolve_field_returns_tree(self, seeded_neo4j_http):
-        """resolve_field via HTTP returns type/computed/stored/related tree."""
+    async def test_model_inspect_field_returns_tree(self, seeded_neo4j_http):
+        """model_inspect(method='field') via HTTP returns type/computed/stored/related tree."""
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
             "method": "tools/call",
             "params": {
-                "name": "resolve_field",
+                "name": "model_inspect",
                 "arguments": {
-                    "model_name": "sale.order",
-                    "field_name": "amount_total",
+                    "model": "sale.order",
+                    "method": "field",
+                    "field": "amount_total",
                     "odoo_version": TEST_VERSION,
                 },
             },
@@ -430,18 +435,19 @@ class TestMCPHTTPResolveField:
 
 
 @pytest.mark.skip(reason="requires live server with indexed Odoo data")
-class TestMCPHTTPResolveMethod:
+class TestMCPHTTPModelInspectMethod:
     @pytest.mark.asyncio
-    async def test_resolve_method_override_chain(self, seeded_neo4j_http):
-        """resolve_method via HTTP returns override chain with super() markers."""
+    async def test_model_inspect_method_override_chain(self, seeded_neo4j_http):
+        """model_inspect(method='method') via HTTP returns override chain with super() markers."""
         request_body = {
             "jsonrpc": "2.0",
             "id": "1",
             "method": "tools/call",
             "params": {
-                "name": "resolve_method",
+                "name": "model_inspect",
                 "arguments": {
-                    "model_name": "sale.order",
+                    "model": "sale.order",
+                    "method": "method",
                     "method_name": "action_confirm",
                     "odoo_version": TEST_VERSION,
                 },

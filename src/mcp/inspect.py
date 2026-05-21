@@ -180,7 +180,7 @@ def _module_inspect(
         # in _list_fields (model is required). Return an informative stub.
         return (
             f"module_inspect(name='{name}', method='fields') — "
-            "use list_fields(model=<model>, odoo_version=...) for model-scoped fields, "
+            "use model_inspect(model=<model>, method='fields', odoo_version=...) for model-scoped fields, "
             "or describe_module(name='{name}') for counts."
         ).format(name=name)
 
@@ -188,7 +188,7 @@ def _module_inspect(
         # Same limitation as 'fields' — _list_methods requires a model arg.
         return (
             f"module_inspect(name='{name}', method='methods') — "
-            "use list_methods(model=<model>, odoo_version=...) for model-scoped methods, "
+            "use model_inspect(model=<model>, method='methods', odoo_version=...) for model-scoped methods, "
             "or describe_module(name='{name}') for counts."
         ).format(name=name)
 

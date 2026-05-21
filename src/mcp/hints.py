@@ -3,7 +3,7 @@
 
 This module owns:
 
-1. ``NEXT_STEP_HINTS`` — 18-entry registry mapping each drill-down tool to its
+1. ``NEXT_STEP_HINTS`` — 11-entry registry mapping each drill-down tool to its
    recommended next-step templates. Templates contain ``{name}``, ``{ver}``,
    ``{module}``, ``{field}``, ``{method}``, ``{xmlid}`` placeholders rendered
    via ``str.format(**ctx)``.
@@ -26,7 +26,7 @@ been removed from ``server.py`` — the relocated helper is exported under
 the public name ``format_next_step``.
 """
 
-# Per ADR-0023 §4.3 table — 18 drill-down tools, each with up to 2 hints.
+# Per ADR-0023 §4.3 table — 11 drill-down tools (v0.6: 10 flat shims removed), each with up to 2 hints.
 # Templates use str.format keyword args (name, ver, module, field, method, xmlid).
 # Callers pass relevant context kwargs to hints_for(); unused ones are ignored.
 NEXT_STEP_HINTS: dict[str, list[str]] = {

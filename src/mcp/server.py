@@ -86,7 +86,7 @@ def _render_capped(
     `total` defaults to len(items) — pass explicitly when caller has already
     sliced items (e.g., from a Cypher LIMIT). `more_hint` is the suggested
     tool invocation to retrieve the full list, e.g.
-    "list_fields(model='sale.order', odoo_version='17.0') for full list".
+    "model_inspect(model='sale.order', method='fields', odoo_version='17.0') for full list".
     Required when total > cap; raises ValueError otherwise.
     """
     real_total = total if total is not None else len(items)
@@ -112,7 +112,7 @@ register_resources(mcp)
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
-# All 28 OSM tools are read-only queries against a statically-indexed graph.
+# All 18 OSM tools are read-only queries against a statically-indexed graph.
 # Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
 # ChatGPT) so they can auto-approve and skip confirmation gates.
 # (cross-server pattern: read-only annotations for auto-approval)
@@ -149,8 +149,8 @@ def _get_api_key_id() -> str:
     Sync MCP tool wrappers run outside Starlette request context, so we
     cannot extract the real API key from the request.  Return a stable
     sentinel so all sync callers share one ref namespace — per-call refs
-    minted by list_* tools (which DO have request context) are stored under
-    the real api_key_id, while resolve_* tools look up under the same key.
+    minted by model_inspect/module_inspect tools are stored under the real
+    api_key_id, and entity_lookup / on_read_resource resolve under the same key.
     In production, the middleware writes the api_key_id into a thread-local;
     fall back to 'default' when not set (unit tests, CLI invocations).
     """
@@ -384,7 +384,7 @@ def _resolve_model(
     if extensions:
         lines.append("├─ Extended by:")
         more_hint = (
-            f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model_name}', method='fields', odoo_version='{odoo_version}')"
             " for full overview"
         )
         rendered = _render_capped(
@@ -398,9 +398,9 @@ def _resolve_model(
     lines.append(f"├─ Fields:         {fields_count}")
     lines.append(f"├─ Methods:        {methods_count}")
     lines.append(format_next_step([
-        f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
+        f"model_inspect(model='{model_name}', method='fields', odoo_version='{odoo_version}')"
         " for full field list",
-        f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
+        f"model_inspect(model='{model_name}', method='methods', odoo_version='{odoo_version}')"
         " for behavior",
     ]))
     return "\n".join(lines)
@@ -585,14 +585,13 @@ def _resolve_view(
             branches.append(("xpaths", list(zip(own_exprs, own_positions))))
     if extensions:
         branches.append(("extensions", extensions))
-    # Wave 5: append Next-step footer per ADR-0023 §4. Suggest list_views
-    # scoped to the same model when known, plus find_examples for xpath
-    # patterns.
+    # Wave 5: append Next-step footer per ADR-0023 §4. Suggest model_inspect views
+    # scoped to the same model when known, plus find_examples for xpath patterns.
     view_model = v_props.get("model")
     next_hints: list[str] = []
     if view_model:
         next_hints.append(
-            f"list_views(model='{view_model}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{view_model}', method='views', odoo_version='{odoo_version}')"
             " for sibling views",
         )
     next_hints.append(
@@ -627,7 +626,7 @@ def _resolve_view(
             exts = payload  # type: ignore[assignment]
             lines.append(f"{connector} Extended by ({len(exts)} modules):")
             more_hint = (
-                f"resolve_view(xmlid='{xmlid}', odoo_version='{odoo_version}')"
+                f"entity_lookup(kind='view', xmlid='{xmlid}', odoo_version='{odoo_version}')"
                 " to drill into a specific view"
             )
 
@@ -1123,14 +1122,14 @@ def _impact_analysis(
         ]
     elif entity_type == "field":
         next_hints = [
-            f"resolve_field(model_name='{model_name}', field_name='{member_name}'"
+            f"model_inspect(model='{model_name}', method='field', field='{member_name}'"
             f", odoo_version='{odoo_version}') for field detail",
             f"find_deprecated_usage(odoo_version='{odoo_version}')"
             " to widen for deprecated calls",
         ]
     else:  # model
         next_hints = [
-            f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model_name}', method='methods', odoo_version='{odoo_version}')"
             " for behavior surface",
             f"find_deprecated_usage(odoo_version='{odoo_version}')"
             " to widen for deprecated calls",
@@ -1153,7 +1152,7 @@ def impact_analysis(
     "rủi ro khi sửa method Y", "blast radius of removing field Z"
     PREFER over: manual grep — traces transitive dependencies (views, methods,
     JS patches, dependent modules) across all indexed repos automatically
-    SKIP when: user wants to see who extends a model → use resolve_model;
+    SKIP when: user wants to see who extends a model → use model_inspect(method='summary');
     user wants deprecation warnings → use find_deprecated_usage
 
     Args:
@@ -2225,8 +2224,7 @@ def _describe_module(
             first_def = defines[0]["name"]
             def_preview += (
                 f", ... and {overflow} more"
-                f" (use list_fields(model='{first_def}', module='{name}',"
-                f" odoo_version='{odoo_version}'))"
+                f" (use model_inspect(model='{first_def}', method='fields', odoo_version='{odoo_version}'))"
             )
         lines.append(f"├─ Defines models: {def_total} ({def_preview})")
     else:
@@ -2242,8 +2240,7 @@ def _describe_module(
             first_ext = extends[0]["name"]
             ext_preview += (
                 f", ... and {overflow} more"
-                f" (use list_fields(model='{first_ext}', module='{name}',"
-                f" odoo_version='{odoo_version}'))"
+                f" (use model_inspect(model='{first_ext}', method='fields', odoo_version='{odoo_version}'))"
             )
         lines.append(f"├─ Extends models: {ext_total} ({ext_preview})")
     else:
@@ -2272,9 +2269,9 @@ def _describe_module(
         first_target = extends[0]["name"]
     if first_target:
         next_hints = [
-            f"list_fields(model='{first_target}', module='{name}'"
-            f", odoo_version='{odoo_version}') for declared fields",
-            f"list_views(model='{first_target}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{first_target}', method='fields', odoo_version='{odoo_version}')"
+            " for declared fields",
+            f"model_inspect(model='{first_target}', method='views', odoo_version='{odoo_version}')"
             " for module views",
         ]
     else:
@@ -2352,7 +2349,7 @@ def _list_fields(
     if total == 0:
         # Wave 5: Next-step footer (empty result still gets a sensible hint).
         next_line = format_next_step([
-            f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
             " for behavior",
         ])
         return f"{header}\n├─ (none)\n{next_line}"
@@ -2377,8 +2374,8 @@ def _list_fields(
         lines.append(f"├─ [{repo}] {mod_name}")
         sub_items = groups[key]
         more_hint = (
-            f"list_fields(model='{model}', odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}) for full list"
+            f"model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}')"
+            f" with limit={max(limit * 2, total)} for full list"
         )
         # Build rendered strings with inline refs.
         raw_rows = [r for r, _ in sub_items]
@@ -2409,7 +2406,7 @@ def _list_fields(
         # §Appendix B item #2: pagination is routine, not failure).
         lines.append(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
-            f" Call list_fields(model='{model}', odoo_version='{odoo_version}',"
+            f" Call model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
@@ -2419,16 +2416,16 @@ def _list_fields(
         )
 
     # Wave 5: Next-step footer per ADR-0023 §4. Drill into the first
-    # rendered field for its full chain, and into list_methods for behavior.
+    # rendered field for its full chain, and into model_inspect methods for behavior.
     first_field = rows[0]["name"] if rows else None
     next_hints: list[str] = []
     if first_field:
         next_hints.append(
-            f"resolve_field(model_name='{model}', field_name='{first_field}'"
+            f"model_inspect(model='{model}', method='field', field='{first_field}'"
             f", odoo_version='{odoo_version}') for full chain",
         )
     next_hints.append(
-        f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+        f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
         " for behavior",
     )
     lines.append(format_next_step(next_hints))
@@ -2509,7 +2506,7 @@ def _list_methods(
     header = f"Methods of {model} (Odoo {odoo_version})"
     if total == 0:
         next_line = format_next_step([
-            f"list_fields(model='{model}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}')"
             " for shape",
         ])
         return f"{header}\n├─ (none)\n{next_line}"
@@ -2534,8 +2531,8 @@ def _list_methods(
         sub_indent = "│   "
         sub_items = groups[key]
         more_hint = (
-            f"list_methods(model='{model}', odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}) for full list"
+            f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
+            f" with limit={max(limit * 2, total)} for full list"
         )
 
         raw_rows = [r for r, _ in sub_items]
@@ -2570,7 +2567,7 @@ def _list_methods(
         # Pagination continuation hint (plain text, NOT <error> tag).
         lines.append(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
-            f" Call list_methods(model='{model}', odoo_version='{odoo_version}',"
+            f" Call model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
@@ -2583,7 +2580,7 @@ def _list_methods(
     next_hints: list[str] = []
     if first_method:
         next_hints.append(
-            f"resolve_method(model_name='{model}', method_name='{first_method}'"
+            f"model_inspect(model='{model}', method='method', method_name='{first_method}'"
             f", odoo_version='{odoo_version}') for override chain",
         )
         next_hints.append(
@@ -2697,17 +2694,17 @@ def _list_views_core(
     if is_model_scoped:
         header = f"Views of {model} (Odoo {odoo_version})"
         empty_hint = (
-            f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
             " for behavior"
         )
-        pager_tool = f"list_views(model='{model}', odoo_version='{odoo_version}'"
+        pager_tool = f"model_inspect(model='{model}', method='views', odoo_version='{odoo_version}'"
     else:
         header = f"Views in module '{module}' (Odoo {odoo_version})"
         empty_hint = (
-            f"list_fields(module='{module}', odoo_version='{odoo_version}')"
+            f"describe_module(name='{module}', odoo_version='{odoo_version}')"
             " for model fields"
         )
-        pager_tool = f"list_views(module='{module}', odoo_version='{odoo_version}'"
+        pager_tool = f"module_inspect(name='{module}', method='views', odoo_version='{odoo_version}'"
 
     if total == 0:
         next_line = format_next_step([empty_hint])
@@ -2778,7 +2775,7 @@ def _list_views_core(
     next_hints: list[str] = []
     if first_xmlid:
         next_hints.append(
-            f"resolve_view(xmlid='{first_xmlid}', odoo_version='{odoo_version}')"
+            f"entity_lookup(kind='view', xmlid='{first_xmlid}', odoo_version='{odoo_version}')"
             " for full xpath chain",
         )
     if is_model_scoped:
@@ -2866,16 +2863,16 @@ def _list_owl_components(
         except (ValueError, AttributeError):
             major = 0
         if major and major <= 13:
-            # Wave 5: still emit Next: footer suggesting list_js_patches for
+            # Wave 5: still emit Next: footer suggesting module_inspect(method='js') for
             # era1 widget extensions (the natural era-aware drill-down).
             next_line = format_next_step([
-                f"list_js_patches(module='{module}', era='era1'"
+                f"module_inspect(name='{module}', method='js'"
                 f", odoo_version='{odoo_version}') for legacy widget extends",
             ])
             return (
                 f"OWL components of {module} (Odoo {odoo_version})\n"
                 "├─ (none) — Warning: No OWL components in v8-v13"
-                " (Widget era). Use list_js_patches(era='era1') for legacy"
+                " (Widget era). Use module_inspect(method='js') for legacy"
                 " widget extensions.\n"
                 + next_line
             )
@@ -2918,11 +2915,11 @@ def _list_owl_components(
                 " — may miss components using dynamic this.props.resModel",
             )
         lines.append("├─ (none)")
-        # Wave 5: suggest list_qweb_templates / list_js_patches as siblings.
+        # Wave 5: suggest module_inspect qweb / js as siblings.
         lines.append(format_next_step([
-            f"list_qweb_templates(module='{module}'"
+            f"module_inspect(name='{module}', method='qweb'"
             f", odoo_version='{odoo_version}') for QWeb templates",
-            f"list_js_patches(module='{module}', odoo_version='{odoo_version}')"
+            f"module_inspect(name='{module}', method='js', odoo_version='{odoo_version}')"
             " for related patches",
         ]))
         return "\n".join(lines)
@@ -2936,8 +2933,8 @@ def _list_owl_components(
 
     lines = [header]
     more_hint = (
-        f"list_owl_components(module='{module}'"
-        f", odoo_version='{odoo_version}', limit={max(limit * 2, total)})"
+        f"module_inspect(name='{module}', method='owl'"
+        f", odoo_version='{odoo_version}') with limit={max(limit * 2, total)}"
         " for full list"
     )
     raw_rows = rows
@@ -2977,7 +2974,7 @@ def _list_owl_components(
     if has_more:
         lines.append(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
-            f" Call list_owl_components(module='{module}',"
+            f" Call module_inspect(name='{module}', method='owl',"
             f" odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
@@ -2988,9 +2985,9 @@ def _list_owl_components(
 
     # Wave 5: Next-step footer per ADR-0023 §4.
     lines.append(format_next_step([
-        f"list_qweb_templates(module='{module}', odoo_version='{odoo_version}')"
+        f"module_inspect(name='{module}', method='qweb', odoo_version='{odoo_version}')"
         " for QWeb templates",
-        f"list_js_patches(module='{module}', odoo_version='{odoo_version}')"
+        f"module_inspect(name='{module}', method='js', odoo_version='{odoo_version}')"
         " for related patches",
     ]))
     return "\n".join(lines)
@@ -3046,7 +3043,7 @@ def _list_qweb_templates(
     header = f"QWeb templates of {module} (Odoo {odoo_version})"
     if total == 0:
         next_line = format_next_step([
-            f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
+            f"module_inspect(name='{module}', method='owl', odoo_version='{odoo_version}')"
             " for OWL components",
             f"describe_module(name='{module}', odoo_version='{odoo_version}')"
             " for module overview",
@@ -3060,8 +3057,8 @@ def _list_qweb_templates(
 
     lines = [header]
     more_hint = (
-        f"list_qweb_templates(module='{module}'"
-        f", odoo_version='{odoo_version}', limit={max(limit * 2, total)})"
+        f"module_inspect(name='{module}', method='qweb'"
+        f", odoo_version='{odoo_version}') with limit={max(limit * 2, total)}"
         " for full list"
     )
     rendered = _render_capped(
@@ -3090,7 +3087,7 @@ def _list_qweb_templates(
     if has_more:
         lines.append(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
-            f" Call list_qweb_templates(module='{module}',"
+            f" Call module_inspect(name='{module}', method='qweb',"
             f" odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
@@ -3101,7 +3098,7 @@ def _list_qweb_templates(
 
     # Wave 5: Next-step footer per ADR-0023 §4.
     lines.append(format_next_step([
-        f"list_owl_components(module='{module}', odoo_version='{odoo_version}')"
+        f"module_inspect(name='{module}', method='owl', odoo_version='{odoo_version}')"
         " for OWL components",
         f"find_examples(query='QWeb {module}', odoo_version='{odoo_version}')"
         " for inheritance patterns",
@@ -3199,7 +3196,7 @@ def _list_js_patches(
         # when module is known (era3 drill-down).
         if module:
             next_line = format_next_step([
-                f"list_owl_components(module='{module}'"
+                f"module_inspect(name='{module}', method='owl'"
                 f", odoo_version='{odoo_version}') for v15+ components",
             ])
         else:
@@ -3233,8 +3230,8 @@ def _list_js_patches(
         sub_indent = "│   "
         sub_items = groups[key]
         more_hint = (
-            f"list_js_patches(odoo_version='{odoo_version}'"
-            f", limit={max(limit * 2, total)}) for full list"
+            f"module_inspect(name='{mod_name}', method='js', odoo_version='{odoo_version}')"
+            f" with limit={max(limit * 2, total)} for full list"
         )
         raw_rows = [r for r, _ in sub_items]
         rendered = _render_capped(
@@ -3268,7 +3265,8 @@ def _list_js_patches(
     if has_more:
         lines.append(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
-            f" Call list_js_patches(odoo_version='{odoo_version}',"
+            f" Call module_inspect(name='{module or '...'}', method='js',"
+            f" odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
     elif start_index > 0:
@@ -3280,7 +3278,7 @@ def _list_js_patches(
     # drill-down when module is known; otherwise suggest find_examples.
     if module:
         next_hints = [
-            f"list_owl_components(module='{module}'"
+            f"module_inspect(name='{module}', method='owl'"
             f", odoo_version='{odoo_version}') for v15+ components",
             f"find_examples(query='JS patch', odoo_version='{odoo_version}')"
             " for patch patterns",
@@ -3397,7 +3395,7 @@ def _diff_method_across_versions(
         )
         lines.append(f"├─ Status:           {presence_label}")
         lines.append(format_next_step([
-            f"list_methods(model='{model}', odoo_version='{to_version}')"
+            f"model_inspect(model='{model}', method='methods', odoo_version='{to_version}')"
             " to verify the method name",
         ]))
         return "\n".join(lines)
@@ -3458,7 +3456,7 @@ def _diff_method_across_versions(
 
     # Wave 5: Next-step footer per ADR-0023 §4.
     lines.append(format_next_step([
-        f"resolve_method(model_name='{model}', method_name='{method}'"
+        f"model_inspect(model='{model}', method='method', method_name='{method}'"
         f", odoo_version='{to_version}') for full chain detail",
         f"find_examples(query='{method} override', odoo_version='{to_version}')"
         " for prior art",
@@ -3499,7 +3497,7 @@ def _find_override_point(
 
     if not records:
         next_line = format_next_step([
-            f"list_methods(model='{model}', odoo_version='{v}')"
+            f"model_inspect(model='{model}', method='methods', odoo_version='{v}')"
             " to find the actual method name",
         ])
         return (
@@ -3548,7 +3546,7 @@ def _format_find_override_point(
         lines.append(f"│   {connector} {ap}")
     # Wave 5: Next-step footer per ADR-0023 §4.
     lines.append(format_next_step([
-        f"resolve_method(model_name='{model}', method_name='{method}'"
+        f"model_inspect(model='{model}', method='method', method_name='{method}'"
         f", odoo_version='{version}') for full chain detail",
         f"find_examples(query='{method} override', odoo_version='{version}')"
         " for prior art",
@@ -3612,7 +3610,7 @@ def check_module_exists(
     existence check with Enterprise edition detection and Viindoo equivalent
     SKIP when: caller needs the module's contents (models, views, JS) — use
     describe_module instead, which returns a full architecture overview in
-    one round-trip. user wants module field/method details → use resolve_model;
+    one round-trip. user wants module field/method details → use model_inspect;
     user wants code examples from a module → use find_examples
 
     Args:
@@ -3647,10 +3645,10 @@ def find_override_point(
     override point for partner creation", "how to extend method X without
     breaking OCA", "override field X ở đâu là đúng", "điểm override phù hợp
     cho method Y", "is super() required for write override"
-    PREFER over: resolve_method — gives recommended injection points with
-    super() safety guidance and anti-patterns, not just chain listing
-    SKIP when: user wants full override chain only → use resolve_method; user
-    wants design pattern guidance → use suggest_pattern
+    PREFER over: model_inspect(method='method') — gives recommended injection
+    points with super() safety guidance and anti-patterns, not just chain listing
+    SKIP when: user wants full override chain only → use model_inspect(method='method');
+    user wants design pattern guidance → use suggest_pattern
 
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
@@ -3759,9 +3757,9 @@ def _resolve_model_structured(
         field_count=base["fields_count"],
         method_count=base["methods_count"],
         next_step_hint=format_next_step([
-            f"list_fields(model='{model_name}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model_name}', method='fields', odoo_version='{odoo_version}')"
             " for full field list",
-            f"list_methods(model='{model_name}', odoo_version='{odoo_version}')"
+            f"model_inspect(model='{model_name}', method='methods', odoo_version='{odoo_version}')"
             " for behavior",
         ]),
     )
@@ -3957,7 +3955,7 @@ def _resolve_view_structured(
         extended_by=extended_by,
         next_step_hint=format_next_step(
             [
-                f"list_views(model='{v_props.get('model')}', odoo_version='{odoo_version}')"
+                f"model_inspect(model='{v_props.get('model')}', method='views', odoo_version='{odoo_version}')"
                 " for sibling views",
                 f"find_examples(query='{xmlid} xpath', odoo_version='{odoo_version}')"
                 " for inheritance patterns",
@@ -4052,18 +4050,18 @@ def _describe_module_structured(
         js_patch_count=js_count_rec["c"] if js_count_rec else 0,
         next_step_hint=format_next_step(
             [
-                f"list_fields(model='{defines[0]['name']}', module='{name}'"
+                f"model_inspect(model='{defines[0]['name']}', method='fields'"
                 f", odoo_version='{odoo_version}') for declared fields",
-                f"list_views(model='{defines[0]['name']}', odoo_version='{odoo_version}')"
-                " for module views",
+                f"model_inspect(model='{defines[0]['name']}', method='views'"
+                f", odoo_version='{odoo_version}') for module views",
             ]
             if defines
             else (
                 [
-                    f"list_fields(model='{extends[0]['name']}', module='{name}'"
+                    f"model_inspect(model='{extends[0]['name']}', method='fields'"
                     f", odoo_version='{odoo_version}') for declared fields",
-                    f"list_views(model='{extends[0]['name']}', odoo_version='{odoo_version}')"
-                    " for module views",
+                    f"model_inspect(model='{extends[0]['name']}', method='views'"
+                    f", odoo_version='{odoo_version}') for module views",
                 ]
                 if extends
                 else []
@@ -4143,11 +4141,11 @@ def _list_fields_structured(
     next_hints: list[str] = []
     if first_field:
         next_hints.append(
-            f"resolve_field(model_name='{model}', field_name='{first_field}'"
+            f"model_inspect(model='{model}', method='field', field='{first_field}'"
             f", odoo_version='{odoo_version}') for full chain",
         )
     next_hints.append(
-        f"list_methods(model='{model}', odoo_version='{odoo_version}')"
+        f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
         " for behavior",
     )
     return ListFieldsOutput(
@@ -4241,7 +4239,7 @@ def _list_methods_structured(
     next_hints: list[str] = []
     if first_method:
         next_hints.append(
-            f"resolve_method(model_name='{model}', method_name='{first_method}'"
+            f"model_inspect(model='{model}', method='method', method_name='{first_method}'"
             f", odoo_version='{odoo_version}') for override chain",
         )
         next_hints.append(
@@ -4276,8 +4274,8 @@ def describe_module(
     TRIGGER when: "what does module viin_sale do", "describe sale_management",
     "overview of website_sale", "module X làm gì", "tóm tắt module Y"
     PREFER over: check_module_exists when caller needs module contents
-    (models, views, JS), not just YES/NO. Also prefer over resolve_model
-    when the question is about a module, not a model.
+    (models, views, JS), not just YES/NO. Also prefer over model_inspect
+    when the question is about a module overview, not a single model.
     SKIP when: caller only needs YES/NO — use check_module_exists (faster).
 
     Args:
@@ -4323,13 +4321,12 @@ def model_inspect(
 
     TRIGGER when: you need to inspect one model from multiple angles in
     succession — summary then fields then methods — to reduce round trips
-    vs calling resolve_model / list_fields / list_methods separately.
+    vs multiple separate model_inspect calls.
     Also: "kiểm tra một model nhiều mặt", "xem mọi thông tin của model X"
-    PREFER over: chaining resolve_model + list_fields + list_methods when
+    PREFER over: chaining multiple separate model_inspect calls when
     you already know which sub-view you want; one call with method= is
     friendlier for LLM context windows.
-    SKIP when: you need a single specific drill-down — call the specific
-    tool directly (resolve_field, list_methods) for a cleaner trace.
+    SKIP when: you need cross-model entity dispatch by kind — use entity_lookup.
 
     Args:
         model: Dotted model name, e.g. 'sale.order', 'res.partner'.
@@ -4345,7 +4342,7 @@ def model_inspect(
 
     Example:
         model_inspect("sale.order", "fields", "17.0")
-        → same as list_fields(model="sale.order", odoo_version="17.0")
+        → same as model_inspect(model="sale.order", method="fields", odoo_version="17.0")
     """
     text = _model_inspect(
         model=model,
@@ -4370,12 +4367,11 @@ def module_inspect(
 
     TRIGGER when: you need to inspect one module from multiple angles —
     summary then views then OWL components — reducing round trips vs
-    calling describe_module / list_views / list_owl_components separately.
+    multiple separate module_inspect or describe_module calls.
     Also: "khám phá nội dung module X", "module X chứa những gì"
-    PREFER over: chaining describe_module + list_views + list_owl_components
+    PREFER over: chaining describe_module + multiple module_inspect calls
     when the discriminator method= captures the exact sub-view needed.
-    SKIP when: you need a single entity type — call describe_module,
-    list_qweb_templates, or list_js_patches directly for a cleaner trace.
+    SKIP when: you need only a summary — use describe_module directly.
 
     Args:
         name: Technical module name, e.g. 'sale', 'website_sale'.
@@ -4389,7 +4385,7 @@ def module_inspect(
 
     Example:
         module_inspect("sale_management", "owl", "17.0")
-        → same as list_owl_components(module="sale_management", odoo_version="17.0")
+        → same as module_inspect(name="sale_management", method="owl", odoo_version="17.0")
     """
     text = _module_inspect(
         name=name,
@@ -4415,15 +4411,14 @@ def entity_lookup(
 ) -> ToolResult:
     """Unified single-entity lookup by kind discriminator. See ADR-0028.
 
-    TRIGGER when: kind of entity is known but the specific tool name is
-    unclear — use kind= to dispatch to the right resolver without knowing
-    whether to call resolve_model, resolve_field, resolve_view, etc.
+    TRIGGER when: kind of entity is known but you're unsure which method=
+    to use on model_inspect — use kind= to dispatch without knowing whether
+    to call model_inspect, module_inspect, or describe_module.
     Also: "tra cứu một entity cụ thể khi biết kind", "tìm field/method/view"
-    PREFER over: guessing the right tool name; entity_lookup normalises the
-    dispatch and returns the same tree text as the underlying tool.
-    SKIP when: the specific tool name is already known — call resolve_model,
-    resolve_field, resolve_method, resolve_view, describe_module, or
-    suggest_pattern directly for a cleaner trace and less cognitive overhead.
+    PREFER over: guessing the right superset tool + method combination;
+    entity_lookup normalises the dispatch and returns the same tree text.
+    SKIP when: the entity kind and tool are already known — call model_inspect,
+    module_inspect, or describe_module directly for a cleaner trace.
 
     Args:
         kind: One of model | field | method | view | module | pattern.
@@ -4440,7 +4435,7 @@ def entity_lookup(
 
     Example:
         entity_lookup("field", model="sale.order", field="amount_total")
-        → same as resolve_field("sale.order", "amount_total")
+        → same as model_inspect(model="sale.order", method="field", field="amount_total")
     """
     text = _entity_lookup(
         kind=kind,
@@ -4614,7 +4609,7 @@ def list_available_versions() -> ToolResult:
     PREFER over: guessing a version and getting an empty result; use this
     first to confirm what is indexed before running model/field queries.
     SKIP when: the version is already known (e.g. from a prior set_active_version
-    confirmation or from a resolve_model result header).
+    confirmation or from a model_inspect result header).
 
     Returns:
         Sorted list of indexed Odoo versions (newest first), e.g.:
