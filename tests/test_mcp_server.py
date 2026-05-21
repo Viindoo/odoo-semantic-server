@@ -3045,10 +3045,11 @@ def test_list_fields_dedup_magic_field_overridden(neo4j_driver):
         srv = _import_server_module()
         out = srv._list_fields("sale.order", _M10A_D2_VERSION)
         # Count occurrences of the field name in output — must be exactly 1.
+        # Use " id :" as sentinel so tree-connector prefixes (│, ├─, └─) do not
+        # interfere with startswith-based checks (U+2502 is not stripped by str.strip()).
         id_occurrences = sum(
             1 for line in out.splitlines()
-            if line.strip().startswith("id ")
-            or line.strip().startswith("[ref=") and " id " in line
+            if " id :" in line
         )
         assert id_occurrences == 1, (
             f"'id' appears {id_occurrences} times — expected exactly 1 (dedup).\n{out}"

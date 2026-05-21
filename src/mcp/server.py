@@ -2518,37 +2518,47 @@ def _list_fields(
         ).single()
         total = total_rec["c"] if total_rec else 0
 
-    # D2: Inject magic-field synthetic rows for the first page only (start_index=0)
-    # and only when no module filter suppresses them.
-    # Dedup: skip a magic field if it already appears in Neo4j rows (model override).
+    # D2: Build magic-field prelude for page 0 only when no module filter suppresses them.
+    # Magic fields are rendered as a FIXED <builtin> prelude block that is OUTSIDE the
+    # pagination/truncation logic for real fields.  The "Showing rows X–Y of N" line and
+    # all start_index arithmetic operate ONLY on real (Neo4j) fields.
+    # Dedup: skip a magic field if the model already declares it in Neo4j.
+    magic_prelude_rows: list[dict] = []
     if start_index == 0 and module is None:
         existing_names = {r["name"] for r in rows}
-        magic_rows = [
+        magic_prelude_rows = [
             {
                 "name": fname,
                 "ttype": ttype,
-                "module": "<builtin>",
-                "repo": None,
-                "edition_rank": -1,   # float before community rows
-                "mod_name": "<builtin>",
             }
             for fname, (ttype, _comodel) in MAGIC_FIELDS.items()
             if fname not in existing_names
             and (kind is None or kind == ttype)
         ]
-        rows = magic_rows + list(rows)
-        total = total + len(magic_rows)
 
     header = f"Fields of {model} (Odoo {odoo_version})"
+
+    # Render the <builtin> prelude block (always shown in full, no refs, not paginated).
+    # Group header matches the old "repo=None → '?', module='<builtin>'" format so that
+    # existing tests checking ``"<builtin>" in out`` continue to pass.
+    lines = [header]
+    if magic_prelude_rows:
+        lines.append("├─ [?] <builtin>")
+        builtin_tagged = [f"{r['name']} : {r['ttype']}" for r in magic_prelude_rows]
+        lines.extend(render_list_block(builtin_tagged))
+
     if total == 0:
+        # No real fields — emit "(none)" sentinel so callers can detect empty declared fields.
+        lines.append("├─ (none)")
         # Wave 5: Next-step footer (empty result still gets a sensible hint).
         next_line = format_next_step([
             f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
             " for behavior",
         ])
-        return f"{header}\n├─ (none)\n{next_line}"
+        lines.append(next_line)
+        return "\n".join(lines)
 
-    # Mint opaque refs for each returned row (field kind).
+    # Mint opaque refs for real (Neo4j) rows only.
     field_items = [{"field_name": r["name"], "model": model} for r in rows]
     ref_ids = mint_refs(field_items, api_key_id, kind="field")
 
@@ -2562,7 +2572,6 @@ def _list_fields(
             order.append(key)
         groups[key].append((r, ref_id))
 
-    lines = [header]
     for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
@@ -2591,6 +2600,7 @@ def _list_fields(
                 tagged.append(f"{prefix}{row_str}")
         lines.extend(render_list_block(tagged))
 
+    # Pagination hint — counts ONLY real fields (total from Neo4j, not +magic).
     shown = len(rows)
     end_index = start_index + shown
     has_more = total > end_index
@@ -2609,13 +2619,16 @@ def _list_fields(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
-    # Wave 5: Next-step footer per ADR-0023 §4. Drill into the first
-    # rendered field for its full chain, and into model_inspect methods for behavior.
-    first_field = rows[0]["name"] if rows else None
+    # Wave 5: Next-step footer per ADR-0023 §4. Prefer a real field name for the
+    # drill-down hint; fall back to first magic field if no real field on this page.
+    first_real_field = rows[0]["name"] if rows else None
+    first_hint_field = first_real_field or (
+        magic_prelude_rows[0]["name"] if magic_prelude_rows else None
+    )
     next_hints: list[str] = []
-    if first_field:
+    if first_hint_field:
         next_hints.append(
-            f"model_inspect(model='{model}', method='field', field='{first_field}'"
+            f"model_inspect(model='{model}', method='field', field='{first_hint_field}'"
             f", odoo_version='{odoo_version}') for full chain",
         )
     next_hints.append(
@@ -4938,13 +4951,23 @@ def _resolve_stylesheet(
 
     if not rows:
         footer = hints_for("resolve_stylesheet", name=module, ver=odoo_version)
-        lines = [
-            f"resolve_stylesheet({module!r}, {odoo_version!r})",
-            f"├─ not found — no Stylesheet nodes indexed for module '{module}'.",
-            "└─ Recovery: describe_module(name=..., odoo_version=...) to verify module exists.",
-        ]
+        recovery = (
+            "Recovery: describe_module(name=..., odoo_version=...) to verify module exists."
+        )
         if footer:
-            lines.append(footer)
+            # footer ends with └─ Next: — use ├─ for Recovery so └─ stays last.
+            lines = [
+                f"resolve_stylesheet({module!r}, {odoo_version!r})",
+                f"├─ not found — no Stylesheet nodes indexed for module '{module}'.",
+                f"├─ {recovery}",
+                footer,
+            ]
+        else:
+            lines = [
+                f"resolve_stylesheet({module!r}, {odoo_version!r})",
+                f"├─ not found — no Stylesheet nodes indexed for module '{module}'.",
+                f"└─ {recovery}",
+            ]
         return "\n".join(lines)
 
     header = f"resolve_stylesheet({module!r}, {odoo_version!r})"
