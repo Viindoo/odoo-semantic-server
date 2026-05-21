@@ -2,6 +2,24 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.7.0] — 2026-05-21 — M10A + M10.5-P1: stylesheet tools, magic fields, from_module, noqa, comodel_name
+
+### Added
+- **`resolve_stylesheet(module, odoo_version)`** (M10A) — new MCP tool (#19). Returns the full stylesheet chain for a module: file path, import graph, CSS custom properties / SCSS variables. Output follows ADR-0023 tree-grammar contract.
+- **`find_style_override(selector_or_variable, odoo_version)`** (M10A) — new MCP tool (#20). Traces which module last re-declares a CSS custom property or overrides a selector across the indexed stylesheet graph.
+- **Magic-fields `<builtin>` prelude** (M10A D2) — `resolve_model`, `list_fields`, `resolve_field` now include a synthetic `<builtin>` section listing `id`, `display_name`, `create_uid`, `create_date`, `write_uid`, `write_date` for all `models.Model` subclasses. Source-of-truth: `src/constants.py::MAGIC_FIELDS`. Not written to Neo4j; injected at query time.
+- **`from_module` param** (M10A D3) — `model_inspect` (kind=fields) and `entity_lookup` (kind=field) accept an optional `from_module` argument to restrict field declarations to those originating from a specific module.
+- **`noqa` suppression in `lint_check`** (M10A D4) — inline `# noqa: <rule_id>` comment suppresses the matching lint rule for that line. Multiple rules: `# noqa: ORM001,ORM002`. Bare `# noqa` suppresses all rules on that line.
+- **`Field.comodel_name` graph property** (M10.5 Phase 1) — `FieldInfo.comodel_name: str | None` dataclass field; parser extraction for `fields.Many2one`/`One2many`/`Many2many` (era1 text-regex + era2 AST); writer persists `f.comodel_name` in Neo4j. Enables M10.5 Phase 2 ORM validation tools.
+
+### Changed
+- **Tool surface 18 → 20** (M10A D5+D6) — two stylesheet tools added. `tools/list` now reports 20 tools.
+
+### Notes
+- PR #156 — includes code-review fixes: model-scoped field dedup, `(none)`-sentinel for missing comodel, hint-variable naming, stylesheet tree-grammar contract + batch Cypher, header decoration for builtin prelude.
+- Cross-repo follow-up: routing matrix EN+VI for `resolve_stylesheet` / `find_style_override` needs update at [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md).
+- M10.5 Phase 1 data layer: run `python -m src.indexer index-repo --all --full` on prod to backfill `comodel_name` for existing Field nodes.
+
 ## [0.6.0] — 2026-05-21 — v0.6: remove 10 deprecated flat tools (ADR-0028 timeline)
 
 ### Added

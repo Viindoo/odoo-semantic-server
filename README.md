@@ -42,12 +42,13 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **18 tools** (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline):
+MCP server expose **20 tools** (v0.7 — +2 stylesheet tools added per M10A):
 
 - **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
 - **1 module overview tool (M9 Wave 1):** `describe_module`
 - **3 superset discriminator tools (M11 Wave D — ADR-0028):** `model_inspect`, `module_inspect`, `entity_lookup` — route to the right flat tool by kind/entity-type, with structured `discriminator` in `structuredContent`
 - **4 session tools (M11 Wave E — ADR-0029):** `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` — sticky per-API-key context (24h TTL) eliminates `odoo_version` repetition
+- **2 stylesheet tools (M10A — ADR-0025):** `resolve_stylesheet`, `find_style_override` — CSS/SCSS chain + variable tracing across the indexed stylesheet graph
 
 Capabilities: Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) + CSS/SCSS stylesheet indexing across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
 
@@ -142,14 +143,14 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 |------|----------|
 | [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) | **End-user client setup** — Claude Code, Codex, Gemini, VS Code, Antigravity (snippets + pitfalls đầy đủ) |
 | [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
-| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 18 MCP tool sign-off table + 7 MCP resource sign-off trước khi mở public |
+| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 20 MCP tool sign-off table + 7 MCP resource sign-off trước khi mở public |
 | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | **DR runbook** — backup frequency, restore order, step-by-step commands, RTO estimate |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | **Bắt đầu ở đây nếu bạn là developer** — setup, chạy tests, Local E2E, workflow |
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
-| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 18 tools, trigger conditions, persona mapping |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 20 tools, trigger conditions, persona mapping |
 
 ---
 
@@ -174,7 +175,7 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.6.0 (2026-05-21) — removed 10 deprecated flat tools (ADR-0028 timeline); 18 tools, 7 MCP Resources. See CHANGELOG.md.
+**Latest release:** v0.7.0 (2026-05-21) — M10A + M10.5-P1: 2 stylesheet tools added, magic-fields prelude, from_module param, noqa in lint_check, Field.comodel_name graph property; 20 tools, 7 MCP Resources. See CHANGELOG.md.
 
 **Production deploy:** 2026-05-17 — PR #119 go-live batch deployed (writer profile stub fix eliminating 5,988 NULL nodes, MFA flag sync, backup CLI docker-exec fallback + nightly systemd timer, `/api/health` auth-exempt endpoint, ADR-0016 D7 stub policy). PR #117 (migration 0004 self-contained SQL rescue) + PR #118 (CSP + Permissions-Policy headers) also live. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state.
 

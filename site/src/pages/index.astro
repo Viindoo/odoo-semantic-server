@@ -29,6 +29,8 @@ const TOOLS = [
   { num: '16', name: 'set_active_profile', desc: 'Sticky profile for the session.', group: 'session' },
   { num: '17', name: 'list_available_versions', desc: 'What versions are indexed.', group: 'session' },
   { num: '18', name: 'list_available_profiles', desc: 'What profiles you can switch to.', group: 'session' },
+  { num: '19', name: 'resolve_stylesheet', desc: 'Full stylesheet chain + variable list for a module.', group: 'stylesheet' },
+  { num: '20', name: 'find_style_override', desc: 'Trace which module last overrides a CSS selector or custom property.', group: 'stylesheet' },
 ];
 ---
 
@@ -91,7 +93,7 @@ const TOOLS = [
         <span class="opacity-40" aria-hidden="true">&middot;</span>
         <span>v8 &rarr; v19+</span>
         <span class="opacity-40" aria-hidden="true">&middot;</span>
-        <span><strong class="text-viindoo-primary-bright font-semibold">18 MCP tools</strong></span>
+        <span><strong class="text-viindoo-primary-bright font-semibold">20 MCP tools</strong></span>
       </div>
     </div>
   </section>
@@ -137,20 +139,20 @@ const TOOLS = [
         03 &middot; THE TOOLBOX
       </div>
       <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
-        18 specialized tools.<br />One MCP endpoint.
+        20 specialized tools.<br />One MCP endpoint.
       </h2>
       <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
         Resolve models, fields, methods, views. Find examples, measure impact. Version diffs, deprecation scans, pattern suggestions — all atomic. Plus supersets and session-state tools for streamlined AI agent workflows.
       </p>
 
-      <!-- 18-tool grid -->
+      <!-- 20-tool grid -->
       <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
         {TOOLS.map((tool) => (
           <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[120px]" data-tool-group={tool.group}>
             <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
             <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
             <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
-            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : tool.group === 'superset' ? 'bg-viindoo-success' : tool.group === 'session' ? 'bg-viindoo-info' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
+            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : tool.group === 'superset' ? 'bg-viindoo-success' : tool.group === 'session' ? 'bg-viindoo-info' : tool.group === 'stylesheet' ? 'bg-viindoo-secondary' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
           </div>
         ))}
       </div>
