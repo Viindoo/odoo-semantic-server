@@ -53,14 +53,21 @@ Use `make recreate-db` after any change to `docker-compose.yml`:
 ```bash
 make recreate-db
 # Equivalent to:
-#   docker compose down
-#   docker compose up -d postgres
-#   bash scripts/wait-pg-healthy.sh
+#   docker compose down                  # stops + removes BOTH postgres and neo4j
+#   docker compose up -d postgres neo4j  # bring the WHOLE DB tier back, not just postgres
+#   bash scripts/wait-pg-healthy.sh      # neo4j returns to healthy via its own healthcheck
 ```
 
 `down` (not just `restart`) is required because container metadata is
 recreated only on `down → up`. A bare `up -d` after editing compose
 silently keeps the OLD bind-mount path on existing containers.
+
+`down` removes the **whole project** (both postgres and neo4j), so the `up`
+must name **both** services — bringing up only `postgres` would leave neo4j
+stopped and the MCP server stuck in degraded mode until someone starts it.
+Recreating both also rewrites each container's compose `working_dir` label
+from the current cwd, healing any stale label left by an earlier wrong-cwd
+or dev-tree creation.
 
 ## Dev → service install migration
 

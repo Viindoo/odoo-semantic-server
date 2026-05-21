@@ -20,7 +20,7 @@ help:
 	@echo "  neo4j-up          Start Neo4j container"
 	@echo "  neo4j-down        Stop Neo4j container"
 	@echo "  neo4j-logs        Xem log Neo4j"
-	@echo "  recreate-db       down → up postgres → wait-healthy (use sau khi compose đổi)"
+	@echo "  recreate-db       down → up postgres+neo4j → wait-pg-healthy (use sau khi compose đổi)"
 	@echo "  lint              Chạy ruff + shell lint (strict)"
 	@echo "  check-systemd-overrides  Drift audit installed systemd units (issue #144)"
 
@@ -92,9 +92,10 @@ neo4j-logs:
 # (docs/deploy/db-tier-operations.md).
 recreate-db:
 	$(COMPOSE) down
-	$(COMPOSE) up -d postgres
+	$(COMPOSE) up -d postgres neo4j
 	@echo "Đợi PostgreSQL healthy..."
 	@bash scripts/wait-pg-healthy.sh
+	@echo "✓ DB tier (postgres + neo4j) recreated. Neo4j tự healthy qua container healthcheck (xem 'docker ps')."
 
 # --- Lint ---
 
