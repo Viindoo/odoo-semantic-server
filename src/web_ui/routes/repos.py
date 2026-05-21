@@ -999,7 +999,11 @@ async def core_symbol_counts(request: Request, repo_id: int):
     vs-nonzero status badges.
 
     JSON response: ``{"counts": {"17.0": 1234, "16.0": 0, ...}}``
-    Returns 503 when Neo4j is unreachable; 404 when the repo is not found.
+
+    Returns 404 when the repo is not found.
+    Returns 503 when Postgres / repo-lookup fails.
+    Returns 200 with an empty ``counts`` dict when Neo4j is unavailable or
+    the Neo4j query fails (graceful degradation - no 503 on graph errors).
     """
     try:
         from src.db.pg import repo_store

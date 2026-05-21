@@ -757,7 +757,9 @@ class AuthStore:
 
         DEPRECATED (M9 W-AL): Use src.db.audit.write_audit_log() directly instead.
         This method is kept for backward compatibility only and will be removed
-        in a future major release (per ADR-0021 §Legacy Column Deprecation).
+        in a future major release.  Only the canonical columns (actor, action,
+        target, success) are written; legacy columns were dropped by migration
+        m10_001_drop_audit_legacy_columns.sql.
 
         New callers should use:
             from src.db.audit import write_audit_log
