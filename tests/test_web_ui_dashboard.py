@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_dashboard.py
 """Tests for /api/dashboard Web UI routes — requires PostgreSQL (M8 Phase 8 fix).
 

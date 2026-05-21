@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/public/test_404.py
 """Browser tests for 404 behaviour on public paths (M8 W7).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for health endpoint chunk_type breakdown.
 
 Tests the new /health endpoint field that breaks down embeddings by chunk_type.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for `python -m src.cli diagnose`.
 
 Each check is exercised independently by stubbing the underlying subprocess /

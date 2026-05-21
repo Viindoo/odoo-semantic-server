@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_oauth.py
 """Unit tests for POST /api/auth/oauth-login (M9 W-OA).
 

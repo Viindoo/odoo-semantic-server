@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_cli.py
 """Unit tests for src.cli — backup, restore, rotate-fernet commands."""
 from unittest.mock import MagicMock, patch

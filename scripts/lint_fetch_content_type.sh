@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Lint rule: fetch() with JSON body must include Content-Type: application/json
 # (prevent Astro 5.x checkOrigin rejection per M8 hotfix postmortem).
 #

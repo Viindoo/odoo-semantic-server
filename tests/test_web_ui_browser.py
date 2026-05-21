@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_browser.py
 """MIGRATED — see tests/browser/admin/ for the current browser test suite.
 

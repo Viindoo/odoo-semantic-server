@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_backup_cli_docker_fallback.py
 """Unit tests for _resolve_postgres_tool — docker exec fallback when pg_dump/psql absent."""
 from unittest.mock import patch

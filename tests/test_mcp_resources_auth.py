@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Auth-contract tests for the odoo:// resource handlers (WI-F4).
 
 Covers AC-F4-2:

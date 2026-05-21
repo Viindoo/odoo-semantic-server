@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Cross-repo dependency change propagation tests (M7 W14).
 
 Tests cover:

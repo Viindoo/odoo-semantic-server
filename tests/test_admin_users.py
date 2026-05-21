@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_admin_users.py
 """Tests for M9 W-UM: admin user management routes + auth + password reset.
 

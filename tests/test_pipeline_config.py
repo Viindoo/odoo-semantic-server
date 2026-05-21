@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_pipeline_config.py
 """Unit tests for pipeline._neo4j_creds() — no Neo4j required."""
 import importlib

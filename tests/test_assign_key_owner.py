@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_assign_key_owner.py
 """Tests for PATCH /api/admin/api-keys/{key_id}/owner (M9-rbac W2).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for src/git_utils.py — URL detection + SSH clone helper."""
 import os
 import subprocess

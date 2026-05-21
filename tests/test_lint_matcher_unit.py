@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_lint_matcher_unit.py
 """Pure unit tests for _match_lint_rule + V0 banner (PR#11 WI-F6).
 

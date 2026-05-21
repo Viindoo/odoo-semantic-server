@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_spec_tools.py
 """MCP tool tests for the M4.5 spec layer (lookup_core_api / api_version_diff /
 find_deprecated_usage / lint_check / cli_help).

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_spec_curation_banner.py
 """Pure unit + integration tests for _curate_status pending banner (PR#11 WI-F7).
 

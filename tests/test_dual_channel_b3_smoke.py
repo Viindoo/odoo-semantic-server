@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Smoke tests for dual-channel ToolResult on 7 priority tools (M10.5 WI-B3).
 
 AC-B3-2: For each of the 7 tools, assert that:

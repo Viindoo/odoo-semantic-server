@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src/indexer/__main__.py — no DB or Ollama required.
 
 WI-F1: updated to use the new subcommand structure

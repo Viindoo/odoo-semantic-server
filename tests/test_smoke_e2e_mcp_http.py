@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """M7 T1 MCP HTTP E2E smoke tests — calling MCP tools via HTTP JSON-RPC transport.
 
 Smoke tier: fast per-PR tests that verify MCP HTTP transport returns user-visible output.

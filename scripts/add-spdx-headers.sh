@@ -19,7 +19,14 @@ prepend_py() {
     SKIPPED=$((SKIPPED+1))
     return
   fi
-  printf '%s\n' "$py_header" | cat - "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  local first
+  first=$(head -1 "$f")
+  if printf '%s' "$first" | grep -q '^#!'; then
+    # Shebang on line 1 — insert SPDX as line 2 (after shebang, preserves executability)
+    awk 'NR==1{print; print "# SPDX-License-Identifier: AGPL-3.0-or-later"; next} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  else
+    printf '%s\n' "$py_header" | cat - "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  fi
   ADDED=$((ADDED+1))
 }
 
@@ -52,10 +59,42 @@ prepend_astro() {
   ADDED=$((ADDED+1))
 }
 
-# Python files
+prepend_sh() {
+  local f="$1"
+  if grep -q "SPDX-License-Identifier" "$f"; then
+    SKIPPED=$((SKIPPED+1))
+    return
+  fi
+  local first
+  first=$(head -1 "$f")
+  if printf '%s' "$first" | grep -q '^#!'; then
+    # Shebang on line 1 — insert SPDX as line 2 (after shebang)
+    awk 'NR==1{print; print "# SPDX-License-Identifier: AGPL-3.0-or-later"; next} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  else
+    printf '%s\n' "$py_header" | cat - "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  fi
+  ADDED=$((ADDED+1))
+}
+
+# Python files — src/
 while IFS= read -r -d '' f; do
   prepend_py "$f"
 done < <(find "$REPO/src" -name "*.py" -print0)
+
+# Python files — tests/
+while IFS= read -r -d '' f; do
+  prepend_py "$f"
+done < <(find "$REPO/tests" -name "*.py" -print0)
+
+# Python files — scripts/
+while IFS= read -r -d '' f; do
+  prepend_py "$f"
+done < <(find "$REPO/scripts" -name "*.py" -print0)
+
+# Shell scripts — scripts/
+while IFS= read -r -d '' f; do
+  prepend_sh "$f"
+done < <(find "$REPO/scripts" -name "*.sh" -print0)
 
 # Site TS/TSX
 while IFS= read -r -d '' f; do

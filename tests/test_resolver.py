@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_resolver.py
 from src.indexer.models import ModuleInfo
 from src.indexer.resolver import topological_sort

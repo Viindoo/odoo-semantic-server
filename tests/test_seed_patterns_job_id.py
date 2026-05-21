@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_seed_patterns_job_id.py
 """Tests for --job-id flag in src/indexer/seed_patterns.py (M8 W6).
 

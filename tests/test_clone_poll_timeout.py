@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_clone_poll_timeout.py
 """M7-C2: Clone-status polling timeout feature tests.
 

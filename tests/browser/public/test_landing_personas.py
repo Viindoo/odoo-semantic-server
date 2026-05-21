@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/public/test_landing_personas.py
 """Browser smoke tests for landing-v2 multi-persona expansion + interactive demos.
 

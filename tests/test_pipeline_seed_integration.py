@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Auto-reseed pattern catalogue at end of index_profile (M6 W2-7)."""
 import json
 import textwrap

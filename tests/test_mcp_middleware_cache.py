@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Concurrency and thread-safety tests for MCP middleware cache."""
 import concurrent.futures
 import time

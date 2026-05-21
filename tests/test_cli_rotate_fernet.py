@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_cli_rotate_fernet.py
 """Tests for FERNET rotation hardening — atomic rollback, audit log, env-var delivery.
 

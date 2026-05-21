@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_indexer_lock.py
 """Tests for Postgres advisory lock in indexer pipeline."""
 import os

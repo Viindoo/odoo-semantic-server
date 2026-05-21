@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Grammar consistency tests per ADR-0023 §2/§4.
 
 Four gating checks for tool-output drift:

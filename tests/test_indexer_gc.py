@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Module GC flag tests — ADR-0007 §D5 follow-up (M7 C4).
 
 Tests cover:

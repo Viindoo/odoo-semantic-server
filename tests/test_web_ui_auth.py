@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_auth.py
 """Tests for Web UI session-based authentication (M9 W-AC hardening).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for new CLI delete commands and list-webui-users."""
 import os
 import subprocess

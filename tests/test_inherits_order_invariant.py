@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_inherits_order_invariant.py
 #
 # Invariant: every INHERITS edge written by the indexer MUST have an `order`

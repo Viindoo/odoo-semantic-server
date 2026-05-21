@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for API keys Web UI routes — requires PostgreSQL (M8 W1 pure JSON API)."""
 
 import pytest

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for session-state tool surface (WI-E4, M11 Wave E).
 
 Covers AC-E4-1 through AC-E4-3:

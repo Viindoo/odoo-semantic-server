@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_impact_analysis.py
 """
 Tests for impact_analysis MCP tool.

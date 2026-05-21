@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Verify skip-message printed when embedder=None.
 
 Two cases, two messages:

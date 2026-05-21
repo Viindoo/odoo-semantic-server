@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """AuthMiddleware returns 503 JSON when the PG pool is unavailable.
 
 Pre-incident behaviour: any psycopg2.OperationalError during auth_store()

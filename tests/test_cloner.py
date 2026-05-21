@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Lifecycle tests for src.cloner background clone job.
 
 Tests are pure-unit (no Docker required): DB calls are mocked via patch.

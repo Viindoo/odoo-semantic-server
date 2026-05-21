@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for the backup pre-check that skips gracefully when PG is down.
 
 Incident 2026-05-19: backup unit was failing loud with

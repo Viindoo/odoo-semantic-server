@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """WI-D5 — shim contract tests for the 10 legacy tools deprecated in W-D4.
 
 Three sections:

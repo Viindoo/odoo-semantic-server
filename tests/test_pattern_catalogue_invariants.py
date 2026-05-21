@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Pattern catalogue invariants: data-shape, presence, and pipeline non-crash guards.
 
 Uses FakeEmbedder for deterministic embeddings (no Ollama required).

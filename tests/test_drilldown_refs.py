@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end integration tests for the drill-down ref chain.
 
 Covers WI-C4 scenarios:

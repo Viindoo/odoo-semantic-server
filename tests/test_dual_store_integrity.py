@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Dual-store integrity tests for pattern catalogue (F2 fix, ADR-0007 D6-split).
 
 Verifies that Neo4j PatternExample nodes and pgvector pattern embeddings remain

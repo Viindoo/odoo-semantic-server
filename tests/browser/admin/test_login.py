@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_login.py
 """Browser tests for /admin/login page (M8 W7).
 

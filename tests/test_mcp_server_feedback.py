@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_server_feedback.py
 """Test feedback API mounted on MCP server (port 8002 path).
 

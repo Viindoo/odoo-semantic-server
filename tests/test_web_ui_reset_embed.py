@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_reset_embed.py
 """Integration tests for POST /api/repos/repos/{id}/reset-embed (M8 W1 pure JSON API).
 

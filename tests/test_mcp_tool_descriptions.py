@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """tests/test_mcp_tool_descriptions.py — M7.5 T1
 
 Verify that every MCP tool description (docstring exposed via FastMCP):

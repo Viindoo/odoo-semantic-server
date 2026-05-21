@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for src/mcp/resources_index.py (WI-F2, M11 Wave F).
 
 Covers AC-F2-1 through AC-F2-5:

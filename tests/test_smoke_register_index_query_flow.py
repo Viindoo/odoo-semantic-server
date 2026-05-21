@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_smoke_register_index_query_flow.py
 """E2E smoke test: admin flow add_profile → add_repo → index_profile → resolve_model.
 

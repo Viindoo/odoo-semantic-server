@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit test: server.py reads host/port from src.config (no MCP/Neo4j needed)."""
 from src import config as config_mod
 

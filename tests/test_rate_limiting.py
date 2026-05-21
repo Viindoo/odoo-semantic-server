@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_rate_limiting.py
 """Unit tests for per-API-key rate limiter in src.mcp.middleware."""
 import time

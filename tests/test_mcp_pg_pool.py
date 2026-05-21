@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_pg_pool.py
 """Unit/integration tests for the SimpleConnectionPool refactor (WI-P2).
 

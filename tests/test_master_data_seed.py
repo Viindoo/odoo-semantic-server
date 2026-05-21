@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_master_data_seed.py
 """Tests for master data seeding mechanism (profiles + repos).
 

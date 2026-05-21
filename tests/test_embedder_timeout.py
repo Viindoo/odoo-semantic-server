@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Verify that httpx.ReadTimeout is raised (and eventually surfaced as RuntimeError)
 when the Ollama server is too slow to respond within the configured read timeout.
 

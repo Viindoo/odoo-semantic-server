@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Test incremental.py git-diff helpers (M6 W2-3)."""
 import subprocess
 from pathlib import Path

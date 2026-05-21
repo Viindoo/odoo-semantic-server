@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for Neo4j version check in MCP server startup."""
 from unittest.mock import MagicMock
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_middleware.py
 """Regression tests for MCP middleware P0 fix: PG pool must be initialized at startup.
 

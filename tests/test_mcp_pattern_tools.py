@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for M4.6 MCP tools.
 
 Covers suggest_pattern / check_module_exists / find_override_point.

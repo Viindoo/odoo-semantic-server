@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for WI-C3 dual-mode dispatch on the 4 resolve_* wrappers.
 
 Covers AC-C3-1 through AC-C3-7:

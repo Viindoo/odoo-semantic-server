@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_writer_neo4j_invariants.py
 """Invariant tests for Neo4jWriter — property guarantees that must hold for every
 node the writer creates, regardless of whether the node is a "real" definition or

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_profile_seed_completeness.py
 """Assert that seed_all() on empty defaults produces zero rows.
 

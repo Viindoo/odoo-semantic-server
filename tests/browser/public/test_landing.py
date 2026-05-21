@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/public/test_landing.py
 """Browser smoke tests for the landing page /.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_seed_patterns.py
 """Integration tests for POST /api/operations/seed-patterns (M8 W1 pure JSON API).
 

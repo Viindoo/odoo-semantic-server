@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for src.db.migrate — requires PostgreSQL."""
 import pytest
 

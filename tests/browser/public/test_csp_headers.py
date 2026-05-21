@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/public/test_csp_headers.py
 """Astro middleware CSP + Permissions-Policy regression tests.
 

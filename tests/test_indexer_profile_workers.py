@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Cross-profile parallel indexing via --profile-workers / ThreadPoolExecutor (M6 W2-8)."""
 import subprocess
 import threading

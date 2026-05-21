@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for init_pool_with_retry — backoff behaviour without live PG.
 
 We mock out PgPool so we can drive the retry path deterministically (raise N

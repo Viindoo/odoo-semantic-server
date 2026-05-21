@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Schema validation guards for src/data/patterns.json (per ADR-0009)."""
 import json
 import re

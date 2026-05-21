@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_is_definition_sale_order.py
 """Integration tests for is_definition OR-semantics against a live Neo4j instance.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 dump_graph_snippet.py — Bake graph-snapshot.json from live Neo4j for the landing page hero.
 

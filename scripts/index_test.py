@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Script chạy indexer với ~/git, version 17.0, để test E2E."""
 import sys
 import os

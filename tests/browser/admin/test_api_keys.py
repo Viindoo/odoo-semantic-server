@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_api_keys.py
 """Browser tests for /admin/api-keys page (M8 W7).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_diff_engine.py
 """Diff engine tests (M4.5 WI2.1).
 

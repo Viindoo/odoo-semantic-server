@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for src/db/auth_registry.py — requires PostgreSQL."""
 
 import pytest

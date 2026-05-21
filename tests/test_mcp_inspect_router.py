@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_inspect_router.py
 """Tests for src/mcp/inspect.py — discriminator routers.
 

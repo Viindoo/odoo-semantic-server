@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for parser_css.py — CSS file parsing for Odoo modules (WI-A1).
 
 These tests use only the public API (parse_file, parse_module) and work

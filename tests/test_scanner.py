@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_scanner.py
 from src.indexer.scanner import get_git_branch, is_odoo_version_branch, scan_repos
 from tests.conftest import make_git_repo

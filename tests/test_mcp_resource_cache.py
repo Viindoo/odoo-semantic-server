@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for ``src.mcp.resources.ResourceCache`` (WI-F1).
 
 Covers AC-F1-2 + AC-F1-3 — the thread-safe LRU+TTL cache underlying the 7

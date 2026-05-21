@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """DB integration tests for src/mcp/session.py — requires live PostgreSQL.
 
 Marker: pytest.mark.postgres

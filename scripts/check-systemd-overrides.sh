@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # check-systemd-overrides.sh — Drift audit for installed OSM systemd units.
 #
 # Compares each installed /etc/systemd/system/odoo-semantic-*.service body

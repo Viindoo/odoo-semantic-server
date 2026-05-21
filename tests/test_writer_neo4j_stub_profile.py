@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_writer_neo4j_stub_profile.py
 """Tests for stub node profile ownership (ADR-0016 D7).
 

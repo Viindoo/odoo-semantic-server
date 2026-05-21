@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # wait-pg-healthy.sh — poll `docker compose ps` until the postgres service is healthy.
 #
 # Why: after `docker compose up -d postgres`, the container is "running" almost

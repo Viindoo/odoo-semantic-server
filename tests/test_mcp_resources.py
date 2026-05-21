@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for ``src.mcp.resources`` — odoo:// URI handlers (WI-F1).
 
 Covers AC-F1-4 + AC-F1-5:

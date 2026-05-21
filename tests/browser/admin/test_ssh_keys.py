@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_ssh_keys.py
 """Browser tests for /admin/ssh-keys page (M8 W7).
 

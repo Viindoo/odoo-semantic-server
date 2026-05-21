@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Invariant test to prevent v96.0 test data from being re-introduced.
 

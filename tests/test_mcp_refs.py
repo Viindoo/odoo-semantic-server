@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for src/mcp/refs.py — per-API-key ref minter with TTL + tenant isolation.
 
 Covers AC-C1-1 through AC-C1-6:

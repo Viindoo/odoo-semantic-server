@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_neo4j_cli_docker_fallback.py
 """Unit tests for _resolve_neo4j_tool — docker exec fallback when neo4j-admin absent.
 

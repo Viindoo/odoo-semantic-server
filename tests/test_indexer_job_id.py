@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for --job-id flag in src/indexer/__main__.py — pure unit (no PG).
 
 WI-F2: --job-id arg for index-repo subcommand, reports status to job_registry.

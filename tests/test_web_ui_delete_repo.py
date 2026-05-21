@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_delete_repo.py
 """Integration tests for DELETE /api/repos/repos/{id} (M8 W1 pure JSON API).
 

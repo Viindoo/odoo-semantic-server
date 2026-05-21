@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Lint rule: every JSONResponse call passing a dict literal must wrap with
 # _json_safe() (prevent datetime/Decimal/UUID/bytes serialization TypeError
 # per M8 hotfix postmortem). Catches BOTH single-line and multi-line forms:

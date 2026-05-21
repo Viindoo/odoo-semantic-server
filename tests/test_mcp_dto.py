@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src/mcp/dto.py — Pydantic v2 DTOs (M10.5 WI-B2).
 
 Each test covers one *Output type:

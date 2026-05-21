@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_smoke_pattern_wow.py
 """Per-PR smoke: M4.6 Pattern Wow pipeline against mini fixture → assert counts.
 

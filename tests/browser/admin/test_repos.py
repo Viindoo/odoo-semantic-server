@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_repos.py
 """Browser tests for /admin/repos page (M8 W7).
 

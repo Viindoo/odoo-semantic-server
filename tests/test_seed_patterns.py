@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for src/data/patterns.json + src/indexer/seed_patterns.py CLI."""
 import json
 import os

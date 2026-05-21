@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for Web UI health endpoint (WI-4, pre-launch checklist §10.5).
 
 Business intent: GET /api/health returns 200 with status and version,

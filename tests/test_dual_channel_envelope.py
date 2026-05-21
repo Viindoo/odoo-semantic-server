@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Comprehensive contract tests for the dual-channel envelope on 7 priority tools
 (M10.5 WI-B4).
 

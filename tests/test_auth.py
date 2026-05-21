@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for src/auth.py and src/mcp/middleware.py — no DB required."""
 import time
 

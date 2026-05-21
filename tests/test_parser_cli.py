@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_parser_cli.py
 """CLI parser tests (M4.5 WI4).
 

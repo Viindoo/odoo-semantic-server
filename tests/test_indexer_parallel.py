@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_indexer_parallel.py
 """Tests for ThreadPoolExecutor parallel repo scanning in index_profile (M6 P3).
 

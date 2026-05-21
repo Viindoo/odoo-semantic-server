@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Schema migration upgrade-path tests (M6 W2 review fix).
 
 Reproduces the Opus review HIGH finding: CREATE TABLE IF NOT EXISTS is a no-op

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_pattern_seed_no_test_pollution.py
 """Regression: seeder must not introduce test-prefixed PatternExample nodes
 into Neo4j after a clean seed run.

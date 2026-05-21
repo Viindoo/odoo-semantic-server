@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_spec_data_lint_rules_curated.py
 """Acceptance tests for curated lint_rules_*.json static data files (WI-A4).
 

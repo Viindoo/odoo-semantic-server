@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end pipeline test — needs both Neo4j and PostgreSQL."""
 import textwrap
 from pathlib import Path

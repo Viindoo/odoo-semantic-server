@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_apply_preset.py
 """Integration tests for POST /api/operations/apply-preset (M8 W1 pure JSON API).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for writer_pgvector — make_chunks (unit) + write/query (postgres integration)."""
 import pytest
 

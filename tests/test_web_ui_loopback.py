@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for Web UI loopback-only middleware (I6)."""
 import pytest
 

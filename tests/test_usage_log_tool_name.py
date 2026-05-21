@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for UsageLogMiddleware — tool_name extraction at FastMCP layer.
 
 OBS-2 / F5: usage_log.tool_name was always 'unknown' because AuthMiddleware

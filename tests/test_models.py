@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_models.py
 from src.indexer.models import (
     JSGraphResult,

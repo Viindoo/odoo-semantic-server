@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_parser_python_scope_resolver.py
 """Unit tests for V0.5 qualified-name scope resolver in parser_python.py (M7 W13).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_cli_backup_bundle.py
 """Unit tests for the extended _cmd_backup — tar.gz bundle (M9 W-BK)."""
 import hashlib

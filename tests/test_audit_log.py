@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src/db/audit.py — write_audit_log, resolve_actor, @audit_action, audit_cli.
 
 These tests are fully unit-level (no Docker / no real DB). All DB calls are mocked.

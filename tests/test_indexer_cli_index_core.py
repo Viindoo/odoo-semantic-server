@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_indexer_cli_index_core.py
 """Tests for the `index-core` CLI subcommand (PR#11 fix WI-F1).
 

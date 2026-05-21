@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Verify Qwen3Embedder default model matches config + README."""
 
 

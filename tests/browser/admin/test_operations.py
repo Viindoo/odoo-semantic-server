@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_operations.py
 """Browser tests for /admin/operations page — migrations display + FERNET placeholder (M9 W-UO).
 

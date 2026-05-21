@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/public/test_install.py
 """Browser tests for the install/snippet UX on the landing page (M8 W7).
 

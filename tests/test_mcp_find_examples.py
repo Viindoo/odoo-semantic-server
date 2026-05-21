@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for find_examples MCP tool — requires Neo4j + PostgreSQL + pgvector."""
 import pytest
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_is_definition_or_logic.py
 """Unit tests for is_definition OR-semantics in writer_neo4j.py.
 

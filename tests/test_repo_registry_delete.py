@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_repo_registry_delete.py
 """Unit tests for delete_profile, delete_repo, reset_repo_head_sha (M8 W0).
 

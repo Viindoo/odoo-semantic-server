@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_restore_security.py
 """Security tests for the restore upload endpoint (M9 W-RS OWASP 10-item checklist).
 

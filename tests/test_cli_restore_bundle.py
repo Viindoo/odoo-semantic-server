@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_cli_restore_bundle.py
 """Unit tests for CLI restore bundle path (M9 W-RS).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src.db.migrate version checks using mocks (no PostgreSQL required)."""
 from unittest.mock import MagicMock, patch
 

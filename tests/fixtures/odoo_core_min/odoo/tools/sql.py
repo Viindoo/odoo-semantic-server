@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Minimal stub modelling Odoo's tools/sql.py — written from scratch for parser smoke tests.
 # DOES NOT contain real Odoo source. Purpose: exercise parse_odoo_core kind=function (top-level).
 """SQL DDL helper functions stub.

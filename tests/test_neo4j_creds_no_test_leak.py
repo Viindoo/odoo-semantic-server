@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Regression: NEO4J_TEST_* must never influence pipeline._neo4j_creds().
 
 Before this fix, `_neo4j_creds()` preferred NEO4J_TEST_* over NEO4J_*. When

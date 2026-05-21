@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_timeout_defaults.py
 """Verify that timeout/batch constants have safe defaults for v17+ heavy reindex
 and that env-var overrides work correctly.

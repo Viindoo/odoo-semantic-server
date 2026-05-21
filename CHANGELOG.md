@@ -2,6 +2,11 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — 2026-05-21 — Housekeeping: SPDX headers + script fix + ADR-0031
+
+### Changed
+- [SPLIT] Housekeeping: added SPDX-License-Identifier: AGPL-3.0-or-later headers to all 200 `tests/**/*.py` and 6 `scripts/` files (`.py` + `.sh`). Fixed `add-spdx-headers.sh` `prepend_py()` to insert SPDX as line 2 when shebang is present (preserves shebang executability). Extended script to cover `tests/`, `scripts/*.py`, and `scripts/*.sh` targets. Added ADR-0031 (python-dotenv auto-load at CLI entry points) to `CLAUDE.md` ADR list.
+
 ## [Unreleased] — 2026-05-20 — Security: purge internal deployment data
 
 ### Security

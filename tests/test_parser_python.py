@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_parser_python.py
 import textwrap
 from pathlib import Path

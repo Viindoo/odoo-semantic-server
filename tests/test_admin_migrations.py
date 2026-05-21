@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_admin_migrations.py
 """Tests for M9 W-UO: GET /api/admin/migrations read-only display.
 

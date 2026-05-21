@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Test scanner.get_module_commit_sha() helper (M6 W2-2)."""
 import subprocess
 from pathlib import Path

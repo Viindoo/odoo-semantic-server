@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_logout.py
 """Browser tests for logout flow (M8 W7).
 

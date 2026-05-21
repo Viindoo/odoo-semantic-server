@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for curated cli_flags_<version>.json spec data files (WI-A5).
 
 Validates:

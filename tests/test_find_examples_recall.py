@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Recall benchmark for find_examples — requires Ollama + Qwen3-Embedding-4B + indexed data.
 
 Gate:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for exponential backoff in Qwen3Embedder._embed_one retry loop.
 
 Verifies:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Mock recall benchmark for find_examples — runs in CI without Ollama.
 
 Tests the ranking logic (cosine similarity + centrality rerank) with

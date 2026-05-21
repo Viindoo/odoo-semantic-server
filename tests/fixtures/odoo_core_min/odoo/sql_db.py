@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Minimal stub modelling Odoo's sql_db.py — written from scratch for parser smoke tests.
 # DOES NOT contain real Odoo source. Purpose: exercise parse_odoo_core kind=cursor_method.
 """Odoo database connection and cursor stubs.

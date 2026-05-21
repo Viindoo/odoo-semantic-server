@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_diff_engine_lifecycle.py
 """Tests for lifecycle diff engine extension (PR#11 fix WI-F2).
 

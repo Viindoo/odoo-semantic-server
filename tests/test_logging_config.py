@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_logging_config.py
 """Unit tests for src.logging_config."""
 import json

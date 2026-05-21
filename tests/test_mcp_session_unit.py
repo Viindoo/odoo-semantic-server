@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src/mcp/session.py — pure unit, no DB required.
 
 Covers AC-E2-2, AC-E2-3, AC-E2-4 (via mocked clock), AC-E2-5.

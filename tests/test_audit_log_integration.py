@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for admin_audit_log via src/db/audit.py (M9 W-AL).
 
 Requires PostgreSQL (pytestmark = pytest.mark.postgres).

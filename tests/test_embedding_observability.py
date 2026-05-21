@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Embedding observability tests (M7 C5).
 
 Tests:

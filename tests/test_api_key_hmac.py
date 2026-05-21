@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for W-AK: HMAC hashing, expires_at filter, user_id FK wiring.
 
 All DB-backed tests require PostgreSQL and are marked pytest.mark.postgres.

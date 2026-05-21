@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_method_diff.py
 """Integration tests for find_override_point cross-version diff (M6 W3-7).
 

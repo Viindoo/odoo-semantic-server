@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for the remaining 4 odoo:// resource handlers (WI-F4).
 
 Covers AC-F4-1:

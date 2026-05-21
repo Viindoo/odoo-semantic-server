@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src.config — INI reader, no DB needed."""
 import textwrap
 from pathlib import Path

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for src/web_ui/_json.py::_json_safe.
 
 Covers all supported conversions: datetime, date, Decimal, UUID, bytes, and

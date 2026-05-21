@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_index_all.py
 """Integration tests for POST /api/repos/index-all (M8 W1 pure JSON API).
 

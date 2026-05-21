@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_ssh_keys.py
 """Tests for SSH key generation — no DB required (unit tests)."""
 import os

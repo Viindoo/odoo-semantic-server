@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Pipeline incremental indexer integration tests (M6 W2-4).
 
 Tests verify the incremental indexing contract:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Calibration harness for find_examples rerank coefficients (Item A) and
 _compute_risk thresholds (Item B).
 

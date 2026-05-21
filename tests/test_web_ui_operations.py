@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_web_ui_operations.py
 """Browser-level E2E tests for the /operations page (M8 W0).
 

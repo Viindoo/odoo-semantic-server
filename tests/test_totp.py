@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_totp.py
 """Unit + integration tests for TOTP MFA (M9 W-MF).
 

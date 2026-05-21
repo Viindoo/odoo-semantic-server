@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_operations_backup_route.py
 """Unit tests for backup endpoints in src/web_ui/routes/operations.py (M9 W-BK)."""
 import json

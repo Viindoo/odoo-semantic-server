@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_smoke_index_core.py
 """Per-PR smoke: index-core pipeline against mini fixture → assert counts.
 

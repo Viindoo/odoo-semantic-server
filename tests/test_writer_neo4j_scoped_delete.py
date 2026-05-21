@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_writer_neo4j_scoped_delete.py
 """Integration tests for Neo4jWriter.delete_modules_scoped (M8 W0).
 

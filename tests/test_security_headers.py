@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for security header configuration — M9 W-HD / CSP hardening.
 
 Scope:

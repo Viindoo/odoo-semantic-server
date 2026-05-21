@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_parser_python_era1_field_extraction.py
 """Tests for era1 (v8/v9) _columns field extraction improvements (WI-A2).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 WI-A3 — PatternExample v9–v15 coverage tests.
 

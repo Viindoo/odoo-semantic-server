@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_account_anon_redirect.py
 """Browser regression test: anonymous users hitting /account/* must redirect
 to /admin/login (single global login flow).
