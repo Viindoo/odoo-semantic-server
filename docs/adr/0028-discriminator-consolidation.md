@@ -87,7 +87,7 @@ The 10 superseded tools become runtime shims in `src/mcp/server.py`. Each shim:
 | Version | Action |
 |---|---|
 | v0.5.x | Three superset tools shipped (`model_inspect`, `module_inspect`, `entity_lookup`). Ten old tools become shims: output begins with `DEPRECATED:` banner; docstring `SKIP` clause updated. Existing client configs work unchanged. |
-| v0.6 | Ten deprecated shims removed. Clients that have not migrated to the superset tools will receive `Tool not found` errors. Migration path: swap tool name + convert flat params to discriminator param. |
+| v0.6 | Ten deprecated shims removed (**executed in PR #155, 2026-05-21**). Clients that have not migrated to the superset tools will receive `Tool not found` errors. Migration path: swap tool name + convert flat params to discriminator param. `model_inspect`/`module_inspect` additionally gained `start_index`/`limit` so the supersets fully replace the paginated `list_*` tools (no pagination regression). |
 
 One major release between deprecation banner and removal gives integrators a full release cycle to update client configurations, which are typically embedded in AI tool config files (`claude_desktop_config.json`, `.cursor/mcp.json`, etc.) and are not always easy to update on short notice.
 
@@ -97,7 +97,7 @@ One major release between deprecation banner and removal gives integrators a ful
 
 ### Positive
 
-- **Reduced context cost.** The `tools/list` schema shrinks from 21 tools to 24 (21 − 10 deprecated + 3 new) for the v0.5.x transition period, and to 14 after v0.6 cleanup. Each tool entry in the FastMCP schema is approximately 300–500 tokens; cutting 7 net tools saves ~2–3k tokens per session cold-start.
+- **Reduced context cost.** The `tools/list` schema carries 28 tools during the v0.5.x transition period (18 supersets + session + core + inspection tools, plus the 10 deprecated shims), shrinking to 18 after v0.6 cleanup. Each tool entry in the FastMCP schema is approximately 300–500 tokens; cutting the 10 shims saves ~3–5k tokens per session cold-start.
 - **Self-documenting discriminators.** The JSON Schema `enum` on `method` and `kind` lists every valid value in the schema response, so the LLM can self-route without re-reading docstrings. GitHub's production evidence shows this reduces hallucinated parameter values significantly.
 - **Single Cypher path per tool.** Each superset tool routes to exactly one core function per discriminator value; there is no conditional branching inside the Cypher queries. The fan-out is purely at the Python routing layer (`src/mcp/inspect.py`), which is trivially testable.
 - **Backward compatibility through v0.5.x.** The shim pattern allows all existing AI client configs — Claude Code `~/.claude/mcp.json`, Cursor `.cursor/mcp.json`, Codex CLI `~/.codex/config.yaml` — to continue working without any user-side change until v0.6.
@@ -105,7 +105,7 @@ One major release between deprecation banner and removal gives integrators a ful
 
 ### Negative
 
-- **Temporary tool count inflation.** During v0.5.x, the tool count is 24 (21 + 3 new, before the 10 deprecated shims are removed). The context-cost benefit is only fully realized after v0.6. Mitigation: the deprecation banners and docstring `SKIP` clauses actively discourage LLM selection of the old tools.
+- **Temporary tool count inflation.** During v0.5.x, the tool count is 28 (the 18 kept tools plus the 10 deprecated shims, before the shims are removed). The context-cost benefit is only fully realized after v0.6. Mitigation: the deprecation banners and docstring `SKIP` clauses actively discourage LLM selection of the old tools.
 - **Breaking change at v0.6.** Any AI client config that was not updated during the v0.5.x window will break at v0.6. Mitigation: the deprecation banner in tool output is a machine-readable signal — AI agents that read their own tool output can detect the deprecation and surface the migration instruction to the user before v0.6.
 - **Discriminator validation overhead.** Each superset tool must validate the `method`/`kind` enum at runtime and return an instructive error for unknown values. This is a small constant cost but is new code that must be tested (covered in `tests/test_mcp_inspect_router.py`).
 
