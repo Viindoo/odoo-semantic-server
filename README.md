@@ -42,15 +42,16 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **20 tools** (v0.7 — +2 stylesheet tools added per M10A):
+MCP server expose **24 tools** (v0.8 — +4 ORM-validation tools added per M10.5 Phase 2):
 
 - **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
 - **1 module overview tool (M9 Wave 1):** `describe_module`
 - **3 superset discriminator tools (M11 Wave D — ADR-0028):** `model_inspect`, `module_inspect`, `entity_lookup` — route to the right flat tool by kind/entity-type, with structured `discriminator` in `structuredContent`
 - **4 session tools (M11 Wave E — ADR-0029):** `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` — sticky per-API-key context (24h TTL) eliminates `odoo_version` repetition
 - **2 stylesheet tools (M10A — ADR-0025):** `resolve_stylesheet`, `find_style_override` — CSS/SCSS chain + variable tracing across the indexed stylesheet graph
+- **4 ORM-validation tools (M10.5 Phase 2 — v0.8):** `resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation` — static ORM checks (dotted-path resolution, domain field + version-aware operator validity, `@api.depends` paths, relation comodel) against the indexed graph before an AI client suggests a domain/depends/relation
 
-Capabilities: Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) + CSS/SCSS stylesheet indexing across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
+Capabilities: Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) + CSS/SCSS stylesheet indexing + static ORM validation (domain / @api.depends / relation / dotted-path chain) across v8 → v17, v19 (v18 pending — see OBS-1; v20 not yet released by Odoo).
 
 MCP server also exposes **7 Resources** (`odoo://` URI scheme — M11 Wave F, ADR-0030) for bookmark-stable entity reads:
 
@@ -175,7 +176,7 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.7.1 (2026-05-21) — superset filter parity: `model_inspect`/`module_inspect` now forward `kind`/`view_type`/`era`/`bound_model` to the underlying enumerations (completes `from_module` from v0.7.0). v0.7.0 shipped M10A + M10.5-P1: 2 stylesheet tools, magic-fields prelude, `from_module` param, `noqa` in lint_check, Field.comodel_name graph property; 20 tools, 7 MCP Resources. See CHANGELOG.md.
+**Latest release:** v0.8.0 (2026-05-21) — M10.5 Phase 2: 4 ORM-validation tools (`resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation`) for static domain / `@api.depends` / relation / dotted-path checks against the indexed graph, with version-aware domain operators (`any`/`not any` v17+, `parent_of` v9+) from the v8→v19 ORM survey; `MethodInfo.depends` graph property; 24 tools, 7 MCP Resources. v0.7.1 added superset filter parity (`kind`/`view_type`/`era`/`bound_model`); v0.7.0 shipped M10A + M10.5-P1. See CHANGELOG.md.
 
 **Production deploy:** 2026-05-17 — PR #119 go-live batch deployed (writer profile stub fix eliminating 5,988 NULL nodes, MFA flag sync, backup CLI docker-exec fallback + nightly systemd timer, `/api/health` auth-exempt endpoint, ADR-0016 D7 stub policy). PR #117 (migration 0004 self-contained SQL rescue) + PR #118 (CSP + Permissions-Policy headers) also live. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state.
 

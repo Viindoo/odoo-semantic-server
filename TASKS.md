@@ -743,7 +743,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ## Milestone 10.5 — "ORM Intelligence Wow"
 
-**Status:** `[~]` Phase 1 data layer shipped PR #156 2026-05-21; Phase 2 (4 MCP tools) pending. (M10.5 P1 shipped PR #156; Phase 2 pending)
+**Status:** `[x]` DONE — Phase 1 data layer shipped PR #156 2026-05-21; Phase 2 (4 MCP tools) shipped 2026-05-21 (v0.8.0, branch `feat/m10-5-phase2-orm-tools`). Tool surface 20 → 24. Prod reindex (comodel_name + new `mth.depends`) remains an ops follow-up.
 
 **Intent:** New MCP tool family for ORM-level validation — domains, depends graphs, relation chains. Sits between drill-down tools (M1–M5) and architectural impact (M4 `impact_analysis`).
 **Outcome:** AI client validates an ORM domain (`[('partner_id.country_id', '=', 'VN')]`) against the actual model graph before suggesting it to the user — no more hallucinated fields in domain expressions.
@@ -757,17 +757,25 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [x] **`FieldInfo.comodel_name` field** — extend dataclass in `src/indexer/models.py:28-35` with `comodel_name: str | None = None`. (2026-05-21, PR #156)
 - [x] **Parser extraction** — `src/indexer/parser_python.py`: for `fields.Many2one`/`One2many`/`Many2many` calls, extract first positional arg (the comodel string) and populate `FieldInfo.comodel_name`. Handle both era1 (text-regex `_columns` dict) and era2 (AST). (2026-05-21, PR #156)
 - [x] **Writer persist** — `src/indexer/writer_neo4j.py:182`: add `SET f.comodel_name = $comodel_name` clause when writing Field nodes. (2026-05-21, PR #156)
-- [ ] **Production reindex** — after migration deploys, run `python -m src.indexer index-repo --all --full` to populate `f.comodel_name` for existing Field nodes (otherwise queries return null). **Note:** ops follow-up — run `index-repo --all --full` to backfill comodel_name on prod.
+- [ ] **Production reindex** — after migration deploys, run `python -m src.indexer index-repo --all --full` to populate `f.comodel_name` for existing Field nodes (otherwise queries return null). **Note:** ops follow-up — also backfills the new `mth.depends` (Phase 2). Run `index-repo --all --full` on prod.
 
-### Phase 2 — 4 MCP tools (depends on Phase 1 complete)
+### Phase 1b — Data layer for validate_depends (Phase 2 prerequisite, shipped v0.8.0)
 
-- [ ] **`resolve_orm_chain(model, dotted_path, odoo_version)`** — IMPLEMENT FIRST (primitive reused by other 3). Traverse a dotted path (`partner_id.country_id.code`) returning the terminal field type + intermediate Many2one comodels. Errors out at the first broken hop with `{step: N, model: X, field: Y, reason: 'missing'}`.
+- [x] **`MethodInfo.depends` field** — `src/indexer/models.py`: `depends: list[str] = field(default_factory=list)`. (v0.8.0)
+- [x] **Parser extraction** — `src/indexer/parser_python.py`: era2 decorator loop captures `@api.depends('a.b', ...)` string args (lambda/callable skipped via `_extract_string` returning None); era1 has no decorator depends → empty. (v0.8.0)
+- [x] **Writer persist** — `src/indexer/writer_neo4j.py`: `SET mth.depends = $depends`. (v0.8.0)
 
-- [ ] **`validate_domain(model, domain, odoo_version)`** — parse the domain string/list, walk each `('field.subfield...', op, value)` term against the Neo4j Field graph via `resolve_orm_chain`, return `ok` or list of `{term, error: 'field not found' | 'invalid operator' | 'comodel mismatch'}`.
+### Phase 2 — 4 MCP tools (depends on Phase 1 complete) — shipped v0.8.0
 
-- [ ] **`validate_depends(model, method, odoo_version)`** — read the `@api.depends('field.subfield')` decorator on the method, validate each dependency via `resolve_orm_chain`, return violations + suggested corrections (typo distance ≤ 2 → "did you mean X?").
+> Implemented in new module `src/mcp/orm.py` (primitive `_traverse_field_chain` + 4 impls); 4 thin `@mcp.tool` wrappers in `src/mcp/server.py`. 19 integration tests (`tests/test_orm_validation.py`) + 6 pure operator tests (`tests/test_domain_operators.py`) + parser/writer unit+integration tests, all green.
 
-- [ ] **`validate_relation(model, field, target_model, odoo_version)`** — assert that `model.field` is a Many2one/One2many/Many2many pointing at `target_model` (or any of its ancestors via INHERITS). Returns `ok` or `{actual_comodel, expected_comodel, suggestion}`.
+- [x] **`resolve_orm_chain(model, dotted_path, odoo_version)`** — primitive reused by other 3. Walks dotted path → terminal field type + intermediate comodels; `BROKEN` line at first broken hop (reason ∈ missing/not_relational/dangling_comodel). Handles magic fields + INHERITS/DELEGATES_TO inherited fields. (v0.8.0)
+
+- [x] **`validate_domain(model, domain, odoo_version)`** — `ast.literal_eval` parse; per-term field-path validation via primitive; **version-aware operator set** (`valid_domain_operators` — `any`/`not any` v17+, `parent_of` v9+); logical `&`/`|`/`!` skipped. (v0.8.0)
+
+- [x] **`validate_depends(model, method, odoo_version)`** — reads `Method.depends` from Neo4j, validates each path; flags depends-on-`id` (Odoo `NotImplementedError`); era1 (empty depends) → clear note; `difflib` "did you mean X?" for typos. (v0.8.0)
+
+- [x] **`validate_relation(model, field, target_model, odoo_version)`** — asserts `model.field` is relational → `target_model` (or subtype via INHERITS); reports actual comodel on mismatch + field-typo suggestion. (v0.8.0)
 
 Acceptance: each tool follows ADR-0023 tree-grammar contract (§1 header + §4 Next-step hint mapping); routing matrix in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) lists all 4 tools with TRIGGER phrases EN+VI; integration tests against `viindoo_17` fixture profile; snapshot tests for tree-text output.
 

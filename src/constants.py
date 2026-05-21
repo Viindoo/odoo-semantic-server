@@ -197,3 +197,41 @@ MAGIC_FIELDS: dict[str, tuple[str, str | None]] = {
     "write_uid": ("many2one", "res.users"),
     "write_date": ("datetime", None),
 }
+
+# ---------------------------------------------------------------------------
+# Domain operators — VERSION-AWARE (M10.5 P2, used by validate_domain).
+# Cross-version survey v8→v19 (12 Haiku agents): the term-operator set is NOT
+# constant across Odoo majors. `parent_of` arrived in v9; `any`/`not any` in
+# v17; v19 added access-rights-bypass variants (`any!`/`not any!`) + explicit
+# `not =like`/`not =ilike`. The `=like`/`=ilike` family persists v8→v19.
+# Relational set ttypes are lowercase as stored in Neo4j Field.ttype.
+# ---------------------------------------------------------------------------
+
+RELATIONAL_TTYPES: frozenset[str] = frozenset({"many2one", "one2many", "many2many"})
+
+# Term operators available in every supported Odoo major (v8+).
+_DOMAIN_OPERATORS_BASE: frozenset[str] = frozenset({
+    "=", "!=", "<", "<=", ">", ">=", "=?",
+    "=like", "=ilike", "like", "not like", "ilike", "not ilike",
+    "in", "not in", "child_of",
+})
+
+
+def valid_domain_operators(odoo_version: str) -> frozenset[str]:
+    """Return the set of valid domain term-operators for an Odoo version.
+
+    Unknown / unparseable versions return a permissive superset (all operators)
+    so validate_domain never flags a false positive on an unrecognised version.
+    """
+    try:
+        major = int(str(odoo_version).split(".")[0])
+    except (ValueError, IndexError, AttributeError):
+        major = 99  # unknown → permissive
+    ops = set(_DOMAIN_OPERATORS_BASE)
+    if major >= 9:
+        ops.add("parent_of")
+    if major >= 17:
+        ops |= {"any", "not any"}
+    if major >= 19:
+        ops |= {"any!", "not any!", "not =like", "not =ilike"}
+    return frozenset(ops)

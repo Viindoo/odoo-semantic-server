@@ -522,11 +522,19 @@ def _parse_class(
 
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):
             decorators = []
+            depends: list[str] = []
             for dec in node.decorator_list:
                 if isinstance(dec, ast.Attribute):
                     decorators.append(f'api.{dec.attr}')
                 elif isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
                     decorators.append(f'api.{dec.func.attr}')
+                    # M10.5 P2 — capture @api.depends('a.b', 'c') string args for
+                    # validate_depends. _extract_string returns None for lambda/
+                    # callable args, so dynamic depends are skipped (not resolvable).
+                    if dec.func.attr == 'depends':
+                        depends.extend(
+                            s for arg in dec.args if (s := _extract_string(arg))
+                        )
                 elif isinstance(dec, ast.Name):
                     decorators.append(dec.id)
 
@@ -554,6 +562,7 @@ def _parse_class(
                 super_safety=ss,
                 return_required=rr,
                 signature=sig,
+                depends=depends,
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)

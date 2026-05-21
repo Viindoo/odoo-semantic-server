@@ -45,6 +45,11 @@ _TOOL_NAMES = [
     # M10A stylesheet tools (ADR-0025, D5/D6)
     "resolve_stylesheet",
     "find_style_override",
+    # M10.5 P2 ORM-validation tools
+    "resolve_orm_chain",
+    "validate_domain",
+    "validate_depends",
+    "validate_relation",
 ]
 
 # Odoo-content query tools that MUST contain ≥1 Vietnamese diacritic in their
@@ -72,6 +77,11 @@ _VI_TRIGGER_TOOL_NAMES = [
     # M10A stylesheet tools (ADR-0025, D5/D6)
     "resolve_stylesheet",
     "find_style_override",
+    # M10.5 P2 ORM-validation tools
+    "resolve_orm_chain",
+    "validate_domain",
+    "validate_depends",
+    "validate_relation",
 ]
 
 _REQUIRED_BLOCKS = ("TRIGGER when:", "PREFER over:", "SKIP when:")

@@ -161,6 +161,55 @@ def test_parse_method_decorators(tmp_path, sale_module):
     assert "api.onchange" in method_map["_onchange_partner"].decorators
 
 
+def test_parse_method_depends_args(tmp_path, sale_module):
+    """M10.5 P2 — @api.depends('a', 'b.c') string args captured into MethodInfo.depends.
+
+    Lambda/callable depends are skipped (not statically resolvable); non-depends
+    decorators (onchange) leave depends empty.
+    """
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, api
+
+        class MyModel(models.Model):
+            _name = 'my.model'
+
+            @api.depends('partner_id', 'line_ids.price_subtotal')
+            def _compute_total(self):
+                pass
+
+            @api.depends(lambda self: ('partner_id',))
+            def _compute_dynamic(self):
+                pass
+
+            @api.onchange('partner_id')
+            def _onchange_partner(self):
+                pass
+    """)
+    result = parse_file(f, sale_module)
+    method_map = {m.name: m for m in result[0].methods}
+    assert method_map["_compute_total"].depends == ["partner_id", "line_ids.price_subtotal"]
+    # lambda arg is not a string constant → skipped (dynamic depends).
+    assert method_map["_compute_dynamic"].depends == []
+    # onchange is not depends → depends stays empty.
+    assert method_map["_onchange_partner"].depends == []
+
+
+def test_parse_method_depends_default_empty(tmp_path, sale_module):
+    """Method without @api.depends → depends defaults to empty list (not None)."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models
+
+        class MyModel(models.Model):
+            _name = 'my.model'
+
+            def plain_method(self):
+                pass
+    """)
+    result = parse_file(f, sale_module)
+    method_map = {m.name: m for m in result[0].methods}
+    assert method_map["plain_method"].depends == []
+
+
 def test_parse_skips_syntax_error_files(tmp_path, sale_module):
     bad = tmp_path / "bad.py"
     bad.write_text("def broken(: invalid syntax {{{")

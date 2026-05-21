@@ -98,3 +98,34 @@ def test_comodel_name_idempotent_reindex(writer, neo4j_driver):
 
     assert len(rows) == 1, "Field node must be unique (MERGE idempotent)"
     assert rows[0]["comodel"] == "res.partner"
+
+
+def test_method_depends_persisted(writer, neo4j_driver):
+    """M10.5 P2 — MethodInfo.depends persisted to Neo4j Method node (mth.depends)."""
+    module = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION, repo="sale_repo",
+        path="/tmp", depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=TEST_VERSION,
+        methods=[
+            MethodInfo(
+                name="_compute_total", has_super_call=False, decorators=["api.depends"],
+                depends=["partner_id", "order_line.price_subtotal"],
+            ),
+            MethodInfo(name="action_confirm", has_super_call=False, decorators=[]),
+        ],
+    )
+    writer.write_results([ParseResult(module=module, models=[model])])
+
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            "MATCH (mth:Method {model: $m, odoo_version: $v}) "
+            "RETURN mth.name AS name, mth.depends AS depends",
+            m="sale.order", v=TEST_VERSION,
+        ).data()
+
+    depends_map = {r["name"]: r["depends"] for r in rows}
+    assert depends_map["_compute_total"] == ["partner_id", "order_line.price_subtotal"]
+    # Method without @api.depends → empty list persisted (Neo4j stores [] as null/[]).
+    assert depends_map["action_confirm"] in ([], None)

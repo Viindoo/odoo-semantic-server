@@ -3,10 +3,11 @@
 
 This module owns:
 
-1. ``NEXT_STEP_HINTS`` — 13-entry registry mapping each drill-down tool to its
+1. ``NEXT_STEP_HINTS`` — 17-entry registry mapping each drill-down tool to its
    recommended next-step templates. Templates contain ``{name}``, ``{ver}``,
    ``{module}``, ``{field}``, ``{method}``, ``{xmlid}`` placeholders rendered
-   via ``str.format(**ctx)``.
+   via ``str.format(**ctx)``. (v0.6: 10 shims removed; M10A: +2 stylesheet;
+   M10.5 P2: +4 ORM-validation tools.)
 
 2. ``TERMINAL_TOOLS`` — frozenset of three tools (``lint_check``, ``cli_help``,
    ``api_version_diff``) that MUST NOT emit a Next-step footer per ADR-0023
@@ -91,6 +92,32 @@ NEXT_STEP_HINTS: dict[str, list[str]] = {
         "resolve_stylesheet(module='{module}', odoo_version='{ver}')"
         " to list all stylesheets in the matched module",
         "describe_module(name='{module}', odoo_version='{ver}') for module context",
+    ],
+    # M10.5 P2 ORM-validation tools (ADR-0023 follow-up).
+    # {name} = root model; {model}/{field} = terminal/broken-step model+field.
+    "resolve_orm_chain": [
+        "entity_lookup(kind='field', model='{model}', field='{field}',"
+        " odoo_version='{ver}') for terminal field detail",
+        "model_inspect(model='{model}', method='fields', odoo_version='{ver}')"
+        " to list valid fields at the broken step",
+    ],
+    "validate_domain": [
+        "resolve_orm_chain(model='{name}', dotted_path='<a.b.c>', odoo_version='{ver}')"
+        " to debug one path",
+        "model_inspect(model='{name}', method='fields', odoo_version='{ver}')"
+        " to list valid fields",
+    ],
+    "validate_depends": [
+        "resolve_orm_chain(model='{name}', dotted_path='<dependency path>',"
+        " odoo_version='{ver}') to debug one dependency",
+        "model_inspect(model='{name}', method='fields', odoo_version='{ver}')"
+        " to list valid fields",
+    ],
+    "validate_relation": [
+        "entity_lookup(kind='field', model='{name}', field='{field}',"
+        " odoo_version='{ver}') for field detail",
+        "model_inspect(model='{name}', method='fields', odoo_version='{ver}')"
+        " to list relational fields",
     ],
 }
 

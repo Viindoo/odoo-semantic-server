@@ -59,6 +59,9 @@ class MethodInfo:
     # M6 W3-7 — function argument signature string (e.g. "self, vals_list").
     # Captured via ast.unparse(node.args) in parser_python (era2 only; None for era1).
     signature: str | None = None
+    # M10.5 P2 — @api.depends('field.subfield') dotted-path string args (era2 only;
+    # [] for era1, which has no decorator depends). Used by validate_depends MCP tool.
+    depends: list[str] = field(default_factory=list)
 
 
 @dataclass

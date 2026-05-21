@@ -2,6 +2,26 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.8.0] — 2026-05-21 — M10.5 Phase 2: ORM validation tools
+
+### Added
+- **`resolve_orm_chain(model, dotted_path, odoo_version)`** — new MCP tool. Walks a dotted field path (e.g. `partner_id.country_id.code`) hop by hop across the indexed Field graph, returning the terminal field type or a `BROKEN` line naming the first unresolved hop. Handles ORM magic fields (`create_uid` → `res.users`, etc.) and inherited fields reached via `INHERITS`/`DELEGATES_TO` (e.g. `message_ids` from a `mail.thread` mixin).
+- **`validate_domain(model, domain, odoo_version)`** — new MCP tool. Parses a domain literal and validates each `(field_path, operator, value)` term: every field-path hop must resolve, and the operator must be valid for the version. Operator validity is **version-aware** (cross-version survey v8→v19): `parent_of` from v9, `any`/`not any` only from v17, v19 access-rights variants (`any!`/`not any!`). Logical connectors (`&`, `|`, `!`) are skipped.
+- **`validate_depends(model, method, odoo_version)`** — new MCP tool. Reads the indexed `@api.depends('a.b', ...)` arguments of a compute method and validates each dependency path; flags depends on `id` (Odoo raises `NotImplementedError`) and suggests the closest field name for typos. Era1 (v8/v9, no decorator depends) surfaces a clear "no @api.depends" note.
+- **`validate_relation(model, field, target_model, odoo_version)`** — new MCP tool. Asserts a field is a many2one/one2many/many2many whose comodel is `target_model` (or a subtype via inheritance); reports the actual comodel on mismatch and suggests the closest field name when missing.
+- **`MethodInfo.depends` graph property** (M10.5 Phase 2 data layer) — parser now extracts `@api.depends` string args (era2 AST; lambda/callable args skipped as non-static; era1 has none); writer persists `mth.depends` in Neo4j. Powers `validate_depends`.
+- **`valid_domain_operators(odoo_version)` + `RELATIONAL_TTYPES`** in `src/constants.py` — version-keyed domain operator sets; unknown/sentinel versions return a permissive superset (no false positives).
+
+### Changed
+- **Tool surface 20 → 24** — four ORM-validation tools added. `tools/list` now reports 24 tools. The four tools read version-tagged graph nodes, so they are version-agnostic; the only version-aware logic is the domain operator set and the era1 depends gate.
+
+### Notes
+- Implementation in new module `src/mcp/orm.py` (primitive `_traverse_field_chain` + 4 impls), mirroring `src/mcp/inspect.py` (late-import of `server` to avoid a circular dependency).
+- **Ops follow-up:** run `python -m src.indexer index-repo --all --full` on prod to backfill `mth.depends` for existing Method nodes (mirrors the M10.5 Phase 1 `comodel_name` reindex).
+- **Cross-repo follow-up:** routing matrix EN+VI + adapters/persona skills for the 4 ORM tools need updating at [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) (the client hand-mirrors the server tool surface — no generator).
+
+---
+
 ## [0.7.1] — 2026-05-21
 
 ### Fixed
