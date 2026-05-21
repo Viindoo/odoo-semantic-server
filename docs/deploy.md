@@ -400,8 +400,11 @@ indexer subprocess; populated bởi `index-repo --job-id N` + Web UI status badg
 
 ### 3.3.5 Profiles and repos setup
 
-`python -m src.db.migrate` chỉ áp dụng schema migrations — không seed profiles
-hay repos tự động. Admin tạo profiles + repos qua web UI hoặc JSON API.
+`python -m src.db.migrate` áp dụng schema migrations và seed 12 root profile
+`odoo_N` (Odoo CE v8–v19) qua migration `0004` (idempotent `ON CONFLICT (name)
+DO NOTHING`). Python seeder (`seed_all()`) cũng chạy nhưng **no-op mặc định** —
+không bundle roster nào. Admin tạo các profile khác + toàn bộ repos qua web UI
+hoặc JSON API.
 
 Xem [`docs/deploy/master-data-upgrade.md`](deploy/master-data-upgrade.md) cho
 hướng dẫn tạo profiles, thêm repos, và setup profile hierarchy (delta model per

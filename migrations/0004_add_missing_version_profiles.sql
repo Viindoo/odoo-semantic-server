@@ -25,16 +25,16 @@
 
 INSERT INTO profiles (name, odoo_version, description)
 VALUES
-    ('odoo_8',  '8.0',  'Odoo CE 8.0 (Viindoo fork as canonical CE)'),
-    ('odoo_9',  '9.0',  'Odoo CE 9.0 (Viindoo fork as canonical CE)'),
-    ('odoo_10', '10.0', 'Odoo CE 10.0 (Viindoo fork as canonical CE)'),
-    ('odoo_11', '11.0', 'Odoo CE 11.0 (Viindoo fork as canonical CE)'),
-    ('odoo_12', '12.0', 'Odoo CE 12.0 (Viindoo fork as canonical CE)'),
-    ('odoo_13', '13.0', 'Odoo CE 13.0 (Viindoo fork as canonical CE)'),
-    ('odoo_14', '14.0', 'Odoo CE 14.0 (Viindoo fork as canonical CE)'),
-    ('odoo_15', '15.0', 'Odoo CE 15.0 (Viindoo fork as canonical CE)'),
-    ('odoo_16', '16.0', 'Odoo CE 16.0 (Viindoo fork as canonical CE)'),
-    ('odoo_17', '17.0', 'Odoo CE 17.0 (Viindoo fork as canonical CE)'),
-    ('odoo_18', '18.0', 'Odoo CE 18.0 (Viindoo fork as canonical CE)'),
-    ('odoo_19', '19.0', 'Odoo CE 19.0 (Viindoo fork as canonical CE)')
+    ('odoo_8',  '8.0',  'Odoo CE 8.0'),
+    ('odoo_9',  '9.0',  'Odoo CE 9.0'),
+    ('odoo_10', '10.0', 'Odoo CE 10.0'),
+    ('odoo_11', '11.0', 'Odoo CE 11.0'),
+    ('odoo_12', '12.0', 'Odoo CE 12.0'),
+    ('odoo_13', '13.0', 'Odoo CE 13.0'),
+    ('odoo_14', '14.0', 'Odoo CE 14.0'),
+    ('odoo_15', '15.0', 'Odoo CE 15.0'),
+    ('odoo_16', '16.0', 'Odoo CE 16.0'),
+    ('odoo_17', '17.0', 'Odoo CE 17.0'),
+    ('odoo_18', '18.0', 'Odoo CE 18.0'),
+    ('odoo_19', '19.0', 'Odoo CE 19.0')
 ON CONFLICT (name) DO NOTHING;
