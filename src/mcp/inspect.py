@@ -46,6 +46,8 @@ def _model_inspect(
     field: str | None = None,
     method_name: str | None = None,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
+    start_index: int = 0,
+    limit: int = 200,
 ) -> str:
     """Route to a model-scoped tool by discriminator.
 
@@ -69,6 +71,10 @@ def _model_inspect(
         keyword).
     api_key_id:
         Tenant key for ref minting (default: ``'anonymous'``).
+    start_index:
+        Pagination cursor for fields/methods/views (zero-based SKIP).
+    limit:
+        Max rows per page for fields/methods/views (default 200).
 
     Returns
     -------
@@ -91,6 +97,8 @@ def _model_inspect(
             odoo_version=odoo_version,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     if method == "methods":
@@ -99,6 +107,8 @@ def _model_inspect(
             odoo_version=odoo_version,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     if method == "views":
@@ -107,6 +117,8 @@ def _model_inspect(
             odoo_version=odoo_version,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     if method == "field":
@@ -139,6 +151,8 @@ def _module_inspect(
     profile_name: str | None = None,
     *,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
+    start_index: int = 0,
+    limit: int = 200,
 ) -> str:
     """Route to a module-scoped tool by discriminator.
 
@@ -155,6 +169,10 @@ def _module_inspect(
         Optional profile filter.
     api_key_id:
         Tenant key for ref minting (default: ``'anonymous'``).
+    start_index:
+        Pagination cursor for views/owl/qweb/js (zero-based SKIP).
+    limit:
+        Max rows per page for views/owl/qweb/js (default 200).
 
     Returns
     -------
@@ -180,7 +198,8 @@ def _module_inspect(
         # in _list_fields (model is required). Return an informative stub.
         return (
             f"module_inspect(name='{name}', method='fields') — "
-            "use list_fields(model=<model>, odoo_version=...) for model-scoped fields, "
+            "use model_inspect(model=<model>, method='fields', odoo_version=...) "
+            "for model-scoped fields, "
             "or describe_module(name='{name}') for counts."
         ).format(name=name)
 
@@ -188,7 +207,8 @@ def _module_inspect(
         # Same limitation as 'fields' — _list_methods requires a model arg.
         return (
             f"module_inspect(name='{name}', method='methods') — "
-            "use list_methods(model=<model>, odoo_version=...) for model-scoped methods, "
+            "use model_inspect(model=<model>, method='methods', odoo_version=...) "
+            "for model-scoped methods, "
             "or describe_module(name='{name}') for counts."
         ).format(name=name)
 
@@ -198,6 +218,8 @@ def _module_inspect(
             odoo_version=odoo_version,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     if method == "owl":
@@ -206,6 +228,8 @@ def _module_inspect(
             odoo_version=odoo_version,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     if method == "qweb":
@@ -214,6 +238,8 @@ def _module_inspect(
             odoo_version=odoo_version,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     if method == "js":
@@ -222,6 +248,8 @@ def _module_inspect(
             module=name,
             profile_name=profile_name,
             api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
         )
 
     # Unreachable — guard for exhaustiveness

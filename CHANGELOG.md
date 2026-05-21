@@ -2,6 +2,24 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.6.0] — 2026-05-21 — v0.6: remove 10 deprecated flat tools (ADR-0028 timeline)
+
+### Added
+- `model_inspect` / `module_inspect` now accept `start_index` + `limit` and forward them to the underlying field/method/view/owl/qweb/js listings — preserves the paginated drill-down that the removed flat `list_*` tools provided (the pager continuation hint now names a superset that actually paginates).
+
+### Removed
+- Removed 10 deprecated flat MCP tools (ADR-0028 deprecation timeline): `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`. Tool surface 28 → 18. Use the `model_inspect` / `module_inspect` / `entity_lookup` supersets instead.
+
+### Fixed
+- `resources/read` now honours `set_active_version` — added `on_read_resource` hook to `UsageLogMiddleware` so the sticky per-API-key version applies to `odoo://` resource reads, not just tool calls. [WI-B1]
+- `set_active_version` / `set_active_profile` validate inputs — pinning a non-indexed version or unknown profile returns an error tree listing valid options instead of silently falling back. [WI-B2]
+- Surviving tools' next-step/pager hints + `TRIGGER/PREFER/SKIP` docstrings no longer reference the removed flat tools — all redirected to the `model_inspect` / `module_inspect` / `entity_lookup` supersets (caught + fixed in-PR by the code-review pass).
+
+### Changed
+- ADR-0029 amended: `set_active_profile` documented as default-arg convenience, not an access-control boundary.
+
+---
+
 ## [0.5.0] — 2026-05-21 — M10.5 + M11 tool UX · go-live deploy · open-core split · security hardening
 
 Consolidated release covering all work since v0.4.1: the M10.5 + M11 tool-UX/architecture batch, the go-live production deploy, the M9 Coverage Fill + RBAC follow-ups, the open-core repo split with AGPL license metadata, the internal-data security purge, and SPDX/housekeeping. Sub-sections below are grouped by theme and date.

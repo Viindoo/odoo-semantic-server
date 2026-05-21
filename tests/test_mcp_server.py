@@ -1675,7 +1675,7 @@ def test_describe_module_truncation(neo4j_driver):
         assert "Defines models: 22" in out
         # describe_module inlines top-20 with "... and K more (use list_fields(...))" tail.
         assert "and 2 more" in out
-        assert "use list_fields(" in out
+        assert "use model_inspect(" in out
     finally:
         _cleanup_version(neo4j_driver, W6_DESCRIBE_VERSION)
 
@@ -1790,7 +1790,7 @@ def test_list_fields_truncation(neo4j_driver):
         # cap = LIST_PREVIEW_FIELDS_MAX (50); 60 total → continuation hint appears.
         # Pagination hint format: "Showing rows 1–50 of 60. Call list_fields(...)"
         assert "Showing rows 1–50 of 60" in out
-        assert "list_fields" in out  # continuation hint references the same tool
+        assert "model_inspect" in out  # continuation hint references the superset tool
         assert "start_index=50" in out  # next-page cursor is disclosed
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_FIELDS_VERSION)
@@ -1961,7 +1961,7 @@ def test_list_methods_truncation(neo4j_driver):
         # cap = 20; 30 total → continuation hint appears.
         # Pagination hint format: "Showing rows 1–20 of 30. Call list_methods(...)"
         assert "Showing rows 1–20 of 30" in out
-        assert "list_methods" in out  # continuation hint references the same tool
+        assert "model_inspect" in out  # continuation hint references the superset tool
         assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_METHODS_VERSION)
@@ -2055,7 +2055,7 @@ def test_list_views_truncation(neo4j_driver):
         out = srv._list_views("big.model", W6_LIST_VIEWS_VERSION)
         # cap = 20; 25 total → continuation hint appears.
         assert "Showing rows 1–20 of 25" in out
-        assert "list_views" in out
+        assert "model_inspect" in out  # continuation hint references the superset tool
         assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_VIEWS_VERSION)
@@ -2176,7 +2176,7 @@ def test_list_owl_components_truncation(neo4j_driver):
         )
         # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → continuation hint appears.
         assert "Showing rows 1–20 of 25" in out
-        assert "list_owl_components" in out
+        assert "module_inspect" in out  # continuation hint references the superset tool
         assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_OWL_VERSION)
@@ -2193,7 +2193,7 @@ def test_list_owl_components_era_guard_v13(neo4j_driver):
         # Era-guard text is the canonical v8–v13 message per ADR-0023 §1.7.
         assert "(none)" in out
         assert "Widget era" in out
-        assert "list_js_patches" in out
+        assert "module_inspect" in out  # era-guard suggests module_inspect(method='js')
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_OWL_LEGACY_VERSION)
 
@@ -2259,7 +2259,7 @@ def test_list_qweb_templates_truncation(neo4j_driver):
         )
         # cap = LIST_PREVIEW_MAX_ITEMS (20); 25 total → continuation hint appears.
         assert "Showing rows 1–20 of 25" in out
-        assert "list_qweb_templates" in out
+        assert "module_inspect" in out  # continuation hint references the superset tool
         assert "start_index=20" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_QWEB_VERSION)
@@ -2319,7 +2319,7 @@ def test_list_js_patches_truncation(neo4j_driver):
         out = srv._list_js_patches(W6_LIST_JS_VERSION, module="patchy_mod")
         # cap = LIST_PREVIEW_PATCHES_MAX (10); 15 total → continuation hint appears.
         assert "Showing rows 1–10 of 15" in out
-        assert "list_js_patches" in out
+        assert "module_inspect" in out  # continuation hint references the superset tool
         assert "start_index=10" in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_JS_VERSION)
@@ -2887,13 +2887,38 @@ def test_set_active_version_persists_then_resolve_model_uses_it(seeded_neo4j):
     assert "account.move" in text
 
 
+def _make_profile_found_pg_checkout():
+    """Return a context manager that simulates a Postgres connection with the profile present.
+
+    fetchone() returns (1,) — profile found; fetchall() returns [] (unused in happy path).
+    """
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    @contextmanager
+    def _mock():
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.__enter__ = lambda s: s
+        cur.__exit__ = MagicMock(return_value=False)
+        cur.fetchone.return_value = (1,)   # profile exists → happy path
+        cur.fetchall.return_value = []
+        conn.cursor.return_value = cur
+        yield conn
+    return _mock
+
+
 def test_set_active_profile_returns_confirmation(seeded_neo4j):
     """set_active_profile stores profile name and returns confirmation."""
     from unittest.mock import patch
 
     srv = _import_server_module()
 
-    with patch("src.mcp.session.set_active_profile_db") as mock_set:
+    checkout = _make_profile_found_pg_checkout()
+    with (
+        patch("src.mcp.server._checkout_pg", checkout),
+        patch("src.mcp.session.set_active_profile_db") as mock_set,
+    ):
         result = srv.set_active_profile.fn(profile_name="my-erp-prod")
         text = result.content[0].text
         assert "my-erp-prod" in text, f"Expected profile name in confirmation: {text!r}"

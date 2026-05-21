@@ -806,7 +806,7 @@ ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; sect
 
 ## Milestone 12 — "v0.6 Shim Removal + M11 Hardening"
 
-**Status:** `[ ]` Not started.
+**Status:** `[x]` DONE — 2026-05-21 (PR #155, v0.6.0). Stream A (shim removal) + Stream B (WI-B1/B2 hardening + WI-B3 ADR-0029 amendment) shipped in one PR. Orchestrated as a multi-subagent worktree wave (S1 src / S2 tests / S3 docs → diamond integration). 18 tools, CI green. See "Review-followup" note below for in-PR fixes from the `/code-review:code-review` pass.
 
 > Tracked as v0.6 follow-up after v0.5 ships in PR #133 (commit `9ae3732`, `feat/m10-5-m11-tool-ux-architecture`). Two streams: Stream A executes the deprecation timeline promised by [ADR-0028](docs/adr/0028-discriminator-consolidation.md) (one-major-release removal of the 10 legacy shims); Stream B absorbs the three functional/hardening observations surfaced by the M11 security review of PR #133 (zero HIGH/MEDIUM security findings — these are UX / correctness gaps, not vulnerabilities).
 
@@ -821,47 +821,58 @@ ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; sect
 
 ADR-0028 §Timeline promises "one major release between deprecation banner and removal". v0.5.x shipped the `DEPRECATED:` banners; v0.6 retires the wrappers. Persona skills in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) already migrated to supersets in PR #133 commit `4ba1432` (verified: 0 legacy refs, 15/15 use supersets + `set_active_version`) — no skill changes required.
 
-- [ ] **WI-A1 — Delete the 10 `@mcp.tool()` shim wrappers** in `src/mcp/server.py`:
+- [x] **WI-A1 — Delete the 10 `@mcp.tool()` shim wrappers** in `src/mcp/server.py`: *(commit `18b3b66`; also removed orphaned `_deprecation_banner`/`_looks_like_ref`/`_REF_PATTERN`/`_STALE_REF_RECOVERY`/`_format_stale_ref_error` + 4 unused imports)*
   - `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`
   - `list_fields`, `list_methods`, `list_views`
   - `list_owl_components`, `list_qweb_templates`, `list_js_patches`
   - Keep the `_resolve_*` / `_list_*` implementation functions intact — they are called by the supersets (`model_inspect` / `module_inspect` / `entity_lookup`) via `src/mcp/inspect.py` routers.
-- [ ] **WI-A2 — Delete `tests/test_mcp_deprecation_shims.py`** (shim-banner equivalence tests no longer applicable).
-- [ ] **WI-A3 — Update tool count from 28 → 18 across docs + UI:**
-  - [ ] `README.md` (every "28 tools" / "28 MCP tools" reference → 18)
+- [x] **WI-A2 — Delete `tests/test_mcp_deprecation_shims.py`** (shim-banner equivalence tests no longer applicable). *(commit `d5fcdd2`)*
+- [x] **WI-A3 — Update tool count from 28 → 18 across docs + UI:** *(in-repo items done, commit `ea083a9`; client-repo items below stay open — tracked in Viindoo/odoo-mcp-client)*
+  - [x] `README.md` (every "28 tools" / "28 MCP tools" reference → 18)
   - [ ] [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) (28-tool matrix → 18-tool) — update in Viindoo/odoo-mcp-client repo
   - [ ] [docs/personas/dev.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) ("28-tool arsenal" phrasing → 18-tool) — update in Viindoo/odoo-mcp-client repo
-  - [ ] [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) (`server.py + 28 tools` → `+ 18 tools`)
+  - [x] [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) (`server.py + 28 tools` → `+ 18 tools`)
   - [ ] [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) — remove "Tool Surface Change — v0.4 → v0.5" section (legacy no longer callable); keep "Session Context" + "MCP Resources" sections (still applicable). Update in Viindoo/odoo-mcp-client repo.
   - [ ] Cursor, Gemini, OpenAI adapter files in Viindoo/odoo-mcp-client — drop DEPRECATED legacy tool blocks.
-  - [ ] `site/src/pages/index.astro` — TOOLS array: remove legacy entries; "28" → "18".
-  - [ ] `site/src/components/Hero.astro` — tag pill + stats "28" → "18".
-- [ ] **WI-A4 — Version bump:** `pyproject.toml` `0.5.0 → 0.6.0`; CHANGELOG.md entry for v0.6 documenting shim removal + the Stream B fixes shipping alongside.
-- [ ] **WI-A5 — Smoke gate before tag:** `pytest -m "(postgres or neo4j or ...)"` full integration sweep + manual `tools/list` length check against running MCP server (= 18). `grep -r 'resolve_model\|list_fields' src/mcp/` returns 0 hits outside `inspect.py` / `_resolve_*` impl.
+  - [x] `site/src/pages/index.astro` — TOOLS array: remove legacy entries; "28" → "18".
+  - [x] `site/src/components/Hero.astro` — tag pill + stats "28" → "18". *(also `InstallSnippets.astro`)*
+- [x] **WI-A4 — Version bump:** `pyproject.toml` `0.5.0 → 0.6.0`; CHANGELOG.md `[0.6.0]` entry documenting shim removal + Stream B fixes + pagination passthrough. *(commit `ea083a9` + docs-sync)*
+- [x] **WI-A5 — Smoke gate before tag:** full integration sweep (CI `integration-tests` green) + `tools/list` == 18 verified + `grep -r 'def resolve_model\|def list_fields' src/mcp/` returns 0 hits outside `inspect.py` / `_resolve_*` impl. CI all green on PR #155.
 
 ### Stream B — M11 Hardening (security-review follow-ups, PR #133)
 
 Three observations surfaced during the M11 security review of PR #133. All three are NOT security vulnerabilities (data is global Odoo codebase intelligence with no tenant-private content) — they are functional / UX gaps that should not be carried into v0.6 unfixed.
 
-- [ ] **WI-B1 — `resources/read` honours `set_active_version`** — MED
+- [x] **WI-B1 — `resources/read` honours `set_active_version`** — MED *(commit `18b3b66`: added `on_read_resource` hook to `UsageLogMiddleware`, mirrors `on_call_tool` thread-local set/clear; covered by `tests/test_mcp_resources_session.py`)*
   - Symptom: `UsageLogMiddleware` (`src/mcp/tool_log_middleware.py:49-92`) hooks `on_call_tool` only, not `resources/read`. After `set_active_version('17.0')`, calling `odoo://auto/model/sale.order` bypasses the sticky session — `_get_api_key_id()` returns `"default"`, `int("default")` fails in `_fetch_from_db`, fallback to `_latest_version()`.
   - Fix direction: extend `UsageLogMiddleware` to also hook `on_read_resource` and set the same thread-local. Alternative: make `_resolved_version_for` accept an explicit `api_key_id` arg threaded by the FastMCP resource framework.
   - Acceptance: integration test verifies `set_active_version('17.0')` then `resources/read odoo://auto/model/sale.order` returns the v17.0 rendering (NOT `_latest_version()` output); covers both `odoo://auto/*` and any future per-version resource URIs.
   - Cross-ref: [ADR-0029](docs/adr/0029-implicit-session-context.md) §Session resolution; [ADR-0030](docs/adr/0030-mcp-resources-uri-scheme.md) §URI grammar.
 
-- [ ] **WI-B2 — Validate `set_active_version` / `set_active_profile` inputs** — LOW
+- [x] **WI-B2 — Validate `set_active_version` / `set_active_profile` inputs** — LOW *(commit `18b3b66`: validation placed at the tool boundary in `src/mcp/server.py` — NOT the `session.py` db helper as the symptom suggested — because version validation needs Neo4j + the tool can render the error tree; `set_active_version('999.0')` / `set_active_profile('does_not_exist')` now return an error tree naming valid options; covered by `tests/test_session_validation.py`)*
   - Symptom: `src/mcp/session.py` `set_active_version_db` / `set_active_profile_db` accept any string. Pinning to `'99.0'` (non-indexed) or `'nonexistent_profile'` silently falls back or returns empty trees — poor UX, no error surface.
   - Fix direction: in `set_active_version_db`, run a sanity Cypher (`MATCH (m:Module {odoo_version: $v}) RETURN m LIMIT 1`) — empty result raises `ValueError("version not indexed: <v>")` propagated up the tool surface. Same pattern for `set_active_profile_db` against the `profiles` table.
   - Acceptance: `set_active_version('999.0')` returns an error tree naming the available versions; `set_active_profile('does_not_exist')` returns an error tree naming valid profiles. Existing happy-path tests stay green.
   - Note: NOT a security finding — values are parameter-bound everywhere; no injection possible.
 
-- [ ] **WI-B3 — Profile-as-convenience-not-authz documentation amendment** — LOW (decision-only)
+- [x] **WI-B3 — Profile-as-convenience-not-authz documentation amendment** — LOW (decision-only) *(path (a) chosen: ADR-0029 amended with "Profile is convenience, not authz" section, commit `ea083a9`. Client-setup-guide note tracked in Viindoo/odoo-mcp-client.)*
   - Symptom: per `src/db/migrate.py:139-147` (`api_keys` schema), any authenticated key can query any profile via the `profile_name` parameter. Resource handlers in `src/mcp/resources.py` deliberately omit `profile_name` from underlying `_resolve_*` calls. v0.5's introduction of `set_active_profile` could mislead users into expecting authz.
   - Decision required, pick one of:
     - **(a) Status quo + documentation (recommended, lowest-effort):** Amend [ADR-0029](docs/adr/0029-implicit-session-context.md) + [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) with explicit note that `set_active_profile` is convenience for default-arg-injection, NOT an access control mechanism. Profile boundary remains data segmentation only.
     - **(b) True profile authz (higher-effort):** Add `allowed_profile_ids JSONB` column to `api_keys`; filter all Cypher queries in resources + tools by this list. Open a separate RFC / ADR before implementing — needs customer demand signal first (i.e. customer-A's index hidden from customer-B).
   - Acceptance: written decision committed — either ADR-0029 amendment (path a) OR new RFC ticket linking to a draft ADR-0031 (path b).
   - Note: by design today, NOT a security finding per se; flagged because v0.5 surface could mislead.
+
+### Review-followup (PR #155 `/code-review:code-review` pass — fixed in-PR to prevent docs/code drift)
+
+The mechanical shim removal initially left dangling references; a multi-agent code review caught them and all were fixed within the same PR (no follow-up debt):
+
+- **Dangling next-step/pager hints + docstrings** — ~49 inline `Next:`/pager f-strings + ~14 `TRIGGER/PREFER/SKIP` docstring clauses inside the *surviving* impls (`_resolve_model`, `_resolve_view`, `_list_fields`, `_list_methods`, `_list_views*`, `_list_owl_components`, `_list_qweb_templates`, `_describe_module`, `find_override_point`, `impact_analysis`) + 2 `inspect.py` fields/methods stubs were redirected to the supersets (`model_inspect`/`module_inspect`/`entity_lookup`). *(commit `8db30f4`)*
+- **Pagination parity** — `model_inspect`/`module_inspect` now accept + forward `start_index` / `limit` to the underlying `_list_*` impls, so paginated field/method/view/owl/qweb/js listing survives the flat-tool removal (the pager continuation hint now names a tool that actually paginates). *(commit `2ad9b84`)*
+- **Docstring budget** — `find_override_point` docstring trimmed back under the 1500-char limit after the reword. *(commit `cb18f2b`)*
+- **Tests** — 4 integration test files migrated off the removed tools (`test_drilldown_refs`, `test_dual_channel_b3_smoke`, `test_dual_channel_envelope`, `test_smoke_e2e_mcp_http`); 8 truncation/era-guard assertions in `test_mcp_server.py` updated to the superset hint names; `test_set_active_profile_returns_confirmation` mock updated for the WI-B2 profiles check.
+
+Wave commits: `18b3b66` (S1 src), `ea083a9` (S3 docs), `d5fcdd2` (S2 tests), `5205600` (hints self-loop), `8db30f4` + `2ad9b84` + `cb18f2b` (review-followup).
 
 ### Sequencing note
 
@@ -871,7 +882,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Pre-launch Signoff
 
-Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 21 MCP tool sign-off table.
+Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 18 MCP tool sign-off table.
 
 | Mục | Admin | Ngày | Ghi chú |
 |-----|-------|------|---------|
@@ -880,7 +891,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Port Isolation | | | |
 | Logrotate | | | |
 | Backup & Recovery | | | |
-| MCP Tool Sign-Off (21 tools) | | | |
+| MCP Tool Sign-Off (18 tools) | | | |
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
@@ -895,5 +906,5 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
 | ↓ | Implementation plans (archived internally) | Per-milestone implementation plans |
-| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 21 MCP tool verify |
+| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 18 MCP tool verify |
 | → | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook — backup frequency, restore order, RTO |

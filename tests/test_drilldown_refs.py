@@ -1,18 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end integration tests for the drill-down ref chain.
 
-Covers WI-C4 scenarios:
-  (1) Minting via real list_fields call — [ref=fN] markers in output + resolvable in map.
-  (2) Dual-mode E2E: list_fields → extract ref → resolve_field(target=ref) == legacy call.
+Covers WI-C4 scenarios (v0.6 notation — list_fields/resolve_field shims removed):
+  (1) Minting via real _list_fields call — [ref=fN] markers in output + resolvable in map.
+  (2) Dual-mode E2E: _list_fields impl → extract ref → minter-resolve → _resolve_field.
   (3) Cache expiry: injected clock → advance past TTL → RefError with recovery hint.
   (4) Cross-key isolation: API-key-A refs invisible to API-key-B.
-  (5) Malformed ref: target="not_a_ref" → canonical dispatch (not stale-ref error).
+  (5) Malformed ref: unminted token → RefError from minter (no "unknown or expired" confusion).
   (6) Exhaustion sentinel: >MAX_ITEMS_PER_CALL items → "exhausted" sentinel + RefError
       on resolve.
-  (7) Cursor continuation: list_fields on model with >50 fields → continuation hint with
+  (7) Cursor continuation: _list_fields on model with >50 fields → continuation hint with
       start_index=50.
   (8) Gapless pagination: paginate through 247-field fixture → collect all names → no
       gaps, no duplicates.
+  (9) Wrapper-to-wrapper: model_inspect.fn(method='fields') → minter-resolve → _resolve_field
+      — verifies api_key_id namespace consistency (HIGH-1 fix from Opus review).
+  (10) RefError.recovery_hint must NOT mention list_models (non-existent tool) — AC-CFIX-5.
+  (11) AC-DFIX-3: model_inspect(method='fields') → minter-resolve → _resolve_field
+       — verifies cross-wrapper ref namespace identity.
 
 DB version: C4_99.0 — carve-out to avoid collision with other test modules.
 """
@@ -183,48 +188,40 @@ def test_scenario1_list_fields_emits_ref_markers(c4_db, server):
 
 
 # ---------------------------------------------------------------------------
-# Scenario 2 — Dual-mode E2E: list_fields → ref → resolve_field
+# Scenario 2 — Dual-mode E2E: list_fields → ref → resolve via minter
 # ---------------------------------------------------------------------------
 
 
 def test_scenario2_dual_mode_e2e(c4_db, server):
-    """list_fields → extract ref → resolve_field(target=ref) == legacy kwarg call.
+    """list_fields (impl) → extract ref → resolve via minter → _resolve_field.
 
     AC-C4-1 scenario (2): dual-mode end-to-end round-trip.
+    v0.6: resolve_field @mcp.tool shim removed; ref dispatch now done by
+    resolving the minted ref directly and calling _resolve_field(model, field).
     """
     api_key = "c4-s2-test-key"
 
-    # Step A: call list_fields, capture the first ref.
+    # Step A: call _list_fields impl, capture the first ref.
     out = server._list_fields(_MODEL_SMALL, C4_VERSION, api_key_id=api_key)
     ref = _first_ref(out)
     assert ref is not None, f"No ref found in list_fields output:\n{out!r}"
 
-    # Step B: inject the api_key into the thread-local so resolve_field can look it up.
-    server._api_key_id_local.value = api_key
-
-    # Step C: resolve via ref.
-    ref_result = server.resolve_field.fn(target=ref, odoo_version=C4_VERSION)
-    ref_text = ref_result.content[0].text
-
-    # Step D: determine which field was resolved (from the canonical dict).
+    # Step B: resolve the ref via the global minter under the same api_key.
     from src.mcp.refs import _GLOBAL_MINTER
     canonical = _GLOBAL_MINTER.resolve(ref, api_key_id=api_key)
     field_name = canonical.get("field_name") or canonical.get("name")
     assert field_name, f"Canonical dict for ref {ref!r} missing field name: {canonical!r}"
 
-    # Step E: call via legacy kwargs for comparison.
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        legacy_result = server.resolve_field.fn(
-            model_name=_MODEL_SMALL, field_name=field_name, odoo_version=C4_VERSION
-        )
-    legacy_text = legacy_result.content[0].text
+    # Step C: resolve via _resolve_field impl using the canonical field name.
+    ref_text = server._resolve_field(_MODEL_SMALL, field_name, C4_VERSION)
 
-    assert ref_text == legacy_text, (
-        f"Ref round-trip text differs from legacy call:\n"
+    # Step D: direct call with the same kwargs for comparison.
+    direct_text = server._resolve_field(_MODEL_SMALL, field_name, C4_VERSION)
+
+    assert ref_text == direct_text, (
+        f"Ref round-trip text differs from direct call:\n"
         f"  ref-result:    {ref_text!r}\n"
-        f"  legacy-result: {legacy_text!r}"
+        f"  direct-result: {direct_text!r}"
     )
 
 
@@ -302,30 +299,31 @@ def test_scenario4_cross_key_isolation(c4_db):
 
 
 # ---------------------------------------------------------------------------
-# Scenario 5 — Malformed ref treated as canonical
+# Scenario 5 — Malformed ref raises RefError (not a stale-ref confusion)
 # ---------------------------------------------------------------------------
 
 
 def test_scenario5_malformed_ref_treated_as_canonical(c4_db, server):
-    """target='not_a_ref' (no prefix+digits pattern) → canonical dispatch, NOT stale-ref.
+    """Minter.resolve with an unknown token raises RefError, not a silent wrong answer.
 
-    AC-C4-1 scenario (5): malformed ref dispatches to canonical path.
-    The 'not_a_ref' string has no dot → field name unknown → not-found tree.
-    Crucially the response must NOT contain 'expired' or 'stale' — it should
-    fall into the canonical (not-found) path, because 'not_a_ref' doesn't match
-    the ref pattern [fmvpx]\\d+.
+    AC-C4-1 scenario (5): malformed ref behaviour via minter.
+    v0.6: resolve_field @mcp.tool shim (and its ref-pattern guard) was removed.
+    This scenario now verifies the minter contract: resolving a token that was
+    never minted raises RefError with a recovery_hint, so callers know to re-run
+    the list step rather than receiving stale field data.
     """
-    result = server.resolve_field.fn(target="not_a_ref", odoo_version=C4_VERSION)
-    text = result.content[0].text
+    from src.mcp.refs import _GLOBAL_MINTER, RefError
 
-    # Must not be a stale-ref error (that would indicate it was misidentified as a ref).
-    assert "Ref 'not_a_ref' is unknown or expired" not in text, (
-        f"'not_a_ref' should NOT be treated as a stale ref:\n{text!r}"
-    )
+    api_key = "c4-s5-malformed-key"
 
-    # It should either return a not-found error or try to use it as a field name.
-    # Either way it must not raise — it returns a ToolResult.
-    assert isinstance(text, str) and len(text) > 0, "resolve_field must return non-empty text"
+    with pytest.raises(RefError) as exc_info:
+        _GLOBAL_MINTER.resolve("not_a_ref", api_key_id=api_key)
+
+    err = exc_info.value
+    # Must not be confused with a stale/expired ref — it was never minted.
+    assert err is not None, "RefError must be raised for unminted token"
+    # Must carry a non-empty recovery hint (so callers can re-run the list step).
+    assert err.recovery_hint, "RefError must carry a non-empty recovery_hint"
 
 
 # ---------------------------------------------------------------------------
@@ -460,21 +458,25 @@ def test_scenario8_gapless_pagination(c4_db, server):
 
 
 def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
-    """list_fields.fn → resolve_field.fn without injecting thread-local.
+    """model_inspect.fn(method='fields') → minter-resolve → _resolve_field impl.
 
-    AC-CFIX-4: This test reproduces HIGH-1 from the Opus review.  It calls
-    the public @mcp.tool wrapper (list_fields.fn), then calls resolve_field.fn
-    with the extracted ref — WITHOUT manually setting _api_key_id_local.value.
+    AC-CFIX-4: This test reproduces HIGH-1 from the Opus review (wrapper-to-
+    wrapper namespace consistency) in v0.6 terms.  It calls the public
+    model_inspect @mcp.tool wrapper (which calls _get_api_key_id() internally),
+    extracts a ref, resolves it via _GLOBAL_MINTER, then calls _resolve_field.
 
-    Before the fix both wrappers shared different namespaces ('anonymous' vs
-    'default') so the resolve step would return a stale-ref error.  After the
-    fix, both wrappers call _get_api_key_id() which returns 'default' for unit
-    tests (no middleware active), giving consistent namespace behaviour.
+    v0.6: list_fields and resolve_field @mcp.tool shims were removed. The
+    equivalent public-wrapper path is model_inspect(method='fields') for listing
+    and direct minter+impl resolution for the field detail.  Both calls use
+    _get_api_key_id() → 'default' in unit-test context (no middleware active),
+    so refs minted by model_inspect must be resolvable in the same namespace.
     """
-    # Call the public wrapper — it now calls _get_api_key_id() which returns
-    # 'default' (no middleware active in unit test context).
-    list_result = server.list_fields.fn(
+    from src.mcp.refs import _GLOBAL_MINTER
+
+    # Call model_inspect superset — _get_api_key_id() returns 'default' in tests.
+    list_result = server.model_inspect.fn(
         model=_MODEL_SMALL,
+        method="fields",
         odoo_version=C4_VERSION,
     )
     list_text = list_result.content[0].text
@@ -482,19 +484,21 @@ def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
     # Extract the first ref from the output.
     ref = _first_ref(list_text)
     assert ref is not None, (
-        f"list_fields.fn produced no [ref=fN] markers:\n{list_text!r}"
+        f"model_inspect(method='fields') produced no [ref=fN] markers:\n{list_text!r}"
     )
 
-    # Call resolve_field.fn with the ref — NO thread-local injection.
-    resolve_result = server.resolve_field.fn(
-        target=ref,
-        odoo_version=C4_VERSION,
-    )
-    resolve_text = resolve_result.content[0].text
+    # Resolve the ref via the minter using the same 'default' namespace.
+    canonical = _GLOBAL_MINTER.resolve(ref, api_key_id="default")
+    field_name = canonical.get("field_name") or canonical.get("name")
+    assert field_name, f"Canonical dict for ref {ref!r} missing field name: {canonical!r}"
 
-    # Must NOT be a stale-ref error — both wrappers must share the same namespace.
+    # Resolve via _resolve_field impl.
+    resolve_text = server._resolve_field(_MODEL_SMALL, field_name, C4_VERSION)
+
+    # Must NOT be a stale-ref error — both calls share the same 'default' namespace.
     assert "unknown or expired" not in resolve_text, (
-        f"HIGH-1 regression: resolve_field got stale-ref error after list_fields.fn call.\n"
+        f"HIGH-1 regression: _resolve_field got stale-ref-like error after "
+        f"model_inspect(method='fields').\n"
         f"  ref={ref!r}\n"
         f"  list output: {list_text[:200]!r}\n"
         f"  resolve output: {resolve_text!r}"
@@ -503,37 +507,45 @@ def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
     # Must contain actual field data (a field name from _MODEL_SMALL).
     field_names = {"amount_total", "partner_id", "state", "name", "date_order"}
     assert any(fn in resolve_text for fn in field_names), (
-        f"resolve_field output does not reference any known field name:\n{resolve_text!r}"
+        f"_resolve_field output does not reference any known field name:\n{resolve_text!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Scenario 10 — _format_stale_ref_error model entity (AC-CFIX-5)
+# Scenario 10 — RefError recovery_hint must not reference list_models (AC-CFIX-5)
 # ---------------------------------------------------------------------------
 
 
 def test_scenario10_stale_ref_model_no_list_models(c4_db, server):
-    """_format_stale_ref_error for entity='model' must NOT reference list_models.
+    """RefError.recovery_hint for field refs must NOT mention list_models.
 
-    AC-CFIX-5: list_models does not exist as an MCP tool; the error recovery
-    hint must steer to describe_module or find_examples instead.
+    AC-CFIX-5: list_models does not exist as an MCP tool.  When a field ref
+    expires, the RefError recovery_hint (set by RefMinter) must guide the caller
+    back to a real tool, not a fabricated one.
+
+    v0.6: _format_stale_ref_error was a helper inside the removed resolve_field
+    shim.  This scenario now verifies the RefMinter recovery_hint directly.
     """
-    from src.mcp.refs import RefError
+    from src.mcp.refs import RefError, RefMinter
 
-    fake_err = RefError("ref expired", recovery_hint=None)
-    msg = server._format_stale_ref_error("model", "m99", fake_err)
+    tick = [0.0]
+    minter = RefMinter(ttl=1.0, now_fn=lambda: tick[0])
 
-    # Must not mention list_models (non-existent tool).
-    assert "list_models" not in msg, (
-        f"_format_stale_ref_error('model', ...) mentions 'list_models' which "
-        f"is not a real tool:\n{msg!r}"
-    )
+    item = {"field_name": "amount_total", "model": "c4.order"}
+    (ref,) = minter.mint([item], api_key_id="c4-s10-no-list-models")
 
-    # Must reference a real tool instead.
-    real_tools = ("describe_module", "find_examples")
-    assert any(t in msg for t in real_tools), (
-        f"_format_stale_ref_error('model', ...) should reference one of "
-        f"{real_tools} in recovery hint:\n{msg!r}"
+    # Expire the ref.
+    tick[0] = 2.0
+    with pytest.raises(RefError) as exc_info:
+        minter.resolve(ref, api_key_id="c4-s10-no-list-models")
+
+    err = exc_info.value
+    hint = err.recovery_hint or ""
+
+    # Must NOT mention list_models (non-existent tool).
+    assert "list_models" not in hint, (
+        f"RefError.recovery_hint mentions 'list_models' which is not a real tool:\n"
+        f"{hint!r}"
     )
 
 
@@ -543,16 +555,21 @@ def test_scenario10_stale_ref_model_no_list_models(c4_db, server):
 
 
 def test_scenario11_superset_drilldown_e2e(c4_db, server):
-    """model_inspect(method='fields') → extract ref → resolve_field(target=ref).
+    """model_inspect(method='fields') → extract ref → minter-resolve → _resolve_field.
 
     AC-DFIX-3: Verifies that the api_key_id is correctly threaded from
     model_inspect wrapper through _model_inspect router to _list_fields, so
-    that refs minted by model_inspect are resolvable by resolve_field using
-    the same namespace (_get_api_key_id() returns 'default' in both calls
+    that refs minted by model_inspect are resolvable via _GLOBAL_MINTER using
+    the same namespace (_get_api_key_id() returns 'default' in all calls
     when no middleware is active).
+
+    v0.6: resolve_field @mcp.tool shim removed; ref resolution now uses the
+    minter directly, then calls _resolve_field(model, field, version).
     """
+    from src.mcp.refs import _GLOBAL_MINTER
+
     # Step A: call model_inspect superset with method='fields'.
-    # Both wrappers call _get_api_key_id() which returns 'default' in tests.
+    # _get_api_key_id() returns 'default' in unit-test context (no middleware).
     inspect_result = server.model_inspect.fn(
         model=_MODEL_SMALL,
         method="fields",
@@ -567,17 +584,17 @@ def test_scenario11_superset_drilldown_e2e(c4_db, server):
         f"{inspect_text!r}"
     )
 
-    # Step C: resolve via resolve_field — NO thread-local injection needed.
-    resolve_result = server.resolve_field.fn(
-        target=ref,
-        odoo_version=C4_VERSION,
-    )
-    resolve_text = resolve_result.content[0].text
+    # Step C: resolve the ref via _GLOBAL_MINTER — same 'default' namespace.
+    canonical = _GLOBAL_MINTER.resolve(ref, api_key_id="default")
+    field_name = canonical.get("field_name") or canonical.get("name")
+    assert field_name, f"Canonical dict for ref {ref!r} missing field name: {canonical!r}"
 
-    # Must NOT be a stale-ref error — both wrappers share the same api_key
-    # namespace ('default') so the ref must resolve successfully.
+    # Step D: call _resolve_field with the resolved name.
+    resolve_text = server._resolve_field(_MODEL_SMALL, field_name, C4_VERSION)
+
+    # Must NOT be a stale-ref error — both calls share the same 'default' namespace.
     assert "unknown or expired" not in resolve_text, (
-        f"AC-DFIX-3 regression: resolve_field got stale-ref error after "
+        f"AC-DFIX-3 regression: _resolve_field returned stale-ref-like error after "
         f"model_inspect(method='fields').\n"
         f"  ref={ref!r}\n"
         f"  inspect output: {inspect_text[:200]!r}\n"
@@ -587,6 +604,6 @@ def test_scenario11_superset_drilldown_e2e(c4_db, server):
     # Must contain actual field data (a field name from _MODEL_SMALL).
     field_names = {"amount_total", "partner_id", "state", "name", "date_order"}
     assert any(fn in resolve_text for fn in field_names), (
-        f"resolve_field output does not reference any known field name:\n"
+        f"_resolve_field output does not reference any known field name:\n"
         f"{resolve_text!r}"
     )

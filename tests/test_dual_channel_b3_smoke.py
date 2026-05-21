@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Smoke tests for dual-channel ToolResult on 7 priority tools (M10.5 WI-B3).
+"""Smoke tests for superset tool text channels + surviving dual-channel tools (M12 v0.6).
 
-AC-B3-2: For each of the 7 tools, assert that:
-  - content[0].text is a non-empty string (text channel present).
-  - structured_content is a non-None dict that validates against the
-    declared *Output DTO type (structured channel present and typed).
+After v0.6 removed the 10 flat shims (resolve_model, resolve_field, resolve_method,
+resolve_view, list_fields, list_methods, list_views, list_owl_components,
+list_qweb_templates, list_js_patches), the dual-channel contract for the 5 surviving
+dual-channel tools (describe_module + list_fields/methods/resolve_view/model structured
+companions) is verified by:
+  (a) describe_module — still registered as @mcp.tool with structured output.
+  (b) The 6 structured-companion functions (_resolve_model_structured, _resolve_field_structured,
+      _resolve_method_structured, _resolve_view_structured, _list_fields_structured,
+      _list_methods_structured) are called directly to confirm the DTO round-trips still work.
 
-These are integration tests (Neo4j required).  They intentionally avoid
-detailed schema assertions — that is WI-B4's job.  Here we only verify
-both channels are present and the structured dict round-trips through the
-*Output Pydantic model without error.
+For the new superset tools (model_inspect, module_inspect, entity_lookup), only the
+text channel is verified (they are text-only per design — no structured_content).
 
 DB version: TEST_VERSION = "95.0" (distinct from 99.0/98.0/97.0/96.0
 fixtures used by other test modules).
@@ -29,7 +32,6 @@ from src.mcp.dto import (
     ResolveFieldOutput,
     ResolveMethodOutput,
     ResolveModelOutput,
-    ResolveViewOutput,
 )
 
 pytestmark = pytest.mark.neo4j
@@ -119,15 +121,14 @@ def b3_db(neo4j_driver, monkeypatch_module):
 # ---------------------------------------------------------------------------
 
 
-def _assert_dual_channel(result, dto_class) -> None:
-    """Assert both channels are present and structured_content validates as dto_class."""
+def _assert_text_channel(result) -> str:
+    """Assert text channel is present; return the text string."""
     from fastmcp.tools.tool import ToolResult
     from mcp.types import TextContent
 
     assert isinstance(result, ToolResult), (
         f"Expected ToolResult, got {type(result)}"
     )
-    # Text channel
     assert result.content is not None, "content must not be None"
     assert len(result.content) == 1, f"Expected 1 ContentBlock, got {len(result.content)}"
     block = result.content[0]
@@ -137,6 +138,13 @@ def _assert_dual_channel(result, dto_class) -> None:
     assert isinstance(block.text, str) and block.text, (
         "content[0].text must be a non-empty string"
     )
+    return block.text
+
+
+def _assert_dual_channel(result, dto_class) -> None:
+    """Assert both channels are present and structured_content validates as dto_class."""
+    text = _assert_text_channel(result)
+    assert text, "text channel must be non-empty"
     # Structured channel
     assert result.structured_content is not None, "structured_content must not be None"
     assert isinstance(result.structured_content, dict), (
@@ -149,7 +157,12 @@ def _assert_dual_channel(result, dto_class) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7 smoke tests — one per tool
+# 7 smoke tests — migrated to v0.6 superset tools.
+#
+# (a) describe_module — still has dual channel (unchanged).
+# (b) model_inspect / entity_lookup — text-only channel (by design, v0.6+).
+# (c) Structured companion functions (_resolve_*_structured, _list_*_structured)
+#     are called directly to verify DTO round-trips without needing the wrapper.
 #
 # NOTE: @mcp.tool() wraps functions into FunctionTool objects (not directly
 # callable per CLAUDE.md §FastMCP). We call .fn to reach the underlying
@@ -157,66 +170,72 @@ def _assert_dual_channel(result, dto_class) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_model_dual_channel(b3_db):
-    """resolve_model wrapper returns both text and structured ResolveModelOutput."""
-    from src.mcp.server import resolve_model
+def test_model_inspect_summary_text_channel(b3_db):
+    """model_inspect(method='summary') returns non-empty text with model name."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
 
-    result = resolve_model.fn(target="b3.order", odoo_version=TEST_VERSION)
-    _assert_dual_channel(result, ResolveModelOutput)
-    # Spot-check structured payload fields.
-    sc = result.structured_content
-    assert sc["ref"]["name"] == "b3.order"
-    assert sc["ref"]["odoo_version"] == TEST_VERSION
-    assert isinstance(sc["field_count"], int)
-    assert isinstance(sc["method_count"], int)
-    assert "next_step_hint" in sc
+    result = server.model_inspect.fn(model="b3.order", method="summary", odoo_version=TEST_VERSION)
+    text = _assert_text_channel(result)
+    assert "b3.order" in text
+    assert "b3_sale" in text or "sale" in text.lower()
 
 
-def test_resolve_field_dual_channel(b3_db):
-    """resolve_field wrapper returns both text and structured ResolveFieldOutput."""
-    from src.mcp.server import resolve_field
+def test_resolve_model_structured_companion(b3_db):
+    """_resolve_model_structured returns a valid ResolveModelOutput DTO."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
 
-    result = resolve_field.fn(
-        target="b3.order.amount_total", odoo_version=TEST_VERSION
+    structured = server._resolve_model_structured("b3.order", TEST_VERSION)
+    assert structured is not None, "_resolve_model_structured returned None"
+    output = ResolveModelOutput.model_validate(structured.model_dump())
+    assert output.ref.name == "b3.order"
+    assert output.ref.odoo_version == TEST_VERSION
+    assert isinstance(output.field_count, int)
+    assert isinstance(output.method_count, int)
+    assert output.next_step_hint
+
+
+def test_resolve_field_structured_companion(b3_db):
+    """_resolve_field_structured returns a valid ResolveFieldOutput DTO."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
+
+    structured = server._resolve_field_structured("b3.order", "amount_total", TEST_VERSION)
+    assert structured is not None, "_resolve_field_structured returned None"
+    output = ResolveFieldOutput.model_validate(structured.model_dump())
+    assert output.ref.name == "amount_total"
+    assert output.ref.model == "b3.order"
+    assert output.ref.odoo_version == TEST_VERSION
+    assert output.ttype
+    assert output.next_step_hint
+
+
+def test_resolve_method_structured_companion(b3_db):
+    """_resolve_method_structured returns a valid ResolveMethodOutput DTO."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
+
+    structured = server._resolve_method_structured("b3.order", "action_confirm", TEST_VERSION)
+    assert structured is not None, "_resolve_method_structured returned None"
+    output = ResolveMethodOutput.model_validate(structured.model_dump())
+    assert output.ref.name == "action_confirm"
+    assert output.ref.model == "b3.order"
+    assert output.ref.odoo_version == TEST_VERSION
+    assert isinstance(output.override_chain, list)
+    assert output.next_step_hint
+
+
+def test_entity_lookup_view_text_channel(b3_db):
+    """entity_lookup(kind='view') returns non-empty text with view xmlid (replaces resolve_view)."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
+
+    result = server.entity_lookup.fn(
+        kind="view", xmlid="b3_sale.view_order_form", odoo_version=TEST_VERSION
     )
-    _assert_dual_channel(result, ResolveFieldOutput)
-    sc = result.structured_content
-    assert sc["ref"]["name"] == "amount_total"
-    assert sc["ref"]["model"] == "b3.order"
-    assert sc["ref"]["odoo_version"] == TEST_VERSION
-    assert "ttype" in sc
-    assert "next_step_hint" in sc
-
-
-def test_resolve_method_dual_channel(b3_db):
-    """resolve_method wrapper returns both text and structured ResolveMethodOutput."""
-    from src.mcp.server import resolve_method
-
-    result = resolve_method.fn(
-        target="b3.order.action_confirm", odoo_version=TEST_VERSION
-    )
-    _assert_dual_channel(result, ResolveMethodOutput)
-    sc = result.structured_content
-    assert sc["ref"]["name"] == "action_confirm"
-    assert sc["ref"]["model"] == "b3.order"
-    assert sc["ref"]["odoo_version"] == TEST_VERSION
-    assert isinstance(sc["override_chain"], list)
-    assert "next_step_hint" in sc
-
-
-def test_resolve_view_dual_channel(b3_db):
-    """resolve_view wrapper returns both text and structured ResolveViewOutput."""
-    from src.mcp.server import resolve_view
-
-    result = resolve_view.fn(
-        target="b3_sale.view_order_form", odoo_version=TEST_VERSION
-    )
-    _assert_dual_channel(result, ResolveViewOutput)
-    sc = result.structured_content
-    assert sc["ref"]["xmlid"] == "b3_sale.view_order_form"
-    assert sc["ref"]["odoo_version"] == TEST_VERSION
-    assert "view_type" in sc
-    assert "next_step_hint" in sc
+    text = _assert_text_channel(result)
+    assert "b3_sale.view_order_form" in text
 
 
 def test_describe_module_dual_channel(b3_db):
@@ -233,31 +252,33 @@ def test_describe_module_dual_channel(b3_db):
     assert "next_step_hint" in sc
 
 
-def test_list_fields_dual_channel(b3_db):
-    """list_fields wrapper returns both text and structured ListFieldsOutput."""
-    from src.mcp.server import list_fields
+def test_list_fields_structured_companion(b3_db):
+    """_list_fields_structured returns a valid ListFieldsOutput DTO."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
 
-    result = list_fields.fn("b3.order", TEST_VERSION)
-    _assert_dual_channel(result, ListFieldsOutput)
-    sc = result.structured_content
-    assert sc["model"] == "b3.order"
-    assert sc["odoo_version"] == TEST_VERSION
-    assert isinstance(sc["total"], int)
-    assert isinstance(sc["shown"], int)
-    assert isinstance(sc["fields"], list)
-    assert "next_step_hint" in sc
+    structured = server._list_fields_structured("b3.order", TEST_VERSION)
+    assert structured is not None, "_list_fields_structured returned None"
+    output = ListFieldsOutput.model_validate(structured.model_dump())
+    assert output.model == "b3.order"
+    assert output.odoo_version == TEST_VERSION
+    assert isinstance(output.total, int)
+    assert isinstance(output.shown, int)
+    assert isinstance(output.fields, list)
+    assert output.next_step_hint
 
 
-def test_list_methods_dual_channel(b3_db):
-    """list_methods wrapper returns both text and structured ListMethodsOutput."""
-    from src.mcp.server import list_methods
+def test_list_methods_structured_companion(b3_db):
+    """_list_methods_structured returns a valid ListMethodsOutput DTO."""
+    import importlib
+    server = importlib.import_module("src.mcp.server")
 
-    result = list_methods.fn("b3.order", TEST_VERSION)
-    _assert_dual_channel(result, ListMethodsOutput)
-    sc = result.structured_content
-    assert sc["model"] == "b3.order"
-    assert sc["odoo_version"] == TEST_VERSION
-    assert isinstance(sc["total"], int)
-    assert isinstance(sc["shown"], int)
-    assert isinstance(sc["methods"], list)
-    assert "next_step_hint" in sc
+    structured = server._list_methods_structured("b3.order", TEST_VERSION)
+    assert structured is not None, "_list_methods_structured returned None"
+    output = ListMethodsOutput.model_validate(structured.model_dump())
+    assert output.model == "b3.order"
+    assert output.odoo_version == TEST_VERSION
+    assert isinstance(output.total, int)
+    assert isinstance(output.shown, int)
+    assert isinstance(output.methods, list)
+    assert output.next_step_hint

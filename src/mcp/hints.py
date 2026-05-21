@@ -3,7 +3,7 @@
 
 This module owns:
 
-1. ``NEXT_STEP_HINTS`` — 18-entry registry mapping each drill-down tool to its
+1. ``NEXT_STEP_HINTS`` — 11-entry registry mapping each drill-down tool to its
    recommended next-step templates. Templates contain ``{name}``, ``{ver}``,
    ``{module}``, ``{field}``, ``{method}``, ``{xmlid}`` placeholders rendered
    via ``str.format(**ctx)``.
@@ -26,62 +26,34 @@ been removed from ``server.py`` — the relocated helper is exported under
 the public name ``format_next_step``.
 """
 
-# Per ADR-0023 §4.3 table — 18 drill-down tools, each with up to 2 hints.
+# Per ADR-0023 §4.3 — 11 drill-down tools (v0.6: 10 flat shims removed), up to 2 hints each.
 # Templates use str.format keyword args (name, ver, module, field, method, xmlid).
 # Callers pass relevant context kwargs to hints_for(); unused ones are ignored.
 NEXT_STEP_HINTS: dict[str, list[str]] = {
-    "resolve_model": [
-        "list_fields(model='{name}', odoo_version='{ver}') for full field list",
-        "list_methods(model='{name}', odoo_version='{ver}') for behavior",
+    # Superset discriminator tools (ADR-0028, v0.6+) — 10 flat shims removed.
+    "model_inspect": [
+        "impact_analysis(entity_type='model', entity_name='{name}',"
+        " odoo_version='{ver}') for change blast radius",
+        "find_examples(query='{name}', odoo_version='{ver}') for real-world usage",
     ],
-    "resolve_field": [
-        "find_examples(query='{name} usage', odoo_version='{ver}') for real-world patterns",
-        "impact_analysis(field='{name}', odoo_version='{ver}') for blast radius",
-    ],
-    "resolve_method": [
-        "find_override_point(model='{model}', method='{name}', odoo_version='{ver}')"
-        " for safe extension spot",
-        "find_examples(query='{name} override', odoo_version='{ver}') for prior art",
-    ],
-    "resolve_view": [
-        "list_views(model='{model}', odoo_version='{ver}') for sibling views",
+    "entity_lookup": [
         "find_examples(query='{name} xpath', odoo_version='{ver}') for inheritance patterns",
-    ],
-    "describe_module": [
-        "list_fields(model='{name}', module='{module}', odoo_version='{ver}') for declared fields",
-        "list_views(model='{name}', odoo_version='{ver}') for module views",
-    ],
-    "list_fields": [
-        "resolve_field(model='{model}', field='{name}', odoo_version='{ver}')"
-        " for one field's full chain",
-        "list_methods(model='{model}', odoo_version='{ver}') for behavior",
-    ],
-    "list_methods": [
-        "resolve_method(model='{model}', method='{name}', odoo_version='{ver}') for override chain",
         "find_override_point(model='{model}', method='{name}', odoo_version='{ver}') for hook spot",
     ],
-    "list_views": [
-        "resolve_view(xmlid='{name}', odoo_version='{ver}') for full xpath chain",
-        "list_qweb_templates(module='{module}', odoo_version='{ver}') for QWeb siblings",
-    ],
-    "list_owl_components": [
+    "module_inspect": [
         "find_examples(query='OWL {name}', odoo_version='{ver}') for component patterns",
-        "list_js_patches(target='{name}', odoo_version='{ver}') for related patches",
-    ],
-    "list_qweb_templates": [
-        "find_examples(query='QWeb {name}', odoo_version='{ver}') for template patterns",
-        "resolve_view(xmlid='{name}', odoo_version='{ver}') when the template IS a view",
-    ],
-    "list_js_patches": [
         "find_examples(query='JS {name}', odoo_version='{ver}') for patch patterns",
-        "list_owl_components(module='{module}', odoo_version='{ver}') for v15+ components",
+    ],
+    "describe_module": [
+        "model_inspect(model='{name}', method='fields', odoo_version='{ver}') for declared fields",
+        "model_inspect(model='{name}', method='views', odoo_version='{ver}') for module views",
     ],
     "check_module_exists": [
         "describe_module(name='{name}', odoo_version='{ver}') for full overview",
     ],
     "find_override_point": [
         "find_examples(query='{name} override', odoo_version='{ver}') for prior art",
-        "resolve_method(model='{model}', method='{name}', odoo_version='{ver}') for chain",
+        "model_inspect(model='{model}', method='method', odoo_version='{ver}') for chain",
     ],
     "impact_analysis": [
         "find_deprecated_usage(pattern='{name}', odoo_version='{ver}') to widen search",
@@ -89,7 +61,7 @@ NEXT_STEP_HINTS: dict[str, list[str]] = {
     ],
     "find_examples": [
         "suggest_pattern(query='{name}', odoo_version='{ver}') for curated patterns",
-        "resolve_method(model='{model}', method='{name}', odoo_version='{ver}')"
+        "model_inspect(model='{model}', method='method', odoo_version='{ver}')"
         " for the canonical implementation",
     ],
     "find_deprecated_usage": [
@@ -103,7 +75,7 @@ NEXT_STEP_HINTS: dict[str, list[str]] = {
     ],
     "suggest_pattern": [
         "find_examples(query='{name}', odoo_version='{ver}') for real-world variants",
-        "resolve_method(model='{model}', method='{name}', odoo_version='{ver}')"
+        "model_inspect(model='{model}', method='method', odoo_version='{ver}')"
         " when pattern targets a method",
     ],
 }

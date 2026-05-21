@@ -1,25 +1,29 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for WI-C3 dual-mode dispatch on the 4 resolve_* wrappers.
+"""Tests for the model_inspect / entity_lookup superset tools (M12 v0.6 — shims removed).
 
-Covers AC-C3-1 through AC-C3-7:
-  C3-1: 4 wrappers expose target= as first arg; legacy kwargs kept as None-default
-  C3-2: Round-trip — ref → canonical → same output as legacy kwarg call
-  C3-3: Stale-ref returns a friendly error string (no exception raised)
-  C3-4: DeprecationWarning fires exactly once per legacy-kwarg use
-  C3-7: ≥4 tests covering ref round-trip, canonical, stale-ref, legacy-warn
+In v0.5 the 10 deprecated shims (resolve_model, resolve_field, resolve_method,
+resolve_view, list_fields, list_methods, list_views, list_owl_components,
+list_qweb_templates, list_js_patches) exposed a dual-mode target= dispatch and
+carried legacy-kwarg DeprecationWarnings.  All 10 were removed in v0.6 (M12
+W-S1).  This file was updated (M12 W-S2) to remove the now-stale AC-C3 shim
+contract tests and replace them with equivalent coverage against the superset
+tools.
 
-These are unit tests (no DB required for stale-ref / warning tests).
-The round-trip tests require Neo4j and are marked with pytest.mark.neo4j.
+Remaining coverage:
+  C3-2b: model_inspect('summary') returns the same content as the underlying
+          _resolve_model implementation.
+  C3-2c: model_inspect('field', ...) returns the same content as _resolve_field.
+  C3-3b: model_inspect / entity_lookup with an invalid discriminator returns a
+          friendly error string (no exception raised).
+  Signature: model_inspect / entity_lookup have the correct parameters.
 
-DB version: TEST_VERSION = "91.0" (distinct from all other test modules).
+DB version: TEST_VERSION = "91.0" (unchanged — same Neo4j namespace as before).
 """
+import importlib
 import inspect
 import os
-import warnings
 
 import pytest
-
-from src.mcp.refs import RefMinter
 
 # ---------------------------------------------------------------------------
 # DB version (must not collide with other test fixtures)
@@ -92,223 +96,142 @@ def dual_db(neo4j_driver, monkeypatch_module):
         s.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TEST_VERSION)
 
 
-@pytest.fixture()
-def minted_field_ref():
-    """Mint a ref for 'amount_total' on 'c3.order' in the test API key namespace."""
-    minter = RefMinter()
-    items = [{"field_name": "amount_total", "model": "c3.order"}]
-    refs = minter.mint(items, api_key_id="test-key-c3")
-    # Patch the global singleton so server._GLOBAL_MINTER resolves the same ref.
-    from src.mcp import refs as refs_module
-    original = refs_module._GLOBAL_MINTER
-    refs_module._GLOBAL_MINTER = minter
-    yield refs[0]
-    refs_module._GLOBAL_MINTER = original
-
-
 # ---------------------------------------------------------------------------
-# AC-C3-7 Test 1 — target=ref round-trip (requires Neo4j, AC-C3-2)
+# C3-2b: model_inspect('summary') matches _resolve_model
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.neo4j
-def test_resolve_field_via_ref_round_trip(dual_db, minted_field_ref):
-    """Ref 'f1' minted for c3.order.amount_total resolves to identical output as legacy kwargs.
+def test_model_inspect_summary_matches_resolve_model_impl(dual_db):
+    """model_inspect(model, 'summary') returns the same text as _resolve_model.
 
-    AC-C3-2: round-trip output byte-identical to legacy kwarg call.
-    AC-C3-7 test 1: target=ref happy path.
+    Verifies that the superset tool routes to the same underlying implementation
+    as the now-removed resolve_model shim did.
     """
-    from src.mcp.server import _api_key_id_local
-
-    # Set the thread-local API key so the wrapper looks up the right namespace.
-    _api_key_id_local.value = "test-key-c3"
-
-    import importlib
     server = importlib.import_module("src.mcp.server")
 
-    # Call via ref
-    ref_result = server.resolve_field.fn(
-        target=minted_field_ref, odoo_version=TEST_VERSION
-    )
-    # Call via legacy kwargs (should produce same text)
-    legacy_result = server.resolve_field.fn(
-        model_name="c3.order", field_name="amount_total", odoo_version=TEST_VERSION
+    direct = server._resolve_model("c3.order", TEST_VERSION)
+    via_superset = server.model_inspect.fn(
+        model="c3.order", method="summary", odoo_version=TEST_VERSION
     )
 
-    ref_text = ref_result.content[0].text
-    legacy_text = legacy_result.content[0].text
-
-    assert ref_text == legacy_text, (
-        f"Ref round-trip text mismatch:\n  ref:    {ref_text!r}\n  legacy: {legacy_text!r}"
+    superset_text = via_superset.content[0].text
+    assert "c3.order" in superset_text, f"Expected model name in output: {superset_text!r}"
+    assert superset_text == direct, (
+        f"model_inspect(summary) must match _resolve_model.\n"
+        f"superset: {superset_text[:200]!r}\n"
+        f"direct:   {direct[:200]!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# AC-C3-7 Test 2 — target=canonical happy path
+# C3-2c: model_inspect('field', ...) matches _resolve_field
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.neo4j
-def test_resolve_field_via_canonical_target(dual_db):
-    """target='c3.order.amount_total' dispatches to the correct field impl.
+def test_model_inspect_field_matches_resolve_field_impl(dual_db):
+    """model_inspect(model, 'field', field='amount_total') returns same as _resolve_field.
 
-    AC-C3-7 test 2: target=canonical happy path.
+    Verifies that the superset tool routes to the correct field resolver.
     """
-    import importlib
     server = importlib.import_module("src.mcp.server")
 
-    result = server.resolve_field.fn(
-        target="c3.order.amount_total", odoo_version=TEST_VERSION
+    direct = server._resolve_field("c3.order", "amount_total", TEST_VERSION)
+    via_superset = server.model_inspect.fn(
+        model="c3.order",
+        method="field",
+        odoo_version=TEST_VERSION,
+        field="amount_total",
     )
-    text = result.content[0].text
-    assert "amount_total" in text, f"Expected 'amount_total' in output: {text!r}"
-    assert "c3.order" in text, f"Expected 'c3.order' in output: {text!r}"
-    assert "monetary" in text.lower(), f"Expected type 'monetary' in output: {text!r}"
+
+    superset_text = via_superset.content[0].text
+    assert "amount_total" in superset_text, (
+        f"Expected 'amount_total' in model_inspect(field) output: {superset_text!r}"
+    )
+    assert superset_text == direct, (
+        f"model_inspect(field) must match _resolve_field.\n"
+        f"superset: {superset_text[:200]!r}\n"
+        f"direct:   {direct[:200]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
-# AC-C3-7 Test 3 — stale-ref returns friendly error string (AC-C3-3)
+# C3-3b: Invalid discriminator → friendly error string (no exception)
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_field_stale_ref_returns_friendly_error():
-    """resolve_field(target='f999') returns a friendly error string, not an exception.
+def test_model_inspect_invalid_method_returns_error_string():
+    """model_inspect with an unrecognised method= returns a friendly error, not an exception.
 
-    AC-C3-3: unknown/stale ref → friendly error string in same tree format.
-    AC-C3-7 test 3: stale-ref error path.
+    Covers the invalid-discriminator guard in _model_inspect (src/mcp/inspect.py).
+    No DB required — the guard fires before any Neo4j query.
     """
-    import importlib
     server = importlib.import_module("src.mcp.server")
 
-    # 'f99999' cannot exist (no minting happened for this ref)
-    result = server.resolve_field.fn(target="f99999", odoo_version=TEST_VERSION)
-
-    # Must return ToolResult with text, not raise.
-    text = result.content[0].text
-    assert "f99999" in text, f"Expected ref 'f99999' mentioned in error: {text!r}"
-    assert "expired" in text.lower() or "unknown" in text.lower(), (
-        f"Expected 'expired' or 'unknown' in error text: {text!r}"
+    result = server.model_inspect.fn(
+        model="c3.order", method="nonexistent_method", odoo_version=TEST_VERSION
     )
-    assert "list_fields" in text.lower() or "re-run" in text.lower(), (
-        f"Expected recovery hint mentioning list_fields or re-run: {text!r}"
-    )
-
-
-def test_resolve_model_stale_ref_returns_friendly_error():
-    """resolve_model(target='m99999') returns a friendly error string."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    result = server.resolve_model.fn(target="m99999")
 
     text = result.content[0].text
-    assert "m99999" in text
-    assert "expired" in text.lower() or "unknown" in text.lower()
+    assert "Error" in text, f"Expected 'Error' in output: {text!r}"
+    assert "nonexistent_method" in text, f"Expected bad method name in error: {text!r}"
 
 
-# ---------------------------------------------------------------------------
-# AC-C3-7 Test 4 — legacy kwarg triggers DeprecationWarning (AC-C3-4)
-# ---------------------------------------------------------------------------
+def test_entity_lookup_invalid_kind_returns_error_string():
+    """entity_lookup with an unrecognised kind= returns a friendly error, not an exception.
 
-
-def test_legacy_kwargs_trigger_deprecation_warning():
-    """Supplying model_name= / field_name= fires exactly one DeprecationWarning each call.
-
-    AC-C3-4: warnings.warn(..., DeprecationWarning, stacklevel=2) with Python dedup.
-    AC-C3-7 test 4: legacy kwarg + DeprecationWarning fires.
+    No DB required — the guard fires before any resolver call.
     """
-    import importlib
     server = importlib.import_module("src.mcp.server")
 
-    # Use 'always' filter so warnings are never suppressed by default once-per-location rule.
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        # Call resolve_model with legacy model_name= (no valid DB needed — it will
-        # hit "not found" but the warning must fire before the DB query completes
-        # or the DB simply isn't available; we only care about the warning).
-        try:
-            server.resolve_model.fn(model_name="nonexistent.model.for.warn.test")
-        except Exception:
-            pass  # DB not available or not found — irrelevant for this test.
-
-    deprecation_warns = [
-        w for w in caught
-        if issubclass(w.category, DeprecationWarning)
-        and "model_name" in str(w.message).lower()
-        and "deprecated" in str(w.message).lower()
-    ]
-    assert len(deprecation_warns) >= 1, (
-        f"Expected DeprecationWarning for model_name=, got warnings: {caught}"
+    result = server.entity_lookup.fn(
+        kind="nonexistent_kind", odoo_version=TEST_VERSION
     )
 
-
-def test_legacy_field_kwargs_trigger_deprecation_warning():
-    """Supplying model_name= + field_name= on resolve_field fires DeprecationWarning."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        try:
-            server.resolve_field.fn(
-                model_name="nonexistent.model", field_name="nonexistent_field"
-            )
-        except Exception:
-            pass
-
-    deprecation_warns = [
-        w for w in caught
-        if issubclass(w.category, DeprecationWarning)
-        and "deprecated" in str(w.message).lower()
-    ]
-    assert len(deprecation_warns) >= 1, (
-        f"Expected DeprecationWarning for legacy field kwargs, got: {caught}"
+    text = result.content[0].text
+    assert "Error" in text, f"Expected 'Error' in output: {text!r}"
+    assert "nonexistent_kind" in text, (
+        f"Expected bad kind name in error message: {text!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# AC-C3-1 — Signature contract: target= is first positional, legacy kwargs present
+# Signature contract: superset tools have the correct parameters
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_model_signature_has_target_first():
-    """resolve_model wrapper has target as first parameter (AC-C3-1)."""
-    import importlib
+def test_model_inspect_signature():
+    """model_inspect.fn has model, method, odoo_version, field, method_name params."""
     server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.resolve_model.fn)
-    params = list(sig.parameters.keys())
-    assert params[0] == "target", f"Expected 'target' as first param, got: {params}"
-    assert "model_name" in params, "Expected legacy 'model_name' param to be present"
-    assert "odoo_version" in params, "Expected 'odoo_version' param"
+    sig = inspect.signature(server.model_inspect.fn)
+    params = set(sig.parameters.keys())
+    assert "model" in params, f"Expected 'model' param, got: {params}"
+    assert "method" in params, f"Expected 'method' param, got: {params}"
+    assert "odoo_version" in params, f"Expected 'odoo_version' param, got: {params}"
+    assert "field" in params, f"Expected 'field' param, got: {params}"
+    assert "method_name" in params, f"Expected 'method_name' param, got: {params}"
 
 
-def test_resolve_field_signature_has_target_first():
-    """resolve_field wrapper has target as first parameter and legacy field kwargs (AC-C3-1)."""
-    import importlib
+def test_module_inspect_signature():
+    """module_inspect.fn has name, method, odoo_version params."""
     server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.resolve_field.fn)
-    params = list(sig.parameters.keys())
-    assert params[0] == "target", f"Expected 'target' as first param, got: {params}"
-    assert "model_name" in params, "Expected legacy 'model_name' param"
-    assert "field_name" in params, "Expected legacy 'field_name' param"
+    sig = inspect.signature(server.module_inspect.fn)
+    params = set(sig.parameters.keys())
+    assert "name" in params, f"Expected 'name' param, got: {params}"
+    assert "method" in params, f"Expected 'method' param, got: {params}"
+    assert "odoo_version" in params, f"Expected 'odoo_version' param, got: {params}"
 
 
-def test_resolve_method_signature_has_target_first():
-    """resolve_method wrapper has target as first parameter and legacy method kwargs (AC-C3-1)."""
-    import importlib
+def test_entity_lookup_signature():
+    """entity_lookup.fn has kind, odoo_version, model, field, method_name, xmlid, name params."""
     server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.resolve_method.fn)
-    params = list(sig.parameters.keys())
-    assert params[0] == "target", f"Expected 'target' as first param, got: {params}"
-    assert "model_name" in params, "Expected legacy 'model_name' param"
-    assert "method_name" in params, "Expected legacy 'method_name' param"
-
-
-def test_resolve_view_signature_has_target_first():
-    """resolve_view wrapper has target as first parameter and legacy xmlid kwarg (AC-C3-1)."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.resolve_view.fn)
-    params = list(sig.parameters.keys())
-    assert params[0] == "target", f"Expected 'target' as first param, got: {params}"
-    assert "xmlid" in params, "Expected legacy 'xmlid' param"
+    sig = inspect.signature(server.entity_lookup.fn)
+    params = set(sig.parameters.keys())
+    assert "kind" in params, f"Expected 'kind' param, got: {params}"
+    assert "odoo_version" in params, f"Expected 'odoo_version' param, got: {params}"
+    assert "model" in params, f"Expected 'model' param, got: {params}"
+    assert "field" in params, f"Expected 'field' param, got: {params}"
+    assert "method_name" in params, f"Expected 'method_name' param, got: {params}"
+    assert "xmlid" in params, f"Expected 'xmlid' param, got: {params}"
+    assert "name" in params, f"Expected 'name' param, got: {params}"

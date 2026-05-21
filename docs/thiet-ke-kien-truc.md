@@ -610,7 +610,7 @@ odoo-semantic-mcp/
 │   ├── cloner/                     -- SSH auto-clone subprocess orchestrator (M6 W4)
 │   │   └── __main__.py             -- spawn from web_ui, decrypt key, git clone
 │   ├── mcp/
-│   │   ├── server.py               -- MCP server + 28 tools + 7 Resources (M10.5+M11, v0.5.0)
+│   │   ├── server.py               -- MCP server + 18 tools + 7 Resources (M10.5+M11, v0.6.0)
 │   │   ├── hints.py                -- next-step hint mapping for drill-down tools (ADR-0023)
 │   │   ├── tree_builder.py         -- canonical tree grammar renderer with truncation (_render_capped)
 │   │   ├── dto.py                  -- shared response DTOs across supersets (ADR-0028 discriminator)

@@ -23,11 +23,13 @@ DB insert is handled exclusively here.
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 
 import mcp.types as mt
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.middleware.middleware import CallNext, ToolResult
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 _logger = logging.getLogger(__name__)
 
@@ -43,8 +45,9 @@ class UsageLogMiddleware(Middleware):
     the server starts accepting connections (see server.py module-level setup).
 
     Also writes api_key_id into server._api_key_id_local so that synchronous
-    tool wrappers (list_* and resolve_*) share the same tenant namespace for
-    ref minting and resolution (fixes HIGH-1 from Wave C Opus review).
+    tool wrappers (model_inspect, module_inspect, entity_lookup, describe_module)
+    share the same tenant namespace for ref minting and resolution (fixes HIGH-1
+    from Wave C Opus review).
     """
 
     async def on_call_tool(
@@ -59,7 +62,7 @@ class UsageLogMiddleware(Middleware):
         swallowed so a logging failure never breaks the tool response.
 
         Sets server._api_key_id_local.value for the duration of the call so
-        list_* and resolve_* wrappers share the same tenant api_key_id via
+        MCP tool wrappers share the same tenant api_key_id via
         _get_api_key_id().  Cleared in finally to avoid cross-request leakage.
         """
         tool_name: str = context.message.name  # always present per MCP spec
@@ -91,6 +94,35 @@ class UsageLogMiddleware(Middleware):
         task.add_done_callback(_BG_TASKS.discard)
 
         return result
+
+    async def on_read_resource(
+        self,
+        context: MiddlewareContext[mt.ReadResourceRequestParams],
+        call_next: CallNext[mt.ReadResourceRequestParams, Sequence[ReadResourceContents]],
+    ) -> Sequence[ReadResourceContents]:
+        """Hook fired for every ``resources/read`` JSON-RPC request.
+
+        Propagates api_key_id into the thread-local so the session-context
+        resolver (_get_api_key_id) returns the real tenant key during resource
+        reads, preventing the sticky-session bypass where resource reads always
+        resolved to the 'default' sentinel.
+
+        Usage-log insert is intentionally omitted here — resource reads are
+        typically bookmark-stable content fetches and are already cached; the
+        on_call_tool hook covers tool-call accounting.
+        """
+        api_key_id: str | None = None
+        try:
+            req = get_http_request()
+            api_key_id = getattr(req.state, "api_key_id", None)
+        except Exception:
+            pass  # no active HTTP request (e.g. stdio transport) — fine
+
+        _set_server_api_key(api_key_id)
+        try:
+            return await call_next(context)
+        finally:
+            _set_server_api_key(None)  # clear to avoid cross-request leakage
 
 
 def _set_server_api_key(api_key_id: str | None) -> None:
