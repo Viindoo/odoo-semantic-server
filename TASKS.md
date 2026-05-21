@@ -871,7 +871,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Pre-launch Signoff
 
-Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 21 MCP tool sign-off table.
+Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 18 MCP tool sign-off table.
 
 | Mục | Admin | Ngày | Ghi chú |
 |-----|-------|------|---------|
@@ -880,7 +880,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Port Isolation | | | |
 | Logrotate | | | |
 | Backup & Recovery | | | |
-| MCP Tool Sign-Off (21 tools) | | | |
+| MCP Tool Sign-Off (18 tools) | | | |
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
@@ -895,5 +895,5 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
 | ↓ | Implementation plans (archived internally) | Per-milestone implementation plans |
-| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 21 MCP tool verify |
+| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 18 MCP tool verify |
 | → | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook — backup frequency, restore order, RTO |

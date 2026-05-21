@@ -11,34 +11,24 @@ import PromptSimulator from '../components/PromptSimulator.tsx';
 import TokenBenchmark from '../components/TokenBenchmark.tsx';
 
 const TOOLS = [
-  { num: '01', name: 'resolve_model', desc: 'Find a model across modules + versions.', group: 'resolve' },
-  { num: '02', name: 'resolve_field', desc: 'Locate a field — type, defaults, overrides.', group: 'resolve' },
-  { num: '03', name: 'resolve_method', desc: 'Trace a method across the inheritance chain.', group: 'resolve' },
-  { num: '04', name: 'resolve_view', desc: 'Find a view + its XPath inheritance order.', group: 'resolve' },
-  { num: '05', name: 'find_examples', desc: 'Pull real-world usage from indexed repos.', group: 'resolve' },
-  { num: '06', name: 'impact_analysis', desc: 'Measure blast radius of a field change.', group: 'resolve' },
-  { num: '07', name: 'lookup_core_api', desc: 'Identify ORM, CLI, and framework symbols.', group: 'resolve' },
-  { num: '08', name: 'api_version_diff', desc: 'Delta between two versions.', group: 'version' },
-  { num: '09', name: 'find_deprecated_usage', desc: 'Scan a codebase for deprecated APIs.', group: 'version' },
-  { num: '10', name: 'lint_check', desc: 'Odoo-specific lint, not generic Python.', group: 'quality' },
-  { num: '11', name: 'cli_help', desc: 'odoo-bin flags for your installed version.', group: 'quality' },
-  { num: '12', name: 'suggest_pattern', desc: 'Curated implementation patterns.', group: 'resolve' },
-  { num: '13', name: 'check_module_exists', desc: 'Settle "is this built-in" debates.', group: 'resolve' },
-  { num: '14', name: 'find_override_point', desc: 'Pinpoint the safest hook for custom logic.', group: 'resolve' },
-  { num: '15', name: 'describe_module', desc: 'Architecture overview of a module: manifest, defined/extended models, view + JS-patch counts.', group: 'resolve' },
-  { num: '16', name: 'list_fields', desc: 'Enumerate all fields of a model, grouped by module with type tags.', group: 'resolve' },
-  { num: '17', name: 'list_methods', desc: 'Enumerate methods of a model, marking overrides across modules.', group: 'resolve' },
-  { num: '18', name: 'list_views', desc: 'Enumerate XML views of a model, grouped by type (form/tree/search/…).', group: 'resolve' },
-  { num: '19', name: 'list_owl_components', desc: 'List OWL components in a module (Odoo v15+); era-aware.', group: 'quality' },
-  { num: '20', name: 'list_qweb_templates', desc: 'List QWeb templates in a module with inheritance hints.', group: 'quality' },
-  { num: '21', name: 'list_js_patches', desc: 'List JS patches (Widget/odoo.define/OWL.patch) by target/module/era.', group: 'quality' },
-  { num: '22', name: 'model_inspect', desc: 'Superset of resolve_model/list_fields/list_methods — discriminator-based.', group: 'superset' },
-  { num: '23', name: 'module_inspect', desc: 'Superset for module-scoped queries — fields/views/owl/qweb/patches.', group: 'superset' },
-  { num: '24', name: 'entity_lookup', desc: 'Superset of resolve_field/resolve_method/resolve_view.', group: 'superset' },
-  { num: '25', name: 'set_active_version', desc: 'Sticky version for the session — call once, every tool uses it.', group: 'session' },
-  { num: '26', name: 'set_active_profile', desc: 'Sticky profile for the session.', group: 'session' },
-  { num: '27', name: 'list_available_versions', desc: 'What versions are indexed.', group: 'session' },
-  { num: '28', name: 'list_available_profiles', desc: 'What profiles you can switch to.', group: 'session' },
+  { num: '01', name: 'find_examples', desc: 'Pull real-world usage from indexed repos.', group: 'resolve' },
+  { num: '02', name: 'impact_analysis', desc: 'Measure blast radius of a field change.', group: 'resolve' },
+  { num: '03', name: 'lookup_core_api', desc: 'Identify ORM, CLI, and framework symbols.', group: 'resolve' },
+  { num: '04', name: 'api_version_diff', desc: 'Delta between two versions.', group: 'version' },
+  { num: '05', name: 'find_deprecated_usage', desc: 'Scan a codebase for deprecated APIs.', group: 'version' },
+  { num: '06', name: 'lint_check', desc: 'Odoo-specific lint, not generic Python.', group: 'quality' },
+  { num: '07', name: 'cli_help', desc: 'odoo-bin flags for your installed version.', group: 'quality' },
+  { num: '08', name: 'suggest_pattern', desc: 'Curated implementation patterns.', group: 'resolve' },
+  { num: '09', name: 'check_module_exists', desc: 'Settle "is this built-in" debates.', group: 'resolve' },
+  { num: '10', name: 'find_override_point', desc: 'Pinpoint the safest hook for custom logic.', group: 'resolve' },
+  { num: '11', name: 'describe_module', desc: 'Architecture overview of a module: manifest, defined/extended models, view + JS-patch counts.', group: 'resolve' },
+  { num: '12', name: 'model_inspect', desc: 'Superset of resolve_model/list_fields/list_methods — discriminator-based.', group: 'superset' },
+  { num: '13', name: 'module_inspect', desc: 'Superset for module-scoped queries — fields/views/owl/qweb/patches.', group: 'superset' },
+  { num: '14', name: 'entity_lookup', desc: 'Superset of resolve_field/resolve_method/resolve_view.', group: 'superset' },
+  { num: '15', name: 'set_active_version', desc: 'Sticky version for the session — call once, every tool uses it.', group: 'session' },
+  { num: '16', name: 'set_active_profile', desc: 'Sticky profile for the session.', group: 'session' },
+  { num: '17', name: 'list_available_versions', desc: 'What versions are indexed.', group: 'session' },
+  { num: '18', name: 'list_available_profiles', desc: 'What profiles you can switch to.', group: 'session' },
 ];
 ---
 
@@ -101,7 +91,7 @@ const TOOLS = [
         <span class="opacity-40" aria-hidden="true">&middot;</span>
         <span>v8 &rarr; v19+</span>
         <span class="opacity-40" aria-hidden="true">&middot;</span>
-        <span><strong class="text-viindoo-primary-bright font-semibold">28 MCP tools</strong></span>
+        <span><strong class="text-viindoo-primary-bright font-semibold">18 MCP tools</strong></span>
       </div>
     </div>
   </section>
@@ -147,13 +137,13 @@ const TOOLS = [
         03 &middot; THE TOOLBOX
       </div>
       <h2 class="text-4xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
-        28 specialized tools.<br />One MCP endpoint.
+        18 specialized tools.<br />One MCP endpoint.
       </h2>
       <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
         Resolve models, fields, methods, views. Find examples, measure impact. Version diffs, deprecation scans, pattern suggestions — all atomic. Plus supersets and session-state tools for streamlined AI agent workflows.
       </p>
 
-      <!-- 28-tool grid -->
+      <!-- 18-tool grid -->
       <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
         {TOOLS.map((tool) => (
           <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[120px]" data-tool-group={tool.group}>
@@ -167,9 +157,9 @@ const TOOLS = [
 
       <!-- Tool legend -->
       <div class="mt-6 flex flex-wrap items-center justify-center gap-5 font-mono text-xs text-viindoo-on-dark-muted">
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-primary"></span>Resolve (14)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-primary"></span>Resolve (7)</span>
         <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary"></span>Version (2)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-warning"></span>Quality (5)</span>
+        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-warning"></span>Quality (2)</span>
         <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-success"></span>Supersets (3)</span>
         <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-info"></span>Session (4)</span>
       </div>

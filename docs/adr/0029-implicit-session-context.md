@@ -207,3 +207,17 @@ A Redis layer would provide cross-worker cache coherence and sub-millisecond rea
 - `docs/adr/0011-web-ui-session-auth.md` — precedent for 8h sliding TTL on web UI sessions; the 24h value for MCP sessions reflects the longer idle periods typical of AI coding tool sessions vs browser sessions.
 - `docs/adr/0023-tool-output-completeness.md` — English-only output policy; all four new tools conform.
 - `docs/adr/0026-rbac-key-ownership.md` — `is_admin` DB-sourced pattern; `api_key_id`-scoped data follows the same tenant-isolation contract.
+
+---
+
+## Amendment (v0.6, 2026-05-21) — Profile is convenience, not authz
+
+`set_active_profile` injects a default `profile_name` argument for convenience only; it is **not** an access-control mechanism. Any authenticated API key can still query any profile by passing `profile_name` explicitly in a tool call — the sticky profile merely saves callers from repeating a frequently-used default argument.
+
+The profile boundary is **data segmentation**, not authorization. A profile represents a named view of the indexed corpus (e.g., `viindoo-enterprise-17`, `acme-custom-17`), and `set_active_profile` records the caller's preferred segment. It does not restrict which profiles the API key may access.
+
+True per-key profile authorization — where a key is only permitted to query one or more specific profiles — would require:
+1. An `allowed_profile_ids` column (or join table) on `api_keys`.
+2. Query-level filtering in every resolver (`resolve_version_v2`, Neo4j Cypher `WHERE profile IN allowed`) enforced regardless of whether `profile_name` was supplied explicitly or via session state.
+
+This is out of scope for v0.6. The design decision is to keep the implementation simple until there is a concrete customer demand signal for profile-level authz (e.g., multi-tenant SaaS where different teams must be isolated from each other's indexed codebases). If that signal arrives, the authz layer can be added without changing the existing session-state schema — the `api_key_id` PK already provides the natural tenant anchor.
