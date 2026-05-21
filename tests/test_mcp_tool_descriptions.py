@@ -18,10 +18,7 @@ import pytest
 from src.mcp.server import mcp
 
 _TOOL_NAMES = [
-    "resolve_model",
-    "resolve_field",
-    "resolve_method",
-    "resolve_view",
+    # M1–M5 core tools (10)
     "find_examples",
     "impact_analysis",
     "lookup_core_api",
@@ -32,14 +29,10 @@ _TOOL_NAMES = [
     "suggest_pattern",
     "check_module_exists",
     "find_override_point",
-    # M9 Wave 1 entity-enumeration tools (ADR-0023)
+    # M9 Wave 1 entity-enumeration: describe_module (the 6 flat enumeration tools
+    # list_fields/list_methods/list_views/list_owl_components/list_qweb_templates/
+    # list_js_patches were removed in v0.6; use model_inspect/module_inspect instead)
     "describe_module",
-    "list_fields",
-    "list_methods",
-    "list_views",
-    "list_owl_components",
-    "list_qweb_templates",
-    "list_js_patches",
     # D3 superset tools (ADR-0028)
     "model_inspect",
     "module_inspect",
@@ -56,10 +49,7 @@ _TOOL_NAMES = [
 # Session-state tools are intentionally excluded: they are internal plumbing
 # utilities, not user-facing query tools where Vietnamese routing matters.
 _VI_TRIGGER_TOOL_NAMES = [
-    "resolve_model",
-    "resolve_field",
-    "resolve_method",
-    "resolve_view",
+    # M1–M5 core tools
     "find_examples",
     "impact_analysis",
     "lookup_core_api",
@@ -70,13 +60,9 @@ _VI_TRIGGER_TOOL_NAMES = [
     "suggest_pattern",
     "check_module_exists",
     "find_override_point",
+    # M9 entity-enumeration (remaining after v0.6 flat-tool removal)
     "describe_module",
-    "list_fields",
-    "list_methods",
-    "list_views",
-    "list_owl_components",
-    "list_qweb_templates",
-    "list_js_patches",
+    # D3 superset tools (ADR-0028)
     "model_inspect",
     "module_inspect",
     "entity_lookup",
