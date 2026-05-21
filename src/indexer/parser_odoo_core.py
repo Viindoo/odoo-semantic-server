@@ -84,6 +84,37 @@ def _has_deprecated_decorator(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -
     return False
 
 
+def _has_body_level_deprecation_warning(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Detect body-level `warnings.warn(..., DeprecationWarning)` inside a method.
+
+    Odoo v17 deprecates `name_get` via a `warnings.warn(...)` call in the method
+    body rather than a decorator.  This helper catches that pattern so the symbol
+    is classified as status='deprecated' even when no decorator is present.
+
+    Matches any `ast.Call` where:
+    - the callable is `warnings.warn` (ast.Attribute attr=='warn'), AND
+    - `DeprecationWarning` appears as a positional arg or as keyword `category=`.
+    """
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # Must be an attribute call (e.g. warnings.warn)
+        if not (isinstance(func, ast.Attribute) and func.attr == "warn"):
+            continue
+        # Collect all candidate nodes: positional args + keyword 'category' value
+        candidates: list[ast.expr] = list(node.args)
+        for kw in node.keywords:
+            if kw.arg == "category":
+                candidates.append(kw.value)
+        for cand in candidates:
+            if isinstance(cand, ast.Name) and cand.id == "DeprecationWarning":
+                return True
+            if isinstance(cand, ast.Attribute) and cand.attr == "DeprecationWarning":
+                return True
+    return False
+
+
 def _build_function_symbol(
     fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
     qualified_name: str,
@@ -91,7 +122,11 @@ def _build_function_symbol(
     kind: str,
     file_path: str | None,
 ) -> CoreSymbolInfo:
-    status = "deprecated" if _has_deprecated_decorator(fn_node) else "stable"
+    status = (
+        "deprecated"
+        if (_has_deprecated_decorator(fn_node) or _has_body_level_deprecation_warning(fn_node))
+        else "stable"
+    )
     # Compact signature: name(args). Default values omitted in V0.
     args = [a.arg for a in fn_node.args.args]
     if fn_node.args.vararg:

@@ -505,6 +505,59 @@ def test_parse_odoo_core_v19_full_pipeline_emits_orm_symbols(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# WI-2 (M10) — body-level DeprecationWarning detection for name_get / v17
+# ---------------------------------------------------------------------------
+
+
+def test_body_level_deprecation_warning_marks_deprecated():
+    """Method with `warnings.warn(..., DeprecationWarning)` in body → status='deprecated'.
+
+    Odoo v17 deprecates `name_get` this way (no decorator used).
+    """
+    src = (
+        "import warnings\n"
+        "class BaseModel:\n"
+        "    def name_get(self):\n"
+        "        warnings.warn('Since 17.0 use display_name', DeprecationWarning, 2)\n"
+        "        return [(rec.id, rec.display_name) for rec in self]\n"
+    )
+    syms = _extract_from_source(src, "odoo.models", "17.0")
+    nm = next(s for s in syms if s.qualified_name.endswith(".name_get"))
+    assert nm.status == "deprecated", (
+        f"name_get with body-level DeprecationWarning should be deprecated, got {nm.status!r}"
+    )
+
+
+def test_plain_method_without_deprecation_is_stable():
+    """Method with no decorator and no `warnings.warn` call → status='stable'."""
+    src = (
+        "class BaseModel:\n"
+        "    def write(self, vals):\n"
+        "        return True\n"
+    )
+    syms = _extract_from_source(src, "odoo.models", "17.0")
+    write = next(s for s in syms if s.qualified_name.endswith(".write"))
+    assert write.status == "stable", (
+        f"plain method should be stable, got {write.status!r}"
+    )
+
+
+def test_decorator_deprecated_regression_still_deprecated():
+    """Regression: `@api.deprecated(...)` decorator still marks method as deprecated."""
+    src = (
+        "class BaseModel:\n"
+        "    @api.deprecated('Use display_name')\n"
+        "    def name_get(self):\n"
+        "        return self.display_name\n"
+    )
+    syms = _extract_from_source(src, "odoo.models", "16.0")
+    nm = next(s for s in syms if s.qualified_name.endswith(".name_get"))
+    assert nm.status == "deprecated", (
+        f"decorator-deprecated method should still be deprecated, got {nm.status!r}"
+    )
+
+
 def test_parse_odoo_core_v8_openerp_emits_legacy_symbols(tmp_path):
     """v8 complete tree: openerp/ namespace with legacy field declarations.
 
