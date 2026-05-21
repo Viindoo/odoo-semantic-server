@@ -32,6 +32,7 @@ class FieldInfo:
     stored: bool = True
     required: bool = False
     source_definition: str | None = None  # raw assignment line(s), for embedding
+    comodel_name: str | None = None  # M10.5 P1 — comodel của Many2one/One2many/Many2many
 
 
 @dataclass

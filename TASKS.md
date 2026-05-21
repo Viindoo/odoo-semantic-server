@@ -663,7 +663,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ## Milestone 10 — "Billing Wow" + Tool Surface + Polish
 
-**Status:** `[ ]` Not started.
+**Status:** `[~]` M10A + M10.5 P1 shipped PR #156 2026-05-21; M10B/M10C pending. (M10A + M10.5 P1 shipped PR #156; còn lại pending)
 
 **Intent:** Three independent substreams launched after M9 ship. M10A delivers low-risk MCP tool surface expansion. M10B delivers Stripe billing core (largest scope). M10C absorbs polish + observability + carry-over fixes from M7.5/M8/M9.
 
@@ -673,18 +673,19 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ### M10A — Tool Surface Expansion (low-risk, ship first)
 
-- [ ] **MCP tool surface for Stylesheet** — HIGH
+- [x] **MCP tool surface for Stylesheet** — HIGH (2026-05-21, PR #156)
   - Source: WI-A7 absorption (M9 Coverage Fill deferred items).
   - Scope: 2 new MCP tools — `resolve_stylesheet(module, odoo_version)` returns stylesheet chain + variable list; `find_style_override(selector_or_variable, odoo_version)` traces which module last re-declares a CSS custom property / overrides a selector.
   - Acceptance: tools registered in `src/mcp/server.py`; output follows ADR-0023 tree-grammar contract; routing matrix in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) lists both tools with TRIGGER phrases EN+VI; per-tool integration test against fixture profile.
   - Dependency: WI-A1 (`:Stylesheet` node landed via ADR-0025) + B8 reindex must populate stylesheet nodes for production profiles before tool ships.
   - Cross-ref: ADR-0025 §Future Work item 1 forward-refs back to this entry.
+  - **Follow-up (cross-repo):** routing matrix EN+VI for `resolve_stylesheet`/`find_style_override` needs update at [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md).
 
-- [ ] **M10 Quick Wins from `osm_vs_odoo-ls.md`** — HIGH
+- [x] **M10 Quick Wins from `osm_vs_odoo-ls.md`** — HIGH (2026-05-21, PR #156)
   - 4 sub-tasks (each independently shippable):
-    - [ ] **Magic fields auto-injection** — `resolve_model`/`list_fields`/`resolve_field` include `id`, `display_name`, `create_uid`, `create_date`, `write_uid`, `write_date` as synthetic Field rows when the model is a `models.Model` subclass. Source-of-truth: hard-coded list in `src/constants.py::MAGIC_FIELDS`; not written to Neo4j (synthetic at query time only).
-    - [ ] **`from_module` param** for `resolve_model` + `resolve_field` — restrict inheritance chain / field declarations to those originating from a specific module.
-    - [ ] **`noqa` support in `lint_check`** — `# noqa: <rule_id>` inline comment suppresses the matching rule for that line.
+    - [x] **Magic fields auto-injection** — `resolve_model`/`list_fields`/`resolve_field` include `id`, `display_name`, `create_uid`, `create_date`, `write_uid`, `write_date` as synthetic Field rows when the model is a `models.Model` subclass. Source-of-truth: hard-coded list in `src/constants.py::MAGIC_FIELDS`; not written to Neo4j (synthetic at query time only). (2026-05-21, PR #156)
+    - [x] **`from_module` param** for `resolve_model` + `resolve_field` — restrict inheritance chain / field declarations to those originating from a specific module. (2026-05-21, PR #156)
+    - [x] **`noqa` support in `lint_check`** — `# noqa: <rule_id>` inline comment suppresses the matching rule for that line. (2026-05-21, PR #156)
     - [ ] **CLI batch audit** — `python -m src.indexer audit-repo --profile <name> --output audit.json` emits a JSON file with per-module coverage stats.
   - Acceptance: each sub-task has its own unit test + snapshot test; output schemas documented in the [routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) for the 3 MCP-facing changes.
 
@@ -736,7 +737,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ## Milestone 10.5 — "ORM Intelligence Wow"
 
-**Status:** `[ ]` Not started.
+**Status:** `[~]` Phase 1 data layer shipped PR #156 2026-05-21; Phase 2 (4 MCP tools) pending. (M10.5 P1 shipped PR #156; Phase 2 pending)
 
 **Intent:** New MCP tool family for ORM-level validation — domains, depends graphs, relation chains. Sits between drill-down tools (M1–M5) and architectural impact (M4 `impact_analysis`).
 **Outcome:** AI client validates an ORM domain (`[('partner_id.country_id', '=', 'VN')]`) against the actual model graph before suggesting it to the user — no more hallucinated fields in domain expressions.
@@ -747,10 +748,10 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 `:Field.comodel_name` property does not exist anywhere in the pipeline today (verified via subagent survey 2026-05-18). Must land 4 changes before any ORM tool ships:
 
-- [ ] **`FieldInfo.comodel_name` field** — extend dataclass in `src/indexer/models.py:28-35` with `comodel_name: str | None = None`.
-- [ ] **Parser extraction** — `src/indexer/parser_python.py`: for `fields.Many2one`/`One2many`/`Many2many` calls, extract first positional arg (the comodel string) and populate `FieldInfo.comodel_name`. Handle both era1 (text-regex `_columns` dict) and era2 (AST).
-- [ ] **Writer persist** — `src/indexer/writer_neo4j.py:182`: add `SET f.comodel_name = $comodel_name` clause when writing Field nodes.
-- [ ] **Production reindex** — after migration deploys, run `python -m src.indexer index-repo --all --full` to populate `f.comodel_name` for existing Field nodes (otherwise queries return null).
+- [x] **`FieldInfo.comodel_name` field** — extend dataclass in `src/indexer/models.py:28-35` with `comodel_name: str | None = None`. (2026-05-21, PR #156)
+- [x] **Parser extraction** — `src/indexer/parser_python.py`: for `fields.Many2one`/`One2many`/`Many2many` calls, extract first positional arg (the comodel string) and populate `FieldInfo.comodel_name`. Handle both era1 (text-regex `_columns` dict) and era2 (AST). (2026-05-21, PR #156)
+- [x] **Writer persist** — `src/indexer/writer_neo4j.py:182`: add `SET f.comodel_name = $comodel_name` clause when writing Field nodes. (2026-05-21, PR #156)
+- [ ] **Production reindex** — after migration deploys, run `python -m src.indexer index-repo --all --full` to populate `f.comodel_name` for existing Field nodes (otherwise queries return null). **Note:** ops follow-up — run `index-repo --all --full` to backfill comodel_name on prod.
 
 ### Phase 2 — 4 MCP tools (depends on Phase 1 complete)
 

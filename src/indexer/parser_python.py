@@ -17,6 +17,10 @@ FIELD_TYPES = {
     'Many2many', 'Reference', 'Json', 'Properties', 'Image',
 }
 
+# M10.5 P1 — relational field types whose first positional arg (or comodel_name kwarg)
+# names the target model. Used in both era2 (AST) and era1 (text-regex) extraction.
+RELATIONAL_FIELD_TYPES = {"many2one", "one2many", "many2many"}
+
 # v8/v9 _columns dict declarations: 'name': fields.<lowercase_type>(...)
 # Includes legacy-only types (function, related, dummy, sparse) that disappeared in v10+.
 FIELD_TYPES_LEGACY = {
@@ -496,6 +500,14 @@ def _parse_class(
                 else:
                     stored = (compute is None and related is None)
 
+                # M10.5 P1 — extract comodel for relational fields (best-effort)
+                comodel: str | None = None
+                if field_type in RELATIONAL_FIELD_TYPES:
+                    if call.args:
+                        comodel = _extract_string(call.args[0])
+                    elif "comodel_name" in kwargs:
+                        comodel = _extract_string(kwargs["comodel_name"])
+
                 src_def = (
                     ast.get_source_segment(source, node)
                     if source else None
@@ -505,6 +517,7 @@ def _parse_class(
                     related=related, compute=compute,
                     stored=stored, required=required,
                     source_definition=src_def,
+                    comodel_name=comodel,
                 ))
 
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):
@@ -612,6 +625,10 @@ _RE_ERA1_METHOD = re.compile(
     r"(?:^[ \t]*@([\w.]+)\s*\n)?^[ \t]+def\s+(\w+)\s*\(\s*self\b",
     re.MULTILINE,
 )
+# M10.5 P1 — era1 comodel extraction: matches the first string literal argument
+# inside a relational field call, e.g. fields.many2one('res.partner', ...).
+# Best-effort: dynamic comodel (variable reference) → no match → None (OK).
+_RE_ERA1_COMODEL = re.compile(r"fields\.\w+\(\s*['\"]([^'\"]+)['\"]")
 
 
 def _slice_class_body(source: str, start_pos: int, next_pos: int | None) -> str:
@@ -886,11 +903,17 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
                     continue
                 seen_field_names.add(field_name)
                 src_def = _extract_era1_field_entry(cols_block, fm.start())
+                # M10.5 P1 — comodel extraction (best-effort, relational only)
+                era1_comodel: str | None = None
+                if ttype in RELATIONAL_FIELD_TYPES:
+                    cm = _RE_ERA1_COMODEL.search(src_def or "")
+                    era1_comodel = cm.group(1) if cm else None
                 fields_list.append(FieldInfo(
                     name=field_name, ttype=ttype,
                     related=None, compute=None,
                     stored=True, required=False,
                     source_definition=src_def or None,
+                    comodel_name=era1_comodel,
                 ))
 
         # Fields from _columns.update({...}) calls — may appear with or without
@@ -907,11 +930,17 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
                     continue
                 seen_field_names.add(field_name)
                 src_def = _extract_era1_field_entry(upd_block, fm.start())
+                # M10.5 P1 — comodel extraction (best-effort, relational only)
+                upd_comodel: str | None = None
+                if ttype in RELATIONAL_FIELD_TYPES:
+                    cm = _RE_ERA1_COMODEL.search(src_def or "")
+                    upd_comodel = cm.group(1) if cm else None
                 fields_list.append(FieldInfo(
                     name=field_name, ttype=ttype,
                     related=None, compute=None,
                     stored=True, required=False,
                     source_definition=src_def or None,
+                    comodel_name=upd_comodel,
                 ))
 
         # Detect `_columns = X._columns.copy()` pattern (WI-5).

@@ -1525,7 +1525,7 @@ def test_resolve_view_profile_filter_isolates(view_profile_tools):
 # ===========================================================================
 
 from tests.conftest import (  # noqa: E402,I001
-    seed_js_patches, seed_owl_components, seed_qweb_templates,
+    seed_js_patches, seed_owl_components, seed_qweb_templates, seed_stylesheets,
 )
 
 
@@ -1750,6 +1750,17 @@ def test_list_fields_happy(neo4j_driver):
 
 
 def test_list_fields_empty(neo4j_driver):
+    """Model with 0 declared fields (ghost.model) still shows the builtin magic block.
+
+    Changed in M10A D2: magic fields (id, display_name, create_uid, create_date,
+    write_uid, write_date) are always injected as a synthetic <builtin> block when
+    no module filter is active.  A model that has never been indexed will have 0
+    declared fields, but the magic block makes the output non-empty.
+    ADR-0023 §1.6: "(none)" means "empty IS the answer"; with magic rows present
+    the answer is NOT empty — so "(none)" is NOT emitted.  A truly-empty result
+    (all fields filtered out by kind/module/profile with no magic match) still
+    emits "(none)" — see test_list_fields_truly_empty_with_kind_filter below.
+    """
     _cleanup_version(neo4j_driver, W6_LIST_FIELDS_VERSION)
     try:
         srv = _import_server_module()
@@ -1757,9 +1768,39 @@ def test_list_fields_empty(neo4j_driver):
         assert out.startswith(
             f"Fields of ghost.model (Odoo {W6_LIST_FIELDS_VERSION})",
         )
-        assert "(none)" in out
-        # Empty result still emits a Next: hint per Wave 5.
+        # Magic block is present — no "(none)" when magic fields are shown.
+        assert "(none)" not in out
+        assert "<builtin>" in out, "Expected '<builtin>' marker (magic fields always shown)"
+        assert "id : integer" in out, "Magic field 'id' must be present"
+        # Empty declared fields still get a Next: hint per Wave 5.
         assert "└─ Next:" in out
+    finally:
+        _cleanup_version(neo4j_driver, W6_LIST_FIELDS_VERSION)
+
+
+def test_list_fields_truly_empty_with_kind_filter(neo4j_driver):
+    """When kind filter matches no real field AND no magic field, emit '(none)'.
+
+    Use kind='monetary' on ghost.model — ghost.model has 0 real fields, and
+    no magic field has ttype='monetary', so magic_prelude_rows is also empty.
+    This is the truly-empty case where ADR-0023 §1.6 '(none)' IS the answer.
+    """
+    _cleanup_version(neo4j_driver, W6_LIST_FIELDS_VERSION)
+    try:
+        srv = _import_server_module()
+        # MAGIC_FIELDS: id=integer, display_name=char, create_uid/write_uid=many2one,
+        # create_date/write_date=datetime — none are 'monetary'.
+        # ghost.model has 0 real fields. So total==0 AND magic_prelude_rows is [].
+        out = srv._list_fields("ghost.model", W6_LIST_FIELDS_VERSION, kind="monetary")
+        assert out.startswith(
+            f"Fields of ghost.model (Odoo {W6_LIST_FIELDS_VERSION})",
+        )
+        # Truly empty — "(none)" is the correct sentinel.
+        assert "(none)" in out
+        # Next: hint still emitted even for truly-empty result.
+        assert "└─ Next:" in out
+        # Magic block must NOT appear (kind filter excluded all magic fields).
+        assert "<builtin>" not in out
     finally:
         _cleanup_version(neo4j_driver, W6_LIST_FIELDS_VERSION)
 
@@ -2364,7 +2405,7 @@ def test_list_js_patches_era_filter(neo4j_driver):
 def grammar_seed(neo4j_driver):
     """Seed a minimal but complete dataset so every tool returns content.
 
-    All 21 tools either render content or a deterministic empty/error string;
+    All 23 tools either render content or a deterministic empty/error string;
     every output must obey the ADR-0023 §1 tree grammar.
     """
     _cleanup_version(neo4j_driver, W6_GRAMMAR_VERSION)
@@ -2410,6 +2451,38 @@ def grammar_seed(neo4j_driver):
         neo4j_driver, module="sale", odoo_version=W6_GRAMMAR_VERSION,
         patches=[{"target": "ListController",
                   "patch_name": "x", "era": "patch"}],
+    )
+    # Seed :Stylesheet nodes with an :IMPORTS edge so resolve_stylesheet exercises
+    # the import-chain branch in test_grammar_consistency_all_tools.
+    # Two files: main.scss (imports variables.scss) and variables.scss.
+    # This ensures both the "has imports" branch and "imports: none" branch are hit
+    # within a single tool invocation against grammar_seed data.
+    seed_stylesheets(
+        neo4j_driver, module="sale", odoo_version=W6_GRAMMAR_VERSION,
+        stylesheets=[
+            {
+                "file_path": "/tmp/sale/static/src/scss/main.scss",
+                "language": "scss",
+                "selector_count": 5,
+                "variable_count": 0,
+                "import_count": 1,
+                "mixin_count": 0,
+            },
+            {
+                "file_path": "/tmp/sale/static/src/scss/variables.scss",
+                "language": "scss",
+                "selector_count": 0,
+                "variable_count": 3,
+                "import_count": 0,
+                "mixin_count": 0,
+            },
+        ],
+        imports=[
+            (
+                "/tmp/sale/static/src/scss/main.scss",
+                "/tmp/sale/static/src/scss/variables.scss",
+            ),
+        ],
     )
     yield W6_GRAMMAR_VERSION
     _cleanup_version(neo4j_driver, W6_GRAMMAR_VERSION)
@@ -2469,16 +2542,21 @@ def _all_tool_invocations(version: str):
          lambda: srv._find_examples("", version)),
         ("suggest_pattern",
          lambda: srv._suggest_pattern("", version)),
+        # M10A stylesheet tools (ADR-0025, D5/D6)
+        ("resolve_stylesheet",
+         lambda: srv._resolve_stylesheet("sale", version)),
+        ("find_style_override",
+         lambda: srv._find_style_override("", version)),
     ]
 
 
 TERMINAL_TOOLS = {"lint_check", "cli_help", "api_version_diff"}
 
-# `find_examples` and `suggest_pattern` empty-input sentinels are intentional
-# user-error messages that bypass the tree grammar — exclude them from the
-# strict grammar / next-step tests. Their normal-path output IS tree-shaped
-# but reproducing it here would require seeded pgvector embeddings.
-SENTINEL_EDGE_CASES = {"find_examples", "suggest_pattern"}
+# `find_examples`, `suggest_pattern`, and `find_style_override` empty-input
+# sentinels are intentional user-error messages that bypass the tree grammar —
+# exclude them from the strict grammar / next-step tests. Their normal-path
+# output IS tree-shaped but reproducing it here would require seeded pgvector.
+SENTINEL_EDGE_CASES = {"find_examples", "suggest_pattern", "find_style_override"}
 
 
 def _tool_invocation_count() -> int:
@@ -2582,14 +2660,14 @@ def test_grammar_consistency_all_tools(grammar_seed, idx):
 
 
 # ===========================================================================
-# Next-step footer test — 18 drill-down MUST emit, 3 terminal MUST NOT emit.
+# Next-step footer test — 20 drill-down MUST emit, 3 terminal MUST NOT emit.
 # ===========================================================================
 
 
 def test_next_step_footer_present(grammar_seed):
     """Each drill-down tool's normal output MUST contain ``└─ Next:``.
 
-    Per ADR-0023 §4.3 the 18 drill-down tools emit ``└─ Next:`` either as the
+    Per ADR-0023 §4.3 the 20 drill-down tools emit ``└─ Next:`` either as the
     last line or, on empty-result branches, somewhere in the output. The two
     sentinel edge cases (``find_examples`` / ``suggest_pattern`` empty input)
     are exempt — they emit a user-error message, not a drill-down tree.
@@ -2973,3 +3051,245 @@ def test_mcp_resources_registered(seeded_neo4j):
     ]
     for uri in expected_uris:
         assert uri in templates, f"Expected resource URI {uri!r} not registered"
+
+
+# ===========================================================================
+# M10A D2 — Magic-fields auto-injection
+# ===========================================================================
+
+_MAGIC_FIELD_NAMES = ("id", "display_name", "create_uid", "create_date",
+                      "write_uid", "write_date")
+_M10A_D2_VERSION = "74.0"
+
+
+def _cleanup_d2(driver):
+    _cleanup_version(driver, _M10A_D2_VERSION)
+
+
+def test_list_fields_includes_magic_fields(neo4j_driver):
+    """_list_fields returns all 6 magic fields as synthetic rows (D2)."""
+    _cleanup_d2(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _M10A_D2_VERSION, "odoo_test", "/tmp", [], "")
+        mdl = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_M10A_D2_VERSION,
+            fields=[FieldInfo("name", "char")],
+            methods=[],
+        )
+        writer.write_results([ParseResult(module=mod, models=[mdl])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._list_fields("sale.order", _M10A_D2_VERSION)
+        for magic in _MAGIC_FIELD_NAMES:
+            assert magic in out, (
+                f"Magic field '{magic}' missing from _list_fields output.\n{out}"
+            )
+        assert "<builtin>" in out, "Expected '<builtin>' module marker in output"
+    finally:
+        _cleanup_d2(neo4j_driver)
+
+
+def test_list_fields_dedup_magic_field_overridden(neo4j_driver):
+    """When model declares 'id' itself, synthetic magic 'id' must not be duplicated (D2)."""
+    _cleanup_d2(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _M10A_D2_VERSION, "odoo_test", "/tmp", [], "")
+        mdl = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_M10A_D2_VERSION,
+            fields=[FieldInfo("id", "integer")],
+            methods=[],
+        )
+        writer.write_results([ParseResult(module=mod, models=[mdl])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._list_fields("sale.order", _M10A_D2_VERSION)
+        # Count occurrences of the field name in output — must be exactly 1.
+        # Use " id :" as sentinel so tree-connector prefixes (│, ├─, └─) do not
+        # interfere with startswith-based checks (U+2502 is not stripped by str.strip()).
+        id_occurrences = sum(
+            1 for line in out.splitlines()
+            if " id :" in line
+        )
+        assert id_occurrences == 1, (
+            f"'id' appears {id_occurrences} times — expected exactly 1 (dedup).\n{out}"
+        )
+    finally:
+        _cleanup_d2(neo4j_driver)
+
+
+def test_resolve_field_magic_field_synthetic(neo4j_driver):
+    """_resolve_field for magic field 'id' returns synthetic builtin info (D2)."""
+    _cleanup_d2(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _M10A_D2_VERSION, "odoo_test", "/tmp", [], "")
+        mdl = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_M10A_D2_VERSION,
+            fields=[FieldInfo("name", "char")],
+            methods=[],
+        )
+        writer.write_results([ParseResult(module=mod, models=[mdl])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._resolve_field("sale.order", "id", _M10A_D2_VERSION)
+        assert "integer" in out.lower(), f"Expected 'integer' type for magic 'id'.\n{out}"
+        assert "<builtin>" in out, f"Expected '<builtin>' marker.\n{out}"
+    finally:
+        _cleanup_d2(neo4j_driver)
+
+
+def test_resolve_field_magic_not_shown_when_from_module_set(neo4j_driver):
+    """_resolve_field with from_module set suppresses magic-field synthetic rows (D2+D3)."""
+    _cleanup_d2(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _M10A_D2_VERSION, "odoo_test", "/tmp", [], "")
+        mdl = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_M10A_D2_VERSION,
+            fields=[FieldInfo("name", "char")],
+            methods=[],
+        )
+        writer.write_results([ParseResult(module=mod, models=[mdl])])
+        writer.close()
+
+        srv = _import_server_module()
+        # 'id' is only a magic field; from_module='sale' should not match '<builtin>'
+        out = srv._resolve_field("sale.order", "id", _M10A_D2_VERSION, from_module="sale")
+        assert "not found" in out.lower(), (
+            f"Expected 'not found' when from_module='sale' for magic-only 'id'.\n{out}"
+        )
+    finally:
+        _cleanup_d2(neo4j_driver)
+
+
+# ===========================================================================
+# M10A D3 — from_module param
+# ===========================================================================
+
+_M10A_D3_VERSION = "73.0"
+
+
+def _cleanup_d3(driver):
+    _cleanup_version(driver, _M10A_D3_VERSION)
+
+
+def _seed_d3(neo4j_driver):
+    """Seed two-module setup: base 'sale' + extension 'sale_ext'."""
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    base_mod = ModuleInfo("sale", _M10A_D3_VERSION, "odoo_test", "/tmp", [], "")
+    base_mdl = ModelInfo(
+        name="sale.order", module="sale", odoo_version=_M10A_D3_VERSION,
+        fields=[FieldInfo("name", "char"), FieldInfo("amount_total", "float")],
+        methods=[],
+    )
+    ext_mod = ModuleInfo("sale_ext", _M10A_D3_VERSION, "addons_test", "/tmp", ["sale"], "")
+    ext_mdl = ModelInfo(
+        name="sale.order", module="sale_ext", odoo_version=_M10A_D3_VERSION,
+        inherit=["sale.order"],
+        fields=[FieldInfo("x_note", "text")],
+        methods=[],
+    )
+    writer.write_results([
+        ParseResult(module=base_mod, models=[base_mdl]),
+        ParseResult(module=ext_mod, models=[ext_mdl]),
+    ])
+    writer.close()
+
+
+def test_resolve_model_from_module_filters(neo4j_driver):
+    """_resolve_model(from_module='sale') shows only the sale module (D3)."""
+    _cleanup_d3(neo4j_driver)
+    try:
+        _seed_d3(neo4j_driver)
+        srv = _import_server_module()
+        out = srv._resolve_model("sale.order", _M10A_D3_VERSION, from_module="sale")
+        assert "sale" in out, f"Expected 'sale' in output.\n{out}"
+        assert "sale_ext" not in out, (
+            f"Expected 'sale_ext' to be filtered out when from_module='sale'.\n{out}"
+        )
+    finally:
+        _cleanup_d3(neo4j_driver)
+
+
+def test_resolve_model_from_module_nonexistent_returns_not_found(neo4j_driver):
+    """_resolve_model with nonexistent from_module returns not-found hint (D3)."""
+    _cleanup_d3(neo4j_driver)
+    try:
+        _seed_d3(neo4j_driver)
+        srv = _import_server_module()
+        out = srv._resolve_model("sale.order", _M10A_D3_VERSION, from_module="no_such_module")
+        assert "not found" in out.lower(), (
+            f"Expected 'not found' for nonexistent from_module.\n{out}"
+        )
+    finally:
+        _cleanup_d3(neo4j_driver)
+
+
+def test_resolve_model_from_module_none_returns_all(neo4j_driver):
+    """_resolve_model(from_module=None) shows all modules — backward compat (D3)."""
+    _cleanup_d3(neo4j_driver)
+    try:
+        _seed_d3(neo4j_driver)
+        srv = _import_server_module()
+        out = srv._resolve_model("sale.order", _M10A_D3_VERSION)
+        assert "sale" in out, f"Expected 'sale' in output.\n{out}"
+        # sale_ext shows under 'Extended by' when default None
+        assert "sale_ext" in out, (
+            f"Expected 'sale_ext' visible when from_module=None.\n{out}"
+        )
+    finally:
+        _cleanup_d3(neo4j_driver)
+
+
+def test_resolve_field_from_module_filters(neo4j_driver):
+    """_resolve_field(from_module='sale_ext') shows only sale_ext declaration (D3)."""
+    _cleanup_d3(neo4j_driver)
+    try:
+        _seed_d3(neo4j_driver)
+        srv = _import_server_module()
+        # amount_total is only in base 'sale' — from_module='sale_ext' yields not found
+        out = srv._resolve_field(
+            "sale.order", "amount_total", _M10A_D3_VERSION, from_module="sale_ext",
+        )
+        assert "not found" in out.lower(), (
+            f"amount_total should not be visible under sale_ext.\n{out}"
+        )
+        # x_note is only in sale_ext
+        out2 = srv._resolve_field(
+            "sale.order", "x_note", _M10A_D3_VERSION, from_module="sale_ext",
+        )
+        assert "sale_ext" in out2, (
+            f"x_note should be visible under from_module='sale_ext'.\n{out2}"
+        )
+    finally:
+        _cleanup_d3(neo4j_driver)

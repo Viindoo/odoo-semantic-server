@@ -48,6 +48,7 @@ def _model_inspect(
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
     start_index: int = 0,
     limit: int = 200,
+    from_module: str | None = None,
 ) -> str:
     """Route to a model-scoped tool by discriminator.
 
@@ -75,6 +76,10 @@ def _model_inspect(
         Pagination cursor for fields/methods/views (zero-based SKIP).
     limit:
         Max rows per page for fields/methods/views (default 200).
+    from_module:
+        When set, filter results to rows declared in this module only.
+        Passed through to ``_resolve_model`` (method='summary') and
+        ``_resolve_field`` (method='field').  Default ``None``.
 
     Returns
     -------
@@ -89,12 +94,13 @@ def _model_inspect(
     from src.mcp import server as srv
 
     if method == "summary":
-        return srv._resolve_model(model, odoo_version, profile_name)
+        return srv._resolve_model(model, odoo_version, profile_name, from_module)
 
     if method == "fields":
         return srv._list_fields(
             model=model,
             odoo_version=odoo_version,
+            module=from_module,
             profile_name=profile_name,
             api_key_id=api_key_id,
             limit=limit,
@@ -126,7 +132,7 @@ def _model_inspect(
             return (
                 "Error: model_inspect(method='field') requires field='<field_name>'."
             )
-        return srv._resolve_field(model, field, odoo_version, profile_name)
+        return srv._resolve_field(model, field, odoo_version, profile_name, from_module)
 
     if method == "method":
         if not method_name:
@@ -271,6 +277,7 @@ def _entity_lookup(
     xmlid: str | None = None,
     name: str | None = None,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
+    from_module: str | None = None,
 ) -> str:
     """Unified entity lookup by kind discriminator.
 
@@ -298,6 +305,10 @@ def _entity_lookup(
         name or pattern intent string.
     api_key_id:
         Tenant key for ref minting (default: ``'anonymous'``).
+    from_module:
+        When set, filter results to rows declared in this module only.
+        Passed through for ``kind`` in ``{'model', 'field'}``.
+        Default ``None``.
 
     Returns
     -------
@@ -314,14 +325,14 @@ def _entity_lookup(
     if kind == "model":
         if not model:
             return "Error: entity_lookup(kind='model') requires model='<model_name>'."
-        return srv._resolve_model(model, odoo_version, profile_name)
+        return srv._resolve_model(model, odoo_version, profile_name, from_module)
 
     if kind == "field":
         if not model:
             return "Error: entity_lookup(kind='field') requires model='<model_name>'."
         if not field:
             return "Error: entity_lookup(kind='field') requires field='<field_name>'."
-        return srv._resolve_field(model, field, odoo_version, profile_name)
+        return srv._resolve_field(model, field, odoo_version, profile_name, from_module)
 
     if kind == "method":
         if not model:

@@ -956,3 +956,140 @@ def test_era1_columns_copy_detected_no_field_nodes(tmp_path):
         "Field 'parent_field' should NOT be extracted from copy() — "
         "parent fields come via INHERITS path"
     )
+
+
+# ---------------------------------------------------------------------------
+# M10.5 P1 — comodel_name extraction tests
+# ---------------------------------------------------------------------------
+
+
+def test_era2_comodel_many2one_positional(tmp_path, sale_module):
+    """era2: Many2one with positional string arg → comodel_name extracted."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            partner_id = fields.Many2one('res.partner')
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["partner_id"].comodel_name == "res.partner"
+
+
+def test_era2_comodel_many2one_kwarg(tmp_path, sale_module):
+    """era2: Many2one with comodel_name kwarg → comodel_name extracted."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            partner_id = fields.Many2one(comodel_name='res.partner', required=True)
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["partner_id"].comodel_name == "res.partner"
+
+
+def test_era2_comodel_one2many(tmp_path, sale_module):
+    """era2: One2many positional string arg → comodel_name extracted."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            line_ids = fields.One2many('sale.order.line', 'order_id')
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["line_ids"].comodel_name == "sale.order.line"
+
+
+def test_era2_comodel_many2many(tmp_path, sale_module):
+    """era2: Many2many positional string arg → comodel_name extracted."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            tag_ids = fields.Many2many('crm.tag')
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["tag_ids"].comodel_name == "crm.tag"
+
+
+def test_era2_comodel_variable_arg_returns_none(tmp_path, sale_module):
+    """era2: Many2one with variable (not string literal) → comodel_name is None."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        TARGET_MODEL = 'res.partner'
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            partner_id = fields.Many2one(TARGET_MODEL)
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["partner_id"].comodel_name is None
+
+
+def test_era2_non_relational_field_comodel_none(tmp_path, sale_module):
+    """era2: Non-relational fields (Char, Float) have comodel_name = None."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            name = fields.Char()
+            amount = fields.Float()
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["name"].comodel_name is None
+    assert field_map["amount"].comodel_name is None
+
+
+def test_era1_comodel_many2one_columns(tmp_path):
+    """era1: _columns many2one with literal arg → comodel_name extracted."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class AccountMove(osv.osv):\n"
+        "    _name = 'account.move'\n"
+        "    _columns = {\n"
+        "        'partner_id': fields.many2one('res.partner', 'Partner'),\n"
+        "    }\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["partner_id"].comodel_name == "res.partner"
+
+
+def test_era1_non_relational_field_comodel_none(tmp_path):
+    """era1: Non-relational fields have comodel_name = None."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class AccountMove(osv.osv):\n"
+        "    _name = 'account.move'\n"
+        "    _columns = {\n"
+        "        'name': fields.char('Name'),\n"
+        "        'amount': fields.float('Amount'),\n"
+        "    }\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["name"].comodel_name is None
+    assert field_map["amount"].comodel_name is None

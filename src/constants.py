@@ -183,3 +183,17 @@ MCP_HEALTH_PROBE_TIMEOUT_SECONDS: int = 5
 # ---------------------------------------------------------------------------
 
 DEFAULT_RATE_LIMIT_RPM: int = 120
+
+# ---------------------------------------------------------------------------
+# Magic fields — ORM auto-injects these at runtime; not declared in source.
+# Value: (ttype, comodel_name | None). Synthetic at query-time only.
+# ---------------------------------------------------------------------------
+
+MAGIC_FIELDS: dict[str, tuple[str, str | None]] = {
+    "id": ("integer", None),
+    "display_name": ("char", None),
+    "create_uid": ("many2one", "res.users"),
+    "create_date": ("datetime", None),
+    "write_uid": ("many2one", "res.users"),
+    "write_date": ("datetime", None),
+}

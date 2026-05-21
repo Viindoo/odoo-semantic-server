@@ -22,6 +22,7 @@ from src.constants import (
     LIST_PREVIEW_FIELDS_MAX,
     LIST_PREVIEW_MAX_ITEMS,
     LIST_PREVIEW_PATCHES_MAX,
+    MAGIC_FIELDS,
     PG_POOL_MAX_CONN,
     PG_POOL_MIN_CONN,
     REL_DEPENDS_ON,
@@ -112,7 +113,7 @@ register_resources(mcp)
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
-# All 18 OSM tools are read-only queries against a statically-indexed graph.
+# All 20 OSM tools are read-only queries against a statically-indexed graph.
 # Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
 # ChatGPT) so they can auto-approve and skip confirmation gates.
 # (cross-server pattern: read-only annotations for auto-approval)
@@ -320,7 +321,26 @@ def _resolve_model(
     model_name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
+    from_module: str | None = None,
 ) -> str:
+    """Return a tree overview of a model, optionally scoped to a single declaring module.
+
+    Parameters
+    ----------
+    model_name:
+        Dotted model name, e.g. ``sale.order``.
+    odoo_version:
+        Odoo version string, e.g. ``17.0``. ``"auto"`` resolves to the latest
+        indexed version.
+    profile_name:
+        Optional profile filter.
+    from_module:
+        When set, restrict the inheritance-chain layers to rows where the
+        declaring module equals this value. Layers from other modules are
+        silently filtered out.  ``"<builtin>"`` is never returned regardless
+        of this parameter (magic fields live in synthetic space only).
+        Default ``None`` preserves the existing behaviour (all modules).
+    """
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
@@ -336,6 +356,7 @@ def _resolve_model(
             f"""
             MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
             WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
+              AND ($from_module IS NULL OR m.module = $from_module)
             WITH m, mod,
                  CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
                  COUNT {{
@@ -351,9 +372,15 @@ def _resolve_model(
                      edition_rank ASC, mod_name ASC
             """,
             name=model_name, v=odoo_version, profile_name=profile_name,
+            from_module=from_module,
         ).data()
 
         if not layers:
+            if from_module:
+                return (
+                    f"Model '{model_name}' not found in module '{from_module}'"
+                    f" (Odoo {odoo_version})."
+                )
             return f"Model '{model_name}' not found in Odoo {odoo_version}."
 
         base = layers[0]
@@ -374,7 +401,11 @@ def _resolve_model(
             ORDER BY pname
         """, name=model_name, v=odoo_version).data()
 
+    # ADR-0023 §1.1: header = "{entity} (Odoo {version})", no decoration.
+    # from_module filter info goes as a branch line, not appended to header.
     lines = [f"{model_name} (Odoo {odoo_version})"]
+    if from_module:
+        lines.append(f"├─ filter: from_module={from_module}")
     lines.append(f"├─ Defined in:     [{base['repo']}] {base['module_name']}")
 
     if parents:
@@ -411,7 +442,27 @@ def _resolve_field(
     field_name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
+    from_module: str | None = None,
 ) -> str:
+    """Return detail about a field, optionally scoped to a single declaring module.
+
+    Parameters
+    ----------
+    model_name:
+        Dotted model name, e.g. ``sale.order``.
+    field_name:
+        Field name to look up.
+    odoo_version:
+        Odoo version string. ``"auto"`` resolves to the latest indexed version.
+    profile_name:
+        Optional profile filter.
+    from_module:
+        When set, only ``Declared in`` rows whose module equals this value are
+        returned.  When the field is a magic field (``id``, ``display_name``,
+        etc.) it is declared in ``"<builtin>"``; setting ``from_module`` will
+        suppress magic-field synthetic rows since ``"<builtin>"`` will not match
+        any real module name.  Default ``None`` preserves existing behaviour.
+    """
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
@@ -419,6 +470,7 @@ def _resolve_field(
         records = session.run(f"""
             MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
             WHERE ($profile_name IS NULL OR $profile_name IN f.profile)
+              AND ($from_module IS NULL OR f.module = $from_module)
             OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
             WITH f, mod, m_node,
@@ -433,9 +485,32 @@ def _resolve_field(
             RETURN f, f.module AS module_name, mod.repo AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
-        """, fn=field_name, mn=model_name, v=odoo_version, profile_name=profile_name).data()
+        """, fn=field_name, mn=model_name, v=odoo_version, profile_name=profile_name,
+            from_module=from_module).data()
 
+    # D2: If not found in graph, check whether it's a magic field.
+    # Magic fields are synthetic — not in Neo4j — so we build a synthetic record.
     if not records:
+        if from_module is None and field_name in MAGIC_FIELDS:
+            ttype, _comodel = MAGIC_FIELDS[field_name]
+            lines = [
+                f"{model_name}.{field_name} (Odoo {odoo_version})",
+                f"├─ Type:     {ttype}",
+                "├─ Computed: No",
+                "├─ Stored:   Yes",
+                "├─ Required: No",
+                "├─ Related:  —",
+                "├─ Declared in:",
+                "│   └─ <builtin>  [ORM magic field — injected at runtime, not in source]",
+            ]
+            lines.append(format_next_step([
+                f"find_examples(query='{model_name}.{field_name} usage'"
+                f", odoo_version='{odoo_version}') for real-world patterns",
+                f"impact_analysis(entity_type='field'"
+                f", entity_name='{model_name}.{field_name}'"
+                f", odoo_version='{odoo_version}') for blast radius",
+            ]))
+            return "\n".join(lines)
         return (
             f"Field '{field_name}' not found on model"
             f" '{model_name}' in Odoo {odoo_version}."
@@ -1506,10 +1581,89 @@ def _match_lint_rule(code: str, rule: dict) -> bool:
     return len(overlap) >= 2
 
 
+def _build_noqa_suppress(code: str) -> dict[int, set[str]]:
+    """Parse noqa comments and return a suppress-set keyed by 1-based line number.
+
+    Each value is a set of rule IDs suppressed on that line, or ``{"*"}`` for a
+    bare ``noqa`` (suppresses all rules on that line).
+
+    Examples (comment marker elided to avoid ruff false-positive)::
+
+        noqa: E8001          → {1: {"E8001"}}
+        noqa: E8001, W9002   → {1: {"E8001", "W9002"}}
+        noqa                 → {1: {"*"}}
+    """
+    import re as _re
+
+    suppress: dict[int, set[str]] = {}
+    for lineno, line in enumerate(code.splitlines(), start=1):
+        # Match bare noqa comment with optional rule list.
+        m = _re.search(r"#\s*noqa(?::\s*([A-Za-z0-9,\s]+))?", line)
+        if not m:
+            continue
+        ids_str = m.group(1)
+        if ids_str:
+            ids = {s.strip() for s in ids_str.split(",") if s.strip()}
+        else:
+            ids = {"*"}
+        suppress[lineno] = ids
+    return suppress
+
+
+def _match_lint_rule_lines(code: str, rule: dict) -> list[int]:
+    """Return 1-based line numbers in *code* where *rule* matches.
+
+    Uses the same token-overlap logic as :func:`_match_lint_rule` but applies
+    it per-line so we can honour ``# noqa`` suppression.  A line matches when
+    it contains ≥2 significant tokens from the rule message.
+
+    Returns an empty list when the rule message has fewer than 2 significant
+    tokens (same contract as ``_match_lint_rule`` — the rule never fires).
+    """
+    import re as _re
+
+    msg = (rule.get("message") or "").lower()
+    if not msg:
+        return []
+    rule_tokens = {
+        t for t in _re.split(r"[^a-z_]+", msg)
+        if len(t) > 3 and t not in _LINT_STOPWORDS
+    }
+    if len(rule_tokens) < 2:
+        return []
+
+    # First check the whole snippet (existing behaviour) — if not triggered at
+    # all, skip per-line work.
+    code_tokens_all = set(_re.split(r"[^a-z_]+", (code or "").lower()))
+    if len(rule_tokens & code_tokens_all) < 2:
+        return []
+
+    # Per-line pass to get line numbers.
+    hit_lines: list[int] = []
+    for lineno, line in enumerate(code.splitlines(), start=1):
+        line_lc = line.lower()
+        line_tokens = set(_re.split(r"[^a-z_]+", line_lc))
+        if len(rule_tokens & line_tokens) >= 2:
+            hit_lines.append(lineno)
+    # If the whole-code match fired but no individual line triggered ≥2 tokens
+    # (tokens spread across lines), attribute the violation to line 1 as a
+    # conservative fallback so the caller still receives it.
+    if not hit_lines:
+        hit_lines = [1]
+    return hit_lines
+
+
 def _lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
-    """Pattern-match user code against indexed LintRule.message (V0)."""
+    """Pattern-match user code against indexed LintRule.message (V0).
+
+    Supports ``# noqa`` suppression per line:
+
+    * ``# noqa: E8001`` — suppress rule ``E8001`` on that line only.
+    * ``# noqa: E8001, W9002`` — suppress multiple rules on that line.
+    * ``# noqa`` (bare) — suppress all rules matched on that line.
+    """
     if language not in _VALID_LINT_LANGUAGES:
         valid = ", ".join(sorted(_VALID_LINT_LANGUAGES))
         return (
@@ -1536,7 +1690,24 @@ def _lint_check(
             RETURN sm.curate_status AS curate_status
         """, v=odoo_version).single()
         curate_status = curate_rec["curate_status"] if curate_rec else None
-    violations = [r for r in rules if _match_lint_rule(code, r)]
+
+    # Build noqa suppress set from the input code.
+    suppress = _build_noqa_suppress(code)
+
+    violations: list[dict] = []
+    for rule in rules:
+        hit_lines = _match_lint_rule_lines(code, rule)
+        if not hit_lines:
+            continue
+        rule_id = rule.get("rule_id") or "?"
+        # A violation is suppressed only when ALL matched lines suppress this rule.
+        suppressed_lines = sum(
+            1 for ln in hit_lines
+            if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
+        )
+        if suppressed_lines < len(hit_lines):
+            violations.append(rule)
+
     result = _format_lint_check(violations, odoo_version, code, language)
     if curate_status == "pending":
         result = (
@@ -2298,7 +2469,9 @@ def _list_fields(
     """Layer-2 — enumerate fields on a model, grouped by module.
 
     `kind` filters by Field.ttype (e.g. 'monetary', 'many2one').
-    `module` restricts to one declaring module.
+    `module` restricts to one declaring module.  When ``module`` is set,
+    magic-field synthetic rows are suppressed (module=``"<builtin>"`` would
+    not match any real module filter value).
     `limit` caps the Cypher query size; the render cap is LIST_PREVIEW_FIELDS_MAX.
     `start_index` is a zero-based pagination cursor (Cypher SKIP).
     `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
@@ -2347,16 +2520,74 @@ def _list_fields(
         ).single()
         total = total_rec["c"] if total_rec else 0
 
-    header = f"Fields of {model} (Odoo {odoo_version})"
-    if total == 0:
-        # Wave 5: Next-step footer (empty result still gets a sensible hint).
-        next_line = format_next_step([
-            f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
-            " for behavior",
-        ])
-        return f"{header}\n├─ (none)\n{next_line}"
+    # D2: Build magic-field prelude for page 0 only when no module filter suppresses them.
+    # Magic fields are rendered as a FIXED <builtin> prelude block that is OUTSIDE the
+    # pagination/truncation logic for real fields.  The "Showing rows X–Y of N" line and
+    # all start_index arithmetic operate ONLY on real (Neo4j) fields.
+    # Dedup: skip a magic field if the model already declares it in Neo4j anywhere (model-
+    # scoped, not page-scoped — fields on page 2+ would not be in `rows` and would cause
+    # duplicates for e.g. display_name, write_date that appear late in the field list).
+    magic_prelude_rows: list[dict] = []
+    if start_index == 0 and module is None:
+        magic_names_list = list(MAGIC_FIELDS.keys())
+        with _get_driver().session() as _dedup_session:
+            _dedup_rec = _dedup_session.run(
+                """
+                MATCH (f:Field {model: $m, odoo_version: $v})
+                WHERE f.name IN $magic_names
+                  AND ($profile_name IS NULL OR $profile_name IN f.profile)
+                  AND f.module <> '__unresolved__'
+                RETURN collect(DISTINCT f.name) AS names
+                """,
+                m=model, v=odoo_version, magic_names=magic_names_list,
+                profile_name=profile_name,
+            ).single()
+        existing_names: set[str] = set(_dedup_rec["names"]) if _dedup_rec else set()
+        magic_prelude_rows = [
+            {
+                "name": fname,
+                "ttype": ttype,
+            }
+            for fname, (ttype, _comodel) in MAGIC_FIELDS.items()
+            if fname not in existing_names
+            and (kind is None or kind == ttype)
+        ]
 
-    # Mint opaque refs for each returned row (field kind).
+    header = f"Fields of {model} (Odoo {odoo_version})"
+
+    # Render the <builtin> prelude block (always shown in full, no refs, not paginated).
+    # Group header matches the old "repo=None → '?', module='<builtin>'" format so that
+    # existing tests checking ``"<builtin>" in out`` continue to pass.
+    lines = [header]
+    if magic_prelude_rows:
+        lines.append("├─ [?] <builtin>")
+        builtin_tagged = [f"{r['name']} : {r['ttype']}" for r in magic_prelude_rows]
+        lines.extend(render_list_block(builtin_tagged))
+
+    if total == 0:
+        # No real declared fields.
+        if magic_prelude_rows:
+            # Model has no declared fields but magic fields are present — the builtin block
+            # IS the content. ADR-0023 §1.6: "(none)" means "empty IS the answer"; when
+            # magic rows exist, the answer is not empty. Do NOT emit "(none)".
+            # The builtin block was already appended above. Just add the Next footer.
+            next_line = format_next_step([
+                f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
+                " for behavior",
+            ])
+            lines.append(next_line)
+        else:
+            # Truly no fields at all (all filtered out by kind/module/profile, or model unknown).
+            # Emit "(none)" sentinel so callers can detect completely empty result.
+            lines.append("├─ (none)")
+            next_line = format_next_step([
+                f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
+                " for behavior",
+            ])
+            lines.append(next_line)
+        return "\n".join(lines)
+
+    # Mint opaque refs for real (Neo4j) rows only.
     field_items = [{"field_name": r["name"], "model": model} for r in rows]
     ref_ids = mint_refs(field_items, api_key_id, kind="field")
 
@@ -2370,7 +2601,6 @@ def _list_fields(
             order.append(key)
         groups[key].append((r, ref_id))
 
-    lines = [header]
     for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
@@ -2399,6 +2629,7 @@ def _list_fields(
                 tagged.append(f"{prefix}{row_str}")
         lines.extend(render_list_block(tagged))
 
+    # Pagination hint — counts ONLY real fields (total from Neo4j, not +magic).
     shown = len(rows)
     end_index = start_index + shown
     has_more = total > end_index
@@ -2417,13 +2648,16 @@ def _list_fields(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
         )
 
-    # Wave 5: Next-step footer per ADR-0023 §4. Drill into the first
-    # rendered field for its full chain, and into model_inspect methods for behavior.
-    first_field = rows[0]["name"] if rows else None
+    # Wave 5: Next-step footer per ADR-0023 §4. Prefer a real field name for the
+    # drill-down hint; fall back to first magic field if no real field on this page.
+    first_real_field = rows[0]["name"] if rows else None
+    first_hint_field = first_real_field or (
+        magic_prelude_rows[0]["name"] if magic_prelude_rows else None
+    )
     next_hints: list[str] = []
-    if first_field:
+    if first_hint_field:
         next_hints.append(
-            f"model_inspect(model='{model}', method='field', field='{first_field}'"
+            f"model_inspect(model='{model}', method='field', field='{first_hint_field}'"
             f", odoo_version='{odoo_version}') for full chain",
         )
     next_hints.append(
@@ -4324,6 +4558,7 @@ def model_inspect(
     method_name: str | None = None,
     start_index: int = 0,
     limit: int = 200,
+    from_module: str | None = None,
 ) -> ToolResult:
     """Method-discriminator superset for model-scoped reads. See ADR-0028.
 
@@ -4346,6 +4581,8 @@ def model_inspect(
         method_name: Required when method='method'. Method name.
         start_index: Pagination cursor for fields/methods/views (zero-based).
         limit: Max rows per page for fields/methods/views (default 200).
+        from_module: Optional module filter — restrict results to rows declared
+            in this module only (summary and field sub-views).
 
     Returns:
         Tree text identical to the underlying tool's output.
@@ -4364,6 +4601,7 @@ def model_inspect(
         api_key_id=_get_api_key_id(),
         start_index=start_index,
         limit=limit,
+        from_module=from_module,
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
@@ -4426,6 +4664,7 @@ def entity_lookup(
     method_name: str | None = None,
     xmlid: str | None = None,
     name: str | None = None,
+    from_module: str | None = None,
 ) -> ToolResult:
     """Unified single-entity lookup by kind discriminator. See ADR-0028.
 
@@ -4447,6 +4686,8 @@ def entity_lookup(
         method_name: Required for kind='method'.
         xmlid: Required for kind='view'.
         name: Required for kind in {module, pattern}.
+        from_module: Optional module filter — restrict results to rows declared
+            in this module only (kind='model' and kind='field').
 
     Returns:
         Tree text identical to the underlying tool's output.
@@ -4465,6 +4706,7 @@ def entity_lookup(
         xmlid=xmlid,
         name=name,
         api_key_id=_get_api_key_id(),
+        from_module=from_module,
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
@@ -4703,6 +4945,344 @@ def list_available_profiles() -> ToolResult:
         ver_str = f"  ({odoo_version})" if odoo_version else ""
         lines.append(f"{prefix} {name}{ver_str}")
     return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
+
+
+# ---------------------------------------------------------------------------
+# M10A Stylesheet tools — D5 resolve_stylesheet + D6 find_style_override
+# ---------------------------------------------------------------------------
+
+
+def _resolve_stylesheet(
+    module: str,
+    odoo_version: str = "auto",
+) -> str:
+    """Impl for resolve_stylesheet tool — no FastMCP wrapper overhead.
+
+    Returns a tree listing all :Stylesheet nodes for *module* at *odoo_version*
+    with their language, stat counters, and BFS :IMPORTS chain.
+    """
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            """
+            MATCH (ss:Stylesheet {module: $mod, odoo_version: $v})
+            RETURN ss.file_path AS file_path,
+                   ss.language AS language,
+                   ss.selector_count AS selector_count,
+                   ss.variable_count AS variable_count,
+                   ss.import_count AS import_count,
+                   ss.mixin_count AS mixin_count
+            ORDER BY ss.file_path ASC
+            """,
+            mod=module, v=odoo_version,
+        ).data()
+
+    if not rows:
+        footer = hints_for("resolve_stylesheet", name=module, ver=odoo_version)
+        recovery = (
+            "Recovery: describe_module(name=..., odoo_version=...) to verify module exists."
+        )
+        if footer:
+            # footer ends with └─ Next: — use ├─ for Recovery so └─ stays last.
+            lines = [
+                f"resolve_stylesheet({module!r}, {odoo_version!r})",
+                f"├─ not found — no Stylesheet nodes indexed for module '{module}'.",
+                f"├─ {recovery}",
+                footer,
+            ]
+        else:
+            lines = [
+                f"resolve_stylesheet({module!r}, {odoo_version!r})",
+                f"├─ not found — no Stylesheet nodes indexed for module '{module}'.",
+                f"└─ {recovery}",
+            ]
+        return "\n".join(lines)
+
+    # I5: Batch-query all :IMPORTS edges in ONE session before the render loop
+    # (avoids N+1 sessions — one session per row that had imp > 0).
+    # Pattern: UNWIND file paths → collect imports per source, return as map.
+    fps_with_imports = [r["file_path"] for r in rows if (r["import_count"] or 0) > 0]
+    imports_by_fp: dict[str, list[dict]] = {}
+    if fps_with_imports:
+        with _get_driver().session() as session:
+            batch_rows = session.run(
+                """
+                UNWIND $fps AS fp
+                MATCH (src:Stylesheet {file_path: fp, module: $mod, odoo_version: $v})
+                      -[:IMPORTS]->(tgt:Stylesheet)
+                RETURN fp, tgt.file_path AS import_path, tgt.module AS import_module
+                ORDER BY fp ASC, tgt.file_path ASC
+                """,
+                fps=fps_with_imports, mod=module, v=odoo_version,
+            ).data()
+        for br in batch_rows:
+            imports_by_fp.setdefault(br["fp"], []).append(
+                {"import_path": br["import_path"], "import_module": br["import_module"]}
+            )
+
+    header = f"resolve_stylesheet({module!r}, {odoo_version!r})"
+    lines = [header, f"├─ Stylesheets: {len(rows)} file(s)"]
+
+    for idx, row in enumerate(rows):
+        is_last_row = idx == len(rows) - 1
+        row_prefix = "└─" if is_last_row else "├─"
+        fp = row["file_path"]
+        lang = row["language"] or "css"
+        sel = row["selector_count"] or 0
+        var = row["variable_count"] or 0
+        imp = row["import_count"] or 0
+        mix = row["mixin_count"] or 0
+
+        # Stat summary line
+        stats_parts = [f"lang={lang}", f"selectors={sel}", f"vars={var}"]
+        if mix:
+            stats_parts.append(f"mixins={mix}")
+        if imp:
+            stats_parts.append(f"imports={imp}")
+
+        # I4: Use grammar-valid prefixes only (per ADR-0023 §1, tested by
+        # test_grammar_consistency_all_tools).  The import entries are rendered
+        # at the same depth as Stats (not deeper), so they always land on a
+        # valid allowed_start regardless of whether this is the last row:
+        #   non-last row: sub_prefix="│   " → import lines start with "│   │   ├─" (valid)
+        #   last row:     sub_prefix="    " → import lines start with "│       ├─" (valid)
+        # Nesting import entries one level deeper (│   {sub_prefix}    {imp_pfx}) would
+        # produce "│           ├─" for last-row which is NOT in allowed_starts.
+        lines.append(f"│   {row_prefix} {fp}")
+        sub_prefix = "    " if is_last_row else "│   "
+        import_rows = imports_by_fp.get(fp, []) if imp > 0 else []
+
+        if import_rows:
+            lines.append(f"│   {sub_prefix}├─ Stats: {', '.join(stats_parts)}")
+            lines.append(f"│   {sub_prefix}├─ Imports ({len(import_rows)}):")
+            for i_idx, ir in enumerate(import_rows):
+                is_last_imp = i_idx == len(import_rows) - 1
+                imp_prefix = "└─" if is_last_imp else "├─"
+                lines.append(
+                    f"│   {sub_prefix}{imp_prefix} {ir['import_path']}"
+                    f" [{ir['import_module']}]"
+                )
+        elif imp > 0:
+            # imp_count > 0 but batch returned no edges (edges not yet resolved)
+            lines.append(f"│   {sub_prefix}├─ Stats: {', '.join(stats_parts)}")
+            lines.append(
+                f"│   {sub_prefix}└─ Imports: edges not yet resolved (re-index to backfill)."
+            )
+        else:
+            lines.append(f"│   {sub_prefix}├─ Stats: {', '.join(stats_parts)}")
+            lines.append(f"│   {sub_prefix}└─ Imports: none")
+
+    footer = hints_for("resolve_stylesheet", name=module, ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+def _find_style_override(
+    selector_or_variable: str,
+    odoo_version: str = "auto",
+    limit: int = 5,
+    *,
+    _driver=None,
+    _pg_conn=None,
+    _embedder=None,
+) -> str:
+    """Impl for find_style_override tool — no FastMCP wrapper overhead.
+
+    Performs pgvector ANN on chunk_type ∈ {css, scss} to find stylesheets
+    declaring *selector_or_variable*, then traverses :IMPORTS to show which
+    modules re-declare the same selector (override order — last writer wins
+    in CSS cascade, first-match wins in SCSS @import chain).
+    """
+    if not selector_or_variable.strip():
+        return (
+            "find_style_override: empty selector_or_variable — provide a CSS selector,"
+            " SCSS variable, or mixin name.\nFound 0 results\n"
+        )
+
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+
+    driver = _driver or _get_driver()
+    try:
+        embedder = _embedder or _get_embedder()
+    except Exception as e:
+        return (
+            f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
+            "Found 0 results\n"
+            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+        )
+
+    with driver.session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+    try:
+        query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + selector_or_variable])[0]
+    except Exception as e:
+        return (
+            f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+            "Found 0 results\n"
+            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+        )
+
+    _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
+    with _pg_ctx as pg:
+        with pg.cursor() as cur:
+            placeholders = "%s, %s"
+            cur.execute(
+                f"""SELECT chunk_type, module, entity_name, file_path,
+                           chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                    FROM embeddings
+                    WHERE odoo_version = %s AND chunk_type IN ({placeholders})
+                    ORDER BY vec <=> %s::vector LIMIT %s""",
+                [query_vec, odoo_version, "css", "scss", query_vec,
+                 min(limit, FIND_EXAMPLES_ANN_LIMIT)],
+            )
+            raw = [
+                dict(chunk_type=r[0], module=r[1], entity_name=r[2],
+                     file_path=r[3], chunk_idx=r[4], content=r[5], cosine=float(r[6]))
+                for r in cur.fetchall()
+            ]
+
+    header = (
+        f'find_style_override: "{selector_or_variable}" ({odoo_version})\n'
+        f"Found {len(raw)} result(s)\n"
+    )
+    if not raw:
+        footer = hints_for("find_style_override", module="", ver=odoo_version)
+        return header + (footer if footer else "")
+
+    # For each hit, check :IMPORTS override chain — which modules re-declare
+    # the same selector (import same file path chain).
+    sep = "─" * 41
+    lines = [header]
+    for i, chunk in enumerate(raw, 1):
+        entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
+        chunk_label = chunk["chunk_type"]
+        if chunk["chunk_idx"] > 0:
+            chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
+        lines.append(sep)
+        lines.append(f"#{i} · score {chunk['cosine']:.2f} · {chunk_label} · {entity}")
+        lines.append(f"   File: {chunk['file_path']}")
+
+        # Find stylesheets that import this file (override chain — BFS depth 1)
+        with driver.session() as session:
+            importers = session.run(
+                """
+                MATCH (tgt:Stylesheet {file_path: $fp, odoo_version: $v})
+                      <-[:IMPORTS]-(src:Stylesheet)
+                RETURN src.file_path AS importer_path, src.module AS importer_module
+                ORDER BY src.file_path ASC
+                """,
+                fp=chunk["file_path"], v=odoo_version,
+            ).data()
+
+        if importers:
+            lines.append(f"   Override chain ({len(importers)} importer(s)):")
+            for imp in importers:
+                lines.append(
+                    f"   ├─ {imp['importer_path']} [{imp['importer_module']}]"
+                )
+        else:
+            lines.append("   Override chain: no importers found (no :IMPORTS edges).")
+
+        lines.append("   ┌" + "─" * 42)
+        for line in chunk["content"].splitlines():
+            lines.append(f"   │ {line}")
+        lines.append("   └" + "─" * 42)
+        lines.append("")
+
+    # Pass top-result module so hints render useful resolve_stylesheet/describe_module calls.
+    top_module = raw[0]["module"] if raw else ""
+    footer = hints_for("find_style_override", module=top_module, ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def resolve_stylesheet(
+    module: str,
+    odoo_version: str = "auto",
+) -> str:
+    """Enumerate CSS/SCSS stylesheets for an Odoo module with import chain.
+
+    TRIGGER when: "what stylesheets does module X have", "show CSS files in
+    website_sale", "list SCSS imports for web module", "module Y có file CSS/SCSS
+    nào", "xem import chain stylesheet của module Z"
+    PREFER over: find_style_override when you want an overview of all stylesheets
+    in a module, not a specific selector search.
+    SKIP when: searching for a specific CSS selector or SCSS variable across
+    modules — use find_style_override (ANN search).
+
+    Args:
+        module: Odoo module technical name (e.g. 'web', 'website_sale').
+        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
+
+    Returns:
+        Tree listing each stylesheet with language, stat counters
+        (selectors, vars, mixins, imports), and resolved :IMPORTS chain.
+
+    Example:
+        resolve_stylesheet("web", "17.0")
+        → resolve_stylesheet('web', '17.0')
+          ├─ Stylesheets: 2 file(s)
+          │   ├─ /path/web/static/src/css/main.css
+          │   │   ├─ Stats: lang=css, selectors=42, vars=0
+          │   │   └─ Imports: none
+          │   └─ /path/web/static/src/scss/variables.scss
+          │       ├─ Stats: lang=scss, selectors=0, vars=15, mixins=3, imports=1
+          │       ├─ Imports (1):
+          │       └─ /path/web/static/src/scss/base.scss [web]
+          └─ Next: find_style_override(...) | describe_module(...)
+
+    See also: odoo://{version}/stylesheet/{module}/{file_path*}
+    """
+    return _resolve_stylesheet(module, odoo_version)
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def find_style_override(
+    selector_or_variable: str,
+    odoo_version: str = "auto",
+    limit: int = 5,
+) -> str:
+    """Find CSS selectors or SCSS variables/mixins across modules + override order.
+
+    Uses pgvector ANN on indexed css/scss chunks to locate declarations, then
+    traces :IMPORTS edges to show which modules re-declare the same selector
+    (override order — last writer wins in CSS cascade).
+
+    TRIGGER when: "which module overrides .o_form_view selector", "where is
+    $primary variable defined", "find CSS override for .btn-primary", "module
+    nào override selector X", "tìm định nghĩa biến SCSS Y trong codebase"
+    PREFER over: find_examples when looking specifically for CSS/SCSS patterns
+    rather than Python/XML code examples.
+    SKIP when: you want a full list of all stylesheets in a module — use
+    resolve_stylesheet instead.
+
+    Args:
+        selector_or_variable: CSS selector, SCSS variable (e.g. '$primary'),
+            or mixin name to search for.
+        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
+        limit: Max results to return (default 5).
+
+    Returns:
+        Ranked ANN hits with chunk content, cosine score, and :IMPORTS
+        override chain showing which modules import the matched file.
+
+    Example:
+        find_style_override(".o_list_view", "17.0")
+        → find_style_override: ".o_list_view" (17.0)
+          Found 2 result(s)
+          ─────...
+          #1 · score 0.87 · css · [web] selector:.o_list_view
+             File: /path/web/static/src/css/views.css
+             Override chain (1 importer(s)):
+             ├─ /path/website/static/src/scss/views.scss [website]
+    """
+    return _find_style_override(selector_or_variable, odoo_version, limit)
 
 
 def _mcp_host() -> str:

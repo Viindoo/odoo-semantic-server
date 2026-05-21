@@ -84,11 +84,11 @@ Admin phải ký tên vào mọi mục bên dưới (ghi `[x]` + ngày + ghi ch�
 
 ---
 
-## 6. MCP Tool Sign-Off (All 18 Tools)
+## 6. MCP Tool Sign-Off (All 20 Tools)
 
 **Mỗi tool phải trả về kết quả có cấu trúc — không được empty hoặc error.**
 
-> **Tool count history:** 14 (M1–M5) → 21 (+ M9 W-OSM Wave 1) → 28 (+ M10.5/M11 Wave D+E) → **18 (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline)**. See [ADR-0023](../adr/0023-tool-output-completeness.md) + [ADR-0028](../adr/0028-discriminator-consolidation.md) + [ADR-0029](../adr/0029-implicit-session-context.md).
+> **Tool count history:** 14 (M1–M5) → 21 (+ M9 W-OSM Wave 1) → 28 (+ M10.5/M11 Wave D+E) → **18 (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline)** → **20 (v0.7 — +2 stylesheet tools per M10A)**. See [ADR-0023](../adr/0023-tool-output-completeness.md) + [ADR-0028](../adr/0028-discriminator-consolidation.md) + [ADR-0029](../adr/0029-implicit-session-context.md).
 
 Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 
@@ -112,8 +112,10 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 | 16 | `set_active_profile` | `set_active_profile(profile_name="acme_enterprise_17")` | Persists sticky profile for this API key; confirms `Active profile set to acme_enterprise_17` | `[ ]` (M11 Wave E — ADR-0029) |
 | 17 | `list_available_versions` | `list_available_versions()` | Lists all indexed Odoo versions for the current profile; marks current active version | `[ ]` (M11 Wave E — ADR-0029) |
 | 18 | `list_available_profiles` | `list_available_profiles()` | Lists all profiles accessible to this API key; marks current active profile | `[ ]` (M11 Wave E — ADR-0029) |
+| 19 | `resolve_stylesheet` | `resolve_stylesheet(module="web", odoo_version="17.0")` | Stylesheet chain + variable list for module; follows ADR-0023 tree-grammar contract | `[ ]` (M10A — ADR-0025; v0.7.0) |
+| 20 | `find_style_override` | `find_style_override(selector_or_variable="--color-primary", odoo_version="17.0")` | Which module last re-declares a CSS custom property / overrides a selector | `[ ]` (M10A — ADR-0025; v0.7.0) |
 
-**Sign-off summary 2026-05-14 (hotfix applied + client-side cross-check):** 9/10 M1–M5 core tools PASS + 1 PARTIAL (#8 `suggest_pattern` operational gap: PatternExample not seeded on prod; #4 `api_version_diff` Tier 2 v16 backlog). Tool #11 `describe_module` (M9 W-OSM Wave 1) + tools #12-#18 (M11 Wave D+E) pending prod smoke. P1-D HSTS verified. All P1 root causes resolved except P1-E (deferred to M8 per Branch B). (Detailed verification reports archived internally.) Note: v0.6 removed tools #1-4 + #16-21 from v0.5 table (resolve_model/field/method/view, list_fields/methods/views/owl/qweb/js); use model_inspect/module_inspect/entity_lookup supersets instead.
+**Sign-off summary 2026-05-14 (hotfix applied + client-side cross-check):** 9/10 M1–M5 core tools PASS + 1 PARTIAL (#8 `suggest_pattern` operational gap: PatternExample not seeded on prod; #4 `api_version_diff` Tier 2 v16 backlog). Tool #11 `describe_module` (M9 W-OSM Wave 1) + tools #12-#18 (M11 Wave D+E) pending prod smoke. P1-D HSTS verified. All P1 root causes resolved except P1-E (deferred to M8 per Branch B). (Detailed verification reports archived internally.) Note: v0.6 removed tools #1-4 + #16-21 from v0.5 table (resolve_model/field/method/view, list_fields/methods/views/owl/qweb/js); use model_inspect/module_inspect/entity_lookup supersets instead. v0.7 adds tools #19-20 (resolve_stylesheet + find_style_override — M10A, pending prod deploy).
 
 > *Tools 7–11 cần `index-core` đã chạy. Tool 12–14 cần `seed_patterns` đã chạy. Tool 5 cần Ollama + re-index không `--no-embed`.*
 
@@ -268,7 +270,7 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 | Port Isolation (§3) | admin | 2026-05-16 | DB ports loopback-bound; external scan §3.1 still pending admin remote-host test |
 | Logrotate (§4) | admin | 2026-05-17 | Stanza 2 (WI-3 ship) OK; stanza 1 pre-existing followup #14 |
 | Backup & Recovery (§5) | admin | 2026-05-17 | Postgres backup verified (2.55GB bundle); Neo4j dump fails (followup #13); restore + offsite still pending |
-| MCP Tool Sign-Off tools 1-10 (§6) | admin | 2026-05-14 | All 10 M1-M5 core tools verified; tool 11 (describe_module) deferred to next session (followup #15); tools 12-18 (M11 Wave D+E) pending prod deploy |
+| MCP Tool Sign-Off tools 1-10 (§6) | admin | 2026-05-14 | All 10 M1-M5 core tools verified; tool 11 (describe_module) deferred to next session (followup #15); tools 12-18 (M11 Wave D+E) pending prod deploy; tools 19-20 (resolve_stylesheet, find_style_override — M10A v0.7.0) pending prod deploy |
 | MCP Resources Sign-Off (§6.5) | _pending_ | _N/A_ | 7 odoo:// URI kinds (M11 Wave F); pending prod deploy of this PR |
 | Install Page (§7) | admin | 2026-05-14 | Install page + plugin marketplace verified |
 | Systemd Services (§8) | admin | 2026-05-17 | 3 services enabled + healthy; crash sim PR #119 verified auto-restart 5s |
@@ -276,7 +278,7 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 | Web UI Session Auth (§10) | admin | 2026-05-16 | session login + logout verified; canonical webui.env path is followup #11 |
 | Astro Frontend M8 (§10.5) | admin | 2026-05-17 | All routing verified; CSP + Permissions-Policy headers live via PR #118; /api/health 200 via PR #119 WI-4 |
 
-**Go-live status 2026-05-17 (PR #119 deploy):** 9 of 11 sections `[x]` + 2 partial (§5 backup non-prod restore optional, §9 indexer cron optional). 18-tool sign-off (v0.6): 10/10 core tools `[x]` (M1-M5), 1 pending (`describe_module` — M9 W-OSM Wave 1, code-complete + unit-tested, awaiting prod smoke), 7 pending (M11 Wave D+E superset + session tools, pending prod deploy), 7 resources (M11 Wave F, pending prod deploy). **Deploy ready** for go-live (admin-invite signup model) per signoff table above.
+**Go-live status 2026-05-17 (PR #119 deploy):** 9 of 11 sections `[x]` + 2 partial (§5 backup non-prod restore optional, §9 indexer cron optional). 18-tool sign-off (v0.6): 10/10 core tools `[x]` (M1-M5), 1 pending (`describe_module` — M9 W-OSM Wave 1, code-complete + unit-tested, awaiting prod smoke), 7 pending (M11 Wave D+E superset + session tools, pending prod deploy), 7 resources (M11 Wave F, pending prod deploy). **Deploy ready** for go-live (admin-invite signup model) per signoff table above. **v0.7 (PR #156 2026-05-21):** 20-tool sign-off: tools #19-20 (`resolve_stylesheet`, `find_style_override`) added — pending prod deploy + smoke.
 
 ---
 

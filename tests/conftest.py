@@ -368,6 +368,54 @@ def seed_qweb_templates(
                 )
 
 
+def seed_stylesheets(
+    driver, *, module: str, odoo_version: str, stylesheets: list[dict],
+    imports: list[tuple[str, str]] | None = None,
+) -> None:
+    """MERGE a batch of :Stylesheet nodes and optional :IMPORTS edges for tests.
+
+    Each stylesheet dict: ``{"file_path": str, "language": str,
+    "selector_count": int, "variable_count": int, "import_count": int,
+    "mixin_count": int}``.  ``import_count`` should equal the number of
+    :IMPORTS edges declared for that file.
+
+    ``imports`` is a list of ``(src_file_path, tgt_file_path)`` pairs; both
+    nodes must already exist in the ``stylesheets`` list.
+    """
+    with driver.session() as session:
+        for ss in stylesheets:
+            session.run(
+                """
+                MERGE (s:Stylesheet {file_path: $fp, module: $m, odoo_version: $v})
+                ON CREATE SET s.language = $lang,
+                              s.selector_count = $sel,
+                              s.variable_count = $var,
+                              s.import_count = $imp,
+                              s.mixin_count = $mix
+                ON MATCH  SET s.language = $lang,
+                              s.selector_count = $sel,
+                              s.variable_count = $var,
+                              s.import_count = $imp,
+                              s.mixin_count = $mix
+                """,
+                fp=ss["file_path"], m=module, v=odoo_version,
+                lang=ss.get("language", "css"),
+                sel=ss.get("selector_count", 0),
+                var=ss.get("variable_count", 0),
+                imp=ss.get("import_count", 0),
+                mix=ss.get("mixin_count", 0),
+            )
+        for src_fp, tgt_fp in (imports or []):
+            session.run(
+                """
+                MATCH (src:Stylesheet {file_path: $sfp, module: $m, odoo_version: $v})
+                MATCH (tgt:Stylesheet {file_path: $tfp, odoo_version: $v})
+                MERGE (src)-[:IMPORTS]->(tgt)
+                """,
+                sfp=src_fp, tfp=tgt_fp, m=module, v=odoo_version,
+            )
+
+
 # --- PostgreSQL fixtures (for src/db tests) ---
 
 PG_TEST_DSN = os.getenv(
