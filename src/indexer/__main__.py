@@ -21,10 +21,12 @@ from src import config
 from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
 from src.indexer.pipeline import (
+    audit_repo_for_profile,
     index_all,
     index_core,
     index_profile,
     open_production_pg,
+    reembed_stubs_for_profile,
 )
 from src.indexer.writer_neo4j import Neo4jWriter
 
@@ -135,6 +137,36 @@ def _build_parser() -> argparse.ArgumentParser:
     sub_core.add_argument(
         "--static-data-dir", default=None,
         help="Override path for static spec_data JSON files (optional).",
+    )
+
+    # --- reembed-stubs subcommand (M10 WI-3) -----------------------------------
+    sub_reembed = subparsers.add_parser(
+        "reembed-stubs",
+        help=(
+            "Re-embed modules that have Neo4j nodes but zero embeddings (catch-up). "
+            "Idempotent: modules already embedded are skipped."
+        ),
+    )
+    sub_reembed.add_argument(
+        "--profile", required=True,
+        help="Profile name to scan for stub modules.",
+    )
+
+    # --- audit-repo subcommand (M10 WI-3) -------------------------------------
+    sub_audit = subparsers.add_parser(
+        "audit-repo",
+        help=(
+            "Read-only: export per-module coverage stats (model/field/method/"
+            "view/embedding counts) as JSON. Does not write to DB."
+        ),
+    )
+    sub_audit.add_argument(
+        "--profile", required=True,
+        help="Profile name to audit.",
+    )
+    sub_audit.add_argument(
+        "--output", required=True,
+        help="Path to write the JSON output file.",
     )
 
     # --- seed-patterns subcommand (new in WI-W2-6) -------------------------
@@ -310,6 +342,46 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             static_data_dir=args.static_data_dir,
         )
+
+    elif args.subcommand == "reembed-stubs":
+        embedder = _build_embedder()
+        if embedder is None:
+            print(
+                "Error: [embedder] url not configured — cannot reembed. "
+                "Set [embedder] url in odoo-semantic.conf or EMBEDDER_URL env var.",
+                file=sys.stderr,
+            )
+            return 1
+        pg = open_production_pg()
+        try:
+            summary = reembed_stubs_for_profile(
+                pg,
+                profile_name=args.profile,
+                embedder=embedder,
+            )
+            print(
+                f"Done: checked {summary['modules_checked']} modules, "
+                f"re-embedded {summary['modules_reembedded']}, "
+                f"{summary['total_embed_calls']} embed call(s)."
+            )
+        finally:
+            close = getattr(embedder, "close", None)
+            if callable(close):
+                close()
+            pg.close()
+
+    elif args.subcommand == "audit-repo":
+        import json  # noqa: PLC0415
+
+        pg = open_production_pg()
+        try:
+            rows = audit_repo_for_profile(pg, profile_name=args.profile)
+            output_path = args.output
+            with open(output_path, "w", encoding="utf-8") as fh:
+                json.dump(rows, fh, indent=2, ensure_ascii=False)
+            print(f"Audit complete: {len(rows)} module(s) written to {output_path}")
+        finally:
+            pg.close()
 
     elif args.subcommand == "seed-patterns":
         from src.indexer import seed_patterns as seed_patterns_module
