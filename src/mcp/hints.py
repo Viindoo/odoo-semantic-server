@@ -26,7 +26,8 @@ been removed from ``server.py`` — the relocated helper is exported under
 the public name ``format_next_step``.
 """
 
-# Per ADR-0023 §4.3 — 11 drill-down tools (v0.6: 10 flat shims removed), up to 2 hints each.
+# Per ADR-0023 §4.3 — 13 drill-down tools (v0.6: 10 shims removed; M10A: +2 stylesheet).
+# Up to 2 hints each.
 # Templates use str.format keyword args (name, ver, module, field, method, xmlid).
 # Callers pass relevant context kwargs to hints_for(); unused ones are ignored.
 NEXT_STEP_HINTS: dict[str, list[str]] = {
@@ -77,6 +78,17 @@ NEXT_STEP_HINTS: dict[str, list[str]] = {
         "find_examples(query='{name}', odoo_version='{ver}') for real-world variants",
         "model_inspect(model='{model}', method='method', odoo_version='{ver}')"
         " when pattern targets a method",
+    ],
+    # M10A stylesheet tools (ADR-0025, D5/D6)
+    "resolve_stylesheet": [
+        "find_style_override(selector_or_variable='{name}', odoo_version='{ver}')"
+        " to search a specific selector/variable",
+        "describe_module(name='{name}', odoo_version='{ver}') for full module overview",
+    ],
+    "find_style_override": [
+        "resolve_stylesheet(module='{name}', odoo_version='{ver}')"
+        " to list all stylesheets in the matched module",
+        "describe_module(name='{name}', odoo_version='{ver}') for module context",
     ],
 }
 

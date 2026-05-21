@@ -113,7 +113,7 @@ register_resources(mcp)
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
-# All 18 OSM tools are read-only queries against a statically-indexed graph.
+# All 20 OSM tools are read-only queries against a statically-indexed graph.
 # Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
 # ChatGPT) so they can auto-approve and skip confirmation gates.
 # (cross-server pattern: read-only annotations for auto-approval)
@@ -4903,6 +4903,309 @@ def list_available_profiles() -> ToolResult:
         ver_str = f"  ({odoo_version})" if odoo_version else ""
         lines.append(f"{prefix} {name}{ver_str}")
     return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
+
+
+# ---------------------------------------------------------------------------
+# M10A Stylesheet tools — D5 resolve_stylesheet + D6 find_style_override
+# ---------------------------------------------------------------------------
+
+
+def _resolve_stylesheet(
+    module: str,
+    odoo_version: str = "auto",
+) -> str:
+    """Impl for resolve_stylesheet tool — no FastMCP wrapper overhead.
+
+    Returns a tree listing all :Stylesheet nodes for *module* at *odoo_version*
+    with their language, stat counters, and BFS :IMPORTS chain.
+    """
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            """
+            MATCH (ss:Stylesheet {module: $mod, odoo_version: $v})
+            RETURN ss.file_path AS file_path,
+                   ss.language AS language,
+                   ss.selector_count AS selector_count,
+                   ss.variable_count AS variable_count,
+                   ss.import_count AS import_count,
+                   ss.mixin_count AS mixin_count
+            ORDER BY ss.file_path ASC
+            """,
+            mod=module, v=odoo_version,
+        ).data()
+
+    if not rows:
+        footer = hints_for("resolve_stylesheet", name=module, ver=odoo_version)
+        lines = [
+            f"resolve_stylesheet({module!r}, {odoo_version!r})",
+            f"├─ not found — no Stylesheet nodes indexed for module '{module}'.",
+            "└─ Recovery: describe_module(name=..., odoo_version=...) to verify module exists.",
+        ]
+        if footer:
+            lines.append(footer)
+        return "\n".join(lines)
+
+    header = f"resolve_stylesheet({module!r}, {odoo_version!r})"
+    lines = [header, f"├─ Stylesheets: {len(rows)} file(s)"]
+
+    for idx, row in enumerate(rows):
+        is_last_row = idx == len(rows) - 1
+        row_prefix = "└─" if is_last_row else "├─"
+        fp = row["file_path"]
+        lang = row["language"] or "css"
+        sel = row["selector_count"] or 0
+        var = row["variable_count"] or 0
+        imp = row["import_count"] or 0
+        mix = row["mixin_count"] or 0
+
+        # Stat summary line
+        stats_parts = [f"lang={lang}", f"selectors={sel}", f"vars={var}"]
+        if mix:
+            stats_parts.append(f"mixins={mix}")
+        if imp:
+            stats_parts.append(f"imports={imp}")
+
+        lines.append(f"│   {row_prefix} {fp}")
+        sub_prefix = "    " if is_last_row else "│   "
+        lines.append(f"│   {sub_prefix}├─ Stats: {', '.join(stats_parts)}")
+
+        # Resolve BFS :IMPORTS chain for this stylesheet
+        if imp > 0:
+            with _get_driver().session() as session:
+                import_rows = session.run(
+                    """
+                    MATCH (src:Stylesheet {file_path: $fp, module: $mod, odoo_version: $v})
+                          -[:IMPORTS]->(tgt:Stylesheet)
+                    RETURN tgt.file_path AS import_path, tgt.module AS import_module
+                    ORDER BY tgt.file_path ASC
+                    """,
+                    fp=fp, mod=module, v=odoo_version,
+                ).data()
+            if import_rows:
+                lines.append(f"│   {sub_prefix}└─ Imports ({len(import_rows)}):")
+                for i_idx, ir in enumerate(import_rows):
+                    is_last_imp = i_idx == len(import_rows) - 1
+                    imp_prefix = "└─" if is_last_imp else "├─"
+                    lines.append(
+                        f"│   {sub_prefix}    {imp_prefix} {ir['import_path']}"
+                        f" [{ir['import_module']}]"
+                    )
+            else:
+                lines.append(
+                    f"│   {sub_prefix}└─ Imports: edges not yet resolved (re-index to backfill)."
+                )
+        else:
+            lines.append(f"│   {sub_prefix}└─ Imports: none")
+
+    footer = hints_for("resolve_stylesheet", name=module, ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+def _find_style_override(
+    selector_or_variable: str,
+    odoo_version: str = "auto",
+    limit: int = 5,
+    *,
+    _driver=None,
+    _pg_conn=None,
+    _embedder=None,
+) -> str:
+    """Impl for find_style_override tool — no FastMCP wrapper overhead.
+
+    Performs pgvector ANN on chunk_type ∈ {css, scss} to find stylesheets
+    declaring *selector_or_variable*, then traverses :IMPORTS to show which
+    modules re-declare the same selector (override order — last writer wins
+    in CSS cascade, first-match wins in SCSS @import chain).
+    """
+    if not selector_or_variable.strip():
+        return (
+            "find_style_override: empty selector_or_variable — provide a CSS selector,"
+            " SCSS variable, or mixin name.\nFound 0 results\n"
+        )
+
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+
+    driver = _driver or _get_driver()
+    try:
+        embedder = _embedder or _get_embedder()
+    except Exception as e:
+        return (
+            f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
+            "Found 0 results\n"
+            f"{hints_for('find_style_override', name=selector_or_variable, ver=odoo_version)}"
+        )
+
+    with driver.session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+    try:
+        query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + selector_or_variable])[0]
+    except Exception as e:
+        return (
+            f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+            "Found 0 results\n"
+        )
+
+    _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
+    with _pg_ctx as pg:
+        with pg.cursor() as cur:
+            placeholders = "%s, %s"
+            cur.execute(
+                f"""SELECT chunk_type, module, entity_name, file_path,
+                           chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                    FROM embeddings
+                    WHERE odoo_version = %s AND chunk_type IN ({placeholders})
+                    ORDER BY vec <=> %s::vector LIMIT %s""",
+                [query_vec, odoo_version, "css", "scss", query_vec,
+                 min(limit, FIND_EXAMPLES_ANN_LIMIT)],
+            )
+            raw = [
+                dict(chunk_type=r[0], module=r[1], entity_name=r[2],
+                     file_path=r[3], chunk_idx=r[4], content=r[5], cosine=float(r[6]))
+                for r in cur.fetchall()
+            ]
+
+    header = (
+        f'find_style_override: "{selector_or_variable}" ({odoo_version})\n'
+        f"Found {len(raw)} result(s)\n"
+    )
+    if not raw:
+        footer = hints_for("find_style_override", name=selector_or_variable, ver=odoo_version)
+        return header + (footer if footer else "")
+
+    # For each hit, check :IMPORTS override chain — which modules re-declare
+    # the same selector (import same file path chain).
+    sep = "─" * 41
+    lines = [header]
+    for i, chunk in enumerate(raw, 1):
+        entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
+        chunk_label = chunk["chunk_type"]
+        if chunk["chunk_idx"] > 0:
+            chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
+        lines.append(sep)
+        lines.append(f"#{i} · score {chunk['cosine']:.2f} · {chunk_label} · {entity}")
+        lines.append(f"   File: {chunk['file_path']}")
+
+        # Find stylesheets that import this file (override chain — BFS depth 1)
+        with driver.session() as session:
+            importers = session.run(
+                """
+                MATCH (tgt:Stylesheet {file_path: $fp, odoo_version: $v})
+                      <-[:IMPORTS]-(src:Stylesheet)
+                RETURN src.file_path AS importer_path, src.module AS importer_module
+                ORDER BY src.file_path ASC
+                """,
+                fp=chunk["file_path"], v=odoo_version,
+            ).data()
+
+        if importers:
+            lines.append(f"   Override chain ({len(importers)} importer(s)):")
+            for imp in importers:
+                lines.append(
+                    f"   ├─ {imp['importer_path']} [{imp['importer_module']}]"
+                )
+        else:
+            lines.append("   Override chain: no importers found (no :IMPORTS edges).")
+
+        lines.append("   ┌" + "─" * 42)
+        for line in chunk["content"].splitlines():
+            lines.append(f"   │ {line}")
+        lines.append("   └" + "─" * 42)
+        lines.append("")
+
+    footer = hints_for("find_style_override", name=selector_or_variable, ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def resolve_stylesheet(
+    module: str,
+    odoo_version: str = "auto",
+) -> str:
+    """Enumerate CSS/SCSS stylesheets for an Odoo module with import chain.
+
+    TRIGGER when: "what stylesheets does module X have", "show CSS files in
+    website_sale", "list SCSS imports for web module", "module Y có file CSS/SCSS
+    nào", "xem import chain stylesheet của module Z"
+    PREFER over: find_style_override when you want an overview of all stylesheets
+    in a module, not a specific selector search.
+    SKIP when: searching for a specific CSS selector or SCSS variable across
+    modules — use find_style_override (ANN search).
+
+    Args:
+        module: Odoo module technical name (e.g. 'web', 'website_sale').
+        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
+
+    Returns:
+        Tree listing each stylesheet with language, stat counters
+        (selectors, vars, mixins, imports), and resolved :IMPORTS chain.
+
+    Example:
+        resolve_stylesheet("web", "17.0")
+        → resolve_stylesheet('web', '17.0')
+          ├─ Stylesheets: 2 file(s)
+          │   ├─ /path/web/static/src/css/main.css
+          │   │   ├─ Stats: lang=css, selectors=42, vars=0
+          │   │   └─ Imports: none
+          │   └─ /path/web/static/src/scss/variables.scss
+          │       ├─ Stats: lang=scss, selectors=0, vars=15, mixins=3, imports=1
+          │       └─ Imports (1):
+          │           └─ /path/web/static/src/scss/base.scss [web]
+          └─ Next: find_style_override(...) | describe_module(...)
+
+    See also: odoo://{version}/stylesheet/{module}/{file_path*}
+    """
+    return _resolve_stylesheet(module, odoo_version)
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+def find_style_override(
+    selector_or_variable: str,
+    odoo_version: str = "auto",
+    limit: int = 5,
+) -> str:
+    """Find CSS selectors or SCSS variables/mixins across modules + override order.
+
+    Uses pgvector ANN on indexed css/scss chunks to locate declarations, then
+    traces :IMPORTS edges to show which modules re-declare the same selector
+    (override order — last writer wins in CSS cascade).
+
+    TRIGGER when: "which module overrides .o_form_view selector", "where is
+    $primary variable defined", "find CSS override for .btn-primary", "module
+    nào override selector X", "tìm định nghĩa biến SCSS Y trong codebase"
+    PREFER over: find_examples when looking specifically for CSS/SCSS patterns
+    rather than Python/XML code examples.
+    SKIP when: you want a full list of all stylesheets in a module — use
+    resolve_stylesheet instead.
+
+    Args:
+        selector_or_variable: CSS selector, SCSS variable (e.g. '$primary'),
+            or mixin name to search for.
+        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
+        limit: Max results to return (default 5).
+
+    Returns:
+        Ranked ANN hits with chunk content, cosine score, and :IMPORTS
+        override chain showing which modules import the matched file.
+
+    Example:
+        find_style_override(".o_list_view", "17.0")
+        → find_style_override: ".o_list_view" (17.0)
+          Found 2 result(s)
+          ─────...
+          #1 · score 0.87 · css · [web] selector:.o_list_view
+             File: /path/web/static/src/css/views.css
+             Override chain (1 importer(s)):
+             ├─ /path/website/static/src/scss/views.scss [website]
+    """
+    return _find_style_override(selector_or_variable, odoo_version, limit)
 
 
 def _mcp_host() -> str:

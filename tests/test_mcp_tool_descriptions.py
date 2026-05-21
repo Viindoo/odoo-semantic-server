@@ -42,6 +42,9 @@ _TOOL_NAMES = [
     "set_active_profile",
     "list_available_versions",
     "list_available_profiles",
+    # M10A stylesheet tools (ADR-0025, D5/D6)
+    "resolve_stylesheet",
+    "find_style_override",
 ]
 
 # Odoo-content query tools that MUST contain ≥1 Vietnamese diacritic in their
@@ -66,6 +69,9 @@ _VI_TRIGGER_TOOL_NAMES = [
     "model_inspect",
     "module_inspect",
     "entity_lookup",
+    # M10A stylesheet tools (ADR-0025, D5/D6)
+    "resolve_stylesheet",
+    "find_style_override",
 ]
 
 _REQUIRED_BLOCKS = ("TRIGGER when:", "PREFER over:", "SKIP when:")

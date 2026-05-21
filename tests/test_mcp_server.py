@@ -2364,7 +2364,7 @@ def test_list_js_patches_era_filter(neo4j_driver):
 def grammar_seed(neo4j_driver):
     """Seed a minimal but complete dataset so every tool returns content.
 
-    All 21 tools either render content or a deterministic empty/error string;
+    All 23 tools either render content or a deterministic empty/error string;
     every output must obey the ADR-0023 §1 tree grammar.
     """
     _cleanup_version(neo4j_driver, W6_GRAMMAR_VERSION)
@@ -2469,16 +2469,21 @@ def _all_tool_invocations(version: str):
          lambda: srv._find_examples("", version)),
         ("suggest_pattern",
          lambda: srv._suggest_pattern("", version)),
+        # M10A stylesheet tools (ADR-0025, D5/D6)
+        ("resolve_stylesheet",
+         lambda: srv._resolve_stylesheet("sale", version)),
+        ("find_style_override",
+         lambda: srv._find_style_override("", version)),
     ]
 
 
 TERMINAL_TOOLS = {"lint_check", "cli_help", "api_version_diff"}
 
-# `find_examples` and `suggest_pattern` empty-input sentinels are intentional
-# user-error messages that bypass the tree grammar — exclude them from the
-# strict grammar / next-step tests. Their normal-path output IS tree-shaped
-# but reproducing it here would require seeded pgvector embeddings.
-SENTINEL_EDGE_CASES = {"find_examples", "suggest_pattern"}
+# `find_examples`, `suggest_pattern`, and `find_style_override` empty-input
+# sentinels are intentional user-error messages that bypass the tree grammar —
+# exclude them from the strict grammar / next-step tests. Their normal-path
+# output IS tree-shaped but reproducing it here would require seeded pgvector.
+SENTINEL_EDGE_CASES = {"find_examples", "suggest_pattern", "find_style_override"}
 
 
 def _tool_invocation_count() -> int:
@@ -2582,14 +2587,14 @@ def test_grammar_consistency_all_tools(grammar_seed, idx):
 
 
 # ===========================================================================
-# Next-step footer test — 18 drill-down MUST emit, 3 terminal MUST NOT emit.
+# Next-step footer test — 20 drill-down MUST emit, 3 terminal MUST NOT emit.
 # ===========================================================================
 
 
 def test_next_step_footer_present(grammar_seed):
     """Each drill-down tool's normal output MUST contain ``└─ Next:``.
 
-    Per ADR-0023 §4.3 the 18 drill-down tools emit ``└─ Next:`` either as the
+    Per ADR-0023 §4.3 the 20 drill-down tools emit ``└─ Next:`` either as the
     last line or, on empty-result branches, somewhere in the output. The two
     sentinel edge cases (``find_examples`` / ``suggest_pattern`` empty input)
     are exempt — they emit a user-error message, not a drill-down tree.
