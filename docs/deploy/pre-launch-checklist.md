@@ -84,11 +84,13 @@ Admin phải ký tên vào mọi mục bên dưới (ghi `[x]` + ngày + ghi ch�
 
 ---
 
-## 6. MCP Tool Sign-Off (All 20 Tools)
+## 6. MCP Tool Sign-Off (All 24 Tools)
 
 **Mỗi tool phải trả về kết quả có cấu trúc — không được empty hoặc error.**
 
-> **Tool count history:** 14 (M1–M5) → 21 (+ M9 W-OSM Wave 1) → 28 (+ M10.5/M11 Wave D+E) → **18 (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline)** → **20 (v0.7 — +2 stylesheet tools per M10A)**. See [ADR-0023](../adr/0023-tool-output-completeness.md) + [ADR-0028](../adr/0028-discriminator-consolidation.md) + [ADR-0029](../adr/0029-implicit-session-context.md).
+> **Tool count history:** 14 (M1–M5) → 21 (+ M9 W-OSM Wave 1) → 28 (+ M10.5/M11 Wave D+E) → **18 (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline)** → **20 (v0.7 — +2 stylesheet tools per M10A)** → **24 (v0.8 — +4 ORM-validation tools per M10.5 Phase 2)**. See [ADR-0023](../adr/0023-tool-output-completeness.md) + [ADR-0028](../adr/0028-discriminator-consolidation.md) + [ADR-0029](../adr/0029-implicit-session-context.md).
+>
+> **v0.6 note:** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches` (10 flat tools) were removed. Verify via the 3 superset tools (`model_inspect` / `module_inspect` / `entity_lookup`) and the 4 ORM-validation tools (`resolve_orm_chain` / `validate_domain` / `validate_depends` / `validate_relation`) instead.
 
 Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 
@@ -96,7 +98,7 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 |---|------|----------------|-----------------|----------|
 | 1 | `find_examples` | `find_examples("compute tax based on partner country")` | 5 results với file path + score *(skip nếu `--no-embed`)* | `[x]` **P1-A RESOLVED + client-side confirmed 2026-05-14** — Embedder URL port `:9999` (closed) → drop port (port 443). Client-side smoke PASS via MCP plugin: `find_examples("sale order confirm", "17.0")` → 5 results, top score 0.84. 2-of-2 cross-check (Opus + Sonnet) in [`docs/m7.5-mcp-verification.md`](../m7.5-mcp-verification.md). |
 | 2 | `impact_analysis` | `impact_analysis("field", "sale.order.amount_total", "17.0")` | `Risk: <LOW\|MEDIUM\|HIGH>` + Views + JS patches sections | `[x]` 2026-05-14 — Risk HIGH, 49 views, 124 methods, 89 dependent modules |
-| 3 | `lookup_core_api` | `lookup_core_api("name_get", "17.0")` | Status (active/deprecated/removed) + description | `[x]` **P1-B RESOLVED 2026-05-14** — `index-core --source ~/git/odoo_17.0 --version 17.0` ran. v17 now has 501 CoreSymbol. Cypher confirms `odoo.models.BaseModel.name_get` indexed (status=stable per P2 quirk §8). |
+| 3 | `lookup_core_api` | `lookup_core_api("name_get", "17.0")` | Status `deprecated` + description | `[~]` **PENDING re-index** — `index-core v17` ran 2026-05-14 (501 CoreSymbol), but `name_get` returns `status=stable` until prod re-index picks up M10C WI-2 body-level DeprecationWarning detection (PR #159). Re-verify after full reindex. |
 | 4 | `api_version_diff` | `api_version_diff("name_get", "16.0", "17.0")` | Diff giữa 2 version — thay đổi signature hoặc status | `[~]` **PARTIAL** — v17 indexed; v16 still gap (deferred to Tier 2 backlog). Tool will work `from 17.0 to 18.0` once Tier 2 ran. |
 | 5 | `find_deprecated_usage` | `find_deprecated_usage("17.0")` | List deprecated API usages trong code (có thể empty nếu code clean) | `[x]` 2026-05-14 — 0 hits on clean indexed code, valid empty result |
 | 6 | `lint_check` | `lint_check("sale", "17.0")` | Lint rule hits list hoặc "no violations" | `[x]` 2026-05-14 — V0 fuzzy matcher works; P2 catalogue gap noted (M7.5-P2-LINT) |
@@ -104,20 +106,24 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 | 8 | `suggest_pattern` | `suggest_pattern("computed field cross-model partner_id")` | 3-5 PatternExample với code snippet + gotchas | `[~]` **P1-A resolved infra; new P2 operational gap 2026-05-14** — Client-side smoke shows `no patterns indexed. Run: python -m src.indexer.seed_patterns`. Embedder healthy (per #5); root cause is missing `seed_patterns` step on prod, not P1-A. Tracked as M7.5-P2-SEED in TASKS.md M8 backlog. See [`docs/m7.5-mcp-verification.md`](../m7.5-mcp-verification.md). |
 | 9 | `check_module_exists` | `check_module_exists("knowledge", "17.0")` | is_ee_confusion flag + EE warning nếu applicable | `[x]` 2026-05-14 — EE confusion flag set, GPL/EE warning correct |
 | 10 | `find_override_point` | `find_override_point("sale.order", "action_confirm", "17.0")` | super_safety + super_ratio + anti-patterns | `[x]` 2026-05-14 — super_safety=always, super_ratio=7/8, 8-module chain, 3 anti-patterns |
-| 11 | `describe_module` | `describe_module("sale", "17.0")` | Manifest (Depends/Edition/Version) + `Defines models` / `Extends models` / `Views` (by type) / `JS patches` + `Next:` footer | `[ ]` (M9 W-OSM Wave 1) |
-| 12 | `model_inspect` | `model_inspect(target="sale.order", odoo_version="17.0", kind="fields")` | Superset router: delegates to `list_fields` for `kind=fields`; discriminator field in structuredContent | `[ ]` (M11 Wave D — ADR-0028) |
-| 13 | `module_inspect` | `module_inspect(target="sale", odoo_version="17.0", kind="overview")` | Superset router: delegates to `describe_module`; discriminator in structuredContent | `[ ]` (M11 Wave D — ADR-0028) |
-| 14 | `entity_lookup` | `entity_lookup(target="sale.order.amount_total", odoo_version="17.0")` | Auto-detects entity type (model/field/method/view/module) and routes to appropriate superset tool | `[ ]` (M11 Wave D — ADR-0028) |
-| 15 | `set_active_version` | `set_active_version(odoo_version="17.0")` | Persists sticky version for this API key; confirms `Active version set to 17.0` | `[ ]` (M11 Wave E — ADR-0029) |
-| 16 | `set_active_profile` | `set_active_profile(profile_name="acme_enterprise_17")` | Persists sticky profile for this API key; confirms `Active profile set to acme_enterprise_17` | `[ ]` (M11 Wave E — ADR-0029) |
-| 17 | `list_available_versions` | `list_available_versions()` | Lists all indexed Odoo versions for the current profile; marks current active version | `[ ]` (M11 Wave E — ADR-0029) |
-| 18 | `list_available_profiles` | `list_available_profiles()` | Lists all profiles accessible to this API key; marks current active profile | `[ ]` (M11 Wave E — ADR-0029) |
-| 19 | `resolve_stylesheet` | `resolve_stylesheet(module="web", odoo_version="17.0")` | Stylesheet chain + variable list for module; follows ADR-0023 tree-grammar contract | `[ ]` (M10A — ADR-0025; v0.7.0) |
-| 20 | `find_style_override` | `find_style_override(selector_or_variable="--color-primary", odoo_version="17.0")` | Which module last re-declares a CSS custom property / overrides a selector | `[ ]` (M10A — ADR-0025; v0.7.0) |
+| 11 | `describe_module` | `describe_module("sale", "17.0")` | Manifest (Depends/Edition/Version) + `Defines models` / `Extends models` / `Views` (by type) / `JS patches` + `Next:` footer | `[ ]` (M9 W-OSM Wave 1 — pending prod smoke) |
+| 12 | `model_inspect` | `model_inspect(target="sale.order", odoo_version="17.0", kind="fields")` | Superset router: delegates to underlying field enumeration; discriminator field in structuredContent | `[ ]` (M11 Wave D — ADR-0028; pending prod smoke) |
+| 13 | `module_inspect` | `module_inspect(target="sale", odoo_version="17.0", kind="overview")` | Superset router: delegates to `describe_module`; discriminator in structuredContent | `[ ]` (M11 Wave D — ADR-0028; pending prod smoke) |
+| 14 | `entity_lookup` | `entity_lookup(target="sale.order.amount_total", odoo_version="17.0")` | Auto-detects entity type (model/field/method/view/module) and routes to appropriate superset tool | `[ ]` (M11 Wave D — ADR-0028; pending prod smoke) |
+| 15 | `set_active_version` | `set_active_version(odoo_version="17.0")` | Persists sticky version for this API key; confirms `Active version set to 17.0` | `[ ]` (M11 Wave E — ADR-0029; pending prod smoke) |
+| 16 | `set_active_profile` | `set_active_profile(profile_name="acme_enterprise_17")` | Persists sticky profile for this API key; confirms `Active profile set to acme_enterprise_17` | `[ ]` (M11 Wave E — ADR-0029; pending prod smoke) |
+| 17 | `list_available_versions` | `list_available_versions()` | Lists all indexed Odoo versions for the current profile; marks current active version | `[ ]` (M11 Wave E — ADR-0029; pending prod smoke) |
+| 18 | `list_available_profiles` | `list_available_profiles()` | Lists all profiles accessible to this API key; marks current active profile | `[ ]` (M11 Wave E — ADR-0029; pending prod smoke) |
+| 19 | `resolve_stylesheet` | `resolve_stylesheet(module="web", odoo_version="17.0")` | Stylesheet chain + variable list for module; follows ADR-0023 tree-grammar contract | `[ ]` (M10A — ADR-0025; v0.7.0; pending prod deploy) |
+| 20 | `find_style_override` | `find_style_override(selector_or_variable="--color-primary", odoo_version="17.0")` | Which module last re-declares a CSS custom property / overrides a selector | `[ ]` (M10A — ADR-0025; v0.7.0; pending prod deploy) |
+| 21 | `resolve_orm_chain` | `resolve_orm_chain("sale.order", "partner_id.country_id.code", "17.0")` | Hop-by-hop dotted path walk; `BROKEN` line at first unresolved hop with reason | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
+| 22 | `validate_domain` | `validate_domain("sale.order", "[('partner_id.country_id', '=', 'VN')]", "17.0")` | Per-term field-path + operator validation; version-aware operator set | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
+| 23 | `validate_depends` | `validate_depends("sale.order", "_compute_amount_total", "17.0")` | Validates each `@api.depends` path; flags depends-on-`id`; era1 note for v8/v9 | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
+| 24 | `validate_relation` | `validate_relation("sale.order", "partner_id", "res.partner", "17.0")` | Asserts field is relational with comodel matching `res.partner`; reports actual comodel on mismatch | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
 
-**Sign-off summary 2026-05-14 (hotfix applied + client-side cross-check):** 9/10 M1–M5 core tools PASS + 1 PARTIAL (#8 `suggest_pattern` operational gap: PatternExample not seeded on prod; #4 `api_version_diff` Tier 2 v16 backlog). Tool #11 `describe_module` (M9 W-OSM Wave 1) + tools #12-#18 (M11 Wave D+E) pending prod smoke. P1-D HSTS verified. All P1 root causes resolved except P1-E (deferred to M8 per Branch B). (Detailed verification reports archived internally.) Note: v0.6 removed tools #1-4 + #16-21 from v0.5 table (resolve_model/field/method/view, list_fields/methods/views/owl/qweb/js); use model_inspect/module_inspect/entity_lookup supersets instead. v0.7 adds tools #19-20 (resolve_stylesheet + find_style_override — M10A, pending prod deploy).
+**Sign-off summary (current as of PR #159, 2026-05-21):** 9/10 M1-M5 core tools PASS + tool #3 pending re-verify after full reindex (WI-2 name_get fix) + 1 PARTIAL (#8 suggest_pattern operational gap, #4 api_version_diff v16 gap). Tools #11-14 (superset discriminator, M11 Wave D), #15-18 (session tools, M11 Wave E), #19-20 (stylesheet, M10A v0.7), #21-24 (ORM validation, M10.5 Phase 2 v0.8) all pending prod deploy + smoke. **For admin:** use `model_inspect`/`module_inspect`/`entity_lookup` (tools 12-14) to verify entity enumeration — the 10 flat tools (`resolve_model`, `list_fields`, etc.) were removed in v0.6 per ADR-0028.
 
-> *Tools 7–11 cần `index-core` đã chạy. Tool 12–14 cần `seed_patterns` đã chạy. Tool 5 cần Ollama + re-index không `--no-embed`.*
+> *Tools 7-11 need `index-core` run. Tool 8 needs `seed_patterns`. Tool 1 needs Ollama + re-index without `--no-embed`. Tools 21-24 need `index-repo --all --full` to populate `mth.depends` + `f.comodel_name`.*
 
 ### Persona Skills (M7.5)
 
@@ -278,7 +284,9 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 | Web UI Session Auth (§10) | admin | 2026-05-16 | session login + logout verified; canonical webui.env path is followup #11 |
 | Astro Frontend M8 (§10.5) | admin | 2026-05-17 | All routing verified; CSP + Permissions-Policy headers live via PR #118; /api/health 200 via PR #119 WI-4 |
 
-**Go-live status 2026-05-17 (PR #119 deploy):** 9 of 11 sections `[x]` + 2 partial (§5 backup non-prod restore optional, §9 indexer cron optional). 18-tool sign-off (v0.6): 10/10 core tools `[x]` (M1-M5), 1 pending (`describe_module` — M9 W-OSM Wave 1, code-complete + unit-tested, awaiting prod smoke), 7 pending (M11 Wave D+E superset + session tools, pending prod deploy), 7 resources (M11 Wave F, pending prod deploy). **Deploy ready** for go-live (admin-invite signup model) per signoff table above. **v0.7 (PR #156 2026-05-21):** 20-tool sign-off: tools #19-20 (`resolve_stylesheet`, `find_style_override`) added — pending prod deploy + smoke.
+**Go-live status 2026-05-17 (PR #119 deploy):** 9 of 11 sections `[x]` + 2 partial (§5 backup non-prod restore optional, §9 indexer cron optional). **Deploy ready** for go-live (admin-invite signup model) per signoff table above.
+
+**24-tool sign-off (v0.8, as of PR #159 2026-05-21):** 9/10 M1-M5 core tools PASS (tool #3 `lookup_core_api` pending re-verify after full reindex for name_get status fix). Tools #11-24 pending prod deploy + smoke: #11 `describe_module` (M9 W-OSM Wave 1), #12-14 superset discriminator (M11 Wave D), #15-18 session tools (M11 Wave E), #19-20 stylesheet tools (M10A v0.7), #21-24 ORM-validation tools (M10.5 Phase 2 v0.8). All code-complete + unit-tested.
 
 ---
 

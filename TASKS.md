@@ -663,7 +663,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ## Milestone 10 — "Billing Wow" + Tool Surface + Polish
 
-**Status:** `[~]` M10A + M10.5 P1 shipped PR #156 2026-05-21; M10B/M10C pending. (M10A + M10.5 P1 shipped PR #156; còn lại pending)
+**Status:** `[~]` M10A + M10.5 P1+P2 shipped; M10C partially shipped PR #159 2026-05-21 (WI-1..5 + review-followup); M10B/M10C remaining pending. Prod reindex v8→v19 (comodel_name + mth.depends + migration m9_010) remains an OPS follow-up — admin run cuoi tuan.
 
 **Intent:** Three independent substreams launched after M9 ship. M10A delivers low-risk MCP tool surface expansion. M10B delivers Stripe billing core (largest scope). M10C absorbs polish + observability + carry-over fixes from M7.5/M8/M9.
 
@@ -686,7 +686,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
     - [x] **Magic fields auto-injection** — `resolve_model`/`list_fields`/`resolve_field` include `id`, `display_name`, `create_uid`, `create_date`, `write_uid`, `write_date` as synthetic Field rows when the model is a `models.Model` subclass. Source-of-truth: hard-coded list in `src/constants.py::MAGIC_FIELDS`; not written to Neo4j (synthetic at query time only). (2026-05-21, PR #156)
     - [x] **`from_module` param** for `resolve_model` + `resolve_field` — restrict inheritance chain / field declarations to those originating from a specific module. (2026-05-21, PR #156)
     - [x] **`noqa` support in `lint_check`** — `# noqa: <rule_id>` inline comment suppresses the matching rule for that line. (2026-05-21, PR #156)
-    - [ ] **CLI batch audit** — `python -m src.indexer audit-repo --profile <name> --output audit.json` emits a JSON file with per-module coverage stats.
+    - [x] **CLI batch audit** — `python -m src.indexer audit-repo --profile <name> --output audit.json` emits a JSON file with per-module coverage stats. *(2026-05-21, PR #159 WI-3)*
   - Acceptance: each sub-task has its own unit test + snapshot test; output schemas documented in the [routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) for the 3 MCP-facing changes.
 
 - [x] **Superset filter parity** — HIGH (2026-05-21, PR #157)
@@ -709,13 +709,12 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ### M10C — Polish + Observability
 
-- [ ] **M7.5-P2-NAMEGET — Parser body-level deprecation detection** — Odoo 17 uses runtime `warnings.warn(..., DeprecationWarning)` instead of `@api.deprecated` decorator for `name_get`. Extend `src/indexer/parser_odoo_core.py` to AST-walk method bodies and detect `warnings.warn(..., DeprecationWarning)` calls. After re-index, `lookup_core_api("name_get", "17.0")` returns `status='deprecated'` instead of incorrect `'stable'`. Track for M10 polish (carried from M7.5/M8/M9).
+- [x] **M7.5-P2-NAMEGET — Parser body-level deprecation detection** — Odoo 17 uses runtime `warnings.warn(..., DeprecationWarning)` instead of `@api.deprecated` decorator for `name_get`. Extended `src/indexer/parser_odoo_core.py` to AST-walk method bodies and detect `warnings.warn(..., DeprecationWarning)` calls (tighten warn-match pattern in review-followup). After re-index, `lookup_core_api("name_get", "17.0")` returns `status='deprecated'`. *(2026-05-21, PR #159 WI-2 + review-followup)*
 
-- [ ] **Pgvector re-embed for cleaned-up stubs** — MED
-  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
-  - Scope: post-launch overnight job (or incremental indexer pass) that re-embeds modules whose `field_count > 0` but `embeddings_count == 0` — catch up modules skipped due to historical embedder errors / stub field rows now backfilled by WI-A2.
-  - Acceptance: `python -m src.indexer reembed-stubs --profile <name>` enumerates affected modules via `LEFT JOIN embeddings`, re-runs `make_chunks` + `write_module_embeddings`; idempotent; log line summarizes count + total embed calls per ADR-0010 D2.
+- [x] **Pgvector re-embed for cleaned-up stubs** — MED *(2026-05-21, PR #159 WI-3)*
+  - Scope: `python -m src.indexer reembed-stubs --profile <name>` enumerates modules where `field_count > 0` but `embeddings_count == 0` via `LEFT JOIN embeddings`, re-runs `make_chunks` + `write_module_embeddings`; idempotent; log line summarizes count + total embed calls per ADR-0010 D2.
   - Dependency: WI-A2 (era1 field-gap fix) deployed in production.
+  - OPS follow-up: admin runs `reembed-stubs` on prod profiles after applying migration m9_010.
 
 - [ ] **Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram** — MED
   - Source: WI-A7 absorption (M9 Coverage Fill deferred items); extends ADR-0010 §D7 follow-up.
@@ -729,15 +728,15 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
   - Acceptance: production CSP header includes `script-src 'nonce-<random>' 'self'` (no `'unsafe-inline'`); browser console clean of CSP violations; CI test verifies nonce uniqueness across 10 sequential requests.
   - Status: BLOCKED — awaits Astro v5.1+ nonce API exposure.
 
-- [ ] **Admin UI core-index status column** — UX gap. Admin `/admin/repos` page only shows MODULE index status. Add column or badge for CORE index status per version (CoreSymbol count > 0). Prevents user confusion that "v17 indexed" implies core index complete. Implementation: `site/src/components/RepoTable.astro` + new Astro fetch from FastAPI core-symbol count API.
+- [x] **Admin UI core-index status column** — UX gap resolved. *(2026-05-21, PR #159 WI-5)* Admin `/admin/repos` page now shows a "Core Index" column with per-version CoreSymbol count badge via `GET /api/repos/{id}/core-symbol-counts`. `site/src/components/RepoTable.astro` updated + new FastAPI endpoint in `src/web_ui/routes/repos.py`. Review-followup: N+1 hoist + close guard + version sort `toFloat`.
 
-- [ ] **W-UM legacy columns drop migration** — `actor_id`, `target_id`, `detail_text` columns in `audit_log` table are legacy compat shim. Drop via new migration + remove dual-write in `src/db/auth_registry.py::write_audit_log()`. Verify all consumers use new columns (`actor`, `target`, `detail` JSONB).
+- [x] **W-UM legacy columns drop migration** — *(2026-05-21, PR #159 WI-4)* `actor_id`, `target_id`, `detail_text` columns in `admin_audit_log` table dropped via `migrations/m9_010_drop_audit_legacy_columns.sql`. Dual-write removed from `src/db/auth_registry.py::AuthRegistry.log_audit()` (now canonical-only INSERT). All consumers confirmed using canonical columns (`actor`, `action`, `target`, `success`; `detail` JSONB via `src.db.audit.write_audit_log`). Review-followup: migration renamed from `0006` to `m9_010` for yoyo ordering consistency.
 
 - [ ] **v8 era1 CLI parser runtime extraction** — LOW priority. `parser_cli.py` writes 0 CLIFlag runtime for v8 (era1 `openerp-server` CLI structure). Static curation `spec_data/cli_flags_8.0.json` already covers (72 flags). Only matters when indexing a live v8 source tree (rare). Extend `parser_cli.py` with `openerp/` path branch for v8/v9.
 
 - [ ] **T3.4b VN translation persona docs** — Translate 5 EN-canonical persona guides to Vietnamese. Guides now live in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) at `docs/personas/<role>.md`; add `docs/personas/<role>.vi.md` companion files there. Carried from M7.5 design decision.
 
-- [ ] **OWLComp pre-v14 anachronism guard + cleanup** — 239 `__unresolved__` OWLComp nodes at v8-v13 from JSPatch era3 detection. Fix: symmetric v14 guard in `_extract_era3_patches` (parser_js) OR writer-side PATCHES placeholder. Plus Cypher cleanup of current 239 anachronisms. Cross-ref: pre-launch-checklist.md Known follow-ups #12.
+- [x] **OWLComp pre-v14 anachronism guard + cleanup** — *(2026-05-21, PR #159 WI-1)* Parser guard shipped: `_extract_era3_patches` in `parser_js.py` now returns early when `major < 14` (symmetric with the existing `_extract_era3_components` guard from PR #119 WI-1). Prevents NEW anachronistic stubs from being written on future reindex. **Cypher cleanup of existing 239 `__unresolved__` OWLComp stubs (v8-v13) + 1 `snap_mod` node (odoo_version='96.0') is OPS work in the full-reindex runbook below — not yet run on prod.** Cross-ref: pre-launch-checklist.md Known follow-ups #12.
 
 ---
 

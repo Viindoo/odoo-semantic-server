@@ -2,6 +2,33 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — M10C Polish Wave (PR #159)
+
+### Added
+- **`reembed-stubs` CLI subcommand** (`python -m src.indexer reembed-stubs --profile <name>`) — enumerates modules where `field_count > 0` but `embeddings_count == 0` via `LEFT JOIN embeddings`, re-runs `make_chunks` + `write_module_embeddings`; idempotent; log line summarises count + total embed calls per ADR-0010. (WI-3)
+- **`audit-repo` CLI subcommand** (`python -m src.indexer audit-repo --profile <name> --output audit.json`) — emits a per-module JSON coverage report (field count, method count, embedding count, last indexed at) to the path given by the required `--output` flag. Closes M10 Quick Win "CLI batch audit". (WI-3)
+- **`GET /api/repos/{id}/core-symbol-counts`** — new FastAPI endpoint returning per-version CoreSymbol counts for a repo; used by the admin UI core-index status column. Auth-gated, admin only. (WI-5)
+- **Admin UI "Core Index" column** (`site/src/components/RepoTable.astro`) — per-version CoreSymbol count badge in `/admin/repos`, fetched from the new API endpoint above. Prevents user confusion between "repo indexed" and "core symbols indexed". (WI-5)
+
+### Changed
+- **`parser_odoo_core.py` body-level `DeprecationWarning` detection** — method body AST walk (`_has_body_level_deprecation_warning`) now detects `warnings.warn(...)` calls where `DeprecationWarning` appears as any positional arg or as the `category=` keyword (e.g. `warnings.warn("...", DeprecationWarning, stacklevel=2)`). After re-index, `lookup_core_api("name_get", "17.0")` returns `status='deprecated'` instead of incorrect `'stable'`. Detection tightened in review-followup (matches only `warnings.warn`, not `logger.warn`/`self.warn`). (WI-2)
+- **`parser_js.py` OWLComp pre-v14 guard** — `_extract_era3_patches` returns early when `major < 14`, symmetric with the existing `_extract_era3_components` guard. Prevents new anachronistic `__unresolved__` OWLComp stubs being written to Neo4j for v8-v13 repos on future reindex. Existing 239 stubs require a one-time Cypher cleanup (see Full Reindex Runbook). (WI-1)
+- **`admin_audit_log` legacy column drop** — `actor_id`, `target_id`, `detail_text` columns removed via migration `m9_010_drop_audit_legacy_columns.sql`; dual-write removed from `AuthRegistry.log_audit()` (now canonical-only INSERT). All consumers use the canonical columns `actor`, `action`, `target`, `success` (+ `detail` JSONB via `src.db.audit.write_audit_log`). (WI-4)
+
+### Fixed (review-followup)
+- N+1 query hoist in `core-symbol-counts` endpoint - single Cypher query replaces per-version round-trips.
+- Neo4j driver close guard in `core-symbol-counts` to prevent connection leaks on error paths.
+- Version sort uses `toFloat(v)` in Cypher (not lexicographic) — consistent with ADR-0013 tiebreak policy.
+- Migration file renamed `0006_drop_audit_legacy_columns.sql` → `m9_010_drop_audit_legacy_columns.sql` for yoyo ordering consistency.
+- Body-level `DeprecationWarning` AST match tightened in `parser_odoo_core.py` to require the callable be exactly `warnings.warn` (`ast.Attribute` `attr=='warn'` with `func.value` Name `'warnings'`) — avoids false positives from `logger.warn`/other `.warn` calls.
+- Docstrings corrected for `core_symbol_counts` and `log_audit` to match actual behaviour.
+
+### Notes
+- No new MCP tools in this release. Tool surface remains 24.
+- **OPS follow-up (admin, weekend):** run `python -m src.db.migrate` to apply `m9_010`; then run full reindex v8-v19 (see Full Reindex Runbook in `docs/deploy/m10-postmerge-ops.md`) to backfill `mth.depends` + correct `name_get` status + clear pre-v14 OWLComp stubs.
+
+---
+
 ## [0.8.0] — 2026-05-21 — M10.5 Phase 2: ORM validation tools
 
 ### Added
