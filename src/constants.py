@@ -35,6 +35,7 @@ REL_USES_CORE_SYMBOL: str = "USES_CORE_SYMBOL"
 REL_OF_COMMAND: str = "OF_COMMAND"
 REL_TARGETS_MODEL: str = "TARGETS_MODEL"
 REL_IMPORTS: str = "IMPORTS"
+REL_HAS_VIOLATION: str = "HAS_VIOLATION"
 
 # ---------------------------------------------------------------------------
 # Edition metadata

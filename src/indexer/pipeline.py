@@ -337,10 +337,12 @@ def _index_repo(
 
             # Merge both view parsers into one ViewParseResult per module.
             # writer.write_view_results handles both .views and .qweb in one call.
+            # lint_violations from xml_result (RelaxNG v15+) are preserved.
             merged = ViewParseResult(
                 module=info,
                 views=xml_result.views,
                 qweb=qweb_result.qweb,
+                lint_violations=xml_result.lint_violations,
             )
             view_results.append(merged)
 
@@ -386,6 +388,9 @@ def _index_repo(
     _profiles_arr = ancestor_profiles or []
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
+    # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist
+    all_lint_violations = [v for vr in view_results for v in vr.lint_violations]
+    writer.write_lint_violations(all_lint_violations, profiles=_profiles_arr)
     writer.write_js_graph_results(js_graph_results, profiles=_profiles_arr)
     # WI-A1: write Stylesheet nodes (CSS + SCSS) after module writes
     writer.write_stylesheets(all_stylesheet_infos, profiles=_profiles_arr)

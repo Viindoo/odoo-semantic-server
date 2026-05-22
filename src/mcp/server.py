@@ -1679,12 +1679,73 @@ def _match_lint_rule_lines(code: str, rule: dict) -> list[int]:
     return hit_lines
 
 
+def _lint_check_xml(odoo_version: str) -> str:
+    """Return RelaxNG :LintViolation nodes from the graph for *odoo_version*.
+
+    Output format follows ADR-0023 tree grammar.  Returns all indexed violations
+    (no code-snippet matching — violations are ground-truth from indexing time).
+
+    Called by _lint_check when language='xml'.
+    """
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+        rows = session.run("""
+            MATCH (lv:LintViolation {odoo_version: $v})
+            RETURN lv.view_xmlid AS view_xmlid,
+                   lv.rule AS rule_id,
+                   lv.severity AS severity,
+                   lv.message AS message,
+                   lv.line AS line,
+                   lv.view_type AS view_type,
+                   lv.file_path AS file_path
+            ORDER BY lv.view_xmlid ASC, lv.line ASC
+        """, v=odoo_version).data()
+
+    header = (
+        f"lint_check(Odoo {odoo_version}, language=xml) — "
+        f"{len(rows)} RelaxNG violations"
+    )
+    lines = [header]
+    if not rows:
+        lines.append("└─ no RelaxNG violations indexed for this version")
+        return "\n".join(lines)
+
+    # Group by view_xmlid for readable tree output
+    from collections import defaultdict as _dd
+    grouped: dict[str, list[dict]] = _dd(list)
+    for r in rows:
+        grouped[r["view_xmlid"] or "?"].append(r)
+
+    view_list = sorted(grouped.keys())
+    last_view_idx = len(view_list) - 1
+    for vi, xmlid in enumerate(view_list):
+        v_connector = "└─" if vi == last_view_idx else "├─"
+        view_rows = grouped[xmlid]
+        vtype = view_rows[0].get("view_type") or "?"
+        lines.append(f"{v_connector} [{xmlid}] ({vtype})")
+        last_viol_idx = len(view_rows) - 1
+        indent = "    " if vi == last_view_idx else "│   "
+        for ri, r in enumerate(view_rows):
+            r_connector = "└─" if ri == last_viol_idx else "├─"
+            rule_id = r.get("rule_id") or "?"
+            sev = r.get("severity") or "error"
+            msg = (r.get("message") or "").strip()
+            lineno = r.get("line") or 0
+            lines.append(f"{indent}{r_connector} line {lineno} | {rule_id} ({sev}): {msg}")
+
+    return "\n".join(lines)
+
+
 def _lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
     """Pattern-match user code against indexed LintRule.message (V0).
 
-    Supports ``# noqa`` suppression per line:
+    For language='xml': queries :LintViolation nodes from the graph (ground-truth
+    RelaxNG results indexed from v15+ views) — no code-snippet arg needed.
+
+    For language='python'/'javascript': fuzzy token-overlap match against
+    indexed LintRule catalogue with noqa suppression support:
 
     * ``# noqa: E8001`` — suppress rule ``E8001`` on that line only.
     * ``# noqa: E8001, W9002`` — suppress multiple rules on that line.
@@ -1696,12 +1757,16 @@ def _lint_check(
             f"lint_check: invalid language {language!r}. "
             f"Valid options: {valid}."
         )
+
+    # XML: return ground-truth RelaxNG violations from the graph (no code matching)
+    if language == "xml":
+        return _lint_check_xml(odoo_version)
+
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
         kind_prefix = (
             "pylint" if language == "python"
-            else "eslint" if language == "javascript"
-            else "static-xml"
+            else "eslint"  # javascript
         )
         rules = session.run("""
             MATCH (l:LintRule {odoo_version: $v})
@@ -1799,19 +1864,30 @@ def lint_check(
     user wants module existence check → use check_module_exists
 
     Args:
-        code: Source code chunk to check.
+        code: Source code chunk to check. For language='xml', this argument is
+            ignored — the tool returns all indexed RelaxNG violations from the
+            graph (ground-truth from indexing time, v15+ only).
         odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
         language: 'python' | 'javascript' | 'xml'.
+            - 'python': fuzzy token-overlap match against indexed pylint-odoo rules.
+            - 'javascript': fuzzy token-overlap match against indexed eslint-odoo rules.
+            - 'xml': returns RelaxNG schema violations from :LintViolation nodes
+              (ground-truth, no fuzzy matching; requires v15+ indexed views).
 
     Returns:
         Tree text listing matched rule violations (rule_id, severity, message).
-        V0 matcher is fuzzy token-overlap — use as first-pass screen, not as
-        authoritative pylint/ruff/eslint output.
+        python/javascript: V0 fuzzy token-overlap — use as first-pass screen.
+        xml: Ground-truth RelaxNG violations grouped by view xmlid.
 
     Example:
         lint_check("raise UserError('Hello %s' % name)", "17.0", "python")
         → lint_check(Odoo 17.0, language=python) — 1 violations
           └─ E8502 (error): Bad usage of _, _lt function...
+
+        lint_check("", "17.0", "xml")
+        → lint_check(Odoo 17.0, language=xml) — 2 RelaxNG violations
+          ├─ [my_module.view_order_tree] (tree)
+          │   └─ line 5 | relaxng.tree_view (error): Did not expect element badfield...
     """
     return _lint_check(code, odoo_version, language)
 

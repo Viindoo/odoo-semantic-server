@@ -138,10 +138,15 @@ class JSChunk:
 
 @dataclass
 class ViewParseResult:
-    """Parse result for XML files in a module: views + qweb templates."""
+    """Parse result for XML files in a module: views + qweb templates.
+
+    `lint_violations` contains RelaxNG validation errors (v15+ only) collected
+    by `parser_xml` for each view whose type has a vendored RNG schema.
+    """
     module: ModuleInfo
     views: list[ViewInfo] = field(default_factory=list)
     qweb: list[QWebInfo] = field(default_factory=list)
+    lint_violations: list["LintViolationInfo"] = field(default_factory=list)
 
 
 @dataclass
@@ -317,3 +322,36 @@ class CLIFlagInfo:
     replacement_flag_name: str | None = None
     env_name: str | None = None
     posix_only: bool = False
+
+
+# --- RelaxNG XML lint violation layer (WI-E, M11) ----------------------------
+
+
+@dataclass
+class LintViolationInfo:
+    """A RelaxNG validation error found in a View's arch XML (WI-E, M11).
+
+    Collected during XML parsing (v15+ only, via VersionRegistry gate) and
+    written as :LintViolation Neo4j nodes tied to the owning :View node.
+
+    Composite MERGE key: (file_path, line, rule, odoo_version).
+
+    Fields:
+        file_path:    Absolute path of the source XML file.
+        line:         1-based line number within the arch element where the
+                      error was reported (0 when unavailable).
+        rule:         Short rule identifier, e.g. 'relaxng.tree_view'.
+        message:      Raw error message from the RelaxNG validator.
+        view_xmlid:   Full xmlid of the owning view, e.g. 'sale.view_order_tree'.
+        odoo_version: Odoo version label, e.g. '17.0'.
+        severity:     Always 'error' for RelaxNG violations (schema mismatch).
+        view_type:    View type that was validated, e.g. 'tree', 'search'.
+    """
+    file_path: str
+    line: int
+    rule: str
+    message: str
+    view_xmlid: str
+    odoo_version: str
+    severity: str = "error"
+    view_type: str = ""

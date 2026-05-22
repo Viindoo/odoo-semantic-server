@@ -1,0 +1,20 @@
+RelaxNG XML Validation Schemas for Odoo Views
+===============================================
+
+Source: Odoo SA, odoo/addons/base/rng/ directory
+Version vendored: Odoo 17.0 (commit 07384d02c17)
+Original path: odoo/addons/base/rng/*.rng
+License: GNU Lesser General Public License v3.0 (LGPL-3.0)
+
+These files are verbatim copies (with this NOTICE header added as a comment
+in each file) from the Odoo Community repository:
+  https://github.com/odoo/odoo/tree/17.0/odoo/addons/base/rng/
+
+Copyright (C) Odoo SA and contributors.
+
+The schema stable range is v15-v19 (schema structure unchanged across
+these versions). The indexer applies a VersionRegistry gate: only views
+from Odoo v15+ are validated against these schemas to avoid false positives
+on older eras where view grammar was different.
+
+Full LGPL-3.0 license text: https://www.gnu.org/licenses/lgpl-3.0.html

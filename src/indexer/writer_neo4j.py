@@ -9,6 +9,7 @@ from src.constants import (
     REL_CHECKS,
     REL_DEFINED_IN,
     REL_DEPENDS_ON,
+    REL_HAS_VIOLATION,
     REL_IMPORTS,
     REL_INHERITS,
     REL_INHERITS_VIEW,
@@ -25,6 +26,7 @@ from .models import (
     CoreSymbolInfo,
     JSGraphResult,
     LintRuleInfo,
+    LintViolationInfo,
     ParseResult,
     PatternExample,
     StylesheetInfo,
@@ -601,6 +603,56 @@ def _write_stylesheets_batch(
                  tgt_fp=import_path)
 
 
+# ---------------------------------------------------------------------------
+# RelaxNG LintViolation writer (WI-E, M11)
+# ---------------------------------------------------------------------------
+
+def _write_lint_violations_batch(
+    tx, violations: list[LintViolationInfo], profiles: list[str],
+) -> None:
+    """MERGE :LintViolation nodes + :HAS_VIOLATION edge from owning :View.
+
+    Composite MERGE key: (file_path, line, rule, odoo_version).
+    The :HAS_VIOLATION edge target is the :View node keyed on (xmlid,
+    odoo_version).  Silent skip when the View does not yet exist — the edge
+    will be created once the View is written (idempotent MERGE on next run).
+    """
+    for v in violations:
+        # Upsert the LintViolation node
+        tx.run("""
+            MERGE (lv:LintViolation {
+                file_path: $fp, line: $line,
+                rule: $rule, odoo_version: $ver
+            })
+            ON CREATE SET lv.message = $msg,
+                          lv.severity = $sev,
+                          lv.view_xmlid = $xmlid,
+                          lv.view_type = $vtype,
+                          lv.profile = $profiles
+            ON MATCH  SET lv.message = $msg,
+                          lv.severity = $sev,
+                          lv.view_xmlid = $xmlid,
+                          lv.view_type = $vtype,
+                          lv.profile =
+                              [x IN coalesce(lv.profile, []) WHERE NOT x IN $profiles]
+                              + $profiles
+        """, fp=v.file_path, line=v.line, rule=v.rule, ver=v.odoo_version,
+             msg=v.message, sev=v.severity, xmlid=v.view_xmlid,
+             vtype=v.view_type, profiles=profiles)
+
+        # HAS_VIOLATION edge from :View to :LintViolation
+        # Silent skip when the View node does not exist yet.
+        tx.run(f"""
+            MATCH (view:View {{xmlid: $xmlid, odoo_version: $ver}})
+            MATCH (lv:LintViolation {{
+                file_path: $fp, line: $line,
+                rule: $rule, odoo_version: $ver
+            }})
+            MERGE (view)-[:{REL_HAS_VIOLATION}]->(lv)
+        """, xmlid=v.view_xmlid, ver=v.odoo_version,
+             fp=v.file_path, line=v.line, rule=v.rule)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -644,6 +696,11 @@ class Neo4jWriter:
                 " ON (n.file_path, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:Stylesheet)"
                 " ON (n.module, n.odoo_version)",
+                # WI-E RelaxNG lint violation layer (M11):
+                "CREATE INDEX IF NOT EXISTS FOR (n:LintViolation)"
+                " ON (n.file_path, n.line, n.rule, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:LintViolation)"
+                " ON (n.view_xmlid, n.odoo_version)",
             ]:
                 session.run(stmt)
 
@@ -867,6 +924,27 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for batch in _chunked(stylesheets, NEO4J_WRITE_BATCH_SIZE):
                 session.execute_write(_write_stylesheets_batch, batch, _profiles)
+
+    def write_lint_violations(
+        self,
+        violations: list[LintViolationInfo],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist :LintViolation nodes + :HAS_VIOLATION edges to :View (WI-E, M11).
+
+        Idempotent MERGE on composite key (file_path, line, rule, odoo_version).
+        *profiles* is the ancestor profile name array (per ADR-0016 Option Y).
+        Batched at NEO4J_WRITE_BATCH_SIZE per transaction.
+        The :HAS_VIOLATION edge is silently skipped when the target :View has
+        not yet been written — the edge is written on the next incremental run.
+        Should be called after write_view_results() so View nodes exist.
+        """
+        if not violations:
+            return
+        _profiles = profiles if profiles is not None else []
+        with self.driver.session() as session:
+            for batch in _chunked(violations, NEO4J_WRITE_BATCH_SIZE):
+                session.execute_write(_write_lint_violations_batch, batch, _profiles)
 
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
         """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.
