@@ -266,6 +266,13 @@ class ResolveMethodOutput(BaseModel):
             "B1 provenance — already in graph."
         ),
     )
+    docstring: str | None = Field(
+        default=None,
+        description=(
+            "First line of the method's docstring from the authoritative module. "
+            "Populated after reindex (A2a); None on pre-reindex graphs."
+        ),
+    )
     override_chain: list[MethodRef] = Field(
         description="All overrides ordered by ranking heuristic (first = authoritative)"
     )
@@ -339,6 +346,48 @@ class DescribeModuleOutput(BaseModel):
     version_raw: str | None = Field(
         default=None,
         description="Raw version string from __manifest__, e.g. '17.0.1.0.0'",
+    )
+    repo_url: str | None = Field(
+        default=None,
+        description=(
+            "Remote repository URL (e.g. 'https://github.com/odoo/odoo'). "
+            "Populated after reindex (A2c); None on pre-reindex graphs."
+        ),
+    )
+    auto_install: bool = Field(
+        default=False,
+        description=(
+            "True when the module is auto-installed when its dependencies are present. "
+            "Populated after reindex (A2b)."
+        ),
+    )
+    application: bool = Field(
+        default=False,
+        description=(
+            "True when the module is a top-level application (shows in Apps menu). "
+            "Populated after reindex (A2b)."
+        ),
+    )
+    category: str | None = Field(
+        default=None,
+        description=(
+            "Manifest category string, e.g. 'Accounting/Accounting'. "
+            "Populated after reindex (A2b); None when absent."
+        ),
+    )
+    external_python: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Python package dependencies from the manifest external_dependencies "
+            "section. Populated after reindex (A2b)."
+        ),
+    )
+    external_bin: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Binary/system dependencies from the manifest external_dependencies "
+            "section. Populated after reindex (A2b)."
+        ),
     )
     depends: list[str] = Field(
         default_factory=list,

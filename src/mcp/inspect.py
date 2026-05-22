@@ -13,7 +13,8 @@ See docs/adr/0028-discriminator-consolidation.md.
 # ---------------------------------------------------------------------------
 
 _MODEL_METHODS = frozenset({"summary", "fields", "methods", "views", "field", "method"})
-_MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qweb", "js"})
+_MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qweb", "js",
+                              "dependencies"})
 _ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern"})
 
 # ---------------------------------------------------------------------------
@@ -288,6 +289,10 @@ def _module_inspect(
             limit=limit,
             start_index=start_index,
         )
+
+    if method == "dependencies":
+        # B2: transitive DEPENDS_ON closure + load order (ADR-0028 consolidation).
+        return srv._module_dep_closure(name, odoo_version, profile_name)
 
     # Unreachable — guard for exhaustiveness
     return _invalid_method_error("module_inspect", method, _MODULE_METHODS)  # pragma: no cover

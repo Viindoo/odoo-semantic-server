@@ -26,10 +26,12 @@ from src.constants import (
     PG_POOL_MAX_CONN,
     PG_POOL_MIN_CONN,
     REL_DEPENDS_ON,
+    REL_DEPENDS_ON_FIELD,
     REL_INHERITS,
     REL_INHERITS_VIEW,
     REL_TARGETS_MODEL,
     REL_USES_CORE_SYMBOL,
+    REL_USES_FIELD,
     SNIPPET_PREVIEW_MAX_LINES,
     VALID_CHUNK_TYPES,
 )
@@ -621,6 +623,10 @@ def _resolve_method(
         lines.append(f"├─ Signature:   ({base_mth['signature']})")
     if base_mth.get("convention_kind"):
         lines.append(f"├─ Convention:  {base_mth['convention_kind']}")
+    # B2: render docstring first line (A2a — populated after reindex; absent pre-reindex).
+    if base_mth.get("docstring"):
+        first_line = base_mth["docstring"].strip().splitlines()[0][:120]
+        lines.append(f"├─ Docstring:   {first_line}")
     lines.append(f"├─ Override chain ({len(records)}):")
     last_idx = len(records) - 1
     for i, r in enumerate(records):
@@ -843,7 +849,8 @@ def _find_examples(
                 placeholders = ",".join(["%s"] * len(selected_types))
                 cur.execute(
                     f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
+                               line_start, repo
                         FROM embeddings
                         WHERE odoo_version = %s AND chunk_type IN ({placeholders})
                         ORDER BY vec <=> %s::vector LIMIT %s""",
@@ -854,14 +861,16 @@ def _find_examples(
             else:
                 cur.execute(
                     """SELECT chunk_type, module, entity_name, model_name, file_path,
-                              chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                              chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
+                              line_start, repo
                        FROM embeddings WHERE odoo_version = %s
                        ORDER BY vec <=> %s::vector LIMIT %s""",
                     [query_vec, odoo_version, query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)],
                 )
             raw = [
                 dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
-                     file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]))
+                     file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]),
+                     line_start=r[8], repo=r[9])
                 for r in cur.fetchall()
             ]
 
@@ -924,7 +933,11 @@ def _find_examples(
             chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
         lines.append(sep)
         lines.append(f"#{i} · score {chunk['score']:.2f} · {chunk_label} · {entity}")
-        lines.append(f"   File: {chunk['file_path']}")
+        # B2: render [repo] file_path:line_start when provenance data is present (A3).
+        file_path = chunk["file_path"] or ""
+        repo_pfx = f"[{chunk['repo']}] " if chunk.get("repo") else ""
+        line_sfx = f":{chunk['line_start']}" if chunk.get("line_start") is not None else ""
+        lines.append(f"   File: {repo_pfx}{file_path}{line_sfx}")
         lines.append("   ┌" + "─" * 42)
         for line in chunk["content"].splitlines():
             lines.append(f"   │ {line}")
@@ -1156,6 +1169,37 @@ def _impact_analysis(
         else:
             def_modules = []
 
+        # ------------------------------------------------------------------ #
+        # Query 6 (field only): methods that USES_FIELD / DEPENDS_ON_FIELD    #
+        # Traverses A2d edges — populated after reindex; empty pre-reindex.   #
+        # ------------------------------------------------------------------ #
+        uses_field_methods: list[dict] = []
+        depends_on_field_methods: list[dict] = []
+        if entity_type == "field":
+            uses_field_methods = session.run(
+                f"""
+                MATCH (mth:Method {{odoo_version: $v}})
+                      -[:{REL_USES_FIELD}]->(f:Field {{name: $fn, model: $mn, odoo_version: $v}})
+                WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+                RETURN DISTINCT mth.name AS name, mth.model AS model, mth.module AS module
+                ORDER BY mth.module, mth.model, mth.name
+                """,
+                fn=member_name, mn=model_name, v=odoo_version,
+                profile_name=profile_name,
+            ).data()
+            depends_on_field_methods = session.run(
+                f"""
+                MATCH (mth:Method {{odoo_version: $v}})
+                      -[:{REL_DEPENDS_ON_FIELD}]->(f:Field {{name: $fn, model: $mn,
+                                                              odoo_version: $v}})
+                WHERE ($profile_name IS NULL OR $profile_name IN mth.profile)
+                RETURN DISTINCT mth.name AS name, mth.model AS model, mth.module AS module
+                ORDER BY mth.module, mth.model, mth.name
+                """,
+                fn=member_name, mn=model_name, v=odoo_version,
+                profile_name=profile_name,
+            ).data()
+
     # ---------------------------------------------------------------------- #
     # Build output tree                                                        #
     # ---------------------------------------------------------------------- #
@@ -1197,10 +1241,26 @@ def _impact_analysis(
                 lines.append(f"│   {connector} [{m_item['module']}] {m_item['name']}")
         else:
             lines.append(f"├─ {methods_label}: none")
-        lines.append(
-            "│   Note: field-level impact requires F4 USES_FIELD edge"
-            " (deferred to M5). Current scope: model-level."
-        )
+        # B2: field-level blast radius from USES_FIELD / DEPENDS_ON_FIELD edges (A2d).
+        # Omit sections entirely when empty (pre-reindex: edges not present yet).
+        if uses_field_methods:
+            lines.append(f"├─ Methods using this field ({len(uses_field_methods)}):")
+            last_u = len(uses_field_methods) - 1
+            for i, m_item in enumerate(uses_field_methods):
+                connector = "└─" if i == last_u else "├─"
+                lines.append(
+                    f"│   {connector} [{m_item['module']}] {m_item['model']}.{m_item['name']}"
+                )
+        if depends_on_field_methods:
+            lines.append(
+                f"├─ Compute-dependent methods ({len(depends_on_field_methods)}):"
+            )
+            last_d = len(depends_on_field_methods) - 1
+            for i, m_item in enumerate(depends_on_field_methods):
+                connector = "└─" if i == last_d else "├─"
+                lines.append(
+                    f"│   {connector} [{m_item['module']}] {m_item['model']}.{m_item['name']}"
+                )
     elif methods:
         lines.append(f"├─ {methods_label} ({method_count}):")
         for i, m_item in enumerate(methods):
@@ -2415,7 +2475,13 @@ def _describe_module(
             RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
                    m.edition AS edition,
                    m.viindoo_equivalent_qname AS vvq,
-                   m.license_notice AS license_notice
+                   m.license_notice AS license_notice,
+                   m.repo_url AS repo_url,
+                   m.auto_install AS auto_install,
+                   m.application AS application,
+                   m.category AS category,
+                   m.external_python AS external_python,
+                   m.external_bin AS external_bin
             """,
             n=name, v=odoo_version, profile_name=profile_name,
         ).single()
@@ -2485,6 +2551,31 @@ def _describe_module(
         lines.append(f"├─ Repo: {mod_rec['repo']}")
     if mod_rec.get("path"):
         lines.append(f"├─ Path: {mod_rec['path']}")
+
+    # B2: render repo_url (A2c — populated after reindex; absent pre-reindex).
+    if mod_rec.get("repo_url"):
+        lines.append(f"├─ Repo URL: {mod_rec['repo_url']}")
+
+    # B2: render auto_install / application flags (only when True — not noise).
+    if mod_rec.get("auto_install"):
+        lines.append("├─ Auto-install: yes")
+    if mod_rec.get("application"):
+        lines.append("├─ Application: yes")
+
+    # B2: render category when present.
+    if mod_rec.get("category"):
+        lines.append(f"├─ Category: {mod_rec['category']}")
+
+    # B2: render external deps (python + bin) when non-empty.
+    ext_py = mod_rec.get("external_python") or []
+    ext_bin = mod_rec.get("external_bin") or []
+    if ext_py or ext_bin:
+        parts = []
+        if ext_py:
+            parts.append("python: " + ", ".join(ext_py))
+        if ext_bin:
+            parts.append("bin: " + ", ".join(ext_bin))
+        lines.append("├─ External deps: " + "; ".join(parts))
 
     # ADR-0036: surface license_notice as a visible marker (D3 — never silent).
     # Only emitted when non-null (i.e. module is ingest_flagged; skip action
@@ -2581,6 +2672,79 @@ def _describe_module(
     if footer := format_next_step(next_hints):
         lines.append(footer)
 
+    return "\n".join(lines)
+
+
+def _module_dep_closure(
+    name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
+    """Transitive DEPENDS_ON closure for a module — returns all dependencies + load order.
+
+    Traverses (:Module)-[:DEPENDS_ON*]->(:Module) up to depth 20 to collect
+    the full transitive closure.  Then computes a topological load order using
+    path-length as a proxy (shorter path = loaded earlier) with alphabetical
+    tiebreak for determinism.  Each dependency line shows [repo] name (repo_url).
+
+    B2: This is surfaced as module_inspect(method='dependencies') per ADR-0028
+    consolidation — no new top-level tool.
+    """
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        # Verify the module exists first.
+        exists = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) "
+            "WHERE ($profile_name IS NULL OR $profile_name IN m.profile) "
+            "RETURN count(m) AS c",
+            n=name, v=odoo_version, profile_name=profile_name,
+        ).single()["c"]
+        if not exists:
+            return f"No module named '{name}' indexed for Odoo {odoo_version}."
+
+        # Collect full transitive closure with min path-length (Dijkstra-style)
+        # and repo/repo_url for each dependency.
+        # PATHS(p) gives the variable-length path; length(p) = hop count.
+        dep_rows = session.run(f"""
+            MATCH path = (:Module {{name: $n, odoo_version: $v}})
+                         -[:{REL_DEPENDS_ON}*1..20]->(dep:Module {{odoo_version: $v}})
+            WHERE ($profile_name IS NULL OR $profile_name IN dep.profile)
+            WITH dep, min(length(path)) AS min_depth
+            RETURN dep.name AS dep_name,
+                   dep.repo AS repo,
+                   dep.repo_url AS repo_url,
+                   min_depth
+            ORDER BY min_depth ASC, dep.name ASC
+        """, n=name, v=odoo_version, profile_name=profile_name).data()
+
+    if not dep_rows:
+        lines = [f"{name} dependency closure (Odoo {odoo_version})"]
+        lines.append("├─ No transitive dependencies found.")
+        lines.append(format_next_step([
+            f"describe_module(name='{name}', odoo_version='{odoo_version}')"
+            " for full module overview",
+        ]))
+        return "\n".join(lines)
+
+    # Build load order: sort by (min_depth ASC, name ASC) — already ordered by Cypher.
+    # Assign sequential load-order index (1 = loaded first / deepest dependency).
+    lines = [f"{name} dependency closure (Odoo {odoo_version})"]
+    lines.append(f"├─ Transitive dependencies ({len(dep_rows)}) — load order:")
+    last_idx = len(dep_rows) - 1
+    for i, row in enumerate(dep_rows):
+        connector = "└─" if i == last_idx else "├─"
+        repo_str = f"[{row['repo']}] " if row.get("repo") else ""
+        url_str = f"  ({row['repo_url']})" if row.get("repo_url") else ""
+        lines.append(
+            f"│   {connector} {i + 1:>2}. {repo_str}{row['dep_name']}{url_str}"
+        )
+    lines.append(format_next_step([
+        f"describe_module(name='{name}', odoo_version='{odoo_version}')"
+        " for full module overview",
+        f"module_inspect(name='{name}', method='summary', odoo_version='{odoo_version}')"
+        " for manifest detail",
+    ]))
     return "\n".join(lines)
 
 
@@ -4378,7 +4542,13 @@ def _describe_module_structured(
             MATCH (m:Module {name: $n, odoo_version: $v})
             WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
             RETURN m.edition AS edition, m.version_raw AS version_raw,
-                   m.repo AS repo, m.path AS path
+                   m.repo AS repo, m.path AS path,
+                   m.repo_url AS repo_url,
+                   m.auto_install AS auto_install,
+                   m.application AS application,
+                   m.category AS category,
+                   m.external_python AS external_python,
+                   m.external_bin AS external_bin
             """,
             n=name, v=odoo_version, profile_name=profile_name,
         ).single()
@@ -4439,6 +4609,12 @@ def _describe_module_structured(
         ref=ModuleRef(name=name, odoo_version=odoo_version, profile=None),
         repo=mod_rec.get("repo") or None,
         path=mod_rec.get("path") or None,
+        repo_url=mod_rec.get("repo_url") or None,
+        auto_install=bool(mod_rec.get("auto_install")) if mod_rec.get("auto_install") else False,
+        application=bool(mod_rec.get("application")) if mod_rec.get("application") else False,
+        category=mod_rec.get("category") or None,
+        external_python=list(mod_rec.get("external_python") or []),
+        external_bin=list(mod_rec.get("external_bin") or []),
         edition=mod_rec.get("edition") or "community",
         version_raw=mod_rec.get("version_raw") or None,
         depends=[d["name"] for d in depends],
@@ -4786,8 +4962,10 @@ def module_inspect(
 
     Args:
         name: Technical module name, e.g. 'sale', 'website_sale'.
-        method: One of summary | views | owl | qweb | js.
+        method: One of summary | views | owl | qweb | js | dependencies.
             'fields' and 'methods' return a guidance stub (model required).
+            'dependencies' returns the transitive DEPENDS_ON closure with repo
+            info and topological load order (B2, ADR-0028 consolidation).
         odoo_version: e.g. '17.0', '18.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
