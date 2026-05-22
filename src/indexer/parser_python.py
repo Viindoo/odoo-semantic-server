@@ -576,6 +576,7 @@ def _parse_class(
                     stored=stored, required=required,
                     source_definition=src_def,
                     comodel_name=comodel,
+                    line=node.lineno,  # A3: 1-based line of the field assignment (era2)
                 ))
 
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):
@@ -641,6 +642,7 @@ def _parse_class(
                 depends=depends,
                 docstring=method_docstring,
                 field_refs=_field_refs,
+                line=node.lineno,  # A3: 1-based line of `def` statement (era2)
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)
@@ -1086,15 +1088,20 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
 
     if era == "era1":
         try:
-            return _parse_era2_ast(source, module_info)
+            models = _parse_era2_ast(source, module_info)
         except SyntaxError:
-            return _parse_era1_text(source, module_info)
+            models = _parse_era1_text(source, module_info)
+    else:
+        # era2: AST-only
+        try:
+            models = _parse_era2_ast(source, module_info)
+        except SyntaxError:
+            models = []
 
-    # era2: AST-only
-    try:
-        return _parse_era2_ast(source, module_info)
-    except SyntaxError:
-        return []
+    # A3: stamp real source file path on every returned ModelInfo
+    for m in models:
+        m.file_path = filepath
+    return models
 
 
 def parse_module(module_info: ModuleInfo) -> ParseResult:

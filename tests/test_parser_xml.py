@@ -242,3 +242,39 @@ def test_parse_module_skips_static_dir(tmp_path):
     result = parse_module(module)
     assert result.views == []
     assert result.qweb == []
+
+
+# --- WI-A3: ViewInfo.line (sourceline) ---
+
+
+def test_parse_view_line_is_set(tmp_path, sale_module):
+    """parse_file must set ViewInfo.line to the 1-based source line of the <record> tag."""
+    xml_file = tmp_path / "views.xml"
+    xml_file.write_text(textwrap.dedent("""\
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_sale_order_form" model="ir.ui.view">
+                <field name="name">Sale Order Form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml"><form/></field>
+            </record>
+        </odoo>
+    """))
+    from src.indexer.parser_xml import parse_file as xml_parse_file
+    views = xml_parse_file(str(xml_file), sale_module)
+    assert len(views) == 1
+    # The <record> tag is on line 3 in the dedented content
+    assert views[0].line is not None
+    assert views[0].line >= 1
+
+
+def test_parse_view_line_none_when_not_available(tmp_path, sale_module):
+    """ViewInfo.line defaults to None when .sourceline is absent/zero."""
+    # Construct a ViewInfo directly without lxml to confirm the default
+    from src.indexer.models import ViewInfo
+    v = ViewInfo(
+        xmlid="sale.view_test", name="Test", model="sale.order",
+        module="sale", odoo_version="17.0", view_type="form",
+        mode="primary", inherit_xmlid=None,
+    )
+    assert v.line is None

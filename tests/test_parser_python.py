@@ -1291,3 +1291,82 @@ def test_era1_field_refs_empty(tmp_path):
     assert create_mth is not None
     # era1 text-regex path does NOT capture field_refs
     assert create_mth.field_refs == []
+
+
+# --- WI-A3: parse_file provenance (file_path / line) ---
+
+
+def test_parse_file_sets_model_file_path(tmp_path, sale_module):
+    """parse_file must stamp model.file_path with the real .py file path (not module dir)."""
+    src = tmp_path / "models" / "sale_order.py"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(textwrap.dedent("""\
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            name = fields.Char()
+    """))
+    result = parse_file(str(src), sale_module)
+    assert len(result) == 1
+    assert result[0].file_path == str(src)
+    assert result[0].file_path != sale_module.path
+
+
+def test_parse_file_era2_method_line_set(tmp_path, sale_module):
+    """era2 AST: method.line must equal the 1-based line of the def statement."""
+    src = tmp_path / "m.py"
+    # The def is on line 5 (1-based) after 4 lines of header
+    src.write_text(textwrap.dedent("""\
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            def action_confirm(self):
+                pass
+    """))
+    result = parse_file(str(src), sale_module)
+    assert result
+    mth = next((m for m in result[0].methods if m.name == "action_confirm"), None)
+    assert mth is not None
+    assert mth.line == 5
+
+
+def test_parse_file_era2_field_line_set(tmp_path, sale_module):
+    """era2 AST: field.line must equal the 1-based line of the field assignment."""
+    src = tmp_path / "m.py"
+    src.write_text(textwrap.dedent("""\
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            name = fields.Char()
+            amount_total = fields.Monetary(compute='_compute_amount')
+    """))
+    result = parse_file(str(src), sale_module)
+    assert result
+    fld = next((f for f in result[0].fields if f.name == "amount_total"), None)
+    assert fld is not None
+    assert fld.line == 6  # amount_total is on line 6
+
+
+def test_parse_file_era1_line_is_none(tmp_path):
+    """era1 text-regex fallback: method.line and field.line are None (not extracted)."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "account.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class AccountMove(osv.osv):\n"
+        "    _name = 'account.move'\n"
+        "    _columns = {'name': fields.char('Name', size=64)}\n"
+        "    def create(self, cr, uid, vals, context=None):\n"
+        "        pass\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    # era1 text-regex is used because of `print 'hello'`
+    assert result
+    for mth in result[0].methods:
+        assert mth.line is None, f"method {mth.name!r} should have line=None in era1"

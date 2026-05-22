@@ -15,10 +15,11 @@ _OVERLAP_CHARS = 256
 _INSERT_SQL = """
 INSERT INTO embeddings
     (chunk_type, module, odoo_version, entity_name, model_name, file_path, chunk_idx, content, vec,
-     profile_name)
+     profile_name, line_start, repo, repo_id)
 VALUES %s
 ON CONFLICT ON CONSTRAINT ux_embeddings_chunk
-DO UPDATE SET content = EXCLUDED.content, vec = EXCLUDED.vec, indexed_at = NOW()
+DO UPDATE SET content = EXCLUDED.content, vec = EXCLUDED.vec, indexed_at = NOW(),
+              line_start = EXCLUDED.line_start, repo = EXCLUDED.repo, repo_id = EXCLUDED.repo_id
 """
 
 
@@ -34,6 +35,10 @@ class EmbeddingChunk:
     chunk_idx: int
     content: str
     profile_name: str | None = None  # NULL = shared/global (pattern chunks, pre-tenant rows)
+    # A3 — provenance columns (reindex-forcing; NULL for css/scss/less/pattern chunks)
+    line_start: int | None = None   # 1-based source line of the entity (method def / field assign)
+    repo: str | None = None         # repo basename (ModuleInfo.repo)
+    repo_id: int | None = None      # FK to repos.id (ModuleInfo.repo_id)
 
     def as_tuple(self, vec: list[float]) -> tuple:
         return (
@@ -41,6 +46,7 @@ class EmbeddingChunk:
             self.entity_name, self.model_name, self.file_path,
             self.chunk_idx, self.content, vec,
             self.profile_name,
+            self.line_start, self.repo, self.repo_id,
         )
 
 
@@ -52,18 +58,31 @@ def _sliding(
     version: str,
     file_path: str,
     model_name: str | None,
+    *,
+    line_start: int | None = None,
+    repo: str | None = None,
+    repo_id: int | None = None,
 ) -> list[EmbeddingChunk]:
-    """Split large content into overlapping window EmbeddingChunks."""
+    """Split large content into overlapping window EmbeddingChunks.
+
+    A3: optional keyword arguments `line_start`, `repo`, `repo_id` are
+    propagated to every produced chunk (all windows share the same provenance —
+    line_start points to the first line of the entity regardless of window).
+    """
     if len(raw) <= _WINDOW_CHARS:
         return [
-            EmbeddingChunk(chunk_type, module, version, entity_name, model_name, file_path, 0, raw)
+            EmbeddingChunk(
+                chunk_type, module, version, entity_name, model_name, file_path, 0, raw,
+                line_start=line_start, repo=repo, repo_id=repo_id,
+            )
         ]
     chunks: list[EmbeddingChunk] = []
     start, idx = 0, 0
     while start < len(raw):
         end = min(start + _WINDOW_CHARS, len(raw))
         chunks.append(EmbeddingChunk(
-            chunk_type, module, version, entity_name, model_name, file_path, idx, raw[start:end]
+            chunk_type, module, version, entity_name, model_name, file_path, idx, raw[start:end],
+            line_start=line_start, repo=repo, repo_id=repo_id,
         ))
         if end == len(raw):
             break
@@ -79,17 +98,32 @@ def make_chunks(
     view_result: ViewParseResult | None,
     js_chunks: list[JSChunk] | None,
 ) -> list[EmbeddingChunk]:
-    """Convert ParseResult + ViewParseResult + JSChunks into EmbeddingChunks."""
+    """Convert ParseResult + ViewParseResult + JSChunks into EmbeddingChunks.
+
+    A3: method/field chunks carry real source file_path (from model.file_path),
+    line_start (from method.line / field.line), repo and repo_id (from module).
+    view/qweb chunks carry their existing real file_path plus line_start / repo /
+    repo_id.  JS chunks carry repo / repo_id.  css/scss/less/pattern helpers are
+    not touched here (they have no ParseResult/module context in their callers).
+    """
     chunks: list[EmbeddingChunk] = []
 
+    mod = parse_result.module
+    mod_repo = mod.repo
+    mod_repo_id = mod.repo_id
+
     for model in parse_result.models:
+        # A3: use real source file_path when available; fall back to module dir.
+        model_fp = model.file_path or mod.path
+
         for method in model.methods:
             prefix = f"[{module}] {model.name}.{method.name} ({version})"
             body = method.source_code or f"def {method.name}(self): ..."
             content = f"{prefix}\n{body}"
             chunks.extend(_sliding(
                 content, f"{model.name}.{method.name}", "method",
-                module, version, parse_result.module.path, model.name,
+                module, version, model_fp, model.name,
+                line_start=method.line, repo=mod_repo, repo_id=mod_repo_id,
             ))
 
         for fld in model.fields:
@@ -98,7 +132,8 @@ def make_chunks(
             content = f"{prefix}\n{body}"
             chunks.extend(_sliding(
                 content, f"{model.name}.{fld.name}", "field",
-                module, version, parse_result.module.path, model.name,
+                module, version, model_fp, model.name,
+                line_start=fld.line, repo=mod_repo, repo_id=mod_repo_id,
             ))
 
     if view_result:
@@ -106,17 +141,23 @@ def make_chunks(
             inherit_str = f", inherit={view.inherit_xmlid}" if view.inherit_xmlid else ""
             prefix = f"[{module}] {view.xmlid} ({view.view_type}{inherit_str})"
             body = view.arch or f"<!-- arch missing for {view.xmlid} -->"
-            fp = view.file_path or parse_result.module.path
+            fp = view.file_path or mod.path
             chunks.extend(
-                _sliding(f"{prefix}\n{body}", view.xmlid, "view", module, version, fp, view.model)
+                _sliding(
+                    f"{prefix}\n{body}", view.xmlid, "view", module, version, fp, view.model,
+                    line_start=view.line, repo=mod_repo, repo_id=mod_repo_id,
+                )
             )
 
         for qweb in view_result.qweb:
             prefix = f"[{module}] {qweb.xmlid}"
             body = qweb.content or f"<!-- content missing for {qweb.xmlid} -->"
-            fp = qweb.file_path or parse_result.module.path
+            fp = qweb.file_path or mod.path
             chunks.extend(
-                _sliding(f"{prefix}\n{body}", qweb.xmlid, "qweb", module, version, fp, None)
+                _sliding(
+                    f"{prefix}\n{body}", qweb.xmlid, "qweb", module, version, fp, None,
+                    line_start=qweb.line, repo=mod_repo, repo_id=mod_repo_id,
+                )
             )
 
     for jsc in (js_chunks or []):
@@ -124,6 +165,7 @@ def make_chunks(
         chunks.append(EmbeddingChunk(
             chunk_type, module, version,
             jsc.entity_name, None, jsc.file_path, jsc.chunk_idx, jsc.content,
+            repo=mod_repo, repo_id=mod_repo_id,
         ))
 
     return chunks

@@ -49,6 +49,8 @@ class FieldInfo:
     required: bool = False
     source_definition: str | None = None  # raw assignment line(s), for embedding
     comodel_name: str | None = None  # M10.5 P1 — comodel của Many2one/One2many/Many2many
+    # A3 — provenance: 1-based source line in the .py file (era2 only; None for era1)
+    line: int | None = None
 
 
 @dataclass
@@ -86,6 +88,8 @@ class MethodInfo:
     # Only captures top-level self.x (NOT self.x.y chains — .y captured as x only).
     # Used by writer_neo4j to MERGE USES_FIELD / DEPENDS_ON_FIELD edges (best-effort).
     field_refs: list[str] = field(default_factory=list)
+    # A3 — provenance: 1-based source line of the def statement (era2 only; None for era1)
+    line: int | None = None
 
 
 @dataclass
@@ -101,6 +105,9 @@ class ModelInfo:
     is_abstract: bool = False
     is_transient: bool = False
     had_explicit_name: bool = False  # True when _name = "..." appears in class body
+    # A3 — provenance: absolute path of the .py file that defined this model
+    # (set by parse_file after _parse_era2_ast / _parse_era1_text return)
+    file_path: str | None = None
 
 
 @dataclass
@@ -131,6 +138,9 @@ class ViewInfo:
     xpaths: list[XPathInfo] = field(default_factory=list)
     arch: str | None = None       # serialized XML content of <arch> field, for embedding
     file_path: str | None = None  # source XML file path
+    # A3 — provenance: 1-based source line of the <record> element
+    # (best-effort from lxml .sourceline; None if unavailable)
+    line: int | None = None
 
 
 @dataclass
@@ -142,6 +152,9 @@ class QWebInfo:
     inherit_xmlid: str | None = None
     content: str | None = None    # serialized XML content of <template>, for embedding
     file_path: str | None = None  # source XML file path
+    # A3 — provenance: 1-based source line of the <template> element
+    # (best-effort from lxml .sourceline; None if unavailable)
+    line: int | None = None
 
 
 @dataclass

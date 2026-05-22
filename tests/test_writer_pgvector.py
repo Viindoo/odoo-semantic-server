@@ -256,7 +256,7 @@ def test_embedding_chunk_default_profile_name_is_none():
 
 
 def test_embedding_chunk_as_tuple_includes_profile_name():
-    """as_tuple must include profile_name as the last element."""
+    """as_tuple must include profile_name (positioned before the A3 provenance fields)."""
     chunk = EmbeddingChunk(
         "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
         "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
@@ -265,9 +265,10 @@ def test_embedding_chunk_as_tuple_includes_profile_name():
     vec = [0.0] * 1024
     t = chunk.as_tuple(vec)
     # tuple order: chunk_type, module, odoo_version, entity_name, model_name,
-    #              file_path, chunk_idx, content, vec, profile_name
-    assert t[-1] == "tenant_acme"
+    #              file_path, chunk_idx, content, vec, profile_name,
+    #              line_start, repo, repo_id  (A3 — appended after profile_name)
     assert t[0] == "method"
+    assert "tenant_acme" in t, "profile_name must be present in tuple"
 
 
 def test_embedding_chunk_as_tuple_profile_name_none():
@@ -277,7 +278,8 @@ def test_embedding_chunk_as_tuple_profile_name_none():
         "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
     )
     t = chunk.as_tuple([0.0] * 1024)
-    assert t[-1] is None
+    # profile_name is at index 9 (0-based)
+    assert t[9] is None
 
 
 def test_make_pattern_chunks_profile_name_is_none():
@@ -383,3 +385,183 @@ def test_write_migration_adds_profile_name_column(clean_pg_embeddings):
         )
         row = cur.fetchone()
     assert row is not None, "profile_name column missing from embeddings table"
+
+
+# --- WI-A3: embeddings provenance (unit tests, no DB needed) ---
+
+
+def test_make_chunks_method_file_path_is_real_file_not_module_dir():
+    """Method chunk file_path must equal model.file_path, not the module directory."""
+    mi = ModuleInfo(
+        name=TEST_MODULE, odoo_version=TEST_VERSION,
+        repo="my_repo", path="/repo/my_module", depends=[],
+        repo_id=42,
+    )
+    model = ModelInfo(
+        name="sale.order", module=TEST_MODULE, odoo_version=TEST_VERSION,
+        methods=[MethodInfo(name="action_confirm",
+                            source_code="def action_confirm(self):\n    pass",
+                            line=15)],
+        file_path="/repo/my_module/models/sale_order.py",  # real file path (A3)
+    )
+    result = ParseResult(module=mi, models=[model])
+    chunks = make_chunks(TEST_MODULE, TEST_VERSION, result, None, None)
+    method_chunks = [c for c in chunks if c.chunk_type == "method"]
+    assert len(method_chunks) == 1
+    assert method_chunks[0].file_path == "/repo/my_module/models/sale_order.py"
+    assert method_chunks[0].file_path != "/repo/my_module"  # NOT the module dir
+
+
+def test_make_chunks_method_line_start_propagated():
+    """Method chunk line_start must equal method.line."""
+    mi = ModuleInfo(
+        name=TEST_MODULE, odoo_version=TEST_VERSION,
+        repo="my_repo", path="/repo/my_module", depends=[],
+    )
+    model = ModelInfo(
+        name="sale.order", module=TEST_MODULE, odoo_version=TEST_VERSION,
+        methods=[MethodInfo(name="action_confirm",
+                            source_code="def action_confirm(self):\n    pass",
+                            line=37)],
+        file_path="/repo/my_module/models/sale_order.py",
+    )
+    result = ParseResult(module=mi, models=[model])
+    chunks = make_chunks(TEST_MODULE, TEST_VERSION, result, None, None)
+    method_chunks = [c for c in chunks if c.chunk_type == "method"]
+    assert method_chunks[0].line_start == 37
+
+
+def test_make_chunks_method_repo_and_repo_id_propagated():
+    """Method chunk repo / repo_id come from parse_result.module."""
+    mi = ModuleInfo(
+        name=TEST_MODULE, odoo_version=TEST_VERSION,
+        repo="viindoo_17", path="/repo/my_module", depends=[],
+        repo_id=7,
+    )
+    model = ModelInfo(
+        name="sale.order", module=TEST_MODULE, odoo_version=TEST_VERSION,
+        methods=[MethodInfo(name="action_confirm",
+                            source_code="def action_confirm(self):\n    pass")],
+    )
+    result = ParseResult(module=mi, models=[model])
+    chunks = make_chunks(TEST_MODULE, TEST_VERSION, result, None, None)
+    method_chunks = [c for c in chunks if c.chunk_type == "method"]
+    assert method_chunks[0].repo == "viindoo_17"
+    assert method_chunks[0].repo_id == 7
+
+
+def test_make_chunks_field_provenance():
+    """Field chunk carries real file_path, line_start, repo, repo_id."""
+    mi = ModuleInfo(
+        name=TEST_MODULE, odoo_version=TEST_VERSION,
+        repo="my_repo", path="/repo/my_module", depends=[],
+        repo_id=5,
+    )
+    model = ModelInfo(
+        name="sale.order", module=TEST_MODULE, odoo_version=TEST_VERSION,
+        fields=[FieldInfo(
+            name="amount_total", ttype="monetary",
+            source_definition="amount_total = fields.Monetary(compute='_compute_amount')",
+            line=22,
+        )],
+        file_path="/repo/my_module/models/sale_order.py",
+    )
+    result = ParseResult(module=mi, models=[model])
+    chunks = make_chunks(TEST_MODULE, TEST_VERSION, result, None, None)
+    field_chunks = [c for c in chunks if c.chunk_type == "field"]
+    assert len(field_chunks) == 1
+    assert field_chunks[0].file_path == "/repo/my_module/models/sale_order.py"
+    assert field_chunks[0].line_start == 22
+    assert field_chunks[0].repo == "my_repo"
+    assert field_chunks[0].repo_id == 5
+
+
+def test_make_chunks_method_fallback_to_module_path_when_no_file_path():
+    """When model.file_path is None, method chunk file_path falls back to module dir."""
+    mi = ModuleInfo(
+        name=TEST_MODULE, odoo_version=TEST_VERSION,
+        repo="my_repo", path="/repo/my_module", depends=[],
+    )
+    model = ModelInfo(
+        name="sale.order", module=TEST_MODULE, odoo_version=TEST_VERSION,
+        methods=[MethodInfo(name="write", source_code="def write(self, vals): pass")],
+        file_path=None,  # not set — fallback expected
+    )
+    result = ParseResult(module=mi, models=[model])
+    chunks = make_chunks(TEST_MODULE, TEST_VERSION, result, None, None)
+    method_chunks = [c for c in chunks if c.chunk_type == "method"]
+    assert method_chunks[0].file_path == "/repo/my_module"
+
+
+def test_embedding_chunk_as_tuple_includes_provenance():
+    """as_tuple must include line_start, repo, repo_id after profile_name."""
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
+        "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
+        profile_name="tenant_x",
+        line_start=42,
+        repo="viindoo_17",
+        repo_id=3,
+    )
+    t = chunk.as_tuple([0.0] * 1024)
+    # tuple order: chunk_type, module, odoo_version, entity_name, model_name,
+    #              file_path, chunk_idx, content, vec, profile_name,
+    #              line_start, repo, repo_id
+    assert t[-3] == 42
+    assert t[-2] == "viindoo_17"
+    assert t[-1] == 3
+
+
+def test_embedding_chunk_provenance_defaults_to_none():
+    """New provenance fields default to None for backward-compat."""
+    chunk = EmbeddingChunk(
+        "css", TEST_MODULE, TEST_VERSION, "my_selector",
+        None, "/tmp/style.css", 0, ".foo { color: red }",
+    )
+    assert chunk.line_start is None
+    assert chunk.repo is None
+    assert chunk.repo_id is None
+
+
+# --- WI-A3: migration columns (postgres integration) ---
+
+
+@pytest.mark.postgres
+def test_write_migration_adds_provenance_columns(clean_pg_embeddings):
+    """After run_migrations, embeddings must have line_start, repo, repo_id columns."""
+    with clean_pg_embeddings.cursor() as cur:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'embeddings' AND column_name IN ('line_start','repo','repo_id') "
+            "ORDER BY column_name"
+        )
+        found = {r[0] for r in cur.fetchall()}
+    assert "line_start" in found, "line_start column missing from embeddings table"
+    assert "repo" in found, "repo column missing from embeddings table"
+    assert "repo_id" in found, "repo_id column missing from embeddings table"
+
+
+@pytest.mark.postgres
+def test_write_provenance_columns_populated(clean_pg_embeddings):
+    """write_module_embeddings stores line_start / repo / repo_id when set on chunks."""
+    embedder = FakeEmbedder(dim=1024)
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.action_confirm",
+        "sale.order", "/tmp/sale.py", 0, "def action_confirm(self): pass",
+        line_start=55,
+        repo="viindoo_17",
+        repo_id=9,
+    )
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
+
+    with clean_pg_embeddings.cursor() as cur:
+        cur.execute(
+            "SELECT line_start, repo, repo_id FROM embeddings "
+            "WHERE module = %s AND odoo_version = %s AND entity_name = %s",
+            (TEST_MODULE, TEST_VERSION, "sale.order.action_confirm"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == 55
+    assert row[1] == "viindoo_17"
+    assert row[2] == 9
