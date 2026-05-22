@@ -272,7 +272,14 @@ class AuthStore:
     # ------------------------------------------------------------------
 
     def list_ssh_keys(self) -> list[dict]:
-        """List SSH key pairs (without private key for security).
+        """List admin-managed access-key SSH pairs (without private key).
+
+        Excludes ``key_type='deploy_key'`` rows: per-tenant deploy keys are
+        owned via the self-service endpoint (ADR-0034 D7), not the admin SSH-key
+        surface, and must never appear in the admin "Stored Keys" table, the
+        Add-Repo SSH-key dropdown, or the dashboard count. The clone path
+        resolves credentials by id via get_ssh_key_by_id (unaffected by this
+        filter).
 
         Returns:
             List of dicts with keys: id, name, public_key, key_version, created_at.
@@ -281,7 +288,7 @@ class AuthStore:
             return self._pool.fetch_all(
                 conn,
                 "SELECT id, name, public_key, key_version, created_at"
-                " FROM ssh_key_pairs ORDER BY id",
+                " FROM ssh_key_pairs WHERE key_type = 'access_key' ORDER BY id",
             )
 
     def get_ssh_key_by_id(self, key_id: int) -> dict | None:

@@ -183,6 +183,32 @@ async def test_tenant_a_gets_public_key_on_first_call(pg_deploy_conn):
     assert row[2] == tid_a
 
 
+def test_deploy_key_excluded_from_admin_list_ssh_keys(pg_deploy_conn):
+    """Deploy keys must NOT surface via list_ssh_keys (admin Stored-Keys table,
+    Add-Repo SSH-key dropdown, dashboard count). They are tenant-self-service
+    (ADR-0034 D7), not admin-managed access keys. The clone path resolves
+    credentials by id via get_ssh_key_by_id, so it is unaffected by this filter.
+    """
+    _ensure_fernet_key()
+    from src.db.pg import auth_store
+
+    tid = _create_tenant(pg_deploy_conn, "tenant-list")
+    deploy_pub = auth_store().get_or_create_tenant_deploy_key(pg_deploy_conn, tid)
+    with pg_deploy_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted) "
+            "VALUES ('admin-access', 'ssh-ed25519 ACCESSPUB', 'enc')"
+        )
+    if not pg_deploy_conn.autocommit:
+        pg_deploy_conn.commit()
+
+    pubs = {k["public_key"] for k in auth_store().list_ssh_keys()}
+    assert "ssh-ed25519 ACCESSPUB" in pubs, "access_key must appear in admin list"
+    assert deploy_pub not in pubs, (
+        "deploy_key must NOT appear in admin list_ssh_keys (tenant-owned)"
+    )
+
+
 @pytest.mark.asyncio
 async def test_second_call_is_idempotent(pg_deploy_conn):
     """Second call for the same tenant returns the same public key without creating new rows."""

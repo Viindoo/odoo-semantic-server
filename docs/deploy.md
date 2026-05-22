@@ -1365,7 +1365,7 @@ Host key verification writes to:
 ~/.local/share/odoo-semantic-mcp/known_hosts
 ```
 
-**Policy:** `-o StrictHostKeyChecking=accept-new` persists fingerprints on first connection. Admin can inspect/clear if MITM suspected:
+**Policy:** `-o StrictHostKeyChecking=yes` against a pre-pinned `known_hosts` bundled for GitHub/GitLab/Bitbucket (no trust-on-first-use; self-hosted forges must be pinned manually — see the reindex runbook §MED-2). Per ADR-0035 D3 (supersedes the old accept-new). Admin can inspect/clear if MITM suspected:
 ```bash
 cat ~/.local/share/odoo-semantic-mcp/known_hosts
 ```

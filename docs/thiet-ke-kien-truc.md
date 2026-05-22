@@ -87,7 +87,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Nginx                                                        │  │
-│  │  /mcp  → MCP Server  :8002  (FastMCP, 5 tools + M4)          │  │
+│  │  /mcp  → MCP Server  :8002  (FastMCP, 24 tools + 7 Resources) │  │
 │  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)       │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────┬──────────────────────────────────────┘
@@ -611,7 +611,7 @@ odoo-semantic-mcp/
 │   ├── cloner/                     -- SSH auto-clone subprocess orchestrator (M6 W4)
 │   │   └── __main__.py             -- spawn from web_ui, decrypt key, git clone
 │   ├── mcp/
-│   │   ├── server.py               -- MCP server + 20 tools + 7 Resources (M10A+M10.5+M11, v0.7.0)
+│   │   ├── server.py               -- MCP server + 24 tools + 7 Resources (M10A+M10.5+M11, v0.9.1)
 │   │   ├── hints.py                -- next-step hint mapping for drill-down tools (ADR-0023)
 │   │   ├── tree_builder.py         -- canonical tree grammar renderer with truncation (_render_capped)
 │   │   ├── dto.py                  -- shared response DTOs across supersets (ADR-0028 discriminator)

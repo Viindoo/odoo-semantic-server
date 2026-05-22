@@ -136,7 +136,7 @@ So sánh `git rev-parse HEAD` với stored `repos.head_sha`: bằng nhau → ski
 
 ## SSH Auto-Clone (M6 Wave 4)
 
-`POST /repos/{id}/clone` auto-clone SSH repos: key via `GIT_SSH_COMMAND` env (NOT `-i`), tempfile `mkstemp(0o600)` + `try/finally unlink`, project-local `known_hosts` (`StrictHostKeyChecking=accept-new`), full clone (no `--depth=1` — incremental needs history). `clone_status`: manual/pending/cloned/error + UI poll 5s.
+`POST /repos/{id}/clone` auto-clone SSH repos: key via `GIT_SSH_COMMAND` env (NOT `-i`), tempfile `mkstemp(0o600)` + `try/finally unlink`, project-local `known_hosts` pre-pinned for GitHub/GitLab/Bitbucket + `StrictHostKeyChecking=yes` (no TOFU — ADR-0035 D3 supersedes the old accept-new; self-hosted forges need manual pinning), full clone (no `--depth=1` — incremental needs history). Mutating git ops run under a per-repo Postgres advisory lock; re-clone of an existing checkout refreshes in place (fetch + reset --hard, ADR-0035 D2/D4). `clone_status`: manual/pending/cloned/error + UI poll 5s.
 
 **Policy chi tiết:** [`docs/adr/0008-ssh-auto-clone.md`](docs/adr/0008-ssh-auto-clone.md).
 
