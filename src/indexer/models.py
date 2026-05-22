@@ -10,6 +10,9 @@ class ModuleInfo:
     M4.6 WI1: `edition` ∈ {community/enterprise/viindoo/oca/custom},
     `viindoo_equivalent_qname` nullable string for EE-confusion lookup
     (e.g. user types `helpdesk` on Viindoo stack → suggest `viin_helpdesk`).
+    A2b: manifest enrichment fields (auto_install, application, category,
+    external_python, external_bin).
+    A2c: repo provenance fields (repo_url, repo_id).
     """
     name: str
     odoo_version: str
@@ -24,6 +27,15 @@ class ModuleInfo:
     license: str | None = None
     copyright_owner: str | None = None
     license_notice: str | None = None
+    # A2b — manifest enrichment
+    auto_install: bool = False
+    application: bool = False
+    category: str | None = None
+    external_python: list[str] = field(default_factory=list)
+    external_bin: list[str] = field(default_factory=list)
+    # A2c — repo provenance
+    repo_url: str | None = None
+    repo_id: int | None = None
 
 
 @dataclass
@@ -47,6 +59,8 @@ class MethodInfo:
     the method name regex map (`_classify_method_convention` in parser_python).
     Used by `find_override_point` MCP tool to surface anti-patterns and
     super() guidance per ADR-0003 §3.
+    A2a — docstring: captured via ast.get_docstring() in era2 AST extraction.
+    A2d — field_refs: self.<x> direct attribute access names collected in era2.
     """
     name: str
     has_super_call: bool = False
@@ -66,6 +80,12 @@ class MethodInfo:
     # M10.5 P2 — @api.depends('field.subfield') dotted-path string args (era2 only;
     # [] for era1, which has no decorator depends). Used by validate_depends MCP tool.
     depends: list[str] = field(default_factory=list)
+    # A2a — docstring extracted via ast.get_docstring() (era2 only; None for era1).
+    docstring: str | None = None
+    # A2d — direct self.<x> attribute access names (era2 only; [] for era1).
+    # Only captures top-level self.x (NOT self.x.y chains — .y captured as x only).
+    # Used by writer_neo4j to MERGE USES_FIELD / DEPENDS_ON_FIELD edges (best-effort).
+    field_refs: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -1970,3 +1970,257 @@ def test_write_results_no_profiles_empty_array(writer, neo4j_driver):
     assert rec is not None
     assert rec["p"] == [] or rec["p"] is None  # empty list or null — no crash
 
+
+# ---------------------------------------------------------------------------
+# A2 — Module/Method enrichment + USES_FIELD / DEPENDS_ON_FIELD edges
+# ---------------------------------------------------------------------------
+
+
+def _make_enriched_parse_result(
+    module_name: str = "test_mod",
+    model_name: str = "test.model",
+    *,
+    auto_install: bool = False,
+    application: bool = False,
+    category: str | None = None,
+    external_python: list | None = None,
+    external_bin: list | None = None,
+    repo_url: str | None = None,
+    repo_id: int | None = None,
+    fields_list: list | None = None,
+    methods_list: list | None = None,
+) -> ParseResult:
+    """Build a ParseResult with A2 enrichment fields for integration tests."""
+    module = ModuleInfo(
+        name=module_name,
+        odoo_version=TEST_VERSION,
+        repo=f"{module_name}_repo",
+        path="/tmp",
+        depends=[],
+        version_raw="99.0.1.0.0",
+        auto_install=auto_install,
+        application=application,
+        category=category,
+        external_python=external_python or [],
+        external_bin=external_bin or [],
+        repo_url=repo_url,
+        repo_id=repo_id,
+    )
+    model = ModelInfo(
+        name=model_name,
+        module=module_name,
+        odoo_version=TEST_VERSION,
+        fields=fields_list or [],
+        methods=methods_list or [],
+    )
+    return ParseResult(module=module, models=[model])
+
+
+def test_a2b_module_node_has_enrichment_fields(writer, neo4j_driver):
+    """A2b: Module node persists auto_install, application, category, external_python,
+    external_bin after write_results."""
+    result = _make_enriched_parse_result(
+        auto_install=True,
+        application=True,
+        category="Accounting",
+        external_python=["pdfminer", "reportlab"],
+        external_bin=["wkhtmltopdf"],
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m",
+            n="test_mod", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    node = rec["m"]
+    assert node["auto_install"] is True
+    assert node["application"] is True
+    assert node["category"] == "Accounting"
+    assert "pdfminer" in node["external_python"]
+    assert "reportlab" in node["external_python"]
+    assert "wkhtmltopdf" in node["external_bin"]
+
+
+def test_a2c_module_node_has_repo_provenance(writer, neo4j_driver):
+    """A2c: Module node persists repo_url and repo_id."""
+    result = _make_enriched_parse_result(
+        repo_url="https://github.com/example/odoo",
+        repo_id=42,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m",
+            n="test_mod", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    node = rec["m"]
+    assert node["repo_url"] == "https://github.com/example/odoo"
+    assert node["repo_id"] == 42
+
+
+def test_a2a_method_node_has_docstring(writer, neo4j_driver):
+    """A2a: Method node persists docstring field."""
+    methods_list = [
+        MethodInfo(
+            name="action_confirm",
+            has_super_call=True,
+            decorators=[],
+            docstring="Confirm the sale order.",
+        )
+    ]
+    result = _make_enriched_parse_result(methods_list=methods_list)
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (mth:Method {name: $n, model: $m, odoo_version: $v}) RETURN mth",
+            n="action_confirm", m="test.model", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["mth"]["docstring"] == "Confirm the sale order."
+
+
+def test_a2d_uses_field_edge_created(writer, neo4j_driver):
+    """A2d: USES_FIELD edge from Method to Field when field_refs contains a known Field."""
+    fields_list = [FieldInfo(name="amount", ttype="float")]
+    methods_list = [
+        MethodInfo(
+            name="_compute_total",
+            has_super_call=False,
+            decorators=["api.depends"],
+            field_refs=["amount"],
+        )
+    ]
+    result = _make_enriched_parse_result(
+        fields_list=fields_list,
+        methods_list=methods_list,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            """
+            MATCH (mth:Method {name: $mth_name, model: $m, odoo_version: $v})
+                  -[:USES_FIELD]->
+                  (f:Field {name: $f_name, model: $m, odoo_version: $v})
+            RETURN count(*) AS cnt
+            """,
+            mth_name="_compute_total", m="test.model",
+            f_name="amount", v=TEST_VERSION,
+        ).single()
+
+    assert rec["cnt"] == 1
+
+
+def test_a2d_depends_on_field_edge_created(writer, neo4j_driver):
+    """A2d: DEPENDS_ON_FIELD edge from Method to Field when depends path matches a Field."""
+    fields_list = [FieldInfo(name="amount", ttype="float")]
+    methods_list = [
+        MethodInfo(
+            name="_compute_total",
+            has_super_call=False,
+            decorators=["api.depends"],
+            depends=["amount"],
+            field_refs=[],
+        )
+    ]
+    result = _make_enriched_parse_result(
+        fields_list=fields_list,
+        methods_list=methods_list,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            """
+            MATCH (mth:Method {name: $mth_name, model: $m, odoo_version: $v})
+                  -[:DEPENDS_ON_FIELD]->
+                  (f:Field {name: $f_name, model: $m, odoo_version: $v})
+            RETURN count(*) AS cnt
+            """,
+            mth_name="_compute_total", m="test.model",
+            f_name="amount", v=TEST_VERSION,
+        ).single()
+
+    assert rec["cnt"] == 1
+
+
+def test_a2d_depends_on_field_first_segment_only(writer, neo4j_driver):
+    """A2d: @api.depends('partner_id.name') uses 'partner_id' as first segment."""
+    fields_list = [FieldInfo(name="partner_id", ttype="many2one")]
+    methods_list = [
+        MethodInfo(
+            name="_compute_partner_name",
+            has_super_call=False,
+            decorators=["api.depends"],
+            depends=["partner_id.name"],
+            field_refs=[],
+        )
+    ]
+    result = _make_enriched_parse_result(
+        fields_list=fields_list,
+        methods_list=methods_list,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            """
+            MATCH (mth:Method {name: $mth_name, model: $m, odoo_version: $v})
+                  -[:DEPENDS_ON_FIELD]->
+                  (f:Field {name: 'partner_id', model: $m, odoo_version: $v})
+            RETURN count(*) AS cnt
+            """,
+            mth_name="_compute_partner_name", m="test.model", v=TEST_VERSION,
+        ).single()
+
+    assert rec["cnt"] == 1
+
+
+def test_a2d_nonexistent_field_ref_no_edge(writer, neo4j_driver):
+    """A2d: field_ref to non-existent field produces NO edge (MATCH, not MERGE - no stub)."""
+    fields_list = []  # no fields in model
+    methods_list = [
+        MethodInfo(
+            name="action_confirm",
+            has_super_call=False,
+            decorators=[],
+            field_refs=["env", "nonexistent_field"],
+        )
+    ]
+    result = _make_enriched_parse_result(
+        fields_list=fields_list,
+        methods_list=methods_list,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        # No USES_FIELD edges should exist
+        rec = session.run(
+            """
+            MATCH (mth:Method {name: $n, model: $m, odoo_version: $v})
+            OPTIONAL MATCH (mth)-[:USES_FIELD]->(f:Field)
+            RETURN count(f) AS edge_cnt
+            """,
+            n="action_confirm", m="test.model", v=TEST_VERSION,
+        ).single()
+        # Also verify no stub Field nodes created for 'env' or 'nonexistent_field'
+        stub_rec = session.run(
+            """
+            MATCH (f:Field {odoo_version: $v})
+            WHERE f.name IN ['env', 'nonexistent_field']
+            RETURN count(f) AS stub_cnt
+            """,
+            v=TEST_VERSION,
+        ).single()
+
+    assert rec["edge_cnt"] == 0, "No USES_FIELD edges for non-existent fields"
+    assert stub_rec["stub_cnt"] == 0, "No stub Field nodes created for non-existent field refs"
+

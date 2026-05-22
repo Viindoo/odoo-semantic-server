@@ -135,6 +135,8 @@ def _find_manifests(repo_path: str, odoo_version: str = "") -> list[str]:
 
 def build_registry(
     repo_version_pairs: list[tuple[str, str]],
+    repo_url: str | None = None,
+    repo_id: int | None = None,
 ) -> dict[str, dict[str, ModuleInfo]]:
     """
     Build module registry from a list of (repo_path, odoo_version) pairs.
@@ -142,6 +144,11 @@ def build_registry(
 
     Conflict resolution: when the same module name appears in the same version,
     prefer the entry with a long-format manifest version.
+
+    Args:
+        repo_version_pairs: List of (repo_path, odoo_version) tuples.
+        repo_url:  Optional repo URL for A2c provenance (set on every ModuleInfo).
+        repo_id:   Optional repo DB id for A2c provenance (set on every ModuleInfo).
     """
     registry: dict[str, dict[str, ModuleInfo]] = {}
 
@@ -200,6 +207,18 @@ def build_registry(
                     f" Content is indexed but withheld from normal results pending review."
                 )
 
+            # A2b — manifest enrichment fields
+            # auto_install may be bool OR list of trigger module names → coerce to bool
+            _auto_install_raw = manifest.get('auto_install', False)
+            _auto_install: bool = bool(_auto_install_raw)
+
+            _application: bool = bool(manifest.get('application', False))
+            _category: str | None = manifest.get('category') or None
+
+            _ext_deps: dict = manifest.get('external_dependencies', {})
+            _external_python: list[str] = list(_ext_deps.get('python', []))
+            _external_bin: list[str] = list(_ext_deps.get('bin', []))
+
             info = ModuleInfo(
                 name=module_name,
                 odoo_version=odoo_version,
@@ -215,6 +234,15 @@ def build_registry(
                 license=effective_license,
                 copyright_owner=copyright_owner,
                 license_notice=license_notice,
+                # A2b — manifest enrichment
+                auto_install=_auto_install,
+                application=_application,
+                category=_category,
+                external_python=_external_python,
+                external_bin=_external_bin,
+                # A2c — repo provenance
+                repo_url=repo_url,
+                repo_id=repo_id,
             )
 
             if odoo_version not in registry:

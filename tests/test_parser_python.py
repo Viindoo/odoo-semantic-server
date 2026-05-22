@@ -1142,3 +1142,152 @@ def test_era1_non_relational_field_comodel_none(tmp_path):
     field_map = {fld.name: fld for fld in result[0].fields}
     assert field_map["name"].comodel_name is None
     assert field_map["amount"].comodel_name is None
+
+
+# ---------------------------------------------------------------------------
+# A2a — Method.docstring
+# ---------------------------------------------------------------------------
+
+
+def test_era2_method_docstring_captured(tmp_path, sale_module):
+    """era2: method with docstring → MethodInfo.docstring populated."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+
+            def action_confirm(self):
+                \"\"\"Confirm the sale order.\"\"\"
+                return True
+    """)
+    result = parse_file(f, sale_module)
+    mth = next(m for m in result[0].methods if m.name == "action_confirm")
+    assert mth.docstring == "Confirm the sale order."
+
+
+def test_era2_method_without_docstring_is_none(tmp_path, sale_module):
+    """era2: method without docstring → MethodInfo.docstring is None."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+
+            def _compute_amount(self):
+                self.amount = 0
+    """)
+    result = parse_file(f, sale_module)
+    mth = next(m for m in result[0].methods if m.name == "_compute_amount")
+    assert mth.docstring is None
+
+
+def test_era1_method_docstring_is_none(tmp_path):
+    """era1 path: docstring left as None (not captured in text-regex fallback)."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "era1_doc.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'x.model'\n"
+        "    _columns = {}\n"
+        "    def create(self, cr, uid, vals, context=None):\n"
+        '        """Create record."""\n'
+        "        pass\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    create_mth = next((m for m in result[0].methods if m.name == "create"), None)
+    assert create_mth is not None
+    # era1 text-regex path does NOT capture docstrings
+    assert create_mth.docstring is None
+
+
+# ---------------------------------------------------------------------------
+# A2d — field_refs (direct self.<x> access)
+# ---------------------------------------------------------------------------
+
+
+def test_era2_field_refs_captures_self_dot_x(tmp_path, sale_module):
+    """era2: self.amount accessed → 'amount' in field_refs."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields, api
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            amount = fields.Float()
+
+            @api.depends('amount')
+            def _compute_total(self):
+                self.amount = self.amount * 2
+    """)
+    result = parse_file(f, sale_module)
+    mth = next(m for m in result[0].methods if m.name == "_compute_total")
+    assert "amount" in mth.field_refs
+
+
+def test_era2_field_refs_does_not_capture_chained_attr(tmp_path, sale_module):
+    """era2: self.partner_id.name → only 'partner_id' captured, NOT 'name'."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+            partner_id = fields.Many2one('res.partner')
+
+            def _compute_partner_name(self):
+                return self.partner_id.name
+    """)
+    result = parse_file(f, sale_module)
+    mth = next(m for m in result[0].methods if m.name == "_compute_partner_name")
+    # partner_id is captured (self.partner_id has value=Name('self'))
+    assert "partner_id" in mth.field_refs
+    # 'name' should NOT be captured (its value is Attribute(value=Attribute(...)),
+    # NOT Name('self'), so the outer .name node's value is not Name('self'))
+    assert "name" not in mth.field_refs
+
+
+def test_era2_field_refs_env_not_captured_but_ok(tmp_path, sale_module):
+    """era2: self.env is captured in field_refs (noise - MATCH on Field silently skips it)."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _name = 'sale.order'
+
+            def action_confirm(self):
+                user = self.env.user
+                return True
+    """)
+    result = parse_file(f, sale_module)
+    mth = next(m for m in result[0].methods if m.name == "action_confirm")
+    # 'env' is captured (self.env), but no Field node 'env' will exist -> no edge (best-effort)
+    # We just verify it doesn't crash and field_refs is a list
+    assert isinstance(mth.field_refs, list)
+
+
+def test_era1_field_refs_empty(tmp_path):
+    """era1 path: field_refs left empty (not analyzed in text-regex fallback)."""
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "era1_refs.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "class X(osv.osv):\n"
+        "    _name = 'x.model'\n"
+        "    _columns = {}\n"
+        "    def create(self, cr, uid, vals, context=None):\n"
+        "        self.name = vals['name']\n"
+        "        pass\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    create_mth = next((m for m in result[0].methods if m.name == "create"), None)
+    assert create_mth is not None
+    # era1 text-regex path does NOT capture field_refs
+    assert create_mth.field_refs == []

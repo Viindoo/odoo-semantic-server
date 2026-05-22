@@ -605,6 +605,24 @@ def _parse_class(
             except (AttributeError, ValueError):
                 sig = None
             ck, ss, rr = _classify_method_convention(node.name)
+
+            # A2a — capture docstring (era2 only)
+            method_docstring = ast.get_docstring(node)
+
+            # A2d — collect direct self.<x> attribute access names from method body.
+            # Only captures top-level self.x: for self.partner_id.name, only
+            # 'partner_id' is captured because .name has value=Attribute(value=Name('self'))
+            # which satisfies the condition only for the first-level node.
+            _field_ref_set: set[str] = set()
+            for _attr_node in ast.walk(node):
+                if (
+                    isinstance(_attr_node, ast.Attribute)
+                    and isinstance(_attr_node.value, ast.Name)
+                    and _attr_node.value.id == "self"
+                ):
+                    _field_ref_set.add(_attr_node.attr)
+            _field_refs = sorted(_field_ref_set)  # deterministic ordering
+
             methods_list.append(MethodInfo(
                 name=node.name,
                 has_super_call=_has_super_call(node),
@@ -621,6 +639,8 @@ def _parse_class(
                 return_required=rr,
                 signature=sig,
                 depends=depends,
+                docstring=method_docstring,
+                field_refs=_field_refs,
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)
