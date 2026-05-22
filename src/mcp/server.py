@@ -1853,41 +1853,29 @@ def find_deprecated_usage(
 def lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
-    """Check a code snippet against indexed Odoo-specific lint rules (V0 fuzzy).
+    """Check code against indexed Odoo lint rules; language='xml' returns RelaxNG violations.
 
-    TRIGGER when: "lint check this module", "OCA style violations in module X",
-    "check coding standards", "module X có vi phạm coding convention không",
-    "kiểm tra code quality", "does this code follow Odoo guidelines"
-    PREFER over: running ruff/pylint directly — applies Odoo-specific lint rules
-    from indexed LintRule catalogue, not generic Python linters
-    SKIP when: user wants deprecated API scan → use find_deprecated_usage;
-    user wants module existence check → use check_module_exists
+    TRIGGER when: "lint check this module", "OCA style violations", "check coding
+    standards", "kiểm tra code quality", "does this code follow Odoo guidelines"
+    PREFER over: running ruff/pylint directly — applies the Odoo-specific LintRule
+    catalogue, not generic Python linters
+    SKIP when: deprecated API scan → find_deprecated_usage; module existence
+    check → check_module_exists
 
     Args:
-        code: Source code chunk to check. For language='xml', this argument is
-            ignored — the tool returns all indexed RelaxNG violations from the
-            graph (ground-truth from indexing time, v15+ only).
+        code: Source chunk to check. Ignored for language='xml' (the tool then
+            returns all indexed RelaxNG violations from the graph, v15+ only).
         odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
-        language: 'python' | 'javascript' | 'xml'.
-            - 'python': fuzzy token-overlap match against indexed pylint-odoo rules.
-            - 'javascript': fuzzy token-overlap match against indexed eslint-odoo rules.
-            - 'xml': returns RelaxNG schema violations from :LintViolation nodes
-              (ground-truth, no fuzzy matching; requires v15+ indexed views).
+        language: 'python' | 'javascript' (fuzzy token-overlap vs indexed rules)
+            | 'xml' (ground-truth RelaxNG :LintViolation nodes, v15+ only).
 
     Returns:
-        Tree text listing matched rule violations (rule_id, severity, message).
-        python/javascript: V0 fuzzy token-overlap — use as first-pass screen.
-        xml: Ground-truth RelaxNG violations grouped by view xmlid.
+        Tree text of violations. python/javascript = V0 fuzzy first-pass screen;
+        xml = ground-truth RelaxNG violations grouped by view xmlid.
 
     Example:
-        lint_check("raise UserError('Hello %s' % name)", "17.0", "python")
-        → lint_check(Odoo 17.0, language=python) — 1 violations
-          └─ E8502 (error): Bad usage of _, _lt function...
-
-        lint_check("", "17.0", "xml")
-        → lint_check(Odoo 17.0, language=xml) — 2 RelaxNG violations
-          ├─ [my_module.view_order_tree] (tree)
-          │   └─ line 5 | relaxng.tree_view (error): Did not expect element badfield...
+        lint_check("raise UserError('Hi %s' % n)", "17.0", "python")
+        lint_check("", "17.0", "xml")   # RelaxNG violations grouped by view
     """
     return _lint_check(code, odoo_version, language)
 
