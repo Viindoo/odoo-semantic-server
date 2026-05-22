@@ -19,8 +19,9 @@ constraints on the input list.
 ``seed_repos()`` iterates _REPO_DEFS_BY_PROFILE; for each profile, looks up
 profile_id by name and INSERTs repos with ``local_path =
 default_clone_dir(profile_name, url)`` and ``clone_status='manual'``.
-ON CONFLICT (url, branch) DO NOTHING — repos already registered under any
-profile are left alone (delta-only ownership model per ADR-0016).
+ON CONFLICT (url, branch, profile_id) DO NOTHING — a repo already registered
+under the SAME profile is left alone (ADR-0034 D2 allows the same upstream
+url+branch under different profiles).
 
 ``repos.local_path`` depends on ``Path.home()`` at runtime (see
 ``src/git_utils.py::default_clone_dir``) and cannot be hardcoded in pure SQL.
@@ -32,8 +33,6 @@ Called from two places:
 2. ``python -m src.manager seed-master-data`` CLI — invokes ``seed_all`` or
    ``reset_seeded_data`` for re-seed / destructive reset.
 """
-
-import sys
 
 from src.git_utils import default_clone_dir
 
@@ -133,8 +132,8 @@ def seed_repos(conn) -> tuple[int, int]:
     missing, skip its repos silently (admin may have deleted the profile).
     For each repo tuple, INSERT with ``local_path =
     default_clone_dir(profile_name, url)`` and ``clone_status='manual'``.
-    ON CONFLICT (url, branch) DO NOTHING — repos already registered (under
-    any profile) are left alone.
+    ON CONFLICT (url, branch, profile_id) DO NOTHING — a repo already
+    registered under the SAME profile is left alone (ADR-0034 D2).
 
     Commits before returning when the caller passes a non-autocommit
     connection, so callers cannot accidentally leave an open transaction.
@@ -157,30 +156,16 @@ def seed_repos(conn) -> tuple[int, int]:
                     "INSERT INTO repos "
                     "(profile_id, url, branch, local_path, clone_status) "
                     "VALUES (%s, %s, %s, %s, %s) "
-                    "ON CONFLICT (url, branch) DO NOTHING RETURNING id",
+                    "ON CONFLICT (url, branch, profile_id) DO NOTHING RETURNING id",
                     (profile_id, url, branch, local_path, "manual"),
                 )
                 if cur.fetchone() is not None:
                     inserted += 1
                 else:
+                    # Same (url, branch) already registered under THIS profile
+                    # (idempotent re-seed). Cross-profile duplicates are allowed
+                    # per ADR-0034 D2 and INSERT a separate row rather than skip.
                     skipped += 1
-                    # Identify which profile already owns this (url, branch) so
-                    # the admin knows why their newly-seeded profile may end up
-                    # with zero repos.
-                    with conn.cursor() as cur2:
-                        cur2.execute(
-                            "SELECT p.name FROM repos r "
-                            "JOIN profiles p ON p.id = r.profile_id "
-                            "WHERE r.url = %s AND r.branch = %s",
-                            (url, branch),
-                        )
-                        row2 = cur2.fetchone()
-                    if row2 is not None and row2[0] != profile_name:
-                        print(
-                            f"⚠ Skipping {url}@{branch} for profile '{profile_name}' — "
-                            f"already registered under '{row2[0]}'.",
-                            file=sys.stderr,
-                        )
     if not conn.autocommit:
         conn.commit()
     return inserted, skipped

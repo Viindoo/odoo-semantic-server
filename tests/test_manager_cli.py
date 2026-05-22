@@ -65,7 +65,6 @@ def test_add_repo_attaches_to_profile(migrated_pg, tmp_path):
     res = _run([
         "add-repo", "--profile", "viindoo_17",
         "--url", "github.com/odoo/odoo", "--branch", "17.0",
-        "--local-path", str(repo_dir),
     ], env_extra=env)
     assert res.returncode == 0, res.stderr
 
@@ -93,7 +92,6 @@ def test_list_shows_profile_and_repo(migrated_pg, tmp_path):
     _run([
         "add-repo", "--profile", "viindoo_17",
         "--url", "github.com/x/y", "--branch", "17.0",
-        "--local-path", str(repo_dir),
     ], env_extra=env)
     res = _run(["list"], env_extra=env)
     assert res.returncode == 0
@@ -119,7 +117,7 @@ def test_add_repo_unknown_profile_exits_2(migrated_pg, tmp_path):
     )
     res = _run(
         ["add-repo", "--profile", "does_not_exist",
-         "--url", "x", "--branch", "17.0", "--local-path", str(tmp_path)],
+         "--url", "x", "--branch", "17.0"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
     )
     assert res.returncode == 2
@@ -169,7 +167,10 @@ def test_add_profile_duplicate_friendly_error(migrated_pg, tmp_path):
     assert "already exists" in res.stderr.lower()
 
 
-def test_add_repo_rejects_nonexistent_path(migrated_pg, tmp_path):
+def test_add_repo_url_only_derives_path_and_rejects_local_path(migrated_pg, tmp_path):
+    """WI-G/ADR-0034: add-repo takes only a git URL; local_path is server-derived
+    and need NOT pre-exist (the clone step creates it). The --local-path flag is
+    removed, so passing it is rejected by argparse."""
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(
         "[database]\npg_dsn = "
@@ -177,13 +178,19 @@ def test_add_repo_rejects_nonexistent_path(migrated_pg, tmp_path):
     )
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
     _run(["add-profile", "okprofile17", "--version", "17.0"], env_extra=env)
+    # URL-only succeeds even though no local dir exists yet (clone creates it).
     res = _run([
         "add-repo", "--profile", "okprofile17",
-        "--url", "x", "--branch", "17.0",
+        "--url", "https://example.com/x", "--branch", "17.0",
+    ], env_extra=env)
+    assert res.returncode == 0, res.stderr
+    # The removed --local-path flag is no longer accepted.
+    res2 = _run([
+        "add-repo", "--profile", "okprofile17",
+        "--url", "https://example.com/y", "--branch", "17.0",
         "--local-path", str(tmp_path / "no_such_dir"),
     ], env_extra=env)
-    assert res.returncode == 1
-    assert "does not exist" in res.stderr.lower()
+    assert res2.returncode != 0
 
 
 # ---------------------------------------------------------------------------
