@@ -32,6 +32,16 @@ BEGIN
 
   -- 2. Rebuild the unique constraint to include profile_name if absent.
   --    This mirrors the pattern in migrate.py _EMBEDDINGS_UPGRADE_SQL.
+  --
+  --    NULLS NOT DISTINCT (PG15+) is REQUIRED: profile_name is NULL for shared
+  --    and pattern chunks. Under default SQL semantics two NULLs compare as
+  --    distinct, so a plain UNIQUE key would let duplicate NULL-profile chunks
+  --    coexist — silently regressing the dedup invariant the 6-column key
+  --    guaranteed before profile_name existed. With NULLS NOT DISTINCT, NULL
+  --    profile_names are treated as equal, so shared/pattern chunks still
+  --    dedup on (chunk_type, module, odoo_version, entity_name, file_path,
+  --    chunk_idx) exactly as they did pre-WI-B, while non-NULL profiles remain
+  --    independently scoped.
   IF EXISTS (
     SELECT 1 FROM information_schema.table_constraints
     WHERE constraint_name = 'ux_embeddings_chunk' AND table_name = 'embeddings'
@@ -41,7 +51,8 @@ BEGIN
   ) THEN
     ALTER TABLE embeddings DROP CONSTRAINT ux_embeddings_chunk;
     ALTER TABLE embeddings ADD CONSTRAINT ux_embeddings_chunk
-      UNIQUE (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx, profile_name);
+      UNIQUE NULLS NOT DISTINCT
+      (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx, profile_name);
   END IF;
 
   -- 3. Rebuild idx_embeddings_filter to include profile_name for

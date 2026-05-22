@@ -73,7 +73,14 @@ def test_migrate_embeddings_idempotent(clean_pg):
 
 
 def test_migrate_embeddings_unique_index(clean_pg):
-    """UNIQUE constraint on (chunk_type, module, odoo_version, entity_name, chunk_idx)."""
+    """UNIQUE NULLS NOT DISTINCT on (chunk_type, module, odoo_version, entity_name,
+    file_path, chunk_idx, profile_name).
+
+    Both rows below omit profile_name (→ NULL = shared/pattern chunk). Under the
+    default UNIQUE semantics two NULLs are distinct and would NOT collide, silently
+    regressing dedup for shared chunks; the NULLS NOT DISTINCT clause (m13_001)
+    treats NULL profile_names as equal, so the duplicate must still raise.
+    """
     import psycopg2.errors
     from pgvector.psycopg2 import register_vector
     run_migrations(clean_pg)
