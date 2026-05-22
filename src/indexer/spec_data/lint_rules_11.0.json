@@ -44,7 +44,7 @@
     {
       "rule_id": "W8107",
       "kind": "pylint-odoo",
-      "message": "`@api.multi` is deprecated and will be removed in v14 — prefer explicit `for rec in self:` pattern.",
+      "message": "`@api.multi` is deprecated and will be removed in v13 — prefer explicit `for rec in self:` pattern.",
       "severity": "info",
       "file_pattern": "**/*.py"
     },

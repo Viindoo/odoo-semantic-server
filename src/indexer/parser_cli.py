@@ -3,9 +3,10 @@
 """Extract CLICommand + CLIFlag from Odoo upstream source (M4.5 WI4).
 
 Sources:
-    odoo/cli/<name>.py — `class X(Command)` subclasses → CLICommandInfo.
-    odoo/tools/config.py — `parser.add_option / group.add_option / parser.add_argument`
-                           AST calls → CLIFlagInfo.
+    <pkg>/cli/<name>.py — `class X(Command)` subclasses → CLICommandInfo.
+    <pkg>/tools/config.py — `parser.add_option / group.add_option / parser.add_argument`
+                            AST calls → CLIFlagInfo.
+    (<pkg> is ``odoo`` for v10+, ``openerp`` for v8/v9.)
 
 NOTE on optparse vs argparse: Odoo upstream historically uses optparse
 (`add_option`). We accept both `add_option` and `add_argument` AST shapes for

@@ -839,7 +839,7 @@ def index_core(
     )
 
     # 3. CLICommand
-    commands = parse_cli_commands(source_root, odoo_version)
+    commands = parse_cli_commands(source_root, odoo_version, static_data_dir=static_data_dir)
     writer.write_cli_commands(commands)
     _logger.info("index_core: wrote %d CLICommand nodes", len(commands))
 
