@@ -141,7 +141,8 @@ class ViewParseResult:
     """Parse result for XML files in a module: views + qweb templates.
 
     `lint_violations` contains RelaxNG validation errors (v15+ only) collected
-    by `parser_xml` for each view whose type has a vendored RNG schema.
+    by `parser_xml` using the version-exact RNG read from the indexed Odoo core
+    source tree at index time (no vendored copy).
     """
     module: ModuleInfo
     views: list[ViewInfo] = field(default_factory=list)

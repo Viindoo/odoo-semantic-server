@@ -77,7 +77,7 @@ class TestMaxWorkers1Sequential:
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
                             progress=False, full_reindex=False, ancestor_profiles=None,
-                            profile_name=None):
+                            profile_name=None, **kwargs):
             call_order.append(repo["id"])
             return _fake_counters()
 
@@ -112,7 +112,7 @@ class TestMaxWorkers2Concurrent:
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
                             progress=False, full_reindex=False, ancestor_profiles=None,
-                            profile_name=None):
+                            profile_name=None, **kwargs):
             inside_event.set()  # signal that we're inside
             # Give the other thread time to also enter
             concurrency_detected.wait(timeout=2.0)
@@ -130,7 +130,7 @@ class TestMaxWorkers2Concurrent:
 
         def fake_index_repo_v2(repo, writer, pg_conn=None, embedder=None, gc=False,
                                progress=False, full_reindex=False, ancestor_profiles=None,
-                            profile_name=None):
+                            profile_name=None, **kwargs):
             nonlocal active_count
             with lock:
                 active_count += 1
@@ -214,7 +214,7 @@ class TestMaxWorkers2PartialFailure:
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
                             progress=False, full_reindex=False, ancestor_profiles=None,
-                            profile_name=None):
+                            profile_name=None, **kwargs):
             if repo["id"] == 10:
                 raise RuntimeError("simulated failure on repo 10")
             return _fake_counters(3)

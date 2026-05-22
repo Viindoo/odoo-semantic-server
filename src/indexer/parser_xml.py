@@ -13,9 +13,10 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # RelaxNG validation (v15+ only) — WI-E, M11
 # ---------------------------------------------------------------------------
-
-# Schemas directory (vendored from Odoo SA, LGPL-3.0 — see NOTICE file).
-_SCHEMA_DIR = Path(__file__).parent / "schemas" / "odoo_xml"
+# RNG files are read directly from the indexed Odoo core source tree at index
+# time: <core_repo_root>/odoo/addons/base/rng/ (v10+) or
+# <core_repo_root>/openerp/addons/base/rng/ (v8/v9).
+# This guarantees version-exact validation — no vendored copy required.
 
 # VersionRegistry gate: validate only for Odoo v15+ where the schema is stable.
 # v8-v14 had different view grammar; applying v15+ schema would produce
@@ -24,20 +25,10 @@ _RELAXNG_GATE: VersionRegistry[bool] = VersionRegistry([
     (15, None, True),   # v15, v16, v17, v18, v19, … — validate
 ])
 
-# View types that have a vendored RNG file, by version era.
-# v15-v17: <tree> root validated by tree_view.rng
-# v18+:    <list> root validated by list_view.rng (Odoo 18 renamed tree→list)
-# Other types (activity, calendar, graph, pivot, search) are version-stable.
-_RNG_SUPPORTED_VIEW_TYPES_PRE18 = frozenset({
-    "activity", "calendar", "graph", "pivot", "search", "tree",
-})
-_RNG_SUPPORTED_VIEW_TYPES_V18PLUS = frozenset({
-    "activity", "calendar", "graph", "pivot", "search", "list",
-})
-
-# Module-level cache: rng_filename_stem -> etree.RelaxNG or None (if load failed).
-# Key is the schema filename stem (e.g. "tree_view", "list_view") so both tree
-# and list schemas can be cached independently.
+# Module-level cache: absolute rng file path (str) -> etree.RelaxNG or None.
+# Keyed by resolved absolute path so different Odoo versions cache separately
+# (e.g. /home/git/odoo17/odoo/addons/base/rng/tree_view.rng vs
+#  /home/git/odoo18/odoo/addons/base/rng/list_view.rng).
 _RELAXNG_CACHE: dict[str, "_lxml_etree.RelaxNG | None"] = {}
 
 
@@ -49,48 +40,61 @@ def _odoo_major(odoo_version: str) -> int:
         return 0
 
 
-def _get_relaxng_validator(view_type: str, odoo_version: str) -> "_lxml_etree.RelaxNG | None":
-    """Return cached RelaxNG validator for *view_type* at *odoo_version*, or None.
+def _get_relaxng_validator(
+    view_type: str,
+    rng_root: Path | None,
+) -> "_lxml_etree.RelaxNG | None":
+    """Return cached RelaxNG validator for *view_type* from *rng_root*, or None.
 
-    Version-aware routing:
-      - v18+: 'list' -> list_view.rng; 'tree' is not a valid root (skip).
-      - v15-v17: 'tree' -> tree_view.rng; 'list' is not a valid root (skip).
-      - Other types (activity, calendar, graph, pivot, search) unchanged.
+    *rng_root* is the directory that contains ``<view_type>_view.rng`` for the
+    indexed Odoo version (read from the actual source tree at index time —
+    never from a vendored copy).
+
+    Correctness is driven purely by file existence:
+    - v15-v17 ship ``tree_view.rng`` (no ``list_view.rng``).
+    - v18-v19 ship ``list_view.rng`` (no ``tree_view.rng``).
+    - activity/calendar/graph/pivot/search exist across all supported versions.
+    If the expected ``<view_type>_view.rng`` is absent in *rng_root*, or if
+    *rng_root* is None, this function returns None (validation gracefully
+    skipped — no false positives).
+
+    Cache key is the resolved absolute rng file path so parallel profiles
+    pointing at different Odoo versions never share a stale validator entry.
     """
-    major = _odoo_major(odoo_version)
-    if major >= 18:
-        supported = _RNG_SUPPORTED_VIEW_TYPES_V18PLUS
-        # For list views on v18+ use list_view.rng; other types keep {type}_view.rng
-        schema_stem = "list_view" if view_type == "list" else f"{view_type}_view"
-    else:
-        supported = _RNG_SUPPORTED_VIEW_TYPES_PRE18
-        schema_stem = f"{view_type}_view"
-
-    if view_type not in supported:
+    if rng_root is None:
         return None
 
-    if schema_stem not in _RELAXNG_CACHE:
-        rng_path = _SCHEMA_DIR / f"{schema_stem}.rng"
+    rng_path = rng_root / f"{view_type}_view.rng"
+    if not rng_path.exists():
+        return None
+
+    cache_key = str(rng_path.resolve())
+    if cache_key not in _RELAXNG_CACHE:
         try:
             rng_doc = _lxml_etree.parse(str(rng_path))
-            _RELAXNG_CACHE[schema_stem] = _lxml_etree.RelaxNG(rng_doc)
+            _RELAXNG_CACHE[cache_key] = _lxml_etree.RelaxNG(rng_doc)
         except Exception:
-            _logger.exception("Failed to load RelaxNG schema %r", rng_path.name)
-            _RELAXNG_CACHE[schema_stem] = None
-    return _RELAXNG_CACHE[schema_stem]
+            _logger.exception("Failed to load RelaxNG schema %r", rng_path)
+            _RELAXNG_CACHE[cache_key] = None
+    return _RELAXNG_CACHE[cache_key]
 
 
 def _validate_arch_relaxng(
     view: ViewInfo,
+    rng_root: Path | None = None,
 ) -> list[LintViolationInfo]:
     """Validate a view's arch XML against its RelaxNG schema (v15+ only).
+
+    *rng_root* is the directory containing ``<view_type>_view.rng`` for the
+    indexed Odoo version.  When None or when the relevant ``.rng`` file is
+    absent, validation is silently skipped (no false positives).
 
     Returns a list of LintViolationInfo (empty = valid or schema not available).
     Version gate is checked by the caller via _RELAXNG_GATE.
     """
     if not view.arch or not view.file_path:
         return []
-    validator = _get_relaxng_validator(view.view_type, view.odoo_version)
+    validator = _get_relaxng_validator(view.view_type, rng_root)
     if validator is None:
         return []
 
@@ -212,12 +216,23 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
     return views
 
 
-def parse_module(module_info: ModuleInfo) -> ViewParseResult:
+def parse_module(
+    module_info: ModuleInfo,
+    rng_root: Path | None = None,
+) -> ViewParseResult:
     """Parse all XML files in a module directory.
 
-    For Odoo v15+, each parsed view whose type has a vendored RelaxNG schema
-    is validated; violations are collected into ``result.lint_violations``.
-    v8-v14 views are skipped (different grammar — would produce false positives).
+    For Odoo v15+, each parsed view is validated against the version-exact
+    RelaxNG schema read from *rng_root* (the ``rng/`` directory inside the
+    indexed Odoo core source tree).  Violations are collected into
+    ``result.lint_violations``.
+
+    When *rng_root* is None, or when the relevant ``.rng`` file is absent in
+    that directory (e.g. ``tree_view.rng`` is absent on v18+), validation is
+    silently skipped — no false positives.
+
+    v8-v14 views are always skipped regardless of *rng_root* (different grammar
+    — the v15+ gate is enforced via VersionRegistry before any file lookup).
     """
     result = ViewParseResult(module=module_info)
     module_path = Path(module_info.path)
@@ -231,7 +246,7 @@ def parse_module(module_info: ModuleInfo) -> ViewParseResult:
     should_validate = _RELAXNG_GATE.resolve_version(module_info.odoo_version, default=False)
     if should_validate:
         for view in result.views:
-            violations = _validate_arch_relaxng(view)
+            violations = _validate_arch_relaxng(view, rng_root)
             result.lint_violations.extend(violations)
 
     return result

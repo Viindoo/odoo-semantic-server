@@ -422,7 +422,7 @@ cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
      RETURN v.odoo_version AS version, count(lv) AS violations
      ORDER BY toFloat(version) ASC;"
 ```
-Expected: non-zero for v15.0, v16.0, v17.0, v18.0, v19.0. v18/v19 violations may include `<list>` views validated against `list_view.rng` (Odoo renamed `<tree>` → `<list>`).
+Expected: non-zero for v15.0, v16.0, v17.0, v18.0, v19.0. v18/v19 violations may include `<list>` views validated against `list_view.rng` (Odoo renamed `<tree>` → `<list>`; RNG is read version-exact from the indexed Odoo core source at index time).
 
 ---
 
