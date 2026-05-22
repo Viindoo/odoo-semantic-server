@@ -29,6 +29,16 @@ import difflib
 from src.constants import MAGIC_FIELDS, RELATIONAL_TTYPES, valid_domain_operators
 from src.mcp.hints import hints_for
 
+
+def _effective_allowed(profile_name):
+    """Lazy shim — avoids circular import (server imports orm at module level).
+
+    Delegates to src.mcp.server._effective_allowed for the tenant boundary +
+    profile_name narrowing logic (ADR-0034 WI-4, C2 enforcement).
+    """
+    from src.mcp.server import _effective_allowed as _ea  # lazy: avoid circular import
+    return _ea(profile_name)
+
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
@@ -48,12 +58,12 @@ def _lookup_field(
     rows = session.run(
         """
         MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
-        WHERE ($pn IS NULL OR $pn IN f.profile)
+        WHERE ($allowed IS NULL OR any(__ap IN f.profile WHERE __ap IN $allowed))
         RETURN f.ttype AS ttype, f.comodel_name AS comodel
         ORDER BY f.module ASC
         LIMIT 1
         """,
-        fn=field, mn=model, v=odoo_version, pn=profile_name,
+        fn=field, mn=model, v=odoo_version, allowed=_effective_allowed(profile_name),
     ).data()
     if rows:
         return {"ttype": rows[0]["ttype"], "comodel": rows[0]["comodel"], "source": "direct"}
@@ -69,12 +79,12 @@ def _lookup_field(
         MATCH (start)-[:INHERITS|DELEGATES_TO*1..3]->(parent:Model)
         WHERE NOT coalesce(parent.unresolved, false)
         MATCH (f:Field {name: $fn, model: parent.name, odoo_version: $v})
-        WHERE ($pn IS NULL OR $pn IN f.profile)
+        WHERE ($allowed IS NULL OR any(__ap IN f.profile WHERE __ap IN $allowed))
         RETURN f.ttype AS ttype, f.comodel_name AS comodel
         ORDER BY parent.name ASC, f.module ASC
         LIMIT 1
         """,
-        fn=field, mn=model, v=odoo_version, pn=profile_name,
+        fn=field, mn=model, v=odoo_version, allowed=_effective_allowed(profile_name),
     ).data()
     if rows:
         return {"ttype": rows[0]["ttype"], "comodel": rows[0]["comodel"], "source": "inherited"}
@@ -144,10 +154,10 @@ def _field_names_on_model(
     rows = session.run(
         """
         MATCH (f:Field {model: $mn, odoo_version: $v})
-        WHERE ($pn IS NULL OR $pn IN f.profile)
+        WHERE ($allowed IS NULL OR any(__ap IN f.profile WHERE __ap IN $allowed))
         RETURN DISTINCT f.name AS name
         """,
-        mn=model, v=odoo_version, pn=profile_name,
+        mn=model, v=odoo_version, allowed=_effective_allowed(profile_name),
     ).data()
     names = {r["name"] for r in rows} | set(MAGIC_FIELDS)
     return sorted(names)
@@ -321,10 +331,10 @@ def _validate_depends(
         rows = session.run(
             """
             MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
-            WHERE ($pn IS NULL OR $pn IN mth.profile)
+            WHERE ($allowed IS NULL OR any(__ap IN mth.profile WHERE __ap IN $allowed))
             RETURN mth.depends AS depends
             """,
-            mn=method, model=model, v=version, pn=profile_name,
+            mn=method, model=model, v=version, allowed=_effective_allowed(profile_name),
         ).data()
 
         if not rows:
