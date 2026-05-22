@@ -280,6 +280,79 @@ class TestParseLessBasic:
                 f"entity_name should be 'kind:name', got: {ec.entity_name!r}"
             )
 
+    def test_mixin_def_not_double_counted_as_selector(self, tmp_path):
+        """FIX 1: A mixin definition must be counted once as mixin, NOT also as selector.
+
+        Fixture has:
+          - 1 mixin def  .foo() { ... }
+          - 1 plain class selector  .bar { ... }
+          - 1 pseudo-class selector  a:hover { ... }
+
+        Expected: mixin_count==1, selector_count==2 (bar + a:hover), and no
+        'selector' chunk whose entity_name matches the mixin def.
+        """
+        from src.indexer.parser_less import parse_file
+
+        less = """\
+        .foo() {
+            display: flex;
+            align-items: center;
+        }
+        .bar {
+            color: red;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        """
+        less_file = _write_less(tmp_path, less)
+        module = _make_module()
+
+        chunks, info = parse_file(str(less_file), module)
+
+        assert info.mixin_count == 1, (
+            f"Expected mixin_count==1, got {info.mixin_count}"
+        )
+        assert info.selector_count == 2, (
+            f"Expected selector_count==2 (.bar + a:hover), got {info.selector_count}. "
+            "Mixin def .foo() is being double-counted as a selector."
+        )
+        # No 'selector' chunk should correspond to the mixin def
+        selector_chunks = [c for c in chunks if c.chunk_kind == "selector"]
+        mixin_selector_chunks = [
+            c for c in selector_chunks
+            if ".foo" in c.entity_name and "()" in c.entity_name
+        ]
+        assert mixin_selector_chunks == [], (
+            f"Mixin def '.foo()' produced phantom selector chunk(s): {mixin_selector_chunks}"
+        )
+        # The pseudo-class selector should be present as a selector chunk
+        hover_chunks = [c for c in selector_chunks if "hover" in c.entity_name]
+        assert len(hover_chunks) >= 1, (
+            f"Expected 'a:hover' to produce a selector chunk, got selector chunks: "
+            f"{[c.entity_name for c in selector_chunks]}"
+        )
+
+    def test_at_page_not_counted_as_variable(self, tmp_path):
+        """FIX 2: @page at-rule must NOT be miscounted as a LESS variable."""
+        from src.indexer.parser_less import parse_file
+
+        less = """\
+        @page :first {
+            margin-top: 2cm;
+        }
+        @primary: #875A7B;
+        """
+        less_file = _write_less(tmp_path, less)
+        module = _make_module()
+
+        _, info = parse_file(str(less_file), module)
+
+        assert info.variable_count == 1, (
+            f"Expected variable_count==1 (@primary only), got {info.variable_count}. "
+            "@page is being miscounted as a variable."
+        )
+
     def test_large_less_file_sliding_window(self, tmp_path):
         """Large LESS mixin blocks should be split into overlapping window chunks."""
         from src.indexer.parser_less import _WINDOW, parse_file

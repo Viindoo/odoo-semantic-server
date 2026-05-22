@@ -14,7 +14,7 @@
       "qualified_name": "odoo.tools.safe_eval.safe_eval",
       "kind": "tool_export",
       "status": "deprecated",
-      "replacement_qname": "odoo.tools.safe_eval.safe_eval",
+      "replacement_qname": null,
       "signature": "safe_eval(expr, *, globals_dict=None, locals_dict=None, mode='eval', nocopy=False)",
       "note": "BREAKING in v19: all optional args are now keyword-only. The 'test_expr' param is removed. Callers using positional args will fail. Must import from odoo.tools.safe_eval submodule (unchanged)."
     },

@@ -52,7 +52,7 @@ MODEL_BASE_CLASSES = {
 # scope-resolver, M7 W13). V1 entries are covered by the same mechanism.
 #
 # Numbers in trailing comment = first-affected Odoo major version.
-# Cap at 15 entries to keep false-positive surface manageable (ADR-0002 §3).
+# Currently 19 entries; keep this list focused to limit false-positive surface (ADR-0002 §3).
 _DEPRECATED_API_SYMBOLS = frozenset({
     # --- Removed (no in-place replacement, full rewrite required) ---
     "name_get",              # 18: removed → use display_name computed field

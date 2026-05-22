@@ -120,7 +120,8 @@ def _resolve_less_import(import_path: str, source_file: str) -> str | None:
 
 # LESS variables: @varname: value;  (but NOT @media, @import, @mixin, @keyframes etc.)
 _RE_LESS_VAR = re.compile(
-    r'^\s*@(?!import|media|charset|keyframes|font-face|mixin|include|extend|use|forward)'
+    r'^\s*@(?!import|media|charset|keyframes|font-face|mixin|include|extend|use|forward'
+    r'|page|viewport)'
     r'[\w-]+\s*:',
     re.MULTILINE,
 )
@@ -149,6 +150,14 @@ _RE_MEDIA = re.compile(r'(@media\s[^{]+)\{', re.IGNORECASE)
 
 # Non-mixin rule selectors: lines ending with { that don't start with @ or whitespace-only
 _RE_SELECTOR = re.compile(r'^([^@\s{}\n][^{}\n]*)\s*\{', re.MULTILINE)
+
+# Guard: detect a mixin-def selector shape — [.#]ident(...) with the paren
+# immediately following the leading ident (not a pseudo-class like :not(.x)).
+# Matches: ".o-flex-center()" or "#ns > .sub(@a, @b)" — any selector whose
+# FIRST token (after optional whitespace) is [.#]word immediately followed by (.
+# Does NOT match "a:hover", "div:nth-child(2n)", ".btn:not(.x)" because those
+# all start with an element/class token that does NOT have '(' right after the ident.
+_RE_MIXIN_DEF_SHAPE = re.compile(r'^[.#][\w-]+\s*\(')
 
 
 def _extract_block(text: str, start: int) -> tuple[str, int]:
@@ -241,8 +250,14 @@ def _parse_less_regex(
 
     # Rule sets (non-mixin selectors)
     for m in _RE_SELECTOR.finditer(src):
-        selector_count += 1
         header = m.group(1).strip()
+        # Skip mixin definitions — they are already handled by _RE_MIXIN_DEF above.
+        # A mixin def starts with [.#]ident( immediately (e.g. ".o-flex-center()").
+        # Real pseudo-class selectors like "a:hover" or ".btn:not(.x)" do NOT start
+        # their first token with a bare '(' right after the ident, so they pass through.
+        if _RE_MIXIN_DEF_SHAPE.match(header):
+            continue
+        selector_count += 1
         block_text, _ = _extract_block(src, m.end() - 1)
         raw = header + " " + block_text
         entity = header[:80]
