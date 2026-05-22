@@ -539,7 +539,7 @@ def _write_stylesheets_batch(
 
     Composite MERGE key: (file_path, module, odoo_version) per ADR-0025 §D1.
     Properties written:
-      - language ∈ {css, scss}
+      - language ∈ {css, scss, less}
       - selector_count, variable_count, import_count, mixin_count
       - profile[] — ancestor profile name array (per ADR-0016 Option Y)
 

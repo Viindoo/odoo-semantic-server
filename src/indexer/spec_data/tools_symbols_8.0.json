@@ -4,13 +4,6 @@
   "_note": "Curated odoo.tools symbols for Odoo 8.0 (OpenERP era). safe_eval imported from openerp.tools.safe_eval. image_resize_image and friends available. pycompat present. date_utils absent (introduced v12). No SQL class (v17+). format_datetime/format_amount/get_lang absent (v13+).",
   "symbols": [
     {
-      "qualified_name": "odoo.tools.safe_eval.safe_eval",
-      "kind": "tool_export",
-      "status": "stable",
-      "signature": "safe_eval(expr, globals_dict=None, locals_dict=None, mode='eval', nocopy=False)",
-      "note": "Must import from openerp.tools.safe_eval (v8) or odoo.tools.safe_eval (v10+). NEVER 'from odoo.tools import safe_eval' — that path does not re-export the function."
-    },
-    {
       "qualified_name": "odoo.tools.image_resize_image",
       "kind": "tool_export",
       "status": "stable",

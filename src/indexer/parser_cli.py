@@ -29,9 +29,18 @@ from pathlib import Path
 from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
 
 from .models import CLICommandInfo, CLIFlagInfo
+from .version_registry import VersionRegistry
 
 _CLI_OPTION_FUNCS = {"add_option", "add_argument"}
 _DEPRECATED_HELP_TOKENS = ("deprecated", "obsolete")
+
+# Version-dispatch registry for namespace-prefix selection (ADR-0032).
+# v8/v9: openerp (pre-rename era).  v10+: odoo (modern namespace, open-ended).
+# To add v20 with a hypothetical new namespace: append one entry here.
+_PKG_PREFIX_REGISTRY: VersionRegistry[str] = VersionRegistry([
+    (8,  ODOO_NAMESPACE_LEGACY_MAX_MAJOR, "openerp"),  # v8-v9
+    (10, None,                            "odoo"),      # v10+, open-ended
+])
 
 
 def _pkg_prefix(odoo_version: str) -> str:
@@ -39,12 +48,9 @@ def _pkg_prefix(odoo_version: str) -> str:
 
     v8/v9 shipped as ``openerp/``; v10+ renamed to ``odoo/``.
     Mirrors ``_version_prefix()`` in parser_odoo_core.py — same threshold.
+    Delegates to ``_PKG_PREFIX_REGISTRY`` per ADR-0032 so v20+ is a 1-line change.
     """
-    try:
-        major = int(odoo_version.split(".")[0])
-    except (ValueError, IndexError):
-        major = 99  # unknown version → modern prefix
-    return "openerp" if major <= ODOO_NAMESPACE_LEGACY_MAX_MAJOR else "odoo"
+    return _PKG_PREFIX_REGISTRY.resolve_version(odoo_version, default="odoo")  # type: ignore[return-value]
 
 
 # --- CLI command parsing (odoo/cli/*.py) ----------------------------------

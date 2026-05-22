@@ -115,23 +115,32 @@ class TestSQLLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# 3. safe_eval always uses qualified submodule path
+# 3. safe_eval is NOT in curated tools_symbols (it is parsed from source)
 # ---------------------------------------------------------------------------
 
 class TestSafeEvalImportPath:
     @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
-    def test_safe_eval_uses_submodule_path(self, version: str):
+    def test_safe_eval_absent_from_curated_symbols(self, version: str):
+        """safe_eval must NOT appear in tools_symbols_*.json.
+
+        odoo.tools.safe_eval.safe_eval is parsed directly from
+        odoo/tools/safe_eval.py by parse_odoo_core() (kind='function').
+        The curated JSON entry was removed (PR#160 FIX B) because:
+          - Neo4j MERGE is last-write-wins on (qualified_name, odoo_version).
+          - Appending tool_symbols AFTER parsed symbols caused the curated
+            'tool_export' node to clobber the real parsed 'function' node.
+          - Since parse_odoo_core already covers safe_eval, the curated entry
+            is dead and can never survive the pipeline dedup filter.
+        safe_eval lookup still works — the parsed node carries file_path +
+        line number and is queried by _lookup_core_api via ENDS WITH.
+        """
         symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
-        # Should be odoo.tools.safe_eval.safe_eval, NOT odoo.tools.safe_eval
-        safe_eval_syms = [
-            s for s in symbols if "safe_eval" in s.qualified_name
-        ]
-        assert len(safe_eval_syms) >= 1, f"No safe_eval symbol found in {version}"
-        for sym in safe_eval_syms:
-            assert sym.qualified_name == "odoo.tools.safe_eval.safe_eval", (
-                f"In {version}: safe_eval qualified_name={sym.qualified_name!r}; "
-                f"expected 'odoo.tools.safe_eval.safe_eval' (submodule path)"
-            )
+        safe_eval_syms = [s for s in symbols if "safe_eval" in s.qualified_name]
+        assert len(safe_eval_syms) == 0, (
+            f"In {version}: found {len(safe_eval_syms)} curated safe_eval symbol(s) "
+            f"{[s.qualified_name for s in safe_eval_syms]}; expected 0 — safe_eval is "
+            f"parsed from source, not curated."
+        )
 
 
 # ---------------------------------------------------------------------------

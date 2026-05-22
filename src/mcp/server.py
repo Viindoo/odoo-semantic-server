@@ -5097,10 +5097,10 @@ def _find_style_override(
 ) -> str:
     """Impl for find_style_override tool — no FastMCP wrapper overhead.
 
-    Performs pgvector ANN on chunk_type ∈ {css, scss} to find stylesheets
+    Performs pgvector ANN on chunk_type ∈ {css, scss, less} to find stylesheets
     declaring *selector_or_variable*, then traverses :IMPORTS to show which
     modules re-declare the same selector (override order — last writer wins
-    in CSS cascade, first-match wins in SCSS @import chain).
+    in CSS cascade, first-match wins in SCSS/LESS @import chain).
     """
     if not selector_or_variable.strip():
         return (
@@ -5257,7 +5257,7 @@ def find_style_override(
 ) -> str:
     """Find CSS selectors or SCSS variables/mixins across modules + override order.
 
-    Uses pgvector ANN on indexed css/scss chunks to locate declarations, then
+    Uses pgvector ANN on indexed css/scss/less chunks to locate declarations, then
     traces :IMPORTS edges to show which modules re-declare the same selector
     (override order — last writer wins in CSS cascade).
 

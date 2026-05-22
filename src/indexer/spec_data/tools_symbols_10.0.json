@@ -4,13 +4,6 @@
   "_note": "Curated odoo.tools symbols for Odoo 10.0. Same landscape as v9: safe_eval submodule, image_resize_image family present, pycompat, no SQL class, no date_utils, no format_datetime/get_lang. Module fully renamed to 'odoo' (no more 'openerp').",
   "symbols": [
     {
-      "qualified_name": "odoo.tools.safe_eval.safe_eval",
-      "kind": "tool_export",
-      "status": "stable",
-      "signature": "safe_eval(expr, globals_dict=None, locals_dict=None, mode='eval', nocopy=False)",
-      "note": "Must import from odoo.tools.safe_eval submodule. NEVER 'from odoo.tools import safe_eval'."
-    },
-    {
       "qualified_name": "odoo.tools.image_resize_image",
       "kind": "tool_export",
       "status": "stable",

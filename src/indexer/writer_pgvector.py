@@ -24,7 +24,7 @@ DO UPDATE SET content = EXCLUDED.content, vec = EXCLUDED.vec, indexed_at = NOW()
 @dataclass
 class EmbeddingChunk:
     """A single embeddable text unit derived from Odoo source code."""
-    chunk_type: str     # 'method'|'field'|'view'|'qweb'|'js_era1'|'js_era2'|'js_era3'
+    chunk_type: str     # 'method'|'field'|'view'|'qweb'|'js_era1'|'js_era2'|'js_era3'|'css'|'scss'|'less'  # noqa: E501
     module: str
     odoo_version: str
     entity_name: str

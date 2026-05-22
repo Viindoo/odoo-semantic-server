@@ -200,20 +200,20 @@ class SCSSChunk:
 
 @dataclass
 class StylesheetInfo:
-    """Metadata summary for a CSS or SCSS file in an Odoo module.
+    """Metadata summary for a CSS, SCSS, or LESS file in an Odoo module.
 
     Composite Neo4j key: (file_path, module, odoo_version).
     Written as :Stylesheet node with :DEFINED_IN -> :Module edge.
     :Stylesheet -[:IMPORTS]-> :Stylesheet edges represent @import chains.
     """
-    file_path: str          # absolute path to the .css or .scss file
+    file_path: str          # absolute path to the .css, .scss, or .less file
     module: str             # Odoo module name
     odoo_version: str
-    language: str           # 'css' | 'scss'
+    language: str           # 'css' | 'scss' | 'less'
     selector_count: int = 0
     variable_count: int = 0
     import_count: int = 0
-    mixin_count: int = 0    # SCSS only; always 0 for CSS
+    mixin_count: int = 0    # SCSS/LESS mixins; always 0 for plain CSS
     imports: list[str] = field(default_factory=list)  # resolved file_paths of @import targets
 
 

@@ -4,13 +4,6 @@
   "_note": "Curated odoo.tools symbols for Odoo 14.0. Same as v13 post-image-rewrite. No SQL class yet (v17+). js_transpiler absent (v15+).",
   "symbols": [
     {
-      "qualified_name": "odoo.tools.safe_eval.safe_eval",
-      "kind": "tool_export",
-      "status": "stable",
-      "signature": "safe_eval(expr, globals_dict=None, locals_dict=None, mode='eval', nocopy=False)",
-      "note": "Must import from odoo.tools.safe_eval submodule. NEVER 'from odoo.tools import safe_eval'."
-    },
-    {
       "qualified_name": "odoo.tools.image_process",
       "kind": "tool_export",
       "status": "stable",

@@ -370,6 +370,48 @@ class TestParseLessBasic:
                 f"Chunk too large: {len(c.content)} > {_WINDOW + 1}"
             )
 
+    def test_variable_name_starting_with_keyword_prefix(self, tmp_path):
+        """FIX C: Variables whose names start with an at-rule keyword substring
+        must NOT be silently dropped by the negative-lookahead in _RE_LESS_VAR.
+
+        @media-breakpoint-xs and @page-header-height begin with 'media' and 'page'
+        respectively, but are valid LESS variables (the keyword is followed by '-').
+        A real @media rule (not followed by a word-char or hyphen) must still be
+        excluded so media-query detection is unaffected.
+        """
+        from src.indexer.parser_less import parse_file
+
+        less = """\
+        @media-breakpoint-xs: 480px;
+        @media-breakpoint-sm: 768px;
+        @page-header-height: 60px;
+        @primary: #875A7B;
+
+        @media (min-width: 768px) {
+            .o_form_view {
+                padding: 24px;
+            }
+        }
+        """
+        less_file = _write_less(tmp_path, less)
+        module = _make_module()
+
+        chunks, info = parse_file(str(less_file), module)
+
+        # All four @…: declarations must be counted as variables
+        assert info.variable_count >= 4, (
+            f"Expected ≥4 variables (@media-breakpoint-xs, @media-breakpoint-sm, "
+            f"@page-header-height, @primary), got {info.variable_count}. "
+            "The _RE_LESS_VAR negative-lookahead is over-blocking variables whose "
+            "names start with an at-rule keyword substring."
+        )
+        # The @media block must still be detected as a media-query chunk
+        media_chunks = [c for c in chunks if c.chunk_kind == "media"]
+        assert len(media_chunks) >= 1, (
+            f"Expected ≥1 'media' chunk from @media rule, got kinds: "
+            f"{[c.chunk_kind for c in chunks]}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Integration test — requires Neo4j (testcontainers or CI service container)

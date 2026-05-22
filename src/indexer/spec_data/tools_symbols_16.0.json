@@ -4,13 +4,6 @@
   "_note": "Curated odoo.tools symbols for Odoo 16.0. No SQL class yet (introduced v17). pycompat still present but shrinking. html_escape soft-deprecated in favor of markupsafe.escape. js_transpiler stable.",
   "symbols": [
     {
-      "qualified_name": "odoo.tools.safe_eval.safe_eval",
-      "kind": "tool_export",
-      "status": "stable",
-      "signature": "safe_eval(expr, globals_dict=None, locals_dict=None, mode='eval', nocopy=False)",
-      "note": "Must import from odoo.tools.safe_eval submodule. NEVER 'from odoo.tools import safe_eval'."
-    },
-    {
       "qualified_name": "odoo.tools.js_transpiler",
       "kind": "tool_export",
       "status": "stable",

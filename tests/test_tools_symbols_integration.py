@@ -18,6 +18,7 @@ import sys
 
 import pytest
 
+from src.indexer.models import CoreSymbolInfo
 from src.indexer.parser_tools_symbols import _load_static_tools_symbols
 from src.indexer.writer_neo4j import Neo4jWriter
 
@@ -50,8 +51,25 @@ def seeded_tools_neo4j(neo4j_driver):
     symbols_v16 = _load_static_tools_symbols(TOOLS_V16, static_data_dir=_SPEC_DATA_DIR)
     symbols_v17 = _load_static_tools_symbols(TOOLS_V17, static_data_dir=_SPEC_DATA_DIR)
 
-    writer.write_core_symbols(symbols_v16)
-    writer.write_core_symbols(symbols_v17)
+    # safe_eval is no longer in curated JSON (PR#160 FIX B — removed because
+    # parse_odoo_core already covers it and curated entries must not clobber
+    # parsed 'function' nodes with 'tool_export' ones).  Seed it here as a
+    # parsed-style symbol so that TestSafeEvalLookup still validates the
+    # _lookup_core_api ENDS-WITH query path — the fixture stands in for what
+    # parse_odoo_core would produce from odoo/tools/safe_eval.py at runtime.
+    safe_eval_v16 = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval.safe_eval",
+        kind="function",
+        odoo_version=TOOLS_V16,
+    )
+    safe_eval_v17 = CoreSymbolInfo(
+        qualified_name="odoo.tools.safe_eval.safe_eval",
+        kind="function",
+        odoo_version=TOOLS_V17,
+    )
+
+    writer.write_core_symbols(symbols_v16 + [safe_eval_v16])
+    writer.write_core_symbols(symbols_v17 + [safe_eval_v17])
     writer.close()
 
     yield TOOLS_V16, TOOLS_V17
@@ -100,7 +118,14 @@ class TestSQLVersionAcceptance:
 
 
 class TestSafeEvalLookup:
-    """safe_eval must resolve via qualified submodule path."""
+    """safe_eval must resolve via qualified submodule path.
+
+    safe_eval is parsed from odoo/tools/safe_eval.py (kind='function') — it is
+    NOT in curated tools_symbols_*.json (removed in PR#160 FIX B to prevent the
+    curated 'tool_export' node from clobbering the parsed 'function' node via
+    Neo4j last-write-wins MERGE).  The seeded_tools_neo4j fixture seeds it as a
+    parsed-style CoreSymbolInfo so these lookup tests remain valid.
+    """
 
     def test_safe_eval_found_in_v16_by_short_name(self, tools_mcp, seeded_tools_neo4j):
         """Short name 'safe_eval' resolves via ENDS WITH query."""
@@ -113,6 +138,8 @@ class TestSafeEvalLookup:
         out = tools_mcp._lookup_core_api("odoo.tools.safe_eval.safe_eval", TOOLS_V17)
         assert "safe_eval" in out
         assert "not found" not in out.lower()
+        # The node is kind='function' (parsed), not 'tool_export' (curated)
+        assert "tool_export" not in out.lower() or "function" in out.lower()
 
 
 class TestToolsSymbolKindInOutput:

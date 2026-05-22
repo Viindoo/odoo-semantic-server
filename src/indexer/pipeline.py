@@ -836,13 +836,24 @@ def index_core(
     # participate fully in lifecycle tracking (added_in/removed_in/deprecated_in).
     # fetch_core_symbols() reads from Neo4j, so prior-run tool symbols are already
     # included in old_symbols automatically — no extra step needed.
+    #
+    # Dedup: parsed symbols take precedence over curated tool_symbols when their
+    # qualified_name collides.  The Neo4j MERGE is last-write-wins on the composite
+    # key (qualified_name, odoo_version), so placing tool_symbols AFTER parsed ones
+    # would let a curated entry clobber a real parsed node (e.g. safe_eval which is
+    # both parsed from odoo/tools/safe_eval.py AND listed in tools_symbols_*.json).
+    # We filter tool_symbols to exclude any name already produced by parse_odoo_core
+    # so the parsed node always wins — and the curated metadata (note, signature) is
+    # intentionally dropped for symbols where source-truth already exists.
     symbols = parse_odoo_core(source_root, odoo_version)
     tool_symbols = load_tools_symbols(odoo_version, static_data_dir=static_data_dir)
-    symbols = symbols + tool_symbols
+    parsed_qnames: set[str] = {s.qualified_name for s in symbols}
+    deduped_tool_symbols = [s for s in tool_symbols if s.qualified_name not in parsed_qnames]
+    symbols = symbols + deduped_tool_symbols
     writer.write_core_symbols(symbols)
     _logger.info(
-        "index_core: wrote %d CoreSymbol nodes (%d from odoo.tools curation)",
-        len(symbols), len(tool_symbols),
+        "index_core: wrote %d CoreSymbol nodes (%d from odoo.tools curation, %d skipped as parsed)",
+        len(symbols), len(deduped_tool_symbols), len(tool_symbols) - len(deduped_tool_symbols),
     )
 
     # 2. LintRule

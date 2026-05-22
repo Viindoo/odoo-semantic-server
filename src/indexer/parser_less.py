@@ -118,10 +118,13 @@ def _resolve_less_import(import_path: str, source_file: str) -> str | None:
 # Regex patterns
 # ---------------------------------------------------------------------------
 
-# LESS variables: @varname: value;  (but NOT @media, @import, @mixin, @keyframes etc.)
+# LESS variables: @varname: value;  (but NOT at-rules like @media, @import, @mixin …)
+# The lookahead uses (?!keyword(?![\w-])) so that only *complete* keyword tokens
+# are excluded.  This means @media-breakpoint-xs or @page-header-height are still
+# counted as variables (the keyword prefix is followed by "-", not end-of-token).
 _RE_LESS_VAR = re.compile(
-    r'^\s*@(?!import|media|charset|keyframes|font-face|mixin|include|extend|use|forward'
-    r'|page|viewport)'
+    r'^\s*@(?!(?:import|media|charset|keyframes|font-face|mixin|include|extend|use|forward'
+    r'|page|viewport)(?![\w-]))'
     r'[\w-]+\s*:',
     re.MULTILINE,
 )
