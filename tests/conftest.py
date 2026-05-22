@@ -482,6 +482,8 @@ def clean_pg(pg_conn):
         "embeddings",
         "profiles",
         "webui_users",
+        # M13 — must come after all tables that FK-reference it
+        "tenants",
     ]
 
     def _wipe(conn):
