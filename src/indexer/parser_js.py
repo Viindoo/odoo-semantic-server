@@ -17,6 +17,7 @@ import tree_sitter_javascript as _tsjs
 from tree_sitter import Language, Node, Parser
 
 from .models import JSChunk, JSGraphResult, JSPatchInfo, ModuleInfo, OWLCompInfo
+from .version_registry import VersionRegistry
 
 # tree-sitter Parser objects are NOT thread-safe — concurrent parse() calls on
 # the same instance can corrupt internal state.  ADR-0006 enables cross-profile
@@ -44,6 +45,14 @@ _OVERLAP = 256
 
 _SKIP_DIRS = frozenset({"lib", "tests"})  # Odoo convention: third-party libs + test dirs
 _MAX_JS_BYTES = 200_000  # 200 KB — minified third-party files are usually > 100 KB
+
+# Version-dispatch registry for OWL availability (ADR-0032).
+# OWL patch() and OWL component class detection only exist in v14+.
+# max_major=None: open-ended (v14 and all future versions).
+# To enable OWL-related extraction for a hypothetical v20 change: append one entry.
+_OWL_ENABLED_REGISTRY: VersionRegistry[bool] = VersionRegistry([
+    (14, None, True),   # v14+: OWL patch() and component class extraction enabled
+])
 
 
 def _detect_era(source: str) -> str:
@@ -381,8 +390,7 @@ def _extract_era3_patches(
     tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
 ) -> None:
     """era3: patch(MyComp.prototype, "name", {}) → JSPatchInfo(era='patch')."""
-    major_version = int(module_info.odoo_version.split(".")[0])
-    if major_version < 14:
+    if not _OWL_ENABLED_REGISTRY.resolve_version(module_info.odoo_version, default=False):
         return  # OWL patch() only exists in v14+
     for node in _walk(tree.root_node):
         if node.type != "call_expression":
@@ -501,8 +509,7 @@ def _extract_era3_components(
     Dynamic expressions (this.props.model, variables) are not resolved → bound_model = None.
     Full static analysis via F4 USES_FIELD edge is deferred to M5.
     """
-    major_version = int(module_info.odoo_version.split(".")[0])
-    if major_version < 14:
+    if not _OWL_ENABLED_REGISTRY.resolve_version(module_info.odoo_version, default=False):
         return  # OWL framework only exists in v14+
 
     for node in _walk(tree.root_node):

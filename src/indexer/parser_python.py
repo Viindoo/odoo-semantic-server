@@ -9,6 +9,7 @@ from pathlib import Path
 from src.constants import LEGACY_ERA_MAX_MAJOR
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+from .version_registry import VersionRegistry
 
 # v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
@@ -364,13 +365,19 @@ def _detect_viindoo_equivalent(module_name: str) -> str | None:
     return EE_CONFUSION.get(module_name)
 
 
+# Version-dispatch registry for Python parser era selection (ADR-0032).
+# era1: v8/v9 (Python 2 AST, _columns dict).
+# era2: v10+ (modern AST).
+# To add v20 support (if Odoo changes parser strategy): append one entry here.
+_ERA_REGISTRY: VersionRegistry[str] = VersionRegistry([
+    (8,  LEGACY_ERA_MAX_MAJOR, "era1"),   # v8–v9
+    (10, None,                 "era2"),   # v10+, open-ended
+])
+
+
 def _detect_era(odoo_version: str) -> str:
     """era1: Odoo v8/v9 (Python 2, _columns dict). era2: v10+ (modern AST)."""
-    try:
-        major = int(odoo_version.split(".")[0])
-    except (ValueError, IndexError, AttributeError):
-        return "era2"
-    return "era1" if major <= LEGACY_ERA_MAX_MAJOR else "era2"
+    return _ERA_REGISTRY.resolve_version(odoo_version, default="era2")  # type: ignore[return-value]
 
 
 def _extract_string(node: ast.expr) -> str | None:

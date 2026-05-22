@@ -23,6 +23,7 @@ from pathlib import Path
 from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
 
 from .models import CoreSymbolInfo
+from .version_registry import VersionRegistry
 
 # --- Allow-list (ADR-0002 §6) -----------------------------------------------
 _CORE_FILES: tuple[str, ...] = (
@@ -269,13 +270,22 @@ def _extract_from_source(
     return symbols
 
 
+# Version-dispatch registry for namespace-prefix selection (ADR-0032).
+# v8/v9: openerp/ (pre-rename era).
+# v10+:  odoo/ (modern namespace, open-ended).
+# To add v20 with a hypothetical new namespace: append one entry here.
+_PREFIX_REGISTRY: VersionRegistry[str] = VersionRegistry([
+    (8,  ODOO_NAMESPACE_LEGACY_MAX_MAJOR, "openerp/"),  # v8–v9
+    (10, None,                            "odoo/"),      # v10+, open-ended
+])
+
+
 def _version_prefix(version: str) -> str:
     """Return framework directory prefix for a given Odoo version.
 
     v8/v9 use ``openerp/`` (the pre-rename era); v10+ use ``odoo/``.
     """
-    major = int(version.split(".")[0])
-    return "openerp/" if major <= ODOO_NAMESPACE_LEGACY_MAX_MAJOR else "odoo/"
+    return _PREFIX_REGISTRY.resolve_version(version, default="odoo/")  # type: ignore[return-value]
 
 
 def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> list[Path]:
