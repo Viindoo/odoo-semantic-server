@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
-  "_generated_at": "2026-05-17",
-  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: `UserError(_('msg', arg))` lazy format (args passed to UserError directly), `_('msg', arg)` translation lazy pattern, `group_operator` still present (renamed `aggregator` v18), `_compute_display_name()` replaces `name_get()`.",
+  "_generated_at": "2026-05-22",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: `UserError(_('msg', arg))` lazy format, `_('msg', arg)` translation lazy pattern, `_compute_display_name()` replaces `name_get()` (recommended), `web.Widget` deprecated. `group_operator` still present (renamed `aggregator` v18). `track_visibility` renamed to `tracking` in v16.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -33,10 +33,38 @@
       "file_pattern": "**/__manifest__.py"
     },
     {
+      "rule_id": "W8105",
+      "kind": "pylint-odoo",
+      "message": "Manifest file `installable` key should be a boolean.",
+      "severity": "warning",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8107",
+      "kind": "pylint-odoo",
+      "message": "`@api.multi` is removed in v16 — use plain method with `for rec in self:` loop.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8108",
+      "kind": "pylint-odoo",
+      "message": "`@api.one` is removed in v16.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
       "rule_id": "W8115",
       "kind": "pylint-odoo",
       "message": "New model class is missing `_name` attribute.",
       "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8116",
+      "kind": "pylint-odoo",
+      "message": "`_inherit` without `_name` creates extension — ensure this is intentional.",
+      "severity": "info",
       "file_pattern": "**/*.py"
     },
     {
@@ -62,6 +90,13 @@
       "fix_template": "Use `_('Hello %(name)s') % {'name': name}` or `_('Hello %s', name)` (Odoo 16+ lazy format)."
     },
     {
+      "rule_id": "W8123",
+      "kind": "pylint-odoo",
+      "message": "Translatable string concatenation — do not split translatable strings across `+` operators.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
       "rule_id": "W8130",
       "kind": "pylint-odoo",
       "message": "File declared in manifest `data` list does not exist.",
@@ -83,10 +118,45 @@
       "file_pattern": "**/*.py"
     },
     {
+      "rule_id": "W8142",
+      "kind": "pylint-odoo",
+      "message": "`sudo()` called without restricting scope — avoid broad `sudo()` for entire CRUD operations.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
       "rule_id": "W8150",
       "kind": "pylint-odoo",
       "message": "Hardcoded database ID used — use `env.ref()` instead.",
       "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8151",
+      "kind": "pylint-odoo",
+      "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8160",
+      "kind": "pylint-odoo",
+      "message": "`_rec_name` field not present in model fields.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8161",
+      "kind": "pylint-odoo",
+      "message": "`copy()` override does not call `super()`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8162",
+      "kind": "pylint-odoo",
+      "message": "`write()` override does not call `super()` — record changes may not be persisted.",
+      "severity": "error",
       "file_pattern": "**/*.py"
     },
     {
@@ -102,6 +172,133 @@
       "message": "`unlink()` override does not call `super()`.",
       "severity": "error",
       "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8165",
+      "kind": "pylint-odoo",
+      "message": "`invalidate_cache()` removed — use `flush_recordset()` or `invalidate_recordset()`.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8166",
+      "kind": "pylint-odoo",
+      "message": "`web.Widget` class used — deprecated in v16; prefer OWL components.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "W8167",
+      "kind": "pylint-odoo",
+      "message": "`track_visibility` field attribute renamed to `tracking` in v16.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Replace `track_visibility='onchange'` with `tracking=True` in field definition."
+    },
+    {
+      "rule_id": "W8170",
+      "kind": "pylint-odoo",
+      "message": "N+1 ORM query in loop: `browse()` or `search()` called inside a `for` loop over records.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8171",
+      "kind": "pylint-odoo",
+      "message": "Computed field missing `@api.depends` decorator — will never be recomputed automatically.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8172",
+      "kind": "pylint-odoo",
+      "message": "`search()` method override must return a recordset and call `super()`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8173",
+      "kind": "pylint-odoo",
+      "message": "Many2one field missing `ondelete` parameter — defaults to 'set null' which may leave orphan references.",
+      "severity": "info",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8174",
+      "kind": "pylint-odoo",
+      "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8175",
+      "kind": "pylint-odoo",
+      "message": "`copy=True` set on a field with a unique SQL constraint — duplication will fail.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8176",
+      "kind": "pylint-odoo",
+      "message": "`default_get()` override does not call `super()` — default values from other modules will be lost.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8177",
+      "kind": "pylint-odoo",
+      "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
+      "severity": "info",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8178",
+      "kind": "pylint-odoo",
+      "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8179",
+      "kind": "pylint-odoo",
+      "message": "`_order` attribute references a field that does not exist in the model.",
+      "severity": "error",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8182",
+      "kind": "pylint-odoo",
+      "message": "Static assets declared via `qweb` key — use `assets` key with bundle names.",
+      "severity": "error",
+      "file_pattern": "**/__manifest__.py"
+    },
+    {
+      "rule_id": "W8183",
+      "kind": "pylint-odoo",
+      "message": "XPath `position='replace'` removes the target element entirely — verify this is intentional.",
+      "severity": "info",
+      "file_pattern": "**/*.xml"
+    },
+    {
+      "rule_id": "W8184",
+      "kind": "pylint-odoo",
+      "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
+      "severity": "error",
+      "file_pattern": "**/*.xml"
+    },
+    {
+      "rule_id": "W8190",
+      "kind": "pylint-odoo",
+      "message": "OWL component class not registered via `registry` — component will not be accessible.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "W8191",
+      "kind": "pylint-odoo",
+      "message": "OWL component uses deprecated lifecycle hook `mounted` — use `onMounted` hook.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
     },
     {
       "rule_id": "W8201",
@@ -120,11 +317,11 @@
       "fix_template": "Replace `def name_get(self):` with `def _compute_display_name(self):` setting `rec.display_name = ...`."
     },
     {
-      "rule_id": "W8182",
+      "rule_id": "W8204",
       "kind": "pylint-odoo",
-      "message": "Static assets declared via `qweb` key — use `assets` key with bundle names.",
+      "message": "`_sql_constraints` entry uses invalid constraint type or malformed tuple.",
       "severity": "error",
-      "file_pattern": "**/__manifest__.py"
+      "file_pattern": "**/*.py"
     },
     {
       "rule_id": "no-var",
@@ -148,11 +345,46 @@
       "file_pattern": "**/*.js"
     },
     {
+      "rule_id": "no-unused-vars",
+      "kind": "eslint",
+      "message": "Variable declared but never used.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
       "rule_id": "owl/no-unknown-component",
       "kind": "eslint",
       "message": "OWL template references a component not imported.",
       "severity": "error",
       "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "BLE001",
+      "kind": "ruff-builtin",
+      "message": "Blind exception: do not catch `Exception` without re-raising or logging.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "E501",
+      "kind": "ruff-builtin",
+      "message": "Line too long (exceeds max line length).",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "I001",
+      "kind": "ruff-builtin",
+      "message": "Import block is unsorted or has wrong grouping.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "F401",
+      "kind": "ruff-builtin",
+      "message": "Module imported but unused.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
     }
   ]
 }

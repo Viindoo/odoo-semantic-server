@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
-  "_generated_at": "2026-05-17",
-  "_note": "Curated from pylint-odoo v3.x for Odoo v11. v11 dropped old API entirely (no more cr/uid), Python 3 only, new JS module system (Owl v0). ESLint from odoo/addons/web/static/src/.eslintrc.",
+  "_generated_at": "2026-05-22",
+  "_note": "Curated from pylint-odoo v3.x for Odoo v11. v11 dropped old API entirely (no more cr/uid), Python 3 only, new JS module system. @api.multi still present (removed v14). ESLint from odoo/addons/web/static/src/.eslintrc.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -44,7 +44,7 @@
     {
       "rule_id": "W8107",
       "kind": "pylint-odoo",
-      "message": "Old API decorator `@api.multi` is still present but `for rec in self:` pattern recommended — prepare for v14 removal.",
+      "message": "`@api.multi` is deprecated and will be removed in v14 — prefer explicit `for rec in self:` pattern.",
       "severity": "info",
       "file_pattern": "**/*.py"
     },
@@ -63,6 +63,37 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Use `@api.constrains('field1', 'field2')` on the validation method."
+    },
+    {
+      "rule_id": "W8112",
+      "kind": "pylint-odoo",
+      "message": "Old API method signature `(cr, uid, ids, context)` — not supported in v11.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Switch to new API: `def my_method(self, ...):`."
+    },
+    {
+      "rule_id": "W8113",
+      "kind": "pylint-odoo",
+      "message": "Use of `osv.osv` or `osv.Model` base class — use `models.Model` in v11+.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Replace `class MyModel(osv.osv):` with `class MyModel(models.Model):`."
+    },
+    {
+      "rule_id": "W8115",
+      "kind": "pylint-odoo",
+      "message": "New model class is missing `_name` attribute.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Add `_name = 'module.model'` as the first class attribute."
+    },
+    {
+      "rule_id": "W8116",
+      "kind": "pylint-odoo",
+      "message": "`_inherit` without `_name` creates extension — ensure this is intentional.",
+      "severity": "info",
+      "file_pattern": "**/*.py"
     },
     {
       "rule_id": "W8120",
@@ -85,6 +116,14 @@
       "message": "Translation string uses positional `%s` formatting — use named `%(name)s`.",
       "severity": "warning",
       "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "W8123",
+      "kind": "pylint-odoo",
+      "message": "Translatable string concatenation — do not split translatable strings across `+` operators.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use a single `_('Full sentence %(var)s')` instead of concatenating translated fragments."
     },
     {
       "rule_id": "W8130",
@@ -117,12 +156,28 @@
       "fix_template": "Import safe_eval from odoo.tools.safe_eval and use it to sandbox expression execution."
     },
     {
+      "rule_id": "W8142",
+      "kind": "pylint-odoo",
+      "message": "`sudo()` called without restricting scope — avoid broad `sudo()` for entire CRUD operations.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Prefer `self.sudo(user)` or narrow the sudo() call to the minimum required action."
+    },
+    {
       "rule_id": "W8150",
       "kind": "pylint-odoo",
       "message": "Hardcoded database ID used in code — use `env.ref()` instead.",
       "severity": "warning",
       "file_pattern": "**/*.py",
       "fix_template": "Replace hardcoded integer id with `self.env.ref('module.xml_id').id`."
+    },
+    {
+      "rule_id": "W8151",
+      "kind": "pylint-odoo",
+      "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use `self.env.company.id` rather than a literal integer."
     },
     {
       "rule_id": "W8160",
@@ -140,12 +195,139 @@
       "fix_template": "Ensure `res = super().copy(default)` is called first."
     },
     {
+      "rule_id": "W8162",
+      "kind": "pylint-odoo",
+      "message": "`write()` override does not call `super()` — record changes may not be persisted.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Ensure `res = super().write(vals)` is called and returned."
+    },
+    {
       "rule_id": "W8163",
       "kind": "pylint-odoo",
       "message": "`create()` override does not call `super()` — record will not be created.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Ensure `record = super().create(vals)` then `return record`."
+    },
+    {
+      "rule_id": "W8164",
+      "kind": "pylint-odoo",
+      "message": "`unlink()` override does not call `super()` — records will not be deleted from DB.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Ensure `res = super().unlink()` is called and returned."
+    },
+    {
+      "rule_id": "W8170",
+      "kind": "pylint-odoo",
+      "message": "N+1 ORM query in loop: `browse()` or `search()` called inside a `for` loop over records.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use mapped(), filtered(), or prefetch by reading a relational field on the recordset before the loop."
+    },
+    {
+      "rule_id": "W8171",
+      "kind": "pylint-odoo",
+      "message": "Computed field missing `@api.depends` decorator — will never be recomputed automatically.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Add `@api.depends('field1', 'field2')` above the compute method."
+    },
+    {
+      "rule_id": "W8172",
+      "kind": "pylint-odoo",
+      "message": "`search()` method override must return a recordset and call `super()`.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Ensure `search()` override returns `super().search(args, ...)` after modifying the domain."
+    },
+    {
+      "rule_id": "W8173",
+      "kind": "pylint-odoo",
+      "message": "Many2one field missing `ondelete` parameter — defaults to 'set null' which may leave orphan references.",
+      "severity": "info",
+      "file_pattern": "**/*.py",
+      "fix_template": "Add `ondelete='restrict'` or `ondelete='cascade'` to the Many2one field definition."
+    },
+    {
+      "rule_id": "W8174",
+      "kind": "pylint-odoo",
+      "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Replace `digits=(16, 2)` with `digits='Account'` referencing a `decimal.precision` record."
+    },
+    {
+      "rule_id": "W8175",
+      "kind": "pylint-odoo",
+      "message": "`copy=True` set on a field with a unique SQL constraint — duplication will fail.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Set `copy=False` on fields covered by a `UNIQUE` constraint in `_sql_constraints`."
+    },
+    {
+      "rule_id": "W8176",
+      "kind": "pylint-odoo",
+      "message": "`default_get()` override does not call `super()` — default values from other modules will be lost.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Call `result = super().default_get(fields_list)` first, then update and return `result`."
+    },
+    {
+      "rule_id": "W8177",
+      "kind": "pylint-odoo",
+      "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
+      "severity": "info",
+      "file_pattern": "**/*.py",
+      "fix_template": "Use `_sql_constraints = [('name', 'UNIQUE(field)', _('Error message'))]`."
+    },
+    {
+      "rule_id": "W8178",
+      "kind": "pylint-odoo",
+      "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Explicitly set `sanitize=True` (default) or document why sanitization is disabled."
+    },
+    {
+      "rule_id": "W8179",
+      "kind": "pylint-odoo",
+      "message": "`_order` attribute references a field that does not exist in the model.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Check `_order = 'field_name'` matches an actual field on the model."
+    },
+    {
+      "rule_id": "W8180",
+      "kind": "pylint-odoo",
+      "message": "QWeb report template missing `t-name` attribute.",
+      "severity": "error",
+      "file_pattern": "**/report/*.xml",
+      "fix_template": "Add `t-name='module.report_template_id'` to the `<template>` tag."
+    },
+    {
+      "rule_id": "W8183",
+      "kind": "pylint-odoo",
+      "message": "XPath `position='replace'` removes the target element entirely — verify this is intentional.",
+      "severity": "info",
+      "file_pattern": "**/*.xml"
+    },
+    {
+      "rule_id": "W8184",
+      "kind": "pylint-odoo",
+      "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
+      "severity": "error",
+      "file_pattern": "**/*.xml",
+      "fix_template": "Add `<field name='inherit_id' ref='module.view_id'/>` to the view record."
+    },
+    {
+      "rule_id": "W8204",
+      "kind": "pylint-odoo",
+      "message": "`_sql_constraints` entry uses invalid constraint type or malformed tuple.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "fix_template": "Valid form: `('constraint_name', 'UNIQUE(field)', 'Error message')`."
     },
     {
       "rule_id": "no-var",
@@ -169,11 +351,56 @@
       "file_pattern": "**/*.js"
     },
     {
+      "rule_id": "no-unused-vars",
+      "kind": "eslint",
+      "message": "Variable declared but never used.",
+      "severity": "warning",
+      "file_pattern": "**/*.js",
+      "fix_template": "Remove the unused variable declaration or use it."
+    },
+    {
       "rule_id": "odoo-no-service-get",
       "kind": "eslint",
       "message": "Direct `require()` of Odoo service — use `useService()` hook in OWL components.",
       "severity": "warning",
       "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "no-restricted-globals",
+      "kind": "eslint",
+      "message": "Use of restricted global — prefer Odoo module-scoped equivalents.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "BLE001",
+      "kind": "ruff-builtin",
+      "message": "Blind exception: do not catch `Exception` without re-raising or logging — catches too broadly.",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "E501",
+      "kind": "ruff-builtin",
+      "message": "Line too long (exceeds max line length).",
+      "severity": "warning",
+      "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "I001",
+      "kind": "ruff-builtin",
+      "message": "Import block is unsorted or has wrong grouping.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Run `ruff check --fix` to auto-sort imports."
+    },
+    {
+      "rule_id": "F401",
+      "kind": "ruff-builtin",
+      "message": "Module imported but unused.",
+      "severity": "warning",
+      "file_pattern": "**/*.py",
+      "fix_template": "Remove the unused import or add `# noqa: F401` if re-exported intentionally."
     }
   ]
 }
