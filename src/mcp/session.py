@@ -92,6 +92,50 @@ def _cache_invalidate(api_key_id: str) -> None:
         _cache.pop(api_key_id, None)
 
 
+# --- WI-3: tenant -> allowed profile names cache (60s, ADR-0034) ------------
+# Keyed by tenant_id. The admin/global (None tenant_id) case is NOT cached —
+# it short-circuits to None (unrestricted) in resolve_allowed_profiles.
+_allowed_cache: dict[int, tuple[list[str], float]] = {}
+_allowed_lock = threading.Lock()
+
+
+def invalidate_allowed_profiles(tenant_id: int | None = None) -> None:
+    """Drop the cached allowed-profiles for *tenant_id* (or all when None)."""
+    with _allowed_lock:
+        if tenant_id is None:
+            _allowed_cache.clear()
+        else:
+            _allowed_cache.pop(tenant_id, None)
+
+
+def resolve_allowed_profiles(
+    tenant_id: int | None,
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> list[str] | None:
+    """Return the profile names a tenant may read (WI-3, ADR-0034), cached 60s.
+
+    Returns:
+        - ``None``  → admin / legacy global key (``tenant_id`` is None): UNRESTRICTED.
+          The caller applies no profile filter; this path is audit-logged at the
+          enforcement choke point (WI-4) per ADR-0034.
+        - ``[]``    → tenant owns no profiles: DENY-ALL (no user-data node visible).
+        - ``[...]`` → the tenant's own profiles + their shared-base ancestor chain.
+    """
+    if tenant_id is None:
+        return None
+    now = now_fn()
+    with _allowed_lock:
+        entry = _allowed_cache.get(tenant_id)
+        if entry is not None and entry[1] > now:
+            return list(entry[0])
+    from src.db.pg import repo_store  # lazy import — avoids circular dependency
+    names = repo_store().resolve_allowed_profiles(tenant_id)
+    with _allowed_lock:
+        _allowed_cache[tenant_id] = (names, now + _CACHE_TTL_SEC)
+    return list(names)
+
+
 # ---------------------------------------------------------------------------
 # Public API — sentinel normalization
 # ---------------------------------------------------------------------------

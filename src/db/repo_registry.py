@@ -369,6 +369,39 @@ class RepoStore:
             )
         return [r["name"] for r in rows]
 
+    def resolve_allowed_profiles(self, tenant_id: int) -> list[str]:
+        """Return the profile names tenant *tenant_id* is authorized to read (WI-3, ADR-0034).
+
+        = the tenant's OWN profiles (``profiles.tenant_id = tenant_id``) PLUS their
+        full ancestor chain (the shared-base profiles they parent onto, via
+        ``parent_profile_id``).  Computed in a single recursive CTE.
+
+        Fail-closed semantics:
+        - Returns ``[]`` when the tenant owns no profiles → the caller must treat
+          this as deny-all (no user-data node is visible).  Shared-base profiles
+          (``tenant_id IS NULL``, e.g. ``odoo_17``) are reachable ONLY through a
+          tenant profile's ancestor chain — never granted to a profile-less tenant.
+        - ``tenant_id`` itself is never NULL here: the admin/global (NULL-tenant)
+          unscoped path is handled one layer up in :func:`session.resolve_allowed_profiles`.
+        """
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                """
+                WITH RECURSIVE allowed AS (
+                    SELECT id, name, parent_profile_id
+                    FROM profiles WHERE tenant_id = %s
+                    UNION
+                    SELECT p.id, p.name, p.parent_profile_id
+                    FROM profiles p
+                    JOIN allowed a ON p.id = a.parent_profile_id
+                )
+                SELECT DISTINCT name FROM allowed
+                """,
+                (tenant_id,),
+            )
+        return sorted(r["name"] for r in rows)
+
     def get_ancestor_repos(self, profile_name: str) -> list[dict]:
         """Return repos for *profile_name* and all its ancestors.
 
