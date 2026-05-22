@@ -5677,10 +5677,15 @@ if __name__ == "__main__":
     # at the root prefix '' so its /api/feedback paths remain unchanged.
     from fastapi import FastAPI as _FastAPI
 
+    from src.web_ui.routes import deploy_key as _deploy_key
     from src.web_ui.routes import feedback as _feedback
 
     _feedback_app = _FastAPI()
     _feedback_app.include_router(_feedback.router)
+    # Mount tenant self-service deploy-key endpoint (ADR-0034 D7, WI-I).
+    # GET /api/tenant/deploy-key — tenant_id resolved from X-API-Key auth state,
+    # never from a user-supplied path parameter (cross-tenant leakage impossible).
+    _feedback_app.include_router(_deploy_key.router)
     _app.mount("", _feedback_app)
 
     _uvicorn.run(

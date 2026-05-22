@@ -337,6 +337,60 @@ class AuthStore:
                 (key_id,),
             )
 
+    def get_or_create_tenant_deploy_key(self, conn, tenant_id: int) -> str:
+        """Return the public key for the tenant's deploy keypair.
+
+        Idempotent: if a row with key_type='deploy_key' and the given tenant_id
+        already exists, return its public_key.  Otherwise generate a new Ed25519
+        keypair, FERNET-encrypt the private key (reusing generate_ed25519_keypair
+        from src.web_ui.routes.ssh_keys), and INSERT it.  The private key is
+        NEVER returned.
+
+        This method accepts an open psycopg2 connection so the caller can manage
+        the transaction boundary.  Caller is responsible for commit.
+
+        Args:
+            conn: Open psycopg2 connection (NOT drawn from the pool — caller owns it).
+            tenant_id: tenants.id for which the deploy key is being requested.
+
+        Returns:
+            The OpenSSH public key string (e.g. 'ssh-ed25519 AAAA...').
+
+        Raises:
+            RuntimeError: If FERNET_KEY is not set (ADR-0020 fail-fast policy).
+        """
+        from src.web_ui.routes.ssh_keys import generate_ed25519_keypair
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT public_key FROM ssh_key_pairs "
+                "WHERE tenant_id = %s AND key_type = 'deploy_key' "
+                "LIMIT 1",
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+
+        if row is not None:
+            return row[0]
+
+        # No deploy key yet — generate and persist one.
+        public_key, private_key_encrypted = generate_ed25519_keypair()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ssh_key_pairs"
+                " (name, public_key, private_key_encrypted, key_version, key_type, tenant_id)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    f"deploy-key-tenant-{tenant_id}",
+                    public_key,
+                    private_key_encrypted,
+                    1,
+                    "deploy_key",
+                    tenant_id,
+                ),
+            )
+        return public_key
+
     # ------------------------------------------------------------------
     # Pattern feedback
     # ------------------------------------------------------------------
