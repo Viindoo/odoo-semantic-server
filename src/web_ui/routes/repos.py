@@ -426,14 +426,19 @@ class AddRepoBody(BaseModel):
     profile: str
     url: str
     branch: str
-    local_path: str = ""
+    # local_path is server-managed: always derived via default_clone_dir(profile, url).
+    # Any client-supplied local_path field is silently ignored (WI-G).
     ssh_key_id: str = ""
 
 
 @router.post("/repos")
 @audit_action("repo.create")
 async def add_repo(body: AddRepoBody, request: Request):
-    """Add a repo to a profile. Triggers async clone for SSH URLs."""
+    """Add a repo to a profile. Triggers async clone for SSH URLs.
+
+    local_path is always server-derived via default_clone_dir(profile, url) —
+    user-supplied local_path values are not accepted (WI-G server-managed paths).
+    """
     from src.git_utils import default_clone_dir, is_ssh_url
 
     if is_ssh_url(body.url):
@@ -482,17 +487,18 @@ async def add_repo(body: AddRepoBody, request: Request):
             status_code=500,
         )
 
-    # HTTPS / file:// / manual path
+    # HTTPS / file:// — derive local_path server-side (WI-G: no user-supplied path)
     try:
         from src.db.pg import repo_store
 
         profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
         if profiles_list:
+            target_dir = default_clone_dir(body.profile, body.url)
             repo_store().add_repo(
                 profile_id=profiles_list[0]["id"],
                 url=body.url,
                 branch=body.branch,
-                local_path=body.local_path,
+                local_path=str(target_dir),
                 ssh_key_id=None,
                 clone_status="manual",
             )
@@ -520,16 +526,19 @@ class UpdateRepoBody(BaseModel):
     # ssh_key_id: None = do not change; use clear_ssh_key=True to set NULL explicitly.
     ssh_key_id: int | None = None
     clear_ssh_key: bool = False
-    local_path: str | None = None
+    # local_path is server-managed and cannot be changed via PATCH (WI-G).
+    # Any client-supplied local_path is silently ignored.
 
 
 @router.patch("/repos/{repo_id}")
 @audit_action("repo.update", target_param="repo_id")
 async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
-    """Update URL / branch / SSH key / local_path of an existing repo.
+    """Update URL / branch / SSH key of an existing repo.
 
     head_sha is intentionally preserved so the incremental indexer can still
     use the stored sha — avoiding a costly full reindex after a metadata edit.
+
+    local_path is server-managed and cannot be changed via this endpoint (WI-G).
     """
     from src.git_utils import is_ssh_url
 
@@ -549,7 +558,6 @@ async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
                 "url": existing.get("url"),
                 "branch": existing.get("branch"),
                 "ssh_key_id": existing.get("ssh_key_id"),
-                "local_path": existing.get("local_path"),
             }
         except Exception:
             pass
@@ -569,13 +577,13 @@ async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
                 status_code=400,
             )
 
+        # local_path is NOT passed — server-managed only (WI-G)
         updated_fields = repo_store().update_repo(
             repo_id,
             url=body.url,
             branch=body.branch,
             ssh_key_id=body.ssh_key_id,
             clear_ssh_key=body.clear_ssh_key,
-            local_path=body.local_path,
         )
 
         # Capture after-snapshot — only fields that changed
@@ -589,8 +597,6 @@ async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
                 after["ssh_key_id"] = None
             elif body.ssh_key_id is not None:
                 after["ssh_key_id"] = body.ssh_key_id
-            if body.local_path is not None:
-                after["local_path"] = body.local_path
             request.state.audit_detail["after"] = after
             request.state.audit_detail["updated_fields"] = updated_fields
         except Exception:

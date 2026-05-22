@@ -63,13 +63,12 @@ def _add_profile(page, astro_server, profile_name, version="99.0"):
     expect(page.get_by_test_id("profile-row").first).to_be_visible(timeout=8000)
 
 
-def _add_profile_and_repo(page, astro_server, profile_name, local_path, version="99.0"):
+def _add_profile_and_repo(page, astro_server, profile_name, local_path=None, version="99.0"):
     """Add a profile then a repo under it.
 
     The add-repo form has three required fields: profile (select), url, branch.
-    The earlier helper filled only branch + local_path so HTML5 form validation
-    blocked submit before the JS handler ever ran — every dependent test then
-    timed out waiting for a repo-row that the backend never received.
+    local_path is server-managed (WI-G) and no longer shown as a user input field.
+    The local_path parameter is kept for API compatibility but is unused.
     """
     _add_profile(page, astro_server, profile_name, version)
     page.get_by_test_id("repos-profile-input").select_option(profile_name)
@@ -77,7 +76,7 @@ def _add_profile_and_repo(page, astro_server, profile_name, local_path, version=
         f"file:///tmp/{profile_name}_browser_test_repo"
     )
     page.get_by_test_id("repos-branch-input").fill(version)
-    page.get_by_test_id("repos-local-path-input").fill(local_path)
+    # local_path input removed from form (WI-G: server-managed)
     page.get_by_test_id("add-repo-button").click()
     expect(page.get_by_test_id("repo-row").first).to_be_visible(timeout=8000)
 
@@ -257,18 +256,17 @@ class TestDeleteRepo:
 
         # Add first repo — must fill url + profile (required) or HTML5 form
         # validation silently blocks submit and no repo is created.
+        # local_path input removed from form (WI-G: server-managed).
         page.get_by_test_id("repos-profile-input").select_option("two_repos_profile_br")
         page.get_by_test_id("repos-url-input").fill("file:///tmp/browser_first_repo")
         page.get_by_test_id("repos-branch-input").fill("99.0")
-        page.get_by_test_id("repos-local-path-input").fill("/tmp/browser_repo_first_to_del")
         page.get_by_test_id("add-repo-button").click()
         expect(page.get_by_test_id("repo-row").first).to_be_visible(timeout=8000)
 
-        # Add second repo (different URL + path to avoid uniqueness collisions).
+        # Add second repo (different URL to avoid uniqueness collisions).
         page.get_by_test_id("repos-profile-input").select_option("two_repos_profile_br")
         page.get_by_test_id("repos-url-input").fill("file:///tmp/browser_second_repo")
         page.get_by_test_id("repos-branch-input").fill("99.0")
-        page.get_by_test_id("repos-local-path-input").fill("/tmp/browser_repo_sibling_keep")
         page.get_by_test_id("add-repo-button").click()
         expect(page.locator('[data-testid="repo-row"]')).to_have_count(2, timeout=8000)
 
@@ -399,16 +397,17 @@ class TestResetEmbed:
     ):
         """After setting head_sha in DB → reload → reset-embed-button visible."""
         pg_conn = clean_browser
-        local_path = "/tmp/re_browser_visible"
+        # WI-G: local_path is server-managed; update by profile name instead.
         _add_profile_and_repo(
-            page, astro_server, "re_browser_profile_visible_br", local_path
+            page, astro_server, "re_browser_profile_visible_br"
         )
 
-        # Set head_sha directly in DB
+        # Set head_sha directly in DB for all repos under this profile
         with pg_conn.cursor() as cur:
             cur.execute(
-                "UPDATE repos SET head_sha = 'abc123testsha' WHERE local_path = %s",
-                (local_path,),
+                "UPDATE repos SET head_sha = 'abc123testsha'"
+                " WHERE profile_id = (SELECT id FROM profiles WHERE name = %s)",
+                ("re_browser_profile_visible_br",),
             )
 
         page.reload()
@@ -421,15 +420,16 @@ class TestResetEmbed:
     ):
         """Click reset-embed-button → accept confirm → flash banner visible."""
         pg_conn = clean_browser
-        local_path = "/tmp/re_browser_flash"
+        # WI-G: local_path is server-managed; update by profile name instead.
         _add_profile_and_repo(
-            page, astro_server, "re_browser_profile_flash_br", local_path
+            page, astro_server, "re_browser_profile_flash_br"
         )
 
         with pg_conn.cursor() as cur:
             cur.execute(
-                "UPDATE repos SET head_sha = 'deadbeef' WHERE local_path = %s",
-                (local_path,),
+                "UPDATE repos SET head_sha = 'deadbeef'"
+                " WHERE profile_id = (SELECT id FROM profiles WHERE name = %s)",
+                ("re_browser_profile_flash_br",),
             )
 
         page.reload()

@@ -99,14 +99,73 @@ class TestProfilesEndpoint:
                 "/api/repos/repos",
                 json={
                     "profile": "p1",
-                    "url": "file://local",
+                    "url": "https://github.com/odoo/odoo",
                     "branch": "17.0",
-                    "local_path": "/tmp/odoo_17",
+                    # local_path not sent — server derives it (WI-G)
                 },
             )
         assert resp.status_code == 200
         body = resp.json()
         assert body.get("ok") is True
+
+    @pytest.mark.asyncio
+    async def test_add_repo_server_derives_local_path(self, migrated_pg):
+        """WI-G: POST /repos without local_path → server derives path via default_clone_dir."""
+        from src.db.pg import repo_store
+        from src.git_utils import default_clone_dir
+
+        repo_store().add_profile(name="derive_path_profile", odoo_version="17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/repos/repos",
+                json={
+                    "profile": "derive_path_profile",
+                    "url": "https://github.com/odoo/odoo.git",
+                    "branch": "17.0",
+                },
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+
+        repos = repo_store().list_repos()
+        # Filter to only our profile's repo
+        our_repos = [r for r in repos if r.get("profile_name") == "derive_path_profile"]
+        assert len(our_repos) == 1
+        expected_path = str(default_clone_dir("derive_path_profile", "https://github.com/odoo/odoo.git"))
+        assert our_repos[0]["local_path"] == expected_path
+
+    @pytest.mark.asyncio
+    async def test_add_repo_ignores_user_supplied_local_path(self, migrated_pg):
+        """WI-G: local_path in POST body is ignored; server always derives it."""
+        from src.db.pg import repo_store
+        from src.git_utils import default_clone_dir
+
+        repo_store().add_profile(name="ignore_path_profile", odoo_version="17.0")
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/repos/repos",
+                json={
+                    "profile": "ignore_path_profile",
+                    "url": "https://github.com/odoo/enterprise.git",
+                    "branch": "17.0",
+                    "local_path": "/should/be/ignored",  # user-supplied, must be ignored
+                },
+            )
+        assert resp.status_code == 200
+
+        repos = repo_store().list_repos()
+        our_repos = [r for r in repos if r.get("profile_name") == "ignore_path_profile"]
+        assert len(our_repos) == 1
+        # Must NOT be user-supplied path
+        assert our_repos[0]["local_path"] != "/should/be/ignored"
+        # Must be the server-derived path
+        expected_path = str(default_clone_dir("ignore_path_profile", "https://github.com/odoo/enterprise.git"))
+        assert our_repos[0]["local_path"] == expected_path
 
     @pytest.mark.asyncio
     async def test_index_repo_returns_ok(self, migrated_pg):
@@ -310,8 +369,9 @@ class TestSshCloneFlow:
 
     @pytest.mark.asyncio
     async def test_post_https_url_no_cloner_spawn(self, migrated_pg):
-        """HTTPS URL → legacy flow: no Popen, ssh_key_id=NULL."""
+        """HTTPS URL → server-managed local_path, no Popen, ssh_key_id=NULL."""
         from src.db.pg import repo_store
+        from src.git_utils import default_clone_dir
 
         repo_store().add_profile(name="https_profile", odoo_version="17.0")
 
@@ -324,7 +384,7 @@ class TestSshCloneFlow:
                         "profile": "https_profile",
                         "url": "https://github.com/odoo/odoo",
                         "branch": "17.0",
-                        "local_path": "/tmp/odoo_https",
+                        # local_path omitted — server derives it (WI-G)
                     },
                 )
 
@@ -335,6 +395,9 @@ class TestSshCloneFlow:
         repos = repo_store().list_repos()
         assert len(repos) == 1
         assert repos[0]["ssh_key_id"] is None
+        # Verify server-derived path
+        expected_path = str(default_clone_dir("https_profile", "https://github.com/odoo/odoo"))
+        assert repos[0]["local_path"] == expected_path
 
     @pytest.mark.asyncio
     async def test_get_ssh_keys_list_returns_array(self, migrated_pg):
@@ -1311,7 +1374,8 @@ class TestUpdateRepoEndpoint:
 
         def fake_fetch_one(conn, sql, params=None):
             # Only intercept the UNIQUE conflict pre-check; let get_repo_by_id pass through.
-            if "WHERE url = %s AND branch = %s AND id != %s" in sql:
+            # WI-G: constraint now scoped to (url, branch, profile_id) — see ADR-0034.
+            if "WHERE url = %s AND branch = %s" in sql and "profile_id" in sql:
                 return None
             return original_fetch_one(conn, sql, params)
 
@@ -1335,6 +1399,71 @@ class TestUpdateRepoEndpoint:
         assert resp.status_code == 409
         body = resp.json()
         assert "error" in body
+
+    @pytest.mark.asyncio
+    async def test_patch_cannot_change_local_path(self, migrated_pg):
+        """WI-G: PATCH with local_path in body must NOT change the stored local_path."""
+        from src.db.pg import repo_store
+
+        pid = repo_store().add_profile("no_path_change_profile", "17.0")
+        rid = repo_store().add_repo(
+            profile_id=pid,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/server_managed_path",
+        )
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.patch(
+                f"/api/repos/repos/{rid}",
+                json={"local_path": "/tmp/user_supplied_should_be_ignored"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        # local_path must not appear in updated_fields (server ignores it)
+        assert "local_path" not in body.get("updated_fields", [])
+
+        # Stored local_path must remain the original server-managed path
+        repo = repo_store().get_repo_by_id(rid)
+        assert repo["local_path"] == "/tmp/server_managed_path"
+
+    @pytest.mark.asyncio
+    async def test_dedup_scoped_to_profile_id(self, migrated_pg):
+        """WI-G: same (url, branch) under different profiles is allowed (no conflict)."""
+        from src.db.pg import repo_store
+
+        pid1 = repo_store().add_profile("dedup_profile_a", "17.0")
+        pid2 = repo_store().add_profile("dedup_profile_b", "17.0")
+
+        # Register the same upstream URL+branch under two profiles
+        repo_store().add_repo(
+            profile_id=pid1,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_profile_a",
+        )
+        # Second registration under different profile must succeed
+        rid2 = repo_store().add_repo(
+            profile_id=pid2,
+            url="https://github.com/odoo/odoo.git",
+            branch="17.0",
+            local_path="/tmp/odoo_profile_b",
+        )
+        assert rid2 > 0  # successfully inserted
+
+        # PATCH url on rid2 to something else and back — no conflict with pid1's repo
+        app = create_app()
+        async with _async_client(app) as client:
+            # Changing to same url+branch that exists under pid1 should be fine
+            # since dedup is scoped to profile_id
+            resp = await client.patch(
+                f"/api/repos/repos/{rid2}",
+                json={"branch": "16.0"},
+            )
+        assert resp.status_code == 200
 
 
 class TestUpdateProfileEndpointExtra:

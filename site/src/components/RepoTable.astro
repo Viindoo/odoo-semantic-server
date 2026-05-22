@@ -106,16 +106,6 @@ function truncate(text: string | null | undefined, maxLen: number): string {
         required
       />
     </div>
-    <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">Local path (optional)</label>
-      <input
-        name="local_path"
-        type="text"
-        placeholder="/home/.../repo"
-        data-testid="repos-local-path-input"
-        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
-      />
-    </div>
     <div data-testid="ssh-key-select-wrapper" hidden>
       <label class="block text-xs font-medium text-gray-600 mb-1">SSH Key (for git@ URLs)</label>
       <select
@@ -179,6 +169,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
           <tr>
             <th class="px-4 py-3 text-left">Repo / Branch</th>
             <th class="px-4 py-3 text-left">Profile</th>
+            <th class="px-4 py-3 text-left">Local Path (server-managed)</th>
             <th class="px-4 py-3 text-left">Clone</th>
             <th class="px-4 py-3 text-left">Last Job</th>
             <th class="px-4 py-3 text-left">Last Indexed</th>
@@ -197,6 +188,15 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                 </td>
                 <td class="px-4 py-3 text-gray-600">
                   {profiles.find((p) => p.repos?.some((r) => r.id === repo.id))?.name ?? '—'}
+                </td>
+                <td class="px-4 py-3">
+                  <p
+                    class="text-xs text-gray-500 font-mono truncate max-w-xs"
+                    title={repo.local_path}
+                    data-testid={`repo-local-path-${repo.id}`}
+                  >
+                    {repo.local_path || '—'}
+                  </p>
                 </td>
                 <td class="px-4 py-3">
                   <div class="flex flex-col gap-1">
@@ -284,12 +284,12 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                 class="edit-repo-form-row bg-blue-50"
                 hidden
               >
-                <td colspan="6" class="px-4 py-4">
+                <td colspan="8" class="px-4 py-4">
                   <form
                     data-testid={`edit-repo-form-${repo.id}`}
                     data-edit-repo-form
                     data-repo-id={String(repo.id)}
-                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3"
+                    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                   >
                     <div>
                       <label class="block text-xs font-medium text-gray-600 mb-1">URL</label>
@@ -325,17 +325,15 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                         ))}
                       </select>
                     </div>
-                    <div>
-                      <label class="block text-xs font-medium text-gray-600 mb-1">Local path</label>
-                      <input
-                        name="local_path"
-                        type="text"
-                        placeholder={repo.local_path}
-                        data-testid={`edit-repo-local-path-${repo.id}`}
-                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
-                      />
+                    <div class="sm:col-span-2 lg:col-span-3">
+                      <label class="block text-xs font-medium text-gray-500 mb-1">
+                        Local path (server-managed, read-only)
+                      </label>
+                      <p class="text-xs font-mono text-gray-500 px-3 py-2 bg-gray-100 rounded-lg border border-gray-200 truncate" title={repo.local_path}>
+                        {repo.local_path || '—'}
+                      </p>
                     </div>
-                    <div class="sm:col-span-2 lg:col-span-4 flex gap-2 justify-end">
+                    <div class="sm:col-span-2 lg:col-span-3 flex gap-2 justify-end">
                       <button
                         type="button"
                         data-testid={`edit-repo-cancel-${repo.id}`}
@@ -515,7 +513,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
       const urlVal = (fd.get('url') as string | null)?.trim();
       const branchVal = (fd.get('branch') as string | null)?.trim();
       const sshKeyVal = (fd.get('ssh_key_id') as string | null)?.trim();
-      const localPathVal = (fd.get('local_path') as string | null)?.trim();
+      // local_path is server-managed — not sent in PATCH (WI-G)
 
       if (urlVal) body['url'] = urlVal;
       if (branchVal) body['branch'] = branchVal;
@@ -524,7 +522,6 @@ function truncate(text: string | null | undefined, maxLen: number): string {
       } else if (sshKeyVal) {
         body['ssh_key_id'] = Number(sshKeyVal);
       }
-      if (localPathVal) body['local_path'] = localPathVal;
 
       const res = await fetch(`/api/repos/repos/${repoId}`, {
         method: 'PATCH',
