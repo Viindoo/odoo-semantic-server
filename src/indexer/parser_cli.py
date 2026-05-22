@@ -13,6 +13,10 @@ forward compatibility — same argument shape (positional flag str + kwargs).
 
 Static fallback: spec_data/cli_flags_<version>.json for v8-v16 when no Odoo
 source is available (per ADR-0002 §4).
+
+Version-aware paths: v8/v9 use the ``openerp/`` package prefix; v10+ use
+``odoo/``. This mirrors ``_version_prefix()`` in parser_odoo_core.py and uses
+the same threshold constant (``ODOO_NAMESPACE_LEGACY_MAX_MAJOR``).
 """
 from __future__ import annotations
 
@@ -21,10 +25,25 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
+
 from .models import CLICommandInfo, CLIFlagInfo
 
 _CLI_OPTION_FUNCS = {"add_option", "add_argument"}
 _DEPRECATED_HELP_TOKENS = ("deprecated", "obsolete")
+
+
+def _pkg_prefix(odoo_version: str) -> str:
+    """Return the framework package prefix for *odoo_version*.
+
+    v8/v9 shipped as ``openerp/``; v10+ renamed to ``odoo/``.
+    Mirrors ``_version_prefix()`` in parser_odoo_core.py — same threshold.
+    """
+    try:
+        major = int(odoo_version.split(".")[0])
+    except (ValueError, IndexError):
+        major = 99  # unknown version → modern prefix
+    return "openerp" if major <= ODOO_NAMESPACE_LEGACY_MAX_MAJOR else "odoo"
 
 
 # --- CLI command parsing (odoo/cli/*.py) ----------------------------------
@@ -65,22 +84,73 @@ def _parse_cli_module(
     return out
 
 
-def parse_cli_commands(
-    odoo_source_root: str, odoo_version: str,
+def _load_static_cli_commands(
+    odoo_version: str, static_data_dir: str | Path | None,
 ) -> list[CLICommandInfo]:
-    """Scan odoo/cli/*.py — return all CLICommandInfo found."""
-    cli_dir = Path(odoo_source_root) / "odoo" / "cli"
-    if not cli_dir.is_dir():
+    """Load the ``"commands"`` array from ``cli_flags_<version>.json``.
+
+    Returns an empty list when the file is missing, the JSON is malformed, or
+    the ``"commands"`` key is absent — callers never need to guard against these
+    cases.
+    """
+    base = (
+        Path(static_data_dir) if static_data_dir
+        else Path(__file__).parent / "spec_data"
+    )
+    static_path = base / f"cli_flags_{odoo_version}.json"
+    if not static_path.is_file():
+        return []
+    try:
+        data = json.loads(static_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return []
     out: list[CLICommandInfo] = []
-    for f in sorted(cli_dir.glob("*.py")):
-        if f.name in {"__init__.py", "command.py"} or f.stem.startswith("_"):
+    for c in data.get("commands", []):
+        if not isinstance(c, dict) or "name" not in c:
             continue
-        try:
-            src = f.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        out.extend(_parse_cli_module(src, odoo_version, str(f)))
+        out.append(CLICommandInfo(
+            name=c["name"],
+            odoo_version=odoo_version,
+            description=c.get("description"),
+            file_path=c.get("file_path"),
+        ))
+    return out
+
+
+def parse_cli_commands(
+    odoo_source_root: str, odoo_version: str,
+    static_data_dir: str | Path | None = None,
+) -> list[CLICommandInfo]:
+    """Scan <pkg>/cli/*.py + static JSON commands array → CLICommandInfo list.
+
+    For v8/v9 the CLI lives under ``openerp/cli/``; for v10+ under ``odoo/cli/``.
+    Static ``cli_flags_<version>.json`` commands are merged in so versions without
+    an indexed source root still produce CLICommand nodes.
+    """
+    pkg = _pkg_prefix(odoo_version)
+    cli_dir = Path(odoo_source_root) / pkg / "cli"
+
+    out: list[CLICommandInfo] = []
+    seen: set[str] = set()
+
+    if cli_dir.is_dir():
+        for f in sorted(cli_dir.glob("*.py")):
+            if f.name in {"__init__.py", "command.py"} or f.stem.startswith("_"):
+                continue
+            try:
+                src = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for cmd in _parse_cli_module(src, odoo_version, str(f)):
+                if cmd.name not in seen:
+                    seen.add(cmd.name)
+                    out.append(cmd)
+
+    for cmd in _load_static_cli_commands(odoo_version, static_data_dir):
+        if cmd.name not in seen:
+            seen.add(cmd.name)
+            out.append(cmd)
+
     return out
 
 
@@ -210,7 +280,8 @@ def parse_cli_flags(
         seen.add(key)
         out.append(f)
 
-    config_path = Path(odoo_source_root) / "odoo" / "tools" / "config.py"
+    pkg = _pkg_prefix(odoo_version)
+    config_path = Path(odoo_source_root) / pkg / "tools" / "config.py"
     if config_path.is_file():
         try:
             src = config_path.read_text(encoding="utf-8", errors="ignore")

@@ -18,14 +18,18 @@ import pytest
 
 from src.indexer.models import CLIFlagInfo
 from src.indexer.parser_cli import (
+    _load_static_cli_commands,
     _load_static_cli_flags,
     _parse_cli_module,
     _parse_options_calls,
+    _pkg_prefix,
     compute_cli_flag_diff,
     parse_cli_commands,
     parse_cli_flags,
 )
 
+ODOO8_SRC = os.environ.get("ODOO8_SRC", "/home/tuan/git/odoo8")
+ODOO9_SRC = os.environ.get("ODOO9_SRC", "/home/tuan/git/odoo9")
 ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
@@ -111,8 +115,14 @@ def test_compute_cli_flag_diff_replacement_via_replacement_flag_name():
 
 
 def test_parse_cli_commands_returns_empty_for_nonexistent_root(tmp_path):
-    """Missing source root → empty list, no exception."""
-    assert parse_cli_commands(str(tmp_path / "missing"), "17.0") == []
+    """Missing source root + empty static dir → empty list, no exception.
+
+    ``static_data_dir`` is pointed at an empty tmp dir so the real spec_data
+    files are not consulted (parse_cli_commands now merges static commands).
+    """
+    assert parse_cli_commands(
+        str(tmp_path / "missing"), "17.0", static_data_dir=str(tmp_path),
+    ) == []
 
 
 def test_parse_cli_flags_returns_empty_for_nonexistent_root(tmp_path):
@@ -172,3 +182,175 @@ def test_load_static_cli_flags_coalesces_null_command_to_server(tmp_path):
     assert by_name["--config"] == "server", "explicit null must coalesce"
     assert by_name["--http-port"] == "server", "explicit server preserved"
     assert by_name["--save"] == "server", "missing key default unchanged"
+
+
+# --- _pkg_prefix tests -------------------------------------------------------
+
+def test_pkg_prefix_v8_returns_openerp():
+    """v8.0 → openerp (legacy namespace)."""
+    assert _pkg_prefix("8.0") == "openerp"
+
+
+def test_pkg_prefix_v9_returns_openerp():
+    """v9.0 → openerp (legacy namespace, boundary value)."""
+    assert _pkg_prefix("9.0") == "openerp"
+
+
+def test_pkg_prefix_v10_returns_odoo():
+    """v10.0 → odoo (first modern version)."""
+    assert _pkg_prefix("10.0") == "odoo"
+
+
+def test_pkg_prefix_v17_returns_odoo():
+    """v17.0 → odoo (modern namespace)."""
+    assert _pkg_prefix("17.0") == "odoo"
+
+
+# --- _load_static_cli_commands tests ----------------------------------------
+
+def test_load_static_cli_commands_reads_commands_array(tmp_path):
+    """``"commands"`` array in static JSON → CLICommandInfo list."""
+    static_dir = tmp_path
+    (static_dir / "cli_flags_99.0.json").write_text(json.dumps({
+        "commands": [
+            {"name": "server", "description": "Start server", "file_path": "odoo/cli/server.py"},
+            {"name": "scaffold", "description": "Scaffold module"},
+        ],
+        "flags": [],
+    }))
+    cmds = _load_static_cli_commands("99.0", static_dir)
+    names = {c.name for c in cmds}
+    assert names == {"server", "scaffold"}
+    by_name = {c.name: c for c in cmds}
+    assert by_name["server"].description == "Start server"
+    assert by_name["server"].file_path == "odoo/cli/server.py"
+    assert by_name["scaffold"].file_path is None  # absent key → None
+
+
+def test_load_static_cli_commands_missing_file_returns_empty(tmp_path):
+    """No static file → empty list, no exception."""
+    result = _load_static_cli_commands("20.0", tmp_path)
+    assert result == []
+
+
+def test_load_static_cli_commands_missing_commands_key_returns_empty(tmp_path):
+    """JSON without ``"commands"`` key → empty list (flags-only file)."""
+    static_dir = tmp_path
+    (static_dir / "cli_flags_99.0.json").write_text(json.dumps({
+        "flags": [{"flag_name": "--config"}],
+    }))
+    assert _load_static_cli_commands("99.0", static_dir) == []
+
+
+def test_load_static_cli_commands_skips_entries_without_name(tmp_path):
+    """Malformed entry without ``"name"`` key is silently skipped."""
+    static_dir = tmp_path
+    (static_dir / "cli_flags_99.0.json").write_text(json.dumps({
+        "commands": [
+            {"description": "no name here"},
+            {"name": "shell", "description": "Python shell"},
+        ],
+    }))
+    cmds = _load_static_cli_commands("99.0", static_dir)
+    assert len(cmds) == 1
+    assert cmds[0].name == "shell"
+
+
+def test_load_static_cli_commands_uses_spec_data_by_default():
+    """With static_data_dir=None the real spec_data files are read.
+
+    v8.0 has a curated ``commands`` array → at least one CLICommandInfo returned.
+    """
+    cmds = _load_static_cli_commands("8.0", None)
+    assert len(cmds) > 0, "cli_flags_8.0.json must have at least one command entry"
+    names = {c.name for c in cmds}
+    assert "server" in names, f"expected 'server' in {names}"
+
+
+# --- parse_cli_commands v8/v9 path-prefix tests ------------------------------
+
+@pytest.mark.skipif(
+    not Path(ODOO8_SRC + "/openerp/cli/server.py").exists(),
+    reason="Real Odoo 8 cli dir not on disk",
+)
+def test_parse_cli_commands_smoke_real_v8():
+    """Smoke: real Odoo 8 source yields CLICommand count > 0 using openerp/cli/."""
+    cmds = parse_cli_commands(ODOO8_SRC, "8.0")
+    assert len(cmds) > 0, f"expected >0 CLICommand nodes for v8, got {cmds}"
+    names = {c.name for c in cmds}
+    assert "server" in names, f"expected 'server' in {names}"
+
+
+@pytest.mark.skipif(
+    not Path(ODOO9_SRC + "/openerp/cli/server.py").exists(),
+    reason="Real Odoo 9 cli dir not on disk",
+)
+def test_parse_cli_commands_smoke_real_v9():
+    """Smoke: real Odoo 9 source yields CLICommand count > 0 using openerp/cli/."""
+    cmds = parse_cli_commands(ODOO9_SRC, "9.0")
+    assert len(cmds) > 0, f"expected >0 CLICommand nodes for v9, got {cmds}"
+    names = {c.name for c in cmds}
+    assert "server" in names, f"expected 'server' in {names}"
+
+
+def test_parse_cli_commands_v8_static_fallback_yields_commands(tmp_path):
+    """parse_cli_commands with nonexistent source + v8 spec_data → commands via static."""
+    # Use real spec_data dir (has cli_flags_8.0.json with commands array).
+    from pathlib import Path as P
+    spec_dir = P(__file__).parent.parent / "src" / "indexer" / "spec_data"
+    cmds = parse_cli_commands(str(tmp_path / "missing_v8"), "8.0", static_data_dir=str(spec_dir))
+    assert len(cmds) > 0, "static fallback must yield CLICommandInfo for v8"
+    names = {c.name for c in cmds}
+    assert "server" in names
+
+
+def test_parse_cli_commands_v9_static_fallback_yields_commands(tmp_path):
+    """parse_cli_commands with nonexistent source + v9 spec_data → commands via static."""
+    from pathlib import Path as P
+    spec_dir = P(__file__).parent.parent / "src" / "indexer" / "spec_data"
+    cmds = parse_cli_commands(str(tmp_path / "missing_v9"), "9.0", static_data_dir=str(spec_dir))
+    assert len(cmds) > 0, "static fallback must yield CLICommandInfo for v9"
+    names = {c.name for c in cmds}
+    assert "server" in names
+
+
+def test_parse_cli_commands_deduplicates_source_and_static(tmp_path):
+    """Command present in both source scan and static JSON appears only once."""
+    # Fake source root with openerp/cli/server.py (v8 era).
+    cli_dir = tmp_path / "openerp" / "cli"
+    cli_dir.mkdir(parents=True)
+    (cli_dir / "server.py").write_text(
+        "from openerp.cli import Command\nclass Server(Command):\n    pass\n"
+    )
+    # Static JSON also has "server".
+    (tmp_path / "cli_flags_8.0.json").write_text(json.dumps({
+        "commands": [{"name": "server", "description": "from static"}],
+        "flags": [],
+    }))
+    cmds = parse_cli_commands(str(tmp_path), "8.0", static_data_dir=str(tmp_path))
+    server_cmds = [c for c in cmds if c.name == "server"]
+    assert len(server_cmds) == 1, "duplicate server entry must be collapsed"
+
+
+# --- parse_cli_flags v8/v9 path-prefix tests ---------------------------------
+
+@pytest.mark.skipif(
+    not Path(ODOO8_SRC + "/openerp/tools/config.py").exists(),
+    reason="Real Odoo 8 config.py not on disk",
+)
+def test_parse_cli_flags_smoke_real_v8_picks_up_config_flag():
+    """Smoke: real Odoo 8 openerp/tools/config.py contains --config flag."""
+    flags = parse_cli_flags(ODOO8_SRC, "8.0")
+    flag_names = {f.flag_name for f in flags}
+    assert "--config" in flag_names, f"expected --config in v8 flags, got {flag_names}"
+
+
+@pytest.mark.skipif(
+    not Path(ODOO9_SRC + "/openerp/tools/config.py").exists(),
+    reason="Real Odoo 9 config.py not on disk",
+)
+def test_parse_cli_flags_smoke_real_v9_picks_up_config_flag():
+    """Smoke: real Odoo 9 openerp/tools/config.py contains --config flag."""
+    flags = parse_cli_flags(ODOO9_SRC, "9.0")
+    flag_names = {f.flag_name for f in flags}
+    assert "--config" in flag_names, f"expected --config in v9 flags, got {flag_names}"
