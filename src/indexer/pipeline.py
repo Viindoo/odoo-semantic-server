@@ -157,12 +157,15 @@ def _index_repo(
     full_reindex: bool = False,
     gc: bool = False,
     ancestor_profiles: list[str] | None = None,
+    profile_name: str | None = None,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
     Returns per-repo counters: {modules, views, qweb, embeddings}.
     Pass pg_conn + embedder to also write semantic embeddings to pgvector.
     Set progress=True to show tqdm progress bar during module iteration.
+    profile_name is stamped on every EmbeddingChunk written so re-indexing
+    one profile does not erase another profile's chunks for the same module.
 
     Incremental behaviour (M6 W2-4):
     - Compares current git HEAD to repos.head_sha (stored from last run).
@@ -371,7 +374,8 @@ def _index_repo(
                 chunks.extend(make_scss_chunks(scss_chunks_mod))
                 chunks.extend(make_less_chunks(less_chunks_mod))
                 embed_calls = write_module_embeddings(
-                    mod_name, version, chunks, embedder
+                    mod_name, version, chunks, embedder,
+                    profile_name=profile_name,
                 )
                 total_embeddings += len(chunks)
                 total_embed_calls += embed_calls
@@ -579,6 +583,7 @@ def index_profile(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
                             progress=progress, full_reindex=full_reindex, gc=gc,
                             ancestor_profiles=ancestor_profiles,
+                            profile_name=profile_name,
                         )
                         _elapsed = time.monotonic() - _t0
                         total_modules += counters["modules"]
@@ -633,6 +638,7 @@ def index_profile(
                             full_reindex=full_reindex,
                             gc=gc,
                             ancestor_profiles=ancestor_profiles,
+                            profile_name=profile_name,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")

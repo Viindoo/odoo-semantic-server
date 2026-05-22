@@ -252,9 +252,13 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
+                # Patterns are global (shared across all tenants) → profile_name IS NULL.
+                # Use IS NOT DISTINCT FROM to match NULL safely.
                 cur.execute(
                     "DELETE FROM embeddings "
-                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
+                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__' "
+                    "AND profile_name IS NOT DISTINCT FROM %s",
+                    (None,),
                 )
                 execute_values(
                     cur, _INSERT_SQL,
@@ -345,9 +349,12 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
+                # Patterns are global (shared across all tenants) → profile_name IS NULL.
                 cur.execute(
                     "DELETE FROM embeddings "
-                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'",
+                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__' "
+                    "AND profile_name IS NOT DISTINCT FROM %s",
+                    (None,),
                 )
                 execute_values(
                     cur, _INSERT_SQL,

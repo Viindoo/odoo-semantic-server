@@ -14,7 +14,8 @@ _OVERLAP_CHARS = 256
 
 _INSERT_SQL = """
 INSERT INTO embeddings
-    (chunk_type, module, odoo_version, entity_name, model_name, file_path, chunk_idx, content, vec)
+    (chunk_type, module, odoo_version, entity_name, model_name, file_path, chunk_idx, content, vec,
+     profile_name)
 VALUES %s
 ON CONFLICT ON CONSTRAINT ux_embeddings_chunk
 DO UPDATE SET content = EXCLUDED.content, vec = EXCLUDED.vec, indexed_at = NOW()
@@ -32,12 +33,14 @@ class EmbeddingChunk:
     file_path: str
     chunk_idx: int
     content: str
+    profile_name: str | None = None  # NULL = shared/global (pattern chunks, pre-tenant rows)
 
     def as_tuple(self, vec: list[float]) -> tuple:
         return (
             self.chunk_type, self.module, self.odoo_version,
             self.entity_name, self.model_name, self.file_path,
             self.chunk_idx, self.content, vec,
+            self.profile_name,
         )
 
 
@@ -231,8 +234,14 @@ def write_module_embeddings(
     version: str,
     chunks: list[EmbeddingChunk],
     embedder: EmbedderClient,
+    profile_name: str | None = None,
 ) -> int:
-    """Delete-then-insert embeddings for (module, version) atomically.
+    """Delete-then-insert embeddings for (module, version[, profile_name]) atomically.
+
+    profile_name scopes the delete to a single tenant's chunks so re-indexing
+    profile A does not erase profile B's chunks for the same module/version.
+    NULL (default) is the shared/global scope used for pattern chunks and for
+    legacy callers that pre-date multi-tenant support.
 
     Obtains a pgvector-capable connection from the shared pool (get_pool().checkout_vec()).
     Returns the number of embed() calls made to the embedder during this
@@ -241,6 +250,12 @@ def write_module_embeddings(
     """
     if not chunks:
         return 0
+    # Stamp every chunk with the profile_name supplied at write time.
+    # This is cleaner than threading profile_name through every make_*_chunks
+    # helper: the helpers remain profile-agnostic; the write call is the single
+    # authoritative place that knows which profile owns these chunks.
+    for c in chunks:
+        c.profile_name = profile_name
     # Dedup by the ux_embeddings_chunk unique key — make_module_chunks can emit
     # the same (chunk_type, entity_name, file_path, chunk_idx) twice for one
     # module (e.g. partial classes split across files). Postgres rejects a
@@ -268,8 +283,10 @@ def write_module_embeddings(
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM embeddings WHERE module = %s AND odoo_version = %s",
-                    (module, version),
+                    "DELETE FROM embeddings "
+                    "WHERE module = %s AND odoo_version = %s "
+                    "AND profile_name IS NOT DISTINCT FROM %s",
+                    (module, version, profile_name),
                 )
                 rows = [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)]
                 execute_values(cur, _INSERT_SQL, rows)
