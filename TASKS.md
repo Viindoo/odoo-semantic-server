@@ -426,7 +426,7 @@ Plans archived internally.
 - M9 "Auth Wow" — OAuth Google/GitHub, public signup, tenant API keys (zero migration debt).
 - M10 "Billing Wow" — Stripe, plan tiers.
 - M11 "Dashboard Wow" — `/dashboard` reuse React Flow từ M8 hero.
-- M12 "Multi-tenant Wow" — Neo4j namespacing.
+- M12 "Multi-tenant Wow" — Neo4j namespacing. *(superseded — M12 became "v0.6 Shim Removal"; the real multi-tenant work is now [Milestone 13](#milestone-13--multi-tenant-wow) below, design locked in ADR-0034.)*
 
 **Khi nào start:** M7 đã shipped (PR #46, 2026-05-11). Operator fix-ups done (PR #45, #48). Có thể start ngay. Stream A + Stream B scaffold có thể parallel (độc lập).
 
@@ -901,6 +901,79 @@ Wave commits: `18b3b66` (S1 src), `ea083a9` (S3 docs), `d5fcdd2` (S2 tests), `52
 ### Sequencing note
 
 Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B1 and WI-B2 may bundle into the same v0.6 PR if bandwidth allows; WI-B3 is decision-first (path-a amendment is trivial; path-b spawns its own milestone). v0.6 author chooses the bundle based on review capacity.
+
+---
+
+## Milestone 13 — "Multi-Tenant Wow"
+
+**Status:** `[ ]` Not started. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md).
+
+> Realizes **M12 Stream B WI-B3 path (b) "True profile authz"** (above), which was deferred pending a customer-demand signal: "*customer-A's index hidden from customer-B*". That signal has arrived — OSM will serve many customers, each with **private repositories**. Numbered M13 because M12 was repurposed for v0.6 shim removal; this supersedes the stale post-M8 roadmap line "M12 Multi-tenant Wow — Neo4j namespacing".
+
+**Intent:** Turn `profile` from convenience-segmentation (ADR-0016/0029) into a **hard tenant boundary** so many customers share one Neo4j + one Postgres (pooled topology) with zero cross-tenant visibility, and let customers grant private-repo access via a **deploy key** (they add Viindoo's public key to their own repo).
+**Outcome:** An API key bound to tenant A can never read a tenant-B node through any tool or `odoo://` resource — with or without an explicit `profile_name` — proven by a cross-tenant leak test that gates the release. Shared Odoo CE/EE + spec data stay single-instance (not cloned per tenant). Customers self-serve their deploy public key; private repos clone via that key.
+
+**Locked decisions (2026-05-22 design session):**
+- **Topology:** pooled (one datastore, row-level isolation).
+- **Data model:** shared base + per-tenant overlay — reuse the ADR-0016 `profile[]` inheritance chain; **NO `tenant_id` in Neo4j MERGE keys** (would clone Odoo CE per tenant and destroy the pooled benefit).
+- **Spec data** (CoreSymbol / LintRule / CLICommand / CLIFlag / PatternExample / SpecMetadata) stays **global shared** — standard Odoo reference data, exempt from the tenant filter.
+- **Credential:** per-tenant deploy-key — customer adds Viindoo's public key to their repo; private key never leaves the server.
+- **Git access:** keep subprocess git CLI (NOT GitPython/dulwich/pygit2) — per-repo advisory lock for mutating ops, known_hosts pinning (replaces `accept-new`), `fetch` + `reset --hard` refresh; see [`docs/adr/0035-git-access-model.md`](docs/adr/0035-git-access-model.md).
+- **License policy (soft block, config-driven):** a config `license_policy` map assigns each license class an action (`serve` / `ingest_flagged` / `skip`). Default: copyleft + OPL-1 + unknown → `serve` (submitter responsibility via ToS); **OEEL-1 → `skip`** (Viindoo's own Odoo SA obligation — submitter cannot waive it). Restricted content surfaces a visible `license_notice` to AI + human (never silent). Getting Odoo SA written permission = flip config, **no code change**. See [`docs/adr/0036-indexer-license-guard.md`](docs/adr/0036-indexer-license-guard.md).
+
+**Ordering rule (per request):** ship architecture- and DB-schema-affecting work FIRST (P1 → P2). Every later phase depends on the tenant boundary + the enforcement choke point existing. P3–P5 layer on top.
+
+### P1 — Control plane + DB schema (architecture-first, ship first)
+- [ ] **WI-1 — `tenants` table + tenant FKs** — HIGH (db-schema)
+  - Scope: new migration — `CREATE TABLE tenants`; `ALTER TABLE api_keys / profiles / ssh_key_pairs ADD COLUMN tenant_id` (FK, `NULL` = shared/global). Shared-base profiles (`odoo_N`) keep `tenant_id IS NULL`; tenant profiles parent onto a same-version shared base (ADR-0016 version-match already enforces this).
+  - Acceptance: `python -m src.db.migrate` idempotent on existing prod DB; existing rows default to `tenant_id NULL` (backward compatible); FK cascade verified.
+  - Dependency: none — pure additive schema. **Must land before P2.**
+- [ ] **WI-2 — `verify_api_key` returns `tenant_id`** — HIGH (auth)
+  - Scope: extend `src/db/auth_registry.py:70-120` to return `tenant_id`; auth middleware (`src/mcp/middleware.py:152-216`) writes `request.state.tenant_id`; tool-context thread-local (`src/mcp/server.py:153-164`) exposes it; `create_api_key` gains a `tenant_id` param.
+  - Acceptance: a key created under tenant X resolves to `tenant_id=X` in tool context; legacy `tenant_id NULL` keys behave as admin/global (only unscoped path, audit-logged).
+  - Dependency: WI-1.
+- [ ] **WI-10 — License policy engine (config-driven soft block)** — HIGH (data-correctness / legal) — [ADR-0036](docs/adr/0036-indexer-license-guard.md)
+  - Scope: indexer records `license` + derived `copyright_owner` on every `Module` node (always — facts). A config `license_policy` map (single source) assigns each license class an action: `serve` / `ingest_flagged` (ingest + tag `restricted`, withhold from results) / `skip`. Enforced at `registry.build_registry()` (single chokepoint). Defaults: LGPL/AGPL/GPL + OPL-1 + unknown → `serve`; **OEEL-1 → `skip`**. Restricted/skipped modules emit a structured `license_notice` surfaced to AI clients (tool-output marker) AND humans (UI badge) — never a silent gap. Submitter responsibility for non-OEEL via a ToS representation-and-warranty at repo registration + a notice-and-takedown path.
+  - Acceptance: under default config, OEEL modules from public `odoo/odoo` (`account_payment_term`, `certificate`, `l10n_*`) are NOT served and produce a `license_notice`; **flipping `license_policy.OEEL-1` to `serve` (test) exposes them with NO code change**; copyleft + Viindoo OPL-1 served normally; `EE_CONFUSION` name dict (`src/data/ee_modules.py`) unaffected.
+  - Dependency: none — independent of tenant work; **recommended to land first** (establishes the policy layer + closes the accidental-OEEL-ingest hole even before multi-tenant). ToS clause is a product/legal companion (not code-heavy).
+
+### P2 — Enforcement choke point (architecture-critical — RELEASE GATE)
+- [ ] **WI-3 — `resolve_allowed_profiles(tenant_id)` helper** — HIGH (architecture)
+  - Scope: ONE resolver = tenant's profiles + their shared-base ancestors (Postgres CTE reusing `get_ancestor_profile_names`); cached via the existing 60s session cache (ADR-0029).
+  - Acceptance: returns `['acme_17','odoo_17']` for an Acme-17 tenant; returns only shared-base names for a tenant with no own profiles.
+  - Dependency: WI-1, WI-2.
+- [ ] **WI-4 — Mandatory fail-closed filter across user-data tools** — HIGH (architecture)
+  - Scope: every user-data Cypher query (the ~27 sites enumerated in the survey — `_resolve_*` / `_list_*` / `impact_analysis` / `describe_module` / `find_override_point` / `orm.py` / `resources.py`) takes a **required** `$allowed_profiles`; remove the `$profile_name IS NULL OR …` optional-bypass form. No tenant context (non-admin) → empty result, never the full graph. `_latest_version()` (`src/mcp/server.py:295`) restricted to `$allowed_profiles` (else "auto" version of A leaks B's version). Spec-data tools stay exempt (locked decision).
+  - Acceptance: **cross-tenant leak test (RELEASE GATE)** — tenant A queries every tool + every `odoo://` resource and never sees a tenant-B-only node, with and without explicit `profile_name`. `list_available_profiles` / `set_active_profile` validate ownership.
+  - Dependency: WI-3. **Do not tag a release until this test passes** (Neo4j Community has no per-label security — the resolver is the only guard).
+
+### P3 — pgvector tenant column + RLS (db-schema)
+- [ ] **WI-5 — `embeddings.profile_name` + Postgres RLS** — HIGH (db-schema)
+  - Scope: `ALTER TABLE embeddings ADD COLUMN profile_name` (`NULL` = shared); add to UNIQUE + `idx_embeddings_filter`; `EmbeddingChunk` / INSERT / `DELETE … WHERE module=… AND odoo_version=…` (`writer_pgvector.py:271`) add `profile_name`; `ENABLE ROW LEVEL SECURITY` + policy keyed on `current_setting('app.allowed_profiles')`; MCP DB layer issues `SET LOCAL app.allowed_profiles` per request.
+  - Acceptance: `find_examples` / `suggest_pattern` for tenant A return zero tenant-B chunks even at the same `odoo_version`; RLS verified by direct SQL with a foreign `app.allowed_profiles`.
+  - Dependency: WI-1 (tenant), WI-3 (allow-list). Requires a one-time re-embed to backfill `profile_name`.
+
+### P4 — Deploy-key credential self-service
+- [ ] **WI-6 — Per-tenant deploy keypair + self-service public key** — MED (credential)
+  - Scope: `ssh_key_pairs.tenant_id` (WI-1) + `key_type CHECK ('deploy_key','access_key')`; tenant-scoped `GET /api/tenants/{id}/deploy-key` returns the (non-secret) public key + add-as-deploy-key instructions, gated by tenant auth (not full admin). Reuse existing Ed25519 generation + `GIT_SSH_COMMAND` clone (ADR-0008) unchanged.
+  - Acceptance: a tenant fetches only its own public key; clone of a private repo with that deploy key succeeds; another tenant cannot fetch it.
+  - Dependency: WI-1.
+- [ ] **WI-8 — Concurrent repo refresh: `fetch` + `reset --hard` under per-repo lock** — HIGH (concurrency) — [ADR-0035](docs/adr/0035-git-access-model.md) D2/D4
+  - Scope: add the missing in-place refresh path (none exists today — repos are clone-once). New repo-update helper runs `git fetch` then `git reset --hard origin/<branch>` (NOT `pull`/`merge` — the working tree is a read-only mirror). Wrap every mutating git op (clone/fetch/reset/checkout) in a **per-repo Postgres advisory lock** (`lock_id` from `repo_id`), generalizing the current per-profile lock (`pipeline.py _profile_lock_id`). Read-only `rev-parse`/`diff` stay lock-free but must not race a reset of the same repo. Add stale `.git/*.lock` cleanup before retry (ADR-0035 D6).
+  - Acceptance: integration test — two concurrent refreshes of the SAME repo serialize (no `index.lock` error); refreshes of DIFFERENT repos run in parallel; after a forced SIGKILL mid-fetch, the next refresh succeeds (stale lock cleaned). Credential isolation preserved (per-op `env`/tempfile key for the tenant's deploy key).
+  - Dependency: WI-1 (tenant), WI-6 (per-tenant deploy key). Keep the existing `ThreadPoolExecutor` worker cap; evaluate `--filter=blob:none` partial clone as a separate spike (ADR-0035 D5).
+- [ ] **WI-9 — known_hosts pinning + strict host checking** — MED (security/concurrency) — [ADR-0035](docs/adr/0035-git-access-model.md) D3
+  - Scope: replace the shared known_hosts + `StrictHostKeyChecking=accept-new` (`git_utils.py:112-116`) with a pre-populated, read-only known_hosts pinning the common forges (GitHub/GitLab/Bitbucket) + `StrictHostKeyChecking=yes` (or a per-clone known_hosts tempfile). Fixes both the concurrent-write race and the TOFU first-clone MITM exposure at multi-tenant scale.
+  - Acceptance: concurrent first-clones from multiple forges do not corrupt known_hosts; a clone against an unpinned/mismatched host key is rejected (not silently accepted); existing happy-path clone against a pinned forge still succeeds.
+  - Dependency: none (independent hardening; can land alongside WI-6).
+
+### P5 — Hardening (debt, schedule after P1–P4)
+- [ ] **WI-7 — `FERNET_KEY` → secrets manager; audit unscoped admin paths** — MED (security)
+  - Scope: move `FERNET_KEY` out of the plain env file into a secrets manager; audit-log the admin/global-key unscoped query path; revisit per-tenant envelope encryption (per-tenant DEK + KMS — ADR-0034 D8 deferred it) and decide whether the pooled blast-radius now justifies it.
+  - Acceptance: prod no longer reads `FERNET_KEY` from a systemd env file; audit row emitted on every unscoped admin query.
+  - Dependency: P1–P4 functional.
+
+> **Test discipline (per AI-Memory feedback):** any subagent touching `src/` in this milestone MUST run the Postgres integration suite (`pytest -m "(postgres or integration)"`), not just unit tests — and self-verify, don't trust subagent claims. The WI-4 cross-tenant leak test is the milestone release gate.
 
 ---
 
