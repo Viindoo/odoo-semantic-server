@@ -243,7 +243,9 @@ class ResolveViewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ref: ViewRef = Field(description="Composite key identifying this view")
-    view_type: str = Field(description="View type: 'form' | 'tree' | 'kanban' | ...")
+    view_type: str = Field(
+        description="View type: 'form'|'tree'|'list'|'kanban'|...  'list' is v18+ alias for 'tree'"
+    )
     module: str = Field(description="Defining module name")
     mode: str | None = Field(
         default=None,

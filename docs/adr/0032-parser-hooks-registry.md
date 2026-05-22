@@ -151,6 +151,8 @@ ADR-0005 is kept as historical record and MUST NOT be deleted.
 - The abstraction only makes sense for VERSION-based dispatch. Content-based dispatch
   (JS `_detect_era`) intentionally remains a plain function.
 
+**Robustness note (PR #160 review):** `_OWL_ENABLED_REGISTRY.resolve_version()` returns `default=None` on an unparseable or `"unknown"` version string, whereas the previous inline `int()` call would have raised `ValueError`. Callers treat `None` as "disabled" (skip OWL extraction), which is the safe default. Net OWL output is identical for all valid version strings; behaviour is strictly more robust for malformed inputs.
+
 ---
 
 ## Files Changed

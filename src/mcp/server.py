@@ -2847,7 +2847,8 @@ def _list_views_core(
 ) -> str:
     """Shared core for view listing — takes EITHER model OR module filter (not both).
 
-    `view_type` filters by View.type (form/tree/kanban/search/...).
+    `view_type` filters by View.type (form/tree/list/kanban/search/...).
+    'list' is the v18+ tag alias for 'tree'.
     `start_index` is a zero-based pagination cursor (Cypher SKIP).
     `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
@@ -4589,7 +4590,8 @@ def model_inspect(
         limit: Max rows per page (default 200).
         from_module: Restrict to rows declared in this module (summary/fields/field).
         kind: Filter fields by ttype, e.g. 'many2one' — method='fields' only.
-        view_type: Filter views by type, e.g. 'form' — method='views' only.
+        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
+            'list' is the v18+ alias for 'tree'.
     """
     text = _model_inspect(
         model=model,
@@ -4639,7 +4641,8 @@ def module_inspect(
         profile_name: Optional profile filter.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
-        view_type: Filter views by type, e.g. 'form'/'tree' — method='views' only.
+        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
+            'list' is the v18+ alias for 'tree'.
         bound_model: Filter OWL components bound to a model — method='owl' only.
         era: era1|era2|era3 — filter JS patches by era — method='js' only.
         target: filter JS patches by patched target — method='js' only.

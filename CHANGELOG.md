@@ -2,6 +2,32 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.9.0] — 2026-05-22 — Reindex-prep DB-impact wave v8→v19
+
+Bundled under PR #160. Six parser/indexer fixes that require a full reindex v8→v19 to take effect. No new MCP tools; tool surface remains 24.
+
+### Added
+- **LESS stylesheet indexing for v8-v11** (WI-3) — `src/indexer/parser_less.py` (regex-based, matching the `parser_scss` approach — no `tree-sitter-less` available on PyPI). Produces `:Stylesheet {language: "less"}` Neo4j nodes, `:IMPORTS` edges for `@import` chains, and `chunk_type='less'` pgvector embeddings (selectors, variables, mixins, imports, raw fallback). `find_examples` and `find_style_override` now accept `less` as a filter. `VALID_CHUNK_TYPES` in `src/constants.py` extended with `"less"`. ADR-0025 addendum added. Test coverage: `test_parser_less.py` (534 lines).
+- **Curated `odoo.tools` CoreSymbol coverage — ADR-0033** (WI-4) — 12 `spec_data/tools_symbols_X.0.json` files (v8-v19) with curated `tool_export` CoreSymbols (not auto-parsed — manual curation for accuracy). New `src/indexer/parser_tools_symbols.py` loader. Enables: `lookup_core_api("odoo.tools.SQL","16.0")` = not-available; `"17.0"` = stable. `_DEPRECATED_API_SYMBOLS` expanded from 14 → 19 entries: +4 `image_resize_image*` (removed v13, `image_process` replacement) + `pycompat` (dropped from `odoo.tools.__init__` v19). `safe_eval` dedup: parsed CoreSymbol wins over curated when both exist. Test coverage: `test_parser_tools_symbols.py` + `test_tools_symbols_integration.py`.
+- **v8/v9 CLICommand nodes from `parser_cli`** (WI-2) — `parser_cli.py` now resolves `openerp/` paths for v8/v9 (via `_PKG_PREFIX_REGISTRY`, see WI-6 below) and loads a static `commands` array from `spec_data/cli_commands_8.0.json` / `cli_commands_9.0.json` to produce `CLICommand` nodes. Test coverage: `test_parser_cli.py` extended with v8/v9 fixtures.
+- **Lint rules ≥50/version for v10-v19** (WI-5) — all 10 `spec_data/lint_rules_X.0.json` files (v10-v19) expanded to ≥50 curated rules. `test_lint_rules_minimum_count.py::test_minimum_50_per_version` passes. v8/v9 remain at curation baseline (era1 scarce source data, expected).
+- **`VersionRegistry` shared abstraction — ADR-0032** (WI-6) — `src/indexer/version_registry.py`: `VersionRegistry(min_major, max_major|None, handler)` — first-match wins, sorted by `min_major` ascending. Three registries wired: `_ERA_REGISTRY` (parser_python — era1/era2), `_PREFIX_REGISTRY` (parser_odoo_core — openerp//odoo/ prefix), `_OWL_ENABLED_REGISTRY` (parser_js — OWL v14+). `parser_cli` also gets `_PKG_PREFIX_REGISTRY`. Adding Odoo v20 behaviour is a 1-line registry append. Behavior-preserving: all existing era1/era2/era3 tests pass unchanged. OWL guard fails-soft on unparseable/`"unknown"` version (returns `None` = skip) vs prior `int()` which would raise. Test coverage: `test_version_registry.py` (216 lines).
+
+### Fixed
+- **v18/v19 generic field classes now classify as `field_type`** (WI-1) — `parser_odoo_core.py` detects `ast.Subscript` (e.g. `Field[int]`, `Field[str]`) in addition to `ast.ClassDef` when classifying CoreSymbols as `kind='field_type'`. Before this fix, v18/v19 generic field classes (`Integer`, `Many2one`, `Char`, etc.) were missing from the CoreSymbol graph after Odoo introduced generic field syntax. Test coverage: `test_parser_odoo_core.py` extended with Subscript fixtures.
+- **PR #160 review fixes** — `VALID_CHUNK_TYPES` now includes `"less"` (was missing from initial WI-3 commit); `safe_eval` CoreSymbol dedup: parsed wins over curated (prevents duplicate nodes when both exist); LESS variable regex uses word-boundary anchor `r'\b'` to avoid false matches inside URL strings; `parser_cli` registry wired via `_PKG_PREFIX_REGISTRY` (consistency with WI-6 pattern).
+
+### Changed
+- **`bootstrap_versions.json` corrected** (WI-7 docs) — v11 Bootstrap version `"4.0"` → `"3.3.4"` (v11 ships Bootstrap 3.3.4, not 4.x; v11 was the LESS→SCSS/Bootstrap 4 transition version but the actual shipped library is 3.3.4); v17 Bootstrap version `"5.3"` → `"5.1.3"` (precise patch version). The `site/src/pages/bootstrap.astro` page reads this file dynamically and inherits the correction automatically.
+- **ADR drift corrections** — ADR-0002 §3 `_DEPRECATED_API_SYMBOLS` count updated 14 → 19; ADR-0025 `language` enum extended to `"css"|"scss"|"less"`, `mixin_count` now documented for LESS too, LESS addendum section added; ADR-0032 Consequences note added for OWL fail-soft robustness.
+- **`view_type` docstrings** — `src/mcp/dto.py` `ResolveViewOutput.view_type` + `src/mcp/server.py` `_list_views_core` + `model_inspect`/`module_inspect` Args blocks now mention `'list'` (v18+ tag alias for `'tree'`). No logic change.
+
+### Notes
+- No new MCP tools. Tool surface remains 24. No Postgres migration required.
+- **OPS follow-up (admin, after deploy):** run the full reindex v8→v19 per `docs/deploy/reindex-v8-v19-runbook.md`. Covers: `index-core` v8-v19 (tools symbols + LESS nodes + CLICommand v8/v9 + lint rules ≥50 + field_type v18/v19 fix); `index-repo --all --full` (LESS nodes + mth.depends backfill); Cypher cleanup (OWLComp pre-v14 + snap_mod); `reembed-stubs` per profile.
+
+---
+
 ## [Unreleased] — M10C Polish Wave (PR #159)
 
 ### Added
