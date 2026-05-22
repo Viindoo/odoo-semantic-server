@@ -385,13 +385,20 @@ def test_impact_analysis_profile_none_backward_compat(
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_profile_filter_excludes_wrong_profile(
+def test_impact_analysis_profile_name_is_advisory_admin_unrestricted(
     seeded_impact_profiles, monkeypatch,
 ):
-    """profile_name='beta_impact' causes alpha.model to appear as not found."""
+    """M13 (ADR-0034 supersedes ADR-0029): profile_name is ADVISORY, not isolation.
+
+    Pre-M13 this asserted profile_name='beta_impact' hid alpha.model. Under M13 the
+    TENANT boundary is the isolation mechanism (proven by test_cross_tenant_isolation);
+    with no tenant context (admin), the choke point's `$own IS NULL` branch disables
+    filtering, so profile_name no longer restricts — alpha.model is found. A real
+    tenant would never see another tenant's private model regardless of profile_name.
+    """
     v = seeded_impact_profiles
     _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("model", "alpha.model", v, profile_name="beta_impact")
-    assert "not found" in result.lower(), (
-        f"alpha.model must not be visible under beta_impact profile, got: {result!r}"
+    assert "not found" not in result.lower(), (
+        f"admin (no tenant) is unrestricted — profile_name is advisory, got: {result!r}"
     )

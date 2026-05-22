@@ -431,8 +431,13 @@ class TestCheckModuleExistsProfileFilter:
             driver.close()
         assert "Indexed:         Yes" in result
 
-    def test_profile_filter_hides_other_profile(self, seeded_module_profiles):
-        """profile_name='alpha_cme' does not find the beta module."""
+    def test_profile_name_is_advisory_admin_unrestricted(self, seeded_module_profiles):
+        """M13 (ADR-0034 supersedes ADR-0029): profile_name is ADVISORY, not isolation.
+
+        Pre-M13 this asserted profile_name='alpha_cme' hid cme_beta_mod. Under M13 the
+        tenant boundary isolates (proven by test_cross_tenant_isolation); with no tenant
+        context (admin), profile_name no longer restricts — the beta module is found.
+        """
         from neo4j import GraphDatabase
 
         from src.mcp.server import _check_module_exists
@@ -446,4 +451,6 @@ class TestCheckModuleExistsProfileFilter:
             )
         finally:
             driver.close()
-        assert "Indexed:         No" in result
+        assert "Indexed:         Yes" in result, (
+            f"admin (no tenant) is unrestricted — profile_name is advisory, got: {result!r}"
+        )
