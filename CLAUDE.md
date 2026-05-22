@@ -158,4 +158,41 @@ ADR-0026 for full context and design decisions.
 | `docs/adr/` | Architecture Decision Records — đọc trước khi đụng schema/policy |
 | `CONTRIBUTING.md` | Setup dev, chạy tests, workflow commit |
 
-**ADR đã có:** `0001` schema evolution · `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version) · `0003` pattern storage (PatternExample Neo4j + reuse embeddings) · `0004` auth-web-ui-ssh-policy · `0005` core coverage version paths · `0006` environment harness (M6 Wave 1) · `0007` incremental indexer (head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel) · `0008` SSH auto-clone (URL detection, key delivery via env, tempfile safety, project-local known_hosts, full clone) · `0009` pattern catalogue community contribution (80+ curated patterns, test-enforced minimum) · `0010` embedding observability (call_count thread-safe, COUNT(*) /health) · `0011` Web UI session auth (bcrypt cost=12, 8h TTL, cookie SameSite=strict) · `0012` persona-skill-architecture (M7.5 — TRIGGER/PREFER/SKIP routing) · `0013` Defined-in ranking heuristic (M5.5 — is_definition flag, field_count fallback, deterministic tiebreak) · `0014` Astro unified UI (M8 — SSR pages + React islands, /admin/* gated by middleware → FastAPI /api/auth/verify) · `0015` FastAPI pure JSON API (M8 — Jinja2 removed, /api/* JSON only, Astro renders all HTML) · `0016` Profile hierarchy + Neo4j Option Y (parent_profile_id FK, ancestor profile array property, cycle-free + version-match validation) · `0017` OAuth via arctic + oslo (state + PKCE, Google/GitHub, account linking on verified email) · `0018` backup bundle contract (tar.gz: postgres.sql + neo4j.dump + fernet.enc + manifest.json) · `0019` restore upload security (OWASP 10-item checklist, tarfile filter='data', pre-restore safety backup) · `0020` FERNET key delivery + atomic rotation (--old-key-env/--new-key-env, fail-fast in prod, transaction rollback) · `0021` admin audit log (@audit_action decorator, audit_cli context manager, 18+ routes) · `0022` MFA TOTP (pyotp, Fernet-encrypted secrets, 10 HMAC backup codes, admin-required policy) · `0023` Tool output completeness (M9 W-OSM Wave 1 — tree grammar contract, English-only language policy, truncation+total disclosure via `_render_capped`, next-step hint mapping for 18 drill-down tools) · `0024` PATCH mutation policy (M9 follow-up — preserve head_sha on repo PATCH, reject name/version change on indexed profiles HTTP 409, ancestor+descendant version-match HTTP 422, TOCTOU UniqueViolation catch) · `0025` CSS/SCSS stylesheet indexing (M9 Coverage Fill — `:Stylesheet` node, `:IMPORTS` edges, pgvector chunks) · `0026` RBAC + key ownership (M9 follow-up — is_admin DB-sourced, deactivate authz hole, admin promote/demote, `/account` self-service) · `0027` system-user deployment layout (production migration: personal → dedicated system user, ProtectHome policy, TMPDIR/tmpfs gotcha, uv venv no-pip, Docker Compose basename) · `0028` discriminator consolidation (M11 — model_inspect/module_inspect/entity_lookup supersets, 10 flat tool deprecation shims, 1-major-release removal timeline) · `0029` implicit session context (M11 — per-API-key sticky odoo_version+profile_name, 24h sliding TTL, 5-sentinel defense, 60s in-memory cache, 3-tier resolution order) · `0030` MCP Resources URI scheme (M11 — odoo:// URI grammar, 7 kinds + MIME mapping, in-memory LRU 1000 entries/300s TTL, top-100 popular-model discovery, Postgres cache deferred to M12) · `0031` python-dotenv auto-load at CLI entry points (override=False, idempotent, main()-only to avoid pytest interference).
+**ADR đã có:**
+
+- `0001` schema evolution
+- `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version)
+- `0003` pattern storage (PatternExample Neo4j + reuse embeddings)
+- `0004` auth-web-ui-ssh-policy
+- `0005` core coverage version paths
+- `0006` environment harness (M6 Wave 1)
+- `0007` incremental indexer (head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel)
+- `0008` SSH auto-clone (URL detection, key delivery via env, tempfile safety, project-local known_hosts, full clone)
+- `0009` pattern catalogue community contribution (80+ curated patterns, test-enforced minimum)
+- `0010` embedding observability (call_count thread-safe, COUNT(*) /health)
+- `0011` Web UI session auth (bcrypt cost=12, 8h TTL, cookie SameSite=strict)
+- `0012` persona-skill-architecture (M7.5 — TRIGGER/PREFER/SKIP routing)
+- `0013` Defined-in ranking heuristic (M5.5 — is_definition flag, field_count fallback, deterministic tiebreak)
+- `0014` Astro unified UI (M8 — SSR pages + React islands, /admin/* gated by middleware → FastAPI /api/auth/verify)
+- `0015` FastAPI pure JSON API (M8 — Jinja2 removed, /api/* JSON only, Astro renders all HTML)
+- `0016` Profile hierarchy + Neo4j Option Y (parent_profile_id FK, ancestor profile array property, cycle-free + version-match validation)
+- `0017` OAuth via arctic + oslo (state + PKCE, Google/GitHub, account linking on verified email)
+- `0018` backup bundle contract (tar.gz: postgres.sql + neo4j.dump + fernet.enc + manifest.json)
+- `0019` restore upload security (OWASP 10-item checklist, tarfile filter='data', pre-restore safety backup)
+- `0020` FERNET key delivery + atomic rotation (--old-key-env/--new-key-env, fail-fast in prod, transaction rollback)
+- `0021` admin audit log (@audit_action decorator, audit_cli context manager, 18+ routes)
+- `0022` MFA TOTP (pyotp, Fernet-encrypted secrets, 10 HMAC backup codes, admin-required policy)
+- `0023` Tool output completeness (M9 W-OSM Wave 1 — tree grammar contract, English-only language policy, truncation+total disclosure via `_render_capped`, next-step hint mapping for 18 drill-down tools)
+- `0024` PATCH mutation policy (M9 follow-up — preserve head_sha on repo PATCH, reject name/version change on indexed profiles HTTP 409, ancestor+descendant version-match HTTP 422, TOCTOU UniqueViolation catch)
+- `0025` CSS/SCSS stylesheet indexing (M9 Coverage Fill — `:Stylesheet` node, `:IMPORTS` edges, pgvector chunks)
+- `0026` RBAC + key ownership (M9 follow-up — is_admin DB-sourced, deactivate authz hole, admin promote/demote, `/account` self-service)
+- `0027` system-user deployment layout (production migration: personal → dedicated system user, ProtectHome policy, TMPDIR/tmpfs gotcha, uv venv no-pip, Docker Compose basename)
+- `0028` discriminator consolidation (M11 — model_inspect/module_inspect/entity_lookup supersets, 10 flat tool deprecation shims, 1-major-release removal timeline)
+- `0029` implicit session context (M11 — per-API-key sticky odoo_version+profile_name, 24h sliding TTL, 5-sentinel defense, 60s in-memory cache, 3-tier resolution order)
+- `0030` MCP Resources URI scheme (M11 — odoo:// URI grammar, 7 kinds + MIME mapping, in-memory LRU 1000 entries/300s TTL, top-100 popular-model discovery, Postgres cache deferred to M12)
+- `0031` python-dotenv auto-load at CLI entry points (override=False, idempotent, main()-only to avoid pytest interference)
+- `0032` parser version-dispatch registry (M11 — `VersionRegistry(min_major, max_major, handler)` replaces hard-coded era branches in parser_python/js/core/cli; supersedes prefix-selection part of ADR-0005)
+- `0033` odoo.tools symbol coverage (curated, version-aware)
+- `0034` multi-tenant pooled isolation + deploy-key credentials (M13 — shared-base + per-tenant overlay reusing ADR-0016 `profile[]`, NO tenant_id in Neo4j MERGE keys, mandatory fail-closed choke-point filter + Postgres RLS on embeddings, spec data stays global, per-tenant deploy-key; supersedes ADR-0016 D6 optional-filter + ADR-0029 profile-not-authz)
+- `0035` git access model (M13 — subprocess git CLI kept over GitPython/dulwich/pygit2; per-repo advisory lock for mutating ops, known_hosts pinning replaces accept-new, fetch+reset-hard refresh, evaluate partial clone; supersedes ADR-0008 accept-new posture + revisits full-clone)
+- `0036` license policy engine (M13 — config-driven SOFT block: `license_policy` map → serve/ingest_flagged/skip per license class; default OEEL-1=skip [Viindoo's own Odoo SA obligation], copyleft+OPL-1+unknown=serve under submitter ToS; visible `license_notice` to AI+human, never silent; written-permission = config flip, no code change; complements ADR-0034 read-side isolation)
