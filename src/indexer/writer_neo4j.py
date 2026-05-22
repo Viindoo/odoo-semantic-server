@@ -45,12 +45,18 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
             m.edition = $edition,
             m.viindoo_equivalent_qname = $vvq,
-            m.last_commit_sha = $commit_sha
+            m.last_commit_sha = $commit_sha,
+            m.license = $license,
+            m.copyright_owner = $copyright_owner,
+            m.license_notice = $license_notice
     """, name=module.name, v=module.odoo_version,
          repo=module.repo, path=module.path, version_raw=module.version_raw,
          edition=module.edition,
          vvq=module.viindoo_equivalent_qname,
          commit_sha=module.commit_sha,
+         license=module.license,
+         copyright_owner=module.copyright_owner,
+         license_notice=module.license_notice,
          profiles=profiles)
 
     for dep in module.depends:

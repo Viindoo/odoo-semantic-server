@@ -2305,7 +2305,8 @@ def _describe_module(
             WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
             RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
                    m.edition AS edition,
-                   m.viindoo_equivalent_qname AS vvq
+                   m.viindoo_equivalent_qname AS vvq,
+                   m.license_notice AS license_notice
             """,
             n=name, v=odoo_version, profile_name=profile_name,
         ).single()
@@ -2369,6 +2370,12 @@ def _describe_module(
         ).single()["c"]
 
     lines = [f"{name} (Odoo {odoo_version})"]
+
+    # ADR-0036: surface license_notice as a visible marker (D3 — never silent).
+    # Only emitted when non-null (i.e. module is ingest_flagged; skip action
+    # means the module never reaches here at all).
+    if mod_rec.get("license_notice"):
+        lines.append(f"├─ License notice: {mod_rec['license_notice']}")
 
     # Manifest sub-tree (non-last parent → "│   " sublist indent).
     lines.append("├─ Manifest:")

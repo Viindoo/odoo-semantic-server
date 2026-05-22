@@ -20,6 +20,10 @@ class ModuleInfo:
     edition: str = "community"
     viindoo_equivalent_qname: str | None = None
     commit_sha: str | None = None
+    # ADR-0036 — License policy engine fields (always recorded, policy applied at registry).
+    license: str | None = None
+    copyright_owner: str | None = None
+    license_notice: str | None = None
 
 
 @dataclass

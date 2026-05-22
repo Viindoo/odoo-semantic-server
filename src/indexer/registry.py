@@ -1,15 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/registry.py
 import ast
+import logging
 import re
 from pathlib import Path
 from typing import Protocol
 
-from src.constants import LEGACY_ERA_MAX_MAJOR
+from src.constants import LEGACY_ERA_MAX_MAJOR, license_policy_action
 
 from .models import ModuleInfo
-from .parser_python import _detect_module_edition, _detect_viindoo_equivalent
+from .parser_python import (
+    _derive_copyright_owner,
+    _detect_module_edition,
+    _detect_viindoo_equivalent,
+    _resolve_effective_license,
+)
 from .scanner import get_git_branch, get_module_commit_sha, is_odoo_version_branch
+
+_logger = logging.getLogger(__name__)
 
 # --- ManifestFinder Protocol (M4.5 WI1.1, per ADR-0002) --------------------
 # Odoo v8/v9 use __openerp__.py instead of __manifest__.py.
@@ -164,6 +172,34 @@ def build_registry(
                 module_relpath = module_dir
             commit_sha = get_module_commit_sha(repo_root, module_relpath)
 
+            # --- ADR-0036: License detection (D1) ---
+            try:
+                major = int(odoo_version.split(".")[0])
+            except (ValueError, IndexError):
+                major = 10  # default to v10+ era for unknown versions
+            effective_license = _resolve_effective_license(manifest, major)
+            copyright_owner = _derive_copyright_owner(manifest, effective_license)
+
+            # --- ADR-0036: Policy chokepoint (D2) — single location, config-driven ---
+            action = license_policy_action(effective_license)
+            if action == "skip":
+                _logger.warning(
+                    "License policy: skipping module '%s' (license=%s, action=skip)."
+                    " To enable, flip LICENSE_POLICY['%s'] in src/constants.py.",
+                    module_name, effective_license, effective_license,
+                )
+                continue  # do NOT insert into registry
+
+            # Build the license_notice for restricted (ingest_flagged) modules.
+            # 'serve' modules have no notice (None = silent-OK).
+            license_notice: str | None = None
+            if action == "ingest_flagged":
+                license_notice = (
+                    f"Module '{module_name}' license {effective_license}:"
+                    f" ingest_flagged per license policy."
+                    f" Content is indexed but withheld from normal results pending review."
+                )
+
             info = ModuleInfo(
                 name=module_name,
                 odoo_version=odoo_version,
@@ -176,6 +212,9 @@ def build_registry(
                 ),
                 viindoo_equivalent_qname=_detect_viindoo_equivalent(module_name),
                 commit_sha=commit_sha,
+                license=effective_license,
+                copyright_owner=copyright_owner,
+                license_notice=license_notice,
             )
 
             if odoo_version not in registry:
