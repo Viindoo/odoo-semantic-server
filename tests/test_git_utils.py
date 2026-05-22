@@ -97,11 +97,14 @@ def test_clone_repo_ssh_writes_tmp_then_cleans(tmp_path, monkeypatch):
             private_key_pem=b"fake-pem-bytes",
         )
 
-    # GIT_SSH_COMMAND set with the tmp key path + accept-new + project-local known_hosts
+    # GIT_SSH_COMMAND set with the tmp key path + StrictHostKeyChecking=yes +
+    # project-local known_hosts (ADR-0035 D3: pinned keys, no TOFU).
     assert "GIT_SSH_COMMAND" in captured_env
     gsc = captured_env["GIT_SSH_COMMAND"]
     assert "-i " in gsc
-    assert "StrictHostKeyChecking=accept-new" in gsc
+    # ADR-0035 D3: StrictHostKeyChecking=yes replaces accept-new.
+    assert "StrictHostKeyChecking=yes" in gsc
+    assert "accept-new" not in gsc
     assert "UserKnownHostsFile=" in gsc
     # Verify project-local known_hosts path (not ~/.ssh/known_hosts)
     assert "odoo-semantic-mcp" in gsc

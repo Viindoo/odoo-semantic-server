@@ -20,7 +20,11 @@ def test_migrate_creates_profiles_table(clean_pg):
             WHERE table_name = 'profiles' ORDER BY ordinal_position
         """)
         cols = [r[0] for r in cur.fetchall()]
-    assert cols == ["id", "name", "odoo_version", "description", "created_at", "parent_profile_id"]
+    # M13: tenant_id added by m13_002_tenants_and_fks.sql (additive, nullable FK)
+    assert cols == [
+        "id", "name", "odoo_version", "description", "created_at",
+        "parent_profile_id", "tenant_id",
+    ]
 
 
 def test_migrate_creates_repos_table(clean_pg):
@@ -69,7 +73,14 @@ def test_migrate_embeddings_idempotent(clean_pg):
 
 
 def test_migrate_embeddings_unique_index(clean_pg):
-    """UNIQUE constraint on (chunk_type, module, odoo_version, entity_name, chunk_idx)."""
+    """UNIQUE NULLS NOT DISTINCT on (chunk_type, module, odoo_version, entity_name,
+    file_path, chunk_idx, profile_name).
+
+    Both rows below omit profile_name (→ NULL = shared/pattern chunk). Under the
+    default UNIQUE semantics two NULLs are distinct and would NOT collide, silently
+    regressing dedup for shared chunks; the NULLS NOT DISTINCT clause (m13_001)
+    treats NULL profile_names as equal, so the duplicate must still raise.
+    """
     import psycopg2.errors
     from pgvector.psycopg2 import register_vector
     run_migrations(clean_pg)
@@ -588,6 +599,8 @@ def test_migrate_fresh_db_creates_all_tables(clean_pg):
         "pattern_feedback",
         "indexer_jobs",
         "key_rotation_log",
+        # M13 — tenants table added by m13_002_tenants_and_fks.sql
+        "tenants",
     }
 
     with clean_pg.cursor() as cur:
@@ -641,3 +654,256 @@ def test_key_rotation_log_index_exists(clean_pg):
     assert "idx_key_rotation_log_time" in indexes, (
         f"Expected idx_key_rotation_log_time in {indexes}"
     )
+
+
+# ---------------------------------------------------------------------------
+# M13 schema tests — tenants table + tenant_id FKs + key_type + repos UNIQUE
+# (m13_002_tenants_and_fks.sql, ADR-0034 D1 + D7)
+# ---------------------------------------------------------------------------
+
+
+def test_m13_tenants_table_exists(clean_pg):
+    """m13_002: tenants table must exist with id, name, created_at, active columns."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+             WHERE table_name = 'tenants'
+             ORDER BY ordinal_position
+        """)
+        cols = [r[0] for r in cur.fetchall()]
+    assert "id" in cols, "tenants.id missing"
+    assert "name" in cols, "tenants.name missing"
+    assert "created_at" in cols, "tenants.created_at missing"
+    assert "active" in cols, "tenants.active missing"
+
+
+def test_m13_tenants_name_unique(clean_pg):
+    """m13_002: tenants.name must be UNIQUE — duplicate insert raises UniqueViolation."""
+    import psycopg2.errors
+
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('acme')")
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            cur.execute("INSERT INTO tenants (name) VALUES ('acme')")
+
+
+def test_m13_tenant_id_fk_columns_exist(clean_pg):
+    """m13_002: tenant_id column must be present on api_keys, profiles, ssh_key_pairs, repos."""
+    run_migrations(clean_pg)
+    tables = ["api_keys", "profiles", "ssh_key_pairs", "repos"]
+    for table in tables:
+        with clean_pg.cursor() as cur:
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_name = %s AND column_name = 'tenant_id'
+            """, (table,))
+            row = cur.fetchone()
+        assert row is not None, f"{table}.tenant_id column missing after m13_002"
+
+
+def test_m13_tenant_id_defaults_null(clean_pg):
+    """m13_002: tenant_id must default to NULL — existing-row compatibility (ADR-0034 D1)."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        # Insert a profile without specifying tenant_id
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version) VALUES ('shared_base', '17.0') RETURNING id"
+        )
+        pid = cur.fetchone()[0]
+        cur.execute("SELECT tenant_id FROM profiles WHERE id = %s", (pid,))
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] is None, "profiles.tenant_id should default to NULL for shared/global rows"
+
+
+def test_m13_tenant_id_fk_references_tenants(clean_pg):
+    """m13_002: api_keys.tenant_id must be a FK referencing tenants(id) with CASCADE."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT rc.delete_rule, ccu.table_name AS referenced_table
+              FROM information_schema.referential_constraints rc
+              JOIN information_schema.key_column_usage kcu
+                ON kcu.constraint_name = rc.constraint_name
+              JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = rc.constraint_name
+             WHERE kcu.table_name = 'api_keys' AND kcu.column_name = 'tenant_id'
+        """)
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"Expected 1 FK on api_keys.tenant_id, found {len(rows)}"
+    delete_rule, referenced_table = rows[0]
+    assert delete_rule == "CASCADE"
+    assert referenced_table == "tenants"
+
+
+def test_m13_ssh_key_pairs_key_type_column(clean_pg):
+    """m13_002: ssh_key_pairs.key_type must exist with default 'access_key' (ADR-0034 D7)."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT column_default, is_nullable
+              FROM information_schema.columns
+             WHERE table_name = 'ssh_key_pairs' AND column_name = 'key_type'
+        """)
+        row = cur.fetchone()
+    assert row is not None, "ssh_key_pairs.key_type column missing"
+    column_default, is_nullable = row
+    assert "access_key" in str(column_default), (
+        f"ssh_key_pairs.key_type default should be 'access_key', got: {column_default}"
+    )
+    assert is_nullable == "NO", "ssh_key_pairs.key_type must be NOT NULL"
+
+
+def test_m13_ssh_key_pairs_key_type_check_constraint(clean_pg):
+    """m13_002: ssh_key_pairs.key_type must only accept 'deploy_key' or 'access_key'."""
+    import psycopg2.errors
+
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        # Valid insert — 'deploy_key'
+        cur.execute(
+            "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted, key_type) "
+            "VALUES ('k1', 'pub', 'enc', 'deploy_key')"
+        )
+        # Valid insert — 'access_key' (default)
+        cur.execute(
+            "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted) "
+            "VALUES ('k2', 'pub2', 'enc2')"
+        )
+        cur.execute("SELECT key_type FROM ssh_key_pairs WHERE name = 'k2'")
+        assert cur.fetchone()[0] == "access_key", "Default key_type should be 'access_key'"
+        # Invalid insert — must raise CheckViolation
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted, key_type) "
+                "VALUES ('k3', 'pub3', 'enc3', 'admin_key')"
+            )
+
+
+def test_m13_repos_unique_per_profile_not_global(clean_pg):
+    """m13_002: same (url, branch) under DIFFERENT profiles must succeed (ADR-0034 D2)."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version) VALUES ('p_a', '17.0') RETURNING id"
+        )
+        pid_a = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version) VALUES ('p_b', '17.0') RETURNING id"
+        )
+        pid_b = cur.fetchone()[0]
+
+        # Same URL+branch under profile A
+        cur.execute(
+            "INSERT INTO repos (profile_id, url, branch, local_path) "
+            "VALUES (%s, 'github.com/odoo/odoo', '17.0', '/tmp/odoo_a')",
+            (pid_a,),
+        )
+        # Same URL+branch under profile B — must NOT raise (cross-profile allowed)
+        cur.execute(
+            "INSERT INTO repos (profile_id, url, branch, local_path) "
+            "VALUES (%s, 'github.com/odoo/odoo', '17.0', '/tmp/odoo_b')",
+            (pid_b,),
+        )
+
+
+def test_m13_repos_unique_within_same_profile(clean_pg):
+    """m13_002: same (url, branch, profile_id) under the SAME profile must raise UniqueViolation."""
+    import psycopg2.errors
+
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version) VALUES ('p_dup', '17.0') RETURNING id"
+        )
+        pid = cur.fetchone()[0]
+
+        cur.execute(
+            "INSERT INTO repos (profile_id, url, branch, local_path) "
+            "VALUES (%s, 'github.com/x/y', '17.0', '/tmp/xy_1')",
+            (pid,),
+        )
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            cur.execute(
+                "INSERT INTO repos (profile_id, url, branch, local_path) "
+                "VALUES (%s, 'github.com/x/y', '17.0', '/tmp/xy_2')",
+                (pid,),
+            )
+
+
+def test_m13_repos_old_global_unique_constraint_dropped(clean_pg):
+    """m13_002 must DROP the old global UNIQUE(url, branch) (repos_url_branch_key).
+
+    Asserts the business rule directly: if the drop silently failed, cross-profile
+    registration of the same upstream URL would wrongly raise — and the positive
+    test test_m13_repos_unique_per_profile_not_global would be the only signal.
+    """
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT constraint_name FROM information_schema.table_constraints "
+            "WHERE table_name = 'repos' AND constraint_type = 'UNIQUE'"
+        )
+        names = {r[0] for r in cur.fetchall()}
+    assert "repos_url_branch_key" not in names, (
+        "old global UNIQUE(url, branch) must be dropped by m13_002"
+    )
+    assert "repos_url_branch_profile_key" in names, (
+        "per-profile UNIQUE(url, branch, profile_id) must be present"
+    )
+
+
+def test_m13_deploy_key_unique_per_tenant(clean_pg):
+    """m13_002 partial UNIQUE index allows at most ONE deploy_key per tenant.
+
+    Closes the get_or_create_tenant_deploy_key check-then-insert TOCTOU, while
+    still permitting multiple access_key rows for the same tenant.
+    """
+    import psycopg2.errors
+
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('t_dk') RETURNING id")
+        tid = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+            "VALUES ('dk1', 'pub1', 'enc1', 'deploy_key', %s)",
+            (tid,),
+        )
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            cur.execute(
+                "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+                "VALUES ('dk2', 'pub2', 'enc2', 'deploy_key', %s)",
+                (tid,),
+            )
+
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('t_ak') RETURNING id")
+        tid2 = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+            "VALUES ('ak1', 'pub1', 'enc1', 'access_key', %s)",
+            (tid2,),
+        )
+        cur.execute(
+            "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+            "VALUES ('ak2', 'pub2', 'enc2', 'access_key', %s)",
+            (tid2,),
+        )
+        cur.execute(
+            "SELECT count(*) FROM ssh_key_pairs WHERE tenant_id = %s AND key_type = 'access_key'",
+            (tid2,),
+        )
+        assert cur.fetchone()[0] == 2, "multiple access_key rows per tenant must be allowed"
+
+
+def test_m13_migration_idempotent(clean_pg):
+    """m13_002: running migrate twice must not fail (full idempotency check)."""
+    run_migrations(clean_pg)
+    run_migrations(clean_pg)

@@ -187,7 +187,7 @@ cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
      RETURN s.odoo_version AS version, count(s) AS stylesheet_count
      ORDER BY toFloat(version) ASC;"
 ```
-Expected: non-zero rows for v8.0, v9.0, v10.0, v11.0. Zero for v12.0+ (they use SCSS).
+Expected: **v9.0, v10.0, v11.0 > 0**; **v8.0 = 0 (correct — vendored Bootstrap only)**; zero for v12.0+ (LESS → SCSS cutover at v12).
 
 ```bash
 cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
@@ -290,14 +290,14 @@ cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
      RETURN s.odoo_version AS version, count(s) AS count
      ORDER BY version;"
 ```
-Expected: > 0 for each of v8.0, v9.0, v10.0, v11.0.
+Expected: **v9.0, v10.0, v11.0 > 0**; **v8.0 = 0 (correct — all v8 LESS is vendored Bootstrap, not module LESS source)**. v8 legitimately produces zero `:Stylesheet {language:'less'}` nodes; v9-v11 have real Odoo module LESS source. LESS → SCSS cutover happened at v12 (not v11).
 
 ```bash
 cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
     "MATCH ()-[:IMPORTS]->(s:Stylesheet {language:'less'})
      RETURN count(*) AS import_edges;"
 ```
-Expected: > 0.
+Expected: > 0 (at least one LESS `@import` chain resolved in v9-v11).
 
 ### 5.4 field_type v18/v19 (WI-1)
 
@@ -379,6 +379,101 @@ Expected: output showing `.less` file paths (v9 uses LESS).
 
 ---
 
+## 5.8 Post-wave3 new data verify (M13 pre-reindex wave)
+
+Run after applying migration m13_001 + m13_002 and full reindex.
+
+**5.8a — Module license/copyright_owner populated:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (m:Module)
+     WHERE m.license IS NOT NULL
+     RETURN m.odoo_version AS version, count(m) AS licensed_count
+     ORDER BY toFloat(version) ASC
+     LIMIT 15;"
+```
+Expected: non-zero rows per version (v8 base AGPL-3; v9-v11 mostly LGPL-3 key missing → AGPL-3 fallback; v12+ explicit LGPL-3).
+
+**5.8b — OEEL-1 modules NOT served + carry license_notice:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (m:Module {license: 'OEEL-1'})
+     RETURN m.odoo_version AS version, m.name AS module, m.license_notice AS notice
+     ORDER BY toFloat(version) ASC, m.name ASC;"
+```
+Expected: rows for known OEEL-1 modules (v15/v16: `l10n_it_edi_website_sale`; v17: `account_payment_term` + `l10n_it_edi_website_sale`; v18: `certificate`, `l10n_hr_edi`, `l10n_it_edi_website_sale`, `l10n_jo_edi_pos`, `project_hr_skills`; v19: same minus `l10n_it_edi_website_sale`). Each row must have a non-null `license_notice`. These modules are NOT served in MCP tool output — verify that `model_inspect` on a model defined only in `account_payment_term` (v17) returns an empty result or license_notice only.
+
+**5.8c — embeddings.profile_name populated (no unexpected NULLs for new chunks):**
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT profile_name, count(*) AS chunk_count
+FROM embeddings
+GROUP BY profile_name
+ORDER BY chunk_count DESC
+LIMIT 20;"
+```
+Expected: chunks written after the reindex carry non-NULL `profile_name`. Legacy chunks (written before m13_001) may still have NULL — those will be backfilled on next `reembed-stubs` run per profile.
+
+**5.8d — :LintViolation nodes v15+ > 0 with :HAS_VIOLATION edge:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (v:View)-[:HAS_VIOLATION]->(lv:LintViolation)
+     WHERE v.odoo_version >= '15.0'
+     RETURN v.odoo_version AS version, count(lv) AS violations
+     ORDER BY toFloat(version) ASC;"
+```
+Expected: non-zero for v15.0, v16.0, v17.0, v18.0, v19.0. v18/v19 violations may include `<list>` views validated against `list_view.rng` (Odoo renamed `<tree>` → `<list>`; RNG is read version-exact from the indexed Odoo core source at index time).
+
+---
+
+## 5.9 Repos-hygiene normalize (post-wave3)
+
+The wave3 PR changes repo registration semantics. Audit existing rows for consistency.
+
+**5.9a — Normalize local_path derivation:**
+Existing repos may have user-supplied `local_path` values that differ from the new server-derived convention. Query:
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT id, url, branch, local_path, profile_id
+FROM repos
+WHERE local_path IS NOT NULL
+ORDER BY id;"
+```
+Review each row. If `local_path` was manually set and differs from what the server would derive (URL+branch-based), decide whether to update or leave as-is (both are supported — the column is informational for the cloner, not a unique key).
+
+**5.9b — Review cross-profile (url, branch) duplicates:**
+The UNIQUE constraint was narrowed from `(url, branch)` to `(url, branch, profile_id)`. This allows the same repo to be registered under multiple profiles. Verify intentional duplicates:
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT url, branch, count(*) AS profile_count, array_agg(profile_id) AS profiles
+FROM repos
+GROUP BY url, branch
+HAVING count(*) > 1
+ORDER BY url, branch;"
+```
+Each duplicate must represent a deliberately multi-profile registration (e.g. the same repo indexed under both a shared base and a tenant overlay profile). Unexpected duplicates should be reviewed and de-duplicated via `DELETE FROM repos WHERE id = <stale_id>`.
+
+---
+
+## Known Constraints (post-wave3)
+
+### MED-2 — Private forges require manual known_hosts onboarding
+
+`StrictHostKeyChecking=yes` is now enforced (replaces `accept-new`). GitHub, GitLab, and Bitbucket SSH host keys are pre-pinned in the bundled known_hosts. **Self-hosted or other forges are not pre-pinned** — any clone attempt against an unpinned host will be rejected with a `Host key verification failed` error.
+
+**Resolution (per-host, one-time):**
+1. Obtain the SSH host key fingerprint from the forge admin:
+   ```bash
+   ssh-keyscan -H <your-forge-hostname> 2>/dev/null
+   ```
+2. Append the output to `src/git_utils.py`'s pinned known_hosts constant (or the configured known_hosts file path).
+3. Restart the MCP service: `sudo systemctl restart odoo-semantic-mcp`.
+4. Verify clone succeeds for a test repo on that forge.
+
+This is a one-time step per forge host. Once pinned, subsequent clones for any repo on that forge require no further action.
+
+---
+
 ## 6. Post-Ops Verification Checklist
 
 | Item | Expected | Checked |
@@ -391,7 +486,7 @@ Expected: output showing `.less` file paths (v9 uses LESS).
 | `odoo.tools.SQL` v17 | stable | [ ] |
 | `field_type` count v18/v19 | Non-zero, comparable to v17 | [ ] |
 | CLICommand v8/v9 | > 0 | [ ] |
-| `:Stylesheet {language:'less'}` v8-v11 | > 0 for each version | [ ] |
+| `:Stylesheet {language:'less'}` v9-v11 | > 0 for v9/v10/v11; **v8 = 0 (correct — vendored only)** | [ ] |
 | `:IMPORTS` edges for LESS | > 0 | [ ] |
 | `f.comodel_name` populated | Non-zero for v10+ relational fields | [ ] |
 | `mth.depends` populated | Non-zero for v10+ compute methods | [ ] |
@@ -401,6 +496,13 @@ Expected: output showing `.less` file paths (v9 uses LESS).
 | `resolve_orm_chain` smoke | Returns hop resolution, not BROKEN | [ ] |
 | `validate_domain` smoke | Returns VALID for simple domain | [ ] |
 | `resolve_stylesheet` smoke (v9 LESS) | Returns `.less` file entries | [ ] |
+| Module.license populated (5.8a) | Non-zero per version | [ ] |
+| OEEL-1 modules carry license_notice (5.8b) | Per-version list present; not served in tool output | [ ] |
+| embeddings.profile_name populated (5.8c) | New chunks have non-NULL profile_name | [ ] |
+| :LintViolation v15+ > 0 with :HAS_VIOLATION (5.8d) | Non-zero for v15-v19 incl. v18/v19 list views | [ ] |
+| Repos local_path normalized (5.9a) | No unexpected user-supplied paths | [ ] |
+| Cross-profile (url,branch) duplicates reviewed (5.9b) | All duplicates intentional | [ ] |
+| MED-2 self-hosted forges (if any) | SSH host keys pinned before clone attempt | [ ] |
 
 ---
 

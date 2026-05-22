@@ -149,7 +149,6 @@ class TestDeleteProfile:
         _run([
             "add-repo", "--profile", "profile1",
             "--url", "https://example.com/repo1", "--branch", "17.0",
-            "--local-path", str(repo_dir),
         ], env_extra=env)
 
         res = _run(["delete-profile", "profile1", "--yes"], env_extra=env)
@@ -179,7 +178,6 @@ class TestDeleteRepo:
         _run([
             "add-repo", "--profile", "profile1",
             "--url", "https://example.com/repo1", "--branch", "17.0",
-            "--local-path", str(repo_dir),
         ], env_extra=env)
 
         # Get repo id
@@ -206,7 +204,6 @@ class TestDeleteRepo:
         _run([
             "add-repo", "--profile", "profile1",
             "--url", url, "--branch", "17.0",
-            "--local-path", str(repo_dir),
         ], env_extra=env)
 
         res = _run(["delete-repo", url, "--yes"], env_extra=env)

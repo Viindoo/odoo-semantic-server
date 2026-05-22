@@ -1,7 +1,7 @@
 # ADR-0034 — Multi-Tenant Pooled Isolation + Deploy-Key Credentials
 
 **Date:** 2026-05-22
-**Status:** Proposed — M12
+**Status:** Accepted — M13 (DDL + plumbing shipped on feat/m13pre-wave3: tenants table, tenant_id FKs, ssh_key_pairs.key_type, repos uniqueness, embeddings.profile_name, deploy-key endpoint, git hardening; read-side enforcement + RLS deferred to a follow-up wave)
 
 > Supersedes the "optional `profile_name` filter" posture of [ADR-0016](0016-profile-hierarchy-and-neo4j-isolation.md)
 > D6 and the "profile is convenience, not authz" amendment of
@@ -43,6 +43,8 @@ option for cross-tenant leakage — so the design below centres on closing
 gap #1 with **mandatory, fail-closed** enforcement at a single choke point,
 not 88 hand-edited query sites.
 
+> **Site-count correction (2026-05-22, post-wave3 survey):** The "~27 sites" and "88 query sites" figures were pre-implementation estimates. Verified count: **61 user-data Cypher query sites** (57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`) PLUS 3 embeddings queries with no Neo4j filter (`find_examples`, `find_style_override`, `suggest_pattern`) that rely on pgvector RLS (WI-5/ADR-0034 D6) for isolation. The "88 query sites" figure in D4 referred to a broader naive-approach count; the actual enforcement surface for WI-4 is 61 + 3.
+
 ### Why shared-base + overlay (not `tenant_id` in every key)
 
 The naive reading of "pooled" — add `tenant_id` to all 15 node MERGE keys and
@@ -80,6 +82,7 @@ CREATE TABLE tenants (
 ALTER TABLE api_keys      ADD COLUMN tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE;
 ALTER TABLE profiles      ADD COLUMN tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE;  -- NULL = shared base
 ALTER TABLE ssh_key_pairs ADD COLUMN tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE;
+ALTER TABLE repos         ADD COLUMN tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE;
 ```
 
 A `tenant_id IS NULL` profile (e.g. `odoo_17`) is the **shared base**; every
@@ -176,8 +179,10 @@ and the customer controls grant/revoke.
   column. Per-tenant keys let a customer revoke independently and bound the
   blast radius in the pooled store.
 - **Self-service public-key endpoint**: a tenant-scoped
-  `GET /api/tenants/{id}/deploy-key` returns the (non-secret) public key plus
+  `GET /api/tenant/deploy-key` returns the (non-secret) public key plus
   add-as-deploy-key instructions, gated by tenant-level auth — not full admin.
+  The tenant identity is derived from the `X-API-Key` (request.state.tenant_id),
+  NOT a path/query parameter, so a cross-tenant fetch is structurally impossible.
   The generation/encryption/expose machinery already exists
   (`src/web_ui/routes/ssh_keys.py:33-49,107-168`; UI copy button at
   `site/src/pages/admin/ssh-keys.astro:141-149`).

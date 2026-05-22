@@ -4,7 +4,7 @@
 
 Usage:
     python -m src.manager add-profile NAME --version VERSION [--description TEXT]
-    python -m src.manager add-repo --profile NAME --url URL --branch BRANCH --local-path PATH
+    python -m src.manager add-repo --profile NAME --url URL --branch BRANCH
     python -m src.manager list
     python -m src.manager create-api-key NAME
     python -m src.manager apply-preset PRESET [--repo-base-dir DIR] [--repo-map URL=PATH ...]
@@ -87,23 +87,21 @@ def _cmd_add_profile(args, conn) -> int:
 
 
 def _cmd_add_repo(args, conn) -> int:
+    from src.git_utils import default_clone_dir
+
     profiles = [p for p in repo_store().list_profiles() if p["name"] == args.profile]
     if not profiles:
         print(f"✗ Profile '{args.profile}' not found. Run add-profile first.", file=sys.stderr)
         return 2
-    if not Path(args.local_path).is_dir():
-        print(
-            f"✗ local_path does not exist or is not a directory: {args.local_path}",
-            file=sys.stderr,
-        )
-        return 1
+    # local_path is always server-derived (WI-G: user input removed)
+    local_path = str(default_clone_dir(args.profile, args.url))
     rid = repo_store().add_repo(
         profile_id=profiles[0]["id"],
         url=args.url,
         branch=args.branch,
-        local_path=args.local_path,
+        local_path=local_path,
     )
-    print(f"✓ Repo (id={rid}) {args.url}@{args.branch} → {args.local_path}")
+    print(f"✓ Repo (id={rid}) {args.url}@{args.branch} → {local_path}")
     return 0
 
 
@@ -593,22 +591,22 @@ def main(argv: list[str] | None = None) -> int:
         epilog=textwrap.dedent("""
             Examples:
               python -m src.manager add-repo --profile odoo17 \\
-                  --url https://github.com/odoo/odoo --branch 17.0 \\
-                  --local-path ~/git/odoo_17.0
+                  --url https://github.com/odoo/odoo --branch 17.0
+
+            local_path is server-managed and always derived from the URL + profile
+            via default_clone_dir(). User-supplied local_path is no longer accepted
+            (WI-G: git-URL-only registration, server-managed paths).
+
+            To register repos with explicit local paths during migration, use the
+            apply-preset --repo-map URL=PATH option instead.
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_repo.add_argument("--profile", required=True, help="Existing profile name")
     p_repo.add_argument(
-        "--url", required=True, help="Repo URL (informational; indexer reads local_path)"
+        "--url", required=True, help="Git URL of the repository"
     )
     p_repo.add_argument("--branch", required=True, help="Git branch")
-    p_repo.add_argument(
-        "--local-path",
-        required=True,
-        dest="local_path",
-        help="Absolute path to local checkout (must exist)",
-    )
 
     sub.add_parser("list", help="List all profiles + their repos")
 

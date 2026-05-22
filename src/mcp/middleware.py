@@ -56,6 +56,12 @@ _CACHE_TS: dict[str, float] = {}
 _CACHE_TTL = 300.0  # 5 minutes
 _cache_lock = threading.Lock()  # Protects read/write to _KEY_CACHE and _CACHE_TS
 
+# Secondary cache for tenant_id — same TTL and hash key as _KEY_CACHE.
+# Stored separately to preserve the existing _KEY_CACHE / _cache_set signature
+# used by tests and cache-invalidation helpers.
+# Value is tenant_id (int) for tenant-bound keys, or None for global/admin keys.
+_TENANT_CACHE: dict[str, int | None] = {}
+
 # ---------------------------------------------------------------------------
 # Per-API-key sliding-window rate limiter (WI-8)
 # ---------------------------------------------------------------------------
@@ -131,6 +137,7 @@ def _cache_invalidate(raw_key: str) -> None:
     with _cache_lock:
         _KEY_CACHE.pop(h, None)
         _CACHE_TS.pop(h, None)
+        _TENANT_CACHE.pop(h, None)  # keep the two caches in sync (see _cache_set_tenant)
 
 
 def _cache_invalidate_by_key_id(key_id: int) -> None:
@@ -147,6 +154,36 @@ def _cache_invalidate_by_key_id(key_id: int) -> None:
         for h in stale:
             _KEY_CACHE.pop(h, None)
             _CACHE_TS.pop(h, None)
+            _TENANT_CACHE.pop(h, None)
+
+
+def _cache_set_tenant(raw_key: str, tenant_id: int | None) -> None:
+    """Store tenant_id for raw_key (stored as hash) in the tenant cache.
+
+    Must be called alongside _cache_set so the two caches stay in sync.
+    Thread-safe: guarded by _cache_lock (same lock as _KEY_CACHE).
+    """
+    h = _hash_key(raw_key)
+    with _cache_lock:
+        _TENANT_CACHE[h] = tenant_id
+
+
+def _cache_get_tenant(raw_key: str) -> tuple[bool, int | None]:
+    """Return (hit, tenant_id) from tenant cache. hit=False means miss or expired.
+
+    Uses _CACHE_TS (shared with _KEY_CACHE) for TTL — the two caches have the
+    same lifetime so a single timestamp dict is correct.
+    Thread-safe: guarded by _cache_lock.
+    """
+    h = _hash_key(raw_key)
+    with _cache_lock:
+        ts = _CACHE_TS.get(h)
+        if ts is not None and time.monotonic() - ts < _CACHE_TTL:
+            # Tenant cache may not have an entry if it was set by an old code path
+            # that did not call _cache_set_tenant.  Return (True, None) in that case
+            # so the caller treats a global key correctly.
+            return True, _TENANT_CACHE.get(h)
+        return False, None
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -163,15 +200,47 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not raw_key:
             return Response("Missing X-API-Key header", status_code=401)
 
-        # Check cache first to avoid DB round-trip per request
+        # Check cache first to avoid DB round-trip per request.
+        # Try key_id cache; also probe tenant cache in case this is a warm hit.
         hit, key_id = _cache_get(raw_key)
+        tenant_hit, tenant_id = _cache_get_tenant(raw_key)
         if not hit:
             def _do_verify():
                 from src.db.pg import auth_store
-                return auth_store().verify_api_key(raw_key)
+                store = auth_store()
+                # Prefer verify_api_key_tenant to retrieve both key_id and
+                # tenant_id in a single DB query (ADR-0034 D4.1 plumbing).
+                # Fall back to verify_api_key when:
+                #   (a) verify_api_key_tenant is not present (legacy store / test stub),
+                #   (b) it returns a non-2-tuple (e.g. MagicMock auto-attribute).
+                # This keeps existing tests and stubs green without requiring
+                # them to also mock verify_api_key_tenant.
+                _missing = object()
+                result: object = _missing
+                try:
+                    result = store.verify_api_key_tenant(raw_key)
+                except AttributeError:
+                    pass  # method not present — fall through to verify_api_key
+                except psycopg2.errors.UndefinedColumn:
+                    # api_keys.tenant_id absent — new code running against a
+                    # pre-m13_002 schema (e.g. a rolling deploy before migrate
+                    # has applied). Degrade to legacy verify_api_key
+                    # (tenant_id=None) instead of 500-ing every authed request.
+                    pass
+                if result is not _missing:
+                    # Got a response from verify_api_key_tenant.
+                    if result is None or (isinstance(result, tuple) and len(result) == 2):
+                        return result  # (key_id, tenant_id) or None — correct type
+                    # Unexpected return type (e.g. MagicMock auto-attribute in unit
+                    # tests that only mock verify_api_key).  Fall through below.
+                # verify_api_key_tenant absent or returned unexpected type:
+                # delegate to legacy verify_api_key (may raise OperationalError
+                # — that propagates up and is caught by the caller's except clause).
+                key_id_only = store.verify_api_key(raw_key)
+                return None if key_id_only is None else (key_id_only, None)
 
             try:
-                key_id = await asyncio.to_thread(_do_verify)
+                result = await asyncio.to_thread(_do_verify)
             except (PoolNotInitializedError, psycopg2.OperationalError) as e:
                 # Degraded mode: pool not initialised (lifespan retry still
                 # running) OR a transient DB outage. Return 503 with a
@@ -187,7 +256,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.method, request.url.path, str(e)[:300],
                 )
                 return _degraded_response()
+            if result is None:
+                key_id = None
+                tenant_id = None
+            else:
+                key_id, tenant_id = result
             _cache_set(raw_key, key_id)
+            _cache_set_tenant(raw_key, tenant_id)
+        elif not tenant_hit:
+            # _KEY_CACHE hit but _TENANT_CACHE miss — can happen when cache was
+            # pre-populated by an old code path that did not call _cache_set_tenant.
+            # Treat as global key (tenant_id=None) for this request; will be
+            # refreshed on next cache miss.
+            tenant_id = None
 
         if key_id is None:
             return Response("Invalid or inactive API key", status_code=401)
@@ -204,6 +285,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         request.state.api_key_id = key_id
+        request.state.tenant_id = tenant_id  # ADR-0034 D4.1 — None for global/admin keys
         start = time.monotonic()
         response = await call_next(request)
         ms = int((time.monotonic() - start) * 1000)

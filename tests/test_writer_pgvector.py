@@ -241,3 +241,145 @@ def test_ann_query_returns_nearest_result(clean_pg_embeddings):
         row = cur.fetchone()
     assert row is not None
     assert "action_confirm" in row[0]
+
+
+# --- WI-B: profile_name column (unit tests, no DB needed) ---
+
+
+def test_embedding_chunk_default_profile_name_is_none():
+    """EmbeddingChunk.profile_name defaults to None (shared/global)."""
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
+        "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
+    )
+    assert chunk.profile_name is None
+
+
+def test_embedding_chunk_as_tuple_includes_profile_name():
+    """as_tuple must include profile_name as the last element."""
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
+        "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
+        profile_name="tenant_acme",
+    )
+    vec = [0.0] * 1024
+    t = chunk.as_tuple(vec)
+    # tuple order: chunk_type, module, odoo_version, entity_name, model_name,
+    #              file_path, chunk_idx, content, vec, profile_name
+    assert t[-1] == "tenant_acme"
+    assert t[0] == "method"
+
+
+def test_embedding_chunk_as_tuple_profile_name_none():
+    """as_tuple with profile_name=None passes None (global rows)."""
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
+        "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
+    )
+    t = chunk.as_tuple([0.0] * 1024)
+    assert t[-1] is None
+
+
+def test_make_pattern_chunks_profile_name_is_none():
+    """Pattern chunks must default to profile_name=None (shared/global)."""
+    chunks = make_pattern_chunks([_sample_pattern()])
+    assert chunks[0].profile_name is None
+
+
+# --- WI-B: profile-scoped delete (postgres integration) ---
+
+
+@pytest.mark.postgres
+def test_write_stamps_profile_name_on_rows(clean_pg_embeddings):
+    """write_module_embeddings stamps profile_name onto all written rows."""
+    embedder = FakeEmbedder(dim=1024)
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
+        "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
+    )
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder,
+                            profile_name="profile_a")
+
+    with clean_pg_embeddings.cursor() as cur:
+        cur.execute(
+            "SELECT profile_name FROM embeddings WHERE module = %s AND odoo_version = %s",
+            (TEST_MODULE, TEST_VERSION),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "profile_a"
+
+
+@pytest.mark.postgres
+def test_write_profile_none_stamps_null(clean_pg_embeddings):
+    """write_module_embeddings with no profile_name stores NULL."""
+    embedder = FakeEmbedder(dim=1024)
+    chunk = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
+        "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
+    )
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
+
+    with clean_pg_embeddings.cursor() as cur:
+        cur.execute(
+            "SELECT profile_name FROM embeddings WHERE module = %s AND odoo_version = %s",
+            (TEST_MODULE, TEST_VERSION),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
+@pytest.mark.postgres
+def test_delete_is_profile_scoped_does_not_erase_other_profile(clean_pg_embeddings):
+    """Re-indexing profile A must not delete profile B's chunks for the same module/version."""
+    embedder = FakeEmbedder(dim=1024)
+
+    # Write profile_a chunk
+    chunk_a = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.action_a",
+        "sale.order", "/tmp/sale.py", 0, "def action_a(self): pass",
+    )
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk_a], embedder,
+                            profile_name="profile_a")
+
+    # Write profile_b chunk for the same module/version
+    chunk_b = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.action_b",
+        "sale.order", "/tmp/sale.py", 1, "def action_b(self): pass",
+    )
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk_b], embedder,
+                            profile_name="profile_b")
+
+    # Re-index profile_a — must not touch profile_b rows
+    chunk_a2 = EmbeddingChunk(
+        "method", TEST_MODULE, TEST_VERSION, "sale.order.action_a_v2",
+        "sale.order", "/tmp/sale.py", 0, "def action_a_v2(self): pass",
+    )
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk_a2], embedder,
+                            profile_name="profile_a")
+
+    with clean_pg_embeddings.cursor() as cur:
+        cur.execute(
+            "SELECT entity_name, profile_name FROM embeddings "
+            "WHERE module = %s AND odoo_version = %s ORDER BY entity_name",
+            (TEST_MODULE, TEST_VERSION),
+        )
+        rows = {r[1]: r[0] for r in cur.fetchall()}
+
+    # profile_a should now have action_a_v2 (old action_a was deleted by re-index)
+    assert rows.get("profile_a") == "sale.order.action_a_v2"
+    # profile_b must be untouched
+    assert rows.get("profile_b") == "sale.order.action_b"
+
+
+@pytest.mark.postgres
+def test_write_migration_adds_profile_name_column(clean_pg_embeddings):
+    """After run_migrations, the embeddings table must have a profile_name column."""
+    with clean_pg_embeddings.cursor() as cur:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'embeddings' AND column_name = 'profile_name'"
+        )
+        row = cur.fetchone()
+    assert row is not None, "profile_name column missing from embeddings table"

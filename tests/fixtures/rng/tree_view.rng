@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal self-contained RelaxNG fixture for unit tests.
+     NOT from Odoo SA — generated for OSM test use only.
+     Self-contained (no <include>) so no common.rng needed.
+     Validates: <tree> element with zero-or-more <field> children.
+     Anything else (e.g. <badtag>) is a violation. -->
+<rng:grammar xmlns:rng="http://relaxng.org/ns/structure/1.0"
+             datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes">
+    <rng:start>
+        <rng:ref name="tree"/>
+    </rng:start>
+
+    <rng:define name="tree">
+        <rng:element name="tree">
+            <rng:zeroOrMore>
+                <rng:attribute>
+                    <rng:anyName/>
+                </rng:attribute>
+            </rng:zeroOrMore>
+            <rng:zeroOrMore>
+                <rng:ref name="field"/>
+            </rng:zeroOrMore>
+        </rng:element>
+    </rng:define>
+
+    <rng:define name="field">
+        <rng:element name="field">
+            <rng:zeroOrMore>
+                <rng:attribute>
+                    <rng:anyName/>
+                </rng:attribute>
+            </rng:zeroOrMore>
+            <rng:zeroOrMore>
+                <rng:ref name="field"/>
+            </rng:zeroOrMore>
+        </rng:element>
+    </rng:define>
+</rng:grammar>

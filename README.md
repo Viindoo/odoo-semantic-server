@@ -151,7 +151,7 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
-| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 20 tools, trigger conditions, persona mapping |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 24 tools, trigger conditions, persona mapping |
 
 ---
 
@@ -162,10 +162,10 @@ Different roles get the most value from different tools. Quick-start guides:
 | Persona | Primary Tools | Guide |
 |---------|--------------|-------|
 | CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [→ CEO Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/ceo.md) |
-| Developer | `resolve_model`, `find_override_point`, `suggest_pattern`, `lint_check` | [→ Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) |
+| Developer | `model_inspect`, `find_override_point`, `suggest_pattern`, `lint_check` | [→ Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) |
 | Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [→ Consultant Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/consultant.md) |
 | Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/marketer.md) |
-| Sales | `check_module_exists`, `find_examples`, `resolve_model` | [→ Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/sales.md) |
+| Sales | `check_module_exists`, `find_examples`, `model_inspect` | [→ Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/sales.md) |
 
 > **Claude Code users:** Install the Odoo Semantic plugin — `claude plugin install odoo-semantic@viindoo-plugins` (sau khi `claude plugin marketplace add Viindoo/claude-plugins`), rồi `/odoo-semantic:connect`. Alternative: dùng [install page](https://odoo-semantic.viindoo.com/install/) → tab Claude Code → sub-tab "Plugin".
 > **Gemini users:** See [Gem instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/snippets/gemini-gem-instructions.md).
@@ -176,17 +176,16 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.8.0 (2026-05-21) — M10.5 Phase 2: 4 ORM-validation tools (`resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation`) for static domain / `@api.depends` / relation / dotted-path checks against the indexed graph, with version-aware domain operators (`any`/`not any` v17+, `parent_of` v9+) from the v8→v19 ORM survey; `MethodInfo.depends` graph property; 24 tools, 7 MCP Resources. v0.7.1 added superset filter parity (`kind`/`view_type`/`era`/`bound_model`); v0.7.0 shipped M10A + M10.5-P1. See CHANGELOG.md.
+**Latest release:** v0.9.1 (2026-05-22) — M13 pre-reindex wave: DB schema + multi-tenant foundation + git integrity. 8 work items: license policy engine (Module.license/copyright_owner/license_notice, OEEL-1 skipped by default — ADR-0036); embeddings.profile_name column (migration m13_001, profile-scoped chunk writes); tenants table + tenant_id FKs + ssh_key_pairs.key_type + repos UNIQUE(url,branch,profile_id) (migration m13_002); verify_api_key_tenant plumbing to tool context; RelaxNG XML validation → :LintViolation nodes v15+ + lint_check(language='xml'); git-URL-only repo registration + server-managed local_path; known_hosts pinning (replaces accept-new) + per-repo advisory lock + fetch/reset refresh; self-service deploy-key endpoint GET /api/tenant/deploy-key. Tool count stays **24**; no new MCP tools. v0.9.0 (PR #160) shipped the reindex-prep DB-impact wave (LESS parser, odoo.tools coverage, v8/v9 CLICommand, VersionRegistry ADR-0032, lint rules ≥50/version). See CHANGELOG.md.
 
-**Production deploy:** 2026-05-17 — PR #119 go-live batch deployed (writer profile stub fix eliminating 5,988 NULL nodes, MFA flag sync, backup CLI docker-exec fallback + nightly systemd timer, `/api/health` auth-exempt endpoint, ADR-0016 D7 stub policy). PR #117 (migration 0004 self-contained SQL rescue) + PR #118 (CSP + Permissions-Policy headers) also live. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state.
+**Production deploy:** 2026-05-17 — PR #119 go-live batch deployed. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state. PRs #160 + wave3 pending prod deploy (admin must run full reindex v8→v19 per runbook after deploy, plus `python -m src.db.migrate` for m13_001 + m13_002).
 
-**Active work:** M9 Coverage Fill batch (PR #120 merged 2026-05-17, pending prod deploy) — CSS/SCSS parser, v8 era1 field gap fix, PatternExample v9-v15, LintRule/CLIFlag static curation v8-v19. Plus go-live followups: OWLComp v14 guard for JSPatch era3 (239 anachronistic stubs), Neo4j online backup (replace neo4j-admin dump with Cypher export), §6 tools 15-21 prod smoke (deferred next session).
+**Active work (wave3, feat/m13pre-wave3):** M13 pre-reindex wave — DB schema foundation + multi-tenant wiring + git hardening + license policy + RelaxNG XML lint. **Deferred to next wave:** P2 enforcement (WI-3 `resolve_allowed_profiles` + WI-4 mandatory 61-site filter), cross-tenant leak-test release gate, WI-7 FERNET secrets manager, M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
 
 **Next milestones (roadmap):**
-- **M10 "Billing Wow"** — Stripe subscription + plan tiers + coverage-fill follow-ups: MCP Stylesheet tools (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` metric, M10 Quick Wins (magic fields, `from_module` param, `noqa` support, CLI batch audit), nonce-based CSP.
-- **M10.5 "ORM Intelligence Wow"** — 4 new MCP tools (`validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`) for static ORM validation before AI client suggests a domain/depends.
-- **M11 "Architectural Wow"** — discriminator consolidation: `model_inspect`/`module_inspect`/`entity_lookup` supersets replace 10 flat tools with 1-major-release deprecation timeline (ADR-0028); implicit session context: per-API-key sticky `odoo_version`+`profile_name` with 24h TTL + sentinel defense (ADR-0029); MCP Resources `odoo://` URI scheme: 7 kinds, MIME-native content negotiation, in-memory LRU 1000/300s cache, top-100 popular-model discovery (ADR-0030); parser hooks `(min_version, max_version, fn)` registry refactor (supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue expansion 35 → 100+, lint rules curation 10-30 → 50+/version.
-- **M13 "Multi-Tenant Wow"** — pooled multi-tenancy for many customers with private repos (ADR-0034): `tenants` table + `tenant_id` FK on `api_keys`/`profiles`/`ssh_key_pairs`; shared-base + per-tenant overlay reusing the ADR-0016 `profile[]` chain (NO `tenant_id` in Neo4j MERGE keys — Odoo CE/EE + spec data stay single-instance); mandatory fail-closed tenant filter at one choke point + Postgres RLS on `embeddings`; per-tenant deploy-key credentials (customer adds Viindoo's public key to their repo). Architecture- + DB-schema-first ordering; cross-tenant leak test is the release gate.
+- **M13 enforcement wave** — `resolve_allowed_profiles(tenant_id)` helper (WI-3) + mandatory fail-closed filter at 61 Neo4j query sites + 3 pgvector embeddings queries + Postgres RLS SET LOCAL (WI-4); cross-tenant leak test as release gate. Also: WI-7 FERNET secrets manager.
+- **M10B "Billing Wow"** — Stripe subscription + plan tiers.
+- **M10C remaining** — Prometheus `embedder_batch_duration_seconds` histogram, nonce-based CSP (blocked — awaits Astro v5.1+ nonce API).
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 

@@ -164,8 +164,28 @@ def _get_api_key_id() -> str:
     return getattr(_api_key_id_local, "value", "default")
 
 
+def _get_tenant_id() -> int | None:
+    """Return the tenant_id for the current sync context (ADR-0034 D4.1 plumbing).
+
+    Populated by UsageLogMiddleware (tool_log_middleware.py) from
+    request.state.tenant_id before each tool call, cleared in the finally block.
+    Returns None when not set — this covers:
+      - Unit tests and CLI invocations (no request context)
+      - Global/admin keys (tenant_id IS NULL in DB)
+      - Any code path that has not yet been wired to carry tenant context
+
+    IMPORTANT: returning None here does NOT mean "show everything". Read-side
+    enforcement (deferred to a later WI) will treat None as "global admin access"
+    vs a missing tenant context.  Do NOT use this value for filtering yet.
+    """
+    return getattr(_tenant_id_local, "value", None)
+
+
 # Thread-local storage for API key ID — populated by middleware when available.
 _api_key_id_local = threading.local()
+# Thread-local storage for tenant_id — populated alongside _api_key_id_local
+# by UsageLogMiddleware from request.state.tenant_id (ADR-0034 D4.1).
+_tenant_id_local = threading.local()
 
 
 # find_examples rerank coefficients — extracted so calibration harness can
@@ -1659,12 +1679,73 @@ def _match_lint_rule_lines(code: str, rule: dict) -> list[int]:
     return hit_lines
 
 
+def _lint_check_xml(odoo_version: str) -> str:
+    """Return RelaxNG :LintViolation nodes from the graph for *odoo_version*.
+
+    Output format follows ADR-0023 tree grammar.  Returns all indexed violations
+    (no code-snippet matching — violations are ground-truth from indexing time).
+
+    Called by _lint_check when language='xml'.
+    """
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+        rows = session.run("""
+            MATCH (lv:LintViolation {odoo_version: $v})
+            RETURN lv.view_xmlid AS view_xmlid,
+                   lv.rule AS rule_id,
+                   lv.severity AS severity,
+                   lv.message AS message,
+                   lv.line AS line,
+                   lv.view_type AS view_type,
+                   lv.file_path AS file_path
+            ORDER BY lv.view_xmlid ASC, lv.line ASC, lv.rule ASC
+        """, v=odoo_version).data()
+
+    header = (
+        f"lint_check(Odoo {odoo_version}, language=xml) — "
+        f"{len(rows)} RelaxNG violations"
+    )
+    lines = [header]
+    if not rows:
+        lines.append("└─ no RelaxNG violations indexed for this version")
+        return "\n".join(lines)
+
+    # Group by view_xmlid for readable tree output
+    from collections import defaultdict as _dd
+    grouped: dict[str, list[dict]] = _dd(list)
+    for r in rows:
+        grouped[r["view_xmlid"] or "?"].append(r)
+
+    view_list = sorted(grouped.keys())
+    last_view_idx = len(view_list) - 1
+    for vi, xmlid in enumerate(view_list):
+        v_connector = "└─" if vi == last_view_idx else "├─"
+        view_rows = grouped[xmlid]
+        vtype = view_rows[0].get("view_type") or "?"
+        lines.append(f"{v_connector} [{xmlid}] ({vtype})")
+        last_viol_idx = len(view_rows) - 1
+        indent = "    " if vi == last_view_idx else "│   "
+        for ri, r in enumerate(view_rows):
+            r_connector = "└─" if ri == last_viol_idx else "├─"
+            rule_id = r.get("rule_id") or "?"
+            sev = r.get("severity") or "error"
+            msg = (r.get("message") or "").strip()
+            lineno = r.get("line") or 0
+            lines.append(f"{indent}{r_connector} line {lineno} | {rule_id} ({sev}): {msg}")
+
+    return "\n".join(lines)
+
+
 def _lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
     """Pattern-match user code against indexed LintRule.message (V0).
 
-    Supports ``# noqa`` suppression per line:
+    For language='xml': queries :LintViolation nodes from the graph (ground-truth
+    RelaxNG results indexed from v15+ views) — no code-snippet arg needed.
+
+    For language='python'/'javascript': fuzzy token-overlap match against
+    indexed LintRule catalogue with noqa suppression support:
 
     * ``# noqa: E8001`` — suppress rule ``E8001`` on that line only.
     * ``# noqa: E8001, W9002`` — suppress multiple rules on that line.
@@ -1676,12 +1757,16 @@ def _lint_check(
             f"lint_check: invalid language {language!r}. "
             f"Valid options: {valid}."
         )
+
+    # XML: return ground-truth RelaxNG violations from the graph (no code matching)
+    if language == "xml":
+        return _lint_check_xml(odoo_version)
+
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
         kind_prefix = (
             "pylint" if language == "python"
-            else "eslint" if language == "javascript"
-            else "static-xml"
+            else "eslint"  # javascript
         )
         rules = session.run("""
             MATCH (l:LintRule {odoo_version: $v})
@@ -1768,30 +1853,29 @@ def find_deprecated_usage(
 def lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
-    """Check a code snippet against indexed Odoo-specific lint rules (V0 fuzzy).
+    """Check code against indexed Odoo lint rules; language='xml' returns RelaxNG violations.
 
-    TRIGGER when: "lint check this module", "OCA style violations in module X",
-    "check coding standards", "module X có vi phạm coding convention không",
-    "kiểm tra code quality", "does this code follow Odoo guidelines"
-    PREFER over: running ruff/pylint directly — applies Odoo-specific lint rules
-    from indexed LintRule catalogue, not generic Python linters
-    SKIP when: user wants deprecated API scan → use find_deprecated_usage;
-    user wants module existence check → use check_module_exists
+    TRIGGER when: "lint check this module", "OCA style violations", "check coding
+    standards", "kiểm tra code quality", "does this code follow Odoo guidelines"
+    PREFER over: running ruff/pylint directly — applies the Odoo-specific LintRule
+    catalogue, not generic Python linters
+    SKIP when: deprecated API scan → find_deprecated_usage; module existence
+    check → check_module_exists
 
     Args:
-        code: Source code chunk to check.
+        code: Source chunk to check. Ignored for language='xml' (the tool then
+            returns all indexed RelaxNG violations from the graph, v15+ only).
         odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
-        language: 'python' | 'javascript' | 'xml'.
+        language: 'python' | 'javascript' (fuzzy token-overlap vs indexed rules)
+            | 'xml' (ground-truth RelaxNG :LintViolation nodes, v15+ only).
 
     Returns:
-        Tree text listing matched rule violations (rule_id, severity, message).
-        V0 matcher is fuzzy token-overlap — use as first-pass screen, not as
-        authoritative pylint/ruff/eslint output.
+        Tree text of violations. python/javascript = V0 fuzzy first-pass screen;
+        xml = ground-truth RelaxNG violations grouped by view xmlid.
 
     Example:
-        lint_check("raise UserError('Hello %s' % name)", "17.0", "python")
-        → lint_check(Odoo 17.0, language=python) — 1 violations
-          └─ E8502 (error): Bad usage of _, _lt function...
+        lint_check("raise UserError('Hi %s' % n)", "17.0", "python")
+        lint_check("", "17.0", "xml")   # RelaxNG violations grouped by view
     """
     return _lint_check(code, odoo_version, language)
 
@@ -2305,7 +2389,8 @@ def _describe_module(
             WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
             RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
                    m.edition AS edition,
-                   m.viindoo_equivalent_qname AS vvq
+                   m.viindoo_equivalent_qname AS vvq,
+                   m.license_notice AS license_notice
             """,
             n=name, v=odoo_version, profile_name=profile_name,
         ).single()
@@ -2369,6 +2454,12 @@ def _describe_module(
         ).single()["c"]
 
     lines = [f"{name} (Odoo {odoo_version})"]
+
+    # ADR-0036: surface license_notice as a visible marker (D3 — never silent).
+    # Only emitted when non-null (i.e. module is ingest_flagged; skip action
+    # means the module never reaches here at all).
+    if mod_rec.get("license_notice"):
+        lines.append(f"├─ License notice: {mod_rec['license_notice']}")
 
     # Manifest sub-tree (non-last parent → "│   " sublist indent).
     lines.append("├─ Manifest:")
@@ -5586,10 +5677,15 @@ if __name__ == "__main__":
     # at the root prefix '' so its /api/feedback paths remain unchanged.
     from fastapi import FastAPI as _FastAPI
 
+    from src.web_ui.routes import deploy_key as _deploy_key
     from src.web_ui.routes import feedback as _feedback
 
     _feedback_app = _FastAPI()
     _feedback_app.include_router(_feedback.router)
+    # Mount tenant self-service deploy-key endpoint (ADR-0034 D7, WI-I).
+    # GET /api/tenant/deploy-key — tenant_id resolved from X-API-Key auth state,
+    # never from a user-supplied path parameter (cross-tenant leakage impossible).
+    _feedback_app.include_router(_deploy_key.router)
     _app.mount("", _feedback_app)
 
     _uvicorn.run(

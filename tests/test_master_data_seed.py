@@ -223,8 +223,12 @@ def test_admin_data_wins_on_name_conflict(clean_pg, monkeypatch):
         assert cur.fetchone()[0] == "MANUAL — do not overwrite"
 
 
-def test_seed_repos_warns_on_cross_profile_conflict(clean_pg, monkeypatch, capsys):
-    """Cross-profile (url, branch) skip emits a clarifying warning on stderr."""
+def test_seed_repos_allows_same_url_across_profiles(clean_pg, monkeypatch):
+    """ADR-0034 D2: the same (url, branch) MAY exist under different profiles.
+
+    Seeding does NOT skip/warn on a cross-profile match — it inserts a separate
+    row for the seeded profile (per-profile UNIQUE(url, branch, profile_id)).
+    """
     import src.db.seed_master_data as smd
     monkeypatch.setattr(smd, "_PROFILE_DEFS", _SYNTHETIC_PROFILES)
     monkeypatch.setattr(smd, "_REPO_DEFS_BY_PROFILE", _SYNTHETIC_REPOS)
@@ -232,7 +236,7 @@ def test_seed_repos_warns_on_cross_profile_conflict(clean_pg, monkeypatch, capsy
     run_migrations(clean_pg)
     seed_profiles(clean_pg)
 
-    # Pre-register the same url+branch under a non-seeded profile
+    # Pre-register t_root's url+branch under a different (non-seeded) profile.
     with clean_pg.cursor() as cur:
         cur.execute(
             "INSERT INTO profiles (name, odoo_version, description) "
@@ -246,11 +250,15 @@ def test_seed_repos_warns_on_cross_profile_conflict(clean_pg, monkeypatch, capsy
             (legacy_id, "git@github.com:example/base.git", "17.0", "/tmp/legacy", "manual"),
         )
 
-    # Now seed — t_root wants the same url@branch; should skip + warn
+    # Seeding now inserts a SEPARATE row for t_root (per-profile uniqueness).
     seed_repos(clean_pg)
-    captured = capsys.readouterr()
-    assert "legacy_consumer" in captured.err
-    assert "t_root" in captured.err
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM repos WHERE url = %s AND branch = %s",
+            ("git@github.com:example/base.git", "17.0"),
+        )
+        count = cur.fetchone()[0]
+    assert count == 2, f"expected legacy_consumer + t_root rows, got {count}"
 
 
 def test_reset_seeded_data_deletes_matching_profiles(clean_pg, monkeypatch):

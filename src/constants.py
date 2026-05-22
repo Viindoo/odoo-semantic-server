@@ -35,6 +35,7 @@ REL_USES_CORE_SYMBOL: str = "USES_CORE_SYMBOL"
 REL_OF_COMMAND: str = "OF_COMMAND"
 REL_TARGETS_MODEL: str = "TARGETS_MODEL"
 REL_IMPORTS: str = "IMPORTS"
+REL_HAS_VIOLATION: str = "HAS_VIOLATION"
 
 # ---------------------------------------------------------------------------
 # Edition metadata
@@ -235,3 +236,44 @@ def valid_domain_operators(odoo_version: str) -> frozenset[str]:
     if major >= 19:
         ops |= {"any!", "not any!", "not =like", "not =ilike"}
     return frozenset(ops)
+
+
+# ---------------------------------------------------------------------------
+# License policy engine (ADR-0036)
+# ---------------------------------------------------------------------------
+
+# Config-driven map: license class → action ∈ {serve, ingest_flagged, skip}.
+# 'ingest_flagged' is a valid third action — assign it here to any license class
+# to host-but-not-serve (e.g. to stage OEEL-1 content ahead of a written
+# permission from Odoo S.A. without exposing it to AI clients).
+# Changing any action here is sufficient to change posture — no code change.
+LICENSE_POLICY: dict[str, str] = {
+    "LGPL-3":   "serve",
+    "AGPL-3":   "serve",
+    "GPL-3":    "serve",
+    "OPL-1":    "serve",
+    "unknown":  "serve",
+    # OEEL-1: Odoo S.A. Enterprise — Viindoo's own Partnership obligation (ADR-0036 D4).
+    # Default skip (no derivation until written permission obtained).
+    # To enable: flip to 'serve' or 'ingest_flagged' — config change only, no code change.
+    "OEEL-1":   "skip",
+}
+
+
+def default_license_for_missing(major: int) -> str:
+    """Return the implied license for a module with no explicit 'license' key.
+
+    v8 repo base is AGPL-3; v9+ base is LGPL-3.  Both resolve to 'serve' in
+    LICENSE_POLICY.  Recording the accurate value (rather than 'unknown') is
+    important so that future policy changes are data-driven, not code-driven.
+    """
+    return "AGPL-3" if major <= 8 else "LGPL-3"
+
+
+def license_policy_action(license_value: str) -> str:
+    """Return the LICENSE_POLICY action for a license string.
+
+    Falls back to 'serve' for unmapped license strings — submitter bears
+    responsibility per ADR-0036 D5 (Terms of Service representation).
+    """
+    return LICENSE_POLICY.get(license_value, "serve")

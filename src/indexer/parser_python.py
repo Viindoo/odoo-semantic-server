@@ -365,6 +365,50 @@ def _detect_viindoo_equivalent(module_name: str) -> str | None:
     return EE_CONFUSION.get(module_name)
 
 
+def _resolve_effective_license(manifest: dict, major: int) -> str:
+    """Return the effective SPDX license identifier for a module.
+
+    Missing 'license' key is filled by era default (ADR-0036 D1):
+      - major <= 8: AGPL-3  (v8 repo base)
+      - major >= 9: LGPL-3  (v9+ repo base)
+
+    Returns the raw manifest value when present, so OEEL-1 / OPL-1 / etc.
+    pass through unmodified for policy evaluation.
+    """
+    from src.constants import default_license_for_missing
+    raw = manifest.get("license")
+    if raw:
+        return str(raw).strip()
+    return default_license_for_missing(major)
+
+
+def _derive_copyright_owner(manifest: dict, license_value: str) -> str | None:
+    """Derive a copyright_owner string from manifest + license (ADR-0036 D1).
+
+    Derivation order (first match wins):
+    1. OEEL-1 → 'Odoo S.A.' (always — contractually Odoo S.A. owns OEEL)
+    2. Manifest 'author' contains 'Odoo S.A.' → 'Odoo S.A.'
+    3. Manifest 'author' contains 'Viindoo' or 'TVTMA' → 'Viindoo'
+    4. Manifest 'author' present otherwise → author[:100]
+    5. CE copyleft (LGPL/AGPL/GPL) with no author → 'Odoo S.A.' (CE default)
+    6. Otherwise → None
+    """
+    if license_value == "OEEL-1":
+        return "Odoo S.A."
+    author = (manifest.get("author") or "").strip()
+    if "Odoo S.A." in author:
+        return "Odoo S.A."
+    if "Viindoo" in author or "TVTMA" in author:
+        return "Viindoo"
+    if author:
+        return author[:100]
+    # No author — CE copyleft licenses default to Odoo S.A. as upstream owner
+    ce_copyleft = {"LGPL-3", "LGPL-3.0", "AGPL-3", "AGPL-3.0", "GPL-3", "GPL-3.0"}
+    if license_value in ce_copyleft:
+        return "Odoo S.A."
+    return None
+
+
 # Version-dispatch registry for Python parser era selection (ADR-0032).
 # era1: v8/v9 (Python 2 AST, _columns dict).
 # era2: v10+ (modern AST).

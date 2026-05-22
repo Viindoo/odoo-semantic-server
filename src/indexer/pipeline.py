@@ -47,6 +47,16 @@ def _profile_lock_id(profile_name: str) -> int:
     return int(hashlib.md5(f"odoo-semantic-{profile_name}".encode()).hexdigest(), 16) % (2**31)
 
 
+def _repo_lock_id(repo_id: int) -> int:
+    """Derive a 31-bit Postgres advisory lock id from a repo_id (ADR-0035 D2).
+
+    Uses a different namespace prefix ("osm-repo-") than the profile lock
+    ("odoo-semantic-") to guarantee the two key spaces never collide even if
+    a profile name were a stringified integer equal to a repo_id.
+    """
+    return int(hashlib.md5(f"osm-repo-{repo_id}".encode()).hexdigest(), 16) % (2**31)
+
+
 @contextmanager
 def _indexer_lock(pg_conn, profile_name: str):
     """Postgres advisory lock — prevents concurrent indexer runs for a profile.
@@ -64,6 +74,32 @@ def _indexer_lock(pg_conn, profile_name: str):
                 f"Indexer already running for profile {profile_name!r} "
                 f"(Postgres advisory lock {lock_id} held). "
                 "Wait for it to finish or restart PostgreSQL to release stale lock."
+            )
+        yield
+
+
+@contextmanager
+def _repo_git_lock(pg_conn, repo_id: int):
+    """Per-repo Postgres advisory lock guarding mutating git ops (ADR-0035 D2).
+
+    Wraps clone/fetch/reset for a single repo so two concurrent workers never
+    race on ``.git/index.lock``.  Read-only git ops (rev-parse, diff --name-only)
+    must NOT be wrapped — they run lock-free for performance.
+
+    The lock is keyed by ``repo_id`` (not profile) so cross-repo operations
+    run fully in parallel.
+
+    Raises ``RuntimeError`` if the lock cannot be acquired (another worker is
+    mutating the same repo).
+    """
+    from src.db.pg import advisory_lock
+    lock_id = _repo_lock_id(repo_id)
+    with advisory_lock(pg_conn, lock_id) as acquired:
+        if not acquired:
+            raise RuntimeError(
+                f"Git mutation already in progress for repo id={repo_id} "
+                f"(Postgres advisory lock {lock_id} held). "
+                "Wait for the other worker to finish."
             )
         yield
 
@@ -157,12 +193,22 @@ def _index_repo(
     full_reindex: bool = False,
     gc: bool = False,
     ancestor_profiles: list[str] | None = None,
+    profile_name: str | None = None,
+    core_rng_root: Path | None = None,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
     Returns per-repo counters: {modules, views, qweb, embeddings}.
     Pass pg_conn + embedder to also write semantic embeddings to pgvector.
     Set progress=True to show tqdm progress bar during module iteration.
+    profile_name is stamped on every EmbeddingChunk written so re-indexing
+    one profile does not erase another profile's chunks for the same module.
+
+    core_rng_root: Path to <odoo_core_root>/odoo/addons/base/rng/ (or the
+        openerp/ equivalent for v8/v9).  When the repo itself contains the RNG
+        directory it is used directly; *core_rng_root* is the fallback for
+        addon-only repos whose views still need version-exact RNG validation.
+        None → RelaxNG validation is silently skipped (no false positives).
 
     Incremental behaviour (M6 W2-4):
     - Compares current git HEAD to repos.head_sha (stored from last run).
@@ -178,7 +224,19 @@ def _index_repo(
     if not Path(local_path).is_dir():
         raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
 
+    # Resolve the RNG directory for version-exact RelaxNG validation (WI-E rework).
+    # Prefer the RNG dir within THIS repo's local_path (covers the main Odoo core
+    # repo where addons live alongside the rng/ dir).  Fall back to core_rng_root
+    # (resolved once per profile in index_profile) for addon-only repos.
+    # If neither exists → rng_root=None → validation silently skipped.
     repo_path = Path(local_path)
+    _rng_candidates = [
+        repo_path / "odoo" / "addons" / "base" / "rng",
+        repo_path / "openerp" / "addons" / "base" / "rng",
+    ]
+    rng_root: Path | None = next(
+        (p for p in _rng_candidates if p.is_dir()), core_rng_root
+    )
 
     # === Incremental check (W2-4) ===
     current_head = _incremental.get_repo_head(repo_path)
@@ -324,8 +382,9 @@ def _index_repo(
             py_result = parser_python.parse_module(info)
             py_results.append(py_result)
 
-            # XML views (ir.ui.view records)
-            xml_result = parser_xml.parse_module(info)
+            # XML views (ir.ui.view records) — rng_root enables version-exact
+            # RelaxNG validation; None when no Odoo source RNG dir is available.
+            xml_result = parser_xml.parse_module(info, rng_root=rng_root)
             total_views += len(xml_result.views)
 
             # QWeb templates
@@ -334,10 +393,12 @@ def _index_repo(
 
             # Merge both view parsers into one ViewParseResult per module.
             # writer.write_view_results handles both .views and .qweb in one call.
+            # lint_violations from xml_result (RelaxNG v15+) are preserved.
             merged = ViewParseResult(
                 module=info,
                 views=xml_result.views,
                 qweb=qweb_result.qweb,
+                lint_violations=xml_result.lint_violations,
             )
             view_results.append(merged)
 
@@ -371,7 +432,8 @@ def _index_repo(
                 chunks.extend(make_scss_chunks(scss_chunks_mod))
                 chunks.extend(make_less_chunks(less_chunks_mod))
                 embed_calls = write_module_embeddings(
-                    mod_name, version, chunks, embedder
+                    mod_name, version, chunks, embedder,
+                    profile_name=profile_name,
                 )
                 total_embeddings += len(chunks)
                 total_embed_calls += embed_calls
@@ -382,6 +444,9 @@ def _index_repo(
     _profiles_arr = ancestor_profiles or []
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
+    # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist
+    all_lint_violations = [v for vr in view_results for v in vr.lint_violations]
+    writer.write_lint_violations(all_lint_violations, profiles=_profiles_arr)
     writer.write_js_graph_results(js_graph_results, profiles=_profiles_arr)
     # WI-A1: write Stylesheet nodes (CSS + SCSS) after module writes
     writer.write_stylesheets(all_stylesheet_infos, profiles=_profiles_arr)
@@ -554,6 +619,31 @@ def index_profile(
                 profile_name,
             )
 
+    # Resolve core_rng_root once for the entire profile (WI-E rework).
+    # Scan repos to find the first one whose local_path contains the Odoo RNG
+    # directory.  This covers addon-only repos that need the core's RNG for
+    # version-exact RelaxNG validation without each repo re-scanning for it.
+    # None → validation gracefully skipped (no false positives) if no repo
+    # in this profile is an Odoo core checkout.
+    core_rng_root: Path | None = None
+    for _rng_repo in repos:
+        _lp = Path(_rng_repo.get("local_path", ""))
+        for _candidate in (
+            _lp / "odoo" / "addons" / "base" / "rng",
+            _lp / "openerp" / "addons" / "base" / "rng",
+        ):
+            if _candidate.is_dir():
+                core_rng_root = _candidate
+                break
+        if core_rng_root is not None:
+            break
+    if core_rng_root is None:
+        _logger.debug(
+            "index_profile %r: no Odoo core RNG dir found — "
+            "RelaxNG validation will be skipped for all repos in this profile",
+            profile_name,
+        )
+
     with _indexer_lock(pg_conn, profile_name):
         uri, user, password = _neo4j_creds()
         writer = Neo4jWriter(uri, user, password)
@@ -579,6 +669,8 @@ def index_profile(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
                             progress=progress, full_reindex=full_reindex, gc=gc,
                             ancestor_profiles=ancestor_profiles,
+                            profile_name=profile_name,
+                            core_rng_root=core_rng_root,
                         )
                         _elapsed = time.monotonic() - _t0
                         total_modules += counters["modules"]
@@ -633,6 +725,8 @@ def index_profile(
                             full_reindex=full_reindex,
                             gc=gc,
                             ancestor_profiles=ancestor_profiles,
+                            profile_name=profile_name,
+                            core_rng_root=core_rng_root,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")
@@ -1228,7 +1322,8 @@ def reembed_stubs_for_profile(
                         continue
 
                     embed_calls = write_module_embeddings(
-                        mod_name, odoo_version, chunks, embedder
+                        mod_name, odoo_version, chunks, embedder,
+                        profile_name=profile_name,
                     )
                     total_embed_calls += embed_calls
                     modules_reembedded += 1

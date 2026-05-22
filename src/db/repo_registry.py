@@ -408,14 +408,15 @@ class RepoStore:
         *,
         ssh_key_id: int | None = None,
         clone_status: str = "manual",
+        tenant_id: int | None = None,
     ) -> int:
         with self._pool.checkout() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO repos "
-                    "(profile_id, url, branch, local_path, ssh_key_id, clone_status) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                    (profile_id, url, branch, local_path, ssh_key_id, clone_status),
+                    "(profile_id, url, branch, local_path, ssh_key_id, clone_status, tenant_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (profile_id, url, branch, local_path, ssh_key_id, clone_status, tenant_id),
                 )
                 row_id = cur.fetchone()[0]
             conn.commit()
@@ -677,20 +678,24 @@ class RepoStore:
         head_sha is intentionally preserved — this is the whole point of PATCH
         vs delete+recreate: the incremental indexer can still use the stored sha.
 
+        local_path is server-managed (derived by default_clone_dir at creation).
+        Callers MUST NOT pass user-supplied local_path values here; the parameter
+        is kept only for internal server use (e.g. clone_all short-circuit path).
+
         Args:
             repo_id: ID of repo to update.
             url: New remote URL (or None to leave unchanged).
             branch: New branch name (or None to leave unchanged).
             ssh_key_id: New SSH key id (or None to leave unchanged).
             clear_ssh_key: When True, set ssh_key_id = NULL regardless of ssh_key_id arg.
-            local_path: New local checkout path (or None to leave unchanged).
+            local_path: New local path — server-managed only (ignored in PATCH routes).
 
         Returns:
             List of field names that were updated.
 
         Raises:
             RepoNotFoundError: if repo_id does not exist.
-            RepoConflictError: if the new (url, branch) would violate UNIQUE constraint.
+            RepoConflictError: if the new (url, branch, profile_id) would violate UNIQUE constraint.
         """
         # Verify repo exists and fetch current values for conflict-check
         existing = self.get_repo_by_id(repo_id)
@@ -700,18 +705,24 @@ class RepoStore:
         # Resolve effective values for UNIQUE check
         effective_url = url if url is not None else existing["url"]
         effective_branch = branch if branch is not None else existing["branch"]
+        # profile_id is immutable after creation — use the stored value
+        profile_id = existing["profile_id"]
 
-        # Check UNIQUE(url, branch) before UPDATE — exclude current row
+        # Check UNIQUE(url, branch, profile_id) before UPDATE — exclude current row
+        # Scoped to profile_id so the same upstream URL can be registered under
+        # different profiles/tenants (ADR-0034 D2 + m13_002 constraint change).
         if url is not None or branch is not None:
             with self._pool.checkout() as conn:
                 conflict_row = self._pool.fetch_one(
                     conn,
-                    "SELECT id FROM repos WHERE url = %s AND branch = %s AND id != %s",
-                    (effective_url, effective_branch, repo_id),
+                    "SELECT id FROM repos WHERE url = %s AND branch = %s"
+                    " AND profile_id = %s AND id != %s",
+                    (effective_url, effective_branch, profile_id, repo_id),
                 )
             if conflict_row is not None:
                 raise RepoConflictError(
-                    f"A repo with url={effective_url!r} branch={effective_branch!r} already exists"
+                    f"A repo with url={effective_url!r} branch={effective_branch!r}"
+                    f" already exists under profile_id={profile_id}"
                 )
 
         # Build dynamic SET clause — only include fields the caller wants to change
@@ -753,10 +764,11 @@ class RepoStore:
                 self._pool.execute(conn, sql, tuple(params))
         except psycopg2.errors.UniqueViolation as e:
             # Safety net for TOCTOU race: pre-check can pass while a concurrent
-            # UPDATE commits the same (url, branch) between our SELECT and UPDATE.
+            # UPDATE commits the same (url, branch, profile_id) between our SELECT
+            # and UPDATE.
             raise RepoConflictError(
                 f"A repo with url={effective_url!r} branch={effective_branch!r} "
-                f"already exists (concurrent write)"
+                f"already exists under profile_id={profile_id} (concurrent write)"
             ) from e
 
         return updated_fields

@@ -96,7 +96,7 @@ class TestTwoProfilesParallel:
 
         def fake_index_repo(
             repo, writer, pg_conn=None, embedder=None, progress=False, full_reindex=False,
-            gc=False, ancestor_profiles=None,
+            gc=False, ancestor_profiles=None, profile_name=None, **kwargs,
         ):
             # repo id 1 → 3 modules, repo id 2 → 5 modules
             return _fake_counters(modules=3 if repo["id"] == 1 else 5)
@@ -168,7 +168,7 @@ class TestProfileFailureDoesNotBlockOthers:
 
         def fake_index_repo(
             repo, writer, pg_conn=None, embedder=None, progress=False, full_reindex=False,
-            gc=False, ancestor_profiles=None,
+            gc=False, ancestor_profiles=None, profile_name=None, **kwargs,
         ):
             if repo["id"] == 2:
                 raise RuntimeError("simulated failure for profile 'bad'")
