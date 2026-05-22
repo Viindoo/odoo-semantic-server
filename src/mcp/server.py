@@ -5278,12 +5278,13 @@ def list_available_versions() -> ToolResult:
     with _get_driver().session() as neo4j_session:
         rows = neo4j_session.run("""
             MATCH (m:Module)
+            WHERE ($allowed IS NULL OR any(__ap IN m.profile WHERE __ap IN $allowed))
             WITH DISTINCT m.odoo_version AS v
             WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
             RETURN v
             ORDER BY toInteger(split(v, '.')[0]) DESC,
                      toInteger(split(v, '.')[1]) DESC
-        """).data()
+        """, allowed=_effective_allowed(None)).data()
 
     if not rows:
         return ToolResult(content=[TextContent(type="text",
@@ -5318,11 +5319,20 @@ def list_available_profiles() -> ToolResult:
         ├─ my_profile_17  (17.0)
         └─ customer_erp_16      (16.0)
     """
-    sql = "SELECT name, odoo_version FROM profiles ORDER BY name"
+    # C4 (WI-4): scope the listing to the tenant's allowed profiles. admin
+    # (allowed=None) sees all; a tenant sees only its own + shared-base profiles;
+    # [] (profile-less tenant) → empty list (deny-all).
+    allowed = _effective_allowed(None)
+    if allowed is None:
+        sql = "SELECT name, odoo_version FROM profiles ORDER BY name"
+        params: list = []
+    else:
+        sql = "SELECT name, odoo_version FROM profiles WHERE name = ANY(%s) ORDER BY name"
+        params = [allowed]
     try:
         with _checkout_pg() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 rows = cur.fetchall()
     except Exception as exc:
         return ToolResult(content=[TextContent(type="text",
