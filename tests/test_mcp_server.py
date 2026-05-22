@@ -3302,3 +3302,242 @@ def test_resolve_field_from_module_filters(neo4j_driver):
         )
     finally:
         _cleanup_d3(neo4j_driver)
+
+
+# ===========================================================================
+# B1 — render provenance/intent fields (WI-B1)
+# One focused positive assertion per changed tool confirming the new rendered
+# line appears when the property is set.  Uses dedicated version 76.0 to avoid
+# conflict with all existing version slots.
+# ===========================================================================
+
+_B1_VERSION = "76.0"
+
+
+def _cleanup_b1(neo4j_driver):
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_B1_VERSION,
+        )
+
+
+def test_b1_resolve_field_renders_comodel(neo4j_driver):
+    """B1: resolve_field renders 'Comodel:' line for relational fields."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
+        model = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_B1_VERSION,
+            fields=[FieldInfo("partner_id", "many2one", comodel_name="res.partner")],
+        )
+        writer.write_results([ParseResult(module=mod, models=[model])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._resolve_field("sale.order", "partner_id", _B1_VERSION)
+        assert "Comodel:" in out, f"B1: expected 'Comodel:' line in resolve_field output.\n{out}"
+        assert "res.partner" in out, f"B1: expected comodel name in output.\n{out}"
+    finally:
+        _cleanup_b1(neo4j_driver)
+
+
+def test_b1_resolve_method_renders_signature_and_convention(neo4j_driver):
+    """B1: resolve_method renders 'Signature:' and 'Convention:' from Method node."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
+        model = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_B1_VERSION,
+            fields=[],
+            methods=[MethodInfo(
+                "action_confirm", has_super_call=True,
+                convention_kind="action",
+                signature="self",
+            )],
+        )
+        writer.write_results([ParseResult(module=mod, models=[model])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._resolve_method("sale.order", "action_confirm", _B1_VERSION)
+        assert "Signature:" in out, (
+            f"B1: expected 'Signature:' line in resolve_method output.\n{out}"
+        )
+        assert "Convention:" in out, (
+            f"B1: expected 'Convention:' line in resolve_method output.\n{out}"
+        )
+        assert "action" in out, f"B1: expected convention_kind='action' in output.\n{out}"
+    finally:
+        _cleanup_b1(neo4j_driver)
+
+
+def test_b1_resolve_view_renders_string(neo4j_driver):
+    """B1: resolve_view renders 'String:' line when View.name is non-empty."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        from src.indexer.models import ViewInfo, ViewParseResult
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        base_mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
+        base_view = ViewInfo(
+            xmlid="sale.b1_view_form",
+            name="Sale Order Form",
+            model="sale.order",
+            module="sale",
+            odoo_version=_B1_VERSION,
+            view_type="form",
+            mode="primary",
+            inherit_xmlid=None,
+        )
+        writer.write_view_results([ViewParseResult(module=base_mod, views=[base_view])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._resolve_view("sale.b1_view_form", _B1_VERSION)
+        assert "String:" in out, (
+            f"B1: expected 'String:' line in resolve_view output.\n{out}"
+        )
+        assert "Sale Order Form" in out, (
+            f"B1: expected view name in output.\n{out}"
+        )
+    finally:
+        _cleanup_b1(neo4j_driver)
+
+
+def test_b1_describe_module_renders_repo_and_path(neo4j_driver):
+    """B1: describe_module renders 'Repo:' and 'Path:' lines — #1 agent navigation fix."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo(
+            "sale", _B1_VERSION, "odoo_community", "/opt/odoo/addons/sale", [], "17.0",
+        )
+        model = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_B1_VERSION,
+            fields=[FieldInfo("name", "char")],
+        )
+        model.had_explicit_name = True
+        writer.write_results([ParseResult(module=mod, models=[model])])
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (m:Model {name:'sale.order', module:'sale', odoo_version:$v})"
+                " SET m.is_definition = true",
+                v=_B1_VERSION,
+            )
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._describe_module("sale", _B1_VERSION)
+        assert "Repo:" in out, f"B1: expected 'Repo:' line in describe_module output.\n{out}"
+        assert "odoo_community" in out, f"B1: expected repo value in output.\n{out}"
+        assert "Path:" in out, f"B1: expected 'Path:' line in describe_module output.\n{out}"
+        assert "/opt/odoo/addons/sale" in out, f"B1: expected path value in output.\n{out}"
+    finally:
+        _cleanup_b1(neo4j_driver)
+
+
+def test_b1_list_fields_renders_comodel(neo4j_driver):
+    """B1: list_fields row formatter includes comodel for relational fields."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+        mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
+        model = ModelInfo(
+            name="sale.order", module="sale", odoo_version=_B1_VERSION,
+            fields=[
+                FieldInfo("partner_id", "many2one", comodel_name="res.partner"),
+                FieldInfo("amount_total", "monetary"),
+            ],
+        )
+        writer.write_results([ParseResult(module=mod, models=[model])])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._list_fields("sale.order", _B1_VERSION)
+        # many2one field with comodel should include "-> res.partner" in the row
+        assert "-> res.partner" in out, (
+            f"B1: expected '-> res.partner' comodel in list_fields row.\n{out}"
+        )
+        # plain monetary field has no comodel — just ttype
+        assert "amount_total : monetary" in out
+    finally:
+        _cleanup_b1(neo4j_driver)
+
+
+def test_b1_list_owl_components_renders_template(neo4j_driver):
+    """B1: list_owl_components includes template path per row when set."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        seed_owl_components(
+            neo4j_driver, module="web_sale",
+            odoo_version=_B1_VERSION,
+            components=[
+                {"name": "SaleKanban", "bound_model": "sale.order",
+                 "template": "sale_management.SaleKanban"},
+            ],
+        )
+        srv = _import_server_module()
+        out = srv._list_owl_components("web_sale", _B1_VERSION)
+        assert "template=sale_management.SaleKanban" in out, (
+            f"B1: expected 'template=...' in list_owl_components row.\n{out}"
+        )
+    finally:
+        _cleanup_b1(neo4j_driver)
+
+
+def test_b1_list_js_patches_renders_file_path(neo4j_driver):
+    """B1: list_js_patches includes file_path when non-empty."""
+    _cleanup_b1(neo4j_driver)
+    try:
+        # Use direct Cypher to set a non-empty file_path (seed helper sets '').
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (mod:Module {name: 'sale', odoo_version: $v}) "
+                "SET mod.repo = 'odoo_test', mod.edition = 'community'",
+                v=_B1_VERSION,
+            )
+            session.run(
+                "MERGE (j:JSPatch {target: 'FormController', patch_name: 'onLoad',"
+                "                  module: 'sale', odoo_version: $v}) "
+                "SET j.era = 'patch',"
+                "    j.file_path = 'sale/static/src/js/form_controller.js' "
+                "WITH j "
+                "MATCH (mod:Module {name: 'sale', odoo_version: $v}) "
+                "MERGE (j)-[:DEFINED_IN]->(mod)",
+                v=_B1_VERSION,
+            )
+
+        srv = _import_server_module()
+        out = srv._list_js_patches(_B1_VERSION, module="sale")
+        assert "sale/static/src/js/form_controller.js" in out, (
+            f"B1: expected file_path in list_js_patches row.\n{out}"
+        )
+    finally:
+        _cleanup_b1(neo4j_driver)

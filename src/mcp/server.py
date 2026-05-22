@@ -551,8 +551,11 @@ def _resolve_field(
         f"├─ Stored:   {'Yes' if base_f.get('stored', True) else 'No'}",
         f"├─ Required: {'Yes' if base_f.get('required', False) else 'No'}",
         f"├─ Related:  {base_f.get('related') or '—'}",
-        "├─ Declared in:",
     ]
+    # B1: render comodel_name for relational fields (only when non-null).
+    if base_f.get("comodel_name"):
+        lines.append(f"├─ Comodel:  {base_f['comodel_name']}")
+    lines.append("├─ Declared in:")
     last_idx = len(records) - 1
     for i, r in enumerate(records):
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
@@ -603,10 +606,16 @@ def _resolve_method(
             f" '{model_name}' in Odoo {odoo_version}."
         )
 
+    base_mth = records[0]["mth"]
     lines = [
         f"{model_name}.{method_name}() (Odoo {odoo_version})",
-        f"├─ Override chain ({len(records)}):",
     ]
+    # B1: render signature and convention_kind from the authoritative (first-ranked) entry.
+    if base_mth.get("signature"):
+        lines.append(f"├─ Signature:   ({base_mth['signature']})")
+    if base_mth.get("convention_kind"):
+        lines.append(f"├─ Convention:  {base_mth['convention_kind']}")
+    lines.append(f"├─ Override chain ({len(records)}):")
     last_idx = len(records) - 1
     for i, r in enumerate(records):
         mth = r["mth"]
@@ -673,6 +682,9 @@ def _resolve_view(
     # correct connector based on whether each branch is the last one.
     # ADR-0023 §1.6: empty Extended by is silently skipped (no "No extensions").
     branches: list[tuple[str, object]] = []
+    # B1: render the human label (v.name) when it is non-empty.
+    if v_props.get("name"):
+        branches.append(("string", v_props["name"]))
     branches.append(("type", v_props.get("type", "?")))
     branches.append(("model", v_props.get("model", "?")))
     branches.append(
@@ -708,7 +720,9 @@ def _resolve_view(
         connector = "└─" if is_last else "├─"
         # Sublist indent: 4 spaces when this parent is last; "│   " otherwise.
         sub_indent = "    " if is_last else "│   "
-        if kind == "type":
+        if kind == "string":
+            lines.append(f"{connector} String: {payload}")
+        elif kind == "type":
             lines.append(f"{connector} Type:   {payload}")
         elif kind == "model":
             lines.append(f"{connector} Model:  {payload}")
@@ -1490,7 +1504,9 @@ def _format_deprecated_usage(
         # Wave 5: every hit is now ├─ (Next: footer below is the new └─).
         connector = "├─"
         sub_indent = "│   "
-        loc = f"[{r['module']}] {r['model']}.{r['method']}"
+        # B1: include repo so agent can locate the source file.
+        repo_str = f"[{r['repo']}] " if r.get("repo") else ""
+        loc = f"{repo_str}[{r['module']}] {r['model']}.{r['method']}"
         sym = r["deprecated_symbol"]
         status = r["status"]
         repl = r.get("replacement") or "(no replacement set)"
@@ -1527,11 +1543,14 @@ def _find_deprecated_usage(
         if kind:
             cypher += " AND cs.kind = $kind"
             params["kind"] = kind
+        # B1: OPTIONAL MATCH Module to get repo so agent can locate the file.
         cypher += """
+            OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
             RETURN mth.module AS module, mth.model AS model, mth.name AS method,
                    cs.qualified_name AS deprecated_symbol,
                    cs.status AS status,
-                   cs.replacement_qname AS replacement
+                   cs.replacement_qname AS replacement,
+                   mod.repo AS repo
             ORDER BY mth.module, mth.model, mth.name
             LIMIT $cap_plus_one
         """
@@ -2455,6 +2474,12 @@ def _describe_module(
 
     lines = [f"{name} (Odoo {odoo_version})"]
 
+    # B1: render repo + path so agents can locate the module on disk (#1 navigation blocker).
+    if mod_rec.get("repo"):
+        lines.append(f"├─ Repo: {mod_rec['repo']}")
+    if mod_rec.get("path"):
+        lines.append(f"├─ Path: {mod_rec['path']}")
+
     # ADR-0036: surface license_notice as a visible marker (D3 — never silent).
     # Only emitted when non-null (i.e. module is ingest_flagged; skip action
     # means the module never reaches here at all).
@@ -2593,6 +2618,8 @@ def _list_fields(
                  mod.name AS mod_name
             RETURN f.name AS name, f.ttype AS ttype,
                    f.module AS module, mod.repo AS repo,
+                   f.stored AS stored, f.compute AS compute,
+                   f.comodel_name AS comodel_name,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
             SKIP $skip
@@ -2708,9 +2735,21 @@ def _list_fields(
         )
         # Build rendered strings with inline refs.
         raw_rows = [r for r, _ in sub_items]
+        def _fmt_field_row(r: dict) -> str:
+            # B1: include stored/compute/comodel_name in field row summary.
+            parts = [f"{r['name']} : {r['ttype']}"]
+            if r.get("compute"):
+                parts.append(f"compute={r['compute']}")
+            elif not r.get("stored", True):
+                # stored=False without compute is unusual but surfaceable.
+                parts.append("stored=False")
+            if r.get("comodel_name"):
+                parts.append(f"-> {r['comodel_name']}")
+            return " | ".join(parts)
+
         rendered_strs = _render_capped(
             raw_rows,
-            lambda r: f"{r['name']} : {r['ttype']}",
+            _fmt_field_row,
             cap=cap,
             more_hint=more_hint,
         )
@@ -3277,7 +3316,10 @@ def _list_owl_components(
     raw_rows = rows
     rendered = _render_capped(
         raw_rows,
-        lambda r: f"{r['name']} : {r.get('bound_model') or '(unbound)'}",
+        lambda r: (
+            f"{r['name']} : {r.get('bound_model') or '(unbound)'}"
+            + (f" | template={r['template']}" if r.get("template") else "")
+        ),
         cap=cap,
         more_hint=more_hint,
     )
@@ -3502,6 +3544,7 @@ def _list_js_patches(
                  mod.name AS mod_name
             RETURN j.target AS target, j.patch_name AS patch_name,
                    j.era AS era, j.module AS module, mod.repo AS repo,
+                   j.file_path AS file_path,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, j.target ASC, j.patch_name ASC
             SKIP $skip
@@ -3575,6 +3618,7 @@ def _list_js_patches(
             raw_rows,
             lambda r: (
                 f"{r['target']}.{r['patch_name']} : era={r.get('era') or '?'}"
+                + (f" | {r['file_path']}" if r.get("file_path") else "")
             ),
             cap=cap,
             more_hint=more_hint,
@@ -4158,6 +4202,7 @@ def _resolve_field_structured(
         stored=bool(base_f.get("stored", True)),
         required=bool(base_f.get("required", False)),
         related=base_f.get("related") or None,
+        comodel=base_f.get("comodel_name") or None,
         declared_in=declared_in,
         next_step_hint=format_next_step([
             f"find_examples(query='{model_name}.{field_name} usage'"
@@ -4193,7 +4238,7 @@ def _resolve_method_structured(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
-            RETURN mth.module AS module_name
+            RETURN mth, mth.module AS module_name
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
         """, mn=method_name, model=model_name, v=odoo_version, profile_name=profile_name).data()
@@ -4201,6 +4246,7 @@ def _resolve_method_structured(
     if not records:
         return None
 
+    base_mth = records[0]["mth"]
     override_chain = [
         MethodRef(
             model=model_name,
@@ -4218,6 +4264,8 @@ def _resolve_method_structured(
             module=records[0]["module_name"],
             odoo_version=odoo_version,
         ),
+        signature=base_mth.get("signature") or None,
+        convention=base_mth.get("convention_kind") or None,
         override_chain=override_chain,
         next_step_hint=format_next_step([
             f"find_override_point(model='{model_name}', method='{method_name}'"
@@ -4284,6 +4332,7 @@ def _resolve_view_structured(
             model=v_props.get("model"),
             odoo_version=odoo_version,
         ),
+        string=v_props.get("name") or None,
         view_type=v_props.get("type") or "?",
         module=view_rec.get("module_name") or "?",
         mode=v_props.get("mode") or None,
@@ -4320,7 +4369,8 @@ def _describe_module_structured(
             """
             MATCH (m:Module {name: $n, odoo_version: $v})
             WHERE ($profile_name IS NULL OR $profile_name IN m.profile)
-            RETURN m.edition AS edition, m.version_raw AS version_raw
+            RETURN m.edition AS edition, m.version_raw AS version_raw,
+                   m.repo AS repo, m.path AS path
             """,
             n=name, v=odoo_version, profile_name=profile_name,
         ).single()
@@ -4379,6 +4429,8 @@ def _describe_module_structured(
 
     return DescribeModuleOutput(
         ref=ModuleRef(name=name, odoo_version=odoo_version, profile=None),
+        repo=mod_rec.get("repo") or None,
+        path=mod_rec.get("path") or None,
         edition=mod_rec.get("edition") or "community",
         version_raw=mod_rec.get("version_raw") or None,
         depends=[d["name"] for d in depends],

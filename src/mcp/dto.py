@@ -215,6 +215,13 @@ class ResolveFieldOutput(BaseModel):
         default=None,
         description="Related field path if this is a related field",
     )
+    comodel: str | None = Field(
+        default=None,
+        description=(
+            "Comodel technical name for relational fields (Many2one/One2many/Many2many). "
+            "None for non-relational fields. B1 provenance — already in graph."
+        ),
+    )
     declared_in: list[FieldRef] = Field(
         description="All modules declaring this field, ordered by ranking heuristic"
     )
@@ -229,6 +236,22 @@ class ResolveMethodOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ref: MethodRef = Field(description="Composite key identifying this method")
+    signature: str | None = Field(
+        default=None,
+        description=(
+            "Function argument signature string (e.g. 'self, vals_list') from the "
+            "authoritative (first-ranked) module. None for era1 v8/v9 methods. "
+            "B1 provenance — already in graph."
+        ),
+    )
+    convention: str | None = Field(
+        default=None,
+        description=(
+            "Convention kind derived by the parser (e.g. 'compute', 'crud', 'action', "
+            "'private'). Guides super() safety and anti-pattern hints. "
+            "B1 provenance — already in graph."
+        ),
+    )
     override_chain: list[MethodRef] = Field(
         description="All overrides ordered by ranking heuristic (first = authoritative)"
     )
@@ -243,6 +266,14 @@ class ResolveViewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ref: ViewRef = Field(description="Composite key identifying this view")
+    string: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable label (the ``name`` property stored on the View node, "
+            "typically from the ``<record name='...' ...>`` or ``string`` attribute). "
+            "None when the view was indexed without a name. B1 provenance — already in graph."
+        ),
+    )
     view_type: str = Field(
         description="View type: 'form'|'tree'|'list'|'kanban'|...  'list' is v18+ alias for 'tree'"
     )
@@ -274,6 +305,20 @@ class DescribeModuleOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ref: ModuleRef = Field(description="Composite key identifying this module")
+    repo: str | None = Field(
+        default=None,
+        description=(
+            "Repository / source-set identifier (e.g. 'odoo', 'enterprise', 'viindoo'). "
+            "Stored on the Module node at index time. B1 provenance — already in graph."
+        ),
+    )
+    path: str | None = Field(
+        default=None,
+        description=(
+            "Filesystem path to the module directory on the indexing host "
+            "(e.g. '/opt/odoo/addons/sale'). B1 provenance — already in graph."
+        ),
+    )
     edition: str = Field(
         description="Module edition: 'community' | 'enterprise' | 'viindoo' | 'oca' | 'custom'"
     )

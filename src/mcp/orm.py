@@ -275,7 +275,18 @@ def _validate_domain(
             else:
                 chain = _traverse_field_chain(model, field_path, version, session, profile_name)
                 if chain["error"] is not None:
-                    problems.append(_broken_reason_text(chain["error"]))
+                    err = chain["error"]
+                    msg = _broken_reason_text(err)
+                    # B1: "did you mean?" suggestion for missing fields (matches
+                    # validate_depends error format in the same file).
+                    if err["reason"] == "missing":
+                        cands = _field_names_on_model(
+                            err["model"], version, session, profile_name
+                        )
+                        hint = _suggest(err["field"], cands)
+                        if hint:
+                            msg += f" — did you mean '{hint}'?"
+                    problems.append(msg)
 
             if op not in operators:
                 problems.append(f"operator {op!r} not valid in Odoo {version}")
