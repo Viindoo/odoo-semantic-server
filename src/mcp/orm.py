@@ -39,6 +39,12 @@ def _effective_allowed(profile_name):
     from src.mcp.server import _effective_allowed as _ea  # lazy: avoid circular import
     return _ea(profile_name)
 
+
+def _scope(profile_name=None):
+    """Lazy shim → src.mcp.server._scope (Neo4j own/shared array-filter params)."""
+    from src.mcp.server import _scope as _s  # lazy: avoid circular import
+    return _s(profile_name)
+
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
@@ -58,12 +64,12 @@ def _lookup_field(
     rows = session.run(
         """
         MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
-        WHERE ($allowed IS NULL OR any(__ap IN f.profile WHERE __ap IN $allowed))
+        WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
         RETURN f.ttype AS ttype, f.comodel_name AS comodel
         ORDER BY f.module ASC
         LIMIT 1
         """,
-        fn=field, mn=model, v=odoo_version, allowed=_effective_allowed(profile_name),
+        fn=field, mn=model, v=odoo_version, **_scope(profile_name),
     ).data()
     if rows:
         return {"ttype": rows[0]["ttype"], "comodel": rows[0]["comodel"], "source": "direct"}
@@ -79,12 +85,12 @@ def _lookup_field(
         MATCH (start)-[:INHERITS|DELEGATES_TO*1..3]->(parent:Model)
         WHERE NOT coalesce(parent.unresolved, false)
         MATCH (f:Field {name: $fn, model: parent.name, odoo_version: $v})
-        WHERE ($allowed IS NULL OR any(__ap IN f.profile WHERE __ap IN $allowed))
+        WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
         RETURN f.ttype AS ttype, f.comodel_name AS comodel
         ORDER BY parent.name ASC, f.module ASC
         LIMIT 1
         """,
-        fn=field, mn=model, v=odoo_version, allowed=_effective_allowed(profile_name),
+        fn=field, mn=model, v=odoo_version, **_scope(profile_name),
     ).data()
     if rows:
         return {"ttype": rows[0]["ttype"], "comodel": rows[0]["comodel"], "source": "inherited"}
@@ -154,10 +160,10 @@ def _field_names_on_model(
     rows = session.run(
         """
         MATCH (f:Field {model: $mn, odoo_version: $v})
-        WHERE ($allowed IS NULL OR any(__ap IN f.profile WHERE __ap IN $allowed))
+        WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
         RETURN DISTINCT f.name AS name
         """,
-        mn=model, v=odoo_version, allowed=_effective_allowed(profile_name),
+        mn=model, v=odoo_version, **_scope(profile_name),
     ).data()
     names = {r["name"] for r in rows} | set(MAGIC_FIELDS)
     return sorted(names)
@@ -331,10 +337,10 @@ def _validate_depends(
         rows = session.run(
             """
             MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
-            WHERE ($allowed IS NULL OR any(__ap IN mth.profile WHERE __ap IN $allowed))
+            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
             RETURN mth.depends AS depends
             """,
-            mn=method, model=model, v=version, allowed=_effective_allowed(profile_name),
+            mn=method, model=model, v=version, **_scope(profile_name),
         ).data()
 
         if not rows:

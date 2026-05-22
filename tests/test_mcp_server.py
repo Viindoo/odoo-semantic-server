@@ -1504,16 +1504,23 @@ def test_resolve_view_profile_none_returns_all(view_profile_tools):
     assert "mod_beta.view_beta_form" in result_beta
 
 
-def test_resolve_view_profile_filter_isolates(view_profile_tools):
-    """profile_name='beta_93' should find the beta view but not the alpha view."""
-    resolve_view, ver = view_profile_tools
-    # beta view is found under beta_93
-    result = resolve_view("mod_beta.view_beta_form", ver, profile_name="beta_93")
-    assert "mod_beta.view_beta_form" in result
+def test_resolve_view_profile_name_is_advisory_not_isolation(view_profile_tools):
+    """M13 (ADR-0034) supersedes ADR-0029: profile_name is ADVISORY, not isolation.
 
-    # alpha view is NOT found under beta_93 (different profile)
+    Pre-M13 this asserted profile_name='beta_93' hid the alpha view. Under M13 the
+    isolation mechanism is the TENANT boundary (own/shared), proven by
+    tests/test_cross_tenant_isolation.py. Without a tenant context (admin), the
+    `$own IS NULL` branch disables the choke-point filter, so profile_name no longer
+    restricts results — it is accepted (must not error) and both views stay visible
+    to an unscoped admin caller. A real tenant would never see another tenant's
+    private view regardless of the profile_name it passes (see the leak test).
+    """
+    resolve_view, ver = view_profile_tools
+    result_beta = resolve_view("mod_beta.view_beta_form", ver, profile_name="beta_93")
     result_alpha = resolve_view("mod_alpha.view_alpha_form", ver, profile_name="beta_93")
-    assert "not found" in result_alpha.lower()
+    assert "mod_beta.view_beta_form" in result_beta
+    # admin (no tenant) sees all; profile_name is advisory, isolation is tenant-driven
+    assert "mod_alpha.view_alpha_form" in result_alpha
 
 
 # ===========================================================================
