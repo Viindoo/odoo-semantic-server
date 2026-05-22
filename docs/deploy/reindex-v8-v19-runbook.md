@@ -455,6 +455,57 @@ Each duplicate must represent a deliberately multi-profile registration (e.g. th
 
 ---
 
+## 5.10 Post-final-stretch enrichment verify (feat/osm-final-stretch A1/A2/A3)
+
+Run after full reindex that includes the `feat/osm-final-stretch` enrichment wave commits.
+
+**5.10a — v19 Command + Domain CoreSymbol present:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (cs:CoreSymbol {odoo_version:'19.0'})
+     WHERE cs.qualified_name IN ['odoo.fields.Command','odoo.orm.domains.Domain']
+     RETURN count(cs) AS curated_count;"
+```
+Expected: `curated_count` >= 2 (Command at `odoo.fields.Command`, Domain at `odoo.orm.domains.Domain`).
+
+**5.10b — Module manifest + repo provenance populated:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (m:Module {odoo_version:'17.0'})
+     WHERE m.repo_url IS NOT NULL
+     RETURN count(m) AS modules_with_repo_url;"
+```
+Expected: > 0.
+
+**5.10c — Method.docstring populated:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (mth:Method {odoo_version:'17.0'})
+     WHERE mth.docstring IS NOT NULL
+     RETURN count(mth) AS methods_with_docstring;"
+```
+Expected: > 0.
+
+**5.10d — USES_FIELD and DEPENDS_ON_FIELD edges present:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (:Method)-[r:USES_FIELD]->(:Field) RETURN count(r) AS uses_field_count;"
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (:Method)-[r:DEPENDS_ON_FIELD]->(:Field) RETURN count(r) AS depends_on_field_count;"
+```
+Expected: both > 0 after reindex.
+
+**5.10e — embeddings provenance columns populated (pgvector):**
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT count(*) AS provenance_chunks
+FROM embeddings
+WHERE repo IS NOT NULL AND line_start IS NOT NULL;"
+```
+Expected: > 0 after `reembed-stubs` run following m13_003 migration.
+
+---
+
 ## Known Constraints (post-wave3)
 
 ### MED-2 — Private forges require manual known_hosts onboarding
@@ -503,6 +554,12 @@ This is a one-time step per forge host. Once pinned, subsequent clones for any r
 | Repos local_path normalized (5.9a) | No unexpected user-supplied paths | [ ] |
 | Cross-profile (url,branch) duplicates reviewed (5.9b) | All duplicates intentional | [ ] |
 | MED-2 self-hosted forges (if any) | SSH host keys pinned before clone attempt | [ ] |
+| v19 Command + Domain CoreSymbol (5.10a) | >= 2 (`odoo.fields.Command` + `odoo.orm.domains.Domain`) | [ ] |
+| Module.repo_url populated v17 (5.10b) | > 0 modules with non-NULL repo_url | [ ] |
+| Method.docstring populated v17 (5.10c) | > 0 methods with non-NULL docstring | [ ] |
+| USES_FIELD edges (5.10d) | > 0 method→field edges | [ ] |
+| DEPENDS_ON_FIELD edges (5.10d) | > 0 method→field edges | [ ] |
+| embeddings repo + line_start populated (5.10e) | > 0 chunks with repo IS NOT NULL AND line_start IS NOT NULL | [ ] |
 
 ---
 

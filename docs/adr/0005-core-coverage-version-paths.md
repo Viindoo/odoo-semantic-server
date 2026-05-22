@@ -117,8 +117,16 @@ When a new Odoo major version ships:
 - v8/v9 and v19+ re-index now produce non-empty `CoreSymbol`. Tools
   `lookup_core_api`, `api_version_diff`, and `find_deprecated_usage` are functional
   for these versions after running `index-core`.
-- v19 ORM surface (all field types, all `api.*` decorators, `Environment`, model
-  classes) is fully indexed — no silent gaps.
+- v19 ORM surface (field types, `api.*` decorators, `Environment`, model classes) is
+  indexed via the package-dir fallback + curated allow-list (`_V19_CURATED_FILES`).
+  **A residual gap existed** for `Command` (defined in `orm/commands.py`, not covered
+  by the `fields*.py` glob) and the public `Domain`/`DomainAnd`/`DomainOr` symbols
+  (`orm/domains.py`) and `TableObject`/`Constraint`/`Index`/`UniqueIndex`
+  (`orm/table_objects.py`). These were found and fixed in the `feat/osm-final-stretch`
+  enrichment wave (A1): `Command` is preserved at its canonical `qname`
+  `odoo.fields.Command`; the orm helpers are added to `_V19_CURATED_FILES`.
+  The ADR-0032 `VersionRegistry` (version-dispatch registry) provides the hook for
+  future v20+ path changes without touching this file's fallback logic.
 - `ValidationError`, `AccessError`, `MissingError`, `RedirectWarning` correctly carry
   `kind=exception` in query results.
 - All file-path resolution logic lives in one place (`_resolve_core_paths`) — future
