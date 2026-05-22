@@ -43,6 +43,8 @@ option for cross-tenant leakage — so the design below centres on closing
 gap #1 with **mandatory, fail-closed** enforcement at a single choke point,
 not 88 hand-edited query sites.
 
+> **Site-count correction (2026-05-22, post-wave3 survey):** The "~27 sites" and "88 query sites" figures were pre-implementation estimates. Verified count: **61 user-data Cypher query sites** (57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`) PLUS 3 embeddings queries with no Neo4j filter (`find_examples`, `find_style_override`, `suggest_pattern`) that rely on pgvector RLS (WI-5/ADR-0034 D6) for isolation. The "88 query sites" figure in D4 referred to a broader naive-approach count; the actual enforcement surface for WI-4 is 61 + 3.
+
 ### Why shared-base + overlay (not `tenant_id` in every key)
 
 The naive reading of "pooled" — add `tenant_id` to all 15 node MERGE keys and

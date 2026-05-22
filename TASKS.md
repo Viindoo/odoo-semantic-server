@@ -820,11 +820,11 @@ ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; sect
   - Dependency: must land BEFORE any v20 work to avoid duplicating the era-branch debt.
   - **DONE:** `VersionRegistry(min_major, max_major|None, handler)` implemented in `src/indexer/version_registry.py`. Three registries wired: `_ERA_REGISTRY` (parser_python), `_PREFIX_REGISTRY` (parser_odoo_core), `_OWL_ENABLED_REGISTRY` (parser_js). `parser_cli` also gets `_PKG_PREFIX_REGISTRY`. `test_version_registry.py` passes. Behavior-preserving: all era1/era2/era3 tests pass. See `docs/adr/0032-parser-hooks-registry.md`.
 
-- [ ] **RelaxNG XML schema validation port from Odoo LS** — MED
-  - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
-  - Scope: port Odoo Language Server's RelaxNG schema files for v15+ view XML; integrate into `parser_xml.py` post-parse step that validates each `<record>`/`<template>` against the schema; surfaces errors as new `:LintViolation` rows tied to the View node.
-  - Acceptance: `validate_xml.py` script runs against `viindoo_17` profile producing a violations report; `lint_check(language='xml')` MCP tool returns RelaxNG errors alongside existing Python lint output.
-  - Dependency: requires `lxml` (already in `pyproject.toml`) and Odoo LS schema files (vendored under `src/indexer/schemas/odoo_xml/v15+.rng`). Licence-check Odoo LS LGPL terms before vendoring.
+- [x] **RelaxNG XML schema validation port from Odoo LS** — MED *(feat/m13pre-wave3 — src/indexer/parser_xml.py, src/indexer/schemas/odoo_xml/)*
+  - Scope: Odoo LS RelaxNG schema files vendored under `src/indexer/schemas/odoo_xml/` (NOTICE file included). Post-parse step in `parser_xml.py` validates each view against the schema; errors surface as `:LintViolation` nodes tied to the View via `:HAS_VIOLATION` edge. `lint_check(language='xml')` returns RelaxNG errors.
+  - Version-aware: v15-v17 use `tree_view.rng`; v18-v19 use `list_view.rng` (Odoo renamed `<tree>` → `<list>`). Common, calendar, activity, graph, search, pivot, kanban schemas shared. v14 and earlier: no RNG validation (schema not available for older versions).
+  - Acceptance: `:LintViolation` nodes > 0 for v15+ profiles after reindex; `lint_check(language='xml')` reports malformed view XML.
+  - Dependency: lxml (already in pyproject.toml). LGPL-compliant vendoring — NOTICE file in schemas dir.
 
 ---
 
@@ -906,7 +906,11 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Milestone 13 — "Multi-Tenant Wow"
 
-**Status:** `[ ]` Not started. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md).
+**Status:** `[~]` In progress. Pre-reindex DB-schema/data + multi-tenant foundation + git-integrity wave shipped (feat/m13pre-wave3, 2026-05-22). Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md).
+
+> **This wave (WI-F):** WI-1/WI-2/WI-5 schema + WI-6 (deploy-key REST endpoint) + WI-8/WI-9 git hardening + WI-10 license policy + M11 RelaxNG XML validation shipped. See CHANGELOG.md `[0.9.1]`.
+> **DEFERRED (not in this PR):** P2 enforcement (WI-3 `resolve_allowed_profiles` + WI-4 mandatory 61-site filter), cross-tenant leak-test release gate, WI-7 FERNET secrets manager, M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 prod smoke, VN persona docs, OBS-2/OBS-3.
+> **ADR-0034 site-count correction:** the ADR text says "~27 user-data Cypher sites". Verified count post-wave3: **61 sites** (57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`) PLUS 3 embeddings queries with NO Neo4j filter (`find_examples` / `find_style_override` / `suggest_pattern`) — those rely on pgvector RLS (WI-5 partial: column added, RLS deferred to WI-4 enforcement wave).
 
 > Realizes **M12 Stream B WI-B3 path (b) "True profile authz"** (above), which was deferred pending a customer-demand signal: "*customer-A's index hidden from customer-B*". That signal has arrived — OSM will serve many customers, each with **private repositories**. Numbered M13 because M12 was repurposed for v0.6 shim removal; this supersedes the stale post-M8 roadmap line "M12 Multi-tenant Wow — Neo4j namespacing".
 
@@ -924,51 +928,58 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 **Ordering rule (per request):** ship architecture- and DB-schema-affecting work FIRST (P1 → P2). Every later phase depends on the tenant boundary + the enforcement choke point existing. P3–P5 layer on top.
 
 ### P1 — Control plane + DB schema (architecture-first, ship first)
-- [ ] **WI-1 — `tenants` table + tenant FKs** — HIGH (db-schema)
+- [x] **WI-1 — `tenants` table + tenant FKs** — HIGH (db-schema) *(feat/m13pre-wave3 — migrations/m13_002_tenants_and_fks.sql)*
   - Scope: new migration — `CREATE TABLE tenants`; `ALTER TABLE api_keys / profiles / ssh_key_pairs ADD COLUMN tenant_id` (FK, `NULL` = shared/global). Shared-base profiles (`odoo_N`) keep `tenant_id IS NULL`; tenant profiles parent onto a same-version shared base (ADR-0016 version-match already enforces this).
   - Acceptance: `python -m src.db.migrate` idempotent on existing prod DB; existing rows default to `tenant_id NULL` (backward compatible); FK cascade verified.
   - Dependency: none — pure additive schema. **Must land before P2.**
-- [ ] **WI-2 — `verify_api_key` returns `tenant_id`** — HIGH (auth)
+  - **Also in m13_002:** `ssh_key_pairs.key_type` column; `repos` UNIQUE constraint narrowed to `(url, branch, profile_id)` (was `(url, branch)`).
+- [x] **WI-2 — `verify_api_key` returns `tenant_id`** — HIGH (auth) *(feat/m13pre-wave3 — src/db/auth_registry.py, src/mcp/middleware.py)*
   - Scope: extend `src/db/auth_registry.py:70-120` to return `tenant_id`; auth middleware (`src/mcp/middleware.py:152-216`) writes `request.state.tenant_id`; tool-context thread-local (`src/mcp/server.py:153-164`) exposes it; `create_api_key` gains a `tenant_id` param.
   - Acceptance: a key created under tenant X resolves to `tenant_id=X` in tool context; legacy `tenant_id NULL` keys behave as admin/global (only unscoped path, audit-logged).
   - Dependency: WI-1.
-- [ ] **WI-10 — License policy engine (config-driven soft block)** — HIGH (data-correctness / legal) — [ADR-0036](docs/adr/0036-indexer-license-guard.md)
+  - **NOTE:** read-side enforcement (WI-3/WI-4 choke point) is DEFERRED — tenant_id is plumbed through context but no query filtering is active yet.
+- [x] **WI-10 — License policy engine (config-driven soft block)** — HIGH (data-correctness / legal) — [ADR-0036](docs/adr/0036-indexer-license-guard.md) *(feat/m13pre-wave3 — src/constants.py, src/indexer/registry.py, src/indexer/writer_neo4j.py, src/mcp/server.py)*
   - Scope: indexer records `license` + derived `copyright_owner` on every `Module` node (always — facts). A config `license_policy` map (single source) assigns each license class an action: `serve` / `ingest_flagged` (ingest + tag `restricted`, withhold from results) / `skip`. Enforced at `registry.build_registry()` (single chokepoint). Defaults: LGPL/AGPL/GPL + OPL-1 + unknown → `serve`; **OEEL-1 → `skip`**. Restricted/skipped modules emit a structured `license_notice` surfaced to AI clients (tool-output marker) AND humans (UI badge) — never a silent gap. Submitter responsibility for non-OEEL via a ToS representation-and-warranty at repo registration + a notice-and-takedown path.
   - Acceptance: under default config, OEEL modules from public `odoo/odoo` (`account_payment_term`, `certificate`, `l10n_*`) are NOT served and produce a `license_notice`; **flipping `license_policy.OEEL-1` to `serve` (test) exposes them with NO code change**; copyleft + Viindoo OPL-1 served normally; `EE_CONFUSION` name dict (`src/data/ee_modules.py`) unaffected.
   - Dependency: none — independent of tenant work; **recommended to land first** (establishes the policy layer + closes the accidental-OEEL-ingest hole even before multi-tenant). ToS clause is a product/legal companion (not code-heavy).
 
 ### P2 — Enforcement choke point (architecture-critical — RELEASE GATE)
-- [ ] **WI-3 — `resolve_allowed_profiles(tenant_id)` helper** — HIGH (architecture)
+- [ ] **WI-3 — `resolve_allowed_profiles(tenant_id)` helper** — HIGH (architecture) **[DEFERRED]**
   - Scope: ONE resolver = tenant's profiles + their shared-base ancestors (Postgres CTE reusing `get_ancestor_profile_names`); cached via the existing 60s session cache (ADR-0029).
   - Acceptance: returns `['acme_17','odoo_17']` for an Acme-17 tenant; returns only shared-base names for a tenant with no own profiles.
   - Dependency: WI-1, WI-2.
-- [ ] **WI-4 — Mandatory fail-closed filter across user-data tools** — HIGH (architecture)
-  - Scope: every user-data Cypher query (the ~27 sites enumerated in the survey — `_resolve_*` / `_list_*` / `impact_analysis` / `describe_module` / `find_override_point` / `orm.py` / `resources.py`) takes a **required** `$allowed_profiles`; remove the `$profile_name IS NULL OR …` optional-bypass form. No tenant context (non-admin) → empty result, never the full graph. `_latest_version()` (`src/mcp/server.py:295`) restricted to `$allowed_profiles` (else "auto" version of A leaks B's version). Spec-data tools stay exempt (locked decision).
+- [ ] **WI-4 — Mandatory fail-closed filter across user-data tools** — HIGH (architecture) **[DEFERRED — RELEASE GATE]**
+  - Scope: every user-data Cypher query (**61 sites** — 57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`; PLUS 3 embeddings queries with no Neo4j filter: `find_examples`, `find_style_override`, `suggest_pattern`) takes a **required** `$allowed_profiles`; remove the `$profile_name IS NULL OR …` optional-bypass form. No tenant context (non-admin) → empty result, never the full graph. `_latest_version()` (`src/mcp/server.py:295`) restricted to `$allowed_profiles` (else "auto" version of A leaks B's version). Spec-data tools stay exempt (locked decision).
   - Acceptance: **cross-tenant leak test (RELEASE GATE)** — tenant A queries every tool + every `odoo://` resource and never sees a tenant-B-only node, with and without explicit `profile_name`. `list_available_profiles` / `set_active_profile` validate ownership.
   - Dependency: WI-3. **Do not tag a release until this test passes** (Neo4j Community has no per-label security — the resolver is the only guard).
+  - **Note on site count:** ADR-0034 originally cited "~27 sites". Verified post-wave3: 61 Cypher sites + 3 SQL embeddings queries without profile filter. ADR-0034 prose updated with a correction note.
 
 ### P3 — pgvector tenant column + RLS (db-schema)
-- [ ] **WI-5 — `embeddings.profile_name` + Postgres RLS** — HIGH (db-schema)
-  - Scope: `ALTER TABLE embeddings ADD COLUMN profile_name` (`NULL` = shared); add to UNIQUE + `idx_embeddings_filter`; `EmbeddingChunk` / INSERT / `DELETE … WHERE module=… AND odoo_version=…` (`writer_pgvector.py:271`) add `profile_name`; `ENABLE ROW LEVEL SECURITY` + policy keyed on `current_setting('app.allowed_profiles')`; MCP DB layer issues `SET LOCAL app.allowed_profiles` per request.
-  - Acceptance: `find_examples` / `suggest_pattern` for tenant A return zero tenant-B chunks even at the same `odoo_version`; RLS verified by direct SQL with a foreign `app.allowed_profiles`.
-  - Dependency: WI-1 (tenant), WI-3 (allow-list). Requires a one-time re-embed to backfill `profile_name`.
+- [x] **WI-5 — `embeddings.profile_name` column (schema only)** — HIGH (db-schema) *(feat/m13pre-wave3 — migrations/m13_001_embeddings_profile_name.sql, src/indexer/writer_pgvector.py)*
+  - Schema: `ALTER TABLE embeddings ADD COLUMN profile_name TEXT`; UNIQUE constraint + `idx_embeddings_filter` updated; `EmbeddingChunk` + INSERT + DELETE writer clauses updated. Profile-scoped chunk writes now active.
+  - **PARTIAL ONLY — RLS deferred:** `ENABLE ROW LEVEL SECURITY` + `SET LOCAL app.allowed_profiles` NOT yet implemented. `find_examples` / `find_style_override` / `suggest_pattern` still query without tenant isolation at the SQL level. RLS enforcement ships with WI-4 (enforcement wave).
+  - Dependency: WI-1 (tenant), WI-3 (allow-list) — column schema landed standalone; RLS activation waits for WI-3/WI-4.
 
 ### P4 — Deploy-key credential self-service
-- [ ] **WI-6 — Per-tenant deploy keypair + self-service public key** — MED (credential)
-  - Scope: `ssh_key_pairs.tenant_id` (WI-1) + `key_type CHECK ('deploy_key','access_key')`; tenant-scoped `GET /api/tenants/{id}/deploy-key` returns the (non-secret) public key + add-as-deploy-key instructions, gated by tenant auth (not full admin). Reuse existing Ed25519 generation + `GIT_SSH_COMMAND` clone (ADR-0008) unchanged.
-  - Acceptance: a tenant fetches only its own public key; clone of a private repo with that deploy key succeeds; another tenant cannot fetch it.
+- [x] **WI-6 — Per-tenant deploy keypair + self-service public key (REST endpoint)** — MED (credential) *(feat/m13pre-wave3 — src/web_ui/routes/deploy_key.py)*
+  - Scope: `ssh_key_pairs.key_type` column (WI-1/m13_002); tenant-scoped `GET /api/tenant/deploy-key` (X-API-Key → tenant_id, cross-tenant-safe) returns the (non-secret) public key + add-as-deploy-key instructions, gated by tenant auth (not full admin). Reuse existing Ed25519 generation + `GIT_SSH_COMMAND` clone (ADR-0008) unchanged.
+  - Acceptance: a tenant fetches only its own public key; another tenant cannot fetch it.
   - Dependency: WI-1.
-- [ ] **WI-8 — Concurrent repo refresh: `fetch` + `reset --hard` under per-repo lock** — HIGH (concurrency) — [ADR-0035](docs/adr/0035-git-access-model.md) D2/D4
-  - Scope: add the missing in-place refresh path (none exists today — repos are clone-once). New repo-update helper runs `git fetch` then `git reset --hard origin/<branch>` (NOT `pull`/`merge` — the working tree is a read-only mirror). Wrap every mutating git op (clone/fetch/reset/checkout) in a **per-repo Postgres advisory lock** (`lock_id` from `repo_id`), generalizing the current per-profile lock (`pipeline.py _profile_lock_id`). Read-only `rev-parse`/`diff` stay lock-free but must not race a reset of the same repo. Add stale `.git/*.lock` cleanup before retry (ADR-0035 D6).
-  - Acceptance: integration test — two concurrent refreshes of the SAME repo serialize (no `index.lock` error); refreshes of DIFFERENT repos run in parallel; after a forced SIGKILL mid-fetch, the next refresh succeeds (stale lock cleaned). Credential isolation preserved (per-op `env`/tempfile key for the tenant's deploy key).
-  - Dependency: WI-1 (tenant), WI-6 (per-tenant deploy key). Keep the existing `ThreadPoolExecutor` worker cap; evaluate `--filter=blob:none` partial clone as a separate spike (ADR-0035 D5).
-- [ ] **WI-9 — known_hosts pinning + strict host checking** — MED (security/concurrency) — [ADR-0035](docs/adr/0035-git-access-model.md) D3
-  - Scope: replace the shared known_hosts + `StrictHostKeyChecking=accept-new` (`git_utils.py:112-116`) with a pre-populated, read-only known_hosts pinning the common forges (GitHub/GitLab/Bitbucket) + `StrictHostKeyChecking=yes` (or a per-clone known_hosts tempfile). Fixes both the concurrent-write race and the TOFU first-clone MITM exposure at multi-tenant scale.
-  - Acceptance: concurrent first-clones from multiple forges do not corrupt known_hosts; a clone against an unpinned/mismatched host key is rejected (not silently accepted); existing happy-path clone against a pinned forge still succeeds.
-  - Dependency: none (independent hardening; can land alongside WI-6).
+  - **Note:** `GET /api/tenant/deploy-key` is a REST endpoint (not an MCP tool). Tool count stays 24.
+- [x] **WI-8 — Concurrent repo refresh: `fetch` + `reset --hard` under per-repo lock** — HIGH (concurrency) *(feat/m13pre-wave3 — src/git_utils.py)* — [ADR-0035](docs/adr/0035-git-access-model.md) D2/D4
+  - Scope: in-place refresh path (`git fetch` + `git reset --hard origin/<branch>`) added. Every mutating git op wrapped in a **per-repo Postgres advisory lock** (`lock_id` from `repo_id`). Stale `.git/*.lock` cleanup before retry. `tests/test_git_hardening.py` (487 lines) covers concurrent serialize + parallel different-repo + post-SIGKILL recovery.
+  - Dependency: WI-1 (tenant), WI-6 (per-tenant deploy key).
+- [x] **WI-9 — known_hosts pinning + strict host checking** — MED (security/concurrency) *(feat/m13pre-wave3 — src/git_utils.py)* — [ADR-0035](docs/adr/0035-git-access-model.md) D3
+  - Scope: replaced `StrictHostKeyChecking=accept-new` with a pre-populated pinned known_hosts for GitHub/GitLab/Bitbucket + `StrictHostKeyChecking=yes`. Fixes TOFU MITM exposure + concurrent known_hosts write race.
+  - **MED-2 known constraint:** self-hosted forges (non-GitHub/GitLab/Bitbucket) require their SSH host key be added to the pinned known_hosts file as a per-host onboarding step (no TOFU — strict checking is now enforced). See runbook §MED-2 note.
+  - Dependency: none.
+
+### P4b — Repo registration hardening (shipped with wave3, unlabeled in original plan)
+- [x] **WI-G — Git-URL-only repo registration + server-managed `local_path` + tenant ownership** *(feat/m13pre-wave3 — src/db/repo_registry.py, src/web_ui/routes/repos.py)*
+  - Repos registered by git URL only; `local_path` computed server-side from URL + branch. `tenant_id` FK propagated on repo creation. Per-profile UNIQUE(url, branch, profile_id) allows cross-profile duplicates.
 
 ### P5 — Hardening (debt, schedule after P1–P4)
-- [ ] **WI-7 — `FERNET_KEY` → secrets manager; audit unscoped admin paths** — MED (security)
+- [ ] **WI-7 — `FERNET_KEY` → secrets manager; audit unscoped admin paths** — MED (security) **[DEFERRED]**
   - Scope: move `FERNET_KEY` out of the plain env file into a secrets manager; audit-log the admin/global-key unscoped query path; revisit per-tenant envelope encryption (per-tenant DEK + KMS — ADR-0034 D8 deferred it) and decide whether the pooled blast-radius now justifies it.
   - Acceptance: prod no longer reads `FERNET_KEY` from a systemd env file; audit row emitted on every unscoped admin query.
   - Dependency: P1–P4 functional.
