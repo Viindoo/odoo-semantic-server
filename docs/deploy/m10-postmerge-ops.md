@@ -131,7 +131,7 @@ Also removes the test-artifact `snap_mod` node (odoo_version='96.0') left from a
 
 ```bash
 cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
-    "MATCH (oc:OWLComponent)
+    "MATCH (oc:OWLComp)
      WHERE oc.odoo_version IN ['8.0','9.0','10.0','11.0','12.0','13.0']
        AND oc.module = '__unresolved__'
      DETACH DELETE oc

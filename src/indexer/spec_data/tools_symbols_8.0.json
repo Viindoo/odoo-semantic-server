@@ -1,0 +1,119 @@
+{
+  "_curate_status": "complete",
+  "_generated_at": "2026-05-22",
+  "_note": "Curated odoo.tools symbols for Odoo 8.0 (OpenERP era). safe_eval imported from openerp.tools.safe_eval. image_resize_image and friends available. pycompat present. date_utils absent (introduced v12). No SQL class (v17+). format_datetime/format_amount/get_lang absent (v13+).",
+  "symbols": [
+    {
+      "qualified_name": "odoo.tools.image_resize_image",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "image_resize_image(base64_source, size=(1024, 1024), encoding='base64', filetype=None, avoid_if_small=False)",
+      "note": "Image resize API for v8-v12. Removed in v13 — replaced by odoo.tools.image_process."
+    },
+    {
+      "qualified_name": "odoo.tools.image_resize_image_big",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "image_resize_image_big(base64_source, size=(1024, 1024), encoding='base64', filetype=None, avoid_if_small=False)",
+      "note": "Convenience wrapper around image_resize_image for large sizes. Removed v13+."
+    },
+    {
+      "qualified_name": "odoo.tools.image_resize_image_medium",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "image_resize_image_medium(base64_source, size=(128, 128), encoding='base64', filetype=None, avoid_if_small=False)",
+      "note": "Convenience wrapper for medium image resize. Removed v13+."
+    },
+    {
+      "qualified_name": "odoo.tools.image_resize_image_small",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "image_resize_image_small(base64_source, size=(64, 64), encoding='base64', filetype=None, avoid_if_small=False)",
+      "note": "Convenience wrapper for small image resize. Removed v13+."
+    },
+    {
+      "qualified_name": "odoo.tools.ustr",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "ustr(value) -> str",
+      "note": "Unicode string coercion helper. Present through v19 though soft-deprecated in later versions. Still valid to use."
+    },
+    {
+      "qualified_name": "odoo.tools.pycompat",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "module",
+      "note": "Python 2/3 compatibility shim. Gradually shrinks from v13 onward, deprecated v18, removed from odoo.tools.__init__ in v19."
+    },
+    {
+      "qualified_name": "odoo.tools.float_compare",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_compare(value1, value2, precision_digits=None, precision_rounding=None) -> int",
+      "note": "Compare two floats with decimal precision. Re-exported from odoo.tools.float_utils."
+    },
+    {
+      "qualified_name": "odoo.tools.float_round",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_round(value, precision_digits=None, precision_rounding=None, rounding_method='HALF-UP') -> float",
+      "note": "Round a float with decimal precision. Re-exported from odoo.tools.float_utils."
+    },
+    {
+      "qualified_name": "odoo.tools.float_is_zero",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_is_zero(value, precision_digits=None, precision_rounding=None) -> bool",
+      "note": "Test if a float is effectively zero within precision. Re-exported from odoo.tools.float_utils."
+    },
+    {
+      "qualified_name": "odoo.tools.html_escape",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "html_escape(text, keep_newlines=False) -> str",
+      "note": "Escape HTML special characters. In v17+ prefer markupsafe.escape for Markup-aware escaping."
+    },
+    {
+      "qualified_name": "odoo.tools.plaintext2html",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "plaintext2html(text, container_tag=False) -> str",
+      "note": "Convert plain text to HTML, escaping special chars and converting newlines to <br>."
+    },
+    {
+      "qualified_name": "odoo.tools.html2plaintext",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "html2plaintext(html) -> str",
+      "note": "Strip HTML tags and return plain text."
+    },
+    {
+      "qualified_name": "odoo.tools.DEFAULT_SERVER_DATE_FORMAT",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "str = '%Y-%m-%d'",
+      "note": "Constant for Odoo server-side date format string."
+    },
+    {
+      "qualified_name": "odoo.tools.DEFAULT_SERVER_DATETIME_FORMAT",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "str = '%Y-%m-%d %H:%M:%S'",
+      "note": "Constant for Odoo server-side datetime format string."
+    },
+    {
+      "qualified_name": "odoo.tools.mute_logger",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "mute_logger(*loggers) -> ContextManager",
+      "note": "Context manager to silence specific loggers during tests. Frequently misused — apply only in test scope."
+    },
+    {
+      "qualified_name": "odoo.tools.config",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "odoo.tools.config.configmanager",
+      "note": "Global Odoo config manager singleton. Access options via odoo.tools.config['option_name']."
+    }
+  ]
+}

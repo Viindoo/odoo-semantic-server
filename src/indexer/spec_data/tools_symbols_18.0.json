@@ -1,0 +1,142 @@
+{
+  "_curate_status": "complete",
+  "_generated_at": "2026-05-22",
+  "_note": "Curated odoo.tools symbols for Odoo 18.0. SQL class stable. pycompat officially deprecated. safe_eval submodule unchanged. html_escape still deprecated (use markupsafe.escape). No major removals vs v17.",
+  "symbols": [
+    {
+      "qualified_name": "odoo.tools.SQL",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "class SQL",
+      "note": "SQL query builder for safe parameterized queries. Introduced v17, stable in v18."
+    },
+    {
+      "qualified_name": "odoo.tools.js_transpiler",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "module",
+      "note": "JavaScript transpiler submodule for Odoo ES module system."
+    },
+    {
+      "qualified_name": "odoo.tools.image_process",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "image_process(b64source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='') -> bytes",
+      "note": "Unified image processing function."
+    },
+    {
+      "qualified_name": "odoo.tools.date_utils",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "module",
+      "note": "Date utility submodule. Provides start_of, end_of, add, subtract."
+    },
+    {
+      "qualified_name": "odoo.tools.format_datetime",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "format_datetime(env, value, tz=False, dt_format='medium', lang_code=False) -> str",
+      "note": "Format a datetime value using the user's locale."
+    },
+    {
+      "qualified_name": "odoo.tools.format_amount",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "format_amount(env, amount, currency, lang_code=False) -> str",
+      "note": "Format a monetary amount using the user's locale and currency."
+    },
+    {
+      "qualified_name": "odoo.tools.get_lang",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "get_lang(env, lang_code=False) -> res.lang record",
+      "note": "Get the res.lang record for the current or specified language."
+    },
+    {
+      "qualified_name": "odoo.tools.ustr",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "ustr(value) -> str",
+      "note": "Unicode string coercion helper. Present through v19, soft-deprecated but still functional."
+    },
+    {
+      "qualified_name": "odoo.tools.pycompat",
+      "kind": "tool_export",
+      "status": "deprecated",
+      "replacement_qname": null,
+      "signature": "module",
+      "note": "Python 2/3 compatibility shim officially deprecated in v18. Removed from odoo.tools.__init__ in v19."
+    },
+    {
+      "qualified_name": "odoo.tools.float_compare",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_compare(value1, value2, precision_digits=None, precision_rounding=None) -> int",
+      "note": "Compare two floats with decimal precision."
+    },
+    {
+      "qualified_name": "odoo.tools.float_round",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_round(value, precision_digits=None, precision_rounding=None, rounding_method='HALF-UP') -> float",
+      "note": "Round a float with decimal precision."
+    },
+    {
+      "qualified_name": "odoo.tools.float_is_zero",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_is_zero(value, precision_digits=None, precision_rounding=None) -> bool",
+      "note": "Test if a float is effectively zero within precision."
+    },
+    {
+      "qualified_name": "odoo.tools.html_escape",
+      "kind": "tool_export",
+      "status": "deprecated",
+      "replacement_qname": "markupsafe.escape",
+      "signature": "html_escape(text, keep_newlines=False) -> str",
+      "note": "Deprecated — use markupsafe.escape for Markup-aware escaping."
+    },
+    {
+      "qualified_name": "odoo.tools.plaintext2html",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "plaintext2html(text, container_tag=False) -> str",
+      "note": "Convert plain text to HTML."
+    },
+    {
+      "qualified_name": "odoo.tools.html2plaintext",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "html2plaintext(html) -> str",
+      "note": "Strip HTML tags and return plain text."
+    },
+    {
+      "qualified_name": "odoo.tools.DEFAULT_SERVER_DATE_FORMAT",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "str = '%Y-%m-%d'",
+      "note": "Constant for Odoo server-side date format string."
+    },
+    {
+      "qualified_name": "odoo.tools.DEFAULT_SERVER_DATETIME_FORMAT",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "str = '%Y-%m-%d %H:%M:%S'",
+      "note": "Constant for Odoo server-side datetime format string."
+    },
+    {
+      "qualified_name": "odoo.tools.mute_logger",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "mute_logger(*loggers) -> ContextManager",
+      "note": "Context manager to silence specific loggers. Use only in tests."
+    },
+    {
+      "qualified_name": "odoo.tools.config",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "odoo.tools.config.configmanager",
+      "note": "Global Odoo config manager singleton."
+    }
+  ]
+}

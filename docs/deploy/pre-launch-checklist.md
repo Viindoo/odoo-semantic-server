@@ -330,6 +330,8 @@ Items left unchecked after 2026-05-16 read-only verification sweep. Each needs a
 15. **§6 Tools 15-21 prod smoke (PENDING 2026-05-17)** — The 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) need an end-to-end smoke against the production MCP endpoint via Claude Code or another MCP client. Deferred to next session per go-live decision. All 7 tools are code-complete + unit-tested; no expected failures.
     > Tracked at TASKS.md → M10A "§6 tools 15-21 prod smoke".
 
+16. **PR #160 DB-impact reindex (NEW 2026-05-22)** — PR #160 ("reindex-prep DB-impact wave v8→v19") introduces parser fixes for v18/v19 field types (WI-1), v8/v9 CLICommand (WI-2), LESS indexing v8-v11 (WI-3), `odoo.tools` curated symbols (WI-4), lint rules ≥50/version (WI-5). After deploying PR #160, admin must run the full reindex sequence. See [`docs/deploy/reindex-v8-v19-runbook.md`](reindex-v8-v19-runbook.md) for the complete step-by-step with verification block (CoreSymbol counts, field_type v18/v19, LESS nodes, `odoo.tools.SQL` availability, MCP smoke). Non-blocking pre-launch — existing graph data is still correct for v12+ (SCSS/era2); the gap is only in v8-v11 LESS coverage and v18/v19 field_type classification.
+
 ---
 
 *Xem thêm: [docs/deploy.md](../deploy.md) · [docs/deploy/disaster-recovery.md](disaster-recovery.md)*

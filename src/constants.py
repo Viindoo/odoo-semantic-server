@@ -56,7 +56,7 @@ VALID_EDITIONS: frozenset[str] = frozenset(EDITION_PRIORITY) | {"custom"}
 
 VALID_CHUNK_TYPES: frozenset[str] = frozenset({
     "method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3",
-    "css", "scss",
+    "css", "scss", "less",
 })
 
 # ---------------------------------------------------------------------------

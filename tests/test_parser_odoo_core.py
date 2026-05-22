@@ -719,3 +719,97 @@ def test_parse_odoo_core_v8_openerp_emits_legacy_symbols(tmp_path):
         f"{len(wrong_version)} symbols have wrong version: "
         f"{[(s.qualified_name, s.odoo_version) for s in wrong_version[:3]]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# WI-1 (RP) — v18+ generic field class classification (Field[T] Subscript)
+# ---------------------------------------------------------------------------
+
+
+def test_generic_field_subscript_name_classifies_as_field_type():
+    """Unit test (no real Odoo source): class Integer(Field[int]) → kind='field_type'.
+
+    In Odoo v18+, field classes use PEP-695-style generics: Field[int], Field[float], etc.
+    The base expression is ast.Subscript(value=ast.Name('Field')).
+    _base_names() must unwrap the Subscript and return 'Field' so _classify_class()
+    returns 'field_type' instead of falling through to 'class'.
+    """
+    src = (
+        "class Field:\n"
+        "    pass\n\n"
+        "class Integer(Field[int]):\n"
+        "    pass\n\n"
+        "class Float(Field[float]):\n"
+        "    aggregator = 'sum'\n"
+    )
+    syms = _extract_from_source(src, "odoo.fields", "18.0")
+    qnames = {s.qualified_name: s for s in syms}
+
+    integer_sym = qnames.get("odoo.fields.Integer")
+    assert integer_sym is not None, "Integer not found in output"
+    assert integer_sym.kind == "field_type", (
+        f"Integer(Field[int]) should be kind='field_type', got {integer_sym.kind!r}"
+    )
+
+    float_sym = qnames.get("odoo.fields.Float")
+    assert float_sym is not None, "Float not found in output"
+    assert float_sym.kind == "field_type", (
+        f"Float(Field[float]) should be kind='field_type', got {float_sym.kind!r}"
+    )
+
+
+def test_generic_field_subscript_attribute_classifies_as_field_type():
+    """Unit test: class Foo(fields.Field[int]) → kind='field_type' (Attribute-Subscript variant).
+
+    When the base is a dotted name with a generic: fields.Field[int], the AST is
+    Subscript(value=Attribute(attr='Field')). _base_names() must extract 'Field'
+    from the Attribute.attr of the Subscript.value.
+    """
+    src = (
+        "class MyField(fields.Field[int]):\n"
+        "    pass\n"
+    )
+    syms = _extract_from_source(src, "odoo.fields", "18.0")
+    qnames = {s.qualified_name: s for s in syms}
+
+    my_field_sym = qnames.get("odoo.fields.MyField")
+    assert my_field_sym is not None, "MyField not found in output"
+    assert my_field_sym.kind == "field_type", (
+        f"MyField(fields.Field[int]) should be kind='field_type', got {my_field_sym.kind!r}"
+    )
+
+
+ODOO19_SRC = os.environ.get("ODOO19_SRC", "/nonexistent/odoo19")
+
+
+@pytest.mark.skipif(
+    not Path(ODOO19_SRC + "/odoo/orm/fields_numeric.py").exists(),
+    reason="Real Odoo 19 source not on disk (skipped in CI; runs locally with ODOO19_SRC=...)",
+)
+def test_parse_odoo_core_smoke_real_v19_field_types():
+    """Smoke test against real Odoo 19 source: Integer, Many2one, Char → kind='field_type'.
+
+    v19 splits field definitions across odoo/orm/fields*.py files.  Field classes use
+    PEP-695-style generics (Field[int], _Relational[M], etc.) requiring the Subscript
+    unwrap fix in _base_names() to classify correctly.
+    """
+    out = parse_odoo_core(ODOO19_SRC, "19.0")
+    assert len(out) >= 50, f"expected >=50 symbols from real v19 source, got {len(out)}"
+
+    qnames = {s.qualified_name: s for s in out}
+
+    # These three field classes must all classify as field_type in v19
+    for field_name in ("Integer", "Many2one", "Char"):
+        # v19 field symbols are emitted under "odoo.fields.*" (logical module_qname)
+        candidates = [
+            s for s in out
+            if s.qualified_name.endswith(f".{field_name}") and "fields" in s.qualified_name
+        ]
+        assert candidates, (
+            f"No symbol for {field_name} found in v19 output. "
+            f"Available field-related qnames: {[q for q in qnames if 'fields' in q][:10]}"
+        )
+        for sym in candidates:
+            assert sym.kind == "field_type", (
+                f"v19 {sym.qualified_name} should be kind='field_type', got {sym.kind!r}"
+            )

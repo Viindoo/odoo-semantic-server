@@ -23,6 +23,7 @@ from pathlib import Path
 from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
 
 from .models import CoreSymbolInfo
+from .version_registry import VersionRegistry
 
 # --- Allow-list (ADR-0002 §6) -----------------------------------------------
 _CORE_FILES: tuple[str, ...] = (
@@ -37,7 +38,19 @@ _CORE_FILES: tuple[str, ...] = (
 )
 
 # Class-name heuristics for `kind` classification.
-_FIELD_BASE_NAMES = {"Field"}
+# Includes one level of well-known intermediate field bases so that classes like
+# Many2one(_Relational) and Char(BaseString) classify as 'field_type' without a
+# recursive AST climb (per ADR-0002 KISS policy).
+# v18+ split hierarchy: _Relational, _String (v18 fields.py); BaseString, BaseDate,
+# _RelationalMulti (v19 orm/fields*.py).
+_FIELD_BASE_NAMES = {
+    "Field",
+    "_Relational",
+    "_RelationalMulti",
+    "_String",
+    "BaseString",
+    "BaseDate",
+}
 # Direct stdlib + Odoo's primary user-facing base. The hierarchy is shallow in
 # practice (one indirection through UserError); deeper trees would need a
 # recursive AST climb, deferred per ADR-0002.
@@ -49,13 +62,28 @@ _CURSOR_HINT_FILES = {"odoo.sql_db"}  # methods inside any class in this module 
 # --- AST helpers ------------------------------------------------------------
 
 def _base_names(cls_node: ast.ClassDef) -> set[str]:
-    """Collect simple base class names (handles `Field`, `tools.SomeBase`, etc.)."""
+    """Collect simple base class names (handles `Field`, `tools.SomeBase`, etc.).
+
+    v18+ generic syntax: class Integer(Field[int]) → Subscript(value=Name('Field')).
+    v18+ with module prefix: class Foo(fields.Field[int]) →
+    Subscript(value=Attribute(attr='Field')).
+    Unwrap Subscript by recursing on .value so generic field classes still classify
+    as 'field_type' (e.g. Field[int] → 'Field').
+    """
     names: set[str] = set()
     for base in cls_node.bases:
         if isinstance(base, ast.Name):
             names.add(base.id)
         elif isinstance(base, ast.Attribute):
             names.add(base.attr)
+        elif isinstance(base, ast.Subscript):
+            # PEP-695-style generics: Field[int], _Relational[M], BaseDate[date], etc.
+            # Unwrap .value — it is Name or Attribute — and extract the short name.
+            inner = base.value
+            if isinstance(inner, ast.Name):
+                names.add(inner.id)
+            elif isinstance(inner, ast.Attribute):
+                names.add(inner.attr)
     return names
 
 
@@ -242,13 +270,22 @@ def _extract_from_source(
     return symbols
 
 
+# Version-dispatch registry for namespace-prefix selection (ADR-0032).
+# v8/v9: openerp/ (pre-rename era).
+# v10+:  odoo/ (modern namespace, open-ended).
+# To add v20 with a hypothetical new namespace: append one entry here.
+_PREFIX_REGISTRY: VersionRegistry[str] = VersionRegistry([
+    (8,  ODOO_NAMESPACE_LEGACY_MAX_MAJOR, "openerp/"),  # v8–v9
+    (10, None,                            "odoo/"),      # v10+, open-ended
+])
+
+
 def _version_prefix(version: str) -> str:
     """Return framework directory prefix for a given Odoo version.
 
     v8/v9 use ``openerp/`` (the pre-rename era); v10+ use ``odoo/``.
     """
-    major = int(version.split(".")[0])
-    return "openerp/" if major <= ODOO_NAMESPACE_LEGACY_MAX_MAJOR else "odoo/"
+    return _PREFIX_REGISTRY.resolve_version(version, default="odoo/")  # type: ignore[return-value]
 
 
 def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> list[Path]:

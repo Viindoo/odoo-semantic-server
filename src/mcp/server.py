@@ -2847,7 +2847,8 @@ def _list_views_core(
 ) -> str:
     """Shared core for view listing — takes EITHER model OR module filter (not both).
 
-    `view_type` filters by View.type (form/tree/kanban/search/...).
+    `view_type` filters by View.type (form/tree/list/kanban/search/...).
+    'list' is the v18+ tag alias for 'tree'.
     `start_index` is a zero-based pagination cursor (Cypher SKIP).
     `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
@@ -4589,7 +4590,8 @@ def model_inspect(
         limit: Max rows per page (default 200).
         from_module: Restrict to rows declared in this module (summary/fields/field).
         kind: Filter fields by ttype, e.g. 'many2one' — method='fields' only.
-        view_type: Filter views by type, e.g. 'form' — method='views' only.
+        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
+            'list' is the v18+ alias for 'tree'.
     """
     text = _model_inspect(
         model=model,
@@ -4639,7 +4641,8 @@ def module_inspect(
         profile_name: Optional profile filter.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
-        view_type: Filter views by type, e.g. 'form'/'tree' — method='views' only.
+        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
+            'list' is the v18+ alias for 'tree'.
         bound_model: Filter OWL components bound to a model — method='owl' only.
         era: era1|era2|era3 — filter JS patches by era — method='js' only.
         target: filter JS patches by patched target — method='js' only.
@@ -5097,10 +5100,10 @@ def _find_style_override(
 ) -> str:
     """Impl for find_style_override tool — no FastMCP wrapper overhead.
 
-    Performs pgvector ANN on chunk_type ∈ {css, scss} to find stylesheets
+    Performs pgvector ANN on chunk_type ∈ {css, scss, less} to find stylesheets
     declaring *selector_or_variable*, then traverses :IMPORTS to show which
     modules re-declare the same selector (override order — last writer wins
-    in CSS cascade, first-match wins in SCSS @import chain).
+    in CSS cascade, first-match wins in SCSS/LESS @import chain).
     """
     if not selector_or_variable.strip():
         return (
@@ -5136,14 +5139,14 @@ def _find_style_override(
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
         with pg.cursor() as cur:
-            placeholders = "%s, %s"
+            placeholders = "%s, %s, %s"
             cur.execute(
                 f"""SELECT chunk_type, module, entity_name, file_path,
                            chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                     FROM embeddings
                     WHERE odoo_version = %s AND chunk_type IN ({placeholders})
                     ORDER BY vec <=> %s::vector LIMIT %s""",
-                [query_vec, odoo_version, "css", "scss", query_vec,
+                [query_vec, odoo_version, "css", "scss", "less", query_vec,
                  min(limit, FIND_EXAMPLES_ANN_LIMIT)],
             )
             raw = [
@@ -5257,7 +5260,7 @@ def find_style_override(
 ) -> str:
     """Find CSS selectors or SCSS variables/mixins across modules + override order.
 
-    Uses pgvector ANN on indexed css/scss chunks to locate declarations, then
+    Uses pgvector ANN on indexed css/scss/less chunks to locate declarations, then
     traces :IMPORTS edges to show which modules re-declare the same selector
     (override order — last writer wins in CSS cascade).
 

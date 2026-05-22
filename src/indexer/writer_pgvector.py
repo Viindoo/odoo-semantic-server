@@ -24,7 +24,7 @@ DO UPDATE SET content = EXCLUDED.content, vec = EXCLUDED.vec, indexed_at = NOW()
 @dataclass
 class EmbeddingChunk:
     """A single embeddable text unit derived from Odoo source code."""
-    chunk_type: str     # 'method'|'field'|'view'|'qweb'|'js_era1'|'js_era2'|'js_era3'
+    chunk_type: str     # 'method'|'field'|'view'|'qweb'|'js_era1'|'js_era2'|'js_era3'|'css'|'scss'|'less'  # noqa: E501
     module: str
     odoo_version: str
     entity_name: str
@@ -162,6 +162,31 @@ def make_scss_chunks(scss_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
         entity = f"{c.chunk_kind}:{c.entity_name}"
         chunks.append(EmbeddingChunk(
             chunk_type="scss",
+            module=c.module,
+            odoo_version=c.odoo_version,
+            entity_name=entity,
+            model_name=None,
+            file_path=c.file_path,
+            chunk_idx=c.chunk_idx,
+            content=c.content,
+        ))
+    return chunks
+
+
+def make_less_chunks(less_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
+    """Convert SCSSChunk list (from parser_less) → EmbeddingChunk list (chunk_type='less').
+
+    Mirrors make_scss_chunks exactly — LESS chunks share the SCSSChunk dataclass
+    because the structure is identical (mixin/variable/selector/import/media/raw).
+    chunk_kind is embedded into entity_name as ``<kind>:<entity_name>`` for ANN
+    kind-filtering without schema changes.
+    model_name is always None — LESS has no model binding.
+    """
+    chunks: list[EmbeddingChunk] = []
+    for c in less_chunks:
+        entity = f"{c.chunk_kind}:{c.entity_name}"
+        chunks.append(EmbeddingChunk(
+            chunk_type="less",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=entity,

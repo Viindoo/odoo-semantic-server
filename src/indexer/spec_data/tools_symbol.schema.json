@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tools_symbol.schema.json",
+  "title": "ToolsSymbol",
+  "description": "A single curated odoo.tools.* export entry in a tools_symbols_<version>.json file (per ADR-0033).",
+  "type": "object",
+  "required": ["qualified_name", "kind", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "qualified_name": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Fully-qualified import path. Examples: 'odoo.tools.SQL', 'odoo.tools.safe_eval.safe_eval', 'odoo.tools.image_process'. Must start with 'odoo.tools'."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["tool_export"],
+      "description": "Fixed discriminator for all tool-export symbols (per ADR-0033)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["stable", "deprecated", "removed"],
+      "description": "Lifecycle status in this version: 'stable' = available, 'deprecated' = available but discouraged, 'removed' = absent (do NOT include removed symbols — omit them instead)."
+    },
+    "signature": {
+      "type": ["string", "null"],
+      "description": "Optional short signature or type hint shown in tool output. E.g. 'SQL(query: str, *args) -> SQL' or 'class'."
+    },
+    "replacement_qname": {
+      "type": ["string", "null"],
+      "description": "Qualified name of the recommended replacement when status='deprecated'. Null when no direct replacement exists."
+    },
+    "note": {
+      "type": ["string", "null"],
+      "description": "Short human-readable note about the symbol's lifecycle, misuse pattern, or import gotcha. Shown in tool output."
+    }
+  }
+}

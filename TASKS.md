@@ -732,7 +732,15 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 - [x] **W-UM legacy columns drop migration** — *(2026-05-21, PR #159 WI-4)* `actor_id`, `target_id`, `detail_text` columns in `admin_audit_log` table dropped via `migrations/m9_010_drop_audit_legacy_columns.sql`. Dual-write removed from `src/db/auth_registry.py::AuthRegistry.log_audit()` (now canonical-only INSERT). All consumers confirmed using canonical columns (`actor`, `action`, `target`, `success`; `detail` JSONB via `src.db.audit.write_audit_log`). Review-followup: migration renamed from `0006` to `m9_010` for yoyo ordering consistency.
 
-- [ ] **v8 era1 CLI parser runtime extraction** — LOW priority. `parser_cli.py` writes 0 CLIFlag runtime for v8 (era1 `openerp-server` CLI structure). Static curation `spec_data/cli_flags_8.0.json` already covers (72 flags). Only matters when indexing a live v8 source tree (rare). Extend `parser_cli.py` with `openerp/` path branch for v8/v9.
+- [x] **v8 era1 CLI parser runtime extraction** — *(2026-05-22, PR #160 WI-2 — bundled in "reindex-prep DB-impact wave v8→v19")* `parser_cli.py` now reads `openerp/` paths for v8/v9 and loads the static `commands` array from the `"commands"` key inside `spec_data/cli_flags_8.0.json` / `cli_flags_9.0.json` to produce `CLICommand` nodes. Also wired via `_PKG_PREFIX_REGISTRY` (ADR-0032 WI-6 follow-up). Test: `test_parser_cli.py` covers v8/v9 CLICommand extraction.
+
+- [x] **v18/v19 generic field classes classify as `field_type`** — *(2026-05-22, PR #160 WI-1 — bundled in "reindex-prep DB-impact wave v8→v19")* `parser_odoo_core.py` now detects `ast.Subscript` (e.g. `Field[int]`, `Field[str]`) in addition to `ast.ClassDef` when classifying CoreSymbols as `kind='field_type'`. Fixes a regression where v18/v19 generic field classes (`Integer`, `Many2one`, `Char`, etc.) were missing from the CoreSymbol graph. Test: `test_parser_odoo_core.py` covers Subscript detection.
+
+- [x] **LESS stylesheet indexing for v8-v11** — *(2026-05-22, PR #160 WI-3 — bundled in "reindex-prep DB-impact wave v8→v19")* `src/indexer/parser_less.py` added (regex-based, matching `parser_scss` approach). Produces `:Stylesheet {language: "less"}` Neo4j nodes + `:IMPORTS` edges + `chunk_type='less'` pgvector embeddings. `find_examples` and `find_style_override` now accept `less` as a `chunk_type` filter. `VALID_CHUNK_TYPES` updated. Test: `test_parser_less.py` (534 lines, covers selectors/variables/mixins/imports/LESS-specific syntax). ADR-0025 addendum documents the schema extension. Cross-ref: `docs/adr/0025-css-scss-indexing.md §Addendum`.
+
+- [x] **`odoo.tools` curated CoreSymbol coverage (ADR-0033)** — *(2026-05-22, PR #160 WI-4 — bundled in "reindex-prep DB-impact wave v8→v19")* 12 `spec_data/tools_symbols_X.0.json` files (v8-v19) curate version-aware `tool_export` CoreSymbols. `lookup_core_api("odoo.tools.SQL","16.0")` returns not-available; `"17.0"` returns stable. `_DEPRECATED_API_SYMBOLS` expanded: +4 image_resize_image* entries (removed v13) + `pycompat` (dropped `__init__` v19) = 19 total. `safe_eval` dedup: parsed CoreSymbol wins over curated (WI-4 review fix). Test: `test_parser_tools_symbols.py` + `test_tools_symbols_integration.py`. See `docs/adr/0033-odoo-tools-symbol-coverage.md`.
+
+- [ ] **Production reindex v8→v19 (DB-impact wave)** — OPS work after PR #160 deploys. Admin must run the full reindex sequence per `docs/deploy/reindex-v8-v19-runbook.md`. Covers: index-core v8-v19 (tools symbols, LESS nodes, CLICommand v8/v9, lint rules ≥50, field_type v18/v19 fix); index-repo --all --full (LESS nodes + mth.depends backfill); Cypher cleanup (OWLComp pre-v14 + snap_mod); reembed-stubs per profile. **Do NOT mark done until admin confirms runbook completion.**
 
 - [ ] **T3.4b VN translation persona docs** — Translate 5 EN-canonical persona guides to Vietnamese. Guides now live in [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) at `docs/personas/<role>.md`; add `docs/personas/<role>.vi.md` companion files there. Carried from M7.5 design decision.
 
@@ -797,18 +805,20 @@ ADR impact: extends ADR-0023 tool-output completeness contract (no new ADR; sect
   - Acceptance: pattern count test `test_patterns_minimum_count.py::test_minimum_100_patterns` passes; new patterns include CSS/SCSS entries per ADR-0025 Future Work item 2 (Bootstrap variable overrides, OWL scoped CSS, mixin reuse).
   - Dependency: ADR-0009 community contribution flow already documented; needs marketing push to attract PRs.
 
-- [ ] **Static spec_data deepening — lint rules 50+/version** — MED
+- [x] **Static spec_data deepening — lint rules 50+/version** — MED *(2026-05-22, PR #160 WI-5 — bundled in "reindex-prep DB-impact wave v8→v19")*
   - Source: WI-A7 absorption (M9 Coverage Fill deferred items).
   - Scope: extend `spec_data/lint_rules_X.0.json` from current baseline (per WI-A4: v8=20, v9=21, ..., v19=26) to ≥50 rules per major version. Prioritize rules with high frequency in real Odoo deprecation warnings; add ESLint SCSS rules (e.g. `scss/no-duplicate-dollar-variables`) per ADR-0025 Future Work item 4.
   - Acceptance: `test_lint_rules_minimum_count.py::test_minimum_50_per_version` passes for v10+ (v8/v9 may stay at curation baseline due to scarce source data); new rules categorized via existing `category` field (`deprecated_api`, `security`, `performance`, `style`).
   - Dependency: WI-A4 baseline must be deployed and production-validated (i.e. real usage logs reveal high-value gaps).
+  - **DONE:** All v10-v19 lint_rules JSON files expanded to ≥50 rules. `test_minimum_50_per_version` passes. v8/v9 remain at curation baseline (≤25 rules — scarce source data for era1, as expected).
 
-- [ ] **Parser hooks registry refactor** — HIGH (architectural)
+- [x] **Parser hooks registry refactor** — HIGH (architectural) *(2026-05-22, PR #160 WI-6 — bundled in "reindex-prep DB-impact wave v8→v19")*
   - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).
   - Scope: replace hard-coded era branches in `parser_python.py`, `parser_js.py`, `parser_odoo_core.py` with a `(min_version, max_version, fn)` registry. Adding v20 support becomes a single registry append (`PARSER_REGISTRY.append((20, None, parse_v20_style))`) instead of a new `if major >= 20:` branch in 3 files.
   - Acceptance: regression test — all existing era1/era2/era3 fixtures pass via the new registry without behavioral change; new entry registered for v8/v9 era1 (`parse_legacy_columns`); registry sorts by `min_version` and short-circuits on first match (no fall-through bug).
-  - **ADR impact: invalidates parts of ADR-0005 (era-aware path resolution).** New ADR required — `ADR-0026 parser hooks registry` — documenting (a) registry data structure, (b) the parser_python/parser_js/parser_odoo_core unification, (c) version overlap policy when two registry entries match (highest `min_version` wins). ADR-0005 to be retained as historical record; superseded section added on land.
+  - **ADR impact: invalidates parts of ADR-0005 (era-aware path resolution).** New ADR required — documented as `ADR-0032` (not ADR-0026 as originally planned; ADR-0026 was already taken by RBAC). ADR-0005 retained as historical record; `ADR-0032 §Relationship to ADR-0005` supersedes the prefix-selection portion.
   - Dependency: must land BEFORE any v20 work to avoid duplicating the era-branch debt.
+  - **DONE:** `VersionRegistry(min_major, max_major|None, handler)` implemented in `src/indexer/version_registry.py`. Three registries wired: `_ERA_REGISTRY` (parser_python), `_PREFIX_REGISTRY` (parser_odoo_core), `_OWL_ENABLED_REGISTRY` (parser_js). `parser_cli` also gets `_PKG_PREFIX_REGISTRY`. `test_version_registry.py` passes. Behavior-preserving: all era1/era2/era3 tests pass. See `docs/adr/0032-parser-hooks-registry.md`.
 
 - [ ] **RelaxNG XML schema validation port from Odoo LS** — MED
   - Source: `peaceful-orbiting-dongarra.md` deferred items list (WI-A7 absorption).

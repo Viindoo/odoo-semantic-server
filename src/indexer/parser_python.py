@@ -9,6 +9,7 @@ from pathlib import Path
 from src.constants import LEGACY_ERA_MAX_MAJOR
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+from .version_registry import VersionRegistry
 
 # v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
@@ -52,26 +53,33 @@ MODEL_BASE_CLASSES = {
 # scope-resolver, M7 W13). V1 entries are covered by the same mechanism.
 #
 # Numbers in trailing comment = first-affected Odoo major version.
-# Cap at 15 entries to keep false-positive surface manageable (ADR-0002 §3).
+# Currently 19 entries; keep this list focused to limit false-positive surface (ADR-0002 §3).
 _DEPRECATED_API_SYMBOLS = frozenset({
     # --- Removed (no in-place replacement, full rewrite required) ---
-    "name_get",          # 18: removed → use display_name computed field
-    "oldname",           # 15: field option removed → use rename + migration script
+    "name_get",              # 18: removed → use display_name computed field
+    "oldname",               # 15: field option removed → use rename + migration script
     # --- Signature-changed (kwarg/semantics breaking caller) ---
-    "name_search",       # 18: operator + count semantics changed
-    "safe_eval",         # 19: signature change in odoo.tools
-    "fields_get",        # 18: 'attributes' kwarg semantics changed
-    "_search",           # 18: keyword-only args + access_rights_uid removed
-    "read_group",        # 19: deprecated → _read_group / formatted_read_group
-    "default_get",       # 17: fields_list arg semantics clarified + changed
+    "name_search",           # 18: operator + count semantics changed
+    "safe_eval",             # 19: signature change in odoo.tools
+    "fields_get",            # 18: 'attributes' kwarg semantics changed
+    "_search",               # 18: keyword-only args + access_rights_uid removed
+    "read_group",            # 19: deprecated → _read_group / formatted_read_group
+    "default_get",           # 17: fields_list arg semantics clarified + changed
     # --- Renamed field option / attribute (declaration-site or attribute access) ---
-    "group_operator",    # 18: field option → aggregator
-    "track_visibility",  # 17: field option → tracking
+    "group_operator",        # 18: field option → aggregator
+    "track_visibility",      # 17: field option → tracking
     # --- Moved module / changed qualified path ---
-    "float_compare",     # 19: odoo.tools.float_utils → odoo.tools (re-exported)
-    "float_round",       # 19: same module move as float_compare
-    "get_modules",       # 18: odoo.modules.get_modules path changed
-    "html_escape",       # 17: markupsafe.escape preferred over odoo.tools.html_escape
+    "float_compare",         # 19: odoo.tools.float_utils → odoo.tools (re-exported)
+    "float_round",           # 19: same module move as float_compare
+    "get_modules",           # 18: odoo.modules.get_modules path changed
+    "html_escape",           # 17: markupsafe.escape preferred over odoo.tools.html_escape
+    # --- odoo.tools image API — removed v13, frequent AI misuse ---
+    "image_resize_image",       # 13: removed → use odoo.tools.image_process
+    "image_resize_image_big",   # 13: removed → use odoo.tools.image_process
+    "image_resize_image_medium",  # 13: removed → use odoo.tools.image_process
+    "image_resize_image_small",   # 13: removed → use odoo.tools.image_process
+    # --- odoo.tools pycompat — removed from __init__ v19 ---
+    "pycompat",              # 19: dropped from odoo.tools.__init__
 })
 
 
@@ -357,13 +365,19 @@ def _detect_viindoo_equivalent(module_name: str) -> str | None:
     return EE_CONFUSION.get(module_name)
 
 
+# Version-dispatch registry for Python parser era selection (ADR-0032).
+# era1: v8/v9 (Python 2 AST, _columns dict).
+# era2: v10+ (modern AST).
+# To add v20 support (if Odoo changes parser strategy): append one entry here.
+_ERA_REGISTRY: VersionRegistry[str] = VersionRegistry([
+    (8,  LEGACY_ERA_MAX_MAJOR, "era1"),   # v8–v9
+    (10, None,                 "era2"),   # v10+, open-ended
+])
+
+
 def _detect_era(odoo_version: str) -> str:
     """era1: Odoo v8/v9 (Python 2, _columns dict). era2: v10+ (modern AST)."""
-    try:
-        major = int(odoo_version.split(".")[0])
-    except (ValueError, IndexError, AttributeError):
-        return "era2"
-    return "era1" if major <= LEGACY_ERA_MAX_MAJOR else "era2"
+    return _ERA_REGISTRY.resolve_version(odoo_version, default="era2")  # type: ignore[return-value]
 
 
 def _extract_string(node: ast.expr) -> str | None:

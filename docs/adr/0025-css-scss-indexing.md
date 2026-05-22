@@ -37,7 +37,7 @@ New label `:Stylesheet` with composite MERGE key `(file_path, module, odoo_versi
 | `file_path` | string | Absolute path on disk (part of composite key) |
 | `module` | string | Odoo module name (part of composite key) |
 | `odoo_version` | string | Odoo version label e.g. "17.0" (part of composite key) |
-| `language` | string | `"css"` or `"scss"` |
+| `language` | string | `"css"`, `"scss"`, or `"less"` |
 | `selector_count` | int | Number of rule-sets / selectors found |
 | `variable_count` | int | CSS custom properties (`--*`) or SCSS `$variable` declarations |
 | `import_count` | int | Number of `@import`/`@use`/`@forward` directives |
@@ -66,6 +66,7 @@ Written for each resolved `@import` path. Resolution: try direct path + `_partia
 New `chunk_type` values added to `VALID_CHUNK_TYPES` in `src/constants.py`:
 - `"css"` — produced by `make_css_chunks()` in `writer_pgvector.py`
 - `"scss"` — produced by `make_scss_chunks()` in `writer_pgvector.py`
+- `"less"` — produced by `make_less_chunks()` in `parser_less.py` (added PR #160 WI-3; v8-v11 LESS coverage)
 
 **Semantic units (what gets embedded):**
 | chunk_kind | Content | Best for |
@@ -116,7 +117,7 @@ This is intentionally conservative: generated CSS from build tools (`static/dist
 
 ### D5 — mixin_count = 0 for CSS
 
-CSS has no `@mixin` concept. The `mixin_count` property is always 0 for `:Stylesheet {language: "css"}` nodes. This is intentional (avoids nullable schema) — SCSS nodes set `mixin_count` from the actual count found.
+CSS has no `@mixin` concept. The `mixin_count` property is always 0 for `:Stylesheet {language: "css"}` nodes. This is intentional (avoids nullable schema) — SCSS and LESS nodes set `mixin_count` from the actual count found (LESS supports `@mixin`/`.mixin()` patterns which the LESS parser tracks under the same property).
 
 ---
 
@@ -148,3 +149,40 @@ The following items are deferred and tracked in `TASKS.md` (WI-A7 absorption, M9
 3. **`:OVERRIDES` edge** for `@extend` chains — not yet scheduled to a milestone (no production demand surfaced). Requires resolving the extended selector to the originating `:Stylesheet` node. Tree-sitter-css provides `extend_statement` nodes with the target selector; resolution requires a lookup by selector text across all indexed stylesheets. When demand arrives, file a new ADR (or extend this one) before implementation — the schema addition touches `:Stylesheet` cardinality assumptions.
 
 4. **Static spec deepening — ESLint SCSS rules** — **M11** (tracked in `TASKS.md` Milestone 11 § "Static spec_data deepening — lint rules 50+/version"). After WI-A4 baseline (per-version lint rules curated) is production-validated, add ESLint SCSS rules (e.g. `scss/no-duplicate-dollar-variables`, `scss/dollar-variable-pattern`) to the LintRule catalogue, counted toward the ≥50 rules per major version target.
+
+---
+
+## Addendum — PR #160 WI-3: LESS indexing for v8-v11 (2026-05-22)
+
+**Status:** Accepted (addendum to this ADR)
+
+Odoo v8-v11 used `.less` files (Bootstrap 3.x LESS source). These were excluded from the original WI-A1 scope (which focused on SCSS for v12+). PR #160 WI-3 fills this gap.
+
+### Changes vs original ADR
+
+| Aspect | Original (WI-A1) | Addendum (WI-3 PR #160) |
+|--------|-----------------|------------------------|
+| `language` enum | `"css"` \| `"scss"` | `"css"` \| `"scss"` \| `"less"` |
+| LESS parser | not implemented | `src/indexer/parser_less.py` — regex-based (same approach as `parser_scss`; no tree-sitter-less available on PyPI) |
+| `VALID_CHUNK_TYPES` | `{"css", "scss", ...}` | `{"css", "scss", "less", ...}` (added `"less"` in `src/constants.py`) |
+| `mixin_count` | SCSS-only | applies to SCSS and LESS (LESS mixin patterns tracked) |
+| Version coverage | v12+ SCSS; v8-v11 gap | v8-v11 LESS now indexed; v12+ SCSS unchanged |
+| `find_examples` / `find_style_override` | css/scss | now also accepts `less` as `chunk_type` filter |
+
+### Implementation notes
+
+- `parser_less.py` regex approach: selector block extraction via `_RE_SELECTOR = r'^([^@\s{}\n][^{}\n]*)\s*\{'` (MULTILINE; skips at-rule lines that start with `@`); variable detection via `_RE_LESS_VAR` — a line-anchored MULTILINE pattern `^\s*@(?!<at-rule-keywords>(?![\w-]))[\w-]+\s*:` that excludes CSS at-rule keywords (`import`, `media`, `charset`, `keyframes`, `font-face`, `mixin`, `include`, `extend`, `use`, `forward`, `page`, `viewport`) via a negative lookahead, with `(?![\w-])` ensuring only complete keyword tokens are excluded (so `@media-breakpoint-xs` or `@page-header-height` are still captured as variables). `@import` chain extraction identical to `parser_scss`. Accuracy comparable to regex fallback in `parser_scss`.
+- `:Stylesheet {language: "less"}` nodes are created with `mixin_count > 0` when `.mixin()` or `#namespace > .method()` patterns are detected.
+- `:IMPORTS` edges between LESS nodes follow the same silent-skip policy as D3 (target not yet indexed → skip silently).
+- `chunk_type='less'` embeddings in pgvector allow ANN queries filtered to LESS content only.
+- v8/v9 modules using `openerp/` prefix are scanned the same way as later versions; the LESS parser is version-agnostic.
+
+### Version coverage after WI-3
+
+| Odoo version | Stylesheet format | Indexed |
+|---|---|---|
+| v8, v9 | LESS (Bootstrap 3.x) | Yes (LESS parser) |
+| v10, v11 | LESS (Bootstrap 3.x, with SCSS migration starting in some modules) | Yes (LESS parser) |
+| v12+ | SCSS (Bootstrap 4/5) | Yes (SCSS parser, unchanged) |
+
+**Cross-ref:** ADR-0033 §odoo.tools (same PR #160); reindex runbook `docs/deploy/reindex-v8-v19-runbook.md`.
