@@ -912,10 +912,11 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Milestone 13 — "Multi-Tenant Wow"
 
-**Status:** `[~]` In progress. Pre-reindex DB-schema/data + multi-tenant foundation + git-integrity wave shipped (feat/m13pre-wave3, 2026-05-22). Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md).
+**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** alongside the pre-reindex enrichment + agent-convenient output waves. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment). **Remaining for M13 close:** the production reindex v8→v19 (OPS) + WI-7 (FERNET secrets / RLS hardening).
 
-> **This wave (WI-F):** WI-1/WI-2/WI-5 schema + WI-6 (deploy-key REST endpoint) + WI-8/WI-9 git hardening + WI-10 license policy + M11 RelaxNG XML validation shipped. See CHANGELOG.md `[0.9.1]`.
-> **DEFERRED (not in this PR):** P2 enforcement (WI-3 `resolve_allowed_profiles` + WI-4 mandatory 61-site filter), cross-tenant leak-test release gate, WI-7 FERNET secrets manager, M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 prod smoke, VN persona docs, OBS-2/OBS-3.
+> **v0.10.0 wave (PR #163):** P2 enforcement — WI-3 `resolve_tenant_scope` + WI-4 fail-closed own/shared filter at 61+4 Cypher + 3 pgvector sites + cross-tenant leak test (RELEASE GATE, PASSED). Plus Group A reindex-forcing enrichment (v19 core, docstring/manifest-deps/repo-provenance/USES_FIELD edges, Field.string/help, embeddings provenance m13_003) + Group B agent-convenient output + `module_inspect(method='dependencies')`. See CHANGELOG.md `[0.10.0]`.
+> **v0.9.1 wave (WI-F):** WI-1/WI-2/WI-5 schema + WI-6 (deploy-key REST) + WI-8/WI-9 git hardening + WI-10 license policy + M11 RelaxNG. See CHANGELOG.md `[0.9.1]`.
+> **STILL DEFERRED:** WI-7 FERNET secrets manager + Postgres RLS (needs FORCE + non-owner read role), M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 prod smoke, VN persona docs, OBS-2/OBS-3.
 > **ADR-0034 site-count correction:** the ADR text says "~27 user-data Cypher sites". Verified count post-wave3: **61 sites** (57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`) PLUS 3 embeddings queries with NO Neo4j filter (`find_examples` / `find_style_override` / `suggest_pattern`) — those rely on pgvector RLS (WI-5 partial: column added, RLS deferred to WI-4 enforcement wave).
 
 > Realizes **M12 Stream B WI-B3 path (b) "True profile authz"** (above), which was deferred pending a customer-demand signal: "*customer-A's index hidden from customer-B*". That signal has arrived — OSM will serve many customers, each with **private repositories**. Numbered M13 because M12 was repurposed for v0.6 shim removal; this supersedes the stale post-M8 roadmap line "M12 Multi-tenant Wow — Neo4j namespacing".
@@ -950,21 +951,19 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
   - Dependency: none — independent of tenant work; **recommended to land first** (establishes the policy layer + closes the accidental-OEEL-ingest hole even before multi-tenant). ToS clause is a product/legal companion (not code-heavy).
 
 ### P2 — Enforcement choke point (architecture-critical — RELEASE GATE)
-- [ ] **WI-3 — `resolve_allowed_profiles(tenant_id)` helper** — HIGH (architecture) **[DEFERRED]**
-  - Scope: ONE resolver = tenant's profiles + their shared-base ancestors (Postgres CTE reusing `get_ancestor_profile_names`); cached via the existing 60s session cache (ADR-0029).
-  - Acceptance: returns `['acme_17','odoo_17']` for an Acme-17 tenant; returns only shared-base names for a tenant with no own profiles.
-  - Dependency: WI-1, WI-2.
-- [ ] **WI-4 — Mandatory fail-closed filter across user-data tools** — HIGH (architecture) **[DEFERRED — RELEASE GATE]**
-  - Scope: every user-data Cypher query (**61 sites** — 57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`; PLUS 3 embeddings queries with no Neo4j filter: `find_examples`, `find_style_override`, `suggest_pattern`) takes a **required** `$allowed_profiles`; remove the `$profile_name IS NULL OR …` optional-bypass form. No tenant context (non-admin) → empty result, never the full graph. `_latest_version()` (`src/mcp/server.py:295`) restricted to `$allowed_profiles` (else "auto" version of A leaks B's version). Spec-data tools stay exempt (locked decision).
-  - Acceptance: **cross-tenant leak test (RELEASE GATE)** — tenant A queries every tool + every `odoo://` resource and never sees a tenant-B-only node, with and without explicit `profile_name`. `list_available_profiles` / `set_active_profile` validate ownership.
-  - Dependency: WI-3. **Do not tag a release until this test passes** (Neo4j Community has no per-label security — the resolver is the only guard).
-  - **Note on site count:** ADR-0034 originally cited "~27 sites". Verified post-wave3: 61 Cypher sites + 3 SQL embeddings queries without profile filter. ADR-0034 prose updated with a correction note.
+- [x] **WI-3 — `resolve_allowed_profiles(tenant_id)` helper** — HIGH (architecture) *(SHIPPED v0.10.0, PR #163 — `src/db/repo_registry.py`, `src/mcp/session.py`)*
+  - Implemented as `resolve_tenant_scope(tenant_id) -> (own, shared)` (own = the tenant's profiles; shared = all global `tenant_id IS NULL` base) + a flat-union `resolve_allowed_profiles` for single-value filters; 60s session cache (ADR-0029). **Refined from the original "own + ancestors" design** — the own/shared split is REQUIRED because the indexer tags nodes with the full ancestor chain, so an `own ∪ ancestors` overlap check leaks another tenant's base-tagged private node (see WI-4).
+  - Acceptance ✓: `tests/test_resolve_allowed_profiles.py` (own/shared + two-tenant isolation + profile-less = own=[] sees only shared base).
+- [x] **WI-4 — Mandatory fail-closed filter across user-data tools** — HIGH (architecture) **[RELEASE GATE — PASSED]** *(SHIPPED v0.10.0, PR #163)*
+  - All **61 Cypher sites** (57 `src/mcp/server.py` + 4 `src/mcp/orm.py`) use the uniform fragment `($own IS NULL OR all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared))` — a node is granted iff EVERY profile on it is own-or-shared; the `$profile_name IS NULL OR …` bypass is **removed**. `_latest_version()` + `find_override_point` scoped; the 3 pgvector queries filtered (`find_examples`/`find_style_override` by `profile_name = ANY(own ∪ shared)`; `suggest_pattern` exempt — global catalogue). The own/shared `all()` model (NOT `any(allowed)`) closes a shared-base leak the gate test caught. `profile_name` is now **advisory** (M13 supersedes ADR-0029). Postgres RLS deferred to WI-7 (needs `FORCE` + non-owner read role).
+  - Acceptance ✓: **cross-tenant leak test PASSES** — `tests/test_cross_tenant_isolation.py` (9 cases): tenant sees own + shared base, never another tenant's private node (with/without explicit `profile_name`); spec data + admin unrestricted; find_examples no leak.
+  - **Note on site count:** verified 61 Cypher + 3 SQL embeddings sites (ADR-0034 corrected).
 
 ### P3 — pgvector tenant column + RLS (db-schema)
 - [x] **WI-5 — `embeddings.profile_name` column (schema only)** — HIGH (db-schema) *(feat/m13pre-wave3 — migrations/m13_001_embeddings_profile_name.sql, src/indexer/writer_pgvector.py)*
   - Schema: `ALTER TABLE embeddings ADD COLUMN profile_name TEXT`; UNIQUE constraint + `idx_embeddings_filter` updated; `EmbeddingChunk` + INSERT + DELETE writer clauses updated. Profile-scoped chunk writes now active.
-  - **PARTIAL ONLY — RLS deferred:** `ENABLE ROW LEVEL SECURITY` + `SET LOCAL app.allowed_profiles` NOT yet implemented. `find_examples` / `find_style_override` / `suggest_pattern` still query without tenant isolation at the SQL level. RLS enforcement ships with WI-4 (enforcement wave).
-  - Dependency: WI-1 (tenant), WI-3 (allow-list) — column schema landed standalone; RLS activation waits for WI-3/WI-4.
+  - **SQL filter active (v0.10.0); RLS deferred:** WI-4 added SQL-level tenant filtering — `find_examples`/`find_style_override` now filter `profile_name = ANY(own ∪ shared)` (`suggest_pattern` exempt as the global catalogue). `ENABLE ROW LEVEL SECURITY` + `SET LOCAL app.allowed_profiles` deferred to **WI-7** (correct RLS needs `FORCE ROW LEVEL SECURITY` + a non-owner read role + a write-path policy = deployment change; the SQL filter is the actual read-guard, proven by the leak test).
+  - Dependency: WI-1 (tenant), WI-3 (scope) — column schema landed standalone; SQL filter shipped v0.10.0; RLS hardening = WI-7.
 
 ### P4 — Deploy-key credential self-service
 - [x] **WI-6 — Per-tenant deploy keypair + self-service public key (REST endpoint)** — MED (credential) *(feat/m13pre-wave3 — src/web_ui/routes/deploy_key.py)*
