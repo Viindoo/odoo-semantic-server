@@ -173,6 +173,31 @@ def make_scss_chunks(scss_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
     return chunks
 
 
+def make_less_chunks(less_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
+    """Convert SCSSChunk list (from parser_less) → EmbeddingChunk list (chunk_type='less').
+
+    Mirrors make_scss_chunks exactly — LESS chunks share the SCSSChunk dataclass
+    because the structure is identical (mixin/variable/selector/import/media/raw).
+    chunk_kind is embedded into entity_name as ``<kind>:<entity_name>`` for ANN
+    kind-filtering without schema changes.
+    model_name is always None — LESS has no model binding.
+    """
+    chunks: list[EmbeddingChunk] = []
+    for c in less_chunks:
+        entity = f"{c.chunk_kind}:{c.entity_name}"
+        chunks.append(EmbeddingChunk(
+            chunk_type="less",
+            module=c.module,
+            odoo_version=c.odoo_version,
+            entity_name=entity,
+            model_name=None,
+            file_path=c.file_path,
+            chunk_idx=c.chunk_idx,
+            content=c.content,
+        ))
+    return chunks
+
+
 def make_pattern_chunks(patterns: list[PatternExample]) -> list[EmbeddingChunk]:
     """Convert PatternExample → EmbeddingChunk (chunk_type='pattern_example').
 

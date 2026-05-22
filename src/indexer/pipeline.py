@@ -24,7 +24,15 @@ from neo4j import GraphDatabase
 from src import config
 from src.db.pg import repo_store
 from src.indexer import incremental as _incremental
-from src.indexer import parser_css, parser_js, parser_python, parser_qweb, parser_scss, parser_xml
+from src.indexer import (
+    parser_css,
+    parser_js,
+    parser_less,
+    parser_python,
+    parser_qweb,
+    parser_scss,
+    parser_xml,
+)
 from src.indexer.models import StylesheetInfo, ViewParseResult
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry
@@ -339,25 +347,29 @@ def _index_repo(
             total_js_patches += len(js_graph.patches)
             total_owl_comps += len(js_graph.components)
 
-            # CSS/SCSS parsing — stylesheet nodes + embeddings (WI-A1, ADR-0025)
+            # CSS/SCSS/LESS parsing — stylesheet nodes + embeddings (WI-A1, ADR-0025; RP WI-3)
             css_chunks_mod, css_infos = parser_css.parse_module(info)
             scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
+            less_chunks_mod, less_infos = parser_less.parse_module(info)
             all_stylesheet_infos.extend(css_infos)
             all_stylesheet_infos.extend(scss_infos)
-            total_stylesheets += len(css_infos) + len(scss_infos)
+            all_stylesheet_infos.extend(less_infos)
+            total_stylesheets += len(css_infos) + len(scss_infos) + len(less_infos)
 
             # Semantic embeddings — optional, skipped when pg_conn/embedder absent,
             # pgvector extension is not installed, or version could not be resolved.
             if embed_enabled and version != "unknown":
                 from src.indexer.writer_pgvector import (  # noqa: PLC0415
                     make_css_chunks,
+                    make_less_chunks,
                     make_scss_chunks,
                 )
                 js_chunks = parser_js.parse_module(info)
                 chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
-                # Append CSS and SCSS embedding chunks
+                # Append CSS, SCSS, and LESS embedding chunks
                 chunks.extend(make_css_chunks(css_chunks_mod))
                 chunks.extend(make_scss_chunks(scss_chunks_mod))
+                chunks.extend(make_less_chunks(less_chunks_mod))
                 embed_calls = write_module_embeddings(
                     mod_name, version, chunks, embedder
                 )
@@ -1156,6 +1168,7 @@ def reembed_stubs_for_profile(
                     from src.indexer import (  # noqa: PLC0415
                         parser_css,
                         parser_js,
+                        parser_less,
                         parser_python,
                         parser_qweb,
                         parser_scss,
@@ -1164,6 +1177,7 @@ def reembed_stubs_for_profile(
                     from src.indexer.models import ViewParseResult  # noqa: PLC0415
                     from src.indexer.writer_pgvector import (  # noqa: PLC0415
                         make_css_chunks,
+                        make_less_chunks,
                         make_scss_chunks,
                     )
 
@@ -1178,10 +1192,12 @@ def reembed_stubs_for_profile(
                     js_chunks = parser_js.parse_module(info)
                     css_chunks_mod, _ = parser_css.parse_module(info)
                     scss_chunks_mod, _ = parser_scss.parse_module(info)
+                    less_chunks_mod, _ = parser_less.parse_module(info)
 
                     chunks = make_chunks(mod_name, odoo_version, py_result, merged, js_chunks)
                     chunks.extend(make_css_chunks(css_chunks_mod))
                     chunks.extend(make_scss_chunks(scss_chunks_mod))
+                    chunks.extend(make_less_chunks(less_chunks_mod))
 
                     if not chunks:
                         _logger.debug(

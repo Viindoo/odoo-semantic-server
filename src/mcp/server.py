@@ -5136,14 +5136,14 @@ def _find_style_override(
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
         with pg.cursor() as cur:
-            placeholders = "%s, %s"
+            placeholders = "%s, %s, %s"
             cur.execute(
                 f"""SELECT chunk_type, module, entity_name, file_path,
                            chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                     FROM embeddings
                     WHERE odoo_version = %s AND chunk_type IN ({placeholders})
                     ORDER BY vec <=> %s::vector LIMIT %s""",
-                [query_vec, odoo_version, "css", "scss", query_vec,
+                [query_vec, odoo_version, "css", "scss", "less", query_vec,
                  min(limit, FIND_EXAMPLES_ANN_LIMIT)],
             )
             raw = [
