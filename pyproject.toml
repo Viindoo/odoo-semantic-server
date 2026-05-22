@@ -17,6 +17,7 @@ dependencies = [
     "fastmcp>=2.3,<3.0",
     "itsdangerous>=2.1",       # M7 W16 — Starlette SessionMiddleware cookie signing
     "jsonschema>=4.21",
+    "lxml>=5.0",               # M11 WI-E — RelaxNG XML schema validation (parser_xml)
     "httpx>=0.27",
     "neo4j>=5.0,<6.0",
     "pgvector>=0.3,<0.5",
