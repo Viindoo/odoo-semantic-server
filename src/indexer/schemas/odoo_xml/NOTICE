@@ -2,19 +2,34 @@ RelaxNG XML Validation Schemas for Odoo Views
 ===============================================
 
 Source: Odoo SA, odoo/addons/base/rng/ directory
-Version vendored: Odoo 17.0 (commit 07384d02c17)
-Original path: odoo/addons/base/rng/*.rng
 License: GNU Lesser General Public License v3.0 (LGPL-3.0)
 
 These files are verbatim copies (with this NOTICE header added as a comment
 in each file) from the Odoo Community repository:
-  https://github.com/odoo/odoo/tree/17.0/odoo/addons/base/rng/
+  https://github.com/odoo/odoo/tree/17.0/odoo/addons/base/rng/  (v17 schemas)
+  https://github.com/odoo/odoo/tree/18.0/odoo/addons/base/rng/  (v18 schemas)
 
 Copyright (C) Odoo SA and contributors.
 
-The schema stable range is v15-v19 (schema structure unchanged across
-these versions). The indexer applies a VersionRegistry gate: only views
-from Odoo v15+ are validated against these schemas to avoid false positives
-on older eras where view grammar was different.
+Vendored schema files and their source versions:
+  activity_view.rng  — Odoo 17.0 (stable across v15-v19)
+  calendar_view.rng  — Odoo 17.0 (stable across v15-v19)
+  common.rng         — Odoo 17.0 (compatible with v15-v19 view schemas)
+  graph_view.rng     — Odoo 17.0 (stable across v15-v19)
+  pivot_view.rng     — Odoo 17.0 (stable across v15-v19)
+  search_view.rng    — Odoo 17.0 (stable across v15-v19)
+  tree_view.rng      — Odoo 17.0 (used for v15-v17 <tree>-root list views)
+  list_view.rng      — Odoo 18.0 (used for v18+ <list>-root list views)
+
+NOTE — v18 tree→list rename: Odoo 18 renamed the list-view root tag from
+<tree> to <list> and ships list_view.rng instead of tree_view.rng. Both
+schemas are vendored here; the indexer selects version-aware:
+  - v15-v17: view_type='tree' validated against tree_view.rng
+  - v18+:    view_type='list' validated against list_view.rng
+The shared common.rng (v17) is compatible with both schemas.
+
+The indexer applies a VersionRegistry gate: only views from Odoo v15+ are
+validated against these schemas to avoid false positives on older eras where
+view grammar was different.
 
 Full LGPL-3.0 license text: https://www.gnu.org/licenses/lgpl-3.0.html

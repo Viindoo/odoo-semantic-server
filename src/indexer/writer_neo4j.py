@@ -618,7 +618,9 @@ def _write_lint_violations_batch(
     will be created once the View is written (idempotent MERGE on next run).
     """
     for v in violations:
-        # Upsert the LintViolation node
+        # Upsert the LintViolation node.
+        # Composite key (file_path, line, rule, odoo_version) collapses multiple
+        # same-line/same-rule messages into one node (last-write-wins, by design).
         tx.run("""
             MERGE (lv:LintViolation {
                 file_path: $fp, line: $line,

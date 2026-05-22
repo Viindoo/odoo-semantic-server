@@ -1275,7 +1275,8 @@ def reembed_stubs_for_profile(
                         continue
 
                     embed_calls = write_module_embeddings(
-                        mod_name, odoo_version, chunks, embedder
+                        mod_name, odoo_version, chunks, embedder,
+                        profile_name=profile_name,
                     )
                     total_embed_calls += embed_calls
                     modules_reembedded += 1

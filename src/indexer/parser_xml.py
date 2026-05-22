@@ -24,29 +24,60 @@ _RELAXNG_GATE: VersionRegistry[bool] = VersionRegistry([
     (15, None, True),   # v15, v16, v17, v18, v19, … — validate
 ])
 
-# View types that have a vendored RNG file.
-# Naming convention: {view_type}_view.rng (mirrors Odoo's internal naming).
-_RNG_SUPPORTED_VIEW_TYPES = frozenset({
+# View types that have a vendored RNG file, by version era.
+# v15-v17: <tree> root validated by tree_view.rng
+# v18+:    <list> root validated by list_view.rng (Odoo 18 renamed tree→list)
+# Other types (activity, calendar, graph, pivot, search) are version-stable.
+_RNG_SUPPORTED_VIEW_TYPES_PRE18 = frozenset({
     "activity", "calendar", "graph", "pivot", "search", "tree",
 })
+_RNG_SUPPORTED_VIEW_TYPES_V18PLUS = frozenset({
+    "activity", "calendar", "graph", "pivot", "search", "list",
+})
 
-# Module-level cache: view_type -> etree.RelaxNG or None (if load failed).
+# Module-level cache: rng_filename_stem -> etree.RelaxNG or None (if load failed).
+# Key is the schema filename stem (e.g. "tree_view", "list_view") so both tree
+# and list schemas can be cached independently.
 _RELAXNG_CACHE: dict[str, "_lxml_etree.RelaxNG | None"] = {}
 
 
-def _get_relaxng_validator(view_type: str) -> "_lxml_etree.RelaxNG | None":
-    """Return cached RelaxNG validator for *view_type*, or None if unsupported."""
-    if view_type not in _RNG_SUPPORTED_VIEW_TYPES:
+def _odoo_major(odoo_version: str) -> int:
+    """Return the major version integer from an Odoo version string (e.g. '18.0' -> 18)."""
+    try:
+        return int(odoo_version.split(".")[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _get_relaxng_validator(view_type: str, odoo_version: str) -> "_lxml_etree.RelaxNG | None":
+    """Return cached RelaxNG validator for *view_type* at *odoo_version*, or None.
+
+    Version-aware routing:
+      - v18+: 'list' -> list_view.rng; 'tree' is not a valid root (skip).
+      - v15-v17: 'tree' -> tree_view.rng; 'list' is not a valid root (skip).
+      - Other types (activity, calendar, graph, pivot, search) unchanged.
+    """
+    major = _odoo_major(odoo_version)
+    if major >= 18:
+        supported = _RNG_SUPPORTED_VIEW_TYPES_V18PLUS
+        # For list views on v18+ use list_view.rng; other types keep {type}_view.rng
+        schema_stem = "list_view" if view_type == "list" else f"{view_type}_view"
+    else:
+        supported = _RNG_SUPPORTED_VIEW_TYPES_PRE18
+        schema_stem = f"{view_type}_view"
+
+    if view_type not in supported:
         return None
-    if view_type not in _RELAXNG_CACHE:
-        rng_path = _SCHEMA_DIR / f"{view_type}_view.rng"
+
+    if schema_stem not in _RELAXNG_CACHE:
+        rng_path = _SCHEMA_DIR / f"{schema_stem}.rng"
         try:
             rng_doc = _lxml_etree.parse(str(rng_path))
-            _RELAXNG_CACHE[view_type] = _lxml_etree.RelaxNG(rng_doc)
+            _RELAXNG_CACHE[schema_stem] = _lxml_etree.RelaxNG(rng_doc)
         except Exception:
-            _logger.exception("Failed to load RelaxNG schema for view type %r", view_type)
-            _RELAXNG_CACHE[view_type] = None
-    return _RELAXNG_CACHE[view_type]
+            _logger.exception("Failed to load RelaxNG schema %r", rng_path.name)
+            _RELAXNG_CACHE[schema_stem] = None
+    return _RELAXNG_CACHE[schema_stem]
 
 
 def _validate_arch_relaxng(
@@ -59,7 +90,7 @@ def _validate_arch_relaxng(
     """
     if not view.arch or not view.file_path:
         return []
-    validator = _get_relaxng_validator(view.view_type)
+    validator = _get_relaxng_validator(view.view_type, view.odoo_version)
     if validator is None:
         return []
 
@@ -70,7 +101,7 @@ def _validate_arch_relaxng(
     except _lxml_etree.XMLSyntaxError:
         return []
 
-    # The arch element's children are the actual view root elements (e.g. <tree>).
+    # The arch element's children are the actual view root elements (e.g. <tree>/<list>).
     violations: list[LintViolationInfo] = []
     for view_root in arch_el:
         if view_root.tag != view.view_type:

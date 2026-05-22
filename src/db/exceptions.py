@@ -29,7 +29,7 @@ class RepoNotFoundError(KeyError):
 
 
 class RepoConflictError(ValueError):
-    """Raised when a repo update would violate the UNIQUE(url, branch) constraint."""
+    """Raised when a repo update would violate the UNIQUE(url, branch, profile_id) constraint."""
 
 
 class ProfileIndexedError(ValueError):

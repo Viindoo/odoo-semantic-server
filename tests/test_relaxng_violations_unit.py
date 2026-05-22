@@ -157,12 +157,31 @@ def test_v17_parse_module_produces_violations(tmp_path):
 
 
 def test_v19_parse_module_produces_violations(tmp_path):
-    """v19 is above the gate (open-ended) — must validate."""
+    """v19 is above the gate (open-ended) — must validate.
+
+    v19 >= 18 uses <list> root (tree→list rename), so we use the invalid <list>
+    XML fixture.  An invalid <tree>-root view on v19 produces no violations
+    because <tree> is not a valid v18+ root tag (not false-positiveable).
+    """
     module = _make_module("sale", "19.0", str(tmp_path))
-    _write_xml(tmp_path, "invalid.xml", _INVALID_TREE_XML)
+    # v19 uses <list> root (v18+ era); use the invalid <list> fixture.
+    _write_xml(tmp_path, "invalid.xml", """\
+<?xml version="1.0"?>
+<odoo>
+    <record id="view_order_list_bad" model="ir.ui.view">
+        <field name="name">sale.order.list.bad</field>
+        <field name="model">sale.order</field>
+        <field name="arch" type="xml">
+            <list>
+                <badtag foo="bar"/>
+            </list>
+        </field>
+    </record>
+</odoo>
+""")
     result = parse_module(module)
     assert len(result.lint_violations) >= 1, (
-        "v19 with invalid tree view must produce lint violations"
+        "v19 with invalid list view must produce lint violations"
     )
 
 
@@ -223,3 +242,124 @@ def test_validate_arch_relaxng_unsupported_view_type_returns_empty(tmp_path):
     assert views, "expected at least 1 view parsed"
     violations = _validate_arch_relaxng(views[0])
     assert violations == [], f"form views must not produce violations; got {violations}"
+
+
+# ---------------------------------------------------------------------------
+# v18 list-view tests (MED-1: tree→list rename)
+# ---------------------------------------------------------------------------
+
+_VALID_LIST_XML = """\
+<?xml version="1.0"?>
+<odoo>
+    <record id="view_order_list" model="ir.ui.view">
+        <field name="name">sale.order.list</field>
+        <field name="model">sale.order</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="partner_id"/>
+            </list>
+        </field>
+    </record>
+</odoo>
+"""
+
+# <badtag> is not allowed inside <list> per Odoo 18's RNG schema.
+_INVALID_LIST_XML = """\
+<?xml version="1.0"?>
+<odoo>
+    <record id="view_order_list_bad" model="ir.ui.view">
+        <field name="name">sale.order.list.bad</field>
+        <field name="model">sale.order</field>
+        <field name="arch" type="xml">
+            <list>
+                <badtag foo="bar"/>
+            </list>
+        </field>
+    </record>
+</odoo>
+"""
+
+
+def test_v18_valid_list_view_no_violations(tmp_path):
+    """A well-formed v18 <list> view produces zero violations."""
+    module = _make_module("sale", "18.0", str(tmp_path))
+    fp = _write_xml(tmp_path, "valid_list.xml", _VALID_LIST_XML)
+    views = parse_file(fp, module)
+    assert views, "expected at least 1 view parsed"
+    assert views[0].view_type == "list", f"expected view_type='list', got {views[0].view_type!r}"
+    violations = _validate_arch_relaxng(views[0])
+    assert violations == [], f"valid v18 list view must produce no violations; got {violations}"
+
+
+def test_v18_invalid_list_view_produces_violations(tmp_path):
+    """An invalid v18 <list> view (bad element) yields at least 1 LintViolationInfo."""
+    module = _make_module("sale", "18.0", str(tmp_path))
+    fp = _write_xml(tmp_path, "invalid_list.xml", _INVALID_LIST_XML)
+    views = parse_file(fp, module)
+    assert views, "expected at least 1 view parsed"
+    violations = _validate_arch_relaxng(views[0])
+    assert len(violations) >= 1, "expected violations for invalid v18 list view"
+    v = violations[0]
+    assert v.rule == "relaxng.list_view"
+    assert v.severity == "error"
+    assert v.view_xmlid == "sale.view_order_list_bad"
+    assert v.odoo_version == "18.0"
+    assert v.view_type == "list"
+    assert "badtag" in v.message
+
+
+def test_v18_parse_module_list_view_violations(tmp_path):
+    """parse_module on v18 with invalid <list> view yields violations end-to-end."""
+    module = _make_module("sale", "18.0", str(tmp_path))
+    _write_xml(tmp_path, "invalid_list.xml", _INVALID_LIST_XML)
+    result = parse_module(module)
+    assert len(result.lint_violations) >= 1, (
+        "v18 with invalid list view must produce lint violations via parse_module"
+    )
+    v = result.lint_violations[0]
+    assert v.rule == "relaxng.list_view"
+    assert v.view_type == "list"
+
+
+def test_v17_tree_view_still_validates(tmp_path):
+    """Regression: v17 <tree> view still validates correctly after v18 list support added."""
+    module = _make_module("sale", "17.0", str(tmp_path))
+    _write_xml(tmp_path, "invalid_tree.xml", _INVALID_TREE_XML)
+    result = parse_module(module)
+    assert len(result.lint_violations) >= 1, (
+        "v17 with invalid tree view must still produce lint violations (regression check)"
+    )
+    v = result.lint_violations[0]
+    assert v.rule == "relaxng.tree_view"
+    assert v.view_type == "tree"
+
+
+def test_v19_parse_module_list_view_violations(tmp_path):
+    """v19 is also >= 18 — must use list_view.rng for <list> root views."""
+    module = _make_module("sale", "19.0", str(tmp_path))
+    _write_xml(tmp_path, "invalid_list.xml", _INVALID_LIST_XML)
+    result = parse_module(module)
+    assert len(result.lint_violations) >= 1, (
+        "v19 with invalid list view must produce lint violations"
+    )
+
+
+def test_v18_tree_view_type_not_validated(tmp_path):
+    """On v18+, a <tree>-rooted view_type='tree' is not a valid root — no RNG file.
+
+    The parser sets view_type='tree' for a <tree> tag. On v18+, 'tree' is not
+    in _RNG_SUPPORTED_VIEW_TYPES_V18PLUS, so no violations are produced
+    (rather than false-positive errors from using the v17 tree_view.rng).
+    """
+    module = _make_module("sale", "18.0", str(tmp_path))
+    fp = _write_xml(tmp_path, "invalid_tree.xml", _INVALID_TREE_XML)
+    views = parse_file(fp, module)
+    assert views, "expected at least 1 view parsed"
+    # The parser sees <tree> tag -> view_type='tree'
+    assert views[0].view_type == "tree"
+    violations = _validate_arch_relaxng(views[0])
+    assert violations == [], (
+        "v18 <tree>-root view must not be validated "
+        "(tree tag is not v18 root — avoid false positives)"
+    )
