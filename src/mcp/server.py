@@ -882,28 +882,42 @@ def _find_examples(
     # Use injected connection (test path) or check out from pool (production).
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
+        # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer. The
+        # Neo4j rerank only deprioritises non-allowed modules — it does NOT drop
+        # their chunks — so isolation MUST be enforced here, in the SQL, before
+        # rows are fetched. allowed=None → admin/unrestricted (no clause);
+        # allowed=[] → deny-all (ANY('{}') matches nothing). profile_name IS NULL
+        # chunks (legacy/unscoped) are excluded when scoped — fail-closed.
+        allowed = _effective_allowed(profile_name)
+        prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
         with pg.cursor() as cur:
             if selected_types:
                 placeholders = ",".join(["%s"] * len(selected_types))
+                params = [query_vec, odoo_version, *selected_types]
+                if allowed is not None:
+                    params.append(allowed)
+                params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
                 cur.execute(
                     f"""SELECT chunk_type, module, entity_name, model_name, file_path,
                                chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
                                line_start, repo
                         FROM embeddings
-                        WHERE odoo_version = %s AND chunk_type IN ({placeholders})
+                        WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
                         ORDER BY vec <=> %s::vector LIMIT %s""",
-                    [query_vec, odoo_version]
-                    + selected_types
-                    + [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)],
+                    params,
                 )
             else:
+                params = [query_vec, odoo_version]
+                if allowed is not None:
+                    params.append(allowed)
+                params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
                 cur.execute(
-                    """SELECT chunk_type, module, entity_name, model_name, file_path,
+                    f"""SELECT chunk_type, module, entity_name, model_name, file_path,
                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
                               line_start, repo
-                       FROM embeddings WHERE odoo_version = %s
+                       FROM embeddings WHERE odoo_version = %s{prof_sql}
                        ORDER BY vec <=> %s::vector LIMIT %s""",
-                    [query_vec, odoo_version, query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)],
+                    params,
                 )
             raw = [
                 dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
@@ -5511,16 +5525,23 @@ def _find_style_override(
 
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
+        # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer (see
+        # _find_examples). No explicit profile arg here → tenant boundary only.
+        allowed = _effective_allowed(None)
+        prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
         with pg.cursor() as cur:
             placeholders = "%s, %s, %s"
+            params = [query_vec, odoo_version, "css", "scss", "less"]
+            if allowed is not None:
+                params.append(allowed)
+            params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
             cur.execute(
                 f"""SELECT chunk_type, module, entity_name, file_path,
                            chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
                     FROM embeddings
-                    WHERE odoo_version = %s AND chunk_type IN ({placeholders})
+                    WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
                     ORDER BY vec <=> %s::vector LIMIT %s""",
-                [query_vec, odoo_version, "css", "scss", "less", query_vec,
-                 min(limit, FIND_EXAMPLES_ANN_LIMIT)],
+                params,
             )
             raw = [
                 dict(chunk_type=r[0], module=r[1], entity_name=r[2],
