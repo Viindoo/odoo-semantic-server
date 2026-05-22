@@ -164,8 +164,28 @@ def _get_api_key_id() -> str:
     return getattr(_api_key_id_local, "value", "default")
 
 
+def _get_tenant_id() -> int | None:
+    """Return the tenant_id for the current sync context (ADR-0034 D4.1 plumbing).
+
+    Populated by UsageLogMiddleware (tool_log_middleware.py) from
+    request.state.tenant_id before each tool call, cleared in the finally block.
+    Returns None when not set — this covers:
+      - Unit tests and CLI invocations (no request context)
+      - Global/admin keys (tenant_id IS NULL in DB)
+      - Any code path that has not yet been wired to carry tenant context
+
+    IMPORTANT: returning None here does NOT mean "show everything". Read-side
+    enforcement (deferred to a later WI) will treat None as "global admin access"
+    vs a missing tenant context.  Do NOT use this value for filtering yet.
+    """
+    return getattr(_tenant_id_local, "value", None)
+
+
 # Thread-local storage for API key ID — populated by middleware when available.
 _api_key_id_local = threading.local()
+# Thread-local storage for tenant_id — populated alongside _api_key_id_local
+# by UsageLogMiddleware from request.state.tenant_id (ADR-0034 D4.1).
+_tenant_id_local = threading.local()
 
 
 # find_examples rerank coefficients — extracted so calibration harness can

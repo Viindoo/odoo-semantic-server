@@ -39,6 +39,7 @@ class AuthStore:
         name: str,
         user_id: int | None = None,
         expires_at=None,
+        tenant_id: int | None = None,
     ) -> tuple[str, str, int]:
         """Create API key with HMAC-SHA256 hash, optional user ownership and expiry.
 
@@ -48,6 +49,9 @@ class AuthStore:
                 (CLI-created keys, backward compat).
             expires_at: Optional datetime (or None for eternal).  When set,
                 the key is rejected after this timestamp.
+            tenant_id: Optional tenants.id FK (ADR-0034 D1).  None = global/admin key
+                that bypasses tenant isolation.  New keys created for a specific tenant
+                must pass the corresponding tenant_id so the key is bound to that tenant.
 
         Returns:
             Tuple of (raw_key_string, key_prefix_12chars, key_id).
@@ -59,9 +63,10 @@ class AuthStore:
         with self._pool.checkout() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO api_keys (name, key_hash, key_prefix, user_id, expires_at)"
-                    " VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                    (name, key_hash, key_prefix, user_id, expires_at),
+                    "INSERT INTO api_keys"
+                    " (name, key_hash, key_prefix, user_id, expires_at, tenant_id)"
+                    " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    (name, key_hash, key_prefix, user_id, expires_at, tenant_id),
                 )
                 row_id = cur.fetchone()[0]
             conn.commit()
@@ -118,6 +123,59 @@ class AuthStore:
                 (key_id,),
             )
         return key_id
+
+    def verify_api_key_tenant(self, raw_key: str) -> tuple[int, int | None] | None:
+        """Return (api_key_id, tenant_id) if active + valid (not expired). Update last_used_at.
+
+        Extended variant of verify_api_key that additionally returns the tenant_id bound
+        to the key (ADR-0034 D4.1 — P1 plumbing).  A NULL tenant_id means the key is a
+        global/admin key that bypasses tenant isolation.
+
+        Lookup order and active/expiry enforcement are identical to verify_api_key().
+        last_used_at is updated on success (same side effect).
+
+        Args:
+            raw_key: The full API key string (starts with 'osm_').
+
+        Returns:
+            (key_id, tenant_id) if found and active/unexpired; None otherwise.
+            tenant_id is None for legacy/global keys (tenant_id IS NULL in DB).
+        """
+        hmac_hash = hash_key(raw_key)
+        expires_filter = "AND (expires_at IS NULL OR expires_at > NOW())"
+        base_query = (
+            "SELECT id, tenant_id FROM api_keys "
+            f"WHERE key_hash = %s AND active = TRUE {expires_filter}"
+        )
+
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(conn, base_query, (hmac_hash,))
+
+        if row is None:
+            # Backward-compat: try plain SHA-256 (until LEGACY_HASH_DEADLINE)
+            sha_hash = hash_key_legacy_sha256(raw_key)
+            with self._pool.checkout() as conn:
+                row = self._pool.fetch_one(conn, base_query, (sha_hash,))
+            if row is not None:
+                logger.warning(
+                    "API key id=%s matched via legacy SHA-256 hash. "
+                    "Please rotate this key before %s.",
+                    row["id"],
+                    "2026-06-15",  # LEGACY_HASH_DEADLINE
+                )
+
+        if row is None:
+            return None
+
+        key_id = row["id"]
+        tenant_id: int | None = row["tenant_id"]
+        with self._pool.checkout() as conn:
+            self._pool.execute(
+                conn,
+                "UPDATE api_keys SET last_used_at = NOW() WHERE id = %s",
+                (key_id,),
+            )
+        return key_id, tenant_id
 
     def list_api_keys(self, user_id: int | None = None, admin: bool = False) -> list[dict]:
         """List API keys (without key_hash for security).

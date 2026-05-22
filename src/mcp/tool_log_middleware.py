@@ -67,24 +67,28 @@ class UsageLogMiddleware(Middleware):
         """
         tool_name: str = context.message.name  # always present per MCP spec
 
-        # api_key_id is set on request.state by AuthMiddleware before the
-        # request reaches the FastMCP handler.  Gracefully fall back to None
-        # for unauthenticated paths (e.g. /health via custom_route).
+        # api_key_id and tenant_id are set on request.state by AuthMiddleware
+        # before the request reaches the FastMCP handler.  Gracefully fall back
+        # to None for unauthenticated paths (e.g. /health via custom_route).
         api_key_id: str | None = None
+        tenant_id: int | None = None
         try:
             req = get_http_request()
             api_key_id = getattr(req.state, "api_key_id", None)
+            tenant_id = getattr(req.state, "tenant_id", None)
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
-        # Propagate api_key_id into the thread-local so synchronous tool
-        # wrappers can call _get_api_key_id() and get the real tenant key.
+        # Propagate api_key_id and tenant_id into thread-locals so synchronous
+        # tool wrappers can call _get_api_key_id() / _get_tenant_id().
         _set_server_api_key(api_key_id)
+        _set_server_tenant_id(tenant_id)
         start = time.monotonic()
         try:
             result = await call_next(context)
         finally:
-            _set_server_api_key(None)  # clear to avoid cross-request leakage
+            _set_server_api_key(None)   # clear to avoid cross-request leakage
+            _set_server_tenant_id(None)  # clear tenant_id in tandem
         ms = int((time.monotonic() - start) * 1000)
 
         task = asyncio.create_task(
@@ -112,17 +116,21 @@ class UsageLogMiddleware(Middleware):
         on_call_tool hook covers tool-call accounting.
         """
         api_key_id: str | None = None
+        tenant_id: int | None = None
         try:
             req = get_http_request()
             api_key_id = getattr(req.state, "api_key_id", None)
+            tenant_id = getattr(req.state, "tenant_id", None)
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
         _set_server_api_key(api_key_id)
+        _set_server_tenant_id(tenant_id)
         try:
             return await call_next(context)
         finally:
-            _set_server_api_key(None)  # clear to avoid cross-request leakage
+            _set_server_api_key(None)   # clear to avoid cross-request leakage
+            _set_server_tenant_id(None)  # clear tenant_id in tandem
 
 
 def _set_server_api_key(api_key_id: str | None) -> None:
@@ -139,6 +147,30 @@ def _set_server_api_key(api_key_id: str | None) -> None:
             # Reset to sentinel so _get_api_key_id() falls back to 'default'.
             try:
                 del _server._api_key_id_local.value
+            except AttributeError:
+                pass  # already unset — fine
+    except Exception:
+        pass  # never raise from middleware — logging failure must not break tool response
+
+
+def _set_server_tenant_id(tenant_id: int | None) -> None:
+    """Write *tenant_id* into server._tenant_id_local (best-effort, never raises).
+
+    Mirrors _set_server_api_key for the tenant_id thread-local introduced in
+    ADR-0034 D4.1 (WI-D plumbing).  Called before and after every tool/resource
+    invocation so _get_tenant_id() returns the correct value for synchronous tool
+    wrappers.
+
+    None clears the local so _get_tenant_id() returns the default (None), which
+    represents "global/admin access or no tenant context".
+    """
+    try:
+        from src.mcp import server as _server  # lazy — avoids circular import
+        if tenant_id is not None:
+            _server._tenant_id_local.value = tenant_id
+        else:
+            try:
+                del _server._tenant_id_local.value
             except AttributeError:
                 pass  # already unset — fine
     except Exception:
