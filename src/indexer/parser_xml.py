@@ -32,14 +32,6 @@ _RELAXNG_GATE: VersionRegistry[bool] = VersionRegistry([
 _RELAXNG_CACHE: dict[str, "_lxml_etree.RelaxNG | None"] = {}
 
 
-def _odoo_major(odoo_version: str) -> int:
-    """Return the major version integer from an Odoo version string (e.g. '18.0' -> 18)."""
-    try:
-        return int(odoo_version.split(".")[0])
-    except (ValueError, IndexError):
-        return 0
-
-
 def _get_relaxng_validator(
     view_type: str,
     rng_root: Path | None,

@@ -2,8 +2,13 @@
 """Background clone job invoked by web UI.
 
 Lifecycle (per ADR-0008 D6):
-    set_clone_status('pending') → clone_repo → set_clone_status('cloned')
+    set_clone_status('pending') → clone_repo/refresh_repo → set_clone_status('cloned')
                                   └→ on failure → set_clone_status('error', msg)
+
+Mutating git ops run under a per-repo Postgres advisory lock (ADR-0035 D2) so
+concurrent jobs for the same repo serialize. If the target is already a clone,
+the job refreshes it in place via fetch + reset --hard (ADR-0035 D4) rather
+than erroring on a non-empty dir.
 
 Invoked as: python -m src.cloner --repo-id <id>
 The repo row must already exist with ssh_key_id (or NULL for HTTPS) populated.
@@ -22,12 +27,29 @@ Exit code:
 import argparse
 import logging
 import sys
+from contextlib import contextmanager
 
 from src import config
-from src.git_utils import clone_repo, default_clone_dir, is_ssh_url
+from src.git_utils import clone_repo, default_clone_dir, is_ssh_url, refresh_repo
 from src.web_ui.routes.ssh_keys import decrypt_private_key
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _repo_clone_lock(repo_id: int):
+    """Hold the per-repo Postgres advisory lock for a clone/refresh (ADR-0035 D2).
+
+    Checks out a dedicated pooled connection (session-scoped advisory lock) and
+    acquires the repo lock; raises RuntimeError if another worker is already
+    mutating the same repo. Pipeline imports are deferred so the cloner stays
+    importable without pulling in the neo4j-heavy indexer at module load.
+    """
+    from src.db.pg import get_pool
+    from src.indexer.pipeline import _repo_git_lock
+    with get_pool().checkout() as conn:
+        with _repo_git_lock(conn, repo_id):
+            yield
 
 
 def _init_pg() -> None:
@@ -101,7 +123,16 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"ssh_key_id={ssh_key_id} not found")
             private_key_pem = decrypt_private_key(key_row["private_key_encrypted"])
 
-        clone_repo(url, branch, target_dir, private_key_pem=private_key_pem)
+        # ADR-0035 D2: serialize mutating git ops on this repo behind a
+        # per-repo Postgres advisory lock so two concurrent clone jobs for the
+        # same repo never race on .git/index.lock. ADR-0035 D4: if the repo is
+        # already cloned, refresh in place (fetch + reset --hard) instead of
+        # failing on a non-empty target dir — makes re-clone idempotent.
+        with _repo_clone_lock(args.repo_id):
+            if (target_dir / ".git").exists():
+                refresh_repo(target_dir, branch, private_key_pem=private_key_pem)
+            else:
+                clone_repo(url, branch, target_dir, private_key_pem=private_key_pem)
     except Exception as e:
         logger.exception("clone failed for repo id=%s", args.repo_id)
         repo_store().set_clone_status(args.repo_id, "error", error_msg=str(e)[:500])

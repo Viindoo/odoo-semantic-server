@@ -1698,7 +1698,7 @@ def _lint_check_xml(odoo_version: str) -> str:
                    lv.line AS line,
                    lv.view_type AS view_type,
                    lv.file_path AS file_path
-            ORDER BY lv.view_xmlid ASC, lv.line ASC
+            ORDER BY lv.view_xmlid ASC, lv.line ASC, lv.rule ASC
         """, v=odoo_version).data()
 
     header = (

@@ -137,6 +137,7 @@ def _cache_invalidate(raw_key: str) -> None:
     with _cache_lock:
         _KEY_CACHE.pop(h, None)
         _CACHE_TS.pop(h, None)
+        _TENANT_CACHE.pop(h, None)  # keep the two caches in sync (see _cache_set_tenant)
 
 
 def _cache_invalidate_by_key_id(key_id: int) -> None:
@@ -220,6 +221,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     result = store.verify_api_key_tenant(raw_key)
                 except AttributeError:
                     pass  # method not present — fall through to verify_api_key
+                except psycopg2.errors.UndefinedColumn:
+                    # api_keys.tenant_id absent — new code running against a
+                    # pre-m13_002 schema (e.g. a rolling deploy before migrate
+                    # has applied). Degrade to legacy verify_api_key
+                    # (tenant_id=None) instead of 500-ing every authed request.
+                    pass
                 if result is not _missing:
                     # Got a response from verify_api_key_tenant.
                     if result is None or (isinstance(result, tuple) and len(result) == 2):

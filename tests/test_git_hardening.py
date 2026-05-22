@@ -368,14 +368,39 @@ class TestRepoGitLock:
             cur.execute("SELECT pg_advisory_unlock(%s)", (id_b,))
 
     def test_lock_releases_on_exception(self, pg_conn):
-        """Lock is released even when an exception is raised inside the context."""
+        """Lock is released even when an exception is raised inside the context.
+
+        Release is verified from a SECOND connection. Re-acquiring on the SAME
+        session would be a no-op — Postgres session advisory locks are
+        re-entrant, so pg_try_advisory_lock on the holding session always
+        succeeds and would pass even if release were broken. A different
+        connection can acquire the lock only if the first actually released it.
+        """
+        import psycopg2
+
         with pytest.raises(ValueError, match="simulated"):
             with _repo_git_lock(pg_conn, repo_id=9005):
                 raise ValueError("simulated")
 
-        # Should be re-acquirable now
-        with _repo_git_lock(pg_conn, repo_id=9005):
-            pass
+        dsn = os.environ.get(
+            "PG_TEST_DSN",
+            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
+        )
+        conn2 = psycopg2.connect(dsn)
+        conn2.autocommit = True
+        try:
+            lock_id = _repo_lock_id(9005)
+            with conn2.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
+                acquired = cur.fetchone()[0]
+            assert acquired is True, (
+                "After the exception inside _repo_git_lock, a different "
+                "connection must acquire the lock — proving the finally released it"
+            )
+            with conn2.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+        finally:
+            conn2.close()
 
     def test_concurrent_same_repo_refreshes_serialize(self, tmp_path, pg_conn):
         """Two concurrent refresh calls on the same repo: one succeeds, one is blocked.

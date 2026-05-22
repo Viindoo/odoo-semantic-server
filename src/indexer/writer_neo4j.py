@@ -613,9 +613,10 @@ def _write_lint_violations_batch(
     """MERGE :LintViolation nodes + :HAS_VIOLATION edge from owning :View.
 
     Composite MERGE key: (file_path, line, rule, odoo_version).
-    The :HAS_VIOLATION edge target is the :View node keyed on (xmlid,
-    odoo_version).  Silent skip when the View does not yet exist — the edge
-    will be created once the View is written (idempotent MERGE on next run).
+    The :HAS_VIOLATION edge source is the :View node keyed on (xmlid,
+    odoo_version) — i.e. (view)-[:HAS_VIOLATION]->(lv).  Silent skip when the
+    View does not yet exist — the edge will be created once the View is written
+    (idempotent MERGE on next run).
     """
     for v in violations:
         # Upsert the LintViolation node.

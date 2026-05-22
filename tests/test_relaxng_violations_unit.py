@@ -18,6 +18,7 @@ Coverage:
 RNG source: tests/fixtures/rng/ — self-contained, no external includes.
 CI: no ~/git/odoo* present → real-source gated tests are skipped.
 """
+import os
 import textwrap
 from pathlib import Path
 
@@ -35,9 +36,14 @@ from src.indexer.parser_xml import _validate_arch_relaxng, parse_file, parse_mod
 # Self-contained RNG fixtures under tests/fixtures/rng/ — no external includes.
 _FIXTURE_RNG_DIR = Path(__file__).parent / "fixtures" / "rng"
 
-# Real Odoo source RNG dirs for gated local-only tests.
-_ODOO17_RNG = Path("/home/tuan/git/odoo17/odoo/addons/base/rng")
-_ODOO18_RNG = Path("/home/tuan/git/odoo18/odoo/addons/base/rng")
+# Real Odoo source RNG dirs for gated local-only tests. Resolved relative to
+# $HOME (developer-machine layout ~/git/odooNN); the tests that use these are
+# skipif-gated on .is_dir() so they no-op on CI and on machines without the
+# source checkouts. Override the base dir with OSM_ODOO_SRC_DIR if your repos
+# live elsewhere.
+_ODOO_SRC_DIR = Path(os.environ.get("OSM_ODOO_SRC_DIR", str(Path.home() / "git")))
+_ODOO17_RNG = _ODOO_SRC_DIR / "odoo17" / "odoo" / "addons" / "base" / "rng"
+_ODOO18_RNG = _ODOO_SRC_DIR / "odoo18" / "odoo" / "addons" / "base" / "rng"
 
 # ---------------------------------------------------------------------------
 # Shared XML fixtures

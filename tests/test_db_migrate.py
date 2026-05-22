@@ -833,6 +833,76 @@ def test_m13_repos_unique_within_same_profile(clean_pg):
             )
 
 
+def test_m13_repos_old_global_unique_constraint_dropped(clean_pg):
+    """m13_002 must DROP the old global UNIQUE(url, branch) (repos_url_branch_key).
+
+    Asserts the business rule directly: if the drop silently failed, cross-profile
+    registration of the same upstream URL would wrongly raise — and the positive
+    test test_m13_repos_unique_per_profile_not_global would be the only signal.
+    """
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT constraint_name FROM information_schema.table_constraints "
+            "WHERE table_name = 'repos' AND constraint_type = 'UNIQUE'"
+        )
+        names = {r[0] for r in cur.fetchall()}
+    assert "repos_url_branch_key" not in names, (
+        "old global UNIQUE(url, branch) must be dropped by m13_002"
+    )
+    assert "repos_url_branch_profile_key" in names, (
+        "per-profile UNIQUE(url, branch, profile_id) must be present"
+    )
+
+
+def test_m13_deploy_key_unique_per_tenant(clean_pg):
+    """m13_002 partial UNIQUE index allows at most ONE deploy_key per tenant.
+
+    Closes the get_or_create_tenant_deploy_key check-then-insert TOCTOU, while
+    still permitting multiple access_key rows for the same tenant.
+    """
+    import psycopg2.errors
+
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('t_dk') RETURNING id")
+        tid = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+            "VALUES ('dk1', 'pub1', 'enc1', 'deploy_key', %s)",
+            (tid,),
+        )
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            cur.execute(
+                "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+                "VALUES ('dk2', 'pub2', 'enc2', 'deploy_key', %s)",
+                (tid,),
+            )
+
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('t_ak') RETURNING id")
+        tid2 = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+            "VALUES ('ak1', 'pub1', 'enc1', 'access_key', %s)",
+            (tid2,),
+        )
+        cur.execute(
+            "INSERT INTO ssh_key_pairs "
+            "(name, public_key, private_key_encrypted, key_type, tenant_id) "
+            "VALUES ('ak2', 'pub2', 'enc2', 'access_key', %s)",
+            (tid2,),
+        )
+        cur.execute(
+            "SELECT count(*) FROM ssh_key_pairs WHERE tenant_id = %s AND key_type = 'access_key'",
+            (tid2,),
+        )
+        assert cur.fetchone()[0] == 2, "multiple access_key rows per tenant must be allowed"
+
+
 def test_m13_migration_idempotent(clean_pg):
     """m13_002: running migrate twice must not fail (full idempotency check)."""
     run_migrations(clean_pg)

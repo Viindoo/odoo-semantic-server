@@ -109,6 +109,7 @@ def test_main_https_clone_success(tmp_path):
 
     with (
         patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.cloner.__main__.clone_repo") as fake_clone,
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
@@ -139,6 +140,7 @@ def test_main_clone_failure_sets_error_status(tmp_path):
 
     with (
         patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.cloner.__main__.clone_repo", side_effect=Exception("git: timeout")),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
@@ -189,6 +191,7 @@ def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
 
     with (
         patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.db.pg.auth_store", return_value=auth_s),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
@@ -224,6 +227,7 @@ def test_main_lifecycle_status_transitions(tmp_path):
 
     with (
         patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.cloner.__main__.clone_repo"),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
@@ -269,6 +273,7 @@ def test_file_url_does_not_require_ssh_key(tmp_path):
 
     with (
         patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch(
             "src.cloner.__main__.clone_repo",
@@ -280,3 +285,52 @@ def test_file_url_does_not_require_ssh_key(tmp_path):
 
     # SSH-key gate returns 2; clone failure returns 1. We must NOT get 2.
     assert rc != 2, "file:// URL must not trip the SSH-key-missing gate (exit 2)"
+
+
+# ---------------------------------------------------------------------------
+# 8. The clone runs under the per-repo advisory lock (ADR-0035 D2)
+# ---------------------------------------------------------------------------
+
+def test_main_clone_runs_under_repo_lock(tmp_path):
+    """clone/refresh must be wrapped by _repo_clone_lock(repo_id) — the lock is
+    the whole point of WI-H; without this it was dead code."""
+    repo_s = _make_repo_store(get_repo_by_id=dict(_HTTPS_REPO))
+
+    with (
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock") as fake_lock,
+        patch("src.db.pg.repo_store", return_value=repo_s),
+        patch("src.cloner.__main__.clone_repo"),
+        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+    ):
+        rc = main(["--repo-id", "1"])
+
+    assert rc == 0
+    fake_lock.assert_called_once_with(1)  # locked by repo_id, around the clone
+
+
+# ---------------------------------------------------------------------------
+# 9. Re-clone of an already-cloned repo refreshes in place (ADR-0035 D4)
+# ---------------------------------------------------------------------------
+
+def test_main_refreshes_when_target_already_cloned(tmp_path):
+    """If target_dir already contains a .git, the job refreshes (fetch + reset)
+    instead of calling clone_repo (which would FileExistsError on a non-empty dir)."""
+    cloned = tmp_path / "cloned"
+    (cloned / ".git").mkdir(parents=True)  # simulate an existing clone
+
+    repo_s = _make_repo_store(get_repo_by_id=dict(_HTTPS_REPO))
+
+    with (
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
+        patch("src.cloner.__main__.clone_repo") as fake_clone,
+        patch("src.cloner.__main__.refresh_repo") as fake_refresh,
+        patch("src.cloner.__main__.default_clone_dir", return_value=cloned),
+    ):
+        rc = main(["--repo-id", "1"])
+
+    assert rc == 0
+    fake_refresh.assert_called_once()
+    fake_clone.assert_not_called()

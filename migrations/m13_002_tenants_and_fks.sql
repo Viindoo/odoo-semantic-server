@@ -25,12 +25,9 @@
 --                                    cross-profile/cross-tenant clones of the same
 --                                    upstream URL.
 --
---      NOTE: src/db/repo_registry.py::update_repo() pre-checks UNIQUE(url, branch)
---      globally (lines 704-714 as of M13 DDL phase).  That application-level check
---      becomes overly restrictive once tenants are active — it will reject a repo
---      registered under tenant A from being added under tenant B.  Updating that
---      check to scope to profile_id is owned by a separate application-code WI
---      (not this DDL-only migration).
+--      NOTE: src/db/repo_registry.py::update_repo() pre-check is scoped to
+--      (url, branch, profile_id) to match this constraint (WI-G), so the same
+--      upstream URL can be registered under different profiles/tenants.
 --
 -- Idempotency: every statement uses IF NOT EXISTS / DO $$ … END $$ guards so this
 -- migration is safe to re-run on a production-shape database.
@@ -78,6 +75,16 @@ ALTER TABLE ssh_key_pairs
     ADD COLUMN IF NOT EXISTS key_type TEXT
     NOT NULL DEFAULT 'access_key'
     CHECK (key_type IN ('deploy_key', 'access_key'));
+
+-- At most ONE deploy key per tenant. This partial UNIQUE index closes the
+-- check-then-insert TOCTOU in auth_registry.get_or_create_tenant_deploy_key:
+-- without it, two concurrent first-time requests for the same tenant both pass
+-- the "no row yet" SELECT and both INSERT, leaving the tenant with two deploy
+-- keys and a non-deterministic LIMIT 1 read. Partial (deploy_key only) so a
+-- tenant may still hold any number of access_key rows.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_ssh_deploy_key_per_tenant
+    ON ssh_key_pairs (tenant_id)
+    WHERE key_type = 'deploy_key';
 
 -- ---------------------------------------------------------------------------
 -- 4. repos UNIQUE constraint: replace (url, branch) with (url, branch, profile_id)

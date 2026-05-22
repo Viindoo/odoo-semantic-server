@@ -375,11 +375,18 @@ class AuthStore:
 
         # No deploy key yet — generate and persist one.
         public_key, private_key_encrypted = generate_ed25519_keypair()
+        # ON CONFLICT guards the check-then-insert race: if a concurrent
+        # first-time request for the same tenant won, our INSERT no-ops
+        # (RETURNING yields no row) and we re-read the winner's public key so
+        # both callers return the SAME key. Conflict target matches the partial
+        # index ux_ssh_deploy_key_per_tenant (m13_002).
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO ssh_key_pairs"
                 " (name, public_key, private_key_encrypted, key_version, key_type, tenant_id)"
-                " VALUES (%s, %s, %s, %s, %s, %s)",
+                " VALUES (%s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT (tenant_id) WHERE key_type = 'deploy_key' DO NOTHING"
+                " RETURNING public_key",
                 (
                     f"deploy-key-tenant-{tenant_id}",
                     public_key,
@@ -389,7 +396,21 @@ class AuthStore:
                     tenant_id,
                 ),
             )
-        return public_key
+            row = cur.fetchone()
+        if row is not None:
+            return row[0]
+
+        # Lost the race — a peer inserted the tenant's deploy key first.
+        # Return their public key so the result is idempotent.
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT public_key FROM ssh_key_pairs "
+                "WHERE tenant_id = %s AND key_type = 'deploy_key' "
+                "LIMIT 1",
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+        return row[0]
 
     # ------------------------------------------------------------------
     # Pattern feedback
