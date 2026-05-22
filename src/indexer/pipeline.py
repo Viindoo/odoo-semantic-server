@@ -47,6 +47,16 @@ def _profile_lock_id(profile_name: str) -> int:
     return int(hashlib.md5(f"odoo-semantic-{profile_name}".encode()).hexdigest(), 16) % (2**31)
 
 
+def _repo_lock_id(repo_id: int) -> int:
+    """Derive a 31-bit Postgres advisory lock id from a repo_id (ADR-0035 D2).
+
+    Uses a different namespace prefix ("osm-repo-") than the profile lock
+    ("odoo-semantic-") to guarantee the two key spaces never collide even if
+    a profile name were a stringified integer equal to a repo_id.
+    """
+    return int(hashlib.md5(f"osm-repo-{repo_id}".encode()).hexdigest(), 16) % (2**31)
+
+
 @contextmanager
 def _indexer_lock(pg_conn, profile_name: str):
     """Postgres advisory lock — prevents concurrent indexer runs for a profile.
@@ -64,6 +74,32 @@ def _indexer_lock(pg_conn, profile_name: str):
                 f"Indexer already running for profile {profile_name!r} "
                 f"(Postgres advisory lock {lock_id} held). "
                 "Wait for it to finish or restart PostgreSQL to release stale lock."
+            )
+        yield
+
+
+@contextmanager
+def _repo_git_lock(pg_conn, repo_id: int):
+    """Per-repo Postgres advisory lock guarding mutating git ops (ADR-0035 D2).
+
+    Wraps clone/fetch/reset for a single repo so two concurrent workers never
+    race on ``.git/index.lock``.  Read-only git ops (rev-parse, diff --name-only)
+    must NOT be wrapped — they run lock-free for performance.
+
+    The lock is keyed by ``repo_id`` (not profile) so cross-repo operations
+    run fully in parallel.
+
+    Raises ``RuntimeError`` if the lock cannot be acquired (another worker is
+    mutating the same repo).
+    """
+    from src.db.pg import advisory_lock
+    lock_id = _repo_lock_id(repo_id)
+    with advisory_lock(pg_conn, lock_id) as acquired:
+        if not acquired:
+            raise RuntimeError(
+                f"Git mutation already in progress for repo id={repo_id} "
+                f"(Postgres advisory lock {lock_id} held). "
+                "Wait for the other worker to finish."
             )
         yield
 

@@ -10,6 +10,10 @@ The repo row must already exist with ssh_key_id (or NULL for HTTPS) populated.
 Reads url, branch, ssh_key_id from the row; computes target_dir via
 git_utils.default_clone_dir; on success writes target_dir to repos.local_path.
 
+SSH host-key policy (ADR-0035 D3): clone_repo uses pre-pinned known_hosts for
+common forges (GitHub/GitLab/Bitbucket) + StrictHostKeyChecking=yes.  Unknown
+hosts are rejected — add their key to PINNED_KNOWN_HOSTS in git_utils.py.
+
 Exit code:
     0 = success (cloned)
     1 = failure (clone_status='error', error_msg captured)
