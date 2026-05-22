@@ -222,6 +222,20 @@ class ResolveFieldOutput(BaseModel):
             "None for non-relational fields. B1 provenance — already in graph."
         ),
     )
+    label: str | None = Field(
+        default=None,
+        description=(
+            "Field label (the ``string=`` attribute) — human-readable intent. "
+            "Populated after reindex; None on pre-reindex graphs."
+        ),
+    )
+    help: str | None = Field(
+        default=None,
+        description=(
+            "Field help text (the ``help=`` attribute) — usage intent. "
+            "Populated after reindex; None on pre-reindex graphs."
+        ),
+    )
     declared_in: list[FieldRef] = Field(
         description="All modules declaring this field, ordered by ranking heuristic"
     )

@@ -51,6 +51,10 @@ class FieldInfo:
     comodel_name: str | None = None  # M10.5 P1 — comodel của Many2one/One2many/Many2many
     # A3 — provenance: 1-based source line in the .py file (era2 only; None for era1)
     line: int | None = None
+    # A2-followup — field intent for AI agents: `string=` label + `help=` text.
+    # era2: kwarg, else first positional arg for non-relational fields; era1 best-effort.
+    string: str | None = None
+    help: str | None = None
 
 
 @dataclass

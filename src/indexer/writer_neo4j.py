@@ -213,12 +213,14 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     [x IN coalesce(f.profile, []) WHERE NOT x IN $profiles] + $profiles
                 SET f.ttype = $ttype, f.related = $related, f.compute = $compute,
                     f.stored = $stored, f.required = $required,
-                    f.comodel_name = $comodel_name
+                    f.comodel_name = $comodel_name,
+                    f.string = $fstring, f.help = $fhelp
                 MERGE (f)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=fld.name, ttype=fld.ttype, related=fld.related,
                  compute=fld.compute, stored=fld.stored, required=fld.required,
                  comodel_name=fld.comodel_name,
+                 fstring=fld.string, fhelp=fld.help,
                  profiles=profiles)
 
         for mth in model.methods:

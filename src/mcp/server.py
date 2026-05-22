@@ -555,6 +555,12 @@ def _resolve_field(
     # B1: render comodel_name for relational fields (only when non-null).
     if base_f.get("comodel_name"):
         lines.append(f"├─ Comodel:  {base_f['comodel_name']}")
+    # A2-followup: field label + help text (intent), rendered when present
+    # (populated after reindex; absent on pre-reindex graphs).
+    if base_f.get("string"):
+        lines.append(f"├─ Label:    {base_f['string']}")
+    if base_f.get("help"):
+        lines.append(f"├─ Help:     {base_f['help']}")
     lines.append("├─ Declared in:")
     last_idx = len(records) - 1
     for i, r in enumerate(records):
@@ -4203,6 +4209,8 @@ def _resolve_field_structured(
         required=bool(base_f.get("required", False)),
         related=base_f.get("related") or None,
         comodel=base_f.get("comodel_name") or None,
+        label=base_f.get("string") or None,
+        help=base_f.get("help") or None,
         declared_in=declared_in,
         next_step_hint=format_next_step([
             f"find_examples(query='{model_name}.{field_name} usage'"

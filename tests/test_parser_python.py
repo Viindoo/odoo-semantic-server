@@ -62,6 +62,28 @@ def test_parse_field_types(tmp_path, sale_module):
     assert field_map["line_ids"].ttype == "one2many"
 
 
+def test_parse_field_string_and_help(tmp_path, sale_module):
+    """A2-followup: field label (string=/positional) + help= captured (AI-agent intent)."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class M(models.Model):
+            _name = 'm'
+            amount = fields.Monetary(string='Total', help='The grand total')
+            name = fields.Char('Display Name')
+            partner_id = fields.Many2one('res.partner', string='Partner')
+            note = fields.Text()
+    """)
+    fmap = {fld.name: fld for fld in parse_file(f, sale_module)[0].fields}
+    assert fmap["amount"].string == "Total"           # string= kwarg
+    assert fmap["amount"].help == "The grand total"   # help= kwarg
+    assert fmap["name"].string == "Display Name"      # positional label (non-relational)
+    # relational: positional[0] is the comodel, NOT the label; label only from kwarg
+    assert fmap["partner_id"].comodel_name == "res.partner"
+    assert fmap["partner_id"].string == "Partner"
+    assert fmap["note"].string is None and fmap["note"].help is None
+
+
 def test_computed_field_default_not_stored(tmp_path, sale_module):
     f = write_py(tmp_path, "model.py", """
         from odoo import models, fields
