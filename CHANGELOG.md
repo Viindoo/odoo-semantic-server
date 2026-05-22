@@ -2,6 +2,77 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.10.0] — 2026-05-23 — Final-stretch: pre-reindex enrichment + agent-convenient output + multi-tenant enforcement gate
+
+One PR (`feat/osm-final-stretch`). Tool surface stays **24** (the module-dependency
+capability is a `module_inspect(method='dependencies')` kind, not a new tool). One
+Postgres migration (`m13_003`). **OPS follow-up (admin):** after deploy, run the full
+reindex v8→v19 — Group A adds new graph/embedding data that is populated only on
+re-index. The cross-tenant leak test is the release gate.
+
+### Added — Group A (reindex-forcing graph/embedding enrichment)
+- **v19 split-ORM core coverage (A1)** — `parser_odoo_core` resolves the v19 `odoo/orm/`
+  package: the `Command` enum keeps its v18 qname `odoo.fields.Command` (via
+  `orm/commands.py`, so `api_version_diff` sees a moved file, not a remove+add), plus a
+  curated v19 allow-list (`_V19_CURATED_FILES`) for `Domain`/`DomainAnd`/`DomainOr`
+  (`orm/domains.py`) and `TableObject`/`Constraint`/`Index`/`UniqueIndex`
+  (`orm/table_objects.py`). ~48 internal domain helpers excluded.
+- **Neo4j node/edge enrichment (A2)** — `Method.docstring`; `Module.auto_install` /
+  `.application` / `.category` / `.external_python` / `.external_bin` (manifest) +
+  `.repo_url` / `.repo_id` (repo provenance, threaded pipeline→registry→writer); new
+  `(:Method)-[:USES_FIELD]->(:Field)` (direct `self.<field>` access) and
+  `(:Method)-[:DEPENDS_ON_FIELD]->(:Field)` (`@api.depends`) edges, best-effort MATCH
+  (no stub fields).
+- **`Field.string` + `Field.help` (A2-followup)** — field label + help text captured
+  (era2 kwarg/positional, era1 best-effort) + persisted + rendered in `resolve_field`.
+- **pgvector embeddings provenance (A3) — migration `m13_003`** — `line_start`, `repo`,
+  `repo_id` columns; method/field chunks now carry the REAL source `.py` path (was the
+  module dir). `parser_xml`/`parser_qweb` switched to lxml for `.sourceline`.
+
+### Added — Group B (agent-convenient tool output)
+- **Render existing provenance/intent (B1)** — `resolve_field` (comodel/label/help),
+  `resolve_method` (signature/convention), `describe_module` (repo + path),
+  `list_js_patches` (file_path), `list_owl_components` (template), `list_fields`
+  (ttype/stored/compute/comodel), `find_deprecated_usage` (repo), `validate_domain`
+  (did-you-mean typo suggestion).
+- **Render new data + module dependencies (B2)** — surfaces docstring / repo_url /
+  manifest-deps / embeddings file+line / field-level `USES_FIELD` impact;
+  `module_inspect(method='dependencies')` returns the transitive `DEPENDS_ON` closure +
+  per-dependency repo + topological load order.
+
+### Added — Group C (multi-tenant enforcement — ADR-0034 WI-3/WI-4, RELEASE GATE)
+- **`resolve_tenant_scope(tenant_id)` (C1)** — `(own, shared)` profile sets (own = the
+  tenant's profiles; shared = all `tenant_id IS NULL` global base), 60s-cached.
+- **Fail-closed Neo4j filter at all 61+4 Cypher sites (C2)** — uniform fragment
+  `($own IS NULL OR all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared))`:
+  a node is granted iff every profile on it is own-or-shared, so another tenant's
+  base-tagged private node is denied and a same-name collision fail-closes. `admin`
+  (own=None) stays unrestricted; the optional `$profile_name IS NULL OR` bypass is
+  fully removed. `_latest_version` + `find_override_point` now scoped too.
+- **pgvector + list-tool scoping (C3/C4)** — `find_examples` / `find_style_override`
+  filter `profile_name = ANY(own ∪ shared)` (`suggest_pattern` exempt — global
+  catalogue); `list_available_versions` / `list_available_profiles` tenant-scoped.
+- **Cross-tenant leak test (C6) — `tests/test_cross_tenant_isolation.py`** — the release
+  gate: a tenant sees its own + the shared base, never another tenant's private node
+  (with or without an explicit `profile_name`); spec data + admin stay unrestricted.
+
+### Changed
+- **ADR-0034 amendment** — records WI-3/WI-4 shipped; documents the pooled MERGE-key
+  same-name collision limitation + the operator namespacing convention (proper
+  MERGE-key discriminator = deferred REC-8 RFC); D6 Postgres RLS deferred to WI-7
+  (the SQL filter is the read-guard; RLS needs `FORCE` + a non-owner read role).
+- **`profile_name` is now ADVISORY** (M13 supersedes ADR-0029 "profile is convenience,
+  not authz"): the tenant boundary is the isolation mechanism. The pre-M13
+  `resolve_view` profile-filter test updated to the new semantics.
+- **ADR-0005** corrected (v19 had a residual `Command` gap, now fixed);
+  `bootstrap_versions.json` v11 `3.3.4`→`3.3.5`; 4 stale TASKS.md markers de-drifted;
+  reindex runbook gains v19/provenance verification queries.
+
+### Notes
+- **DEFERRED:** Postgres RLS (WI-7), FERNET secrets manager, M10B Stripe, Prometheus
+  histogram, nonce-CSP, VN persona docs + the cross-repo `odoo-mcp-client` mirror for
+  `module_inspect(method='dependencies')`.
+
 ## [0.9.1] — 2026-05-22 — M13 pre-reindex wave: DB schema + multi-tenant foundation + git integrity
 
 Eight work items (WI-A/B/C/D/E/G/H/I). No new MCP tools; tool surface remains **24**. Two Postgres migrations (`m13_001`, `m13_002`). Admin must run `python -m src.db.migrate` before deploying services, then execute the full reindex runbook.
