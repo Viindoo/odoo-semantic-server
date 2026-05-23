@@ -233,6 +233,22 @@ def test_build_registry_category_absent_is_none(tmp_path):
     assert registry["17.0"]["mod_nocat"].category is None
 
 
+def test_build_registry_summary(tmp_path):
+    """summary key in manifest → ModuleInfo.summary populated."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_sum", summary="Manage sales orders")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_sum"].summary == "Manage sales orders"
+
+
+def test_build_registry_summary_absent_is_none(tmp_path):
+    """summary absent from manifest → ModuleInfo.summary is None."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_nosum")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_nosum"].summary is None
+
+
 def test_build_registry_external_dependencies(tmp_path):
     """external_dependencies dict parsed into external_python + external_bin lists."""
     repo = make_git_repo(tmp_path / "r", "17.0")

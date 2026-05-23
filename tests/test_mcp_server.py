@@ -1800,6 +1800,49 @@ def test_describe_module_edition_label_lgpl3(neo4j_driver):
         _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
 
 
+def test_describe_module_summary_rendered(neo4j_driver):
+    """describe_module: manifest summary stored on node → rendered as 'Summary: ...' line."""
+    _W6_SUMMARY_VERSION = "99.54"
+    _cleanup_version(neo4j_driver, _W6_SUMMARY_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'test_repo', m.edition = 'community', "
+                "    m.summary = $summary, m.profile = ['default']",
+                n="sale_sum_test", v=_W6_SUMMARY_VERSION,
+                summary="Manage sales orders",
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_sum_test", _W6_SUMMARY_VERSION)
+        assert "Summary: Manage sales orders" in out, (
+            f"Expected 'Summary: Manage sales orders' in describe_module output, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, _W6_SUMMARY_VERSION)
+
+
+def test_describe_module_summary_absent_no_line(neo4j_driver):
+    """describe_module: node without summary → no 'Summary:' line in output."""
+    _W6_NOSUMMARY_VERSION = "99.55"
+    _cleanup_version(neo4j_driver, _W6_NOSUMMARY_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'test_repo', m.edition = 'community', "
+                "    m.profile = ['default']",
+                n="sale_nosum_test", v=_W6_NOSUMMARY_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_nosum_test", _W6_NOSUMMARY_VERSION)
+        assert "Summary:" not in out, (
+            f"Expected no 'Summary:' line when absent, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, _W6_NOSUMMARY_VERSION)
+
+
 # --- list_fields ------------------------------------------------------------
 
 

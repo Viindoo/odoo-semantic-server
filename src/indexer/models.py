@@ -31,6 +31,7 @@ class ModuleInfo:
     auto_install: bool = False
     application: bool = False
     category: str | None = None
+    summary: str | None = None
     external_python: list[str] = field(default_factory=list)
     external_bin: list[str] = field(default_factory=list)
     # A2c — repo provenance

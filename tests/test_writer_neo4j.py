@@ -1983,6 +1983,7 @@ def _make_enriched_parse_result(
     auto_install: bool = False,
     application: bool = False,
     category: str | None = None,
+    summary: str | None = None,
     external_python: list | None = None,
     external_bin: list | None = None,
     repo_url: str | None = None,
@@ -2001,6 +2002,7 @@ def _make_enriched_parse_result(
         auto_install=auto_install,
         application=application,
         category=category,
+        summary=summary,
         external_python=external_python or [],
         external_bin=external_bin or [],
         repo_url=repo_url,
@@ -2042,6 +2044,36 @@ def test_a2b_module_node_has_enrichment_fields(writer, neo4j_driver):
     assert "pdfminer" in node["external_python"]
     assert "reportlab" in node["external_python"]
     assert "wkhtmltopdf" in node["external_bin"]
+
+
+def test_summary_module_node_persists_and_coalesce(writer, neo4j_driver):
+    """summary: Module node stores summary; write with summary=None does not overwrite."""
+    result = _make_enriched_parse_result(
+        module_name="sum_mod",
+        summary="Manage sales orders",
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m",
+            n="sum_mod", v=TEST_VERSION,
+        ).single()
+
+    assert rec is not None
+    assert rec["m"]["summary"] == "Manage sales orders"
+
+    # Second write with summary=None must NOT erase the existing value (coalesce).
+    result2 = _make_enriched_parse_result(module_name="sum_mod", summary=None)
+    writer.write_results([result2])
+
+    with neo4j_driver.session() as session:
+        rec2 = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m",
+            n="sum_mod", v=TEST_VERSION,
+        ).single()
+
+    assert rec2["m"]["summary"] == "Manage sales orders"
 
 
 def test_a2c_module_node_has_repo_provenance(writer, neo4j_driver):

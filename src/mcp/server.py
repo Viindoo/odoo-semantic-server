@@ -2671,6 +2671,7 @@ def _describe_module(
                    m.auto_install AS auto_install,
                    m.application AS application,
                    m.category AS category,
+                   m.summary AS summary,
                    m.external_python AS external_python,
                    m.external_bin AS external_bin
             """,
@@ -2795,6 +2796,8 @@ def _describe_module(
         edition_str += f" (Viindoo equivalent: {mod_rec['vvq']})"
     manifest_rows.append(("Edition", edition_str))
     manifest_rows.append(("Version", mod_rec.get("version_raw") or "—"))
+    if mod_rec.get("summary"):
+        manifest_rows.append(("Summary", mod_rec["summary"]))
     last_m = len(manifest_rows) - 1
     for i, (label, value) in enumerate(manifest_rows):
         conn = "└─" if i == last_m else "├─"
@@ -4793,6 +4796,7 @@ def _describe_module_structured(
                    m.auto_install AS auto_install,
                    m.application AS application,
                    m.category AS category,
+                   m.summary AS summary,
                    m.external_python AS external_python,
                    m.external_bin AS external_bin
             """,
@@ -4863,6 +4867,7 @@ def _describe_module_structured(
         auto_install=bool(mod_rec.get("auto_install")) if mod_rec.get("auto_install") else False,
         application=bool(mod_rec.get("application")) if mod_rec.get("application") else False,
         category=mod_rec.get("category") or None,
+        summary=mod_rec.get("summary") or None,
         external_python=list(mod_rec.get("external_python") or []),
         external_bin=list(mod_rec.get("external_bin") or []),
         edition=mod_rec.get("edition") or "community",

@@ -214,6 +214,7 @@ def build_registry(
 
             _application: bool = bool(manifest.get('application', False))
             _category: str | None = manifest.get('category') or None
+            _summary: str | None = manifest.get('summary') or None
 
             _ext_deps: dict = manifest.get('external_dependencies', {})
             _external_python: list[str] = list(_ext_deps.get('python', []))
@@ -238,6 +239,7 @@ def build_registry(
                 auto_install=_auto_install,
                 application=_application,
                 category=_category,
+                summary=_summary,
                 external_python=_external_python,
                 external_bin=_external_bin,
                 # A2c — repo provenance
