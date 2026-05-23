@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Script chạy indexer với ~/git, version 17.0, để test E2E."""
+"""Script E2E chạy indexer; base dir từ env OSM_REPO_BASE (mặc định ~/git)."""
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -13,7 +13,7 @@ from src.indexer.resolver import topological_sort
 from src.indexer.parser_python import parse_module
 from src.indexer.writer_neo4j import Neo4jWriter
 
-BASE_DIRS = [os.path.expanduser("~/git")]
+BASE_DIRS = [os.path.expanduser(os.environ.get("OSM_REPO_BASE", "~/git"))]
 TARGET_VERSION = "17.0"
 
 print("1. Scanning repos...")

@@ -368,7 +368,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 **M8/M9 backlog from hotfix discoveries (2026-05-14):**
 
 - [~] **Profile + core index gap v9-v19 (OBS-1):** Profiles for v13/14/15/16/19 need to be created by the admin via the web UI or `python -m src.manager add-profile ...`; prod DBs missing them just need a re-run of `python -m src.db.migrate` for schema, then profile creation. **NOTE:** an earlier draft of this work introduced `migrations/0004_add_missing_version_profiles.sql` as belt-and-suspenders; it was removed because it violated the schema-only yoyo-migration contract (see `src/db/migrate.py` docstring and `src/db/seed_master_data.py` line 8-14) and broke 16 integration tests that assume `run_migrations()` leaves the profiles table empty. v10/11/12 profiles existed before OBS-1 (seeder was always complete). Remaining: run indexer per version + register local repo paths via webui if using `/home/user/git/odoo_<N>.0/` instead of auto-clone paths.
-- [x] **v18 source repo missing (OBS-1 deferred):** `odoo_18.0` not on disk as of 2026-05-15. Register via admin webui SSH auto-clone (ADR-0008) — clones automatically. Once cloned, run `index-repo --profile odoo_18`. (cloned + indexed — Group B B1 ops, repo id 34)
+- [x] **v18 source repo missing (OBS-1 deferred):** `odoo_18.0` not on disk as of 2026-05-15. Register via admin webui SSH auto-clone (ADR-0008) — clones automatically. Once cloned, run `index-repo --profile odoo_18`. (cloned + indexed — Group B B1 ops)
 - [x] **v8 parser limitation:** `index-core --version 8.0` writes 167 CoreSymbol but 0 CLIFlag/LintRule — era1 (openerp-server) CLI structure not handled. Extend `parser_cli.py` for era1. (fixed PR #160 WI-2 — v8/v9 CLICommand via openerp/ + static cli_flags)
 - [x] **Admin UI core-index status column [P3 UX]:** Admin `/repos` page only shows MODULE index status (`indexed/error/pending` from Postgres `repos.status`). Add column or badge for CORE index status per version (CoreSymbol count > 0). Prevents user confusion that "v17 indexed" implies core index complete. (duplicates done PR #159 WI-5 item — see line below)
 - [ ] **Cleanup test artifact:** `MATCH (m:Module {odoo_version: '96.0', name: 'snap_mod', module_name: NULL}) DETACH DELETE m` — one anomalous node from test run leaking into production Neo4j.
@@ -554,7 +554,7 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 - [x] Postgres data hygiene: deleted 1 stale `indexer_jobs` queued row (11 days old, no worker) + 4 inactive never-used API keys.
 - [x] Neo4j Cypher cleanup ×2: deleted 2,670 `__unresolved__` stubs v9-v19 + 3,316 v8 orphan children (from prior stale-cleanup) → NULL profile count 5,988 → 2 → 0 (post-reindex).
 - [x] Reindex `--all --full --no-embed` verify run on prod (~16 min main + ~3 min targeted rerun for 3 profiles that hit advisory-lock race with an orphan indexer). Writer fix verified on live data: 0 NULL profile nodes regenerated; `__unresolved__ AND profile IS NULL` count = 0.
-- [x] Ghost uvicorn `--port 8093` (manual dev instance, PID 1018515) killed.
+- [x] Killed a stale manual dev uvicorn instance left over from local testing.
 
 **Acceptance gate met for go-live:** 9 of 11 pre-launch sections `[x]`, 2 partial (§5 non-prod restore optional, §9 cron optional). Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for full signoff table.
 
@@ -635,7 +635,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 | Item | Outcome | Notes |
 |---|---|---|
-| B1 v18 odoo source auto-clone | ✅ Pre-done | `/home/.../clones/odoo_18/odoo` cloned + indexed before this session; verified via DB query (repo id 34, clone_status=cloned). |
+| B1 v18 odoo source auto-clone | ✅ Pre-done | `/home/.../clones/odoo_18/odoo` cloned + indexed before this session; verified via DB query (clone_status=cloned). |
 | B2 `index-core` v9-v16 + v19 | ✅ Done | After PR #125 fix; per-version CoreSymbol 179-534, LintRule 21-63, CLIFlag 66-78. |
 | B3 odoo_18 full reindex (OBS-1) | 🟡 Running | Long-running setsid job; baseline 897 modules, target parity with v17 ~1368. |
 | B4 internal profile 18.0 branch | ⏸ **Deferred (OBS-2)** | See below — upstream has no `18.0` branch for the required internal repo. |

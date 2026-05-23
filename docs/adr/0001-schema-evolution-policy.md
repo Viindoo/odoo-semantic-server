@@ -35,7 +35,7 @@ PostgreSQL schema trong `src/db/migrate.py` hiện dùng approach đơn giản: 
 
 2. **M6: Adopt migration tool.** Khi cần ALTER TABLE lần đầu, switch sang `yoyo-migrations` (hoặc Alembic nếu team quen Odoo convention tốt hơn). `SCHEMA_SQL` hiện tại trở thành migration `0001_initial.sql`. Migration tool giữ version table (`schema_version`) để skip applied migrations + rollback an toàn.
 
-3. **Rule cho intermediate milestones:** Nếu M5 cần ALTER (ngoài add table) — escalate David và update ADR này trước khi implement.
+3. **Rule cho intermediate milestones:** Nếu M5 cần ALTER (ngoài add table) — escalate to maintainer và update ADR này trước khi implement.
 
 > **Lưu ý:** `CREATE TABLE IF NOT EXISTS` là idempotent với *tạo bảng mới*, nhưng **không thêm column vào bảng đã tồn tại**.
 > Nếu developer thêm column vào `SCHEMA_SQL`, lệnh sẽ **silently no-op** trên DB đã có bảng đó.

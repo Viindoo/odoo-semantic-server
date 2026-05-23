@@ -27,7 +27,7 @@ Single source of truth for all audit log writes. Three entry points:
 | Context | Actor string | Example |
 |---|---|---|
 | Web UI session | `user:<id>` | `user:42` |
-| CLI command | `cli:<os_user>` | `cli:tuan` |
+| CLI command | `cli:<os_user>` | `cli:alice` |
 | MCP API key | `api_key:<prefix>` | `api_key:osm_abc12` |
 | OAuth callback | `oauth:<provider>` | `oauth:google` |
 | Unauthenticated | `anonymous` | `anonymous` |

@@ -3,6 +3,10 @@
 > Operations to execute on **production server** after M9 (v0.4.0) is deployed.  
 > Run sequentially. Each section has commands + expected outcome + verification steps.
 >
+> **Placeholder conventions:** `<ODOO_SRC>` = path to checked-out Odoo source for that version
+> (e.g. `~/git/odoo17`, `~/git/odoo_17.0`, or auto-clone path from webui); `<VENV>` =
+> `~/.venv/odoo-semantic-mcp/bin/python`; `<NEO4J_PASSWORD>` = set as env var or via shell.
+>
 > **Start time:** ___________  
 > **Operator:** ___________
 
@@ -66,18 +70,20 @@ Expected: `test_artifact_count = 0`.
 The `index-core` command indexes framework-level symbols (ORM models, fields, decorators) for each Odoo version. This powers the `lookup_core_api` MCP tool. Run once per version, in order.
 
 **Versions to index:**
-- v8.0, v9.0 (legacy era1 — requires `~/git/odoo8`, `~/git/odoo9` present)
-- v10.0, v11.0, …, v17.0, v18.0 (each requires `~/git/odoo<N>` checkout)
-- v19.0 (latest; requires `~/git/odoo19` checkout)
+- v8.0, v9.0 (legacy era1 — each requires its `<ODOO_SRC>` checkout, e.g. `~/git/odoo8`, `~/git/odoo9`)
+- v10.0, v11.0, …, v17.0, v18.0 (each requires its `<ODOO_SRC>` checkout, e.g. `~/git/odoo17`)
+- v19.0 (latest; requires its `<ODOO_SRC>` checkout, e.g. `~/git/odoo19`)
 
-**Note:** v18 is indexed (repo id 34 cloned 2026-05-18); v20 not yet released by Odoo.
+**Note:** v18 hỗ trợ index nếu source có mặt; v20 chưa được Odoo phát hành.
 
 **Commands:**
 ```bash
 for V in 8 9 10 11 12 13 14 15 16 17 18 19; do
+    ODOO_SRC=<ODOO_SRC_v${V}>   # e.g. ~/git/odoo${V} or auto-clone path
+    [ -d "$ODOO_SRC" ] || { echo "SKIP: $ODOO_SRC not found"; continue; }
     echo "=== Indexing Odoo v${V}.0 ===" >&2
-    ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core \
-        --source "$HOME/git/odoo${V}" \
+    <VENV> -m src.indexer index-core \
+        --source "$ODOO_SRC" \
         --version "${V}.0" \
         --log-level INFO || {
             echo "ERROR: index-core v${V}.0 failed. Abort and investigate." >&2

@@ -126,10 +126,10 @@ class TestResolveActor:
         """cli=True → 'cli:<os_user>'."""
         from src.db.audit import resolve_actor
 
-        with patch.dict(os.environ, {"USER": "tuan"}, clear=False):
-            with patch("os.getlogin", return_value="tuan"):
+        with patch.dict(os.environ, {"USER": "testuser"}, clear=False):
+            with patch("os.getlogin", return_value="testuser"):
                 result = resolve_actor(cli=True)
-        assert result == "cli:tuan"
+        assert result == "cli:testuser"
 
     def test_resolve_actor_cli_fallback_env(self):
         """cli=True and os.getlogin() raises OSError → fallback to USER env."""
@@ -378,7 +378,7 @@ class TestAuditCli:
     def test_audit_cli_context_manager_success(self):
         """Normal exit → write_audit_log called with success=True."""
         with patch("src.db.audit.write_audit_log") as mock_write:
-            with patch("src.db.audit.resolve_actor", return_value="cli:tuan"):
+            with patch("src.db.audit.resolve_actor", return_value="cli:testuser"):
                 from src.db.audit import audit_cli
 
                 with audit_cli("profile.delete", target="odoo17") as ctx:
@@ -386,7 +386,7 @@ class TestAuditCli:
 
         mock_write.assert_called_once()
         args = mock_write.call_args[0]
-        assert args[0] == "cli:tuan"
+        assert args[0] == "cli:testuser"
         assert args[1] == "profile.delete"
         assert args[2] == "odoo17"
         assert args[3] is True  # success
@@ -415,7 +415,7 @@ class TestAuditCli:
     def test_audit_cli_default_no_target(self):
         """audit_cli without target → target=None in write_audit_log."""
         with patch("src.db.audit.write_audit_log") as mock_write:
-            with patch("src.db.audit.resolve_actor", return_value="cli:tuan"):
+            with patch("src.db.audit.resolve_actor", return_value="cli:testuser"):
                 from src.db.audit import audit_cli
 
                 with audit_cli("fernet.rotate"):
@@ -427,7 +427,7 @@ class TestAuditCli:
     def test_audit_cli_custom_success_false(self):
         """ctx.success = False manually sets success=False without exception."""
         with patch("src.db.audit.write_audit_log") as mock_write:
-            with patch("src.db.audit.resolve_actor", return_value="cli:tuan"):
+            with patch("src.db.audit.resolve_actor", return_value="cli:testuser"):
                 from src.db.audit import audit_cli
 
                 with audit_cli("profile.delete") as ctx:
