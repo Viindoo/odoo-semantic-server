@@ -16,6 +16,7 @@ from src.indexer.parser_python import (
     _build_import_scope_map,
     _collect_module_local_defs,
     _extract_core_symbol_refs,
+    _is_odoo_qualified,
     parse_file,
 )
 
@@ -86,6 +87,121 @@ def test_scope_map_non_odoo_import_included():
     tree = _parse_module("import json")
     scope = _build_import_scope_map(tree)
     assert scope["json"] == "json"
+
+
+# ---------------------------------------------------------------------------
+# _is_odoo_qualified namespace tests (V9-G5: openerp.* must qualify for v8/v9)
+# ---------------------------------------------------------------------------
+
+def test_is_odoo_qualified_accepts_odoo_namespace_v10plus():
+    """Regression guard: `odoo` / `odoo.*` stay qualified (v10+ behavior unchanged)."""
+    scope = {
+        "odoo": "odoo",
+        "models": "odoo.models",
+        "safe_eval": "odoo.tools.safe_eval",
+    }
+    assert _is_odoo_qualified("odoo", scope) is True
+    assert _is_odoo_qualified("models", scope) is True
+    assert _is_odoo_qualified("safe_eval", scope) is True
+
+
+def test_is_odoo_qualified_accepts_openerp_namespace_v8v9():
+    """V9-G5: in v8/v9 the core package is `openerp` — refs to `openerp` /
+    `openerp.*` must qualify, otherwise the aliased-module-attribute pattern
+    (`import openerp.tools as t; t.safe_eval()`) loses its USES_CORE_SYMBOL edge."""
+    scope = {
+        "openerp": "openerp",
+        "t": "openerp.tools",
+        "http": "openerp.http",
+        "models": "openerp.models",
+    }
+    assert _is_odoo_qualified("openerp", scope) is True
+    assert _is_odoo_qualified("t", scope) is True          # import openerp.tools as t
+    assert _is_odoo_qualified("http", scope) is True        # import openerp.http as http
+    assert _is_odoo_qualified("models", scope) is True
+
+
+def test_is_odoo_qualified_rejects_non_core_namespace():
+    """Non-core packages must NOT qualify — no false-positive USES_CORE_SYMBOL edges."""
+    scope = {
+        "requests": "requests",
+        "np": "numpy",
+        "json": "json",
+    }
+    assert _is_odoo_qualified("requests", scope) is False
+    assert _is_odoo_qualified("np", scope) is False
+    assert _is_odoo_qualified("json", scope) is False
+    # Name absent from scope_map → cannot be qualified.
+    assert _is_odoo_qualified("unknown", scope) is False
+
+
+def test_is_odoo_qualified_rejects_namespace_lookalikes():
+    """Strict token/dotted match: `openerpx`, `openerp_foo`, `odoox` are NOT core.
+
+    Guards against a loose prefix-match that would treat any name starting with
+    'openerp' / 'odoo' as core. The package is `openerp` exactly, or `openerp.<x>`.
+    """
+    scope = {
+        "openerpx": "openerpx",
+        "openerp_foo": "openerp_foo",
+        "odoox": "odoox",
+        "odoo_bar": "odoo_bar",
+        "fake": "myopenerp.tools",   # leaf substring, but root pkg is myopenerp
+    }
+    assert _is_odoo_qualified("openerpx", scope) is False
+    assert _is_odoo_qualified("openerp_foo", scope) is False
+    assert _is_odoo_qualified("odoox", scope) is False
+    assert _is_odoo_qualified("odoo_bar", scope) is False
+    assert _is_odoo_qualified("fake", scope) is False
+
+
+# ---------------------------------------------------------------------------
+# Behavior test: v8/v9 aliased-module-attribute ref is KEPT (V9-G5)
+# ---------------------------------------------------------------------------
+
+def test_keeps_openerp_aliased_module_attr_call_v8v9():
+    """v9-style `import openerp.tools as t; t.safe_eval(...)` → ref KEPT.
+
+    Before V9-G5 fix, `t` resolved to `openerp.tools` which `_is_odoo_qualified`
+    treated as non-core → the t.safe_eval() ref was dropped → missing
+    USES_CORE_SYMBOL edge for v8/v9. After the fix it must be kept.
+    """
+    src = """
+        import openerp.tools as t
+
+        def f():
+            t.safe_eval('1 + 1')
+    """
+    tree = _parse_module(src)
+    scope = _build_import_scope_map(tree)
+    local = _collect_module_local_defs(tree)
+    fn = _first_fn(tree)
+    refs = _extract_core_symbol_refs(fn, scope_map=scope, local_defs=local)
+    assert "safe_eval" in refs, (
+        "v8/v9 aliased openerp.tools attribute call must be KEPT (V9-G5)"
+    )
+
+
+def test_drops_non_core_aliased_module_attr_call():
+    """`import requests as t; t.safe_eval(...)` → DROP (t is a known non-core alias).
+
+    Negative counterpart to the openerp case: a same-named alias bound to a
+    non-core package must still be dropped — the fix must not over-broaden.
+    """
+    src = """
+        import requests as t
+
+        def f():
+            t.safe_eval('1 + 1')
+    """
+    tree = _parse_module(src)
+    scope = _build_import_scope_map(tree)
+    local = _collect_module_local_defs(tree)
+    fn = _first_fn(tree)
+    refs = _extract_core_symbol_refs(fn, scope_map=scope, local_defs=local)
+    assert "safe_eval" not in refs, (
+        "Aliased non-core (requests) attribute call must be DROPPED"
+    )
 
 
 # ---------------------------------------------------------------------------

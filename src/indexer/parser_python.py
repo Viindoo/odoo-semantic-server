@@ -140,10 +140,26 @@ def _collect_module_local_defs(tree: ast.Module) -> set[str]:
 
 
 def _is_odoo_qualified(name: str, scope_map: dict[str, str]) -> bool:
-    """Return True if `name` resolves to an `odoo.*` qualified name via scope_map."""
+    """Return True if `name` resolves to an Odoo-core qualified name via scope_map.
+
+    Accepts BOTH namespaces:
+      - `odoo` / `odoo.*`      → v10+ (current).
+      - `openerp` / `openerp.*` → v8/v9 (the core package was named `openerp`
+        before the v10 rename). In v8/v9, refs to core symbols qualified via the
+        aliased-module-attribute pattern (`import openerp.tools as t; t.safe_eval()`)
+        resolve through scope_map to `openerp.*`; without this branch those refs
+        were silently dropped, losing USES_CORE_SYMBOL edges for v8/v9 (V9-G5).
+
+    The exact-or-dotted check (`== ns` OR `startswith(ns + ".")`) is deliberate:
+    it matches the bare package name and any dotted descendant but NOT lookalike
+    tokens such as `odoox`, `openerpx`, or `openerp_foo` (no false positives).
+    """
     resolved = scope_map.get(name)
-    return resolved is not None and (
-        resolved == "odoo" or resolved.startswith("odoo.")
+    if resolved is None:
+        return False
+    return any(
+        resolved == ns or resolved.startswith(ns + ".")
+        for ns in ("odoo", "openerp")
     )
 
 
