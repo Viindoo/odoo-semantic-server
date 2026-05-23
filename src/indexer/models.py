@@ -10,6 +10,9 @@ class ModuleInfo:
     M4.6 WI1: `edition` ∈ {community/enterprise/viindoo/oca/custom},
     `viindoo_equivalent_qname` nullable string for EE-confusion lookup
     (e.g. user types `helpdesk` on Viindoo stack → suggest `viin_helpdesk`).
+    A2b: manifest enrichment fields (auto_install, application, category,
+    external_python, external_bin).
+    A2c: repo provenance fields (repo_url, repo_id).
     """
     name: str
     odoo_version: str
@@ -24,6 +27,15 @@ class ModuleInfo:
     license: str | None = None
     copyright_owner: str | None = None
     license_notice: str | None = None
+    # A2b — manifest enrichment
+    auto_install: bool = False
+    application: bool = False
+    category: str | None = None
+    external_python: list[str] = field(default_factory=list)
+    external_bin: list[str] = field(default_factory=list)
+    # A2c — repo provenance
+    repo_url: str | None = None
+    repo_id: int | None = None
 
 
 @dataclass
@@ -37,6 +49,12 @@ class FieldInfo:
     required: bool = False
     source_definition: str | None = None  # raw assignment line(s), for embedding
     comodel_name: str | None = None  # M10.5 P1 — comodel của Many2one/One2many/Many2many
+    # A3 — provenance: 1-based source line in the .py file (era2 only; None for era1)
+    line: int | None = None
+    # A2-followup — field intent for AI agents: `string=` label + `help=` text.
+    # era2: kwarg, else first positional arg for non-relational fields; era1 best-effort.
+    string: str | None = None
+    help: str | None = None
 
 
 @dataclass
@@ -47,6 +65,8 @@ class MethodInfo:
     the method name regex map (`_classify_method_convention` in parser_python).
     Used by `find_override_point` MCP tool to surface anti-patterns and
     super() guidance per ADR-0003 §3.
+    A2a — docstring: captured via ast.get_docstring() in era2 AST extraction.
+    A2d — field_refs: self.<x> direct attribute access names collected in era2.
     """
     name: str
     has_super_call: bool = False
@@ -66,6 +86,14 @@ class MethodInfo:
     # M10.5 P2 — @api.depends('field.subfield') dotted-path string args (era2 only;
     # [] for era1, which has no decorator depends). Used by validate_depends MCP tool.
     depends: list[str] = field(default_factory=list)
+    # A2a — docstring extracted via ast.get_docstring() (era2 only; None for era1).
+    docstring: str | None = None
+    # A2d — direct self.<x> attribute access names (era2 only; [] for era1).
+    # Only captures top-level self.x (NOT self.x.y chains — .y captured as x only).
+    # Used by writer_neo4j to MERGE USES_FIELD / DEPENDS_ON_FIELD edges (best-effort).
+    field_refs: list[str] = field(default_factory=list)
+    # A3 — provenance: 1-based source line of the def statement (era2 only; None for era1)
+    line: int | None = None
 
 
 @dataclass
@@ -81,6 +109,9 @@ class ModelInfo:
     is_abstract: bool = False
     is_transient: bool = False
     had_explicit_name: bool = False  # True when _name = "..." appears in class body
+    # A3 — provenance: absolute path of the .py file that defined this model
+    # (set by parse_file after _parse_era2_ast / _parse_era1_text return)
+    file_path: str | None = None
 
 
 @dataclass
@@ -111,6 +142,9 @@ class ViewInfo:
     xpaths: list[XPathInfo] = field(default_factory=list)
     arch: str | None = None       # serialized XML content of <arch> field, for embedding
     file_path: str | None = None  # source XML file path
+    # A3 — provenance: 1-based source line of the <record> element
+    # (best-effort from lxml .sourceline; None if unavailable)
+    line: int | None = None
 
 
 @dataclass
@@ -122,6 +156,9 @@ class QWebInfo:
     inherit_xmlid: str | None = None
     content: str | None = None    # serialized XML content of <template>, for embedding
     file_path: str | None = None  # source XML file path
+    # A3 — provenance: 1-based source line of the <template> element
+    # (best-effort from lxml .sourceline; None if unavailable)
+    line: int | None = None
 
 
 @dataclass

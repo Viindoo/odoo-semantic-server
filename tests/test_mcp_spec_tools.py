@@ -390,11 +390,16 @@ class TestFindDeprecatedUsageProfileFilter:
         assert "legacy_alpha" in out
         assert "legacy_beta" in out
 
-    def test_profile_filter_excludes_other_profile(
+    def test_profile_name_is_advisory_admin_unrestricted(
         self, seeded_deprecated_profiles, spec_tools,
     ):
-        """profile_name='alpha_depr' returns alpha hits and hides beta hits."""
+        """M13 (ADR-0034 supersedes ADR-0029): profile_name is ADVISORY, not isolation.
+
+        Pre-M13 this asserted profile_name='alpha_depr' hid the beta hit. Under M13 the
+        tenant boundary isolates (proven by test_cross_tenant_isolation); with no tenant
+        context (admin), profile_name no longer restricts — both hits are returned.
+        """
         v = seeded_deprecated_profiles
         out = spec_tools._find_deprecated_usage(v, profile_name="alpha_depr")
         assert "legacy_alpha" in out
-        assert "legacy_beta" not in out
+        assert "legacy_beta" in out  # admin sees all; profile_name advisory (isolation = tenant)

@@ -235,6 +235,46 @@ storage raises the cost of a `FERNET_KEY` compromise.
 - Deferring envelope encryption (D8) leaves a single-`FERNET_KEY` blast radius
   until P5.
 
+## Amendment — enforcement wave (2026-05-23, `feat/osm-final-stretch`)
+
+The read-side enforcement deferred above shipped here. Three points refine D2/D4/D6:
+
+**A1 — WI-3 / WI-4 shipped (D4 realised).** `resolve_allowed_profiles(tenant_id)`
+(`RepoStore` recursive CTE + a 60s `session.py` cache; `None` = admin/unrestricted,
+`[]` = deny-all) is the single resolver. The fail-closed filter is applied at all
+**61 Cypher sites** (57 `server.py` + 4 `orm.py`) as the uniform fragment
+`($allowed IS NULL OR any(__ap IN <alias>.profile WHERE __ap IN $allowed))`, plus
+`_latest_version()` (D5) and the previously-unfiltered `find_override_point`. The
+optional `$profile_name IS NULL OR …` bypass form is **fully removed** (0 occurrences;
+statically guarded). Behaviour is preserved for admin/no-tenant callers (`$allowed`
+resolves to `None`), so the gate adds isolation without changing existing results.
+
+**A2 — D6 RLS deferred; SQL filter is the embeddings read-guard.** The 3 pgvector
+ANN queries are split: `find_examples` + `find_style_override` (user-data chunks)
+now carry `AND profile_name = ANY(%s)` built from the same resolver; `suggest_pattern`
+is **exempt** (pattern_example chunks are the global shared catalogue, like spec data,
+D3). Postgres RLS (D6) is **not** enabled in this wave: correct RLS needs
+`FORCE ROW LEVEL SECURITY` + a non-owner read role + a write-path policy (otherwise
+the table-owner role bypasses the policy and the indexer writer is blocked) — a
+deployment/role change. The SQL filter is the actual read-isolation guard (proven by
+the WI-4 cross-tenant leak test); RLS-with-read-role is re-scoped to the WI-7 hardening
+wave as defense-in-depth.
+
+**A3 — Pooled MERGE-key collision: known limitation + mitigation (D2 refinement).**
+Because Module/sub-node MERGE keys exclude `tenant_id` (D2), two **distinctly-tenant
+but identically-named private** modules (e.g. tenant A and tenant B both ship a custom
+module literally named `sale_custom` at the same version) MERGE into ONE node whose
+`profile[]` is the union of both tenants' chains — the WI-4 filter would then match it
+for both, leaking/contaminating that node. Shared Odoo CE/EE + correctly-distinct
+private modules are unaffected. Mitigation (chosen 2026-05-23, "document + constraint"
+over a breaking MERGE-key change): tenant-private module names MUST be namespaced
+(operator convention — e.g. a tenant-specific technical-name prefix), documented here
+and at repo registration; the cross-tenant leak test validates isolation **under this
+convention** (distinct names) and explicitly treats the same-name case as the known
+residual. The proper fix — a tenant/repo discriminator in the MERGE key for
+non-shared nodes (REC-8) — is deferred to its own RFC pending demand, because it is a
+full-graph-teardown breaking change.
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).

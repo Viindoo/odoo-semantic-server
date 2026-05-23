@@ -37,6 +37,22 @@ _CORE_FILES: tuple[str, ...] = (
     "odoo/exceptions.py",
 )
 
+# v19-only curated public APIs from the split ORM package (boil-the-lake, curated).
+# These files do not exist before v19, so _resolve_core_paths returns [] and they
+# are silently skipped on v8–v18. Only the listed PUBLIC symbols are emitted —
+# the ~48 internal helpers in domains.py (e.g. _optimize_*) are excluded via the
+# name allow-list, per the "curated, not maximal" scope decision.
+#   Domain: v19's first-class domain builder (replaces raw list-of-tuples exprs).
+#   table_objects: v19's declarative Constraint/Index API (replaces _sql_constraints).
+# (The `Command` enum is NOT here — it kept its v18 qname `odoo.fields.Command`
+#  and is resolved via the odoo/fields.py entry; see _resolve_core_paths.)
+_V19_CURATED_FILES: dict[str, frozenset[str]] = {
+    "odoo/orm/domains.py": frozenset({"Domain", "DomainAnd", "DomainOr"}),
+    "odoo/orm/table_objects.py": frozenset(
+        {"TableObject", "Constraint", "Index", "UniqueIndex"}
+    ),
+}
+
 # Class-name heuristics for `kind` classification.
 # Includes one level of well-known intermediate field bases so that classes like
 # Many2one(_Relational) and Char(BaseString) classify as 'field_type' without a
@@ -217,12 +233,18 @@ def _extract_from_source(
     module_qname: str,
     odoo_version: str,
     file_path: str | None = None,
+    name_allowlist: frozenset[str] | None = None,
 ) -> list[CoreSymbolInfo]:
     """Extract CoreSymbol from a single Python source string.
 
     Top-level only — Boil-the-Lake but bounded. Module-level functions →
     kind='function'. Top-level classes → kind ∈ {class, field_type, exception},
     plus their public methods → kind ∈ {orm_method, cursor_method, function}.
+
+    When ``name_allowlist`` is given, only top-level symbols whose name is in the
+    set are emitted (their public methods still follow). Used for the v19 curated
+    split-ORM files where the file holds many internal helpers but only a few
+    public classes should be indexed.
     """
     try:
         tree = ast.parse(source)
@@ -232,11 +254,15 @@ def _extract_from_source(
     symbols: list[CoreSymbolInfo] = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            if name_allowlist is not None and node.name not in name_allowlist:
+                continue
             qname = f"{module_qname}.{node.name}"
             symbols.append(_build_function_symbol(
                 node, qname, odoo_version, kind="function", file_path=file_path,
             ))
         elif isinstance(node, ast.ClassDef):
+            if name_allowlist is not None and node.name not in name_allowlist:
+                continue
             kind = _classify_class(node)
             class_qname = f"{module_qname}.{node.name}"
             # Detect class-level @deprecated decorator → mark class status='deprecated'.
@@ -318,7 +344,16 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
     if logical_path == "odoo/fields.py":
         orm_dir = odoo_root / "odoo" / "orm"
         if orm_dir.is_dir():
-            return sorted(p for p in orm_dir.glob("fields*.py") if p.is_file())
+            # v19 split: fields*.py (Char/Integer/Many2one/...) PLUS commands.py.
+            # `Command` lived in odoo/fields.py through v18; keep its qname
+            # `odoo.fields.Command` here so the v18→v19 diff sees continuity
+            # (a moved-file, not a remove+add) and `lookup_core_api("Command")`
+            # still resolves on v19.
+            files = sorted(p for p in orm_dir.glob("fields*.py") if p.is_file())
+            commands = orm_dir / "commands.py"
+            if commands.is_file():
+                files.append(commands)
+            return files
     elif logical_path == "odoo/models.py":
         candidates = [
             odoo_root / "odoo" / "orm" / "models.py",
@@ -353,7 +388,11 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
         return []
 
     out: list[CoreSymbolInfo] = []
-    for relpath in _CORE_FILES:
+    # (logical_path, name_allowlist). None allow-list = emit all top-level symbols
+    # (the 8 stable allow-list files); a frozenset = curated v19 split-ORM files.
+    targets: list[tuple[str, frozenset[str] | None]] = [(p, None) for p in _CORE_FILES]
+    targets += list(_V19_CURATED_FILES.items())
+    for relpath, allow in targets:
         resolved = _resolve_core_paths(root, relpath, odoo_version)
         # "odoo/tools/safe_eval.py" → module_qname "odoo.tools.safe_eval"
         module_qname = relpath.removesuffix(".py").replace("/", ".")
@@ -364,5 +403,6 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
                 continue
             out.extend(_extract_from_source(
                 source, module_qname, odoo_version, file_path=str(full),
+                name_allowlist=allow,
             ))
     return out

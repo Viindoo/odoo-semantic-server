@@ -280,8 +280,13 @@ def _index_repo(
         last_head = None  # ensure diff filter is skipped
     # === End incremental check ===
 
-    # build_registry expects list[tuple[repo_path, odoo_version]]
-    registry = build_registry([(local_path, odoo_version)])
+    # build_registry expects list[tuple[repo_path, odoo_version]].
+    # Pass repo_url + repo_id for A2c provenance stamping on every ModuleInfo.
+    registry = build_registry(
+        [(local_path, odoo_version)],
+        repo_url=repo.get("url"),
+        repo_id=repo.get("id"),
+    )
     # registry: {odoo_version: {module_name: ModuleInfo}}
     modules_by_version = registry  # alias for clarity
 

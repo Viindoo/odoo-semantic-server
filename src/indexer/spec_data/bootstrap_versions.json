@@ -45,7 +45,7 @@
       "notes": "Still Bootstrap 3. Theme customization should target variables.less; do not edit Bootstrap library files directly."
     },
     "11.0": {
-      "bootstrap_version": "3.3.4",
+      "bootstrap_version": "3.3.5",
       "scss_files": [
         "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/variables.scss",

@@ -92,6 +92,66 @@ def _cache_invalidate(api_key_id: str) -> None:
         _cache.pop(api_key_id, None)
 
 
+# --- WI-3: tenant -> (own, shared) profile scope cache (60s, ADR-0034) ------
+# Keyed by tenant_id. The admin/global (None tenant_id) case short-circuits to
+# (None, []) = unrestricted; it is not cached.
+_scope_cache: dict[int, tuple[tuple[list[str], list[str]], float]] = {}
+_scope_lock = threading.Lock()
+
+
+def invalidate_allowed_profiles(tenant_id: int | None = None) -> None:
+    """Drop the cached tenant scope for *tenant_id* (or all when None)."""
+    with _scope_lock:
+        if tenant_id is None:
+            _scope_cache.clear()
+        else:
+            _scope_cache.pop(tenant_id, None)
+
+
+def resolve_tenant_scope(
+    tenant_id: int | None,
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> tuple[list[str] | None, list[str]]:
+    """Return ``(own, shared)`` profile scope for a tenant (WI-3, ADR-0034), cached 60s.
+
+    - ``own=None`` → admin / legacy global key (``tenant_id`` is None): UNRESTRICTED
+      (the Neo4j choke point applies no filter; audited per ADR-0034 WI-7).
+    - ``own=[...]`` → the tenant's directly-owned profiles (NOT the shared ancestors).
+    - ``shared`` → all globally-shared profiles (``tenant_id IS NULL``), visible to all.
+
+    The Neo4j array filter is ``any(node.profile ∩ own) OR all(node.profile ⊆ shared)``.
+    """
+    if tenant_id is None:
+        return None, []
+    now = now_fn()
+    with _scope_lock:
+        entry = _scope_cache.get(tenant_id)
+        if entry is not None and entry[1] > now:
+            own, shared = entry[0]
+            return list(own), list(shared)
+    from src.db.pg import repo_store  # lazy import — avoids circular dependency
+    own, shared = repo_store().resolve_tenant_scope(tenant_id)
+    with _scope_lock:
+        _scope_cache[tenant_id] = ((own, shared), now + _CACHE_TTL_SEC)
+    return list(own), list(shared)
+
+
+def resolve_allowed_profiles(
+    tenant_id: int | None,
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> list[str] | None:
+    """Flat union ``own ∪ shared`` for SINGLE-VALUE filters (pgvector ``profile_name``,
+    profile-name listing). ``None`` = admin/unrestricted. ``[]`` = deny-all.
+    The array-aware Neo4j choke point uses :func:`resolve_tenant_scope` instead.
+    """
+    own, shared = resolve_tenant_scope(tenant_id, now_fn=now_fn)
+    if own is None:
+        return None
+    return sorted(set(own) | set(shared))
+
+
 # ---------------------------------------------------------------------------
 # Public API — sentinel normalization
 # ---------------------------------------------------------------------------

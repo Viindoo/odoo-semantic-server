@@ -266,3 +266,22 @@ def test_validate_relation_field_typo_suggestion(orm_tools):
     out = validate_relation("sale.order", "parner_id", "res.partner", TEST_VERSION)
     assert "not found" in out
     assert "did you mean 'partner_id'" in out
+
+
+# --- B1: validate_domain "did you mean?" suggestion -------------------------
+
+
+def test_validate_domain_field_typo_suggestion(orm_tools):
+    """B1: validate_domain appends 'did you mean?' when field path has a near-miss typo.
+
+    'parner_id' is a close match to 'partner_id' (edit distance ≤ 2, cutoff=0.7).
+    The suggestion mirrors the existing validate_depends / validate_relation format.
+    """
+    _, validate_domain, *_ = orm_tools
+    out = validate_domain("sale.order", "[('parner_id', '=', 1)]", TEST_VERSION)
+    assert "ERROR" in out
+    assert "field 'parner_id' not found" in out
+    assert "did you mean 'partner_id'" in out, (
+        "B1: validate_domain should append 'did you mean?' for near-miss field name.\n"
+        f"Got:\n{out}"
+    )

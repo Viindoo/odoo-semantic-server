@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import logging
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from lxml import etree as _lxml_etree
@@ -126,9 +125,14 @@ _VIEW_TYPES = {
 
 
 def _parse_record(
-    record: ET.Element, module: ModuleInfo, file_path: str | None = None
+    record: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
 ) -> ViewInfo | None:
-    """Parse a <record> element as an ir.ui.view."""
+    """Parse a <record> element as an ir.ui.view.
+
+    *record* is an lxml element so that `.sourceline` is available for A3
+    provenance (1-based line of the <record> tag).  stdlib ET elements are not
+    accepted here — `parse_file` uses lxml.etree.parse() to produce lxml trees.
+    """
     if record.get("model") != "ir.ui.view":
         return None
 
@@ -145,7 +149,8 @@ def _parse_record(
     arch: str | None = None
 
     for child in record:
-        if child.tag != "field":
+        tag = child.tag
+        if not isinstance(tag, str) or tag != "field":
             continue
         fname = child.get("name", "")
         if fname == "name":
@@ -158,17 +163,18 @@ def _parse_record(
                 inherit_xmlid = ref
                 mode = "extension"
         elif fname == "arch":
-            arch = ET.tostring(child, encoding="unicode")
+            arch = _lxml_etree.tostring(child, encoding="unicode")
             arch_children = list(child)
             if arch_children:
                 first = arch_children[0]
+                first_tag = first.tag if isinstance(first.tag, str) else ""
                 # Unwrap <data> container used by many extension views
-                if first.tag == "data":
+                if first_tag == "data":
                     data_children = list(first)
                     if data_children and data_children[0].tag in _VIEW_TYPES:
                         view_type = data_children[0].tag
-                elif first.tag in _VIEW_TYPES:
-                    view_type = first.tag
+                elif first_tag in _VIEW_TYPES:
+                    view_type = first_tag
             for xpath_el in child.iter("xpath"):
                 expr = xpath_el.get("expr", "").strip()
                 position = xpath_el.get("position", "inside").strip()
@@ -177,6 +183,10 @@ def _parse_record(
 
     if not model:
         return None
+
+    # A3 — best-effort source line from lxml .sourceline attribute (always int on lxml
+    # elements; wrap with getattr for defensive safety against hypothetical future callers).
+    src_line: int | None = getattr(record, "sourceline", None) or None
 
     return ViewInfo(
         xmlid=f"{module.name}.{xml_id}",
@@ -190,14 +200,19 @@ def _parse_record(
         xpaths=xpaths,
         arch=arch,
         file_path=file_path,
+        line=src_line,
     )
 
 
 def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
-    """Parse an XML file, return list of ViewInfo found."""
+    """Parse an XML file, return list of ViewInfo found.
+
+    Uses lxml.etree.parse() so that elements carry .sourceline for A3 provenance.
+    Falls back to an empty list on any parse error.
+    """
     try:
-        tree = ET.parse(filepath)
-    except ET.ParseError:
+        tree = _lxml_etree.parse(filepath)
+    except (_lxml_etree.XMLSyntaxError, OSError):
         return []
     root = tree.getroot()
     views = []

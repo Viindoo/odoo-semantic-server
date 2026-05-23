@@ -36,6 +36,9 @@ REL_OF_COMMAND: str = "OF_COMMAND"
 REL_TARGETS_MODEL: str = "TARGETS_MODEL"
 REL_IMPORTS: str = "IMPORTS"
 REL_HAS_VIOLATION: str = "HAS_VIOLATION"
+# A2d — method-to-field provenance edges
+REL_USES_FIELD: str = "USES_FIELD"
+REL_DEPENDS_ON_FIELD: str = "DEPENDS_ON_FIELD"
 
 # ---------------------------------------------------------------------------
 # Edition metadata

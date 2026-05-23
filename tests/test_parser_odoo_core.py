@@ -13,6 +13,7 @@ import pytest
 
 from src.indexer.parser_odoo_core import (
     _CORE_FILES,
+    _V19_CURATED_FILES,
     _extract_from_source,
     _resolve_core_paths,
     _version_prefix,
@@ -191,6 +192,112 @@ def test_v17_file_path_still_works(tmp_path):
     qnames = {s.qualified_name for s in out}
     assert "odoo.fields.Field" in qnames, f"Missing Field in {qnames}"
     assert "odoo.fields.Integer" in qnames, f"Missing Integer in {qnames}"
+
+
+# ---------------------------------------------------------------------------
+# A1 — v19 split-ORM curated coverage (Command / Domain / table_objects)
+# ---------------------------------------------------------------------------
+
+def test_extract_from_source_name_allowlist_filters_top_level():
+    """name_allowlist keeps only listed top-level symbols (their methods follow)."""
+    src = (
+        "class Keep:\n    def public(self):\n        pass\n\n"
+        "class Drop:\n    def public(self):\n        pass\n\n"
+        "def drop_fn():\n    pass\n"
+    )
+    syms = _extract_from_source(
+        src, "odoo.orm.domains", "19.0", name_allowlist=frozenset({"Keep"})
+    )
+    qnames = {s.qualified_name for s in syms}
+    assert "odoo.orm.domains.Keep" in qnames
+    assert "odoo.orm.domains.Keep.public" in qnames
+    assert "odoo.orm.domains.Drop" not in qnames
+    assert "odoo.orm.domains.drop_fn" not in qnames
+
+
+def test_v19_command_enum_resolves_via_fields_with_continuity_qname(tmp_path):
+    """v19 `Command` lives in orm/commands.py but keeps the v18 qname odoo.fields.Command.
+
+    Continuity matters: api_version_diff must see Command as a moved file, not a
+    remove+add, so its qname stays `odoo.fields.Command` (resolved through the
+    odoo/fields.py allow-list entry).
+    """
+    (tmp_path / "odoo" / "fields").mkdir(parents=True)  # package dir → flat file absent
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+    (orm_dir / "fields.py").write_text("class Field:\n    pass\n")
+    (orm_dir / "commands.py").write_text(
+        "import enum\n\n"
+        "class Command(enum.IntEnum):\n"
+        "    CREATE = 0\n"
+        "    @classmethod\n"
+        "    def create(cls, values):\n        return (cls.CREATE, 0, values)\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "19.0")
+    qnames = {s.qualified_name for s in out}
+    assert "odoo.fields.Command" in qnames, f"Missing Command continuity qname in {qnames}"
+    assert "odoo.fields.Command.create" in qnames, "Command classmethods should be indexed"
+
+
+def test_v19_curated_domains_emits_only_public_symbols(tmp_path):
+    """orm/domains.py: only the curated public classes are emitted; helpers excluded."""
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+    (orm_dir / "domains.py").write_text(
+        "class Domain:\n    def optimize(self):\n        pass\n\n"
+        "class DomainBool(Domain):\n    pass\n\n"      # internal — excluded
+        "class DomainAnd(Domain):\n    pass\n\n"
+        "class DomainOr(Domain):\n    pass\n\n"
+        "def _optimize_nary(a, b):\n    return a\n"     # internal helper — excluded
+    )
+    out = parse_odoo_core(str(tmp_path), "19.0")
+    qnames = {s.qualified_name for s in out}
+    assert "odoo.orm.domains.Domain" in qnames
+    assert "odoo.orm.domains.DomainAnd" in qnames
+    assert "odoo.orm.domains.DomainOr" in qnames
+    # Curation: internal helpers must NOT leak into the graph.
+    assert "odoo.orm.domains.DomainBool" not in qnames
+    assert "odoo.orm.domains._optimize_nary" not in qnames
+
+
+def test_v19_curated_table_objects_emits_constraint_index(tmp_path):
+    """orm/table_objects.py: declarative Constraint/Index/UniqueIndex API indexed."""
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+    (orm_dir / "table_objects.py").write_text(
+        "class TableObject:\n    pass\n\n"
+        "class Constraint(TableObject):\n    pass\n\n"
+        "class Index(TableObject):\n    pass\n\n"
+        "class UniqueIndex(Index):\n    pass\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "19.0")
+    qnames = {s.qualified_name for s in out}
+    for name in ("TableObject", "Constraint", "Index", "UniqueIndex"):
+        assert f"odoo.orm.table_objects.{name}" in qnames, f"Missing {name} in {qnames}"
+
+
+def test_pre_v19_skips_curated_orm_files(tmp_path):
+    """v18 (flat fields.py, no orm/ dir): curated files silently skipped; Command still found."""
+    (tmp_path / "odoo").mkdir(parents=True)
+    (tmp_path / "odoo" / "fields.py").write_text(
+        "import enum\n\nclass Field:\n    pass\n\nclass Command(enum.IntEnum):\n    CREATE = 0\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "18.0")
+    qnames = {s.qualified_name for s in out}
+    assert "odoo.fields.Command" in qnames, "v18 Command resolves from flat fields.py"
+    orm_leak = [q for q in qnames if q.startswith("odoo.orm.")]
+    assert not orm_leak, f"v18 must not produce orm.* symbols, got {orm_leak}"
+
+
+def test_v19_curated_files_registry_is_curated_not_maximal():
+    """Sanity: the curated map lists only a small public set, not whole files."""
+    assert set(_V19_CURATED_FILES) == {
+        "odoo/orm/domains.py",
+        "odoo/orm/table_objects.py",
+    }
+    assert _V19_CURATED_FILES["odoo/orm/domains.py"] == frozenset(
+        {"Domain", "DomainAnd", "DomainOr"}
+    )
 
 
 # ---------------------------------------------------------------------------

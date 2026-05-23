@@ -9,6 +9,7 @@ from src.constants import (
     REL_CHECKS,
     REL_DEFINED_IN,
     REL_DEPENDS_ON,
+    REL_DEPENDS_ON_FIELD,
     REL_HAS_VIOLATION,
     REL_IMPORTS,
     REL_INHERITS,
@@ -17,6 +18,7 @@ from src.constants import (
     REL_REPLACED_BY,
     REL_TARGETS_MODEL,
     REL_USES_CORE_SYMBOL,
+    REL_USES_FIELD,
 )
 
 from .diff_engine import DiffResult
@@ -41,9 +43,23 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
 
     tx.run("""
         MERGE (m:Module {name: $name, odoo_version: $v})
-        ON CREATE SET m.profile = $profiles
+        ON CREATE SET m.profile = $profiles,
+                      m.auto_install = $auto_install,
+                      m.application = $application,
+                      m.category = $category,
+                      m.external_python = $external_python,
+                      m.external_bin = $external_bin,
+                      m.repo_url = $repo_url,
+                      m.repo_id = $repo_id
         ON MATCH  SET m.profile =
-            [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles
+                          [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles,
+                      m.auto_install = $auto_install,
+                      m.application = $application,
+                      m.category = $category,
+                      m.external_python = $external_python,
+                      m.external_bin = $external_bin,
+                      m.repo_url = $repo_url,
+                      m.repo_id = $repo_id
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
             m.edition = $edition,
             m.viindoo_equivalent_qname = $vvq,
@@ -59,6 +75,13 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
          license=module.license,
          copyright_owner=module.copyright_owner,
          license_notice=module.license_notice,
+         auto_install=module.auto_install,
+         application=module.application,
+         category=module.category,
+         external_python=module.external_python,
+         external_bin=module.external_bin,
+         repo_url=module.repo_url,
+         repo_id=module.repo_id,
          profiles=profiles)
 
     for dep in module.depends:
@@ -190,12 +213,14 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     [x IN coalesce(f.profile, []) WHERE NOT x IN $profiles] + $profiles
                 SET f.ttype = $ttype, f.related = $related, f.compute = $compute,
                     f.stored = $stored, f.required = $required,
-                    f.comodel_name = $comodel_name
+                    f.comodel_name = $comodel_name,
+                    f.string = $fstring, f.help = $fhelp
                 MERGE (f)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=fld.name, ttype=fld.ttype, related=fld.related,
                  compute=fld.compute, stored=fld.stored, required=fld.required,
                  comodel_name=fld.comodel_name,
+                 fstring=fld.string, fhelp=fld.help,
                  profiles=profiles)
 
         for mth in model.methods:
@@ -212,13 +237,15 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     mth.super_safety = $ss,
                     mth.return_required = $rr,
                     mth.signature = $sig,
-                    mth.depends = $depends
+                    mth.depends = $depends,
+                    mth.docstring = $docstring
                 MERGE (mth)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
                  decorators=mth.decorators,
                  ck=mth.convention_kind, ss=mth.super_safety, rr=mth.return_required,
-                 sig=mth.signature, depends=mth.depends, profiles=profiles)
+                 sig=mth.signature, depends=mth.depends,
+                 docstring=mth.docstring, profiles=profiles)
 
             # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
             # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
@@ -232,6 +259,35 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     MERGE (mth)-[:{REL_USES_CORE_SYMBOL}]->(cs)
                 """, name=mth.name, model_name=model.name, mod=model.module,
                      v=model.odoo_version, ref=ref)
+
+            # A2d: USES_FIELD edges — MATCH (not MERGE) on Field so no stub nodes.
+            # Best-effort: self.env, self.method_name, etc. find no Field → no edge.
+            for ref_name in mth.field_refs:
+                tx.run(f"""
+                    MATCH (mth:Method {{name: $mth_name, model: $model_name,
+                                       module: $mod, odoo_version: $v}})
+                    MATCH (f:Field {{name: $ref_name, model: $model_name,
+                                    odoo_version: $v}})
+                    MERGE (mth)-[:{REL_USES_FIELD}]->(f)
+                """, mth_name=mth.name, model_name=model.name, mod=model.module,
+                     v=model.odoo_version, ref_name=ref_name)
+
+            # A2d: DEPENDS_ON_FIELD edges from @api.depends paths — first segment only.
+            # Best-effort: MATCH on Field so no stub nodes created.
+            _seen_dep_fields: set[str] = set()
+            for dep_path in mth.depends:
+                first_seg = dep_path.split('.')[0]
+                if first_seg in _seen_dep_fields:
+                    continue
+                _seen_dep_fields.add(first_seg)
+                tx.run(f"""
+                    MATCH (mth:Method {{name: $mth_name, model: $model_name,
+                                       module: $mod, odoo_version: $v}})
+                    MATCH (f:Field {{name: $first_seg, model: $model_name,
+                                    odoo_version: $v}})
+                    MERGE (mth)-[:{REL_DEPENDS_ON_FIELD}]->(f)
+                """, mth_name=mth.name, model_name=model.name, mod=model.module,
+                     v=model.odoo_version, first_seg=first_seg)
 
 
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:

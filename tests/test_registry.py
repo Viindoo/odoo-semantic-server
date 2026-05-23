@@ -163,3 +163,126 @@ def test_build_registry_v8_skips_modern_manifest(tmp_path):
     registry = build_registry([(str(repo), "8.0")])
     assert "sale_v8" in registry.get("8.0", {})
     assert "sale_modern" not in registry.get("8.0", {})
+
+
+# ---------------------------------------------------------------------------
+# A2b — Manifest enrichment (auto_install, application, category,
+#        external_python, external_bin)
+# ---------------------------------------------------------------------------
+
+
+def _write_full_manifest(module_dir: Path, **extra_keys) -> None:
+    """Write a __manifest__.py with standard keys + any extra_keys provided."""
+    module_dir.mkdir(parents=True, exist_ok=True)
+    d = {
+        "name": "Test Module",
+        "version": "17.0.1.0.0",
+        "depends": ["base"],
+        "installable": True,
+    }
+    d.update(extra_keys)
+    content = repr(d) + "\n"
+    (module_dir / "__manifest__.py").write_text(content)
+
+
+def test_build_registry_auto_install_bool(tmp_path):
+    """auto_install=True in manifest → ModuleInfo.auto_install is True."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_ai", auto_install=True)
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_ai"].auto_install is True
+
+
+def test_build_registry_auto_install_list_coerces_to_bool(tmp_path):
+    """auto_install=['base', 'sale'] (trigger list) → coerced to True (bool(list))."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_trig", auto_install=["base", "sale"])
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_trig"].auto_install is True
+
+
+def test_build_registry_auto_install_false_default(tmp_path):
+    """auto_install absent from manifest → ModuleInfo.auto_install defaults to False."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_no_ai")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_no_ai"].auto_install is False
+
+
+def test_build_registry_application_true(tmp_path):
+    """application=True in manifest → ModuleInfo.application is True."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_app", application=True)
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_app"].application is True
+
+
+def test_build_registry_category(tmp_path):
+    """category key in manifest → ModuleInfo.category populated."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_cat", category="Accounting")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_cat"].category == "Accounting"
+
+
+def test_build_registry_category_absent_is_none(tmp_path):
+    """category absent from manifest → ModuleInfo.category is None."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_nocat")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_nocat"].category is None
+
+
+def test_build_registry_external_dependencies(tmp_path):
+    """external_dependencies dict parsed into external_python + external_bin lists."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(
+        repo / "mod_extdep",
+        external_dependencies={"python": ["pdfminer", "reportlab"], "bin": ["wkhtmltopdf"]},
+    )
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_extdep"]
+    assert "pdfminer" in info.external_python
+    assert "reportlab" in info.external_python
+    assert "wkhtmltopdf" in info.external_bin
+
+
+def test_build_registry_external_dependencies_absent(tmp_path):
+    """No external_dependencies in manifest → external_python=[] and external_bin=[]."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_noextdep")
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_noextdep"]
+    assert info.external_python == []
+    assert info.external_bin == []
+
+
+# ---------------------------------------------------------------------------
+# A2c — Repo provenance (repo_url, repo_id)
+# ---------------------------------------------------------------------------
+
+
+def test_build_registry_repo_provenance(tmp_path):
+    """repo_url and repo_id passed to build_registry → stamped on all ModuleInfo."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    make_manifest(repo / "mod_a", "Mod A", "17.0.1.0.0", [])
+    make_manifest(repo / "mod_b", "Mod B", "17.0.1.0.0", [])
+    registry = build_registry(
+        [(str(repo), "17.0")],
+        repo_url="https://github.com/example/odoo",
+        repo_id=42,
+    )
+    for mod_name in ("mod_a", "mod_b"):
+        info = registry["17.0"][mod_name]
+        assert info.repo_url == "https://github.com/example/odoo"
+        assert info.repo_id == 42
+
+
+def test_build_registry_repo_provenance_defaults_none(tmp_path):
+    """Callers not passing repo_url/repo_id → both default to None (backward-compat)."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    make_manifest(repo / "mod_c", "Mod C", "17.0.1.0.0", [])
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_c"]
+    assert info.repo_url is None
+    assert info.repo_id is None

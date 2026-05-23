@@ -486,10 +486,24 @@ def _extract_columns_dict_fields(dict_node: ast.Dict) -> list[FieldInfo]:
         ttype = v.func.attr.lower()
         if ttype not in FIELD_TYPES_LEGACY:
             continue
+        # A2-followup — era1 best-effort label/help. Old API: fields.char('Label',
+        # help='...'); string= kwarg also seen. Positional[0] is the label only for
+        # non-relational types (relational positional[0] is the comodel).
+        legacy_kwargs = {kw.arg: kw.value for kw in v.keywords if kw.arg}
+        legacy_string = (
+            _extract_string(legacy_kwargs["string"]) if "string" in legacy_kwargs else None
+        )
+        if legacy_string is None and ttype not in RELATIONAL_FIELD_TYPES and v.args:
+            legacy_string = _extract_string(v.args[0])
+        legacy_help = (
+            _extract_string(legacy_kwargs["help"]) if "help" in legacy_kwargs else None
+        )
         fields_out.append(FieldInfo(
             name=field_name, ttype=ttype,
             related=None, compute=None,
             stored=True, required=False,
+            string=legacy_string,
+            help=legacy_help,
         ))
     return fields_out
 
@@ -566,6 +580,20 @@ def _parse_class(
                     elif "comodel_name" in kwargs:
                         comodel = _extract_string(kwargs["comodel_name"])
 
+                # A2-followup — field label + help text (intent for AI agents).
+                # `string=` kwarg; else the first positional arg is the label for
+                # NON-relational fields (relational positional[0] is the comodel).
+                field_string = (
+                    _extract_string(kwargs["string"]) if "string" in kwargs else None
+                )
+                if (
+                    field_string is None
+                    and field_type not in RELATIONAL_FIELD_TYPES
+                    and call.args
+                ):
+                    field_string = _extract_string(call.args[0])
+                field_help = _extract_string(kwargs["help"]) if "help" in kwargs else None
+
                 src_def = (
                     ast.get_source_segment(source, node)
                     if source else None
@@ -576,6 +604,9 @@ def _parse_class(
                     stored=stored, required=required,
                     source_definition=src_def,
                     comodel_name=comodel,
+                    line=node.lineno,  # A3: 1-based line of the field assignment (era2)
+                    string=field_string,
+                    help=field_help,
                 ))
 
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):
@@ -605,6 +636,24 @@ def _parse_class(
             except (AttributeError, ValueError):
                 sig = None
             ck, ss, rr = _classify_method_convention(node.name)
+
+            # A2a — capture docstring (era2 only)
+            method_docstring = ast.get_docstring(node)
+
+            # A2d — collect direct self.<x> attribute access names from method body.
+            # Only captures top-level self.x: for self.partner_id.name, only
+            # 'partner_id' is captured because .name has value=Attribute(value=Name('self'))
+            # which satisfies the condition only for the first-level node.
+            _field_ref_set: set[str] = set()
+            for _attr_node in ast.walk(node):
+                if (
+                    isinstance(_attr_node, ast.Attribute)
+                    and isinstance(_attr_node.value, ast.Name)
+                    and _attr_node.value.id == "self"
+                ):
+                    _field_ref_set.add(_attr_node.attr)
+            _field_refs = sorted(_field_ref_set)  # deterministic ordering
+
             methods_list.append(MethodInfo(
                 name=node.name,
                 has_super_call=_has_super_call(node),
@@ -621,6 +670,9 @@ def _parse_class(
                 return_required=rr,
                 signature=sig,
                 depends=depends,
+                docstring=method_docstring,
+                field_refs=_field_refs,
+                line=node.lineno,  # A3: 1-based line of `def` statement (era2)
             ))
 
     # _inherit without _name → name = inherit[0] (Odoo convention)
@@ -1066,15 +1118,20 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
 
     if era == "era1":
         try:
-            return _parse_era2_ast(source, module_info)
+            models = _parse_era2_ast(source, module_info)
         except SyntaxError:
-            return _parse_era1_text(source, module_info)
+            models = _parse_era1_text(source, module_info)
+    else:
+        # era2: AST-only
+        try:
+            models = _parse_era2_ast(source, module_info)
+        except SyntaxError:
+            models = []
 
-    # era2: AST-only
-    try:
-        return _parse_era2_ast(source, module_info)
-    except SyntaxError:
-        return []
+    # A3: stamp real source file path on every returned ModelInfo
+    for m in models:
+        m.file_path = filepath
+    return models
 
 
 def parse_module(module_info: ModuleInfo) -> ParseResult:

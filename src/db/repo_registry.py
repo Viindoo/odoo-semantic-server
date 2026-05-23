@@ -369,6 +369,47 @@ class RepoStore:
             )
         return [r["name"] for r in rows]
 
+    def resolve_tenant_scope(self, tenant_id: int) -> tuple[list[str], list[str]]:
+        """Return ``(own, shared)`` profile names for tenant *tenant_id* (WI-3, ADR-0034).
+
+        ``own``    = profiles directly owned by the tenant (``profiles.tenant_id = tenant_id``).
+        ``shared`` = ALL globally-shared profiles (``profiles.tenant_id IS NULL``) — the
+                     Odoo CE/EE base, visible to every tenant.
+
+        Why split (and why ``own`` does NOT include the shared ancestor): the
+        indexer tags each node with its FULL ancestor chain (Option Y), so a
+        tenant-private node of ANOTHER tenant also carries the shared base profile
+        in its ``profile[]`` array. An ``own ∪ ancestors`` overlap check (``any(p IN
+        node.profile WHERE p IN allowed)``) would therefore match that node via the
+        shared base and LEAK it. The Neo4j choke-point instead grants a node iff it
+        carries one of the tenant's ``own`` profiles OR every profile on it is in
+        ``shared`` (a purely-shared base node). Splitting own/shared is what closes
+        the leak (proven by the WI-4 cross-tenant leak test).
+
+        A profile-less tenant gets ``own=[]`` and still sees purely-shared base
+        nodes (global Odoo CE) but no tenant-private node.
+        """
+        with self._pool.checkout() as conn:
+            own_rows = self._pool.fetch_all(
+                conn, "SELECT name FROM profiles WHERE tenant_id = %s", (tenant_id,),
+            )
+            shared_rows = self._pool.fetch_all(
+                conn, "SELECT name FROM profiles WHERE tenant_id IS NULL",
+            )
+        return (
+            sorted(r["name"] for r in own_rows),
+            sorted(r["name"] for r in shared_rows),
+        )
+
+    def resolve_allowed_profiles(self, tenant_id: int) -> list[str]:
+        """Flat union ``own ∪ shared`` — for SINGLE-VALUE filters where each row
+        carries exactly one profile name (pgvector ``embeddings.profile_name``,
+        profile-name listing). The array-aware Neo4j filter uses
+        :meth:`resolve_tenant_scope` directly. Empty own + shared = deny-all.
+        """
+        own, shared = self.resolve_tenant_scope(tenant_id)
+        return sorted(set(own) | set(shared))
+
     def get_ancestor_repos(self, profile_name: str) -> list[dict]:
         """Return repos for *profile_name* and all its ancestors.
 
