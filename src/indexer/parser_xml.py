@@ -164,15 +164,20 @@ def _parse_record(
                 mode = "extension"
         elif fname == "arch":
             arch = _lxml_etree.tostring(child, encoding="unicode")
-            arch_children = list(child)
-            if arch_children:
-                first = arch_children[0]
-                first_tag = first.tag if isinstance(first.tag, str) else ""
+            # F-5: lxml Comment/PI nodes have non-str .tag (callable) — skip them
+            # so a leading comment does not shadow the real view-type element.
+            _first_real = next(
+                (c for c in child if isinstance(c.tag, str)), None
+            )
+            if _first_real is not None:
+                first_tag = _first_real.tag
                 # Unwrap <data> container used by many extension views
                 if first_tag == "data":
-                    data_children = list(first)
-                    if data_children and data_children[0].tag in _VIEW_TYPES:
-                        view_type = data_children[0].tag
+                    _first_data_real = next(
+                        (c for c in _first_real if isinstance(c.tag, str)), None
+                    )
+                    if _first_data_real is not None and _first_data_real.tag in _VIEW_TYPES:
+                        view_type = _first_data_real.tag
                 elif first_tag in _VIEW_TYPES:
                     view_type = first_tag
             for xpath_el in child.iter("xpath"):
@@ -188,6 +193,15 @@ def _parse_record(
     # elements; wrap with getattr for defensive safety against hypothetical future callers).
     src_line: int | None = getattr(record, "sourceline", None) or None
 
+    # T2 — arch_snippet: first ≤30 lines (≤2000 chars) of arch for BASE views only.
+    # Gives AI agents a quick structural overview without the full arch body.
+    # Extension/inherit-only views carry None (their arch is typically just xpaths).
+    _arch_snippet: str | None = None
+    if arch and inherit_xmlid is None:
+        _lines = arch.splitlines()[:30]
+        _candidate = "\n".join(_lines)
+        _arch_snippet = _candidate[:2000]
+
     return ViewInfo(
         xmlid=f"{module.name}.{xml_id}",
         name=name,
@@ -201,6 +215,7 @@ def _parse_record(
         arch=arch,
         file_path=file_path,
         line=src_line,
+        arch_snippet=_arch_snippet,
     )
 
 

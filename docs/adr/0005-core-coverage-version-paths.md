@@ -92,6 +92,22 @@ in one step. Adding `UserError` to the set means `_classify_class` correctly ass
 subclassing) would require a recursive AST climb; that is deferred per ADR-0002 §6 and
 documented as a known limitation in `src/indexer/parser_odoo_core.py`.
 
+### v10 `__openerp__.py`-only modules — handled by `DualManifestFinder`
+
+Three v10 modules retain `__openerp__.py` (the v9-era manifest filename) instead of
+`__manifest__.py`:
+
+- `l10n_fr_sale_closing`
+- `account_cash_basis_base_account`
+- `l10n_fr_pos_cert`
+
+Per the M4.5 manifest-finder protocol, `get_manifest_finder('10.0')` returns
+`DualManifestFinder`, which scans BOTH `rglob('__manifest__.py')` and
+`rglob('__openerp__.py')` and dedupes preferring `__manifest__.py` (a module
+directory holding both files is indexed once, via the modern manifest). These three
+modules are now indexed normally (commit dc3a793 / PR #165). v8/v9 stay
+`LegacyManifestFinder`; v11+ stay `ModernManifestFinder`.
+
 ### Out of scope (explicit non-goals, deferred per ADR-0002 §6)
 
 - Walking the full `odoo/` source tree beyond the 8-file allow-list. Adding

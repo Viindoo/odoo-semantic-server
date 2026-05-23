@@ -1,5 +1,6 @@
 // Cleanup stale test PatternExample nodes that leaked into production Neo4j.
-// Audit date: 2026-05-16 — 9 nodes matching prefix/version criteria found.
+// Targets nodes whose pattern_id carries a test prefix or whose
+// odoo_version_min is a reserved test sentinel.
 //
 // Safe to run idempotently; DETACH DELETE is a no-op when no nodes match.
 // Run the RETURN-only diagnostic first (replace DETACH DELETE with RETURN count(p))

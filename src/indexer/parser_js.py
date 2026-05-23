@@ -54,6 +54,14 @@ _OWL_ENABLED_REGISTRY: VersionRegistry[bool] = VersionRegistry([
     (14, None, True),   # v14+: OWL patch() and component class extraction enabled
 ])
 
+# Known OWL base class names (module-level — loop-invariant constant).
+# Covers both destructured import `extends Component` and qualified `extends owl.Component`.
+# LegacyComponent and ComponentAdapter are intermediate bases used in compatibility layers.
+_OWL_BASE_NAMES: frozenset[str] = frozenset({
+    "Component", "owl.Component",
+    "LegacyComponent", "ComponentAdapter",
+})
+
 
 def _detect_era(source: str) -> str:
     if "@odoo-module" in source:
@@ -240,18 +248,29 @@ def _parse_era3(source: bytes, module: str, version: str, file_path: str) -> lis
                     _sliding_chunks(content, module, version, file_path, "era3", entity_name)
                 )
 
-        # patch() calls: patch("MyComponent", { ... })
+        # patch() calls: patch(FormController.prototype, "mail", {...}) or patch(Foo, {...})
+        # entity_name = TARGET class (first arg), not patch_name string literal (V16-G2 fix).
         elif node.type == "call_expression":
             func = _find_first_child_by_type(node, "identifier")
             if func and source[func.start_byte:func.end_byte] == b"patch":
                 args = _find_first_child_by_type(node, "arguments")
                 entity_name = Path(file_path).stem
                 if args:
-                    string_nodes = [c for c in args.children
-                                    if c.type in ("string", "template_string")]
-                    if string_nodes:
-                        raw = source[string_nodes[0].start_byte:string_nodes[0].end_byte]
-                        entity_name = raw.decode("utf-8", errors="ignore").strip("\"'`")
+                    # First non-punctuation arg is the target object
+                    arg_nodes = [c for c in args.children if c.type not in (",", "(", ")")]
+                    if arg_nodes:
+                        first_arg = arg_nodes[0]
+                        if first_arg.type == "member_expression":
+                            # e.g. FormController.prototype → take base identifier
+                            obj = _find_first_child_by_type(first_arg, "identifier")
+                            if obj:
+                                entity_name = source[obj.start_byte:obj.end_byte].decode(
+                                    "utf-8", errors="ignore"
+                                )
+                        elif first_arg.type == "identifier":
+                            entity_name = source[
+                                first_arg.start_byte:first_arg.end_byte
+                            ].decode("utf-8", errors="ignore")
                 content = src_str[node.start_byte:node.end_byte]
                 if len(content) <= _WINDOW:
                     chunks.append(JSChunk(
@@ -360,8 +379,11 @@ def _extract_era2_patches(
     tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
 ) -> None:
     """era2: Foo.include({}) → JSPatchInfo(era='include').
-    odoo.define() without .include → no patch produced.
+    v14+: MyClass.patch("key", fn) → JSPatchInfo(era='patch') (OWL patchMixin pattern).
+    odoo.define() without .include/.patch → no patch produced.
     """
+    owl_enabled = _OWL_ENABLED_REGISTRY.resolve_version(module_info.odoo_version, default=False)
+
     for node in _walk(tree.root_node):
         if node.type != "call_expression":
             continue
@@ -369,21 +391,53 @@ def _extract_era2_patches(
         if not func:
             continue
         prop = _find_first_child_by_type(func, "property_identifier")
-        if not prop or source[prop.start_byte:prop.end_byte] != b"include":
+        if not prop:
             continue
-        # target = the object calling .include
-        obj = _find_first_child_by_type(func, "identifier")
-        if not obj:
-            continue
-        target = source[obj.start_byte:obj.end_byte].decode("utf-8", errors="ignore")
-        result.patches.append(JSPatchInfo(
-            target=target,
-            patch_name=Path(filepath).stem,
-            module=module_info.name,
-            odoo_version=module_info.odoo_version,
-            era="include",
-            file_path=filepath,
-        ))
+        prop_bytes = source[prop.start_byte:prop.end_byte]
+
+        if prop_bytes == b"include":
+            # era2 classic: Foo.include({...})
+            obj = _find_first_child_by_type(func, "identifier")
+            if not obj:
+                continue
+            target = source[obj.start_byte:obj.end_byte].decode("utf-8", errors="ignore")
+            result.patches.append(JSPatchInfo(
+                target=target,
+                patch_name=Path(filepath).stem,
+                module=module_info.name,
+                odoo_version=module_info.odoo_version,
+                era="include",
+                file_path=filepath,
+            ))
+
+        elif prop_bytes == b"patch" and owl_enabled:
+            # T2 — v14+: MyClass.patch("key", T => class extends T { ... })
+            # member_expression: obj=MyClass, prop=patch
+            # Distinguish from era3 bare patch(): func node has a member_expression, not an
+            # identifier — so era3 _extract_era3_patches (bare identifier) won't match this.
+            obj = _find_first_child_by_type(func, "identifier")
+            if not obj:
+                continue
+            target = source[obj.start_byte:obj.end_byte].decode("utf-8", errors="ignore")
+            # First string arg is the patch key; require it to confirm this is patchMixin usage
+            args = _find_first_child_by_type(node, "arguments")
+            patch_name = Path(filepath).stem
+            if args:
+                arg_nodes = [c for c in args.children if c.type not in (",", "(", ")")]
+                if arg_nodes and arg_nodes[0].type in ("string", "template_string"):
+                    raw = source[arg_nodes[0].start_byte:arg_nodes[0].end_byte]
+                    patch_name = raw.decode("utf-8", errors="ignore").strip("\"'`")
+                elif not arg_nodes or arg_nodes[0].type not in ("string", "template_string"):
+                    # No string key as first arg — not the patchMixin pattern, skip
+                    continue
+            result.patches.append(JSPatchInfo(
+                target=target,
+                patch_name=patch_name,
+                module=module_info.name,
+                odoo_version=module_info.odoo_version,
+                era="patch",
+                file_path=filepath,
+            ))
 
 
 def _extract_era3_patches(
@@ -522,16 +576,24 @@ def _extract_era3_components(
             "utf-8", errors="ignore"
         )
 
-        # extends clause
+        # extends clause — handle both identifier and member_expression.
+        # `extends Component`   → class_heritage child: identifier "Component"
+        # `extends owl.Component` → class_heritage child: member_expression "owl.Component"
         extends_name: str | None = None
         heritage = _find_first_child_by_type(node, "class_heritage")
         if heritage:
-            # class_heritage: "extends Foo" — find the identifier
             ext_id = _find_first_child_by_type(heritage, "identifier")
             if ext_id:
                 extends_name = source[ext_id.start_byte:ext_id.end_byte].decode(
                     "utf-8", errors="ignore"
                 )
+            else:
+                # `extends owl.Component` → member_expression whose full text is "owl.Component"
+                mem_expr = _find_first_child_by_type(heritage, "member_expression")
+                if mem_expr:
+                    extends_name = source[mem_expr.start_byte:mem_expr.end_byte].decode(
+                        "utf-8", errors="ignore"
+                    )
 
         # static template = "..." inside class body
         template_val: str | None = None
@@ -557,6 +619,14 @@ def _extract_era3_components(
         bound_model: str | None = None
         if body:
             bound_model = _detect_bound_model_from_class_body(body, source)
+
+        # T3 — V16-G1: only keep classes that extend a known OWL base class.
+        # era3 files contain many non-OWL utility classes (Domain, Registry, RPCError, etc.)
+        # that tree-sitter classifies as class_declaration — they must NOT become OWLComp nodes.
+        # Allow both direct Component and common OWL intermediate bases (LegacyComponent, etc.).
+        # _OWL_BASE_NAMES is defined at module level (loop-invariant constant).
+        if extends_name is None or extends_name not in _OWL_BASE_NAMES:
+            continue
 
         result.components.append(OWLCompInfo(
             name=class_name,
@@ -584,6 +654,14 @@ def _extract_graph_from_file(
         _extract_era1_patches(tree, source, module_info, filepath, result)
     elif era == "era2":
         _extract_era2_patches(tree, source, module_info, filepath, result)
+        # T1 — JS-G1: era2 files in v14+ can contain OWL components
+        # (`class Foo extends Component` wrapped inside odoo.define).  The era2
+        # detector fires on `odoo.define(` presence; but v14 transitional files have
+        # BOTH.  Call the era3 component extractor so those classes become OWLComp.
+        # No double-count risk: era3 component extractor only appends nodes that pass
+        # the extends-name filter (T3), and era2 dispatcher never calls era3 patches.
+        if _OWL_ENABLED_REGISTRY.resolve_version(module_info.odoo_version, default=False):
+            _extract_era3_components(tree, source, module_info, filepath, result)
     else:  # era3
         _extract_era3_patches(tree, source, module_info, filepath, result)
         _extract_era3_components(tree, source, module_info, filepath, result)

@@ -92,7 +92,7 @@ Restore nhanh từ bundle:
 
 ```bash
 ~/.venv/odoo-semantic-mcp/bin/python -m src.cli restore \
-    /var/backups/odoo-semantic/osm-20260517-030001.tar.gz
+    /var/backups/odoo-semantic/osm-<YYYYMMDD>-<HHMMSS>.tar.gz
 ```
 
 > **Lưu ý:** Restore tự động tạo pre-restore safety backup trước khi ghi đè data.

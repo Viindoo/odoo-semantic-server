@@ -45,6 +45,12 @@ def _scope(profile_name=None):
     from src.mcp.server import _scope as _s  # lazy: avoid circular import
     return _s(profile_name)
 
+
+def _scope_pred(alias: str) -> str:
+    """Lazy shim → src.mcp.server._scope_pred (canonical fail-closed predicate)."""
+    from src.mcp.server import _scope_pred as _sp  # lazy: avoid circular import
+    return _sp(alias)
+
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
@@ -64,7 +70,8 @@ def _lookup_field(
     rows = session.run(
         """
         MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
-        WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+        WHERE ($own IS NULL OR (size(f.profile) > 0
+               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
         RETURN f.ttype AS ttype, f.comodel_name AS comodel
         ORDER BY f.module ASC
         LIMIT 1
@@ -85,7 +92,8 @@ def _lookup_field(
         MATCH (start)-[:INHERITS|DELEGATES_TO*1..3]->(parent:Model)
         WHERE NOT coalesce(parent.unresolved, false)
         MATCH (f:Field {name: $fn, model: parent.name, odoo_version: $v})
-        WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+        WHERE ($own IS NULL OR (size(f.profile) > 0
+               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
         RETURN f.ttype AS ttype, f.comodel_name AS comodel
         ORDER BY parent.name ASC, f.module ASC
         LIMIT 1
@@ -160,7 +168,8 @@ def _field_names_on_model(
     rows = session.run(
         """
         MATCH (f:Field {model: $mn, odoo_version: $v})
-        WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+        WHERE ($own IS NULL OR (size(f.profile) > 0
+               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
         RETURN DISTINCT f.name AS name
         """,
         mn=model, v=odoo_version, **_scope(profile_name),
@@ -337,7 +346,8 @@ def _validate_depends(
         rows = session.run(
             """
             MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN mth.depends AS depends
             """,
             mn=method, model=model, v=version, **_scope(profile_name),
@@ -433,13 +443,16 @@ def _validate_relation(
             # Accept when the field's comodel is a subtype of target_model
             # (comodel INHERITS* target_model) — e.g. field -> a mixin's subtype.
             rec = session.run(
-                """
-                MATCH (c:Model {name: $comodel, odoo_version: $v})
+                f"""
+                MATCH (c:Model {{name: $comodel, odoo_version: $v}})
                 WHERE NOT coalesce(c.unresolved, false)
-                MATCH (c)-[:INHERITS*1..5]->(t:Model {name: $target, odoo_version: $v})
+                  AND {_scope_pred("c")}
+                MATCH (c)-[:INHERITS*1..5]->(t:Model {{name: $target, odoo_version: $v}})
+                WHERE {_scope_pred("t")}
                 RETURN 1 AS ok LIMIT 1
                 """,
                 comodel=actual, target=target_model, v=version,
+                **_scope(profile_name),
             ).single()
             ok = rec is not None
 

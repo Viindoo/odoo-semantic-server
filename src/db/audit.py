@@ -62,7 +62,7 @@ def write_audit_log(
     caller transaction — so a caller ROLLBACK does not lose the audit row.
 
     Args:
-        actor: Canonical actor string (e.g. "user:42", "cli:tuan").
+        actor: Canonical actor string (e.g. "user:42", "cli:alice").
         action: Canonical action name (e.g. "user.login", "profile.delete").
         target: Optional target identifier (user_id, profile_name, etc.).
         success: True if the action succeeded; False on failure/rejection.

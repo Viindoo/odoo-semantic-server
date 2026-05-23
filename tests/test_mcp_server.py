@@ -1504,23 +1504,26 @@ def test_resolve_view_profile_none_returns_all(view_profile_tools):
     assert "mod_beta.view_beta_form" in result_beta
 
 
-def test_resolve_view_profile_name_is_advisory_not_isolation(view_profile_tools):
-    """M13 (ADR-0034) supersedes ADR-0029: profile_name is ADVISORY, not isolation.
+def test_resolve_view_profile_name_narrows_non_escalating_for_admin(view_profile_tools):
+    """WG-3t T3 (ADR-0034): profile_name is a NON-ESCALATING narrowing filter,
+    consistent across the Neo4j and pgvector paths (fixes the split-brain).
 
-    Pre-M13 this asserted profile_name='beta_93' hid the alpha view. Under M13 the
-    isolation mechanism is the TENANT boundary (own/shared), proven by
-    tests/test_cross_tenant_isolation.py. Without a tenant context (admin), the
-    `$own IS NULL` branch disables the choke-point filter, so profile_name no longer
-    restricts results — it is accepted (must not error) and both views stay visible
-    to an unscoped admin caller. A real tenant would never see another tenant's
-    private view regardless of the profile_name it passes (see the leak test).
+    Pre-WG-3t the Neo4j path treated admin's profile_name as advisory (the alpha view
+    stayed visible when asking under 'beta_93') while pgvector narrowed — a split-brain.
+    Under T3 BOTH paths narrow: admin asking for 'beta_93' narrows to that profile, so
+    the alpha view (under 'alpha_93') is NOT found, while the beta view still is. The
+    tenant boundary remains the isolation guarantee (test_cross_tenant_isolation).
     """
     resolve_view, ver = view_profile_tools
     result_beta = resolve_view("mod_beta.view_beta_form", ver, profile_name="beta_93")
     result_alpha = resolve_view("mod_alpha.view_alpha_form", ver, profile_name="beta_93")
-    assert "mod_beta.view_beta_form" in result_beta
-    # admin (no tenant) sees all; profile_name is advisory, isolation is tenant-driven
-    assert "mod_alpha.view_alpha_form" in result_alpha
+    # matching profile still surfaces its view (rendered detail, not just the echoed id).
+    assert "beta form" in result_beta, result_beta
+    # non-matching profile is narrowed away → not-found message (strong assertion: the
+    # rendered view detail 'alpha form' must be ABSENT, since the id is echoed in the
+    # not-found text).
+    assert "not found" in result_alpha.lower(), result_alpha
+    assert "alpha form" not in result_alpha, result_alpha
 
 
 # ===========================================================================
@@ -1716,6 +1719,128 @@ def test_describe_module_no_models_skips_footer(neo4j_driver):
         )
     finally:
         _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
+
+
+# --- WG-5 T1: _edition_label unit tests (no Neo4j required) ----------------
+
+
+def test_edition_label_opl1_is_odoo_ee():
+    """OPL-1 license → 'Odoo Enterprise (EE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label("custom", "OPL-1") == "Odoo Enterprise (EE)"
+
+
+def test_edition_label_lgpl3_is_community_ce():
+    """LGPL-3 license → 'Community (CE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label("community", "LGPL-3") == "Community (CE)"
+
+
+def test_edition_label_oeel1_is_viindoo_ee():
+    """OEEL-1 license → 'Viindoo Enterprise (EE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label("enterprise", "OEEL-1") == "Viindoo Enterprise (EE)"
+
+
+def test_edition_label_fallback_to_enum_when_no_license():
+    """No license → fall back to edition enum mapping."""
+    srv = _import_server_module()
+    assert srv._edition_label("community", None) == "Community (CE)"
+    assert srv._edition_label("enterprise", None) == "Odoo Enterprise (EE)"
+    assert srv._edition_label("viindoo", None) == "Viindoo Enterprise (EE)"
+    assert srv._edition_label("oca", None) == "OCA / Community-compatible"
+
+
+def test_edition_label_none_edition_defaults_to_ce():
+    """None edition + None license → 'Community (CE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label(None, None) == "Community (CE)"
+
+
+W6_EDITION_LABEL_VERSION = "88.0"
+
+
+def test_describe_module_edition_label_opl1(neo4j_driver):
+    """describe_module: OPL-1 license → Edition shows 'Odoo Enterprise (EE)'."""
+    _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'odoo_ent', m.edition = 'custom', m.license = 'OPL-1', "
+                "    m.profile = ['default']",
+                n="sale_enterprise_test", v=W6_EDITION_LABEL_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_enterprise_test", W6_EDITION_LABEL_VERSION)
+        assert "Odoo Enterprise (EE)" in out, (
+            f"Expected 'Odoo Enterprise (EE)' in Edition line, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+
+
+def test_describe_module_edition_label_lgpl3(neo4j_driver):
+    """describe_module: LGPL-3 license → Edition shows 'Community (CE)'."""
+    _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'odoo_ce', m.edition = 'community', m.license = 'LGPL-3', "
+                "    m.profile = ['default']",
+                n="sale_ce_test", v=W6_EDITION_LABEL_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_ce_test", W6_EDITION_LABEL_VERSION)
+        assert "Community (CE)" in out, (
+            f"Expected 'Community (CE)' in Edition line, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+
+
+def test_describe_module_summary_rendered(neo4j_driver):
+    """describe_module: manifest summary stored on node → rendered as 'Summary: ...' line."""
+    _W6_SUMMARY_VERSION = "99.54"
+    _cleanup_version(neo4j_driver, _W6_SUMMARY_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'test_repo', m.edition = 'community', "
+                "    m.summary = $summary, m.profile = ['default']",
+                n="sale_sum_test", v=_W6_SUMMARY_VERSION,
+                summary="Manage sales orders",
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_sum_test", _W6_SUMMARY_VERSION)
+        assert "Summary: Manage sales orders" in out, (
+            f"Expected 'Summary: Manage sales orders' in describe_module output, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, _W6_SUMMARY_VERSION)
+
+
+def test_describe_module_summary_absent_no_line(neo4j_driver):
+    """describe_module: node without summary → no 'Summary:' line in output."""
+    _W6_NOSUMMARY_VERSION = "99.55"
+    _cleanup_version(neo4j_driver, _W6_NOSUMMARY_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'test_repo', m.edition = 'community', "
+                "    m.profile = ['default']",
+                n="sale_nosum_test", v=_W6_NOSUMMARY_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_nosum_test", _W6_NOSUMMARY_VERSION)
+        assert "Summary:" not in out, (
+            f"Expected no 'Summary:' line when absent, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, _W6_NOSUMMARY_VERSION)
 
 
 # --- list_fields ------------------------------------------------------------
@@ -3548,3 +3673,194 @@ def test_b1_list_js_patches_renders_file_path(neo4j_driver):
         )
     finally:
         _cleanup_b1(neo4j_driver)
+
+
+# ---------------------------------------------------------------------------
+# WG-4: T1 — F-4 load-order fix (_module_dep_closure)
+# ---------------------------------------------------------------------------
+
+_WG4_DEP_VERSION = "75.0"
+
+
+def _cleanup_wg4_dep(driver):
+    with driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_WG4_DEP_VERSION,
+        )
+
+
+def test_dep_closure_load_order_deepest_first(neo4j_driver):
+    """T1 (F-4): load order places deepest transitive dep (C) before intermediate (B) before root
+    requester.  Chain: A depends B, B depends C.  Odoo loads C first, then B.
+    index 1 = C (deepest), index 2 = B (direct dep of A).
+    """
+    _cleanup_wg4_dep(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        # A depends on B; B depends on C.
+        mod_c = ModuleInfo("wg4_mod_c", _WG4_DEP_VERSION, "test_repo", "/tmp", [], "")
+        mod_b = ModuleInfo("wg4_mod_b", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_mod_c"], "")
+        mod_a = ModuleInfo("wg4_mod_a", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_mod_b"], "")
+        writer.write_results([
+            ParseResult(module=mod_c, models=[]),
+            ParseResult(module=mod_b, models=[]),
+            ParseResult(module=mod_a, models=[]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._module_dep_closure("wg4_mod_a", _WG4_DEP_VERSION)
+
+        assert "wg4_mod_b" in out, f"Expected wg4_mod_b in output:\n{out}"
+        assert "wg4_mod_c" in out, f"Expected wg4_mod_c in output:\n{out}"
+
+        # Index 1 must be wg4_mod_c (deepest, loaded first); index 2 = wg4_mod_b.
+        # The output format is "  1. wg4_mod_c" and "  2. wg4_mod_b".
+        pos_b = out.index("wg4_mod_b")
+        pos_c = out.index("wg4_mod_c")
+        assert pos_c < pos_b, (
+            f"T1 (F-4): deepest dep (wg4_mod_c) must appear BEFORE wg4_mod_b in load order.\n"
+            f"wg4_mod_c at char {pos_c}, wg4_mod_b at char {pos_b}.\n{out}"
+        )
+
+        # Confirm index 1 is attached to wg4_mod_c, not wg4_mod_b.
+        lines = out.splitlines()
+        idx1_line = next((ln for ln in lines if "1." in ln), "")
+        assert "wg4_mod_c" in idx1_line, (
+            f"T1 (F-4): index 1 must be wg4_mod_c (deepest dep).  Got: {idx1_line!r}\n{out}"
+        )
+    finally:
+        _cleanup_wg4_dep(neo4j_driver)
+
+
+def test_dep_closure_diamond_no_duplicate(neo4j_driver):
+    """T1 (F-4): diamond dependency A->B->D + A->C->D should list D once."""
+    _cleanup_wg4_dep(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        mod_d = ModuleInfo("wg4_dmd_d", _WG4_DEP_VERSION, "test_repo", "/tmp", [], "")
+        mod_b = ModuleInfo("wg4_dmd_b", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_dmd_d"], "")
+        mod_c = ModuleInfo("wg4_dmd_c", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_dmd_d"], "")
+        mod_a = ModuleInfo(
+            "wg4_dmd_a", _WG4_DEP_VERSION, "test_repo", "/tmp",
+            ["wg4_dmd_b", "wg4_dmd_c"], "",
+        )
+        writer.write_results([
+            ParseResult(module=mod_d, models=[]),
+            ParseResult(module=mod_b, models=[]),
+            ParseResult(module=mod_c, models=[]),
+            ParseResult(module=mod_a, models=[]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._module_dep_closure("wg4_dmd_a", _WG4_DEP_VERSION)
+
+        # wg4_dmd_d appears exactly once (DISTINCT in Cypher).
+        assert out.count("wg4_dmd_d") == 1, (
+            f"T1 (F-4): diamond dep wg4_dmd_d should appear exactly once.\n{out}"
+        )
+    finally:
+        _cleanup_wg4_dep(neo4j_driver)
+
+
+# ---------------------------------------------------------------------------
+# WG-4: T2 — LIST list↔tree alias (_list_views_core)
+# ---------------------------------------------------------------------------
+
+_WG4_VIEWS_VERSION = "74.0"
+
+
+def _cleanup_wg4_views(driver):
+    with driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_WG4_VIEWS_VERSION,
+        )
+
+
+def test_view_type_tree_query_matches_list_stored_node(neo4j_driver):
+    """T2 (LIST): querying view_type='tree' must match View nodes with type='list' (v18 style)."""
+    _cleanup_wg4_views(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        mod = ModuleInfo("wg4_sale", _WG4_VIEWS_VERSION, "odoo_test", "/tmp", [], "")
+        # Store a view with type='list' (v18 DB value).
+        list_view = ViewInfo(
+            xmlid="wg4_sale.view_order_list", name="list view",
+            model="wg4.sale.order", module="wg4_sale",
+            odoo_version=_WG4_VIEWS_VERSION,
+            view_type="list", mode="primary", inherit_xmlid=None,
+        )
+        # Store a view with type='tree' (v17 DB value).
+        tree_view = ViewInfo(
+            xmlid="wg4_sale.view_order_tree", name="tree view",
+            model="wg4.sale.order", module="wg4_sale",
+            odoo_version=_WG4_VIEWS_VERSION,
+            view_type="tree", mode="primary", inherit_xmlid=None,
+        )
+        writer.write_view_results([
+            ViewParseResult(module=mod, views=[list_view, tree_view]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+
+        # Query with view_type='tree' — must see BOTH the 'tree' node AND the 'list' node.
+        out_tree = srv._list_views("wg4.sale.order", _WG4_VIEWS_VERSION, view_type="tree")
+        assert "wg4_sale.view_order_list" in out_tree, (
+            f"T2: view_type='tree' must match nodes with type='list' (v18 alias).\n{out_tree}"
+        )
+        assert "wg4_sale.view_order_tree" in out_tree, (
+            f"T2: view_type='tree' must still match nodes with type='tree'.\n{out_tree}"
+        )
+
+        # Query with view_type='list' — must see BOTH (symmetric alias).
+        out_list = srv._list_views("wg4.sale.order", _WG4_VIEWS_VERSION, view_type="list")
+        assert "wg4_sale.view_order_tree" in out_list, (
+            f"T2: view_type='list' must match nodes with type='tree' (v17 alias).\n{out_list}"
+        )
+        assert "wg4_sale.view_order_list" in out_list, (
+            f"T2: view_type='list' must still match nodes with type='list'.\n{out_list}"
+        )
+
+        # Other view types must NOT match (sanity check alias is not a wildcard).
+        form_view = ViewInfo(
+            xmlid="wg4_sale.view_order_form", name="form view",
+            model="wg4.sale.order", module="wg4_sale",
+            odoo_version=_WG4_VIEWS_VERSION,
+            view_type="form", mode="primary", inherit_xmlid=None,
+        )
+        writer2 = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer2.write_view_results([ViewParseResult(module=mod, views=[form_view])])
+        writer2.close()
+
+        out_tree2 = srv._list_views("wg4.sale.order", _WG4_VIEWS_VERSION, view_type="tree")
+        assert "wg4_sale.view_order_form" not in out_tree2, (
+            f"T2: view_type='tree' must NOT match form views.\n{out_tree2}"
+        )
+    finally:
+        _cleanup_wg4_views(neo4j_driver)

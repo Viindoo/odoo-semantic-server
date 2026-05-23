@@ -375,6 +375,13 @@ class DescribeModuleOutput(BaseModel):
             "Populated after reindex (A2b); None when absent."
         ),
     )
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "One-line business purpose from the manifest 'summary' key. "
+            "Populated after reindex; None when absent from the manifest."
+        ),
+    )
     external_python: list[str] = Field(
         default_factory=list,
         description=(

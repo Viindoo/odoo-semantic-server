@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.indexer.registry import (
+    DualManifestFinder,
     LegacyManifestFinder,
     ModernManifestFinder,
     build_registry,
@@ -136,12 +137,86 @@ def test_modern_manifest_finder_ignores_openerp(tmp_path):
 
 
 def test_get_manifest_finder_dispatches_by_version():
-    """v8/v9 → Legacy; v10+ → Modern; unknown version → Modern (default)."""
+    """v8/v9 → Legacy; v10 → Dual (transition era); v11+ → Modern; unknown → Modern.
+
+    v10 is the transition era: most modules use __manifest__.py but a few l10n
+    modules still ship only __openerp__.py, so v10 MUST scan both filenames.
+    """
     assert isinstance(get_manifest_finder("8.0"), LegacyManifestFinder)
     assert isinstance(get_manifest_finder("9.0"), LegacyManifestFinder)
-    assert isinstance(get_manifest_finder("10.0"), ModernManifestFinder)
+    assert isinstance(get_manifest_finder("10.0"), DualManifestFinder)
+    assert isinstance(get_manifest_finder("11.0"), ModernManifestFinder)
     assert isinstance(get_manifest_finder("17.0"), ModernManifestFinder)
     assert isinstance(get_manifest_finder("unknown"), ModernManifestFinder)
+
+
+def test_get_manifest_finder_v10_is_not_legacy_nor_modern():
+    """Regression guard: v10 must be the Dual finder, never Legacy nor plain
+    Modern — a plain Modern finder silently drops the __openerp__.py-only
+    l10n modules (the original v10 indexing gap)."""
+    finder = get_manifest_finder("10.0")
+    assert not isinstance(finder, LegacyManifestFinder)
+    assert type(finder) is DualManifestFinder
+
+
+# --- v10 DualManifestFinder behaviour (GAP-1 fix) ---
+
+
+def test_v10_dual_finder_finds_openerp_only_module(tmp_path):
+    """A v10 module shipping ONLY __openerp__.py (legacy l10n) must be found —
+    this is the exact group the old ModernManifestFinder silently dropped."""
+    (tmp_path / "l10n_fr_pos_cert").mkdir()
+    (tmp_path / "l10n_fr_pos_cert" / "__openerp__.py").write_text(
+        "{'name': 'France POS Cert'}"
+    )
+    paths = DualManifestFinder().find(str(tmp_path))
+    assert any(p.endswith("l10n_fr_pos_cert/__openerp__.py") for p in paths)
+
+
+def test_v10_dual_finder_dedupes_prefer_manifest(tmp_path):
+    """Tree: A=__openerp__.py only, B=__manifest__.py only, C=BOTH files.
+
+    Expect exactly 3 paths (one per module — no double-count), and for module C
+    the path MUST be __manifest__.py (modern wins; legacy is dropped on tie).
+    """
+    # Module A — legacy only
+    (tmp_path / "mod_a").mkdir()
+    (tmp_path / "mod_a" / "__openerp__.py").write_text("{'name': 'A'}")
+    # Module B — modern only
+    (tmp_path / "mod_b").mkdir()
+    (tmp_path / "mod_b" / "__manifest__.py").write_text("{'name': 'B'}")
+    # Module C — BOTH (transition artefact) → must dedupe to modern
+    (tmp_path / "mod_c").mkdir()
+    (tmp_path / "mod_c" / "__manifest__.py").write_text("{'name': 'C modern'}")
+    (tmp_path / "mod_c" / "__openerp__.py").write_text("{'name': 'C legacy'}")
+
+    paths = DualManifestFinder().find(str(tmp_path))
+
+    # Exactly one entry per module — no double-count of C.
+    assert len(paths) == 3, f"expected 3 paths (A, B, C-deduped), got {paths!r}"
+
+    # Module A found via legacy file.
+    assert any(p.endswith("mod_a/__openerp__.py") for p in paths)
+    # Module B found via modern file.
+    assert any(p.endswith("mod_b/__manifest__.py") for p in paths)
+    # Module C resolved to modern, NOT legacy.
+    assert any(p.endswith("mod_c/__manifest__.py") for p in paths), \
+        "C must resolve to __manifest__.py"
+    assert not any(p.endswith("mod_c/__openerp__.py") for p in paths), \
+        "C must NOT include __openerp__.py when __manifest__.py exists (dedupe)"
+
+
+def test_build_registry_v10_indexes_openerp_only_module(tmp_path):
+    """End-to-end: build_registry under v10 must index a module that ships
+    only __openerp__.py (the silent-drop gap), reading its name + depends."""
+    repo = make_git_repo(tmp_path / "odoo_10.0", "10.0")
+    make_manifest(repo / "sale_modern", "Sales Modern", "10.0.1.0.0", ["base"])
+    make_legacy_manifest(repo / "l10n_fr_pos_cert", "FR POS Cert", "10.0.1.0", ["point_of_sale"])
+    registry = build_registry([(str(repo), "10.0")])
+    assert "sale_modern" in registry.get("10.0", {}), "modern module must still index"
+    assert "l10n_fr_pos_cert" in registry.get("10.0", {}), \
+        "__openerp__.py-only module must now index under v10"
+    assert registry["10.0"]["l10n_fr_pos_cert"].depends == ["point_of_sale"]
 
 
 def test_build_registry_v8_module_with_openerp_py(tmp_path):
@@ -233,6 +308,22 @@ def test_build_registry_category_absent_is_none(tmp_path):
     assert registry["17.0"]["mod_nocat"].category is None
 
 
+def test_build_registry_summary(tmp_path):
+    """summary key in manifest → ModuleInfo.summary populated."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_sum", summary="Manage sales orders")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_sum"].summary == "Manage sales orders"
+
+
+def test_build_registry_summary_absent_is_none(tmp_path):
+    """summary absent from manifest → ModuleInfo.summary is None."""
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_nosum")
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["mod_nosum"].summary is None
+
+
 def test_build_registry_external_dependencies(tmp_path):
     """external_dependencies dict parsed into external_python + external_bin lists."""
     repo = make_git_repo(tmp_path / "r", "17.0")
@@ -255,6 +346,38 @@ def test_build_registry_external_dependencies_absent(tmp_path):
     info = registry["17.0"]["mod_noextdep"]
     assert info.external_python == []
     assert info.external_bin == []
+
+
+def test_build_registry_external_dependencies_none_value(tmp_path):
+    """external_dependencies=None in manifest must NOT crash; external_python/bin = [].
+
+    Some manifests set the key explicitly to None (e.g. a merge artefact or a
+    module that cleared its deps).  Previously this caused AttributeError
+    ('NoneType' has no attribute 'get') — regression guard.
+    """
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_extdep_none", external_dependencies=None)
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_extdep_none"]
+    assert info.external_python == [], "external_python must be [] when key is None"
+    assert info.external_bin == [], "external_bin must be [] when key is None"
+
+
+def test_build_registry_external_dependencies_python_none(tmp_path):
+    """external_dependencies={'python': None} must NOT crash; external_python = [].
+
+    A manifest that sets the python list explicitly to None should be treated
+    the same as an absent key — the indexer must not abort the whole repo.
+    """
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(
+        repo / "mod_extdep_py_none",
+        external_dependencies={"python": None, "bin": ["wkhtmltopdf"]},
+    )
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_extdep_py_none"]
+    assert info.external_python == [], "external_python must be [] when value is None"
+    assert "wkhtmltopdf" in info.external_bin, "external_bin must still be populated"
 
 
 # ---------------------------------------------------------------------------

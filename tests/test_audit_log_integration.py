@@ -123,7 +123,7 @@ class TestWriteAuditLogIntegration:
         from src.db.audit import write_audit_log
 
         write_audit_log(
-            actor="cli:tuan",
+            actor="cli:testuser",
             action="profile.delete",
             target="odoo17",
             success=True,
@@ -255,7 +255,7 @@ class TestAuditCliIntegration:
 
         from src.db.audit import audit_cli
 
-        with mock.patch("os.getlogin", return_value="tuan"):
+        with mock.patch("os.getlogin", return_value="testuser"):
             with audit_cli("profile.delete", target="myprofile") as ctx:
                 ctx.detail["profile_id"] = 7
 

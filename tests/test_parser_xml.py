@@ -278,3 +278,156 @@ def test_parse_view_line_none_when_not_available(tmp_path, sale_module):
         mode="primary", inherit_xmlid=None,
     )
     assert v.line is None
+
+
+# --- T1 (F-5): lxml comment node must not shadow real view-type element ---
+
+
+def test_view_type_with_leading_comment_direct(tmp_path, sale_module):
+    """F-5: <arch> with a leading XML comment → view_type must be 'list', not 'form'."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_list" model="ir.ui.view">
+                <field name="name">sale.order.list</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml"><!-- leading comment -->
+                    <list>
+                        <field name="name"/>
+                    </list>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].view_type == "list", (
+        f"Expected 'list', got {result[0].view_type!r} — "
+        "leading comment must not shadow the <list> element"
+    )
+
+
+def test_view_type_with_leading_comment_tree(tmp_path, sale_module):
+    """F-5: <arch> with a leading XML comment → view_type must be 'tree', not 'form'."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_tree" model="ir.ui.view">
+                <field name="name">sale.order.tree</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml"><!-- inherit from tree view -->
+                    <tree>
+                        <field name="name"/>
+                    </tree>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].view_type == "tree", (
+        f"Expected 'tree', got {result[0].view_type!r} — "
+        "leading comment must not shadow the <tree> element"
+    )
+
+
+def test_view_type_with_comment_in_data_wrapper(tmp_path, sale_module):
+    """F-5: <arch><data><!-- comment --><tree>...</tree></data></arch> → view_type='tree'."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_ext" model="ir.ui.view">
+                <field name="name">sale.order.ext</field>
+                <field name="model">sale.order</field>
+                <field name="inherit_id" ref="sale.view_sale_order_tree"/>
+                <field name="arch" type="xml">
+                    <data><!-- extends tree view -->
+                        <tree>
+                            <field name="amount_total"/>
+                        </tree>
+                    </data>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].view_type == "tree", (
+        f"Expected 'tree', got {result[0].view_type!r} — "
+        "comment inside <data> must not shadow the <tree> element"
+    )
+
+
+# --- T2: arch_snippet for base views ---
+
+
+def test_arch_snippet_set_for_base_view(tmp_path, sale_module):
+    """T2: base view (no inherit_id) must carry arch_snippet with view structure."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_sale_order_form" model="ir.ui.view">
+                <field name="name">sale.order.form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <form>
+                        <sheet>
+                            <group name="partner_info">
+                                <field name="partner_id"/>
+                            </group>
+                        </sheet>
+                    </form>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    view = result[0]
+    assert view.arch_snippet is not None, "base view must have arch_snippet"
+    assert "<form>" in view.arch_snippet or "form" in view.arch_snippet
+
+
+def test_arch_snippet_none_for_extension_view(tmp_path, sale_module):
+    """T2: extension/inherit view (has inherit_id) must have arch_snippet=None."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_sale_order_form_inherit" model="ir.ui.view">
+                <field name="name">sale.order.form.inherit</field>
+                <field name="model">sale.order</field>
+                <field name="inherit_id" ref="sale.view_sale_order_form"/>
+                <field name="arch" type="xml">
+                    <data>
+                        <xpath expr="//field[@name='partner_id']" position="after">
+                            <field name="x_field"/>
+                        </xpath>
+                    </data>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].arch_snippet is None, "extension view must have arch_snippet=None"
+
+
+def test_arch_snippet_bounded_to_2000_chars(tmp_path, sale_module):
+    """T2: arch_snippet must be capped at 2000 characters."""
+    # Build a very long arch
+    big_arch = "<form>" + ("<!-- padding -->\n" * 200) + "<field name='x'/></form>"
+    f = write_xml(tmp_path, "views.xml", f"""
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_big" model="ir.ui.view">
+                <field name="name">sale.order.big</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">{big_arch}</field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    snippet = result[0].arch_snippet
+    assert snippet is not None
+    assert len(snippet) <= 2000

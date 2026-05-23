@@ -506,6 +506,146 @@ Expected: > 0 after `reembed-stubs` run following m13_003 migration.
 
 ---
 
+## 5.11 Multi-tenant gate — pre-traffic verify
+
+Run these checks **before routing real API keys** through the multi-tenant choke-point
+filter. Each failure is a blocker; fix the root cause, reindex if needed, then re-verify.
+
+**5.11a — 0 nodes with `profile=[]` (F-6 / ADR-0034 T4):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (n)
+     WHERE size(n.profile) = 0
+       AND any(l IN labels(n) WHERE l IN
+         ['Module','Model','Field','Method','View','OWLComp','JSPatch','Stylesheet','LintViolation'])
+     RETURN labels(n) AS lbl, count(n) AS cnt
+     ORDER BY cnt DESC;"
+```
+Expected: **0 rows**. Any non-zero count means a node was indexed before the profile-array
+writer was enforced. Remediation: run `index-repo --all --full` for the affected profile,
+or manually `SET n.profile = ['<profile_name>']` for nodes with no current profile owner,
+then re-verify.
+
+**5.11b — Edition field derived correctly (Module.license → edition label):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (m:Module {odoo_version:'17.0'})
+     WHERE m.license IS NOT NULL
+     RETURN m.license AS license_class,
+            count(m) AS module_count
+     ORDER BY module_count DESC
+     LIMIT 10;"
+```
+Expected: `LGPL-3` or `LGPL-3 or later` dominates (standard CE modules); `OPL-1`
+for Viindoo/OCA commercial; `OEEL-1` only for Odoo Enterprise modules (skipped by
+license policy by default). Verify that `check_module_exists` returns the correct
+edition tag (`CE` / `Odoo EE` / `Viindoo EE`) for at least one known module per tier.
+
+**5.11c — OWLComp and JSPatch v14-v16 > 0:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (oc:OWLComp)
+     WHERE oc.odoo_version IN ['14.0','15.0','16.0']
+     RETURN oc.odoo_version AS version, count(oc) AS owl_count
+     ORDER BY version;
+     MATCH (jp:JSPatch)
+     WHERE jp.odoo_version IN ['14.0','15.0','16.0']
+     RETURN jp.odoo_version AS version, count(jp) AS patch_count
+     ORDER BY version;"
+```
+Expected: OWLComp > 0 for v14-v16 (WG-2 JS-G1 fix); JSPatch > 0 for v14-v16 (WG-2 JS-G2 fix).
+If 0 for any version: the JS parser dual-dispatch fix is not deployed — check WG-2 branch merge.
+
+**5.11d — CoreSymbol v8-v15 Query class present (CORE-Q fix):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (c:CoreSymbol)
+     WHERE c.qualified_name ENDS WITH 'Query'
+     RETURN c.odoo_version AS version, c.qualified_name AS qname
+     ORDER BY toFloat(version) ASC;"
+```
+Expected: rows for v8.0-v15.0 showing the correct qualified name for the `Query` class
+(e.g. `openerp.osv.query.Query` for v8/v9; `odoo.osv.query.Query` for v10-v15).
+If absent: the CORE-Q version-aware path fix is not deployed — check WG-2 branch merge.
+
+**5.11e — NewId resolves as moved-not-removed for v18→v19 (V19-G5):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (c:CoreSymbol {odoo_version:'19.0'})
+     WHERE c.qualified_name CONTAINS 'NewId'
+     RETURN c.qualified_name AS qname, c.status AS status, c.kind AS kind;"
+```
+Expected: at least 1 row; `api_version_diff("NewId", 18, 19)` in MCP must NOT return
+"removed" — it should return either "stable" (qname preserved) or note "moved to
+`odoo/orm/identifiers.py`". If `api_version_diff` returns removed: the `_V19_CURATED_FILES`
+entry for `odoo/orm/identifiers.py` is absent — check WG-2 / A1 merge.
+
+**5.11f — View.arch_snippet non-null for base views (WG-3w arch_snippet):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (v:View {odoo_version:'17.0'})
+     WHERE v.arch_snippet IS NOT NULL
+     RETURN count(v) AS views_with_arch_snippet;"
+```
+Expected: > 0 (base views have arch_snippet populated after WG-3w). If 0: the
+arch_snippet writer change is not deployed or reindex has not run for the affected profile.
+
+**5.11g — 13-site leak-gate: cross-tenant isolation test passes:**
+```bash
+# Run the release-gate integration test (requires Docker + testcontainers):
+cd /opt/odoo-semantic-mcp
+<VENV> -m pytest tests/test_cross_tenant_isolation.py -v --tb=short
+```
+Expected: all tests pass. This covers all 13 confirmed leak sites (server.py + orm.py)
+plus the pgvector embeddings filter. **GATE: do not serve real tenant traffic if this test fails.**
+
+---
+
+## 5.12 Tenant API key ops (post-multi-tenant deploy)
+
+Run after enabling multi-tenant traffic. Ensures every end-user API key has the
+correct tenant context and no key is inadvertently in admin/unrestricted mode.
+
+**5.12a — Audit unscoped (admin) API keys:**
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT id, name, created_at, last_used_at
+FROM api_keys
+WHERE tenant_id IS NULL AND active = TRUE
+ORDER BY id;"
+```
+Expected: only **intentional admin keys** appear here (e.g. the indexer service key,
+the Web UI admin key). Every end-user API key must have `tenant_id IS NOT NULL`.
+Any unexpected row with `tenant_id IS NULL` is a key that bypasses all tenant filtering
+and has full read access to every profile — revoke or assign a tenant immediately.
+
+**5.12b — Assign tenant_id to end-user keys (if not yet done):**
+```sql
+-- Example: assign user key id=7 to tenant id=2
+UPDATE api_keys SET tenant_id = 2 WHERE id = 7;
+```
+Repeat for each end-user key returned above that should be tenant-scoped.
+
+**5.12c — Verify shared-base profiles have `tenant_id IS NULL`:**
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT id, name, odoo_version, tenant_id
+FROM profiles
+WHERE parent_profile_id IS NULL
+ORDER BY odoo_version;"
+```
+Expected: all root/base profiles (e.g. `odoo_8`, `odoo_9`, ..., `odoo_19`) have
+`tenant_id IS NULL`. These are the global shared-base profiles; assigning a
+`tenant_id` to them would hide them from other tenants. If any root profile has a
+non-NULL `tenant_id`, run: `UPDATE profiles SET tenant_id = NULL WHERE id = <id>;`
+
+**GUARDRAIL — DO NOT enable multi-tenant routing between the v0.9.1 (#163 pre-reindex)
+deploy and this follow-up PR landing + full reindex completing.** The `profile=[]`
+nodes from the pre-profile-writer era are still present and the choke-point filter was
+not yet active. Premature activation = data exposure without isolation.
+
+---
+
 ## Known Constraints (post-wave3)
 
 ### MED-2 — Private forges require manual known_hosts onboarding
@@ -560,6 +700,16 @@ This is a one-time step per forge host. Once pinned, subsequent clones for any r
 | USES_FIELD edges (5.10d) | > 0 method→field edges | [ ] |
 | DEPENDS_ON_FIELD edges (5.10d) | > 0 method→field edges | [ ] |
 | embeddings repo + line_start populated (5.10e) | > 0 chunks with repo IS NOT NULL AND line_start IS NOT NULL | [ ] |
+| 0 nodes `profile=[]` user-data labels (5.11a) | 0 rows — gate before multi-tenant traffic | [ ] |
+| Edition derive correct (5.11b) | LGPL-3 dominates v17; OEEL-1 skipped; edition tag correct | [ ] |
+| OWLComp v14-v16 > 0 (5.11c) | Non-zero per version | [ ] |
+| JSPatch v14-v16 > 0 (5.11c) | Non-zero per version | [ ] |
+| CoreSymbol Query class v8-v15 (5.11d) | Rows present for all 8 versions | [ ] |
+| NewId v19 not-removed (5.11e) | CoreSymbol present; api_version_diff != removed | [ ] |
+| View.arch_snippet non-null (5.11f) | > 0 base views with arch_snippet | [ ] |
+| Cross-tenant leak test (5.11g) | `test_cross_tenant_isolation.py` all pass — RELEASE GATE | [ ] |
+| End-user API keys tenant-scoped (5.12a/b) | 0 unexpected admin-scope keys | [ ] |
+| Shared-base profiles tenant_id IS NULL (5.12c) | All root profiles have tenant_id IS NULL | [ ] |
 
 ---
 

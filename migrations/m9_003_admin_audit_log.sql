@@ -9,7 +9,7 @@
 --     self-describing regardless of actor type, e.g.:
 --       'user:admin'          — authenticated web UI user
 --       'api_key:osm_abcd12'  — API key (prefix only; never the full hash)
---       'cli:tuan'            — CLI invocation (login name)
+--       'cli:alice'           — CLI invocation (login name)
 --   * `action` uses dot-namespaced verbs, e.g. 'user.login', 'profile.delete'.
 --   * `target` (nullable) identifies the resource acted upon, e.g. 'profile:42'.
 --   * `detail` (JSONB, nullable) carries structured payload for forensics.

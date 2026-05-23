@@ -497,7 +497,7 @@ Mọi quyết định kiến trúc lớn — schema policy, storage pattern, par
 **Workflow ADR mới:**
 
 1. Trước khi viết schema/policy mới (vd thêm node label, đổi composite key, tạo bảng), tạo ADR draft tại `docs/adr/000X-<kebab-slug>.md`.
-2. Status `Draft` → David review → `Accepted` (hoặc `Rejected` + lý do).
+2. Status `Draft` → maintainer review → `Accepted` (hoặc `Rejected` + lý do).
 3. Reference ADR ID trong commit message + plan file + code comment khi implement.
 4. ADR là immutable history — không xoá ADR. Nếu thay thế → mark `Status: Superseded by ADR-XXXX` thay vì delete.
 

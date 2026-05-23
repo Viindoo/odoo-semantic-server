@@ -920,3 +920,142 @@ def test_parse_odoo_core_smoke_real_v19_field_types():
             assert sym.kind == "field_type", (
                 f"v19 {sym.qualified_name} should be kind='field_type', got {sym.kind!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# T4 — CORE-Q: query.py version-aware path (v8-v9 openerp/osv, v10-v15 odoo/osv, v16+ odoo/tools)
+# ---------------------------------------------------------------------------
+
+def test_resolve_core_paths_query_v8_returns_openerp_osv(tmp_path):
+    """T4: v8 — odoo/tools/query.py maps to openerp/osv/query.py."""
+    (tmp_path / "openerp" / "osv").mkdir(parents=True)
+    qpy = tmp_path / "openerp" / "osv" / "query.py"
+    qpy.write_text("class Query: pass\n")
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "8.0")
+    assert resolved == [qpy], f"v8 query.py must resolve to openerp/osv/query.py, got {resolved}"
+
+
+def test_resolve_core_paths_query_v9_returns_openerp_osv(tmp_path):
+    """T4: v9 — odoo/tools/query.py maps to openerp/osv/query.py."""
+    (tmp_path / "openerp" / "osv").mkdir(parents=True)
+    qpy = tmp_path / "openerp" / "osv" / "query.py"
+    qpy.write_text("class Query: pass\n")
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "9.0")
+    assert resolved == [qpy], f"v9 query.py must resolve to openerp/osv/query.py, got {resolved}"
+
+
+def test_resolve_core_paths_query_v11_returns_odoo_osv(tmp_path):
+    """T4: v11 — odoo/tools/query.py maps to odoo/osv/query.py."""
+    (tmp_path / "odoo" / "osv").mkdir(parents=True)
+    qpy = tmp_path / "odoo" / "osv" / "query.py"
+    qpy.write_text("class Query: pass\n")
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "11.0")
+    assert resolved == [qpy], f"v11 query.py must resolve to odoo/osv/query.py, got {resolved}"
+
+
+def test_resolve_core_paths_query_v15_returns_odoo_osv(tmp_path):
+    """T4: v15 — odoo/tools/query.py maps to odoo/osv/query.py (boundary check)."""
+    (tmp_path / "odoo" / "osv").mkdir(parents=True)
+    qpy = tmp_path / "odoo" / "osv" / "query.py"
+    qpy.write_text("class Query: pass\n")
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "15.0")
+    assert resolved == [qpy], f"v15 query.py must resolve to odoo/osv/query.py, got {resolved}"
+
+
+def test_resolve_core_paths_query_v16_returns_odoo_tools(tmp_path):
+    """T4: v16 — odoo/tools/query.py resolves to odoo/tools/query.py (moved in v16)."""
+    (tmp_path / "odoo" / "tools").mkdir(parents=True)
+    qpy = tmp_path / "odoo" / "tools" / "query.py"
+    qpy.write_text("class Query: pass\n")
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "16.0")
+    assert resolved == [qpy], f"v16 query.py must resolve to odoo/tools/query.py, got {resolved}"
+
+
+def test_resolve_core_paths_query_v17_returns_odoo_tools(tmp_path):
+    """T4: v17 — odoo/tools/query.py resolves to odoo/tools/query.py."""
+    (tmp_path / "odoo" / "tools").mkdir(parents=True)
+    qpy = tmp_path / "odoo" / "tools" / "query.py"
+    qpy.write_text("class Query: pass\n")
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "17.0")
+    assert resolved == [qpy], f"v17 query.py must resolve to odoo/tools/query.py, got {resolved}"
+
+
+def test_resolve_core_paths_query_missing_returns_empty(tmp_path):
+    """T4: missing query.py in a given version → empty list (silent skip, not exception)."""
+    (tmp_path / "odoo" / "tools").mkdir(parents=True)
+    # Do NOT create query.py
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "14.0")
+    assert resolved == [], "Missing query.py must silently return empty list"
+
+
+def test_parse_odoo_core_query_v11_emits_query_class(tmp_path):
+    """T4 integration: parse_odoo_core v11 with odoo/osv/query.py → Query CoreSymbol."""
+    (tmp_path / "odoo" / "osv").mkdir(parents=True)
+    (tmp_path / "odoo" / "osv" / "query.py").write_text(
+        "class Query:\n"
+        "    def __init__(self, env):\n"
+        "        self.env = env\n"
+        "    def add_where(self, clause):\n"
+        "        pass\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "11.0")
+    qnames = {s.qualified_name for s in out}
+    assert "odoo.tools.query.Query" in qnames, (
+        f"v11 must emit odoo.tools.query.Query (from odoo/osv/query.py); got {qnames}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T5 — V19-G5: NewId in odoo/orm/identifiers.py → v19 CoreSymbol
+# ---------------------------------------------------------------------------
+
+def test_v19_newid_emits_from_identifiers(tmp_path):
+    """T5: v19 — NewId in odoo/orm/identifiers.py is emitted as odoo.api.NewId CoreSymbol.
+
+    identifiers.py is indexed through the odoo/api.py allow-list entry (v19 resolver branch),
+    so the qname gets the "odoo.api" namespace prefix. This ensures api_version_diff(
+    "NewId", "18.0", "19.0") sees continuity (v18 odoo.api.NewId == v19 odoo.api.NewId)
+    rather than a false "removed in 19.0" signal.
+    """
+    # Create v19 layout: odoo/api/ is a package dir (makes candidate.is_file() False)
+    (tmp_path / "odoo" / "api").mkdir(parents=True)
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+    (orm_dir / "decorators.py").write_text("def depends(*a):\n    pass\n")
+    (orm_dir / "environments.py").write_text("class Environment:\n    pass\n")
+    (orm_dir / "identifiers.py").write_text(
+        "class NewId:\n"
+        "    '''Represents a new (unsaved) record identifier.'''\n"
+        "    def __init__(self, ref=None):\n"
+        "        self.ref = ref\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "19.0")
+    qnames = {s.qualified_name for s in out}
+    assert "odoo.api.NewId" in qnames, (
+        f"v19 NewId must be emitted as odoo.api.NewId (via api.py resolver); got: "
+        f"{[q for q in qnames if 'NewId' in q or 'identifiers' in q or 'api' in q]}"
+    )
+
+
+def test_v18_api_py_flat_emits_newid_without_identifiers(tmp_path):
+    """T5 guard: v18 flat odoo/api.py has NewId directly — no identifiers.py needed.
+
+    In v18, odoo/api.py is a regular file (not split). parse_odoo_core must still
+    emit odoo.api.NewId via the flat file, and the identifiers.py path (which doesn't
+    exist in v18) must be silently skipped.
+    """
+    (tmp_path / "odoo").mkdir(parents=True)
+    (tmp_path / "odoo" / "api.py").write_text(
+        "class NewId:\n    pass\n\ndef depends(*a):\n    pass\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "18.0")
+    qnames = {s.qualified_name for s in out}
+    # v18: NewId from flat odoo/api.py → qname odoo.api.NewId
+    assert "odoo.api.NewId" in qnames, (
+        f"v18 must emit odoo.api.NewId from flat api.py; got: {[q for q in qnames if 'api' in q]}"
+    )
+    # No crash from missing identifiers.py (silently skipped)
+    orm_identifiers = [q for q in qnames if "identifiers" in q]
+    assert not orm_identifiers, (
+        f"v18 must not produce identifiers.py symbols (file absent in v18), got {orm_identifiers}"
+    )

@@ -51,13 +51,49 @@ class LegacyManifestFinder:
         return _scan(repo_path, "__openerp__.py")
 
 
+class DualManifestFinder:
+    """Locate both __manifest__.py and __openerp__.py (Odoo v10 transition era).
+
+    Odoo v10 standardised on __manifest__.py, yet a handful of legacy l10n
+    modules still ship only __openerp__.py (carried over from v9). Scanning
+    just one filename silently drops the other group from the graph.
+
+    Dedupe rule: a module directory is indexed once. When a directory holds
+    BOTH files we prefer the modern __manifest__.py (do not double-index the
+    same module, and never pick the legacy file when the modern one exists).
+    Implementation: collect modern manifests first, record their parent
+    directories, then add only those legacy manifests whose parent directory
+    is not already covered by a modern manifest.
+    """
+
+    def find(self, repo_path: str) -> list[str]:
+        modern = _scan(repo_path, "__manifest__.py")
+        modern_dirs = {str(Path(p).parent) for p in modern}
+        legacy = [
+            p
+            for p in _scan(repo_path, "__openerp__.py")
+            if str(Path(p).parent) not in modern_dirs
+        ]
+        return modern + legacy
+
+
 def get_manifest_finder(odoo_version: str) -> ManifestFinder:
-    """Dispatch finder by Odoo major version. Defaults to Modern when unknown."""
+    """Dispatch finder by Odoo major version. Defaults to Modern when unknown.
+
+    - major <= LEGACY_ERA_MAX_MAJOR (v8/v9) → Legacy (__openerp__.py only)
+    - major == 10                            → Dual (both, dedupe to modern)
+    - major >= 11                            → Modern (__manifest__.py only)
+    - unknown / unparseable                  → Modern (safe default)
+    """
     try:
         major = int(odoo_version.split(".")[0])
     except (ValueError, IndexError, AttributeError):
         return ModernManifestFinder()
-    return LegacyManifestFinder() if major <= LEGACY_ERA_MAX_MAJOR else ModernManifestFinder()
+    if major <= LEGACY_ERA_MAX_MAJOR:
+        return LegacyManifestFinder()
+    if major == 10:
+        return DualManifestFinder()
+    return ModernManifestFinder()
 
 
 # --- Regex fallback for legacy __openerp__.py with Python 2 syntax ---------
@@ -214,10 +250,11 @@ def build_registry(
 
             _application: bool = bool(manifest.get('application', False))
             _category: str | None = manifest.get('category') or None
+            _summary: str | None = manifest.get('summary') or None
 
-            _ext_deps: dict = manifest.get('external_dependencies', {})
-            _external_python: list[str] = list(_ext_deps.get('python', []))
-            _external_bin: list[str] = list(_ext_deps.get('bin', []))
+            _ext_deps = manifest.get('external_dependencies') or {}
+            _external_python: list[str] = list(_ext_deps.get('python') or [])
+            _external_bin: list[str] = list(_ext_deps.get('bin') or [])
 
             info = ModuleInfo(
                 name=module_name,
@@ -238,6 +275,7 @@ def build_registry(
                 auto_install=_auto_install,
                 application=_application,
                 category=_category,
+                summary=_summary,
                 external_python=_external_python,
                 external_bin=_external_bin,
                 # A2c — repo provenance

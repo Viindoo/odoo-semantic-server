@@ -80,6 +80,10 @@ async def create_profile(body: CreateProfileBody, request: Request):
             description=body.description,
             parent_id=body.parent_id,
         )
+        # WG-3t T4: a new profile changes the own/shared scope a tenant resolves
+        # to → drop the 60s tenant-scope cache so isolation cannot serve stale.
+        from src.mcp.session import invalidate_allowed_profiles
+        invalidate_allowed_profiles()
     except ValueError as e:
         # Cycle / version-mismatch validation errors → 400.
         _logger.warning("Create profile validation failed: %s", e)
@@ -114,6 +118,10 @@ async def set_profile_parent(
         from src.db.pg import repo_store
 
         changed = repo_store().set_profile_parent(profile_id, body.parent_id)
+        # WG-3t T4: re-parenting alters the ancestor chain → shared scope changes.
+        if changed:
+            from src.mcp.session import invalidate_allowed_profiles
+            invalidate_allowed_profiles()
     except ProfileNotFoundError as e:
         _logger.warning("Set profile parent: profile not found: %s", e)
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -194,6 +202,13 @@ async def update_profile(
         except Exception:
             pass
 
+        # WG-3t T4: a profile rename changes the names a tenant resolves to via
+        # own/shared → drop the 60s tenant-scope cache so isolation cannot serve
+        # stale (e.g. an old name still granting visibility).
+        if updated_fields:
+            from src.mcp.session import invalidate_allowed_profiles
+            invalidate_allowed_profiles()
+
     except ProfileNotFoundError as e:
         _logger.warning("Update profile: not found: %s", e)
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -259,6 +274,11 @@ async def delete_profile(request: Request, profile_id: int):
         # PG delete (CASCADE removes child repos automatically)
         result = repo_store().delete_profile(profile_id)
         repo_count = len(result["repos"])
+
+        # WG-3t T4: deleting a profile removes it from every tenant's own/shared
+        # scope → drop the 60s cache so isolation cannot keep serving it.
+        from src.mcp.session import invalidate_allowed_profiles
+        invalidate_allowed_profiles()
 
     except Exception as e:
         _logger.warning("Delete profile %s failed: %s", profile_id, e)

@@ -431,12 +431,16 @@ class TestCheckModuleExistsProfileFilter:
             driver.close()
         assert "Indexed:         Yes" in result
 
-    def test_profile_name_is_advisory_admin_unrestricted(self, seeded_module_profiles):
-        """M13 (ADR-0034 supersedes ADR-0029): profile_name is ADVISORY, not isolation.
+    def test_profile_name_narrows_non_escalating_for_admin(self, seeded_module_profiles):
+        """WG-3t T3 (ADR-0034): profile_name is a NON-ESCALATING narrowing filter,
+        consistent across the Neo4j and pgvector paths (fixes the split-brain).
 
-        Pre-M13 this asserted profile_name='alpha_cme' hid cme_beta_mod. Under M13 the
-        tenant boundary isolates (proven by test_cross_tenant_isolation); with no tenant
-        context (admin), profile_name no longer restricts — the beta module is found.
+        Pre-WG-3t the Neo4j path treated admin's profile_name as advisory (the beta
+        module was found when asking under 'alpha_cme') while pgvector narrowed — a
+        split-brain. Under T3 BOTH paths narrow: admin asking for 'alpha_cme' narrows
+        to that profile, so cme_beta_mod (under a different profile) is NOT found, while
+        the matching module still is. The tenant boundary remains the isolation
+        guarantee (test_cross_tenant_isolation).
         """
         from neo4j import GraphDatabase
 
@@ -445,12 +449,21 @@ class TestCheckModuleExistsProfileFilter:
         uri, user, password = seeded_module_profiles
         driver = GraphDatabase.driver(uri, auth=(user, password))
         try:
-            result = _check_module_exists(
+            # beta module narrowed away when asking under the alpha profile.
+            beta = _check_module_exists(
                 "cme_beta_mod", odoo_version=TEST_VERSION,
+                profile_name="alpha_cme", _driver=driver,
+            )
+            # matching profile still surfaces its own module (precise narrowing).
+            alpha = _check_module_exists(
+                "cme_alpha_mod", odoo_version=TEST_VERSION,
                 profile_name="alpha_cme", _driver=driver,
             )
         finally:
             driver.close()
-        assert "Indexed:         Yes" in result, (
-            f"admin (no tenant) is unrestricted — profile_name is advisory, got: {result!r}"
+        assert "Indexed:         No" in beta, (
+            f"profile_name='alpha_cme' must narrow away cme_beta_mod, got: {beta!r}"
+        )
+        assert "Indexed:         Yes" in alpha, (
+            f"profile_name='alpha_cme' must still find cme_alpha_mod, got: {alpha!r}"
         )

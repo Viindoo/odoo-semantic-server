@@ -16,6 +16,10 @@ FIELD_TYPES = {
     'Char', 'Text', 'Html', 'Integer', 'Float', 'Monetary', 'Boolean',
     'Date', 'Datetime', 'Binary', 'Selection', 'Many2one', 'One2many',
     'Many2many', 'Reference', 'Json', 'Properties', 'Image',
+    # v13+: generic many2one without FK constraint (odoo/fields.py:2659 in v13)
+    'Many2oneReference',
+    # v16+: stores property definitions on a model (odoo/fields.py:3794 in v16)
+    'PropertiesDefinition',
 }
 
 # M10.5 P1 — relational field types whose first positional arg (or comodel_name kwarg)
@@ -29,6 +33,8 @@ FIELD_TYPES_LEGACY = {
     'float', 'integer', 'char', 'text', 'html', 'boolean', 'monetary',
     'date', 'datetime', 'binary', 'selection',
     'many2one', 'one2many', 'many2many', 'reference', 'image',
+    # v8/v9: specialized field backed by ir.property table (openerp/osv/fields.py:1704 in v8)
+    'property',
 }
 
 MODEL_BASE_CLASSES = {
@@ -134,10 +140,26 @@ def _collect_module_local_defs(tree: ast.Module) -> set[str]:
 
 
 def _is_odoo_qualified(name: str, scope_map: dict[str, str]) -> bool:
-    """Return True if `name` resolves to an `odoo.*` qualified name via scope_map."""
+    """Return True if `name` resolves to an Odoo-core qualified name via scope_map.
+
+    Accepts BOTH namespaces:
+      - `odoo` / `odoo.*`      → v10+ (current).
+      - `openerp` / `openerp.*` → v8/v9 (the core package was named `openerp`
+        before the v10 rename). In v8/v9, refs to core symbols qualified via the
+        aliased-module-attribute pattern (`import openerp.tools as t; t.safe_eval()`)
+        resolve through scope_map to `openerp.*`; without this branch those refs
+        were silently dropped, losing USES_CORE_SYMBOL edges for v8/v9 (V9-G5).
+
+    The exact-or-dotted check (`== ns` OR `startswith(ns + ".")`) is deliberate:
+    it matches the bare package name and any dotted descendant but NOT lookalike
+    tokens such as `odoox`, `openerpx`, or `openerp_foo` (no false positives).
+    """
     resolved = scope_map.get(name)
-    return resolved is not None and (
-        resolved == "odoo" or resolved.startswith("odoo.")
+    if resolved is None:
+        return False
+    return any(
+        resolved == ns or resolved.startswith(ns + ".")
+        for ns in ("odoo", "openerp")
     )
 
 
@@ -582,13 +604,19 @@ def _parse_class(
 
                 # A2-followup — field label + help text (intent for AI agents).
                 # `string=` kwarg; else the first positional arg is the label for
-                # NON-relational fields (relational positional[0] is the comodel).
+                # NON-relational, NON-selection/reference fields only.
+                # Exclusions (positional[0] is NOT a label):
+                #   - Relational fields: positional[0] is the comodel name.
+                #   - Selection: positional[0] is the selection list or a method name.
+                #   - Reference: positional[0] is the selection list of (model,label) pairs.
+                # F-14 fix: guard against mislabeling Selection/Reference positional args.
+                _POSITIONAL_LABEL_EXCLUDED = RELATIONAL_FIELD_TYPES | {"selection", "reference"}
                 field_string = (
                     _extract_string(kwargs["string"]) if "string" in kwargs else None
                 )
                 if (
                     field_string is None
-                    and field_type not in RELATIONAL_FIELD_TYPES
+                    and field_type not in _POSITIONAL_LABEL_EXCLUDED
                     and call.args
                 ):
                     field_string = _extract_string(call.args[0])
@@ -748,6 +776,19 @@ _RE_ERA1_METHOD = re.compile(
 # inside a relational field call, e.g. fields.many2one('res.partner', ...).
 # Best-effort: dynamic comodel (variable reference) → no match → None (OK).
 _RE_ERA1_COMODEL = re.compile(r"fields\.\w+\(\s*['\"]([^'\"]+)['\"]")
+
+# V9-G2 safety-net: matches new-API class-attr field declarations in Python 2
+# source that fails ast.parse. Runs ONLY inside the era1 text fallback when AST
+# fails. Captures: group(1)=field_name, group(2)=FieldType (capitalized era2 name).
+# Examples matched:  amount = fields.Float(...)
+#                    partner_id = fields.Many2one('res.partner')
+#                    amount_tax = fields.Monetary(compute='_compute_tax', store=True)
+# Intentionally simple — does NOT handle complex multi-line calls or decorators.
+# The AST path handles those; this regex is a best-effort fallback only.
+_RE_ERA1_NEWAPI_FIELD = re.compile(
+    r"^[ \t]+(\w+)\s*=\s*fields\.([A-Z][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
 
 
 def _slice_class_body(source: str, start_pos: int, next_pos: int | None) -> str:
@@ -1069,6 +1110,32 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
             # copy_match.group(1) would be the parent class name (e.g. 'ParentCls')
             # We detect and skip — no field extraction from this line.
             pass
+
+        # V9-G2 safety-net: extract new-API class-attr fields when AST failed.
+        # v9 files may mix `_columns = {...}` (era1) WITH `amount = fields.Float(...)`
+        # (era2 new-API) in the same class. The text-regex for _columns misses the
+        # latter entirely. This additional scan catches them as a best-effort fallback.
+        # Only fields in FIELD_TYPES (capitalized) are accepted — era1 dict entries
+        # use lowercase types and are already handled above via FIELD_TYPES_LEGACY.
+        for nm in _RE_ERA1_NEWAPI_FIELD.finditer(body):
+            field_name = nm.group(1)
+            field_type_raw = nm.group(2)  # e.g. 'Float', 'Many2one'
+            # Skip private/dunder and known non-field class assignments
+            if field_name.startswith('_'):
+                continue
+            if field_type_raw not in FIELD_TYPES:
+                continue
+            if field_name in seen_field_names:
+                continue
+            seen_field_names.add(field_name)
+            ttype = field_type_raw.lower()
+            fields_list.append(FieldInfo(
+                name=field_name, ttype=ttype,
+                related=None, compute=None,
+                stored=True, required=False,
+                source_definition=None,
+                comodel_name=None,
+            ))
 
         if not name:
             continue

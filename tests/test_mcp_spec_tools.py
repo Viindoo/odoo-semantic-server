@@ -390,16 +390,19 @@ class TestFindDeprecatedUsageProfileFilter:
         assert "legacy_alpha" in out
         assert "legacy_beta" in out
 
-    def test_profile_name_is_advisory_admin_unrestricted(
+    def test_profile_name_narrows_non_escalating_for_admin(
         self, seeded_deprecated_profiles, spec_tools,
     ):
-        """M13 (ADR-0034 supersedes ADR-0029): profile_name is ADVISORY, not isolation.
+        """WG-3t T3 (ADR-0034): profile_name is a NON-ESCALATING narrowing filter,
+        consistent across the Neo4j and pgvector paths (fixes the split-brain).
 
-        Pre-M13 this asserted profile_name='alpha_depr' hid the beta hit. Under M13 the
-        tenant boundary isolates (proven by test_cross_tenant_isolation); with no tenant
-        context (admin), profile_name no longer restricts — both hits are returned.
+        Pre-WG-3t the Neo4j path treated admin's profile_name as advisory (both hits
+        returned) while the pgvector path narrowed — a split-brain. Under T3 BOTH paths
+        narrow: admin asking for 'alpha_depr' narrows to that profile, so only the alpha
+        hit surfaces; the beta hit (under 'beta_depr') is filtered out. The tenant
+        boundary remains the isolation guarantee (test_cross_tenant_isolation).
         """
         v = seeded_deprecated_profiles
         out = spec_tools._find_deprecated_usage(v, profile_name="alpha_depr")
-        assert "legacy_alpha" in out
-        assert "legacy_beta" in out  # admin sees all; profile_name advisory (isolation = tenant)
+        assert "legacy_alpha" in out  # matching profile still surfaces its hit
+        assert "legacy_beta" not in out  # non-matching profile narrowed away (non-escalating)

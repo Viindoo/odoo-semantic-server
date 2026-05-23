@@ -335,6 +335,23 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
     if prefix_new != prefix_old and logical_path.startswith(prefix_old):
         logical_path = prefix_new + logical_path[len(prefix_old):]
 
+    # T4 — CORE-Q: query.py moved across directories between versions.
+    # After prefix substitution above:
+    #   v8-v9:  logical_path == "openerp/tools/query.py"  → real file: openerp/osv/query.py
+    #   v10-v15: logical_path == "odoo/tools/query.py"    → real file: odoo/osv/query.py
+    #   v16+:   logical_path == "odoo/tools/query.py"     → real file: odoo/tools/query.py (HIT)
+    # The direct `candidate.is_file()` check below handles v16+ (HIT).
+    # For v8-v9 and v10-v15, we need the version-aware osv/ path.
+    major = int(version.split(".")[0])
+    if logical_path in ("odoo/tools/query.py", "openerp/tools/query.py"):
+        if major <= 9:
+            p = odoo_root / "openerp" / "osv" / "query.py"
+        elif major <= 15:
+            p = odoo_root / "odoo" / "osv" / "query.py"
+        else:
+            p = odoo_root / "odoo" / "tools" / "query.py"
+        return [p] if p.is_file() else []
+
     candidate = odoo_root / logical_path
     if candidate.is_file():
         return [candidate]
@@ -364,6 +381,11 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
         candidates = [
             odoo_root / "odoo" / "orm" / "decorators.py",
             odoo_root / "odoo" / "orm" / "environments.py",
+            # T5 — V19-G5: NewId moved from odoo/api.py (v18) to odoo/orm/identifiers.py (v19).
+            # Routing through the api.py entry keeps the qname "odoo.api.NewId" so that
+            # api_version_diff("NewId", "18.0", "19.0") sees continuity (moved, not removed).
+            # re-exported via odoo/api/__init__.py: from odoo.orm.identifiers import NewId.
+            odoo_root / "odoo" / "orm" / "identifiers.py",
         ]
         return [p for p in candidates if p.is_file()]
 

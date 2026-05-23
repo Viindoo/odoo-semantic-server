@@ -107,14 +107,18 @@ def test_parse_era3_owl_class(tmp_path):
 
 
 def test_parse_era3_patch(tmp_path):
+    # V16-G2 fix: entity_name must be the TARGET class, not the patch_name string literal.
+    # Real v16 pattern: patch(SaleOrderWidget.prototype, "key", { ... })
     src = """/** @odoo-module */
 import { patch } from '@web/core/utils/patch';
-patch("SaleOrderWidget", { setup() { this._super(); } });
+patch(SaleOrderWidget.prototype, "sale_patch", { setup() { this._super(); } });
 """
     fp = _write_js(tmp_path, "patch.js", src)
     chunks = parse_file(fp, _module(tmp_path))
     assert any(c.era == "era3" for c in chunks)
+    # entity_name = target class "SaleOrderWidget", NOT patch_name "sale_patch"
     assert any("SaleOrderWidget" in c.entity_name for c in chunks)
+    assert not any("sale_patch" in c.entity_name for c in chunks)
 
 
 # --- Chunking ---
@@ -489,3 +493,237 @@ def test_era3_patches_extracted_for_v17(tmp_path):
     assert p.era == "patch"
     assert p.target == "FormController"
     assert p.patch_name == "form_ctrl_patch"
+
+
+# ---------------------------------------------------------------------------
+# T1 — JS-G1: era2 files in v14+ produce OWLComp nodes (dual-dispatch)
+# ---------------------------------------------------------------------------
+
+def test_era2_owl_component_dual_dispatch_v14(tmp_path):
+    """T1: era2 file with `class Foo extends Component` in v14 → OWLCompInfo.
+
+    The file is classified era2 (odoo.define present, @odoo-module absent).
+    The dual-dispatch in _extract_graph_from_file must also call
+    _extract_era3_components, producing an OWLCompInfo node.
+    """
+    src = (
+        "odoo.define('web.Popover', function(require) {\n"
+        "    const { Component, hooks } = owl;\n"
+        "    const patchMixin = require('web.patchMixin');\n"
+        "    class Popover extends Component {\n"
+        "        setup() {}\n"
+        "    }\n"
+        "    return patchMixin(Popover);\n"
+        "});\n"
+    )
+    _make_static_js(tmp_path, "popover.js", src)
+    result = parse_module_graph(_module(tmp_path, version="14.0"))
+    comp = next((c for c in result.components if c.name == "Popover"), None)
+    assert comp is not None, (
+        "era2 file with class Popover extends Component (v14) must produce OWLCompInfo"
+    )
+    assert comp.extends == "Component"
+
+
+def test_era2_owl_component_not_produced_for_v13(tmp_path):
+    """T1 guard: era2 file with OWL component in v13 must NOT produce OWLCompInfo.
+
+    OWL did not exist before v14. The dual-dispatch guard (_OWL_ENABLED_REGISTRY)
+    must prevent extraction for v13 even if the file has `extends Component`.
+    """
+    src = (
+        "odoo.define('old.Widget', function(require) {\n"
+        "    class OldComp extends Component {}\n"
+        "    return OldComp;\n"
+        "});\n"
+    )
+    _make_static_js(tmp_path, "old_widget.js", src)
+    result = parse_module_graph(_module(tmp_path, version="13.0"))
+    assert result.components == [], (
+        "era2 file with class extends Component in v13 must NOT produce OWLCompInfo"
+    )
+
+
+def test_era2_owl_no_double_count_era3_file(tmp_path):
+    """T1 anti-regression: era3 file is NOT processed by era2 extractor (no double-count).
+
+    era3 files go through _extract_era3_patches + _extract_era3_components only.
+    The dual-dispatch code only runs for era2. A component in an era3 file must
+    appear exactly once.
+    """
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n"
+        "export class FormView extends Component {\n"
+        "    static template = 'web.FormView';\n"
+        "}\n"
+    )
+    _make_static_js(tmp_path, "form_view.js", src)
+    result = parse_module_graph(_module(tmp_path, version="16.0"))
+    form_view_comps = [c for c in result.components if c.name == "FormView"]
+    assert len(form_view_comps) == 1, (
+        f"era3 file must produce exactly 1 OWLCompInfo for FormView, got {len(form_view_comps)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T2 — JS-G2: member-expr MyClass.patch("key", fn) in era2 files (v14+)
+# ---------------------------------------------------------------------------
+
+def test_era2_member_patch_v14_produces_jspatch(tmp_path):
+    """T2: MyClass.patch('key', T => class extends T {...}) in era2 file v14 → JSPatchInfo.
+
+    v14 OWL patchMixin pattern: after wrapping a class with patchMixin(), the class
+    gains a .patch(name, fn) method. This is a member_expression call, not the era2
+    .include() nor the era3 bare patch().
+    """
+    src = (
+        "odoo.define('web.patch_test', function(require) {\n"
+        "    const Popover = require('web.Popover');\n"
+        "    Popover.patch('web.PopoverMixin', T => class extends T {\n"
+        "        setup() { this._super(); }\n"
+        "    });\n"
+        "});\n"
+    )
+    _make_static_js(tmp_path, "patch_test.js", src)
+    result = parse_module_graph(_module(tmp_path, version="14.0"))
+    patch = next((p for p in result.patches if p.target == "Popover"), None)
+    assert patch is not None, (
+        "Popover.patch('key', fn) in era2 file v14 must produce JSPatchInfo"
+    )
+    assert patch.era == "patch"
+    assert patch.patch_name == "web.PopoverMixin"
+
+
+def test_era2_member_patch_not_produced_for_v13(tmp_path):
+    """T2 guard: MyClass.patch() in era2 file v13 must NOT produce JSPatchInfo.
+
+    OWL patchMixin only existed in v14+. Guard (_OWL_ENABLED_REGISTRY) must prevent
+    this pattern from matching in v13.
+    """
+    src = (
+        "odoo.define('old.patch', function(require) {\n"
+        "    var Foo = require('web.Foo');\n"
+        "    Foo.patch('old.key', function() {});\n"
+        "});\n"
+    )
+    _make_static_js(tmp_path, "old_patch.js", src)
+    result = parse_module_graph(_module(tmp_path, version="13.0"))
+    member_patches = [p for p in result.patches if p.era == "patch"]
+    assert member_patches == [], (
+        "MyClass.patch() in era2 file v13 must NOT produce era=patch JSPatchInfo"
+    )
+
+
+def test_era2_include_still_works_alongside_member_patch(tmp_path):
+    """T2 regression: .include() still produces era=include JSPatchInfo after T2 changes."""
+    src = (
+        "odoo.define('mymod.ext', function(require) {\n"
+        "    var Foo = require('web.Foo');\n"
+        "    Foo.include({ start: function() {} });\n"
+        "});\n"
+    )
+    _make_static_js(tmp_path, "inc.js", src)
+    result = parse_module_graph(_module(tmp_path, version="14.0"))
+    include_patches = [p for p in result.patches if p.era == "include"]
+    assert len(include_patches) == 1, (
+        f"Foo.include() must still produce era=include JSPatchInfo, got {include_patches}"
+    )
+    assert include_patches[0].target == "Foo"
+
+
+# ---------------------------------------------------------------------------
+# T3 — V16-G1: OWLComp filter — non-Component classes must NOT become OWLComp
+# ---------------------------------------------------------------------------
+
+def test_era3_only_component_subclass_produces_owlcomp(tmp_path):
+    """T3: era3 file with Component subclass + plain class → only Component subclass indexed.
+
+    `class Domain {}` and `class Registry {}` are utility classes in era3 files.
+    They must NOT produce OWLCompInfo. Only `class Foo extends Component` qualifies.
+    """
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n"
+        "class Foo extends Component {\n"
+        "    static template = 'x.Foo';\n"
+        "}\n"
+        "class Domain {}\n"
+        "class Registry {}\n"
+        "class RPCError {}\n"
+    )
+    _make_static_js(tmp_path, "mixed.js", src)
+    result = parse_module_graph(_module(tmp_path, version="16.0"))
+    component_names = {c.name for c in result.components}
+    assert "Foo" in component_names, "Foo extends Component must be indexed as OWLComp"
+    assert "Domain" not in component_names, "Domain (plain class) must NOT be OWLComp"
+    assert "Registry" not in component_names, "Registry (plain class) must NOT be OWLComp"
+    assert "RPCError" not in component_names, "RPCError (plain class) must NOT be OWLComp"
+
+
+def test_era3_non_component_class_excluded_v17(tmp_path):
+    """T3 regression: non-OWL classes in era3 v17 file are excluded from OWLComp."""
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n"
+        "export class SaleWidget extends Component {}\n"
+        "export class HelperUtil {}\n"
+        "export class DataModel {}\n"
+    )
+    _make_static_js(tmp_path, "sale_widget.js", src)
+    result = parse_module_graph(_module(tmp_path, version="17.0"))
+    component_names = {c.name for c in result.components}
+    assert "SaleWidget" in component_names
+    assert "HelperUtil" not in component_names
+    assert "DataModel" not in component_names
+
+
+def test_era3_owl_member_expr_component(tmp_path):
+    """JS-G1 fix: `extends owl.Component` (member_expression) must produce OWLCompInfo.
+
+    Previously only `extends Component` (identifier) was recognised; the qualified
+    form `extends owl.Component` was parsed as a member_expression by tree-sitter and
+    the extends_name came back None — the class was silently dropped.
+    Regression guard: revert the member_expression branch → test goes red.
+    """
+    src = (
+        "/** @odoo-module */\n"
+        "import owl from '@odoo/owl';\n"
+        "export class FooWidget extends owl.Component {\n"
+        "    static template = 'my_mod.FooWidget';\n"
+        "}\n"
+        "class UtilHelper {}\n"  # no extends — must NOT become OWLComp
+    )
+    _make_static_js(tmp_path, "foo_widget.js", src)
+    result = parse_module_graph(_module(tmp_path, version="15.0"))
+    component_names = {c.name for c in result.components}
+    assert "FooWidget" in component_names, (
+        "extends owl.Component (member_expression) must be indexed as OWLComp"
+    )
+    assert "UtilHelper" not in component_names, (
+        "plain class without extends must NOT be OWLComp"
+    )
+
+
+def test_era3_extends_component_and_owl_component_no_double_count(tmp_path):
+    """Both `extends Component` and `extends owl.Component` in same file → 2 OWLComps, no dup.
+
+    Ensures the member_expression path does not double-count with the identifier path.
+    """
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n"
+        "import owl from '@odoo/owl';\n"
+        "export class AlphaWidget extends Component {}\n"
+        "export class BetaWidget extends owl.Component {}\n"
+        "export class GammaUtil {}\n"
+    )
+    _make_static_js(tmp_path, "widgets.js", src)
+    result = parse_module_graph(_module(tmp_path, version="16.0"))
+    component_names = {c.name for c in result.components}
+    assert "AlphaWidget" in component_names, "extends Component must be OWLComp"
+    assert "BetaWidget" in component_names, "extends owl.Component must be OWLComp"
+    assert "GammaUtil" not in component_names, "plain class must NOT be OWLComp"
+    assert len([c for c in result.components if c.name in {"AlphaWidget", "BetaWidget"}]) == 2, (
+        "exactly 2 OWLComp entries — no double-count"
+    )

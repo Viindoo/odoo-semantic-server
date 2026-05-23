@@ -444,9 +444,19 @@ def _index_repo(
                 total_embed_calls += embed_calls
 
     # Option Y (ADR-0016): pass ancestor profile list so every node gets a
-    # `profile` property array. Defaults to [repo_root_name] when not provided
-    # (legacy callers / unit tests that pre-date profile hierarchy).
-    _profiles_arr = ancestor_profiles or []
+    # `profile` property array.
+    # F-6 guard: NEVER pass profile=[] to writer.  An empty profile array causes
+    # Cypher's vacuous-truth all() to return TRUE for every tenant (fail-open).
+    # index_profile() always builds ancestor_profiles as a non-empty list (line
+    # 610-614 below).  Direct callers (unit tests, CLI) that pass None get the
+    # repo root name as a safe single-element fallback.
+    _profiles_arr: list[str] = ancestor_profiles if ancestor_profiles else [repo_root_name]
+    if not _profiles_arr:  # defensive: should be unreachable after the line above
+        raise RuntimeError(
+            f"_index_repo: profiles list is empty for repo {repo.get('url', local_path)!r}. "
+            "Every indexed node must carry at least one profile name — "
+            "pass ancestor_profiles=[profile_name] from index_profile()."
+        )
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
     # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist

@@ -28,8 +28,8 @@ from src.indexer.parser_cli import (
     parse_cli_flags,
 )
 
-ODOO8_SRC = os.environ.get("ODOO8_SRC", "/home/tuan/git/odoo8")
-ODOO9_SRC = os.environ.get("ODOO9_SRC", "/home/tuan/git/odoo9")
+ODOO8_SRC = os.environ.get("ODOO8_SRC", "/nonexistent/odoo8")
+ODOO9_SRC = os.environ.get("ODOO9_SRC", "/nonexistent/odoo9")
 ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
 
 
