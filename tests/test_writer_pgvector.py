@@ -541,6 +541,31 @@ def test_write_migration_adds_provenance_columns(clean_pg_embeddings):
     assert "repo_id" in found, "repo_id column missing from embeddings table"
 
 
+# --- T6 (V16-G2): JSPatch chunk entity_name must be target, not patch_name ---
+
+
+def test_make_chunks_jspatch_entity_name_is_target():
+    """V16-G2: JSChunk for a patch() call must have entity_name = target component name,
+    not the patch_name string literal (which is used as the Neo4j key, not the component)."""
+    mi = _module_info()
+    # Simulate how parser_js._parse_era3 now emits entity_name = target ("FormController")
+    # rather than patch_name ("mail").
+    js = [JSChunk(
+        module=TEST_MODULE, odoo_version=TEST_VERSION,
+        file_path="/tmp/mail_form_controller_patch.js", era="era3",
+        entity_name="FormController",  # target = the patched class
+        chunk_idx=0,
+        content="patch(FormController, { someMethod() { ... } });",
+    )]
+    chunks = make_chunks(TEST_MODULE, TEST_VERSION, ParseResult(module=mi), None, js)
+    js_chunks = [c for c in chunks if c.chunk_type == "js_era3"]
+    assert len(js_chunks) == 1
+    assert js_chunks[0].entity_name == "FormController", (
+        f"entity_name should be target 'FormController', got {js_chunks[0].entity_name!r} — "
+        "V16-G2: patch chunk entity_name must be target, not patch_name"
+    )
+
+
 @pytest.mark.postgres
 def test_write_provenance_columns_populated(clean_pg_embeddings):
     """write_module_embeddings stores line_start / repo / repo_id when set on chunks."""

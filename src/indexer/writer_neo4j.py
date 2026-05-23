@@ -58,8 +58,8 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.category = $category,
                       m.external_python = $external_python,
                       m.external_bin = $external_bin,
-                      m.repo_url = $repo_url,
-                      m.repo_id = $repo_id
+                      m.repo_url = coalesce($repo_url, m.repo_url),
+                      m.repo_id = coalesce($repo_id, m.repo_id)
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
             m.edition = $edition,
             m.viindoo_equivalent_qname = $vvq,
@@ -261,33 +261,37 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                      v=model.odoo_version, ref=ref)
 
             # A2d: USES_FIELD edges — MATCH (not MERGE) on Field so no stub nodes.
-            # Best-effort: self.env, self.method_name, etc. find no Field → no edge.
-            for ref_name in mth.field_refs:
+            # F-13 fix: include module in Field MATCH key to avoid fan-out across
+            #   modules that all define the same field name on the same model.
+            #   Uses the method's own module (model.module) as the context module.
+            # F-8 fix: batch with UNWIND to avoid 1 tx.run per field_ref (N+1).
+            if mth.field_refs:
                 tx.run(f"""
                     MATCH (mth:Method {{name: $mth_name, model: $model_name,
                                        module: $mod, odoo_version: $v}})
-                    MATCH (f:Field {{name: $ref_name, model: $model_name,
-                                    odoo_version: $v}})
+                    UNWIND $refs AS ref_name
+                    MATCH (f:Field {{name: ref_name, model: $model_name,
+                                    module: $mod, odoo_version: $v}})
                     MERGE (mth)-[:{REL_USES_FIELD}]->(f)
                 """, mth_name=mth.name, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, ref_name=ref_name)
+                     v=model.odoo_version, refs=list(mth.field_refs))
 
             # A2d: DEPENDS_ON_FIELD edges from @api.depends paths — first segment only.
-            # Best-effort: MATCH on Field so no stub nodes created.
-            _seen_dep_fields: set[str] = set()
-            for dep_path in mth.depends:
-                first_seg = dep_path.split('.')[0]
-                if first_seg in _seen_dep_fields:
-                    continue
-                _seen_dep_fields.add(first_seg)
+            # F-13 fix: include module in Field MATCH key (same as USES_FIELD above).
+            # F-8 fix: batch with UNWIND — 1 tx.run per method instead of per dep-path.
+            _dep_segs: list[str] = list(dict.fromkeys(
+                dep.split('.')[0] for dep in mth.depends
+            ))
+            if _dep_segs:
                 tx.run(f"""
                     MATCH (mth:Method {{name: $mth_name, model: $model_name,
                                        module: $mod, odoo_version: $v}})
-                    MATCH (f:Field {{name: $first_seg, model: $model_name,
-                                    odoo_version: $v}})
+                    UNWIND $segs AS first_seg
+                    MATCH (f:Field {{name: first_seg, model: $model_name,
+                                    module: $mod, odoo_version: $v}})
                     MERGE (mth)-[:{REL_DEPENDS_ON_FIELD}]->(f)
                 """, mth_name=mth.name, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, first_seg=first_seg)
+                     v=model.odoo_version, segs=_dep_segs)
 
 
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
@@ -300,12 +304,14 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             SET v.name = $name, v.model = $model, v.module = $module,
                 v.type = $view_type, v.mode = $mode,
                 v.xpaths_exprs = $xpaths_exprs,
-                v.xpaths_positions = $xpaths_positions
+                v.xpaths_positions = $xpaths_positions,
+                v.arch_snippet = $arch_snippet
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
              view_type=view.view_type, mode=view.mode,
              xpaths_exprs=[x.expr for x in view.xpaths],
              xpaths_positions=[x.position for x in view.xpaths],
+             arch_snippet=view.arch_snippet,
              profiles=profiles)
 
         tx.run(f"""

@@ -145,6 +145,10 @@ class ViewInfo:
     # A3 — provenance: 1-based source line of the <record> element
     # (best-effort from lxml .sourceline; None if unavailable)
     line: int | None = None
+    # arch_snippet: first ~20-30 lines of arch (≤2000 chars) for base views only;
+    # None for inherit-only (extension) views.  Stored on the Neo4j View node so AI
+    # agents can inspect view structure without fetching the full arch body.
+    arch_snippet: str | None = None
 
 
 @dataclass

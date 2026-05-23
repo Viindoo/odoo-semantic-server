@@ -2224,3 +2224,218 @@ def test_a2d_nonexistent_field_ref_no_edge(writer, neo4j_driver):
     assert rec["edge_cnt"] == 0, "No USES_FIELD edges for non-existent fields"
     assert stub_rec["stub_cnt"] == 0, "No stub Field nodes created for non-existent field refs"
 
+
+# --- T3 (F-13): USES_FIELD MATCH must include module to prevent cross-module fan-out ---
+
+
+def test_uses_field_scoped_to_own_module_no_fanout(writer, neo4j_driver):
+    """F-13: method in module A referencing 'x' must only get USES_FIELD to A's Field 'x',
+    NOT to module B's Field 'x' on the same model."""
+    # Module A: defines field 'x' + a method that references it
+    mod_a = ModuleInfo(
+        name="mod_a", odoo_version=TEST_VERSION,
+        repo="repo_a", path="/tmp", depends=[], version_raw="",
+    )
+    model_a = ModelInfo(
+        name="test.model", module="mod_a", odoo_version=TEST_VERSION,
+        fields=[FieldInfo(name="x", ttype="char")],
+        methods=[MethodInfo(name="compute_x", field_refs=["x"])],
+    )
+
+    # Module B: also defines field 'x' on the same model (via _inherit extension)
+    mod_b = ModuleInfo(
+        name="mod_b", odoo_version=TEST_VERSION,
+        repo="repo_b", path="/tmp", depends=["mod_a"], version_raw="",
+    )
+    model_b = ModelInfo(
+        name="test.model", module="mod_b", odoo_version=TEST_VERSION,
+        fields=[FieldInfo(name="x", ttype="char")],
+        methods=[],
+    )
+
+    writer.write_results([
+        ParseResult(module=mod_a, models=[model_a]),
+        ParseResult(module=mod_b, models=[model_b]),
+    ])
+
+    with neo4j_driver.session() as session:
+        # USES_FIELD from compute_x (mod_a) must link only to mod_a's Field 'x'
+        rows = session.run(
+            """
+            MATCH (mth:Method {name: $n, model: $m, module: $mod_a, odoo_version: $v})
+                  -[:USES_FIELD]->(f:Field {name: 'x', model: $m, odoo_version: $v})
+            RETURN f.module AS fmod
+            """,
+            n="compute_x", m="test.model", mod_a="mod_a", v=TEST_VERSION,
+        ).data()
+
+    modules_hit = {r["fmod"] for r in rows}
+    assert "mod_a" in modules_hit, "USES_FIELD must connect to mod_a's field"
+    assert "mod_b" not in modules_hit, (
+        "USES_FIELD must NOT fan-out to mod_b's field (F-13 cross-module fan-out)"
+    )
+
+
+# --- T4 (F-8): USES_FIELD / DEPENDS_ON_FIELD batch count verification ---
+
+
+def test_uses_field_batch_edges_correct(writer, neo4j_driver):
+    """F-8: batched UNWIND USES_FIELD must produce same edges as single-per-field loop."""
+    fields_list = [
+        FieldInfo(name="amount_total", ttype="monetary"),
+        FieldInfo(name="partner_id", ttype="many2one"),
+        FieldInfo(name="state", ttype="selection"),
+    ]
+    methods_list = [
+        MethodInfo(
+            name="_compute_all",
+            field_refs=["amount_total", "partner_id", "state"],
+        )
+    ]
+    result = _make_enriched_parse_result(
+        fields_list=fields_list,
+        methods_list=methods_list,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            """
+            MATCH (mth:Method {name: $n, model: $m, odoo_version: $v})
+                  -[:USES_FIELD]->(f:Field {model: $m, odoo_version: $v})
+            RETURN count(f) AS cnt
+            """,
+            n="_compute_all", m="test.model", v=TEST_VERSION,
+        ).single()
+
+    assert rec["cnt"] == 3, (
+        f"Expected 3 USES_FIELD edges (one per field_ref), got {rec['cnt']}"
+    )
+
+
+def test_depends_on_field_batch_deduplicates(writer, neo4j_driver):
+    """F-8: DEPENDS_ON_FIELD with duplicate dotted paths de-duplicates by first segment."""
+    fields_list = [
+        FieldInfo(name="partner_id", ttype="many2one"),
+    ]
+    methods_list = [
+        MethodInfo(
+            name="_compute_partner",
+            depends=["partner_id.name", "partner_id.email", "state"],
+        )
+    ]
+    # Note: 'state' field is NOT in fields_list, so the MATCH for it finds nothing
+    result = _make_enriched_parse_result(
+        fields_list=fields_list,
+        methods_list=methods_list,
+    )
+    writer.write_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            """
+            MATCH (mth:Method {name: $n, model: $m, odoo_version: $v})
+                  -[:DEPENDS_ON_FIELD]->(f:Field {model: $m, odoo_version: $v})
+            RETURN count(f) AS cnt
+            """,
+            n="_compute_partner", m="test.model", v=TEST_VERSION,
+        ).single()
+
+    # partner_id.name and partner_id.email both reduce to first seg 'partner_id' → 1 edge
+    # state has no Field node → 0 edges (MATCH, not MERGE)
+    assert rec["cnt"] == 1, (
+        f"Expected 1 DEPENDS_ON_FIELD edge (dedup 'partner_id.name'+'partner_id.email'), "
+        f"got {rec['cnt']}"
+    )
+
+
+# --- T5 (F-12): Module MERGE ON MATCH must not overwrite repo_url/repo_id with NULL ---
+
+
+def test_module_merge_coalesce_preserves_repo_url(writer, neo4j_driver):
+    """F-12: Writing a module first with repo_url, then again with repo_url=None,
+    must keep the original repo_url on the node (coalesce guard)."""
+    # First write: module with a real repo_url
+    mod_with_url = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+        repo_url="git@github.com:odoo/odoo.git",
+        repo_id=42,
+    )
+    result1 = ParseResult(module=mod_with_url, models=[])
+    writer.write_results([result1])
+
+    # Second write: same module but repo_url=None (dependency stub scenario)
+    mod_no_url = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+        repo_url=None,
+        repo_id=None,
+    )
+    result2 = ParseResult(module=mod_no_url, models=[])
+    writer.write_results([result2])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.repo_url AS url, m.repo_id AS rid",
+            n="sale", v=TEST_VERSION,
+        ).single()
+
+    assert rec["url"] == "git@github.com:odoo/odoo.git", (
+        f"repo_url was overwritten with NULL (F-12); got {rec['url']!r}"
+    )
+    assert rec["rid"] == 42, (
+        f"repo_id was overwritten with NULL (F-12); got {rec['rid']!r}"
+    )
+
+
+# --- T2: arch_snippet on View node (integration) ---
+
+
+def test_view_node_arch_snippet_written(writer, neo4j_driver):
+    """T2: View node in Neo4j must have arch_snippet for base views; None for extension views."""
+    from src.indexer.models import ViewInfo, ViewParseResult, XPathInfo
+
+    mod = ModuleInfo(
+        name="sale", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+    )
+    base_view = ViewInfo(
+        xmlid="sale.view_order_form",
+        name="Sale Order Form",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+        arch="<field name='arch' type='xml'><form><sheet><group name='main'>"
+             "<field name='name'/></group></sheet></form></field>",
+        arch_snippet="<field name='arch' type='xml'><form>",
+    )
+    ext_view = ViewInfo(
+        xmlid="sale.view_order_form_inherit",
+        name="Sale Order Form Inherit",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="extension",
+        inherit_xmlid="sale.view_order_form",
+        xpaths=[XPathInfo(expr="//field[@name='name']", position="after")],
+        arch_snippet=None,
+    )
+    vpr = ViewParseResult(module=mod, views=[base_view, ext_view])
+    writer.write_view_results([vpr])
+
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            "MATCH (v:View {odoo_version: $v}) RETURN v.xmlid AS xmlid, v.arch_snippet AS snip",
+            v=TEST_VERSION,
+        ).data()
+
+    data = {r["xmlid"]: r["snip"] for r in rows}
+    assert data.get("sale.view_order_form") is not None, "base view must have arch_snippet"
+    assert "<form>" in (data.get("sale.view_order_form") or ""), "arch_snippet must contain form structure"
+    assert data.get("sale.view_order_form_inherit") is None, "extension view must have arch_snippet=None"
+
