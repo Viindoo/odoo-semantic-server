@@ -397,9 +397,12 @@ the dependency closure already rides on it correctly.
 The manifest `depends` list in `describe_module` (both `_describe_module` and
 `_describe_module_structured`) returns only `d.name` of `DEPENDS_ON` targets with **no**
 `_scope_pred("d")`, in deliberate contrast to `_module_dep_closure` which DOES filter
-`dep`. This is **by design, not a leak**: the anchor module `m` is already scoped, so
-the caller is entitled to view it; `d.name` is a dependency name from the caller's own
-(scoped) manifest; and the list returns **no foreign node content** — whereas the
+`dep`. This is **by design, not a leak**: the caller already passed the scoped
+`mod_rec` query (which early-returns if they cannot see module `$n`@`$v`), and the
+depends list runs as a *separate* `session.run` that re-matches `m` by name+version
+only (not scoped) — so entitlement rests on that prior gate, not on this query. `d.name`
+is a dependency name from the caller's own manifest; and the list returns **no foreign
+node content** — whereas the
 closure returns `dep.repo` / `dep.repo_url` (foreign paths/URLs) and therefore must
 filter. A name-only list is not a useful leak oracle either: a `DEPENDS_ON` declaration
 MERGE-creates a stub target node regardless of whether another tenant owns a same-named
