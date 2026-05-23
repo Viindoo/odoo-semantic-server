@@ -240,18 +240,29 @@ def _parse_era3(source: bytes, module: str, version: str, file_path: str) -> lis
                     _sliding_chunks(content, module, version, file_path, "era3", entity_name)
                 )
 
-        # patch() calls: patch("MyComponent", { ... })
+        # patch() calls: patch(FormController.prototype, "mail", {...}) or patch(Foo, {...})
+        # entity_name = TARGET class (first arg), not patch_name string literal (V16-G2 fix).
         elif node.type == "call_expression":
             func = _find_first_child_by_type(node, "identifier")
             if func and source[func.start_byte:func.end_byte] == b"patch":
                 args = _find_first_child_by_type(node, "arguments")
                 entity_name = Path(file_path).stem
                 if args:
-                    string_nodes = [c for c in args.children
-                                    if c.type in ("string", "template_string")]
-                    if string_nodes:
-                        raw = source[string_nodes[0].start_byte:string_nodes[0].end_byte]
-                        entity_name = raw.decode("utf-8", errors="ignore").strip("\"'`")
+                    # First non-punctuation arg is the target object
+                    arg_nodes = [c for c in args.children if c.type not in (",", "(", ")")]
+                    if arg_nodes:
+                        first_arg = arg_nodes[0]
+                        if first_arg.type == "member_expression":
+                            # e.g. FormController.prototype → take base identifier
+                            obj = _find_first_child_by_type(first_arg, "identifier")
+                            if obj:
+                                entity_name = source[obj.start_byte:obj.end_byte].decode(
+                                    "utf-8", errors="ignore"
+                                )
+                        elif first_arg.type == "identifier":
+                            entity_name = source[
+                                first_arg.start_byte:first_arg.end_byte
+                            ].decode("utf-8", errors="ignore")
                 content = src_str[node.start_byte:node.end_byte]
                 if len(content) <= _WINDOW:
                     chunks.append(JSChunk(

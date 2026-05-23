@@ -107,14 +107,18 @@ def test_parse_era3_owl_class(tmp_path):
 
 
 def test_parse_era3_patch(tmp_path):
+    # V16-G2 fix: entity_name must be the TARGET class, not the patch_name string literal.
+    # Real v16 pattern: patch(SaleOrderWidget.prototype, "key", { ... })
     src = """/** @odoo-module */
 import { patch } from '@web/core/utils/patch';
-patch("SaleOrderWidget", { setup() { this._super(); } });
+patch(SaleOrderWidget.prototype, "sale_patch", { setup() { this._super(); } });
 """
     fp = _write_js(tmp_path, "patch.js", src)
     chunks = parse_file(fp, _module(tmp_path))
     assert any(c.era == "era3" for c in chunks)
+    # entity_name = target class "SaleOrderWidget", NOT patch_name "sale_patch"
     assert any("SaleOrderWidget" in c.entity_name for c in chunks)
+    assert not any("sale_patch" in c.entity_name for c in chunks)
 
 
 # --- Chunking ---
