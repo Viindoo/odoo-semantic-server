@@ -61,20 +61,20 @@ Expected: `test_artifact_count = 0`.
 
 ---
 
-## 2. Index Odoo Core Symbols v9–v19 (15–30 min)
+## 2. Index Odoo Core Symbols v8–v19 (15–30 min)
 
 The `index-core` command indexes framework-level symbols (ORM models, fields, decorators) for each Odoo version. This powers the `lookup_core_api` MCP tool. Run once per version, in order.
 
 **Versions to index:**
-- v9.0 (legacy era1 — requires `~/git/odoo9` present)
-- v10.0, v11.0, …, v17.0 (each requires `~/git/odoo<N>` checkout)
+- v8.0, v9.0 (legacy era1 — requires `~/git/odoo8`, `~/git/odoo9` present)
+- v10.0, v11.0, …, v17.0, v18.0 (each requires `~/git/odoo<N>` checkout)
 - v19.0 (latest; requires `~/git/odoo19` checkout)
 
-**Note:** v18 is deferred (OBS-1), v20 not yet released by Odoo.
+**Note:** v18 is indexed (repo id 34 cloned 2026-05-18); v20 not yet released by Odoo.
 
 **Commands:**
 ```bash
-for V in 9 10 11 12 13 14 15 16 17 19; do
+for V in 8 9 10 11 12 13 14 15 16 17 18 19; do
     echo "=== Indexing Odoo v${V}.0 ===" >&2
     ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-core \
         --source "$HOME/git/odoo${V}" \

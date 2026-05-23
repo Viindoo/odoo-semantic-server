@@ -68,12 +68,17 @@ Project hỗ trợ Odoo v8 → v19+. Hai pattern bắt buộc:
 **1. ManifestFinder Protocol pluggable** (per [ADR-0002](docs/adr/0002-spec-schema-policy.md)):
 
 ```python
-class ModernManifestFinder:  # rglob '__manifest__.py' (v10+)
+class ModernManifestFinder:  # rglob '__manifest__.py' (v11+)
 class LegacyManifestFinder:  # rglob '__openerp__.py' (v8-9)
+class DualManifestFinder:    # both (v10: 3 l10n modules still ship __openerp__.py)
 
 def get_manifest_finder(odoo_version: str) -> ManifestFinder:
     major = int(odoo_version.split('.')[0])
-    return LegacyManifestFinder() if major <= 9 else ModernManifestFinder()
+    if major <= 9:
+        return LegacyManifestFinder()
+    if major == 10:
+        return DualManifestFinder()  # dedupe preferring __manifest__.py
+    return ModernManifestFinder()
 ```
 
 **2. Era-aware parser_python.py**: Era1 (v8-9) dùng text-regex extract (`_parse_era1_text()`) + `FIELD_TYPES_LEGACY` (`function`, `related`, `dummy`, `sparse`) cho `_columns` dict. Era2 (v10+): AST như hiện tại. Chi tiết: [`docs/huong-dan-stack.md §Era parsing`](docs/huong-dan-stack.md#era-parsing).

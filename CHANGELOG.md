@@ -46,7 +46,7 @@ after deploy (see runbook §5.11-5.12 for the new pre-traffic multi-tenant gate)
   patch name key, for better semantic search quality.
 
 ### Added / Fixed — WG-3t: multi-tenant choke-point (13 leak sites, RELEASE GATE)
-- **13 confirmed leak sites bITted** (`server.py` + `orm.py` + resources.py) via
+- **13 confirmed leak sites closed** (`server.py` + `orm.py` + resources.py) via
   the `_scope` helper + uniform `($allowed IS NULL OR all(...))` guard fragment;
   `profile_name` narrowing is now non-escalating and applied consistently to both
   Neo4j and pgvector paths (eliminates split-brain — see ADR-0034 T2).

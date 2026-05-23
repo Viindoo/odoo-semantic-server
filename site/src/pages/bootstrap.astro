@@ -125,14 +125,14 @@ const source = bootstrapData._source;
         </li>
         <li>
           <strong class="text-gray-200">Upgrading a custom theme:</strong> any version row with a
-          Bootstrap major bump (v10 → v11, v14 → v15) requires rewriting your SCSS. Minor bumps
-          are usually drop-in.
+          Bootstrap major bump (v11 → v12: BS3 LESS → BS4 SCSS; v15 → v16: BS4 → BS5) requires
+          rewriting your styles. Minor bumps (e.g. v14 → v15, both BS4.3.1) are usually drop-in.
         </li>
         <li>
-          <strong class="text-gray-200">v17+ dual-layer theming:</strong> Bootstrap 5.3 added CSS
-          custom properties (<code class="text-viindoo-primary">--bs-primary</code>). Runtime
-          overrides win against SCSS variables — verify both layers when debugging unexpected
-          color values.
+          <strong class="text-gray-200">v16+ CSS-variable theming:</strong> Bootstrap 5 (v16 ships
+          BS 5.1.3; v18/v19 ship BS 5.3.3) exposes CSS custom properties
+          (<code class="text-viindoo-primary">--bs-primary</code>). Runtime overrides win against
+          compiled SCSS variables — verify both layers when debugging unexpected color values.
         </li>
       </ul>
     </div>

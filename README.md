@@ -42,7 +42,7 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **24 tools** (v0.8 — +4 ORM-validation tools added per M10.5 Phase 2):
+MCP server expose **24 tools** (4 ORM-validation tools added in v0.8 / M10.5 Phase 2; current surface unchanged at v0.11.0):
 
 - **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
 - **1 module overview tool (M9 Wave 1):** `describe_module`
@@ -176,14 +176,14 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.11.0 (2026-05-23) — Parser correctness wave (WG-1..WG-5): Python parser v8-v19 (v9 Py2 fallback, Many2oneReference/PropertiesDefinition/property field types, F-14 Selection guard); JS parser (OWLComp dual-dispatch v14-v16 0→N, JSPatch member-expr v14-v16 0→N); writer schema (arch_snippet on View, F-5 comment-led arch, F-13 USES_FIELD module scoping, F-8 batch tx, F-12 MERGE coalesce); 13-site tenant leak bITted (RELEASE GATE); query/render fixes (F-4 load order, list↔tree v18, file:line breadcrumb); cheap enrichment (edition derive, module summary, OWL widget pattern). **Data:** `bootstrap_versions.json` corrected for all 12 versions (key: v11 was BS4+SCSS — WRONG; actual BS3.3.5+LESS; v15 was BS5.1 — WRONG; actual BS4.3.1; v18/v19 exact patch 5.3.3). **Docs:** ADR-0034 tenant model clarification; ADR-0005 v10 known-miss; runbook §5.11/5.12 multi-tenant gate. Tool count stays **24**. **OPS:** full reindex v8→v19 required; run §5.11 gate before serving multi-tenant traffic. v0.10.0 shipped final-stretch enrichment + enforcement gate. See CHANGELOG.md.
+**Latest release:** v0.11.0 (2026-05-23) — Parser correctness wave (WG-1..WG-5): Python parser v8-v19 (v9 Py2 fallback, Many2oneReference/PropertiesDefinition/property field types, F-14 Selection guard); JS parser (OWLComp dual-dispatch v14-v16 0→N, JSPatch member-expr v14-v16 0→N); writer schema (arch_snippet on View, F-5 comment-led arch, F-13 USES_FIELD module scoping, F-8 batch tx, F-12 MERGE coalesce); 13-site tenant leak closed (RELEASE GATE); query/render fixes (F-4 load order, list↔tree v18, file:line breadcrumb); cheap enrichment (edition derive, module summary, OWL widget pattern). **Data:** `bootstrap_versions.json` corrected for all 12 versions (key: v11 was BS4+SCSS — WRONG; actual BS3.3.5+LESS; v15 was BS5.1 — WRONG; actual BS4.3.1; v18/v19 exact patch 5.3.3). **Docs:** ADR-0034 tenant model clarification; ADR-0005 v10 known-miss; runbook §5.11/5.12 multi-tenant gate. Tool count stays **24**. **OPS:** full reindex v8→v19 required; run §5.11 gate before serving multi-tenant traffic. v0.10.0 shipped final-stretch enrichment + enforcement gate. See CHANGELOG.md.
 
 **Production deploy:** 2026-05-17 — PR #119 go-live batch deployed. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state. PRs #160 + wave3 pending prod deploy (admin must run full reindex v8→v19 per runbook after deploy, plus `python -m src.db.migrate` for m13_001 + m13_002).
 
-**Active work (wave3, feat/m13pre-wave3):** M13 pre-reindex wave — DB schema foundation + multi-tenant wiring + git hardening + license policy + RelaxNG XML lint. **Deferred to next wave:** P2 enforcement (WI-3 `resolve_allowed_profiles` + WI-4 mandatory 61-site filter), cross-tenant leak-test release gate, WI-7 FERNET secrets manager, M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
+**Active work (feat/osm-pre-reindex-hardening):** M13 pre-reindex hardening wave (#165) — parser/writer correctness v8-v19 + cheap enrichment, on top of the already-shipped P2 enforcement gate (WI-3/WI-4 + cross-tenant leak gate shipped v0.10.0 #163, refined #165). **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + WI-7 FERNET secrets / Postgres RLS hardening. **Deferred to later waves:** M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
 
 **Next milestones (roadmap):**
-- **M13 enforcement wave** — `resolve_allowed_profiles(tenant_id)` helper (WI-3) + mandatory fail-closed filter at 61 Neo4j query sites + 3 pgvector embeddings queries + Postgres RLS SET LOCAL (WI-4); cross-tenant leak test as release gate. Also: WI-7 FERNET secrets manager.
+- **M13 close** — production reindex v8→v19 (OPS) + WI-7 FERNET secrets / Postgres RLS hardening (RLS needs `FORCE` + non-owner read role). The P2 read-side enforcement gate (WI-3 `resolve_tenant_scope` + WI-4 mandatory fail-closed filter at 61 Neo4j + 4 ORM + 3 pgvector sites + cross-tenant leak test) already shipped in v0.10.0 (#163) and was refined in #165.
 - **M10B "Billing Wow"** — Stripe subscription + plan tiers.
 - **M10C remaining** — Prometheus `embedder_batch_duration_seconds` histogram, nonce-based CSP (blocked — awaits Astro v5.1+ nonce API).
 

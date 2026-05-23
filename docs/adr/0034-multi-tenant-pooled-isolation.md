@@ -1,7 +1,7 @@
 # ADR-0034 — Multi-Tenant Pooled Isolation + Deploy-Key Credentials
 
 **Date:** 2026-05-22
-**Status:** Accepted — M13 (DDL + plumbing shipped on feat/m13pre-wave3: tenants table, tenant_id FKs, ssh_key_pairs.key_type, repos uniqueness, embeddings.profile_name, deploy-key endpoint, git hardening; read-side enforcement + RLS deferred to a follow-up wave)
+**Status:** Accepted + Amended (2026-05-23) — DDL/plumbing (v0.9.1: tenants table, tenant_id FKs, ssh_key_pairs.key_type, repos uniqueness, embeddings.profile_name, deploy-key endpoint, git hardening) + read-side enforcement WI-3/WI-4 + cross-tenant leak gate shipped (v0.10.0 #163, refined #165); Postgres RLS (D6) still deferred to WI-7 hardening wave. See Amendment.
 
 > Supersedes the "optional `profile_name` filter" posture of [ADR-0016](0016-profile-hierarchy-and-neo4j-isolation.md)
 > D6 and the "profile is convenience, not authz" amendment of

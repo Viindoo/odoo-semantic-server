@@ -92,26 +92,21 @@ in one step. Adding `UserError` to the set means `_classify_class` correctly ass
 subclassing) would require a recursive AST climb; that is deferred per ADR-0002 §6 and
 documented as a known limitation in `src/indexer/parser_odoo_core.py`.
 
-### Known limitation — v10 `__openerp__.py`-only modules (3 modules)
+### v10 `__openerp__.py`-only modules — handled by `DualManifestFinder`
 
 Three v10 modules retain `__openerp__.py` (the v9-era manifest filename) instead of
-`__manifest__.py`. They are therefore **missed by `ModernManifestFinder`** (which
-uses `rglob('__manifest__.py')`, per the M4.5 manifest-finder protocol in CLAUDE.md):
+`__manifest__.py`:
 
 - `l10n_fr_sale_closing`
 - `account_cash_basis_base_account`
 - `l10n_fr_pos_cert`
 
-**Decision: document as known-miss, not a code change.**  
-Rationale (Keep Simple principle): these are localisation modules rarely in scope for
-AI agent queries, and adding a `DualManifestFinder` for v10 alone — or silently
-probing both filenames — adds complexity for minimal coverage benefit. The
-`ManifestFinder` protocol (ADR-0002) already supports adding a finder variant; a
-`DualManifestFinder` would call both `rglob('__manifest__.py')` and
-`rglob('__openerp__.py')` and union the results, then use the last-resort
-`LegacyManifestFinder` (v8/v9 path). This is the correct future fix if coverage of
-these three modules becomes necessary. For now, operators indexing v10 should be
-aware that these three modules produce no Module/Field/Method nodes.
+Per the M4.5 manifest-finder protocol, `get_manifest_finder('10.0')` returns
+`DualManifestFinder`, which scans BOTH `rglob('__manifest__.py')` and
+`rglob('__openerp__.py')` and dedupes preferring `__manifest__.py` (a module
+directory holding both files is indexed once, via the modern manifest). These three
+modules are now indexed normally (commit dc3a793 / PR #165). v8/v9 stay
+`LegacyManifestFinder`; v11+ stay `ModernManifestFinder`.
 
 ### Out of scope (explicit non-goals, deferred per ADR-0002 §6)
 
