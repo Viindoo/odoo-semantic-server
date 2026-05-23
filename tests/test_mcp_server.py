@@ -3551,3 +3551,194 @@ def test_b1_list_js_patches_renders_file_path(neo4j_driver):
         )
     finally:
         _cleanup_b1(neo4j_driver)
+
+
+# ---------------------------------------------------------------------------
+# WG-4: T1 — F-4 load-order fix (_module_dep_closure)
+# ---------------------------------------------------------------------------
+
+_WG4_DEP_VERSION = "75.0"
+
+
+def _cleanup_wg4_dep(driver):
+    with driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_WG4_DEP_VERSION,
+        )
+
+
+def test_dep_closure_load_order_deepest_first(neo4j_driver):
+    """T1 (F-4): load order places deepest transitive dep (C) before intermediate (B) before root
+    requester.  Chain: A depends B, B depends C.  Odoo loads C first, then B.
+    index 1 = C (deepest), index 2 = B (direct dep of A).
+    """
+    _cleanup_wg4_dep(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        # A depends on B; B depends on C.
+        mod_c = ModuleInfo("wg4_mod_c", _WG4_DEP_VERSION, "test_repo", "/tmp", [], "")
+        mod_b = ModuleInfo("wg4_mod_b", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_mod_c"], "")
+        mod_a = ModuleInfo("wg4_mod_a", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_mod_b"], "")
+        writer.write_results([
+            ParseResult(module=mod_c, models=[]),
+            ParseResult(module=mod_b, models=[]),
+            ParseResult(module=mod_a, models=[]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._module_dep_closure("wg4_mod_a", _WG4_DEP_VERSION)
+
+        assert "wg4_mod_b" in out, f"Expected wg4_mod_b in output:\n{out}"
+        assert "wg4_mod_c" in out, f"Expected wg4_mod_c in output:\n{out}"
+
+        # Index 1 must be wg4_mod_c (deepest, loaded first); index 2 = wg4_mod_b.
+        # The output format is "  1. wg4_mod_c" and "  2. wg4_mod_b".
+        pos_b = out.index("wg4_mod_b")
+        pos_c = out.index("wg4_mod_c")
+        assert pos_c < pos_b, (
+            f"T1 (F-4): deepest dep (wg4_mod_c) must appear BEFORE wg4_mod_b in load order.\n"
+            f"wg4_mod_c at char {pos_c}, wg4_mod_b at char {pos_b}.\n{out}"
+        )
+
+        # Confirm index 1 is attached to wg4_mod_c, not wg4_mod_b.
+        lines = out.splitlines()
+        idx1_line = next((ln for ln in lines if "1." in ln), "")
+        assert "wg4_mod_c" in idx1_line, (
+            f"T1 (F-4): index 1 must be wg4_mod_c (deepest dep).  Got: {idx1_line!r}\n{out}"
+        )
+    finally:
+        _cleanup_wg4_dep(neo4j_driver)
+
+
+def test_dep_closure_diamond_no_duplicate(neo4j_driver):
+    """T1 (F-4): diamond dependency A->B->D + A->C->D should list D once."""
+    _cleanup_wg4_dep(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        mod_d = ModuleInfo("wg4_dmd_d", _WG4_DEP_VERSION, "test_repo", "/tmp", [], "")
+        mod_b = ModuleInfo("wg4_dmd_b", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_dmd_d"], "")
+        mod_c = ModuleInfo("wg4_dmd_c", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_dmd_d"], "")
+        mod_a = ModuleInfo(
+            "wg4_dmd_a", _WG4_DEP_VERSION, "test_repo", "/tmp",
+            ["wg4_dmd_b", "wg4_dmd_c"], "",
+        )
+        writer.write_results([
+            ParseResult(module=mod_d, models=[]),
+            ParseResult(module=mod_b, models=[]),
+            ParseResult(module=mod_c, models=[]),
+            ParseResult(module=mod_a, models=[]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._module_dep_closure("wg4_dmd_a", _WG4_DEP_VERSION)
+
+        # wg4_dmd_d appears exactly once (DISTINCT in Cypher).
+        assert out.count("wg4_dmd_d") == 1, (
+            f"T1 (F-4): diamond dep wg4_dmd_d should appear exactly once.\n{out}"
+        )
+    finally:
+        _cleanup_wg4_dep(neo4j_driver)
+
+
+# ---------------------------------------------------------------------------
+# WG-4: T2 — LIST list↔tree alias (_list_views_core)
+# ---------------------------------------------------------------------------
+
+_WG4_VIEWS_VERSION = "74.0"
+
+
+def _cleanup_wg4_views(driver):
+    with driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+            v=_WG4_VIEWS_VERSION,
+        )
+
+
+def test_view_type_tree_query_matches_list_stored_node(neo4j_driver):
+    """T2 (LIST): querying view_type='tree' must match View nodes with type='list' (v18 style)."""
+    _cleanup_wg4_views(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        mod = ModuleInfo("wg4_sale", _WG4_VIEWS_VERSION, "odoo_test", "/tmp", [], "")
+        # Store a view with type='list' (v18 DB value).
+        list_view = ViewInfo(
+            xmlid="wg4_sale.view_order_list", name="list view",
+            model="wg4.sale.order", module="wg4_sale",
+            odoo_version=_WG4_VIEWS_VERSION,
+            view_type="list", mode="primary", inherit_xmlid=None,
+        )
+        # Store a view with type='tree' (v17 DB value).
+        tree_view = ViewInfo(
+            xmlid="wg4_sale.view_order_tree", name="tree view",
+            model="wg4.sale.order", module="wg4_sale",
+            odoo_version=_WG4_VIEWS_VERSION,
+            view_type="tree", mode="primary", inherit_xmlid=None,
+        )
+        writer.write_view_results([
+            ViewParseResult(module=mod, views=[list_view, tree_view]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+
+        # Query with view_type='tree' — must see BOTH the 'tree' node AND the 'list' node.
+        out_tree = srv._list_views("wg4.sale.order", _WG4_VIEWS_VERSION, view_type="tree")
+        assert "wg4_sale.view_order_list" in out_tree, (
+            f"T2: view_type='tree' must match nodes with type='list' (v18 alias).\n{out_tree}"
+        )
+        assert "wg4_sale.view_order_tree" in out_tree, (
+            f"T2: view_type='tree' must still match nodes with type='tree'.\n{out_tree}"
+        )
+
+        # Query with view_type='list' — must see BOTH (symmetric alias).
+        out_list = srv._list_views("wg4.sale.order", _WG4_VIEWS_VERSION, view_type="list")
+        assert "wg4_sale.view_order_tree" in out_list, (
+            f"T2: view_type='list' must match nodes with type='tree' (v17 alias).\n{out_list}"
+        )
+        assert "wg4_sale.view_order_list" in out_list, (
+            f"T2: view_type='list' must still match nodes with type='list'.\n{out_list}"
+        )
+
+        # Other view types must NOT match (sanity check alias is not a wildcard).
+        form_view = ViewInfo(
+            xmlid="wg4_sale.view_order_form", name="form view",
+            model="wg4.sale.order", module="wg4_sale",
+            odoo_version=_WG4_VIEWS_VERSION,
+            view_type="form", mode="primary", inherit_xmlid=None,
+        )
+        writer2 = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer2.write_view_results([ViewParseResult(module=mod, views=[form_view])])
+        writer2.close()
+
+        out_tree2 = srv._list_views("wg4.sale.order", _WG4_VIEWS_VERSION, view_type="tree")
+        assert "wg4_sale.view_order_form" not in out_tree2, (
+            f"T2: view_type='tree' must NOT match form views.\n{out_tree2}"
+        )
+    finally:
+        _cleanup_wg4_views(neo4j_driver)

@@ -2853,7 +2853,7 @@ def _module_dep_closure(
                    dep.repo AS repo,
                    dep.repo_url AS repo_url,
                    min_depth
-            ORDER BY min_depth ASC, dep.name ASC
+            ORDER BY min_depth DESC, dep.name ASC
         """, n=name, v=odoo_version, **_scope(profile_name)).data()
 
     if not dep_rows:
@@ -2865,8 +2865,9 @@ def _module_dep_closure(
         ]))
         return "\n".join(lines)
 
-    # Build load order: sort by (min_depth ASC, name ASC) — already ordered by Cypher.
-    # Assign sequential load-order index (1 = loaded first / deepest dependency).
+    # Build load order: sort by (min_depth DESC, name ASC) — already ordered by Cypher.
+    # Odoo loads deepest transitive dependencies FIRST (e.g. 'base' before 'sale').
+    # index 1 = first to be installed / loaded; deepest deps have highest min_depth.
     lines = [f"{name} dependency closure (Odoo {odoo_version})"]
     lines.append(f"├─ Transitive dependencies ({len(dep_rows)}) — load order:")
     last_idx = len(dep_rows) - 1
@@ -3306,6 +3307,19 @@ def _list_views_core(
 
     is_model_scoped = model is not None
 
+    # T2 — list/tree alias: v17 stores 'tree' in DB while source XML uses <list>;
+    # v18 hard-renamed to 'list' in DB.  Treat the two values as interchangeable
+    # so that view_type='tree' matches v18 views (DB='list') and vice-versa.
+    # Strategy: pass BOTH alias values to Cypher via a $view_types list so the
+    # Cypher filter becomes `v.type IN $view_types` — a single predicate handles
+    # NULL (no filter), single-value (exact), and alias-pair cases.
+    if view_type is None:
+        view_types: list[str] | None = None  # pass-through: no type filter
+    elif view_type in ("tree", "list"):
+        view_types = ["tree", "list"]  # alias pair
+    else:
+        view_types = [view_type]  # exact match for all other types
+
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
@@ -3315,7 +3329,7 @@ def _list_views_core(
                 MATCH (v:View {{model: $filter_val, odoo_version: $ver}})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
                        AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
-                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND ($view_types IS NULL OR v.type IN $view_types)
                   AND v.module <> '__unresolved__'
                 OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
                 WITH v, mod,
@@ -3328,7 +3342,7 @@ def _list_views_core(
                 SKIP $skip
                 LIMIT $limit
                 """,
-                filter_val=model, ver=odoo_version, view_type=view_type,
+                filter_val=model, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name), skip=start_index, limit=effective_limit,
             ).data()
 
@@ -3337,11 +3351,11 @@ def _list_views_core(
                 MATCH (v:View {model: $filter_val, odoo_version: $ver})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
                        AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
-                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND ($view_types IS NULL OR v.type IN $view_types)
                   AND v.module <> '__unresolved__'
                 RETURN count(v) AS c
                 """,
-                filter_val=model, ver=odoo_version, view_type=view_type,
+                filter_val=model, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name),
             ).single()
         else:
@@ -3350,7 +3364,7 @@ def _list_views_core(
                 MATCH (v:View {{module: $filter_val, odoo_version: $ver}})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
                        AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
-                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND ($view_types IS NULL OR v.type IN $view_types)
                   AND v.module <> '__unresolved__'
                 OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
                 WITH v, mod,
@@ -3363,7 +3377,7 @@ def _list_views_core(
                 SKIP $skip
                 LIMIT $limit
                 """,
-                filter_val=module, ver=odoo_version, view_type=view_type,
+                filter_val=module, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name), skip=start_index, limit=effective_limit,
             ).data()
 
@@ -3372,11 +3386,11 @@ def _list_views_core(
                 MATCH (v:View {module: $filter_val, odoo_version: $ver})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
                        AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
-                  AND ($view_type IS NULL OR v.type = $view_type)
+                  AND ($view_types IS NULL OR v.type IN $view_types)
                   AND v.module <> '__unresolved__'
                 RETURN count(v) AS c
                 """,
-                filter_val=module, ver=odoo_version, view_type=view_type,
+                filter_val=module, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name),
             ).single()
 
