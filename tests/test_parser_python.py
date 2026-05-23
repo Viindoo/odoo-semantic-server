@@ -1392,3 +1392,277 @@ def test_parse_file_era1_line_is_none(tmp_path):
     assert result
     for mth in result[0].methods:
         assert mth.line is None, f"method {mth.name!r} should have line=None in era1"
+
+
+# ---------------------------------------------------------------------------
+# WG-1 T1 — Field types coverage (Many2oneReference, PropertiesDefinition, property)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def v13_module(tmp_path) -> ModuleInfo:
+    return ModuleInfo(
+        name="account", odoo_version="13.0", repo="odoo_13.0",
+        path=str(tmp_path), depends=["base"], version_raw="13.0.1.0.0",
+    )
+
+
+@pytest.fixture
+def v18_module(tmp_path) -> ModuleInfo:
+    return ModuleInfo(
+        name="note", odoo_version="18.0", repo="odoo_18.0",
+        path=str(tmp_path), depends=["base"], version_raw="18.0.1.0.0",
+    )
+
+
+def test_t1_many2one_reference_indexed(tmp_path, v13_module):
+    """T1: fields.Many2oneReference (v13+) must NOT be silently dropped.
+
+    Rule: Many2oneReference added to FIELD_TYPES in v13 — any class-attr field
+    of this type must produce a FieldInfo node (not be skipped).
+    """
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class IrModel(models.Model):
+            _name = 'ir.model'
+            res_id = fields.Many2oneReference(string='Record', model_field='res_model')
+    """)
+    result = parse_file(f, v13_module)
+    assert result, "Expected 1 model parsed"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert "res_id" in field_map, "fields.Many2oneReference field must be indexed (not dropped)"
+    assert field_map["res_id"].ttype == "many2onereference"
+
+
+def test_t1_properties_definition_indexed(tmp_path, v18_module):
+    """T1: fields.PropertiesDefinition (v18+) must NOT be silently dropped.
+
+    Rule: PropertiesDefinition added to FIELD_TYPES — field must produce FieldInfo.
+    """
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class ProjectTask(models.Model):
+            _name = 'project.task'
+            properties_definition = fields.PropertiesDefinition()
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "Expected 1 model parsed"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert "properties_definition" in field_map, (
+        "fields.PropertiesDefinition field must be indexed (not dropped)"
+    )
+    assert field_map["properties_definition"].ttype == "propertiesdefinition"
+
+
+def test_t1_properties_field_still_indexed(tmp_path, v18_module):
+    """T1: fields.Properties (already in FIELD_TYPES before fix) remains indexed — no regression."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class Note(models.Model):
+            _name = 'note.note'
+            properties = fields.Properties(definition='properties_definition', string='Properties')
+    """)
+    result = parse_file(f, v18_module)
+    assert result
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert "properties" in field_map
+    assert field_map["properties"].ttype == "properties"
+
+
+def test_t1_property_legacy_indexed(tmp_path):
+    """T1: fields.property (v8/v9 era1) must be indexed from _columns dict.
+
+    Rule: 'property' added to FIELD_TYPES_LEGACY — _columns entry of this type
+    must produce a FieldInfo node (not be skipped).
+    """
+    v8_mod = ModuleInfo(
+        name="stock_account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "product.py"
+    src.write_text(
+        "print 'hello'\n\n"
+        "from openerp.osv import osv, fields\n\n"
+        "class ProductTemplate(osv.osv):\n"
+        "    _name = 'product.template'\n"
+        "    _columns = {\n"
+        "        'valuation': fields.property(\n"
+        "            type='selection',\n"
+        "            selection=[('manual_periodic', 'Periodic'), ('real_time', 'Real Time')],\n"
+        "            string='Costing Method',\n"
+        "        ),\n"
+        "    }\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert result, "Expected 1 model parsed"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert "valuation" in field_map, (
+        "fields.property (era1) must be indexed — was silently dropped before fix"
+    )
+    assert field_map["valuation"].ttype == "property"
+
+
+# ---------------------------------------------------------------------------
+# WG-1 T2 — v9 Py2-syntax + new-API fields fallback extractor
+# ---------------------------------------------------------------------------
+
+def test_t2_v9_py2_syntax_new_api_fields_extracted(tmp_path):
+    """T2: Python 2 file with <> operator + new-API fields.X(…) → fields NOT lost.
+
+    Root cause: ast.parse raises SyntaxError on <> → _parse_era1_text() fallback
+    only scanned _columns dict, missing class-attr new-API fields entirely.
+    Fix: V9-G2 safety-net regex in _parse_era1_text also extracts fields.X(…).
+    """
+    v9_mod = ModuleInfo(
+        name="account", odoo_version="9.0", repo="odoo_9.0",
+        path=str(tmp_path), depends=["base"], version_raw="9.0.1.0.0",
+    )
+    # Simulates a v9 file like account/models/account.py:
+    # Python 2 <> operator at top level causes SyntaxError on ast.parse.
+    # But the class uses new-API field declarations (no _columns dict).
+    src = tmp_path / "account.py"
+    src.write_text(
+        "# Python 2 syntax triggers era1 text fallback\n"
+        "if x <> y:\n"
+        "    pass\n\n"
+        "from openerp import models, fields\n\n"
+        "class AccountAccount(models.Model):\n"
+        "    _name = 'account.account'\n"
+        "    name = fields.Char(string='Account Name', required=True)\n"
+        "    code = fields.Char(size=64, required=True)\n"
+        "    balance = fields.Float(compute='_compute_balance')\n"
+        "    partner_id = fields.Many2one('res.partner')\n"
+    )
+    result = parse_file(str(src), v9_mod)
+    assert result, "Expected at least 1 model even with Python 2 syntax"
+    model = result[0]
+    assert model.name == "account.account"
+    field_map = {fld.name: fld for fld in model.fields}
+    # All 4 new-API fields must be captured, NOT silently dropped
+    assert "name" in field_map, "fields.Char 'name' must be extracted from text fallback"
+    assert "code" in field_map, "fields.Char 'code' must be extracted from text fallback"
+    assert "balance" in field_map, "fields.Float 'balance' must be extracted from text fallback"
+    assert "partner_id" in field_map, "fields.Many2one 'partner_id' must be extracted from text fallback"
+    assert field_map["name"].ttype == "char"
+    assert field_map["balance"].ttype == "float"
+    assert field_map["partner_id"].ttype == "many2one"
+
+
+def test_t2_v9_py2_mixed_columns_and_newapi_both_extracted(tmp_path):
+    """T2: File with both _columns dict AND new-API fields → both sources extracted.
+
+    Simulates the hybrid v9 pattern where a class has _columns = {...} for some
+    fields AND new-API class attrs for others (e.g. after partial migration).
+    Both must be captured when AST fails.
+    """
+    v9_mod = ModuleInfo(
+        name="account", odoo_version="9.0", repo="odoo_9.0",
+        path=str(tmp_path), depends=["base"], version_raw="9.0.1.0.0",
+    )
+    src = tmp_path / "mixed.py"
+    src.write_text(
+        "if a <> b:\n"
+        "    pass\n\n"
+        "from openerp import models, fields\n\n"
+        "class SomeModel(models.Model):\n"
+        "    _name = 'some.model'\n"
+        "    _columns = {\n"
+        "        'legacy_field': fields.char('Legacy', size=64),\n"
+        "    }\n"
+        "    amount = fields.Float(string='Amount')\n"
+        "    active = fields.Boolean(default=True)\n"
+    )
+    result = parse_file(str(src), v9_mod)
+    assert result, "Expected 1 model parsed"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    # _columns source
+    assert "legacy_field" in field_map, "fields.char in _columns must be extracted"
+    assert field_map["legacy_field"].ttype == "char"
+    # new-API source
+    assert "amount" in field_map, "fields.Float class-attr must be extracted via V9-G2 safety-net"
+    assert field_map["amount"].ttype == "float"
+    assert "active" in field_map, "fields.Boolean class-attr must be extracted via V9-G2 safety-net"
+    assert field_map["active"].ttype == "boolean"
+
+
+# ---------------------------------------------------------------------------
+# WG-1 T3 — F-14 Selection/Reference positional arg must NOT become label
+# ---------------------------------------------------------------------------
+
+def test_t3_selection_positional_string_not_label(tmp_path, sale_module):
+    """T3 F-14: fields.Selection('_get_sel') positional str must NOT become field label.
+
+    Rule: Selection/Reference positional[0] is a selection list or method name,
+    NOT the human-readable label. Only string= kwarg is the label.
+    """
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class MyModel(models.Model):
+            _name = 'my.model'
+            state = fields.Selection('_get_state_selection')
+            kind = fields.Selection([('a', 'A'), ('b', 'B')], string='Kind')
+    """)
+    result = parse_file(f, sale_module)
+    assert result
+    field_map = {fld.name: fld for fld in result[0].fields}
+    # positional arg is method name — must NOT become label
+    assert field_map["state"].string is None, (
+        "fields.Selection('_get_state_selection') must NOT store method name as label"
+    )
+    # string= kwarg must still work
+    assert field_map["kind"].string == "Kind"
+
+
+def test_t3_selection_string_kwarg_still_works(tmp_path, sale_module):
+    """T3: fields.Selection([...], string='Status') → label captured from kwarg."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class M(models.Model):
+            _name = 'm'
+            status = fields.Selection(
+                [('draft', 'Draft'), ('done', 'Done')],
+                string='Status',
+                default='draft',
+            )
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["status"].string == "Status"
+    assert field_map["status"].ttype == "selection"
+
+
+def test_t3_reference_positional_not_label(tmp_path, sale_module):
+    """T3 F-14: fields.Reference([...]) positional arg (selection list) must NOT become label."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class M(models.Model):
+            _name = 'm'
+            ref = fields.Reference([('res.partner', 'Partner')], string='Target')
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    # positional[0] is the selection list, NOT the label
+    # The label comes from string= kwarg
+    assert field_map["ref"].string == "Target"
+    assert field_map["ref"].ttype == "reference"
+
+
+def test_t3_non_selection_char_positional_label_still_works(tmp_path, sale_module):
+    """T3 regression: fields.Char('My Label') positional label extraction must be unaffected."""
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class M(models.Model):
+            _name = 'm'
+            name = fields.Char('My Label')
+    """)
+    result = parse_file(f, sale_module)
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["name"].string == "My Label", (
+        "Char positional label must still be extracted (non-Selection/Reference)"
+    )
