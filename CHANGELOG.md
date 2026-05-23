@@ -2,6 +2,96 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.11.0] — 2026-05-23 — Parser correctness v8-v19, arch_snippet, tenant isolation, query/render, enrichment (WG-1..WG-5)
+
+Six work-groups landed on `feat/osm-final-stretch` via the fix-wave integration branch.
+Tool surface stays **24**. No new Postgres migrations. Requires a full reindex v8→v19
+after deploy (see runbook §5.11-5.12 for the new pre-traffic multi-tenant gate).
+
+### Added / Fixed — WG-1: Python parser correctness (v8-v19)
+- **v9 Py2-syntax fallback**: `ast.parse` failure on Python-2-only tokens (`<>`, etc.)
+  now falls back to `_parse_era1_text()` regex for both `_columns` AND `fields.X` new-API
+  fields — prevents `account.py` losing 82 fields on v9 reindex.
+- **`Many2oneReference` + `PropertiesDefinition` + `property` field types**: added to
+  `FIELD_TYPES` (v13+ `Many2oneReference`; v18+ `PropertiesDefinition` + `Properties`;
+  v8/v9 legacy `fields.property`). Previously caused silent Field node drops.
+- **F-14 Selection positional guard**: `fields.Selection('_compute_sel')` positional
+  string no longer stored as `string=` label.
+
+### Added / Fixed — WG-2: JS parser + query.py path + NewId (v8-v19)
+- **OWLComp dual-dispatch (JS-G1)**: `parser_js.py` era2 files for major>=14 now also
+  call `_extract_era3_components()` — fixes 0 OWLComp for v14 (96 files), v15 (41), v16 (18).
+- **JSPatch member-expr (JS-G2)**: `MyClass.patch("key", fn)` pattern now matched for
+  major>=14 era2 extractor — fixes 0 JSPatch for v14-v16.
+- **`odoo/osv/query.py` version-aware path (CORE-Q)**: `_resolve_core_paths` maps
+  `odoo/tools/query.py` logical path to `openerp/osv/query.py` (v8/v9) or
+  `odoo/osv/query.py` (v10-v15) — `class Query` now indexed for all 8 versions.
+- **NewId `_V19_CURATED_FILES` entry (V19-G5)**: `odoo/orm/identifiers.py` added so
+  `api_version_diff("NewId", 18, 19)` returns moved-not-removed.
+
+### Added / Fixed — WG-3w: writer schema correctness (F-5, F-13, F-8, F-12, arch_snippet, V16-G2)
+- **arch_snippet on View nodes**: ~20-30 line excerpt of `<arch>` stored at index time;
+  surfaces in `resolve_view` and `model_inspect` output so agents see base view structure.
+- **F-5 XML comment-led arch**: `parser_xml.py` skips comment nodes when detecting
+  `view_type` from first child — prevents 'form' fallback on comment-led `<arch>`.
+- **F-13 USES_FIELD module scoping**: MATCH key includes `module` — eliminates fan-out
+  where one `self.X` ref matched Field nodes in every module with that field name.
+  Known limitation: cross-module USES_FIELD edges are not generated (same-module-only
+  is a precision-over-recall trade-off; see ADR-0034 T5).
+- **F-8 USES_FIELD/DEPENDS_ON_FIELD batched tx**: UNWIND batch per method eliminates N+1
+  transactions at reindex.
+- **F-12 Module MERGE ON MATCH coalesce**: `coalesce($repo_url, m.repo_url)` prevents
+  a second-pass write of `repo_url=None` overwriting existing value in multi-repo pool.
+- **V16-G2 JSPatch entity_name**: chunk `entity_name` uses patch target class, not
+  patch name key, for better semantic search quality.
+
+### Added / Fixed — WG-3t: multi-tenant choke-point (13 leak sites, RELEASE GATE)
+- **13 confirmed leak sites bITted** (`server.py` + `orm.py` + resources.py) via
+  the `_scope` helper + uniform `($allowed IS NULL OR all(...))` guard fragment;
+  `profile_name` narrowing is now non-escalating and applied consistently to both
+  Neo4j and pgvector paths (eliminates split-brain — see ADR-0034 T2).
+- **`tests/test_cross_tenant_isolation.py`** extended to cover all 13 paths (style
+  override/resolve, lint xml, api_version_diff, set_active_version probe,
+  validate_relation, resolve_view parent, structured variant). Gate must be red when
+  any site leaks.
+
+### Added / Fixed — WG-4: query/render correctness
+- **F-4 load order** (`_module_dep_closure`): `ORDER BY min_depth DESC` (deepest =
+  highest depth number = install first); comment corrected.
+- **`<list>` vs `<tree>` view type** (v18+ rename): queries filter
+  `v.type IN ['tree','list']` and normalize for render — fixes 0 v18 list views
+  returned by `model_inspect` / `find_override_point`.
+- **file:line breadcrumb**: `line_start` / `file_path` projected in `find_examples`
+  and `model_inspect` render — agents now see source location without a separate lookup.
+
+### Added / Fixed — WG-5: cheap enrichment
+- **Edition derive**: `Module.license` → `edition` tag (`CE` / `Odoo EE` /
+  `Viindoo EE`) surfaced in `check_module_exists` and `model_inspect` output.
+- **Module.summary / description** surfaced in `describe_module` output.
+- **OWL field-widget pattern** (`fieldRegistry.add`) added to `patterns.json`.
+
+### Changed — docs / data (this PR, WG-6)
+- **`bootstrap_versions.json`**: corrected Bootstrap version + preprocessor for all
+  12 versions (v8-v19). Key corrections: v8 BS 3.2.0 (was `3.x`); v9-v11 BS 3.3.5 +
+  LESS (v11 was wrong BS-major "4" + SCSS); v12 BS 4.1.3 (was `4.1`); v14 BS 4.3.1
+  (was `4.4`); v15 BS 4.3.1 NOT 5 (was `5.1`); v16 BS 5.1.3 (was `5.1`);
+  v18/v19 BS 5.3.3 (was `5.3`). `preprocessor` field added; LESS entry-point paths
+  corrected for v8-v11. Evidence: source-verified per v*-ground-truth.md S10.
+- **ADR-0034**: tenant model clarification amendment (T1-T5) — shared vs own profiles,
+  choke-point invariant, cross-process cache 60s constraint, `profile=[]` pre-reindex
+  gate, USES_FIELD same-module-only known limitation.
+- **ADR-0005**: v10 `__openerp__.py`-only known-miss documented (3 modules:
+  l10n_fr_sale_closing, account_cash_basis_base_account, l10n_fr_pos_cert) — Keep
+  Simple decision; DualManifestFinder deferred.
+- **Reindex runbook**: new §5.11 (multi-tenant pre-traffic gate: profile=[], edition,
+  OWLComp/JSPatch v14-v16, Query CoreSymbol, NewId, arch_snippet, cross-tenant leak
+  test) + §5.12 (tenant API key ops); 12 new checklist rows.
+
+### Notes
+- v18 status: indexer-ready (parser, schema, tools all handle v18). OBS-1 note in
+  README updated — the "pending" was only because the v18 repo was not on disk at the
+  time of the original note; v18 indexing is fully supported.
+
 ## [0.10.0] — 2026-05-23 — Final-stretch: pre-reindex enrichment + agent-convenient output + multi-tenant enforcement gate
 
 One PR (`feat/osm-final-stretch`). Tool surface stays **24** (the module-dependency

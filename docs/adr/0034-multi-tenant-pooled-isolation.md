@@ -275,6 +275,94 @@ residual. The proper fix — a tenant/repo discriminator in the MERGE key for
 non-shared nodes (REC-8) — is deferred to its own RFC pending demand, because it is a
 full-graph-teardown breaking change.
 
+## Amendment — tenant model clarification (2026-05-23, WG-6 docs)
+
+This section consolidates the confirmed tenant model semantics, known limitations, and
+cross-process cache behaviour. It supersedes the informal notes scattered across earlier
+amendments and the CHANGELOG entry.
+
+### T1 — Shared vs own profile definitions (confirmed)
+
+- **Shared profiles** (`tenant_id IS NULL` on the `profiles` row, e.g. `odoo_17`):
+  contain Odoo CE base data + shared ancestor overlays (Odoo EE, curated community).
+  All tenants inherit these automatically via `resolve_tenant_scope`. An admin/global
+  API key (`tenant_id IS NULL` on the `api_keys` row) accesses ALL profiles with no
+  filter — the only unscoped path.
+- **Own profiles** (`tenant_id = <N>`): the tenant's private modules indexed under
+  a child profile whose `parent_profile_id` points to the matching shared base
+  (ADR-0016 version-match rule enforced). Only the owning tenant's key resolves them.
+- **Spec-data global exempt** (D3): `CoreSymbol`, `LintRule`, `CLICommand`, `CLIFlag`,
+  `PatternExample`, `SpecMetadata` carry no `profile` and are exempt from the filter.
+  `suggest_pattern` is also exempt (global catalogue). All other user-data labels
+  (Module, Model, Field, Method, View, OWLComp, JSPatch, Stylesheet, LintViolation)
+  are subject to the choke-point filter.
+
+### T2 — Choke-point filter invariant (confirmed)
+
+The uniform guard fragment applied at all 61 Cypher sites is:
+
+```cypher
+($allowed IS NULL OR all(__ap IN <alias>.profile WHERE __ap IN $allowed))
+```
+
+- A node is **granted** iff `$allowed` is `NULL` (admin) OR every profile on the node
+  is in the resolved allow-list.
+- **Fail-closed**: a node whose `profile = []` (vacuous truth bug F-6, ADR-0034 D4)
+  is *denied* because `all(__ap IN [] WHERE ...)` evaluates to `TRUE` in Cypher, but
+  the additional `size(<alias>.profile) > 0` guard added in A1 ensures empty-profile
+  nodes are never granted. Pre-reindex precondition: **0 nodes must have `profile=[]`**
+  (verify with 5.11 query below before multi-tenant traffic).
+- **`profile_name` is NARROW + non-escalating**: when an API key passes
+  `profile_name` explicitly (via `set_active_profile` or tool arg), the resolved
+  `$allowed` is further narrowed to only include that one profile from the tenant's
+  own-or-shared set. A key cannot use `profile_name` to name a profile outside its
+  resolved scope — the session layer validates membership before injecting
+  (ADR-0029 superseded: profile is now narrowing authz, not advisory convenience).
+  **Both Neo4j (choke-point) and pgvector (`AND profile_name = ANY(%s)`) use the same
+  narrowed scope** — eliminates the split-brain that existed when Neo4j respected
+  `profile_name` but pgvector did not.
+
+### T3 — Cross-process cache constraint (known limitation)
+
+The 60s in-memory session cache (ADR-0029) lives per process. MCP (`:8002`) and
+FastAPI (`:8003`) are **two separate Python processes** with independent caches:
+
+- A tenant profile mutation (add/remove profile, change `tenant_id`) invalidates the
+  FastAPI cache immediately but the MCP process continues serving the stale resolved
+  allow-list for up to **60 seconds**.
+- The invalidation endpoint (`invalidate_allowed_profiles()`, currently 0 callers in
+  prod — see F-11 / ADR-0034 consequence) only flushes the in-process cache of
+  whichever service receives the call.
+- **Chosen mitigation:** 60s TTL is acceptable for the current deployment scale.
+  Cross-process invalidation (e.g. a shared Redis key) is deferred as a follow-up
+  if sub-60s invalidation becomes a requirement. Admin-side profile changes are
+  infrequent enough that the TTL window is safe for now.
+
+### T4 — Profile `[]` pre-reindex gate (operations precondition)
+
+Before enabling multi-tenant traffic (routing real API keys to the choke-point filter):
+
+```cypher
+MATCH (n) WHERE size(n.profile) = 0 RETURN labels(n) AS lbl, count(n) AS cnt;
+```
+
+Expected: **0 rows** for all user-data labels. Any non-zero count means nodes were
+written before the profile-array writer was enforced (ADR-0016). Run `index-repo --all
+--full` for the affected profile to backfill; nodes without a matching module in the
+active index will need a manual Cypher `SET n.profile = ['<profile_name>']` or
+deletion. See runbook §5.11 for the automated check.
+
+### T5 — USES_FIELD same-module-only constraint (known limitation F-13 partial fix)
+
+The USES_FIELD MATCH key includes `module` (WG-3w F-13 fix): a `self.field_name`
+reference in method M is matched only to a Field node in the **same module** as M.
+This prevents the fan-out (one ref matching Field nodes of every module that shares
+the same field name on the same model), at the cost of under-counting cross-module
+usage (a field defined in `base` but referenced from `sale` will not yield a
+USES_FIELD edge from the `sale` method). Accepted trade-off: precision over recall
+for usage tracking. Cross-module USES_FIELD via `DEPENDS_ON_FIELD` (which traces
+`@api.depends` dotted paths) is unaffected.
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).

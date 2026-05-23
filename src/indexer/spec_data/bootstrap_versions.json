@@ -1,38 +1,41 @@
 {
   "_curate_status": "complete",
-  "_generated_at": "2026-05-16",
+  "_generated_at": "2026-05-23",
   "_owner": "Viindoo frontend lead",
-  "_source": "Manual curation against Odoo source tree addons/web/static/src/scss/ and addons/web/static/lib/bootstrap/",
-  "_note": "Bootstrap major.minor reflects the version Odoo ships in addons/web/static/lib/bootstrap/. Patch versions are bumped by Odoo across point releases without API impact and are omitted. SCSS file paths are stable entry points used as customization seams.",
+  "_source": "Manual curation against Odoo source tree — each version verified against addons/web/static/lib/bootstrap/ (bootstrap.css first comment or _variables.scss) and preprocessor file counts (*.less vs *.scss in addons/). See /tmp/osm-survey/v*-ground-truth.md S10 sections for evidence.",
+  "_note": "Bootstrap major.minor.patch reflects the exact version Odoo ships in addons/web/static/lib/bootstrap/. Preprocessor field reflects the primary build-time tool (LESS v8-v11, SCSS v12+). For v8-v11, 'scss_files' are actually LESS entry-point paths — the field name is a misnomer retained for schema compatibility.",
   "versions": {
     "8.0": {
-      "bootstrap_version": "3.x",
+      "bootstrap_version": "3.2.0",
+      "preprocessor": "less",
       "scss_files": [
         "addons/web/static/src/css/openerp.css",
-        "addons/web/static/src/css/base.css",
-        "addons/web/static/lib/bootstrap/css/bootstrap.css"
+        "addons/web/static/lib/bootstrap/less/variables.less",
+        "addons/web/static/lib/bootstrap/less/bootstrap.less"
       ],
       "breaking_changes": [
-        "Frontend stack predates SCSS variables — Odoo 8 ships plain CSS only.",
-        "No standardized brand color overrides; customization requires forking openerp.css."
+        "LESS is the build tool — all customization entry points are .less files.",
+        "No standardized brand color overrides; customization requires forking openerp.css or overriding Bootstrap LESS variables."
       ],
-      "notes": "Bootstrap 3 LESS source in addons/web/static/lib/bootstrap/less/. CSS is precompiled and shipped as-is."
+      "notes": "Bootstrap 3.2.0 LESS source in addons/web/static/lib/bootstrap/less/. CSS is precompiled and shipped. Evidence: addons/web/static/lib/bootstrap/js/bootstrap.js:2 'Bootstrap v3.2.0'."
     },
     "9.0": {
-      "bootstrap_version": "3.x",
+      "bootstrap_version": "3.3.5",
+      "preprocessor": "less",
       "scss_files": [
-        "addons/web/static/src/css/webclient.css",
         "addons/web/static/src/less/webclient.less",
+        "addons/web/static/src/less/variables.less",
         "addons/web/static/lib/bootstrap/less/variables.less"
       ],
       "breaking_changes": [
-        "Switched build pipeline from plain CSS to LESS (still Bootstrap 3-based).",
-        "openerp.css split into multiple per-domain stylesheets."
+        "Bootstrap bump 3.2.0 → 3.3.5 — incremental patches, no major API breakage.",
+        "openerp.css split into per-domain LESS stylesheets."
       ],
-      "notes": "First Odoo version with a LESS variable layer that downstream addons can override before recompile."
+      "notes": "First Odoo version with a LESS variable layer downstream addons can override. 153 .less files in addons/. Evidence: addons/web/static/lib/bootstrap/less/theme.less:1 'Bootstrap v3.3.5'."
     },
     "10.0": {
-      "bootstrap_version": "3.x",
+      "bootstrap_version": "3.3.5",
+      "preprocessor": "less",
       "scss_files": [
         "addons/web/static/src/less/webclient.less",
         "addons/web/static/src/less/variables.less",
@@ -40,27 +43,29 @@
       ],
       "breaking_changes": [
         "Stylesheet asset bundles introduced (web.assets_backend, web.assets_frontend).",
-        "Color/spacing variables consolidated into addons/web/static/src/less/variables.less."
+        "Color/spacing variables consolidated into addons/web/static/src/less/variables.less.",
+        "openerp namespace replaced by odoo namespace — HTTP/addons/tools imports changed."
       ],
-      "notes": "Still Bootstrap 3. Theme customization should target variables.less; do not edit Bootstrap library files directly."
+      "notes": "Still Bootstrap 3.3.5 + LESS. 204 .less files in addons/. Theme customization targets variables.less. Evidence: addons/web/static/lib/bootstrap/css/bootstrap.css:1 'Bootstrap v3.3.5'. Known limitation: 3 modules (l10n_fr_sale_closing, account_cash_basis_base_account, l10n_fr_pos_cert) retain __openerp__.py at v10 and are missed by ModernManifestFinder (see ADR-0005 known-miss)."
     },
     "11.0": {
       "bootstrap_version": "3.3.5",
+      "preprocessor": "less",
       "scss_files": [
-        "addons/web/static/src/scss/webclient.scss",
-        "addons/web/static/src/scss/variables.scss",
-        "addons/web/static/lib/bootstrap/scss/_variables.scss"
+        "addons/web/static/src/less/webclient.less",
+        "addons/web/static/src/less/variables.less",
+        "addons/web/static/lib/bootstrap/less/bootstrap.less"
       ],
       "breaking_changes": [
-        "Major: LESS removed, Bootstrap 4 + SCSS adopted. All custom themes from v10 must be rewritten.",
-        "Grid switched from float-based to flexbox; .row/.col-* class behavior differs.",
-        "Glyphicons removed — Font Awesome 5 introduced as the icon set.",
-        "Many utility class names renamed (e.g. .pull-left → .float-left, .hidden-* → .d-*-none)."
+        "Python 3 only (Python 2 dropped).",
+        "Bootstrap 3.3.5 + LESS retained — the LESS→SCSS migration happens at v12, NOT v11.",
+        "228 .less files in addons/ (1 isolated .scss file from third-party summernote — not the main stack)."
       ],
-      "notes": "First version on Bootstrap 4 + SCSS. Override brand colors via $o-brand-primary in a custom _variables.scss prepended to the asset bundle."
+      "notes": "Bootstrap 3.3.5 + LESS. No scss/ directory under addons/web/static/src/ — only less/. Evidence: addons/web/static/lib/bootstrap/css/bootstrap.css:2 'Bootstrap v3.3.5'; addons/web/static/lib/bootstrap/less/bootstrap.less:2 'Bootstrap v3.3.5'. Brand override: @odoo-brand-primary in addons/web/static/src/less/variables.less."
     },
     "12.0": {
-      "bootstrap_version": "4.1",
+      "bootstrap_version": "4.1.3",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/variables.scss",
@@ -68,13 +73,19 @@
         "addons/web/static/lib/bootstrap/scss/_variables.scss"
       ],
       "breaking_changes": [
-        "Bootstrap minor bump to 4.1 — toast component added, popover/tooltip API refined.",
-        "bootstrap_overridden.scss introduced as the canonical seam for Bootstrap variable overrides."
+        "Major: LESS completely replaced by SCSS. Bootstrap 3 replaced by Bootstrap 4.1.3.",
+        "Grid switched from float-based to flexbox; .row/.col-* class behavior differs.",
+        "Glyphicons removed — Font Awesome icons used instead.",
+        "Many utility class names renamed (e.g. .pull-left → .float-left, .hidden-* → .d-*-none).",
+        "All v11 custom LESS themes must be rewritten as SCSS.",
+        "bootstrap_overridden.scss introduced as the canonical seam for Bootstrap variable overrides.",
+        "Quirk: 5 XML bundle entries still carry type='text/less' on .scss files (v12 source bug — ignored at runtime)."
       ],
-      "notes": "The recommended customization layer is bootstrap_overridden.scss — override $primary, $body-bg, etc. here rather than in variables.scss."
+      "notes": "First version on Bootstrap 4 + SCSS. 308 .scss files in addons/. Evidence: addons/web/static/lib/bootstrap/css/bootstrap.css:1 'Bootstrap v4.1.3'. Override $primary, $body-bg etc. in bootstrap_overridden.scss."
     },
     "13.0": {
-      "bootstrap_version": "4.3",
+      "bootstrap_version": "4.3.1",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/variables.scss",
@@ -82,13 +93,14 @@
         "addons/web/static/lib/bootstrap/scss/_variables.scss"
       ],
       "breaking_changes": [
-        "Bootstrap 4.3: utility API expanded ($utilities-* maps), some spacer scales adjusted.",
+        "Bootstrap bump 4.1.3 → 4.3.1 — utility API expanded ($utilities-* maps), some spacer scales adjusted.",
         ".badge-pill class behavior tightened; rounded-pill recommended."
       ],
-      "notes": "Last release before website/portal stylesheets were heavily reorganized in v14."
+      "notes": "344 .scss files in addons/. Evidence: addons/web/static/lib/bootstrap/css/bootstrap.css 'Bootstrap v4.3.1'. Last release before website/portal stylesheets were heavily reorganized in v14."
     },
     "14.0": {
-      "bootstrap_version": "4.4",
+      "bootstrap_version": "4.3.1",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/webclient.scss",
         "addons/web/static/src/scss/variables.scss",
@@ -97,13 +109,16 @@
         "addons/website/static/src/scss/website.scss"
       ],
       "breaking_changes": [
+        "Bootstrap 4.3.1 retained — no Bootstrap major change at v14.",
         "Website/portal frontend SCSS refactored — website.scss becomes the primary frontend entry.",
-        "web_editor stylesheets split into common/backend/frontend bundles."
+        "web_editor stylesheets split into common/backend/frontend bundles.",
+        "OWL 1.x introduced alongside legacy web.Widget."
       ],
-      "notes": "Customizing frontend (website) themes requires touching both website.scss and bootstrap_overridden.scss layers."
+      "notes": "446 .scss files in addons/. Evidence: addons/web/static/lib/bootstrap/css/bootstrap.css 'Bootstrap v4.3.1'. Customizing frontend themes requires touching both website.scss and bootstrap_overridden.scss layers."
     },
     "15.0": {
-      "bootstrap_version": "5.1",
+      "bootstrap_version": "4.3.1",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
@@ -111,30 +126,35 @@
         "addons/web/static/lib/bootstrap/scss/_variables.scss"
       ],
       "breaking_changes": [
-        "Major: Bootstrap 5.1 adopted. jQuery dropped as a Bootstrap dependency — JS components rewritten on vanilla JS.",
+        "Bootstrap 4.3.1 retained — Bootstrap 5 does NOT arrive until v16.",
+        "Variable layering split into primary_variables.scss (brand) and secondary_variables.scss (derived) — overrides must respect this ordering.",
+        "Assets dict in __manifest__.py replaces XML template asset bundle declarations.",
+        "523 .scss files, 0 .less files (LESS fully gone by v15)."
+      ],
+      "notes": "Evidence: addons/web/static/lib/bootstrap/js/index.js:4 'Bootstrap (v4.3.1)'; addons/web/static/lib/bootstrap/css/bootstrap.css:1 'Bootstrap v4.3.1'. OWL 1.4.11. Override $o-brand-primary in primary_variables.scss."
+    },
+    "16.0": {
+      "bootstrap_version": "5.1.3",
+      "preprocessor": "scss",
+      "scss_files": [
+        "addons/web/static/src/scss/primary_variables.scss",
+        "addons/web/static/src/scss/secondary_variables.scss",
+        "addons/web/static/src/scss/bootstrap_overridden.scss",
+        "addons/web/static/lib/bootstrap/scss/_variables.scss"
+      ],
+      "breaking_changes": [
+        "Major: Bootstrap 4.3.1 → 5.1.3. jQuery dropped as a Bootstrap dependency.",
         "Internet Explorer support dropped.",
         "RTL is now built-in via Bootstrap 5 logical properties (no separate RTL stylesheet).",
         "Many components renamed: .form-row removed, .custom-select → .form-select, data-toggle → data-bs-toggle.",
-        "Variable layering split into primary_variables.scss (brand) and secondary_variables.scss (derived) — overrides must respect this ordering."
+        "OWL 2 introduced — most legacy Widget-based templates migrated to OWL components.",
+        "667 .scss files, 0 .less files."
       ],
-      "notes": "Override $o-brand-primary and $o-brand-odoo in primary_variables.scss. Secondary tokens (e.g. $body-bg) belong in bootstrap_overridden.scss."
-    },
-    "16.0": {
-      "bootstrap_version": "5.1",
-      "scss_files": [
-        "addons/web/static/src/scss/primary_variables.scss",
-        "addons/web/static/src/scss/secondary_variables.scss",
-        "addons/web/static/src/scss/bootstrap_overridden.scss",
-        "addons/web/static/lib/bootstrap/scss/_variables.scss"
-      ],
-      "breaking_changes": [
-        "OWL 2 introduced — most legacy Widget-based templates migrated to OWL components. Component-scoped styles increasingly use SCSS modules colocated with .js files.",
-        "Backend top-bar / cog-menu restyled — variable names like $o-cog-menu-* renamed."
-      ],
-      "notes": "Same Bootstrap version as v15 but heavier component restyling. Migration cost from v15 is mostly OWL, not SCSS."
+      "notes": "Evidence: addons/web/static/lib/bootstrap/js/dist/tab.js:2 'Bootstrap v5.1.3'. OWL 2.8.2. Override $o-brand-primary in primary_variables.scss."
     },
     "17.0": {
       "bootstrap_version": "5.1.3",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
@@ -142,14 +162,16 @@
         "addons/web/static/lib/bootstrap/scss/_variables.scss"
       ],
       "breaking_changes": [
-        "Bootstrap 5.3 brings native color modes (light/dark) via data-bs-theme — Odoo backend gains a partial dark-mode story.",
+        "Bootstrap 5.1.3 retained from v16 — no Bootstrap version bump at v17.",
+        "Partial dark-mode story added via data-bs-theme on select components.",
         "Many color tokens migrated from SCSS variables to CSS custom properties (--bs-primary, --bs-body-bg, etc.).",
-        "Theme overrides via CSS variables now take precedence over SCSS overrides at runtime — be careful when both are set."
+        "769 .scss files, 0 .less files."
       ],
-      "notes": "For brand customization: still override $o-brand-primary in primary_variables.scss for build-time defaults. Use --bs-primary CSS variable for runtime/theme-toggle scenarios."
+      "notes": "Evidence: addons/web/static/lib/bootstrap/js/dist/collapse.js:2 'Bootstrap collapse.js v5.1.3'. For brand customization: override $o-brand-primary in primary_variables.scss for build-time defaults; use --bs-primary CSS variable for runtime/theme-toggle scenarios."
     },
     "18.0": {
-      "bootstrap_version": "5.3",
+      "bootstrap_version": "5.3.3",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
@@ -158,13 +180,17 @@
         "addons/web/static/lib/bootstrap/scss/_variables-dark.scss"
       ],
       "breaking_changes": [
-        "Bootstrap stack stable at 5.3 — no major SCSS breaking changes vs v17.",
-        "Frontend bundle layout refined; some asset bundle names tightened (verify against your custom theme's __manifest__.py assets key)."
+        "Bootstrap bump 5.1.3 → 5.3.3. Native color modes (light/dark) via data-bs-theme.",
+        "CSS custom properties ($variable-prefix: bs-) — deprecated in v5.2.0; $prefix is the new form.",
+        "border-radius-2xl CSS variable deprecated in v5.3.0.",
+        "<tree> → <list> view tag hard rename (ir.ui.view.type stores 'list', not 'tree').",
+        "914 .scss files, 0 .less files."
       ],
-      "notes": "Lower-risk upgrade from v17 on the styling layer. Bulk of v18 frontend churn is OWL component-level, not Bootstrap-level."
+      "notes": "Evidence: addons/web/static/lib/bootstrap/dist/css/bootstrap.css:3 'Bootstrap v5.3.3'. 0 .less files confirmed. Bulk of v18 frontend churn is OWL component-level, not Bootstrap-level."
     },
     "19.0": {
-      "bootstrap_version": "5.3",
+      "bootstrap_version": "5.3.3",
+      "preprocessor": "scss",
       "scss_files": [
         "addons/web/static/src/scss/primary_variables.scss",
         "addons/web/static/src/scss/secondary_variables.scss",
@@ -173,10 +199,12 @@
         "addons/web/static/lib/bootstrap/scss/_variables-dark.scss"
       ],
       "breaking_changes": [
-        "Bootstrap 5.3 retained. Dark mode coverage in the backend is broader vs v17/v18 — more components opt into data-bs-theme.",
+        "Bootstrap 5.3.3 retained from v18 — no Bootstrap version bump at v19.",
+        "ORM package split (odoo/orm/ with 23 files) — parser must use _resolve_core_paths for v19.",
+        "1096 .scss files, 0 .less files.",
         "CSS-custom-property-first theming approach increasingly favored over SCSS-variable overrides."
       ],
-      "notes": "Theming guidance: prefer runtime CSS custom properties (--bs-*, --o-*) when targeting a multi-theme deployment; reserve SCSS overrides for fixed brand defaults."
+      "notes": "Evidence: addons/web/static/lib/bootstrap/dist/css/bootstrap.css:3 'Bootstrap v5.3.3'. Theming guidance: prefer runtime CSS custom properties (--bs-*, --o-*) when targeting a multi-theme deployment; reserve SCSS overrides for fixed brand defaults."
     }
   }
 }
