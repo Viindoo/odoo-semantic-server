@@ -639,6 +639,12 @@ Expected: all root/base profiles (e.g. `odoo_8`, `odoo_9`, ..., `odoo_19`) have
 `tenant_id` to them would hide them from other tenants. If any root profile has a
 non-NULL `tenant_id`, run: `UPDATE profiles SET tenant_id = NULL WHERE id = <id>;`
 
+> **Read-side, no reindex.** Re-classifying a profile shared↔private is purely this
+> `tenant_id` flip — node `profile[]` arrays are unchanged, so it never requires a
+> reindex (ADR-0034 T6). The binary `tenant_id IS NULL` = shared model is the launch
+> design; per-repo / per-tenant "public share" publishing is a deferred product feature
+> (ADR-0034 T6) and is **not** a gate for going multi-tenant LIVE.
+
 **GUARDRAIL — DO NOT enable multi-tenant routing between the v0.9.1 (#163 pre-reindex)
 deploy and this follow-up PR landing + full reindex completing.** The `profile=[]`
 nodes from the pre-profile-writer era are still present and the choke-point filter was
@@ -662,6 +668,28 @@ not yet active. Premature activation = data exposure without isolation.
 4. Verify clone succeeds for a test repo on that forge.
 
 This is a one-time step per forge host. Once pinned, subsequent clones for any repo on that forge require no further action.
+
+---
+
+### MED-3 — Cross-tenant over-eager re-index on name/basename collision
+
+The incremental indexer's dependent-repo detection is **tenant-blind**:
+`cross_repo.find_dependent_repos` (`src/indexer/cross_repo.py`) filters dependents by
+`odoo_version` only (no profile/tenant predicate), and
+`get_repo_ids_by_local_path_basenames` (`src/db/repo_registry.py`) matches on the
+checkout **directory basename** across all tenants. Consequence: an incremental index of
+tenant A's repo can NULL the `head_sha` of tenant B's repo when a module name or a
+checkout basename collides — forcing B's repo to re-index on its next run.
+
+**Impact: integrity/cost only — NOT a confidentiality leak.** No data crosses tenants;
+the choke-point filter still isolates all reads. Worst case is wasted re-index compute
+and a tenant's repo re-running unexpectedly.
+
+Accepted for the current tenant scale (documented + tested as intentional, ADR-0007
+W14). Proper fix = store the full `local_path` (not basename) in `Module.repo` + add a
+tenant/profile predicate to the dependent-repo query; **revisit before scaling tenant
+count materially.** Related: ADR-0034 A3 (the same-name collision also fail-closes
+reads).
 
 ---
 

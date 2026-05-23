@@ -2687,6 +2687,14 @@ def _describe_module(
                 f"No module named '{name}' indexed for Odoo {odoo_version}."
             )
 
+        # depends-list is intentionally NOT tenant-scoped (no _scope_pred("d")).
+        # It returns only d.name — dependency names from THIS module's own manifest,
+        # and the anchor `m` above is already scoped, so the caller is entitled to
+        # them (they wrote those names). Contrast _module_dep_closure below, which
+        # DOES filter `dep` because it returns dependency node CONTENT
+        # (dep.repo / dep.repo_url). Filtering names here would only hide a dep the
+        # tenant itself declared when its name collides with another tenant's private
+        # module (ADR-0034 A3 collision) — no confidentiality gain, real UX loss.
         depends = session.run(
             f"""
             MATCH (m:Module {{name: $n, odoo_version: $v}})
@@ -4810,6 +4818,11 @@ def _describe_module_structured(
         if not mod_rec:
             return None
 
+        # depends-list is intentionally NOT tenant-scoped (no _scope_pred("d")) —
+        # see the matching note in _describe_module: d.name is the dependency name
+        # from this module's own (already-scoped) manifest, not foreign node content.
+        # _module_dep_closure filters because it returns dep.repo/repo_url; this
+        # name-only list has nothing foreign to protect (ADR-0034 A3 / T7).
         depends = session.run(
             f"""
             MATCH (m:Module {{name: $n, odoo_version: $v}})

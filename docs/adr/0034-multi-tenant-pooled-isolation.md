@@ -364,6 +364,50 @@ USES_FIELD edge from the `sale` method). Accepted trade-off: precision over reca
 for usage tracking. Cross-module USES_FIELD via `DEPENDS_ON_FIELD` (which traces
 `@api.depends` dotted paths) is unaffected.
 
+### T6 — Public-share semantics + future direction (confirmed 2026-05-23)
+
+"Shared" visibility is determined **purely** by `profiles.tenant_id IS NULL` (T1) and
+resolved at READ time by `resolve_tenant_scope` (`src/db/repo_registry.py`). Two
+consequences:
+
+- **Re-classification is read-side, no reindex.** Making a profile shared↔private is a
+  single `UPDATE profiles SET tenant_id = <N | NULL>` — the node `profile[]` arrays
+  written at index time do **not** change; only the read-side scope resolution does.
+  (Contrast a hypothetical `tenant_id`-in-MERGE-key model, rejected in D2, which would
+  duplicate every shared CE node per tenant AND break the cross-tenant dependency
+  closure — a tenant's `DEPENDS_ON base` could not resolve onto the single shared
+  `base` node.)
+- **The binary model is sufficient for launch** — one shared CE/EE base
+  (`tenant_id IS NULL`) + per-tenant private overlays. There is no `public_shared` /
+  per-repo / per-tenant-namespaced visibility flag, and none is needed for the launch
+  use case (each customer consumes shared base + their own private repos; no customer
+  shares their repos with another customer).
+
+**Future "public share"** (a tenant publishing its OWN repos to other specific tenants,
+per-repo granularity, self-service) is **deferred as a product feature, not a launch
+gate** (RFC pending demand). If/when built it MUST populate a dedicated, **controlled
+shared profile** (a re-indexed / namespaced publish target) — it must **NOT** flip
+`tenant_id` on a tenant's live private profile, because that would retroactively expose
+any name-colliding nodes and trigger the A3 collision fail-close. The profile-level
+`profile[]` array (not a MERGE-key discriminator) remains the visibility primitive, and
+the dependency closure already rides on it correctly.
+
+### T7 — `describe_module` depends-list intentionally unscoped (confirmed not-a-leak)
+
+The manifest `depends` list in `describe_module` (both `_describe_module` and
+`_describe_module_structured`) returns only `d.name` of `DEPENDS_ON` targets with **no**
+`_scope_pred("d")`, in deliberate contrast to `_module_dep_closure` which DOES filter
+`dep`. This is **by design, not a leak**: the anchor module `m` is already scoped, so
+the caller is entitled to view it; `d.name` is a dependency name from the caller's own
+(scoped) manifest; and the list returns **no foreign node content** — whereas the
+closure returns `dep.repo` / `dep.repo_url` (foreign paths/URLs) and therefore must
+filter. A name-only list is not a useful leak oracle either: a `DEPENDS_ON` declaration
+MERGE-creates a stub target node regardless of whether another tenant owns a same-named
+module, so the name surfaces from the caller's own declaration. Adding the filter would
+only hide a dependency the tenant itself declared whenever the name collides with
+another tenant's private module (A3) — UX loss, zero confidentiality gain. Documented
+here so a future audit does not re-flag the asymmetry as a bug.
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).

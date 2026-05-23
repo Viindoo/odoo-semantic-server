@@ -2,6 +2,36 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [0.11.1] — 2026-05-23 — Pre-LIVE hygiene (read-side; no reindex)
+
+Small follow-up after #165 (v0.11.0). **Read-side only** — no parser/writer change, no
+new migration, **no reindex required**. Tool surface stays **24**.
+
+### Removed
+- **`scripts/cleanup_v96.cypher` + `tests/test_no_v96_data.py`** (stale one-shot relics).
+  The script was an unguarded, label-blind `DETACH DELETE n WHERE n.odoo_version='96.0'`
+  with zero operational wiring; `96.0` is now an active test-sentinel version (the 94-99
+  band, alongside `TEST_VERSION=99.0`), so the guard test was a false-positive generator
+  (it asserted 0 nodes at `96.0` on a DB where sibling tests legitimately seed `96.0`).
+  The runbook §1a `snap_mod`-scoped cleanup (name+version pinned) supersedes the script,
+  and the mandatory full reindex v8→v19 rebuilds the graph regardless.
+
+### Documented (no behaviour change)
+- **R-1 — `describe_module` depends-list intentionally unscoped** (ADR-0034 T7): code
+  comments at `_describe_module` + `_describe_module_structured` explain why the manifest
+  depends list returns names with no `_scope_pred("d")` — the asymmetry with the
+  content-returning `_module_dep_closure` is by design (the list returns only names from
+  the caller's own scoped manifest; the closure returns `dep.repo`/`repo_url` and so must
+  filter). Confirmed not-a-leak; documented to prevent re-flagging.
+- **Public-share semantics + future direction** (ADR-0034 T6): the binary
+  `tenant_id IS NULL` = shared model is the launch design; re-classification is a
+  read-side `tenant_id` flip (no reindex); per-repo / per-tenant publishing is a deferred
+  product feature, **not** a gate for going multi-tenant LIVE. Runbook §5.12c cross-refs.
+- **MED-3 — cross-tenant over-eager re-index** (reindex runbook Known Constraints):
+  `find_dependent_repos` + basename-collision can NULL another tenant's `head_sha`
+  (integrity/cost, **not** a confidentiality leak); accepted at current scale, revisit
+  before scaling tenant count (ADR-0007 W14, ADR-0034 A3).
+
 ## [0.11.0] — 2026-05-23 — Parser correctness v8-v19, arch_snippet, tenant isolation, query/render, enrichment (WG-1..WG-5)
 
 Six work-groups landed on `feat/osm-final-stretch` via the fix-wave integration branch.
