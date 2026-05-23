@@ -273,6 +273,38 @@ def test_build_registry_external_dependencies_absent(tmp_path):
     assert info.external_bin == []
 
 
+def test_build_registry_external_dependencies_none_value(tmp_path):
+    """external_dependencies=None in manifest must NOT crash; external_python/bin = [].
+
+    Some manifests set the key explicitly to None (e.g. a merge artefact or a
+    module that cleared its deps).  Previously this caused AttributeError
+    ('NoneType' has no attribute 'get') — regression guard.
+    """
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_extdep_none", external_dependencies=None)
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_extdep_none"]
+    assert info.external_python == [], "external_python must be [] when key is None"
+    assert info.external_bin == [], "external_bin must be [] when key is None"
+
+
+def test_build_registry_external_dependencies_python_none(tmp_path):
+    """external_dependencies={'python': None} must NOT crash; external_python = [].
+
+    A manifest that sets the python list explicitly to None should be treated
+    the same as an absent key — the indexer must not abort the whole repo.
+    """
+    repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(
+        repo / "mod_extdep_py_none",
+        external_dependencies={"python": None, "bin": ["wkhtmltopdf"]},
+    )
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["mod_extdep_py_none"]
+    assert info.external_python == [], "external_python must be [] when value is None"
+    assert "wkhtmltopdf" in info.external_bin, "external_bin must still be populated"
+
+
 # ---------------------------------------------------------------------------
 # A2c — Repo provenance (repo_url, repo_id)
 # ---------------------------------------------------------------------------

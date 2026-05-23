@@ -13,7 +13,7 @@ after deploy (see runbook §5.11-5.12 for the new pre-traffic multi-tenant gate)
   now falls back to `_parse_era1_text()` regex for both `_columns` AND `fields.X` new-API
   fields — prevents `account.py` losing 82 fields on v9 reindex.
 - **`Many2oneReference` + `PropertiesDefinition` + `property` field types**: added to
-  `FIELD_TYPES` (v13+ `Many2oneReference`; v18+ `PropertiesDefinition` + `Properties`;
+  `FIELD_TYPES` (v13+ `Many2oneReference`; v16+ `PropertiesDefinition`;
   v8/v9 legacy `fields.property`). Previously caused silent Field node drops.
 - **F-14 Selection positional guard**: `fields.Selection('_compute_sel')` positional
   string no longer stored as `string=` label.

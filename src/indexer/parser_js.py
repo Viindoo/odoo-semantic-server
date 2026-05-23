@@ -54,6 +54,14 @@ _OWL_ENABLED_REGISTRY: VersionRegistry[bool] = VersionRegistry([
     (14, None, True),   # v14+: OWL patch() and component class extraction enabled
 ])
 
+# Known OWL base class names (module-level — loop-invariant constant).
+# Covers both destructured import `extends Component` and qualified `extends owl.Component`.
+# LegacyComponent and ComponentAdapter are intermediate bases used in compatibility layers.
+_OWL_BASE_NAMES: frozenset[str] = frozenset({
+    "Component", "owl.Component",
+    "LegacyComponent", "ComponentAdapter",
+})
+
 
 def _detect_era(source: str) -> str:
     if "@odoo-module" in source:
@@ -568,16 +576,24 @@ def _extract_era3_components(
             "utf-8", errors="ignore"
         )
 
-        # extends clause
+        # extends clause — handle both identifier and member_expression.
+        # `extends Component`   → class_heritage child: identifier "Component"
+        # `extends owl.Component` → class_heritage child: member_expression "owl.Component"
         extends_name: str | None = None
         heritage = _find_first_child_by_type(node, "class_heritage")
         if heritage:
-            # class_heritage: "extends Foo" — find the identifier
             ext_id = _find_first_child_by_type(heritage, "identifier")
             if ext_id:
                 extends_name = source[ext_id.start_byte:ext_id.end_byte].decode(
                     "utf-8", errors="ignore"
                 )
+            else:
+                # `extends owl.Component` → member_expression whose full text is "owl.Component"
+                mem_expr = _find_first_child_by_type(heritage, "member_expression")
+                if mem_expr:
+                    extends_name = source[mem_expr.start_byte:mem_expr.end_byte].decode(
+                        "utf-8", errors="ignore"
+                    )
 
         # static template = "..." inside class body
         template_val: str | None = None
@@ -608,10 +624,7 @@ def _extract_era3_components(
         # era3 files contain many non-OWL utility classes (Domain, Registry, RPCError, etc.)
         # that tree-sitter classifies as class_declaration — they must NOT become OWLComp nodes.
         # Allow both direct Component and common OWL intermediate bases (LegacyComponent, etc.).
-        _OWL_BASE_NAMES = frozenset({
-            "Component", "owl.Component",
-            "LegacyComponent", "ComponentAdapter",
-        })
+        # _OWL_BASE_NAMES is defined at module level (loop-invariant constant).
         if extends_name is None or extends_name not in _OWL_BASE_NAMES:
             continue
 

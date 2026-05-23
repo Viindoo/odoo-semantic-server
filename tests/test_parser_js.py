@@ -676,3 +676,54 @@ def test_era3_non_component_class_excluded_v17(tmp_path):
     assert "SaleWidget" in component_names
     assert "HelperUtil" not in component_names
     assert "DataModel" not in component_names
+
+
+def test_era3_owl_member_expr_component(tmp_path):
+    """JS-G1 fix: `extends owl.Component` (member_expression) must produce OWLCompInfo.
+
+    Previously only `extends Component` (identifier) was recognised; the qualified
+    form `extends owl.Component` was parsed as a member_expression by tree-sitter and
+    the extends_name came back None — the class was silently dropped.
+    Regression guard: revert the member_expression branch → test goes red.
+    """
+    src = (
+        "/** @odoo-module */\n"
+        "import owl from '@odoo/owl';\n"
+        "export class FooWidget extends owl.Component {\n"
+        "    static template = 'my_mod.FooWidget';\n"
+        "}\n"
+        "class UtilHelper {}\n"  # no extends — must NOT become OWLComp
+    )
+    _make_static_js(tmp_path, "foo_widget.js", src)
+    result = parse_module_graph(_module(tmp_path, version="15.0"))
+    component_names = {c.name for c in result.components}
+    assert "FooWidget" in component_names, (
+        "extends owl.Component (member_expression) must be indexed as OWLComp"
+    )
+    assert "UtilHelper" not in component_names, (
+        "plain class without extends must NOT be OWLComp"
+    )
+
+
+def test_era3_extends_component_and_owl_component_no_double_count(tmp_path):
+    """Both `extends Component` and `extends owl.Component` in same file → 2 OWLComps, no dup.
+
+    Ensures the member_expression path does not double-count with the identifier path.
+    """
+    src = (
+        "/** @odoo-module */\n"
+        "import { Component } from '@odoo/owl';\n"
+        "import owl from '@odoo/owl';\n"
+        "export class AlphaWidget extends Component {}\n"
+        "export class BetaWidget extends owl.Component {}\n"
+        "export class GammaUtil {}\n"
+    )
+    _make_static_js(tmp_path, "widgets.js", src)
+    result = parse_module_graph(_module(tmp_path, version="16.0"))
+    component_names = {c.name for c in result.components}
+    assert "AlphaWidget" in component_names, "extends Component must be OWLComp"
+    assert "BetaWidget" in component_names, "extends owl.Component must be OWLComp"
+    assert "GammaUtil" not in component_names, "plain class must NOT be OWLComp"
+    assert len([c for c in result.components if c.name in {"AlphaWidget", "BetaWidget"}]) == 2, (
+        "exactly 2 OWLComp entries — no double-count"
+    )

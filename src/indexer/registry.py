@@ -216,9 +216,9 @@ def build_registry(
             _category: str | None = manifest.get('category') or None
             _summary: str | None = manifest.get('summary') or None
 
-            _ext_deps: dict = manifest.get('external_dependencies', {})
-            _external_python: list[str] = list(_ext_deps.get('python', []))
-            _external_bin: list[str] = list(_ext_deps.get('bin', []))
+            _ext_deps = manifest.get('external_dependencies') or {}
+            _external_python: list[str] = list(_ext_deps.get('python') or [])
+            _external_bin: list[str] = list(_ext_deps.get('bin') or [])
 
             info = ModuleInfo(
                 name=module_name,

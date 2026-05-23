@@ -82,8 +82,8 @@ def _edition_rank_cypher(node_alias: str = "mod") -> str:
 
 # Render-only edition label — WG-5 T1.
 # Maps (edition enum, optional raw license) → human-readable label for MCP output.
-# Priority: license → more specific (OPL-1 vs OEEL-1 both map to "enterprise" enum
-# at index time, but license distinguishes Odoo EE vs Viindoo EE at render time).
+# Priority: license → more specific (OEEL-1 maps to "enterprise" at index time;
+# OPL-1 falls to "custom" at index time but is treated as EE at render time via this map).
 _LICENSE_TO_EDITION_LABEL: dict[str, str] = {
     "lgpl-3":   "Community (CE)",
     "lgpl-3.0": "Community (CE)",
@@ -303,11 +303,11 @@ def _scope(profile_name: str | None = None) -> dict:
     ``own ∪ shared``; it can never widen it:
 
     - admin (own=None), no profile_name      → ``own=None`` (unrestricted).
-    - admin (own=None), explicit profile      → narrow to ``own=[profile], shared=[]``
-      (admin convenience — same effect as the pgvector ``_effective_allowed`` path,
-      so Neo4j and pgvector agree).
+    - admin (own=None), explicit profile      → narrow to ``own=[profile]``, keep ``shared``
+      (admin convenience; shared/CE base nodes with [own, base] still visible).
     - tenant, no profile_name                 → full ``(own, shared)`` boundary.
-    - tenant, profile_name ∈ own∪shared       → narrow to that single profile.
+    - tenant, profile_name ∈ own∪shared       → narrow own to ``[profile]``, keep ``shared``
+      (nodes that carry [own, base] both remain visible — shared is never stripped).
     - tenant, profile_name ∉ own∪shared       → deny-all (``own=[], shared=[]``);
       a tenant cannot borrow another tenant's profile name to escalate.
     """
@@ -317,10 +317,13 @@ def _scope(profile_name: str | None = None) -> dict:
     # Non-escalating narrowing. Admin (own=None) is unrestricted, so any profile is
     # in-scope and we narrow purely as a convenience. A scoped tenant may only narrow
     # within its own∪shared boundary; an out-of-scope profile_name fail-closes.
+    # In both admin and tenant cases we KEEP shared so that nodes carrying
+    # [profile_name, base_profile] (the normal [own, CE-base] pattern) are not
+    # accidentally denied when the caller narrows to a specific own-profile.
     if own is None:
-        return {"own": [profile_name], "shared": []}
+        return {"own": [profile_name], "shared": shared}
     if profile_name in own or profile_name in shared:
-        return {"own": [profile_name], "shared": []}
+        return {"own": [profile_name], "shared": shared}
     return {"own": [], "shared": []}
 
 
@@ -2558,17 +2561,18 @@ def _check_module_exists(
     repo = rec.get("repo") if rec else None
     vvq_db = rec.get("vvq") if rec else None
 
-    # Edition-first: check Neo4j for 'enterprise' (from OEEL-1/OPL-1 detection)
-    # Also handles OPL-1 license at render time (not indexed as 'enterprise' currently).
+    # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
+    # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition (it falls to 'custom');
+    # it is handled separately via the raw license value at render time (_is_ee_by_license).
     is_ee_confusion = False
     ee_source = ""  # track source for output messaging
     viindoo_equivalent = None
 
     # OPL-1 at render time: not indexed as "enterprise" (falls to "custom" in
-    # _detect_module_edition) but the raw license distinguishes Odoo EE clearly.
+    # _detect_module_edition) but the raw license value identifies Odoo EE clearly.
     _is_ee_by_license = (license_val or "").upper() in ("OPL-1", "OEEL-1")
     if indexed and (edition == "enterprise" or _is_ee_by_license):
-        # Indexed data has OEEL-1/OPL-1 → is EE module
+        # Indexed data: edition="enterprise" (OEEL-1 path) or raw license is OPL-1/OEEL-1
         is_ee_confusion = True
         ee_source = "indexed"
         viindoo_equivalent = vvq_db or EE_CONFUSION.get(name)

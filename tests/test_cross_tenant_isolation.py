@@ -243,6 +243,29 @@ def test_tenant_cannot_see_other_tenant_field_even_with_explicit_profile(world):
     assert "Declared in" not in out, f"CROSS-TENANT LEAK (detail rendered): {out!r}"
 
 
+def test_tenant_narrow_to_own_profile_still_sees_own_plus_base(world):
+    """_scope fix: narrowing to own profile_name must preserve shared so that nodes
+    carrying [own_profile, base_profile] (the standard [own, CE-base] layout) remain
+    visible to the tenant.
+
+    Before the fix, _scope returned shared=[] on narrowing — the `all(... OR __p IN $shared)`
+    predicate failed for nodes whose profile array includes the shared/base profile alongside
+    the own-profile, causing a false-negative 'not found' on the tenant's own private data.
+
+    Regression guard: revert shared=[] in the narrowing branch → this test goes red.
+    """
+    from src.mcp.server import _resolve_field
+    # acme_field is on a node with profile=[acme_p, base_p] (both own + shared).
+    # Narrowing to acme_p should still resolve it because base_p stays in $shared.
+    with as_tenant(world["acme"]):
+        out = _resolve_field(
+            "acme.secret", "acme_field", V, profile_name=world["acme_p"]
+        )
+    assert "char" in out.lower(), (
+        f"tenant narrow to own profile must still see [own, base] nodes: {out!r}"
+    )
+
+
 def test_tenant_sees_shared_base(world):
     from src.mcp.server import _resolve_field
     with as_tenant(world["acme"]):

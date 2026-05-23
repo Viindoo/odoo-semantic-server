@@ -299,24 +299,25 @@ amendments and the CHANGELOG entry.
 
 ### T2 — Choke-point filter invariant (confirmed)
 
-The uniform guard fragment applied at all 61 Cypher sites is:
+The uniform guard fragment applied at all 61 Cypher sites is (params: `$own`, `$shared`):
 
 ```cypher
-($allowed IS NULL OR all(__ap IN <alias>.profile WHERE __ap IN $allowed))
+($own IS NULL OR (size(<alias>.profile) > 0
+                  AND all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared)))
 ```
 
-- A node is **granted** iff `$allowed` is `NULL` (admin) OR every profile on the node
-  is in the resolved allow-list.
+- A node is **granted** iff `$own` is `NULL` (admin) OR every profile on the node
+  is in the tenant's own-or-shared allow-list.
 - **Fail-closed**: a node whose `profile = []` (vacuous truth bug F-6, ADR-0034 D4)
-  is *denied* because `all(__ap IN [] WHERE ...)` evaluates to `TRUE` in Cypher, but
-  the additional `size(<alias>.profile) > 0` guard added in A1 ensures empty-profile
+  is *denied* because `all(__p IN [] WHERE ...)` evaluates to `TRUE` in Cypher, but
+  the additional `size(<alias>.profile) > 0` guard ensures empty-profile
   nodes are never granted. Pre-reindex precondition: **0 nodes must have `profile=[]`**
   (verify with 5.11 query below before multi-tenant traffic).
 - **`profile_name` is NARROW + non-escalating**: when an API key passes
-  `profile_name` explicitly (via `set_active_profile` or tool arg), the resolved
-  `$allowed` is further narrowed to only include that one profile from the tenant's
-  own-or-shared set. A key cannot use `profile_name` to name a profile outside its
-  resolved scope — the session layer validates membership before injecting
+  `profile_name` explicitly (via `set_active_profile` or tool arg), `$own` is narrowed
+  to `[profile_name]` while `$shared` is kept — so nodes carrying `[own_profile, base_profile]`
+  remain visible. A key cannot use `profile_name` to name a profile outside its resolved
+  scope — the session layer validates membership before injecting
   (ADR-0029 superseded: profile is now narrowing authz, not advisory convenience).
   **Both Neo4j (choke-point) and pgvector (`AND profile_name = ANY(%s)`) use the same
   narrowed scope** — eliminates the split-brain that existed when Neo4j respected

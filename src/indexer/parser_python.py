@@ -18,7 +18,7 @@ FIELD_TYPES = {
     'Many2many', 'Reference', 'Json', 'Properties', 'Image',
     # v13+: generic many2one without FK constraint (odoo/fields.py:2659 in v13)
     'Many2oneReference',
-    # v18+: stores property definitions on a model (odoo/fields.py:4078 in v18)
+    # v16+: stores property definitions on a model (odoo/fields.py:3794 in v16)
     'PropertiesDefinition',
 }
 
