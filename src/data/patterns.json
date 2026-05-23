@@ -1617,5 +1617,43 @@
     "odoo_version_min": "15.0",
     "language": "xml",
     "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-field-widget-register-v17",
+    "intent_keywords": [
+      "owl", "field widget", "registry", "fieldRegistry", "registry.add",
+      "supportedTypes", "extractProps", "component", "widget_name", "custom widget"
+    ],
+    "file_ref": "addons/web/static/src/views/fields/many2one/many2one_field.js:1",
+    "snippet_text": "import { Component } from \"@odoo/owl\";\nimport { registry } from \"@web/core/registry\";\n\nexport class MyCustomField extends Component {\n    static template = \"my_module.MyCustomField\";\n    static props = {\n        ...Component.props,\n        value: { type: [Boolean, { value: false }] },\n        update: { type: Function },\n        readonly: { type: Boolean },\n        // add your custom props here\n    };\n    static supportedTypes = [\"char\", \"text\"];  // restrict which field types can use this widget\n\n    static extractProps({ attrs, field }) {\n        return {\n            value: attrs.value,\n        };\n    }\n}\n\nregistry.category(\"fields\").add(\"my_custom_widget\", {\n    component: MyCustomField,\n    supportedTypes: MyCustomField.supportedTypes,\n    extractProps: MyCustomField.extractProps,\n});",
+    "gotchas": [
+      "Always declare `static template` pointing to an existing QWeb t-name — missing template causes a silent render crash without a useful error message in the console",
+      "`static supportedTypes` restricts which ORM field types can bind to your widget — omitting it means ANY field type can bind, which is usually not intended and can cause runtime errors when the field value shape doesn't match your component expectations",
+      "`extractProps` receives `{ attrs, field, record }` — attrs are the view XML attributes (e.g. options), field is the ORM field descriptor; always return an object even if empty or Owl will throw a props validation error",
+      "In Odoo v17, the field registry category is `'fields'` (not `'field_components'` from v14-v15) — check `registry.category('fields')` call, not `fieldRegistry` import which was removed",
+      "Register the widget in `web.assets_backend` (not `web.assets_frontend`) for backend views; frontend (portal/website) widgets go in `web.assets_frontend`"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "js",
+    "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-field-widget-with-template-v17",
+    "intent_keywords": [
+      "owl", "field widget", "QWeb template", "t-name", "widget template",
+      "CharField", "Many2one widget", "props.value", "props.update", "field component"
+    ],
+    "file_ref": "addons/web/static/src/views/fields/char/char_field.js:1",
+    "snippet_text": "<!-- XML template — register in web.assets_backend -->\n<!-- <templates xml:space=\"preserve\"> -->\n<t t-name=\"my_module.MyCustomField\">\n    <div class=\"o_field_widget o_field_my_custom\">\n        <t t-if=\"props.readonly\">\n            <span t-esc=\"props.value or ''\"/>\n        </t>\n        <t t-else=\"\">\n            <input type=\"text\"\n                   t-att-value=\"props.value or ''\"\n                   t-on-input=\"onInput\"\n                   class=\"o_input\"/>\n        </t>\n    </div>\n</t>\n\n// JS side — setup() and event handler\nsetup() {\n    // no useService / onWillStart needed for minimal widget\n}\nonInput(ev) {\n    this.props.update(ev.target.value);\n}",
+    "gotchas": [
+      "`props.update(newValue)` is the canonical way to commit a field value change — do NOT mutate `props.value` directly or call `record.update()` from the widget; the field binding handles dirty state and re-rendering",
+      "For Many2one fields, `props.value` is `{ id, display_name }` (or `false`) — not a bare integer; always guard with `props.value && props.value.id`",
+      "For Selection fields, `props.value` is the selection key string (not the translated label) — use `props.options` to get `[key, label]` pairs for rendering a dropdown",
+      "Omit `static forceSave = true` unless you need to write the field even when unchanged (e.g. always-write fields) — setting it unnecessarily triggers extra RPC calls",
+      "Template must be included in the same `<templates>` bundle loaded in `web.assets_backend`; cross-bundle template references fail silently and render an empty widget"
+    ],
+    "odoo_version_min": "17.0",
+    "language": "xml",
+    "core_symbol_names": []
   }
 ]

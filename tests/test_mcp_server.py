@@ -1721,6 +1721,85 @@ def test_describe_module_no_models_skips_footer(neo4j_driver):
         _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
 
 
+# --- WG-5 T1: _edition_label unit tests (no Neo4j required) ----------------
+
+
+def test_edition_label_opl1_is_odoo_ee():
+    """OPL-1 license → 'Odoo Enterprise (EE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label("custom", "OPL-1") == "Odoo Enterprise (EE)"
+
+
+def test_edition_label_lgpl3_is_community_ce():
+    """LGPL-3 license → 'Community (CE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label("community", "LGPL-3") == "Community (CE)"
+
+
+def test_edition_label_oeel1_is_viindoo_ee():
+    """OEEL-1 license → 'Viindoo Enterprise (EE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label("enterprise", "OEEL-1") == "Viindoo Enterprise (EE)"
+
+
+def test_edition_label_fallback_to_enum_when_no_license():
+    """No license → fall back to edition enum mapping."""
+    srv = _import_server_module()
+    assert srv._edition_label("community", None) == "Community (CE)"
+    assert srv._edition_label("enterprise", None) == "Odoo Enterprise (EE)"
+    assert srv._edition_label("viindoo", None) == "Viindoo Enterprise (EE)"
+    assert srv._edition_label("oca", None) == "OCA / Community-compatible"
+
+
+def test_edition_label_none_edition_defaults_to_ce():
+    """None edition + None license → 'Community (CE)'."""
+    srv = _import_server_module()
+    assert srv._edition_label(None, None) == "Community (CE)"
+
+
+W6_EDITION_LABEL_VERSION = "88.0"
+
+
+def test_describe_module_edition_label_opl1(neo4j_driver):
+    """describe_module: OPL-1 license → Edition shows 'Odoo Enterprise (EE)'."""
+    _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'odoo_ent', m.edition = 'custom', m.license = 'OPL-1', "
+                "    m.profile = ['default']",
+                n="sale_enterprise_test", v=W6_EDITION_LABEL_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_enterprise_test", W6_EDITION_LABEL_VERSION)
+        assert "Odoo Enterprise (EE)" in out, (
+            f"Expected 'Odoo Enterprise (EE)' in Edition line, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+
+
+def test_describe_module_edition_label_lgpl3(neo4j_driver):
+    """describe_module: LGPL-3 license → Edition shows 'Community (CE)'."""
+    _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'odoo_ce', m.edition = 'community', m.license = 'LGPL-3', "
+                "    m.profile = ['default']",
+                n="sale_ce_test", v=W6_EDITION_LABEL_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._describe_module("sale_ce_test", W6_EDITION_LABEL_VERSION)
+        assert "Community (CE)" in out, (
+            f"Expected 'Community (CE)' in Edition line, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+
+
 # --- list_fields ------------------------------------------------------------
 
 

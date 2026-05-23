@@ -80,6 +80,49 @@ def _edition_rank_cypher(node_alias: str = "mod") -> str:
     return f"CASE {node_alias}.edition {cases} ELSE {EDITION_PRIORITY_ELSE} END AS edition_rank"
 
 
+# Render-only edition label — WG-5 T1.
+# Maps (edition enum, optional raw license) → human-readable label for MCP output.
+# Priority: license → more specific (OPL-1 vs OEEL-1 both map to "enterprise" enum
+# at index time, but license distinguishes Odoo EE vs Viindoo EE at render time).
+_LICENSE_TO_EDITION_LABEL: dict[str, str] = {
+    "lgpl-3":   "Community (CE)",
+    "lgpl-3.0": "Community (CE)",
+    "agpl-3":   "Community (CE)",
+    "agpl-3.0": "Community (CE)",
+    "gpl-3":    "Community (CE)",
+    "gpl-3.0":  "Community (CE)",
+    "opl-1":    "Odoo Enterprise (EE)",
+    "oeel-1":   "Viindoo Enterprise (EE)",
+}
+_EDITION_ENUM_TO_LABEL: dict[str, str] = {
+    "community":  "Community (CE)",
+    "enterprise": "Odoo Enterprise (EE)",
+    "viindoo":    "Viindoo Enterprise (EE)",
+    "oca":        "OCA / Community-compatible",
+    "custom":     "Custom",
+}
+
+
+def _edition_label(edition: str | None, license: str | None = None) -> str:
+    """Return a human-readable edition label for MCP output.
+
+    Derives from ``license`` (SPDX string) first — more specific than the
+    indexed ``edition`` enum when both are available.  Falls back to
+    ``edition`` enum mapping, then returns the raw value (or 'community').
+
+    Used by check_module_exists, describe_module, and model_inspect summary
+    to show 'Community (CE)' / 'Odoo Enterprise (EE)' / 'Viindoo Enterprise (EE)'
+    instead of raw 'community'/'enterprise'/'viindoo'.
+    """
+    if license:
+        label = _LICENSE_TO_EDITION_LABEL.get(license.lower().strip())
+        if label:
+            return label
+    if edition:
+        return _EDITION_ENUM_TO_LABEL.get(edition, edition)
+    return "Community (CE)"
+
+
 def _render_capped(
     items: list,
     formatter,  # Callable[[Any], str]
@@ -490,6 +533,7 @@ def _resolve_model(
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN m.module AS module_name, mod.repo AS repo,
+                   mod.edition AS edition, mod.license AS license,
                    COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
                    COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
@@ -531,7 +575,9 @@ def _resolve_model(
     lines = [f"{model_name} (Odoo {odoo_version})"]
     if from_module:
         lines.append(f"├─ filter: from_module={from_module}")
-    lines.append(f"├─ Defined in:     [{base['repo']}] {base['module_name']}")
+    # WG-5 T1: append edition label after module name for quick CE/EE identification.
+    _base_ed = _edition_label(base.get("edition"), base.get("license"))
+    lines.append(f"├─ Defined in:     [{base['repo']}] {base['module_name']} ({_base_ed})")
 
     if parents:
         parents_str = ", ".join(p["pname"] for p in parents)
@@ -2501,22 +2547,28 @@ def _check_module_exists(
             WHERE ($own IS NULL OR (size(m.profile) > 0
                    AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN m.edition AS edition,
+                   m.license AS license,
                    m.viindoo_equivalent_qname AS vvq,
                    m.repo AS repo
         """, n=name, v=v, **_scope(profile_name)).single()
 
     indexed = rec is not None
     edition = rec["edition"] if rec else None
+    license_val = rec["license"] if rec else None
     repo = rec.get("repo") if rec else None
     vvq_db = rec.get("vvq") if rec else None
 
-    # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 license detection)
+    # Edition-first: check Neo4j for 'enterprise' (from OEEL-1/OPL-1 detection)
+    # Also handles OPL-1 license at render time (not indexed as 'enterprise' currently).
     is_ee_confusion = False
     ee_source = ""  # track source for output messaging
     viindoo_equivalent = None
 
-    if indexed and edition == "enterprise":
-        # Indexed data has OEEL-1 → is EE module
+    # OPL-1 at render time: not indexed as "enterprise" (falls to "custom" in
+    # _detect_module_edition) but the raw license distinguishes Odoo EE clearly.
+    _is_ee_by_license = (license_val or "").upper() in ("OPL-1", "OEEL-1")
+    if indexed and (edition == "enterprise" or _is_ee_by_license):
+        # Indexed data has OEEL-1/OPL-1 → is EE module
         is_ee_confusion = True
         ee_source = "indexed"
         viindoo_equivalent = vvq_db or EE_CONFUSION.get(name)
@@ -2527,7 +2579,8 @@ def _check_module_exists(
         viindoo_equivalent = EE_CONFUSION.get(name)
 
     return _format_check_module_exists(
-        name=name, version=v, indexed=indexed, edition=edition, repo=repo,
+        name=name, version=v, indexed=indexed, edition=edition,
+        license_val=license_val, repo=repo,
         is_ee_confusion=is_ee_confusion, viindoo_equivalent=viindoo_equivalent,
         ee_source=ee_source,
     )
@@ -2535,6 +2588,7 @@ def _check_module_exists(
 
 def _format_check_module_exists(
     *, name: str, version: str, indexed: bool, edition: str | None,
+    license_val: str | None = None,
     repo: str | None, is_ee_confusion: bool, viindoo_equivalent: str | None,
     ee_source: str = "",
 ) -> str:
@@ -2542,7 +2596,10 @@ def _format_check_module_exists(
     lines.append(f"├─ Indexed:         {'Yes' if indexed else 'No'}")
     if indexed and edition:
         repo_suffix = f" [{repo}]" if repo else ""
-        lines.append(f"├─ Edition:         {edition}{repo_suffix}")
+        # WG-5 T1: derive human-readable edition label from license (preferred)
+        # or from indexed edition enum.
+        ed_label = _edition_label(edition, license_val)
+        lines.append(f"├─ Edition:         {ed_label}{repo_suffix}")
     lines.append(
         f"├─ Is EE confusion: {'Yes' if is_ee_confusion else 'No'}"
     )
@@ -2607,6 +2664,7 @@ def _describe_module(
                    AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
                    m.edition AS edition,
+                   m.license AS license,
                    m.viindoo_equivalent_qname AS vvq,
                    m.license_notice AS license_notice,
                    m.repo_url AS repo_url,
@@ -2731,7 +2789,8 @@ def _describe_module(
         manifest_rows.append(("Depends", dep_names))
     else:
         manifest_rows.append(("Depends", "—"))
-    edition_str = mod_rec.get("edition") or "community"
+    # WG-5 T1: human-readable edition label derived from license (preferred) or edition enum.
+    edition_str = _edition_label(mod_rec.get("edition"), mod_rec.get("license"))
     if mod_rec.get("vvq"):
         edition_str += f" (Viindoo equivalent: {mod_rec['vvq']})"
     manifest_rows.append(("Edition", edition_str))

@@ -64,6 +64,12 @@ _W3_3_PATTERN_IDS = {
     "website-published-mixin",
 }
 
+# WG-5 patterns (anti-truncation guard)
+_WG5_PATTERN_IDS = {
+    "owl-field-widget-register-v17",
+    "owl-field-widget-with-template-v17",
+}
+
 
 # -------------------------------------------------------------------
 # Catalogue-level tests (no DB required)
@@ -77,6 +83,16 @@ def test_catalogue_contains_all_w3_3_ids():
     missing = _W3_3_PATTERN_IDS - present_ids
     assert not missing, (
         f"W3-3 patterns missing from catalogue ({len(missing)} absent): {sorted(missing)}"
+    )
+
+
+def test_catalogue_contains_wg5_patterns():
+    """WG-5 OWL field-widget patterns must be present (anti-truncation guard)."""
+    data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
+    present_ids = {p["pattern_id"] for p in data}
+    missing = _WG5_PATTERN_IDS - present_ids
+    assert not missing, (
+        f"WG-5 patterns missing from catalogue ({len(missing)} absent): {sorted(missing)}"
     )
 
 
