@@ -1504,23 +1504,26 @@ def test_resolve_view_profile_none_returns_all(view_profile_tools):
     assert "mod_beta.view_beta_form" in result_beta
 
 
-def test_resolve_view_profile_name_is_advisory_not_isolation(view_profile_tools):
-    """M13 (ADR-0034) supersedes ADR-0029: profile_name is ADVISORY, not isolation.
+def test_resolve_view_profile_name_narrows_non_escalating_for_admin(view_profile_tools):
+    """WG-3t T3 (ADR-0034): profile_name is a NON-ESCALATING narrowing filter,
+    consistent across the Neo4j and pgvector paths (fixes the split-brain).
 
-    Pre-M13 this asserted profile_name='beta_93' hid the alpha view. Under M13 the
-    isolation mechanism is the TENANT boundary (own/shared), proven by
-    tests/test_cross_tenant_isolation.py. Without a tenant context (admin), the
-    `$own IS NULL` branch disables the choke-point filter, so profile_name no longer
-    restricts results — it is accepted (must not error) and both views stay visible
-    to an unscoped admin caller. A real tenant would never see another tenant's
-    private view regardless of the profile_name it passes (see the leak test).
+    Pre-WG-3t the Neo4j path treated admin's profile_name as advisory (the alpha view
+    stayed visible when asking under 'beta_93') while pgvector narrowed — a split-brain.
+    Under T3 BOTH paths narrow: admin asking for 'beta_93' narrows to that profile, so
+    the alpha view (under 'alpha_93') is NOT found, while the beta view still is. The
+    tenant boundary remains the isolation guarantee (test_cross_tenant_isolation).
     """
     resolve_view, ver = view_profile_tools
     result_beta = resolve_view("mod_beta.view_beta_form", ver, profile_name="beta_93")
     result_alpha = resolve_view("mod_alpha.view_alpha_form", ver, profile_name="beta_93")
-    assert "mod_beta.view_beta_form" in result_beta
-    # admin (no tenant) sees all; profile_name is advisory, isolation is tenant-driven
-    assert "mod_alpha.view_alpha_form" in result_alpha
+    # matching profile still surfaces its view (rendered detail, not just the echoed id).
+    assert "beta form" in result_beta, result_beta
+    # non-matching profile is narrowed away → not-found message (strong assertion: the
+    # rendered view detail 'alpha form' must be ABSENT, since the id is echoed in the
+    # not-found text).
+    assert "not found" in result_alpha.lower(), result_alpha
+    assert "alpha form" not in result_alpha, result_alpha
 
 
 # ===========================================================================

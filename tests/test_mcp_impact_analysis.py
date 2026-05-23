@@ -385,20 +385,30 @@ def test_impact_analysis_profile_none_backward_compat(
 
 
 @pytest.mark.neo4j
-def test_impact_analysis_profile_name_is_advisory_admin_unrestricted(
+def test_impact_analysis_profile_name_narrows_non_escalating_for_admin(
     seeded_impact_profiles, monkeypatch,
 ):
-    """M13 (ADR-0034 supersedes ADR-0029): profile_name is ADVISORY, not isolation.
+    """WG-3t T3 (ADR-0034): profile_name is a NON-ESCALATING narrowing filter,
+    consistent across the Neo4j and pgvector paths (fixes the split-brain).
 
-    Pre-M13 this asserted profile_name='beta_impact' hid alpha.model. Under M13 the
-    TENANT boundary is the isolation mechanism (proven by test_cross_tenant_isolation);
-    with no tenant context (admin), the choke point's `$own IS NULL` branch disables
-    filtering, so profile_name no longer restricts — alpha.model is found. A real
-    tenant would never see another tenant's private model regardless of profile_name.
+    Pre-WG-3t the Neo4j path treated admin's profile_name as an advisory no-op
+    (alpha.model still found when asking for 'beta_impact') while the pgvector
+    path narrowed — a split-brain. Under T3 BOTH paths narrow: admin asking for
+    'beta_impact' narrows the visible set to that profile, so alpha.model (which
+    is under 'alpha_impact') is correctly NOT found. The tenant boundary remains
+    the isolation guarantee (test_cross_tenant_isolation); profile_name can only
+    ever shrink within own∪shared, never widen.
     """
     v = seeded_impact_profiles
     _impact_analysis, _ = _import_tools(monkeypatch)
     result = _impact_analysis("model", "alpha.model", v, profile_name="beta_impact")
-    assert "not found" not in result.lower(), (
-        f"admin (no tenant) is unrestricted — profile_name is advisory, got: {result!r}"
+    assert "not found" in result.lower(), (
+        f"profile_name='beta_impact' must narrow away alpha.model (non-escalating), "
+        f"got: {result!r}"
+    )
+    # Positive narrowing: the MATCHING profile still surfaces the model — proving
+    # this is a precise narrowing, not a blanket block.
+    matched = _impact_analysis("model", "alpha.model", v, profile_name="alpha_impact")
+    assert "not found" not in matched.lower(), (
+        f"profile_name='alpha_impact' must still find alpha.model, got: {matched!r}"
     )

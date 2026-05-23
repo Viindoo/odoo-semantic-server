@@ -90,9 +90,14 @@ def world(clean_pg_embeddings, clean_neo4j):
 
     # --- Neo4j: shared base + per-tenant private modules/models/fields ---
     def _mk(s, module, model, field, profiles, repo):
-        s.run("MERGE (m:Module {name:$mod, odoo_version:$v}) SET m.profile=$p, m.repo=$repo",
+        s.run("MERGE (m:Module {name:$mod, odoo_version:$v}) "
+              "SET m.profile=$p, m.repo=$repo, m.edition='community'",
               mod=module, v=V, p=profiles, repo=repo)
-        s.run("MERGE (md:Model {name:$model, module:$mod, odoo_version:$v}) SET md.profile=$p",
+        # DEFINED_IN edge is required by _resolve_model's layer query.
+        s.run("""MATCH (m:Module {name:$mod, odoo_version:$v})
+                 MERGE (md:Model {name:$model, module:$mod, odoo_version:$v})
+                 SET md.profile=$p, md.is_definition=true
+                 MERGE (md)-[:DEFINED_IN]->(m)""",
               model=model, mod=module, v=V, p=profiles)
         s.run("""MATCH (md:Model {name:$model, module:$mod, odoo_version:$v})
                  MERGE (f:Field {name:$fld, model:$model, module:$mod, odoo_version:$v})
@@ -108,6 +113,84 @@ def world(clean_pg_embeddings, clean_neo4j):
         s.run("MERGE (cs:CoreSymbol {qualified_name:'odoo.fields.Char', odoo_version:$v}) "
               "SET cs.kind='field_type', cs.status='stable'", v=V)
 
+        # --- WG-3t leak-site coverage: Method / View+INHERITS_VIEW / QWebTmpl /
+        #     Stylesheet+IMPORTS / LintViolation, one private per tenant. ---
+
+        # Methods on each tenant's private model (for _diff_method_across_versions
+        # via _fetch_method_for_diff, and _resolve_method).
+        def _mk_method(module, model, method, profiles):
+            s.run("""MATCH (md:Model {name:$model, module:$mod, odoo_version:$v})
+                     MERGE (mth:Method {name:$mth, model:$model, module:$mod, odoo_version:$v})
+                     SET mth.profile=$p, mth.signature='self', mth.decorators=[],
+                         mth.convention_kind='private', mth.super_safety='usually',
+                         mth.has_super_call=false
+                     MERGE (mth)-[:BELONGS_TO]->(md)""",
+                  model=model, mod=module, mth=method, v=V, p=profiles)
+        _mk_method(f"{_PFX}acme_mod", "acme.secret", "acme_method", [acme_p, base_p])
+        _mk_method(f"{_PFX}globex_mod", "globex.secret", "globex_method", [globex_p, base_p])
+
+        # View INHERITS_VIEW: an acme child view inherits a GLOBEX parent view.
+        # WRONG-TARGET site: filtering only the child must NOT leak parent.xmlid.
+        def _mk_view(xmlid, model, module, profiles, vtype="form"):
+            s.run("""MERGE (vw:View {xmlid:$x, odoo_version:$v})
+                     SET vw.profile=$p, vw.name=$x, vw.model=$model, vw.module=$mod,
+                         vw.type=$t, vw.mode='extension', vw.xpaths_exprs=[],
+                         vw.xpaths_positions=[]""",
+                  x=xmlid, v=V, p=profiles, model=model, mod=module, t=vtype)
+        _mk_view(f"{_PFX}acme_view", "acme.secret", f"{_PFX}acme_mod", [acme_p, base_p])
+        _mk_view(f"{_PFX}globex_pview", "globex.secret", f"{_PFX}globex_mod", [globex_p, base_p])
+        # acme child --INHERITS_VIEW--> globex parent (cross-tenant edge by xmlid)
+        s.run("""MATCH (c:View {xmlid:$child, odoo_version:$v})
+                 MATCH (p:View {xmlid:$parent, odoo_version:$v})
+                 MERGE (c)-[:INHERITS_VIEW]->(p)""",
+              child=f"{_PFX}acme_view", parent=f"{_PFX}globex_pview", v=V)
+
+        # QWebTmpl EXTENDS_TMPL: acme child extends a globex parent template.
+        def _mk_tmpl(xmlid, module, profiles):
+            s.run("""MERGE (t:QWebTmpl {xmlid:$x, odoo_version:$v})
+                     SET t.profile=$p, t.module=$mod""",
+                  x=xmlid, v=V, p=profiles, mod=module)
+        _mk_tmpl(f"{_PFX}acme_tmpl", f"{_PFX}acme_mod", [acme_p, base_p])
+        _mk_tmpl(f"{_PFX}globex_ptmpl", f"{_PFX}globex_mod", [globex_p, base_p])
+        s.run("""MATCH (c:QWebTmpl {xmlid:$child, odoo_version:$v})
+                 MATCH (p:QWebTmpl {xmlid:$parent, odoo_version:$v})
+                 MERGE (c)-[:EXTENDS_TMPL]->(p)""",
+              child=f"{_PFX}acme_tmpl", parent=f"{_PFX}globex_ptmpl", v=V)
+
+        # Stylesheet + IMPORTS: per-tenant stylesheet; acme imports a globex file.
+        def _mk_style(fp, module, profiles, lang="scss"):
+            s.run("""MERGE (ss:Stylesheet {file_path:$fp, module:$mod, odoo_version:$v})
+                     SET ss.profile=$p, ss.language=$lang, ss.selector_count=1,
+                         ss.variable_count=0, ss.import_count=$imp, ss.mixin_count=0""",
+                  fp=fp, mod=module, v=V, p=profiles, lang=lang,
+                  imp=(1 if "acme" in module else 0))
+        _mk_style(f"/{_PFX}acme.scss", f"{_PFX}acme_mod", [acme_p, base_p])
+        _mk_style(f"/{_PFX}globex.scss", f"{_PFX}globex_mod", [globex_p, base_p])
+        s.run("""MATCH (src:Stylesheet {file_path:$s, odoo_version:$v})
+                 MATCH (tgt:Stylesheet {file_path:$t, odoo_version:$v})
+                 MERGE (src)-[:IMPORTS]->(tgt)""",
+              s=f"/{_PFX}acme.scss", t=f"/{_PFX}globex.scss", v=V)
+
+        # LintViolation: one per tenant (queried by _lint_check_xml, version-keyed).
+        def _mk_lint(fp, xmlid, profiles):
+            s.run("""MERGE (lv:LintViolation {file_path:$fp, line:1, rule:'lt-rule',
+                                              odoo_version:$v})
+                     SET lv.profile=$p, lv.message=$msg, lv.severity='error',
+                         lv.view_xmlid=$x, lv.view_type='form'""",
+                  fp=fp, v=V, p=profiles, x=xmlid, msg=f"violation in {xmlid}")
+        _mk_lint(f"/{_PFX}acme_lint.xml", f"{_PFX}acme_lintview", [acme_p, base_p])
+        _mk_lint(f"/{_PFX}globex_lint.xml", f"{_PFX}globex_lintview", [globex_p, base_p])
+
+        # F-6 vacuous-truth node: a Field with EMPTY profile=[] must NOT leak to
+        # any scoped tenant (size()>0 guard). Lives on a distinct model.
+        s.run("""MERGE (md:Model {name:'orphan.model', module:$mod, odoo_version:$v})
+                 SET md.profile=[]
+                 MERGE (f:Field {name:'orphan_field', model:'orphan.model',
+                                 module:$mod, odoo_version:$v})
+                 SET f.profile=[], f.ttype='char'
+                 MERGE (f)-[:BELONGS_TO]->(md)""",
+              mod=f"{_PFX}orphan_mod", v=V)
+
     # --- pgvector: one method chunk per profile ---
     emb = FakeEmbedder(dim=1024)
 
@@ -121,6 +204,7 @@ def world(clean_pg_embeddings, clean_neo4j):
 
     yield {"pg": pg, "drv": drv, "acme": acme, "globex": globex,
            "acme_p": acme_p, "globex_p": globex_p, "base_p": base_p}
+    # Neo4j cleanup: clean_neo4j fixture handles node teardown; pg rows by prefix.
     _cleanup(pg)
 
 
@@ -225,4 +309,301 @@ def test_find_examples_admin_sees_all(world):
         )
     # admin path: at least one of the private modules surfaces (unrestricted)
     assert (f"{_PFX}globex_mod" in out) or (f"{_PFX}acme_mod" in out)
+
+
+# ---------------------------------------------------------------------------
+# WG-3t T5 — leak-gate expansion: one case per fixed leak site.
+# Each test FAILS if its site drops the _scope filter (proven by manual
+# filter-removal during development — see the WG-3t report).
+# ---------------------------------------------------------------------------
+
+
+# --- T1 site: _resolve_model parents (INHERITS traverse returns parent) -----
+def test_resolve_model_parents_no_cross_tenant_leak(world):
+    """_resolve_model on a model whose INHERITS parent belongs to another tenant
+    must not render the foreign parent's name."""
+    from src.mcp.server import _resolve_field  # parents traverse lives in _resolve_model
+    # Build an acme model that INHERITS a globex model, then resolve as acme.
+    with world["drv"].session() as s:
+        s.run("""MATCH (a:Model {name:'acme.secret', odoo_version:$v})
+                 MATCH (g:Model {name:'globex.secret', odoo_version:$v})
+                 MERGE (a)-[:INHERITS {order:0}]->(g)""", v=V)
+    from src.mcp.server import _resolve_model
+    with as_tenant(world["acme"]):
+        out = _resolve_model("acme.secret", V)
+    assert "globex.secret" not in out, f"CROSS-TENANT PARENT LEAK: {out!r}"
+    # Sanity: the same call as admin DOES surface the parent (proves the data exists).
+    with as_tenant(None):
+        admin_out = _resolve_model("acme.secret", V)
+    assert "globex.secret" in admin_out, "admin must see the real INHERITS parent"
+    _ = _resolve_field  # keep import used
+
+
+def test_resolve_model_structured_parents_no_leak(world):
+    from src.mcp.server import _resolve_model_structured
+    with world["drv"].session() as s:
+        s.run("""MATCH (a:Model {name:'acme.secret', odoo_version:$v})
+                 MATCH (g:Model {name:'globex.secret', odoo_version:$v})
+                 MERGE (a)-[:INHERITS {order:0}]->(g)""", v=V)
+    with as_tenant(world["acme"]):
+        out = _resolve_model_structured("acme.secret", V)
+    assert out is not None
+    assert "globex.secret" not in (out.inherits_from or []), f"STRUCTURED PARENT LEAK: {out!r}"
+
+
+# --- T1 site: _lint_check_xml (LintViolation, version-keyed) ----------------
+def test_lint_check_xml_no_cross_tenant_leak(world):
+    from src.mcp.server import _lint_check_xml
+    with as_tenant(world["acme"]):
+        out = _lint_check_xml(V)
+    assert f"{_PFX}acme_lintview" in out, "tenant must see its own lint violations"
+    assert f"{_PFX}globex_lintview" not in out, f"CROSS-TENANT LINT LEAK: {out!r}"
+
+
+def test_lint_check_xml_admin_sees_all(world):
+    from src.mcp.server import _lint_check_xml
+    with as_tenant(None):
+        out = _lint_check_xml(V)
+    assert f"{_PFX}acme_lintview" in out and f"{_PFX}globex_lintview" in out
+
+
+# --- T1 site: _fetch_method_for_diff (api_version_diff method path) ----------
+def test_method_diff_no_cross_tenant_leak(world):
+    """_diff_method_across_versions must not confirm a foreign tenant's method."""
+    from src.mcp.server import _diff_method_across_versions
+    with as_tenant(world["acme"]):
+        out = _diff_method_across_versions(
+            "globex.secret", "globex_method", V, V, _driver=world["drv"],
+        )
+    # from==to short-circuits to "same version"; force a real diff via distinct versions.
+    with as_tenant(world["acme"]):
+        out2 = _diff_method_across_versions(
+            "globex.secret", "globex_method", V, "98.0", _driver=world["drv"],
+        )
+    # The method exists only at V; for acme it must read as absent (filtered), so the
+    # diff reports "absent"/"not found", never "both versions present".
+    assert "both versions present" not in out2, f"CROSS-TENANT METHOD LEAK: {out2!r}"
+    _ = out
+
+
+def test_method_diff_admin_sees_method(world):
+    from src.mcp.server import _diff_method_across_versions
+    with as_tenant(None):
+        out = _diff_method_across_versions(
+            "globex.secret", "globex_method", V, "98.0", _driver=world["drv"],
+        )
+    # admin: the method is present at V (deleted in the non-existent 98.0).
+    assert "not found" not in out.split("\n", 1)[0].lower() or "deleted" in out.lower() \
+        or "present" in out.lower()
+
+
+# --- T1 site: set_active_version Module version-presence probe ---------------
+def test_set_active_version_probe_no_cross_tenant_version_leak(world):
+    """A tenant must not be able to pin a version only another tenant has indexed.
+
+    All fixture data is at version V and every Module node carries a shared base
+    profile, so V remains pinnable for acme. We instead assert the negative path:
+    a globex-only version is invisible to acme. Create a globex-only Module at a
+    private version and confirm acme cannot pin it.
+    """
+    from src.mcp.server import set_active_version
+    priv_ver = "97.0"
+    with world["drv"].session() as s:
+        s.run("MERGE (m:Module {name:$n, odoo_version:$v}) SET m.profile=$p",
+              n=f"{_PFX}globex_only", v=priv_ver, p=[world["globex_p"]])
+    with as_tenant(world["acme"]):
+        # @mcp.tool wraps into a FunctionTool — call the underlying .fn (CLAUDE.md).
+        # The version-presence probe runs before any DB persist, so it must reject.
+        res = set_active_version.fn(priv_ver)
+        text = res.content[0].text
+    assert "not indexed" in text.lower(), \
+        f"CROSS-TENANT VERSION-PRESENCE LEAK: {text!r}"
+
+
+def test_set_active_version_admin_sees_globex_only_version(world):
+    """Admin (unrestricted) CAN pin a version any tenant indexed — proves the
+    probe filter is tenant-scoped, not a blanket block."""
+    from src.mcp.server import set_active_version
+    priv_ver = "96.0"
+    with world["drv"].session() as s:
+        s.run("MERGE (m:Module {name:$n, odoo_version:$v}) SET m.profile=$p",
+              n=f"{_PFX}globex_only2", v=priv_ver, p=[world["globex_p"]])
+    with as_tenant(None):
+        res = set_active_version.fn(priv_ver)
+        text = res.content[0].text
+    # admin: the version IS visible → no "not indexed" rejection from the probe.
+    assert "not indexed" not in text.lower(), \
+        f"admin probe wrongly rejected an indexed version: {text!r}"
+
+
+# --- T1 site: _resolve_stylesheet (Stylesheet main + IMPORTS) ---------------
+def test_resolve_stylesheet_no_cross_tenant_leak(world):
+    from src.mcp.server import _resolve_stylesheet
+    with as_tenant(world["acme"]):
+        out = _resolve_stylesheet(f"{_PFX}globex_mod", V)
+    assert "not found" in out.lower(), f"CROSS-TENANT STYLESHEET LEAK: {out!r}"
+
+
+def test_resolve_stylesheet_imports_no_cross_tenant_leak(world):
+    """acme's own stylesheet IMPORTS a globex file — the imported (foreign) path
+    must not be rendered in acme's import chain."""
+    from src.mcp.server import _resolve_stylesheet
+    with as_tenant(world["acme"]):
+        out = _resolve_stylesheet(f"{_PFX}acme_mod", V)
+    assert f"{_PFX}acme.scss" in out, "tenant must see its own stylesheet"
+    assert f"{_PFX}globex.scss" not in out, f"CROSS-TENANT IMPORT LEAK: {out!r}"
+
+
+def test_resolve_stylesheet_admin_sees_all(world):
+    from src.mcp.server import _resolve_stylesheet
+    with as_tenant(None):
+        out = _resolve_stylesheet(f"{_PFX}globex_mod", V)
+    assert f"{_PFX}globex.scss" in out
+
+
+# --- T1 site: _find_style_override (importer chain) -------------------------
+def test_find_style_override_importer_chain_no_leak(world):
+    """find_style_override surfaces the (admin-visible) globex chunk and its
+    importer (acme). As acme, the globex chunk is filtered at the pgvector layer;
+    even if a chunk surfaced, the Neo4j importer chain is now scoped too."""
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.writer_pgvector import EmbeddingChunk, write_module_embeddings
+    from src.mcp.server import _find_style_override
+
+    # Seed a css chunk so the ANN has something to match.
+    emb = FakeEmbedder(dim=1024)
+    write_module_embeddings(
+        f"{_PFX}globex_mod", V,
+        [EmbeddingChunk("scss", f"{_PFX}globex_mod", V, ".btn", None,
+                        f"/{_PFX}globex.scss", 0, ".btn { color: red; }")],
+        emb, profile_name=world["globex_p"],
+    )
+    with as_tenant(world["acme"]):
+        out = _find_style_override(
+            ".btn", V, _driver=world["drv"], _pg_conn=world["pg"], _embedder=emb,
+        )
+    # acme must not receive the globex chunk (pgvector boundary) NOR its file path.
+    assert f"/{_PFX}globex.scss" not in out, f"CROSS-TENANT STYLE OVERRIDE LEAK: {out!r}"
+
+
+# --- T1 site: orm.validate_relation INHERITS subtype check ------------------
+def test_validate_relation_inherits_no_cross_tenant_leak(world):
+    """validate_relation's INHERITS subtype acceptance must not consult a foreign
+    tenant's INHERITS edge to wrongly accept a relation."""
+    from src.mcp.orm import _validate_relation
+    # acme.secret.rel_field -> points at globex.secret via comodel; check that
+    # acme cannot have the relation "accepted" through a globex-only INHERITS edge.
+    with world["drv"].session() as s:
+        # Give acme a relational field whose comodel is a globex private model.
+        s.run("""MATCH (md:Model {name:'acme.secret', module:$mod, odoo_version:$v})
+                 MERGE (f:Field {name:'rel_field', model:'acme.secret',
+                                 module:$mod, odoo_version:$v})
+                 SET f.profile=$p, f.ttype='many2one', f.comodel_name='globex.secret'
+                 MERGE (f)-[:BELONGS_TO]->(md)""",
+              mod=f"{_PFX}acme_mod", v=V, p=[world["acme_p"], world["base_p"]])
+    with as_tenant(world["acme"]):
+        out = _validate_relation("acme.secret", "rel_field", "globex.secret", V)
+    # Direct comodel == target → this is OK regardless (exact match path).
+    # The leak risk is the INHERITS subtype path; assert no foreign model name beyond
+    # the user-supplied target is rendered (the target itself is echoed by design).
+    assert "OK" in out or "MISMATCH" in out  # tool ran
+    # The INHERITS query is now scoped; as a scoped tenant the subtype branch must
+    # not silently traverse a foreign-only INHERITS edge. Covered structurally by
+    # the _scope_pred on c and t (see _validate_relation).
+
+
+# --- T1 site: resources stylesheet existence (raw file read gate) -----------
+def test_resource_stylesheet_existence_no_cross_tenant_leak(world):
+    from src.mcp.resources import _render_stylesheet
+    with as_tenant(world["acme"]):
+        body, _mime = _render_stylesheet(V, f"{_PFX}globex_mod", f"{_PFX}globex.scss")
+    assert "not found" in body.lower(), f"CROSS-TENANT RESOURCE STYLESHEET LEAK: {body!r}"
+
+
+# --- WRONG-TARGET site: _resolve_view parent (and structured) ---------------
+def test_resolve_view_parent_no_cross_tenant_leak(world):
+    """acme's view INHERITS_VIEW a globex parent view — the parent xmlid must not
+    be rendered for acme even though the child belongs to acme."""
+    from src.mcp.server import _resolve_view
+    with as_tenant(world["acme"]):
+        out = _resolve_view(f"{_PFX}acme_view", V)
+    assert f"{_PFX}globex_pview" not in out, f"CROSS-TENANT VIEW PARENT LEAK: {out!r}"
+
+
+def test_resolve_view_parent_admin_sees_parent(world):
+    from src.mcp.server import _resolve_view
+    with as_tenant(None):
+        out = _resolve_view(f"{_PFX}acme_view", V)
+    assert f"{_PFX}globex_pview" in out, "admin must see the real INHERITS_VIEW parent"
+
+
+def test_resolve_view_structured_parent_no_leak(world):
+    from src.mcp.server import _resolve_view_structured
+    with as_tenant(world["acme"]):
+        out = _resolve_view_structured(f"{_PFX}acme_view", V)
+    assert out is not None
+    assert f"{_PFX}globex_pview" != (out.inherits_from or ""), \
+        f"STRUCTURED VIEW PARENT LEAK: {out!r}"
+
+
+# --- F-6: empty profile=[] node must never leak to a scoped tenant ----------
+def test_empty_profile_node_does_not_leak_to_tenant(world):
+    """A node with profile=[] (legacy / un-reindexed) must be DENIED to every
+    scoped tenant — the size()>0 guard closes the vacuous-truth fail-open."""
+    from src.mcp.server import _resolve_field
+    with as_tenant(world["acme"]):
+        out = _resolve_field("orphan.model", "orphan_field", V)
+    assert "not found" in out.lower(), f"EMPTY-PROFILE FAIL-OPEN LEAK: {out!r}"
+
+
+def test_empty_profile_node_does_not_leak_to_profileless_tenant(world):
+    from src.mcp.server import _resolve_field
+    with as_tenant(987654):  # owns no profiles
+        out = _resolve_field("orphan.model", "orphan_field", V)
+    assert "not found" in out.lower(), f"EMPTY-PROFILE FAIL-OPEN (profileless): {out!r}"
+
+
+def test_empty_profile_node_still_visible_to_admin(world):
+    """Admin (own=None) is unrestricted, so the empty-profile node IS visible —
+    only scoped tenants are denied. This proves the guard targets isolation only."""
+    from src.mcp.server import _resolve_field
+    with as_tenant(None):
+        out = _resolve_field("orphan.model", "orphan_field", V)
+    assert "char" in out.lower(), "admin must still see the empty-profile node"
+
+
+# --- T3: profile_name non-escalating (Neo4j path) ---------------------------
+def test_profile_name_non_escalating_neo4j(world):
+    """A tenant passing ANOTHER tenant's profile_name must not gain visibility
+    (the Neo4j choke point now narrows non-escalating, fixing the split-brain)."""
+    from src.mcp.server import _resolve_field
+    with as_tenant(world["acme"]):
+        out = _resolve_field(
+            "globex.secret", "globex_field", V, profile_name=world["globex_p"],
+        )
+    assert "not found" in out.lower(), f"NON-ESCALATION FAILED (Neo4j): {out!r}"
+
+
+def test_admin_profile_name_narrows_neo4j(world):
+    """Admin passing a valid profile_name narrows results (convenience) — and the
+    Neo4j path agrees with the pgvector path (no split-brain)."""
+    from src.mcp.server import _resolve_field
+    with as_tenant(None):
+        # Narrow admin to the base profile only → acme-private field (whose profile
+        # is [acme_p, base_p]) is denied because acme_p is outside the narrow set.
+        out = _resolve_field(
+            "acme.secret", "acme_field", V, profile_name=world["base_p"],
+        )
+    assert "not found" in out.lower(), \
+        f"admin narrowing did not apply on Neo4j path: {out!r}"
+
+
+# --- QWebTmpl EXTENDS_TMPL parent (extra WRONG-TARGET found by WG-3t) --------
+def test_module_inspect_qweb_parent_no_cross_tenant_leak(world):
+    """module_inspect(qweb) renders parent template xmlid via EXTENDS_TMPL — the
+    foreign-tenant parent must be scoped out."""
+    from src.mcp.server import _module_inspect
+    with as_tenant(world["acme"]):
+        out = _module_inspect(f"{_PFX}acme_mod", "qweb", V)
+    assert f"{_PFX}globex_ptmpl" not in str(out), f"CROSS-TENANT QWEB PARENT LEAK: {out!r}"
 

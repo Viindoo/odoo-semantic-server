@@ -218,28 +218,67 @@ def _effective_allowed(profile_name: str | None) -> list[str] | None:
     return allowed
 
 
+def _scope_pred(alias: str) -> str:
+    """Canonical fail-closed tenant choke-point predicate for Neo4j node *alias*.
+
+    Single source of truth for the Cypher fragment (WG-3t — avoids per-site drift)::
+
+        ($own IS NULL OR (size(<alias>.profile) > 0
+                          AND all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared)))
+
+    The ``size(...) > 0`` guard closes the F-6 vacuous-truth hole: an empty
+    ``profile=[]`` array makes ``all(__p IN [] ...)`` evaluate to TRUE in Cypher
+    (universal quantification over the empty set), which would fail-OPEN — letting
+    legacy / un-reindexed nodes leak to every tenant. With the guard, a node with
+    no profiles is denied to all *scoped* tenants (admin, ``$own IS NULL``, still
+    sees everything by design).
+    """
+    return (
+        f"($own IS NULL OR (size({alias}.profile) > 0 AND "
+        f"all(__p IN {alias}.profile WHERE __p IN $own OR __p IN $shared)))"
+    )
+
+
 def _scope(profile_name: str | None = None) -> dict:
     """Neo4j ARRAY-filter params: ``{'own': [...] | None, 'shared': [...]}`` (ADR-0034).
 
-    The uniform Cypher fragment at every user-data site is::
+    The uniform fail-closed Cypher fragment at every user-data site is built by
+    :func:`_scope_pred`::
 
-        ($own IS NULL OR all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared))
+        ($own IS NULL OR (size(<alias>.profile) > 0
+                          AND all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared)))
 
-    ``own=None`` (admin / no tenant) disables the filter. A node is granted iff EVERY
-    profile on it is one of the tenant's OWN profiles or a shared/global profile —
-    so another tenant's private node (which also carries the shared base in its
-    ``profile[]``) is denied (its foreign private profile fails the ``all(...)``),
-    and a same-name cross-tenant collision fail-closes (denied to both).
+    ``own=None`` (admin / no tenant) disables the filter. A node is granted iff it
+    has at least one profile AND EVERY profile on it is one of the tenant's OWN
+    profiles or a shared/global profile — so another tenant's private node (which
+    also carries the shared base in its ``profile[]``) is denied (its foreign private
+    profile fails the ``all(...)``), and a same-name cross-tenant collision
+    fail-closes (denied to both).
 
-    NOTE (M13 supersedes ADR-0029): the ``profile_name`` parameter is now ADVISORY,
-    not an isolation mechanism — the tenant boundary is. With no tenant (admin),
-    ``profile_name`` does not restrict results; the WI-4 cross-tenant leak test is
-    the authoritative isolation guarantee. ``profile_name`` is accepted (and a
-    tenant may only ever see within its own boundary) but not used to sub-filter
-    here, keeping the choke-point fragment uniform and brace/line-length clean.
+    ``profile_name`` is a NON-ESCALATING narrowing filter (WG-3t T3 — fixes the
+    Neo4j/pgvector split-brain). It can only shrink the visible set *within*
+    ``own ∪ shared``; it can never widen it:
+
+    - admin (own=None), no profile_name      → ``own=None`` (unrestricted).
+    - admin (own=None), explicit profile      → narrow to ``own=[profile], shared=[]``
+      (admin convenience — same effect as the pgvector ``_effective_allowed`` path,
+      so Neo4j and pgvector agree).
+    - tenant, no profile_name                 → full ``(own, shared)`` boundary.
+    - tenant, profile_name ∈ own∪shared       → narrow to that single profile.
+    - tenant, profile_name ∉ own∪shared       → deny-all (``own=[], shared=[]``);
+      a tenant cannot borrow another tenant's profile name to escalate.
     """
     own, shared = _session.resolve_tenant_scope(_get_tenant_id())
-    return {"own": own, "shared": shared}
+    if not profile_name:
+        return {"own": own, "shared": shared}
+    # Non-escalating narrowing. Admin (own=None) is unrestricted, so any profile is
+    # in-scope and we narrow purely as a convenience. A scoped tenant may only narrow
+    # within its own∪shared boundary; an out-of-scope profile_name fail-closes.
+    if own is None:
+        return {"own": [profile_name], "shared": []}
+    if profile_name in own or profile_name in shared:
+        return {"own": [profile_name], "shared": []}
+    return {"own": [], "shared": []}
 
 
 # find_examples rerank coefficients — extracted so calibration harness can
@@ -370,7 +409,8 @@ def _latest_version(session) -> str | None:
     """
     rec = session.run("""
         MATCH (m:Module)
-        WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+        WHERE ($own IS NULL OR (size(m.profile) > 0
+               AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
           AND m.odoo_version <> 'unknown' AND m.odoo_version =~ '\\d+\\.\\d+'
         WITH DISTINCT m.odoo_version AS v
         RETURN v
@@ -438,7 +478,8 @@ def _resolve_model(
         layers = session.run(
             f"""
             MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
-            WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($from_module IS NULL OR m.module = $from_module)
             WITH m, mod,
                  CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
@@ -480,9 +521,10 @@ def _resolve_model(
             MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
             WHERE p.name <> $name
               AND NOT coalesce(r.unresolved, false)
+              AND {_scope_pred("p")}
             RETURN DISTINCT p.name AS pname
             ORDER BY pname
-        """, name=model_name, v=odoo_version).data()
+        """, name=model_name, v=odoo_version, **_scope(profile_name)).data()
 
     # ADR-0023 §1.1: header = "{entity} (Odoo {version})", no decoration.
     # from_module filter info goes as a branch line, not appended to header.
@@ -552,7 +594,8 @@ def _resolve_field(
         # 5-tier ranking via m_node proxy — see docs/adr/0013
         records = session.run(f"""
             MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(f.profile) > 0
+                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($from_module IS NULL OR f.module = $from_module)
             OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
@@ -646,7 +689,8 @@ def _resolve_method(
         # 5-tier ranking via m_node proxy — see docs/adr/0013
         records = session.run(f"""
             MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $model, module: mth.module, odoo_version: $v}})
             WITH mth, mod, m_node,
@@ -714,7 +758,8 @@ def _resolve_view(
 
         view_rec = session.run("""
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
-            WHERE ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(v.profile) > 0
+                   AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
             RETURN v, mod.name AS module_name, mod.repo AS repo
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
@@ -722,11 +767,15 @@ def _resolve_view(
         if not view_rec:
             return f"View '{xmlid}' not found in Odoo {odoo_version}."
 
+        # WG-3t WRONG-TARGET fix: this returns parent.xmlid, so the tenant
+        # predicate must gate the RETURNED node (parent), not just the child v.
+        # Filtering only v would leak a foreign tenant's parent view xmlid.
         parent_rec = session.run(f"""
             MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
                   -[r:{REL_INHERITS_VIEW}]->(parent:View {{odoo_version: $ver}})
             WHERE NOT coalesce(r.unresolved, false)
-            AND ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+            AND {_scope_pred("v")}
+            AND {_scope_pred("parent")}
             RETURN parent.xmlid AS parent_xmlid
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
 
@@ -734,7 +783,8 @@ def _resolve_view(
             MATCH (ext:View {{odoo_version: $ver}})-[:{REL_INHERITS_VIEW}]->
                   (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             WHERE NOT coalesce(ext.unresolved, false)
-            AND ($own IS NULL OR all(__p IN ext.profile WHERE __p IN $own OR __p IN $shared))
+            AND ($own IS NULL OR (size(ext.profile) > 0
+                 AND all(__p IN ext.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (ext)-[:DEFINED_IN]->(mod:Module)
             RETURN ext.xmlid AS ext_xmlid,
                    ext.xpaths_exprs AS xpaths_exprs,
@@ -957,7 +1007,7 @@ def _find_examples(
         dep_rows = session.run(
             f"UNWIND $names AS name"
             f" MATCH (m:Module {{name: name, odoo_version: $v}})"
-            f" WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))"
+            f" WHERE {_scope_pred('m')}"
             f" WITH m, name"
             f" OPTIONAL MATCH (dep)-[:{REL_DEPENDS_ON}]->(m)"
             f" RETURN name, count(dep) AS dependents",
@@ -971,7 +1021,7 @@ def _find_examples(
                 "MATCH (ctx:Module {name: $ctx, odoo_version: $v})"
                 " -[:DEPENDS_ON*1..]->(tgt:Module)"
                 " WHERE tgt.name IN $names"
-                " AND ($own IS NULL OR all(__p IN ctx.profile WHERE __p IN $own OR __p IN $shared))"
+                f" AND {_scope_pred('ctx')}"
                 " RETURN DISTINCT tgt.name AS name",
                 ctx=context_module, v=odoo_version, names=module_names,
                 **_scope(profile_name),
@@ -1132,7 +1182,7 @@ def _impact_analysis(
         if entity_type == "field":
             exists = session.run(
                 "MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v}) "
-                "WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)) "
+                f"WHERE {_scope_pred('f')} "
                 "RETURN count(f) AS c",
                 fn=member_name, mn=model_name, v=odoo_version,
                 **_scope(profile_name),
@@ -1144,8 +1194,7 @@ def _impact_analysis(
         elif entity_type == "method":
             exists = session.run(
                 "MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v}) "
-                "WHERE ($own IS NULL OR all(__p IN mth.profile "
-                "WHERE __p IN $own OR __p IN $shared)) "
+                f"WHERE {_scope_pred('mth')} "
                 "RETURN count(mth) AS c",
                 mn=member_name, model=model_name, v=odoo_version,
                 **_scope(profile_name),
@@ -1159,7 +1208,7 @@ def _impact_analysis(
                 "MATCH (m:Model {name: $mn, odoo_version: $v}) "
                 "WHERE coalesce(m.unresolved, false) = false "
                 "AND m.module <> '__unresolved__' "
-                "AND ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)) "
+                f"AND {_scope_pred('m')} "
                 "RETURN count(m) AS c",
                 mn=model_name, v=odoo_version, **_scope(profile_name),
             ).single()["c"]
@@ -1173,7 +1222,8 @@ def _impact_analysis(
         # ------------------------------------------------------------------ #
         views = session.run(f"""
             MATCH (m:Model {{name: $mn, odoo_version: $v}})<-[:{REL_TARGETS_MODEL}]-(view:View)
-            WHERE ($own IS NULL OR all(__p IN view.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(view.profile) > 0
+                   AND all(__p IN view.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN DISTINCT view.xmlid AS xmlid, view.module AS module
             ORDER BY view.module, view.xmlid
         """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
@@ -1186,14 +1236,16 @@ def _impact_analysis(
             methods = session.run("""
                 MATCH (mth:Method {model: $mn, odoo_version: $v})
                 WHERE mth.has_super_call = true
-                AND ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+                AND ($own IS NULL OR (size(mth.profile) > 0
+                     AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.module AS module
                 ORDER BY mth.module, mth.name
             """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
         elif entity_type == "method":
             methods = session.run("""
                 MATCH (mth:Method {name: $mn2, model: $mn, odoo_version: $v})
-                WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(mth.profile) > 0
+                       AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.module AS module
                 ORDER BY mth.module
             """, mn2=member_name, mn=model_name, v=odoo_version,
@@ -1201,7 +1253,8 @@ def _impact_analysis(
         else:  # model
             methods = session.run("""
                 MATCH (mth:Method {model: $mn, odoo_version: $v})
-                WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(mth.profile) > 0
+                       AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.module AS module
                 ORDER BY mth.module, mth.name
             """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
@@ -1212,7 +1265,8 @@ def _impact_analysis(
         js_patches = session.run("""
             MATCH (m:Model {name: $mn, odoo_version: $v})<-[:BOUND_TO]-(comp:OWLComp)
                   <-[:PATCHES]-(jp:JSPatch)
-            WHERE ($own IS NULL OR all(__p IN jp.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(jp.profile) > 0
+                   AND all(__p IN jp.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN DISTINCT jp.target AS target, jp.patch_name AS patch_name,
                    jp.module AS module, jp.era AS era
             ORDER BY jp.module, jp.target
@@ -1224,7 +1278,8 @@ def _impact_analysis(
         dep_modules = session.run(f"""
             MATCH (m:Model {{name: $mn, odoo_version: $v}})-[:DEFINED_IN]->(defmod:Module)
                   <-[:{REL_DEPENDS_ON}]-(depmod:Module)
-            WHERE ($own IS NULL OR all(__p IN depmod.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(depmod.profile) > 0
+                   AND all(__p IN depmod.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN DISTINCT depmod.name AS dep_name
             ORDER BY depmod.name
         """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
@@ -1233,7 +1288,8 @@ def _impact_analysis(
         if entity_type == "model":
             def_modules = session.run("""
                 MATCH (m:Model {name: $mn, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
-                WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(m.profile) > 0
+                       AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT m.module AS module_name
                 ORDER BY m.module
             """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
@@ -1251,7 +1307,8 @@ def _impact_analysis(
                 f"""
                 MATCH (mth:Method {{odoo_version: $v}})
                       -[:{REL_USES_FIELD}]->(f:Field {{name: $fn, model: $mn, odoo_version: $v}})
-                WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(mth.profile) > 0
+                       AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.model AS model, mth.module AS module
                 ORDER BY mth.module, mth.model, mth.name
                 """,
@@ -1263,7 +1320,8 @@ def _impact_analysis(
                 MATCH (mth:Method {{odoo_version: $v}})
                       -[:{REL_DEPENDS_ON_FIELD}]->(f:Field {{name: $fn, model: $mn,
                                                               odoo_version: $v}})
-                WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(mth.profile) > 0
+                       AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.model AS model, mth.module AS module
                 ORDER BY mth.module, mth.model, mth.name
                 """,
@@ -1673,7 +1731,8 @@ def _find_deprecated_usage(
         cypher = f"""
             MATCH (mth:Method {{odoo_version: $v}})-[:{REL_USES_CORE_SYMBOL}]->(cs:CoreSymbol)
             WHERE cs.status IN ['deprecated', 'removed']
-            AND ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            AND ($own IS NULL OR (size(mth.profile) > 0
+                 AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
         """
         params: dict = {"v": odoo_version, "cap_plus_one": cap_plus_one,
                         **_scope(profile_name)}
@@ -1845,8 +1904,9 @@ def _lint_check_xml(odoo_version: str) -> str:
     """
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
-        rows = session.run("""
-            MATCH (lv:LintViolation {odoo_version: $v})
+        rows = session.run(f"""
+            MATCH (lv:LintViolation {{odoo_version: $v}})
+            WHERE {_scope_pred("lv")}
             RETURN lv.view_xmlid AS view_xmlid,
                    lv.rule AS rule_id,
                    lv.severity AS severity,
@@ -1855,7 +1915,7 @@ def _lint_check_xml(odoo_version: str) -> str:
                    lv.view_type AS view_type,
                    lv.file_path AS file_path
             ORDER BY lv.view_xmlid ASC, lv.line ASC, lv.rule ASC
-        """, v=odoo_version).data()
+        """, v=odoo_version, **_scope()).data()
 
     header = (
         f"lint_check(Odoo {odoo_version}, language=xml) — "
@@ -2438,7 +2498,8 @@ def _check_module_exists(
         v = _resolve_version(odoo_version, session)
         rec = session.run("""
             MATCH (m:Module {name: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN m.edition AS edition,
                    m.viindoo_equivalent_qname AS vvq,
                    m.repo AS repo
@@ -2542,7 +2603,8 @@ def _describe_module(
         mod_rec = session.run(
             """
             MATCH (m:Module {name: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
                    m.edition AS edition,
                    m.viindoo_equivalent_qname AS vvq,
@@ -2577,7 +2639,8 @@ def _describe_module(
             MATCH (model:Model {module: $n, odoo_version: $v})
             WHERE coalesce(model.is_definition, false) = true
               AND model.module <> '__unresolved__'
-              AND ($own IS NULL OR all(__p IN model.profile WHERE __p IN $own OR __p IN $shared))
+              AND ($own IS NULL OR (size(model.profile) > 0
+                   AND all(__p IN model.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN model.name AS name
             ORDER BY model.name ASC
             """,
@@ -2589,7 +2652,8 @@ def _describe_module(
             MATCH (model:Model {module: $n, odoo_version: $v})
             WHERE coalesce(model.is_definition, false) = false
               AND model.module <> '__unresolved__'
-              AND ($own IS NULL OR all(__p IN model.profile WHERE __p IN $own OR __p IN $shared))
+              AND ($own IS NULL OR (size(model.profile) > 0
+                   AND all(__p IN model.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN model.name AS name
             ORDER BY model.name ASC
             """,
@@ -2599,7 +2663,8 @@ def _describe_module(
         view_breakdown = session.run(
             """
             MATCH (view:View {module: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN view.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(view.profile) > 0
+                   AND all(__p IN view.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN view.type AS type, count(view) AS c
             ORDER BY c DESC, type ASC
             """,
@@ -2609,7 +2674,8 @@ def _describe_module(
         js_count = session.run(
             """
             MATCH (j:JSPatch {module: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN j.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(j.profile) > 0
+                   AND all(__p IN j.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN count(j) AS c
             """,
             n=name, v=odoo_version, **_scope(profile_name),
@@ -2767,7 +2833,7 @@ def _module_dep_closure(
         # Verify the module exists first.
         exists = session.run(
             "MATCH (m:Module {name: $n, odoo_version: $v}) "
-            "WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)) "
+            f"WHERE {_scope_pred('m')} "
             "RETURN count(m) AS c",
             n=name, v=odoo_version, **_scope(profile_name),
         ).single()["c"]
@@ -2780,7 +2846,8 @@ def _module_dep_closure(
         dep_rows = session.run(f"""
             MATCH path = (:Module {{name: $n, odoo_version: $v}})
                          -[:{REL_DEPENDS_ON}*1..20]->(dep:Module {{odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN dep.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(dep.profile) > 0
+                   AND all(__p IN dep.profile WHERE __p IN $own OR __p IN $shared)))
             WITH dep, min(length(path)) AS min_depth
             RETURN dep.name AS dep_name,
                    dep.repo AS repo,
@@ -2849,7 +2916,8 @@ def _list_fields(
         rows = session.run(
             f"""
             MATCH (f:Field {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(f.profile) > 0
+                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR f.module = $module)
               AND ($kind IS NULL OR f.ttype = $kind)
               AND f.module <> '__unresolved__'
@@ -2874,7 +2942,8 @@ def _list_fields(
         total_rec = session.run(
             """
             MATCH (f:Field {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(f.profile) > 0
+                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR f.module = $module)
               AND ($kind IS NULL OR f.ttype = $kind)
               AND f.module <> '__unresolved__'
@@ -2900,7 +2969,8 @@ def _list_fields(
                 """
                 MATCH (f:Field {model: $m, odoo_version: $v})
                 WHERE f.name IN $magic_names
-                  AND ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+                  AND ($own IS NULL OR (size(f.profile) > 0
+                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
                   AND f.module <> '__unresolved__'
                 RETURN collect(DISTINCT f.name) AS names
                 """,
@@ -3071,7 +3141,8 @@ def _list_methods(
         rows = session.run(
             f"""
             MATCH (mth:Method {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR mth.module = $module)
               AND mth.module <> '__unresolved__'
             OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
@@ -3092,7 +3163,8 @@ def _list_methods(
         total_rec = session.run(
             """
             MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR mth.module = $module)
               AND mth.module <> '__unresolved__'
             RETURN count(mth) AS c
@@ -3106,7 +3178,8 @@ def _list_methods(
         override_rec = session.run(
             """
             MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
               AND mth.module <> '__unresolved__'
             WITH mth.name AS name, count(DISTINCT mth.module) AS modcount
             WHERE modcount >= 2
@@ -3240,7 +3313,8 @@ def _list_views_core(
             rows = session.run(
                 f"""
                 MATCH (v:View {{model: $filter_val, odoo_version: $ver}})
-                WHERE ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(v.profile) > 0
+                       AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
                   AND ($view_type IS NULL OR v.type = $view_type)
                   AND v.module <> '__unresolved__'
                 OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
@@ -3261,7 +3335,8 @@ def _list_views_core(
             total_rec = session.run(
                 """
                 MATCH (v:View {model: $filter_val, odoo_version: $ver})
-                WHERE ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(v.profile) > 0
+                       AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
                   AND ($view_type IS NULL OR v.type = $view_type)
                   AND v.module <> '__unresolved__'
                 RETURN count(v) AS c
@@ -3273,7 +3348,8 @@ def _list_views_core(
             rows = session.run(
                 f"""
                 MATCH (v:View {{module: $filter_val, odoo_version: $ver}})
-                WHERE ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(v.profile) > 0
+                       AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
                   AND ($view_type IS NULL OR v.type = $view_type)
                   AND v.module <> '__unresolved__'
                 OPTIONAL MATCH (mod:Module {{name: v.module, odoo_version: $ver}})
@@ -3294,7 +3370,8 @@ def _list_views_core(
             total_rec = session.run(
                 """
                 MATCH (v:View {module: $filter_val, odoo_version: $ver})
-                WHERE ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+                WHERE ($own IS NULL OR (size(v.profile) > 0
+                       AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
                   AND ($view_type IS NULL OR v.type = $view_type)
                   AND v.module <> '__unresolved__'
                 RETURN count(v) AS c
@@ -3497,7 +3574,8 @@ def _list_owl_components(
         rows = session.run(
             """
             MATCH (c:OWLComp {module: $mod, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN c.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(c.profile) > 0
+                   AND all(__p IN c.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($bound_model IS NULL OR c.bound_model = $bound_model)
               AND c.module <> '__unresolved__'
             RETURN c.name AS name, c.bound_model AS bound_model,
@@ -3513,7 +3591,8 @@ def _list_owl_components(
         total_rec = session.run(
             """
             MATCH (c:OWLComp {module: $mod, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN c.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(c.profile) > 0
+                   AND all(__p IN c.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($bound_model IS NULL OR c.bound_model = $bound_model)
               AND c.module <> '__unresolved__'
             RETURN count(c) AS c
@@ -3634,12 +3713,13 @@ def _list_qweb_templates(
         odoo_version = _resolve_version(odoo_version, session)
 
         rows = session.run(
-            """
-            MATCH (t:QWebTmpl {module: $mod, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN t.profile WHERE __p IN $own OR __p IN $shared))
+            f"""
+            MATCH (t:QWebTmpl {{module: $mod, odoo_version: $v}})
+            WHERE {_scope_pred("t")}
               AND t.module <> '__unresolved__'
             OPTIONAL MATCH (t)-[:EXTENDS_TMPL]->(parent:QWebTmpl)
             WHERE NOT coalesce(parent.unresolved, false)
+              AND {_scope_pred("parent")}
             RETURN t.xmlid AS xmlid, parent.xmlid AS parent_xmlid
             ORDER BY t.xmlid ASC
             SKIP $skip
@@ -3652,7 +3732,8 @@ def _list_qweb_templates(
         total_rec = session.run(
             """
             MATCH (t:QWebTmpl {module: $mod, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN t.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(t.profile) > 0
+                   AND all(__p IN t.profile WHERE __p IN $own OR __p IN $shared)))
               AND t.module <> '__unresolved__'
             RETURN count(t) AS c
             """,
@@ -3774,7 +3855,8 @@ def _list_js_patches(
         rows = session.run(
             f"""
             MATCH (j:JSPatch {{odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN j.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(j.profile) > 0
+                   AND all(__p IN j.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($target IS NULL OR j.target = $target)
               AND ($module IS NULL OR j.module = $module)
               AND ($era IS NULL OR j.era = $era)
@@ -3798,7 +3880,8 @@ def _list_js_patches(
         total_rec = session.run(
             """
             MATCH (j:JSPatch {odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN j.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(j.profile) > 0
+                   AND all(__p IN j.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($target IS NULL OR j.target = $target)
               AND ($module IS NULL OR j.module = $module)
               AND ($era IS NULL OR j.era = $era)
@@ -3952,15 +4035,16 @@ def _fetch_method_for_diff(session, model: str, method: str, version: str) -> di
     has_super_call, signature. Returns None when no Method found.
     Aggregates across all modules (decorators union, super_call OR).
     """
-    rows = session.run("""
-        MATCH (mth:Method {name: $method, model: $model, odoo_version: $v})
+    rows = session.run(f"""
+        MATCH (mth:Method {{name: $method, model: $model, odoo_version: $v}})
+        WHERE {_scope_pred("mth")}
         RETURN mth.decorators AS decorators,
                mth.convention_kind AS ck,
                mth.super_safety AS ss,
                coalesce(mth.has_super_call, false) AS has_super,
                mth.signature AS signature
         ORDER BY mth.module
-    """, method=method, model=model, v=version).data()
+    """, method=method, model=model, v=version, **_scope()).data()
     if not rows:
         return None
     # Merge across override chain: union decorators, OR has_super, first non-null sig
@@ -4112,7 +4196,8 @@ def _find_override_point(
     with driver.session() as session:
         records = session.run("""
             MATCH (mth:Method {name: $method, model: $model, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
             RETURN mth.module AS module, mth.convention_kind AS ck,
                    mth.super_safety AS ss, mth.return_required AS rr,
@@ -4329,7 +4414,8 @@ def _resolve_model_structured(
         layers = session.run(
             f"""
             MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
-            WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             WITH m, mod,
                  CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
                  COUNT {{
@@ -4356,9 +4442,10 @@ def _resolve_model_structured(
             MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
             WHERE p.name <> $name
               AND NOT coalesce(r.unresolved, false)
+              AND {_scope_pred("p")}
             RETURN DISTINCT p.name AS pname
             ORDER BY pname
-        """, name=model_name, v=odoo_version).data()
+        """, name=model_name, v=odoo_version, **_scope(profile_name)).data()
 
     base = layers[0]
     extensions = layers[1:]
@@ -4403,7 +4490,8 @@ def _resolve_field_structured(
 
         records = session.run(f"""
             MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(f.profile) > 0
+                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
             WITH f, mod, m_node,
@@ -4474,7 +4562,8 @@ def _resolve_method_structured(
 
         records = session.run(f"""
             MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
             OPTIONAL MATCH (m_node:Model {{name: $model, module: mth.module, odoo_version: $v}})
             WITH mth, mod, m_node,
@@ -4537,7 +4626,8 @@ def _resolve_view_structured(
 
         view_rec = session.run("""
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
-            WHERE ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(v.profile) > 0
+                   AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
             RETURN v, mod.name AS module_name
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
@@ -4549,17 +4639,22 @@ def _resolve_view_structured(
             MATCH (ext:View {{odoo_version: $ver}})-[:{REL_INHERITS_VIEW}]->
                   (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             WHERE NOT coalesce(ext.unresolved, false)
-            AND ($own IS NULL OR all(__p IN ext.profile WHERE __p IN $own OR __p IN $shared))
+            AND ($own IS NULL OR (size(ext.profile) > 0
+                 AND all(__p IN ext.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN ext.xmlid AS ext_xmlid,
                    ext.model AS ext_model,
                    coalesce(ext.xpaths_exprs, []) AS xpaths_exprs
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).data()
 
+        # WG-3t WRONG-TARGET fix: this returns parent.xmlid, so the tenant
+        # predicate must gate the RETURNED node (parent), not just the child v.
+        # Filtering only v would leak a foreign tenant's parent view xmlid.
         parent_rec = session.run(f"""
             MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
                   -[r:{REL_INHERITS_VIEW}]->(parent:View {{odoo_version: $ver}})
             WHERE NOT coalesce(r.unresolved, false)
-            AND ($own IS NULL OR all(__p IN v.profile WHERE __p IN $own OR __p IN $shared))
+            AND {_scope_pred("v")}
+            AND {_scope_pred("parent")}
             RETURN parent.xmlid AS parent_xmlid
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
 
@@ -4617,7 +4712,8 @@ def _describe_module_structured(
         mod_rec = session.run(
             """
             MATCH (m:Module {name: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN m.edition AS edition, m.version_raw AS version_raw,
                    m.repo AS repo, m.path AS path,
                    m.repo_url AS repo_url,
@@ -4647,7 +4743,8 @@ def _describe_module_structured(
             MATCH (model:Model {module: $n, odoo_version: $v})
             WHERE coalesce(model.is_definition, false) = true
               AND model.module <> '__unresolved__'
-              AND ($own IS NULL OR all(__p IN model.profile WHERE __p IN $own OR __p IN $shared))
+              AND ($own IS NULL OR (size(model.profile) > 0
+                   AND all(__p IN model.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN model.name AS name ORDER BY model.name ASC
             """,
             n=name, v=odoo_version, **_scope(profile_name),
@@ -4658,7 +4755,8 @@ def _describe_module_structured(
             MATCH (model:Model {module: $n, odoo_version: $v})
             WHERE coalesce(model.is_definition, false) = false
               AND model.module <> '__unresolved__'
-              AND ($own IS NULL OR all(__p IN model.profile WHERE __p IN $own OR __p IN $shared))
+              AND ($own IS NULL OR (size(model.profile) > 0
+                   AND all(__p IN model.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN model.name AS name ORDER BY model.name ASC
             """,
             n=name, v=odoo_version, **_scope(profile_name),
@@ -4667,7 +4765,8 @@ def _describe_module_structured(
         view_total_rec = session.run(
             """
             MATCH (view:View {module: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN view.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(view.profile) > 0
+                   AND all(__p IN view.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN count(view) AS c
             """,
             n=name, v=odoo_version, **_scope(profile_name),
@@ -4676,7 +4775,8 @@ def _describe_module_structured(
         js_count_rec = session.run(
             """
             MATCH (j:JSPatch {module: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN j.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(j.profile) > 0
+                   AND all(__p IN j.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN count(j) AS c
             """,
             n=name, v=odoo_version, **_scope(profile_name),
@@ -4741,7 +4841,8 @@ def _list_fields_structured(
         rows = session.run(
             f"""
             MATCH (f:Field {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(f.profile) > 0
+                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR f.module = $module)
               AND ($kind IS NULL OR f.ttype = $kind)
               AND f.module <> '__unresolved__'
@@ -4762,7 +4863,8 @@ def _list_fields_structured(
         total_rec = session.run(
             """
             MATCH (f:Field {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN f.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(f.profile) > 0
+                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR f.module = $module)
               AND ($kind IS NULL OR f.ttype = $kind)
               AND f.module <> '__unresolved__'
@@ -4828,7 +4930,8 @@ def _list_methods_structured(
         rows = session.run(
             f"""
             MATCH (mth:Method {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR mth.module = $module)
               AND mth.module <> '__unresolved__'
             OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
@@ -4848,7 +4951,8 @@ def _list_methods_structured(
         total_rec = session.run(
             """
             MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
               AND ($module IS NULL OR mth.module = $module)
               AND mth.module <> '__unresolved__'
             RETURN count(mth) AS c
@@ -4861,7 +4965,8 @@ def _list_methods_structured(
         override_rec = session.run(
             """
             MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(mth.profile) > 0
+                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
               AND mth.module <> '__unresolved__'
             WITH mth.name AS name, count(DISTINCT mth.module) AS modcount
             WHERE modcount >= 2
@@ -5164,20 +5269,22 @@ def set_active_version(odoo_version: str) -> ToolResult:
     try:
         with _get_driver().session() as neo4j_session:
             hit = neo4j_session.run(
-                "MATCH (m:Module {odoo_version: $v}) RETURN m LIMIT 1",
-                v=normalized,
+                f"MATCH (m:Module {{odoo_version: $v}}) WHERE {_scope_pred('m')} "
+                "RETURN m LIMIT 1",
+                v=normalized, **_scope(),
             ).data()
         if not hit:
-            # Version not indexed — fetch available list for the error message.
+            # Version not indexed (for this tenant) — fetch available list for the error.
             with _get_driver().session() as neo4j_session:
-                rows = neo4j_session.run("""
+                rows = neo4j_session.run(f"""
                     MATCH (m:Module)
+                    WHERE {_scope_pred("m")}
                     WITH DISTINCT m.odoo_version AS v
                     WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
                     RETURN v
                     ORDER BY toInteger(split(v, '.')[0]) DESC,
                              toInteger(split(v, '.')[1]) DESC
-                """).data()
+                """, **_scope()).data()
             available = [r["v"] for r in rows]
             if available:
                 avail_str = ", ".join(available)
@@ -5297,7 +5404,8 @@ def list_available_versions() -> ToolResult:
     with _get_driver().session() as neo4j_session:
         rows = neo4j_session.run("""
             MATCH (m:Module)
-            WHERE ($own IS NULL OR all(__p IN m.profile WHERE __p IN $own OR __p IN $shared))
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             WITH DISTINCT m.odoo_version AS v
             WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
             RETURN v
@@ -5391,8 +5499,9 @@ def _resolve_stylesheet(
         odoo_version = _resolve_version(odoo_version, session)
 
         rows = session.run(
-            """
-            MATCH (ss:Stylesheet {module: $mod, odoo_version: $v})
+            f"""
+            MATCH (ss:Stylesheet {{module: $mod, odoo_version: $v}})
+            WHERE {_scope_pred("ss")}
             RETURN ss.file_path AS file_path,
                    ss.language AS language,
                    ss.selector_count AS selector_count,
@@ -5401,7 +5510,7 @@ def _resolve_stylesheet(
                    ss.mixin_count AS mixin_count
             ORDER BY ss.file_path ASC
             """,
-            mod=module, v=odoo_version,
+            mod=module, v=odoo_version, **_scope(),
         ).data()
 
     if not rows:
@@ -5433,14 +5542,15 @@ def _resolve_stylesheet(
     if fps_with_imports:
         with _get_driver().session() as session:
             batch_rows = session.run(
-                """
+                f"""
                 UNWIND $fps AS fp
-                MATCH (src:Stylesheet {file_path: fp, module: $mod, odoo_version: $v})
+                MATCH (src:Stylesheet {{file_path: fp, module: $mod, odoo_version: $v}})
                       -[:IMPORTS]->(tgt:Stylesheet)
+                WHERE {_scope_pred("src")} AND {_scope_pred("tgt")}
                 RETURN fp, tgt.file_path AS import_path, tgt.module AS import_module
                 ORDER BY fp ASC, tgt.file_path ASC
                 """,
-                fps=fps_with_imports, mod=module, v=odoo_version,
+                fps=fps_with_imports, mod=module, v=odoo_version, **_scope(),
             ).data()
         for br in batch_rows:
             imports_by_fp.setdefault(br["fp"], []).append(
@@ -5602,13 +5712,14 @@ def _find_style_override(
         # Find stylesheets that import this file (override chain — BFS depth 1)
         with driver.session() as session:
             importers = session.run(
-                """
-                MATCH (tgt:Stylesheet {file_path: $fp, odoo_version: $v})
+                f"""
+                MATCH (tgt:Stylesheet {{file_path: $fp, odoo_version: $v}})
                       <-[:IMPORTS]-(src:Stylesheet)
+                WHERE {_scope_pred("tgt")} AND {_scope_pred("src")}
                 RETURN src.file_path AS importer_path, src.module AS importer_module
                 ORDER BY src.file_path ASC
                 """,
-                fp=chunk["file_path"], v=odoo_version,
+                fp=chunk["file_path"], v=odoo_version, **_scope(),
             ).data()
 
         if importers:

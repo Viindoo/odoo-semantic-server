@@ -355,14 +355,19 @@ def _render_stylesheet(
         # a path segment).  Try both the as-received string and a
         # leading-slash variant so we match indexer absolute paths *and*
         # any future indexer that stores repo-relative paths.
+        # WG-3t: tenant choke point — guards a raw on-disk file read, so a
+        # foreign tenant must not be able to confirm/read another tenant's
+        # stylesheet via a crafted odoo://stylesheet URI.
         rec = neo4j_session.run(
-            """
-            MATCH (ss:Stylesheet {module: $mod, odoo_version: $v})
-            WHERE ss.file_path = $fp OR ss.file_path = $fp_abs
+            f"""
+            MATCH (ss:Stylesheet {{module: $mod, odoo_version: $v}})
+            WHERE (ss.file_path = $fp OR ss.file_path = $fp_abs)
+              AND {_srv._scope_pred("ss")}
             RETURN ss.file_path AS file_path, ss.language AS language
             LIMIT 1
             """,
             mod=module, v=v, fp=file_path, fp_abs="/" + file_path,
+            **_srv._scope(),
         ).single()
 
     if rec is None:
