@@ -2377,7 +2377,8 @@ def test_module_merge_coalesce_preserves_repo_url(writer, neo4j_driver):
 
     with neo4j_driver.session() as session:
         rec = session.run(
-            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.repo_url AS url, m.repo_id AS rid",
+            "MATCH (m:Module {name: $n, odoo_version: $v}) "
+            "RETURN m.repo_url AS url, m.repo_id AS rid",
             n="sale", v=TEST_VERSION,
         ).single()
 
@@ -2436,6 +2437,6 @@ def test_view_node_arch_snippet_written(writer, neo4j_driver):
 
     data = {r["xmlid"]: r["snip"] for r in rows}
     assert data.get("sale.view_order_form") is not None, "base view must have arch_snippet"
-    assert "<form>" in (data.get("sale.view_order_form") or ""), "arch_snippet must contain form structure"
-    assert data.get("sale.view_order_form_inherit") is None, "extension view must have arch_snippet=None"
+    assert "<form>" in (data.get("sale.view_order_form") or ""), "arch_snippet keeps form structure"
+    assert data.get("sale.view_order_form_inherit") is None, "extension view arch_snippet=None"
 

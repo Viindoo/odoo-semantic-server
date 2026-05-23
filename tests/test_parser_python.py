@@ -1544,7 +1544,7 @@ def test_t2_v9_py2_syntax_new_api_fields_extracted(tmp_path):
     assert "name" in field_map, "fields.Char 'name' must be extracted from text fallback"
     assert "code" in field_map, "fields.Char 'code' must be extracted from text fallback"
     assert "balance" in field_map, "fields.Float 'balance' must be extracted from text fallback"
-    assert "partner_id" in field_map, "fields.Many2one 'partner_id' must be extracted from text fallback"
+    assert "partner_id" in field_map, "fields.Many2one 'partner_id' must come from text fallback"
     assert field_map["name"].ttype == "char"
     assert field_map["balance"].ttype == "float"
     assert field_map["partner_id"].ttype == "many2one"
