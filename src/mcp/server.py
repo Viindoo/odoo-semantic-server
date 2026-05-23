@@ -2687,6 +2687,17 @@ def _describe_module(
                 f"No module named '{name}' indexed for Odoo {odoo_version}."
             )
 
+        # depends-list is intentionally NOT tenant-scoped (no _scope_pred("d")).
+        # It returns only d.name — dependency names from THIS module's own manifest.
+        # Safety rests on the scoped `mod_rec` query above, which early-returns if the
+        # caller is not entitled to module $n@$v; this is a SEPARATE session.run that
+        # re-matches `m` by name+version only (NOT scoped) — fine, because that prior
+        # gate already proved entitlement and d.name is just a name the caller's own
+        # manifest declared. Contrast _module_dep_closure below, which filters `dep`
+        # because it returns dependency node CONTENT (dep.repo / dep.repo_url).
+        # Filtering names here would only hide a dep the tenant itself declared when
+        # its name collides with another tenant's private module (ADR-0034 A3) — no
+        # confidentiality gain, real UX loss.
         depends = session.run(
             f"""
             MATCH (m:Module {{name: $n, odoo_version: $v}})
@@ -4810,6 +4821,12 @@ def _describe_module_structured(
         if not mod_rec:
             return None
 
+        # depends-list is intentionally NOT tenant-scoped (no _scope_pred("d")) —
+        # see the matching note in _describe_module: the scoped `mod_rec` query above
+        # (a separate query that early-returns if unentitled) gates access, and d.name
+        # is just a name from this module's own manifest, not foreign node content.
+        # _module_dep_closure filters because it returns dep.repo/repo_url; this
+        # name-only list has nothing foreign to protect (ADR-0034 A3 / T7).
         depends = session.run(
             f"""
             MATCH (m:Module {{name: $n, odoo_version: $v}})
