@@ -693,6 +693,112 @@ not yet active. Premature activation = data exposure without isolation.
 
 ---
 
+## 5.13 Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19)
+
+Run after deploying PR #170 and completing the full reindex
+v8→v19 (§2 + §3). These three assertions verify the three parser gaps identified in the
+v18/v19 deep-dive and fixed in that PR before the ride-along reindex.
+
+**Property note:** CoreSymbol uses `qualified_name` (NOT `name`) and `kind` in Neo4j —
+confirmed against `CoreSymbolInfo` dataclass (`src/indexer/models.py`) and the MERGE
+writer (`src/indexer/writer_neo4j.py` — `MERGE (cs:CoreSymbol {qualified_name: $qn, odoo_version: $v}) SET cs.kind = $kind`).
+
+**5.13a — GAP1: Reference/Image/Many2oneReference classified as `field_type` (all versions)**
+
+Before this fix these concrete field classes were landing in Neo4j as `kind='class'` (the
+parser's default when it sees a class definition without recognising it as a field subclass).
+The fix makes them match the extended field-type set.
+
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (c:CoreSymbol)
+     WHERE c.qualified_name IN [
+         'odoo.fields.Reference',
+         'odoo.fields.Image',
+         'odoo.fields.Many2oneReference'
+     ]
+       AND c.odoo_version = '17.0'
+     RETURN c.qualified_name AS qname, c.kind AS kind
+     ORDER BY qname;"
+```
+Expected: 3 rows (one per symbol), all with `kind = 'field_type'`.
+
+Alert: if any row shows `kind = 'class'`, the parser fix is not deployed — check that
+PR #170 is merged and `index-core --version 17.0` has re-run. Spot-check a second
+version (e.g. `16.0`) for the same 3 names.
+
+**5.13b — GAP3: v19 Domain subclasses present**
+
+`DomainCondition`, `DomainNot`, `DomainBool`, `DomainNary`, and `DomainCustom` were added
+to `odoo/orm/domains.py` in v19. Before this fix `index-core --version 19.0` did not pick
+them up; the fix adds them to the `_V19_CURATED_FILES` coverage list.
+
+MCP tool smoke — must NOT return a not-found response:
+```bash
+curl -s -X POST "https://<MCP_HOST>/mcp" \
+    -H "X-API-Key: <API_KEY>" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{
+          "name":"lookup_core_api",
+          "arguments":{"name":"DomainCondition","odoo_version":"19.0"}}}' \
+    | python3 -m json.tool | grep -vE "not found|not.available"
+```
+Expected: response body does NOT contain `"not found"` or `"not available"` — the symbol
+is present and `lookup_core_api` returns its record.
+
+Cypher double-check:
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (c:CoreSymbol {odoo_version:'19.0'})
+     WHERE c.qualified_name IN [
+         'odoo.orm.domains.DomainCondition',
+         'odoo.orm.domains.DomainNot',
+         'odoo.orm.domains.DomainBool',
+         'odoo.orm.domains.DomainNary',
+         'odoo.orm.domains.DomainCustom'
+     ]
+     RETURN c.qualified_name AS qname, c.kind AS kind
+     ORDER BY qname;"
+```
+Expected: 5 rows; all `kind = 'class'` (these are class symbols, not field_types).
+
+**5.13c — GAP5: v19 `parse_field_expr` and sibling ORM utils present**
+
+`parse_field_expr`, `is_model_class`, and `is_model_definition` live in
+`odoo/orm/utils.py` + `odoo/orm/model_classes.py` (v19 ORM split). Before this fix the
+v19 curated-file list did not include those paths, so these utility functions were absent
+from indexed CoreSymbols.
+
+MCP tool smoke:
+```bash
+curl -s -X POST "https://<MCP_HOST>/mcp" \
+    -H "X-API-Key: <API_KEY>" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{
+          "name":"lookup_core_api",
+          "arguments":{"name":"parse_field_expr","odoo_version":"19.0"}}}' \
+    | python3 -m json.tool | grep -vE "not found|not.available"
+```
+Expected: response body does NOT contain `"not found"` — `parse_field_expr` is present.
+
+Cypher double-check:
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (c:CoreSymbol {odoo_version:'19.0'})
+     WHERE c.qualified_name IN [
+         'odoo.orm.utils.parse_field_expr',
+         'odoo.orm.model_classes.is_model_class',
+         'odoo.orm.model_classes.is_model_definition'
+     ]
+     RETURN c.qualified_name AS qname, c.kind AS kind
+     ORDER BY qname;"
+```
+Expected: 3 rows; `kind = 'function'` for all three.
+
+**Result:** [ ] GAP1 field_type correct for Reference/Image/Many2oneReference; GAP3 DomainCondition present v19; GAP5 parse_field_expr present v19
+
+---
+
 ## Known Constraints (post-wave3)
 
 ### MED-2 — Private forges require manual known_hosts onboarding

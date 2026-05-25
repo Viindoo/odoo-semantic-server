@@ -5,6 +5,9 @@
 Boil-the-Lake principle: complete top-down inventory across stable v17/v18/v19+
 core API surface — but bounded by an allow-list of 8 well-known files. We do NOT
 walk the full Odoo source (1000+ files), nor parse third-party addons here.
+For v19+, a curated supplement (_V19_CURATED_FILES) indexes split-ORM public APIs
+(Domain, table_objects, utils, model_classes) via name allowlist — 4 small files,
+v19-only, emitting only public symbols.
 
 Per ADR-0002 §6 — the 8 allow-list paths cover the entire surface area surveyed
 across v17→v19 changes (~80 unique symbol changes). Allow-list is intentional:
@@ -36,29 +39,90 @@ _CORE_FILES: tuple[str, ...] = (
     "odoo/sql_db.py",
     "odoo/exceptions.py",
 )
+# _CORE_FILES is EXACTLY 8 entries and is version-AGNOSTIC (no odoo/orm/ paths here).
+# The resolver fan-out (_resolve_core_paths) handles v19 package-dir splits for
+# fields/models/api automatically. Per ADR-0002 §6, adding to _CORE_FILES is a
+# deliberate curated decision — NOT automatic for every new v19 file.
 
 # v19-only curated public APIs from the split ORM package (boil-the-lake, curated).
 # These files do not exist before v19, so _resolve_core_paths returns [] and they
-# are silently skipped on v8–v18. Only the listed PUBLIC symbols are emitted —
-# the ~48 internal helpers in domains.py (e.g. _optimize_*) are excluded via the
-# name allow-list, per the "curated, not maximal" scope decision.
+# are silently skipped on v8–v18. Only the listed PUBLIC symbols are emitted via
+# name_allowlist, per the "curated, not maximal" scope decision.
 #   Domain: v19's first-class domain builder (replaces raw list-of-tuples exprs).
 #   table_objects: v19's declarative Constraint/Index API (replaces _sql_constraints).
+#   utils: parse_field_expr + OriginIds (new public ORM utility API in v19).
+#   model_classes: is_model_class / is_model_definition (new public ORM introspection API).
 # (The `Command` enum is NOT here — it kept its v18 qname `odoo.fields.Command`
 #  and is resolved via the odoo/fields.py entry; see _resolve_core_paths.)
 _V19_CURATED_FILES: dict[str, frozenset[str]] = {
-    "odoo/orm/domains.py": frozenset({"Domain", "DomainAnd", "DomainOr"}),
+    # FIX-2 (v19): expanded Domain allowlist from 3 → 8 public classes.
+    # Evidence: scanned odoo19/odoo/orm/domains.py — public top-level classes:
+    #   Domain (base), DomainBool, DomainNot, DomainNary, DomainAnd(DomainNary),
+    #   DomainOr(DomainNary), DomainCustom, DomainCondition.
+    # DomainNary: concrete (not abstract) base for n-ary AND/OR — included because
+    #   AI clients writing custom domain builders need to know it exists.
+    # DomainBool: represents constant True/False domain — genuine public builder.
+    # DomainCustom: custom-SQL domain — genuine public builder.
+    # DomainCondition: field condition leaf (added in FIX-2; missing was gap DD-1).
+    # Excluded: OptimizationLevel (IntEnum, internal optimization level enum, not a
+    #   domain builder) + ~48 internal helpers (_optimize_*, etc.) via allowlist.
+    "odoo/orm/domains.py": frozenset({
+        "Domain",
+        "DomainAnd",
+        "DomainOr",
+        "DomainCondition",
+        "DomainNot",
+        "DomainBool",
+        "DomainNary",
+        "DomainCustom",
+    }),
     "odoo/orm/table_objects.py": frozenset(
         {"TableObject", "Constraint", "Index", "UniqueIndex"}
     ),
+    # FIX-3 (v19): curated public API from two new split-ORM files.
+    # Correct mechanism: these files belong here (name_allowlist = curated set),
+    # NOT in _CORE_FILES (which uses name_allowlist=None = emit ALL top-level symbols).
+    # Placing them in _CORE_FILES would have indexed internal plumbing such as
+    #   check_pg_name, check_method_name, add_to_registry, setup_model_classes, etc.
+    #
+    # utils.py — curated public API (scanned odoo19/odoo/orm/utils.py):
+    #   parse_field_expr: parse a dotted field path — genuine public utility for
+    #     ORM expressions; used by query builders and AI clients.
+    #   OriginIds: reversible iterable for origin ids — public helper class.
+    #   EXCLUDED: check_method_name (deprecated since 19.0 with DeprecationWarning),
+    #     check_object_name (internal model-name validator),
+    #     check_pg_name (internal PostgreSQL identifier validator),
+    #     expand_ids (internal id-dedup generator, no direct user-facing use).
+    "odoo/orm/utils.py": frozenset({
+        "parse_field_expr",
+        "OriginIds",
+    }),
+    # model_classes.py — curated public API (scanned odoo19/odoo/orm/model_classes.py):
+    #   is_model_class: return True if cls is a model registry class — public introspection.
+    #   is_model_definition: return True if cls is a model definition — public introspection.
+    #   EXCLUDED: add_to_registry (internal registry machinery that creates/extends model
+    #     classes), setup_model_classes, add_field, pop_field (all internal setup helpers),
+    #     and all _private helpers (_check_model_extension, _init_model_class_attributes, etc.).
+    "odoo/orm/model_classes.py": frozenset({
+        "is_model_class",
+        "is_model_definition",
+    }),
 }
 
 # Class-name heuristics for `kind` classification.
-# Includes one level of well-known intermediate field bases so that classes like
-# Many2one(_Relational) and Char(BaseString) classify as 'field_type' without a
+# Includes direct abstract field bases AND concrete intermediate field bases so that
+# ALL field subclasses (direct or one level deep) classify as 'field_type' without a
 # recursive AST climb (per ADR-0002 KISS policy).
 # v18+ split hierarchy: _Relational, _String (v18 fields.py); BaseString, BaseDate,
 # _RelationalMulti (v19 orm/fields*.py).
+#
+# FIX-1: also include concrete intermediate bases to cover 2nd-level field subclasses:
+#   Image(Binary), Reference(Selection), Many2oneReference(Integer)
+# Scanned v17/v18 odoo/fields.py + v19 odoo/orm/fields*.py — Binary/Selection/Integer
+# are the ONLY concrete field classes that are themselves subclassed in core.
+# No 3rd-level field subclasses exist. Binary/Selection/Integer do not appear as class
+# bases in any other allow-listed file (models.py, api.py, exceptions.py, sql_db.py,
+# tools/*), so adding them here causes zero false positives.
 _FIELD_BASE_NAMES = {
     "Field",
     "_Relational",
@@ -66,6 +130,10 @@ _FIELD_BASE_NAMES = {
     "_String",
     "BaseString",
     "BaseDate",
+    # 2nd-level concrete bases (FIX-1)
+    "Binary",
+    "Selection",
+    "Integer",
 }
 # Direct stdlib + Odoo's primary user-facing base. The hierarchy is shallow in
 # practice (one indirection through UserError); deeper trees would need a
