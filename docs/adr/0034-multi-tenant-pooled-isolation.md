@@ -414,7 +414,7 @@ here so a future audit does not re-flag the asymmetry as a bug.
 ## Amendment A4 — RLS partial landing (WI-7, migration m13_004)
 
 **Ngày:** 2026-05-25  
-**PR:** feat/osm-rls-hardening (WI-B)
+**PR:** feat/m13-close-rls (WI-A + WI-B + WI-C)
 
 Migration `m13_004` ship **hai DDL** lên production:
 

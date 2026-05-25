@@ -19,8 +19,8 @@
 --
 -- POLICY semantics (app.allowed_profiles GUC):
 --   '*'        — admin sentinel; policy returns TRUE → unrestricted access.
---   ''         — tenant with no profiles (empty string_to_array = {}) → deny-all
---                (profile_name = ANY('{}') = FALSE; profile_name IS NULL = FALSE
+--   ''         — tenant with no profiles (string_to_array('',',') = {''}) → deny-all
+--                (profile_name = ANY({''}) = FALSE; profile_name IS NULL = FALSE
 --                 for tenant rows; only global shared rows with NULL profile pass
 --                 when the tenant owns no profiles — which is handled by the DB
 --                 returning them through the IS NULL branch for shared catalogue).

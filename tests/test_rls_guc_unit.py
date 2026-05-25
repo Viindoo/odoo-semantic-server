@@ -33,7 +33,7 @@ def test_allowed_to_guc_mapping():
 
     # Deny-all: empty list → empty string
     assert _allowed_to_guc([]) == "", (
-        "_allowed_to_guc([]) must return '' (deny-all: ANY({}) = FALSE for any row)."
+        "_allowed_to_guc([]) must return '' (deny-all: ANY({''}) is FALSE for any real profile_name)."  # noqa: E501
     )
 
     # Single profile

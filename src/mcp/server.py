@@ -356,7 +356,8 @@ def _allowed_to_guc(allowed: list[str] | None) -> str:
     Pure function (no I/O) — easy to unit-test.
 
     - ``None``  → ``'*'``    admin sentinel: policy USING clause returns TRUE.
-    - ``[]``    → ``''``     tenant with no profiles: deny-all (ANY('{}') = FALSE).
+    - ``[]``    → ``''``     tenant with no profiles: deny-all
+      (``string_to_array('', ',') = {''}``; ``ANY({''})`` is FALSE for any real profile_name).
     - ``[...]`` → ``'a,b'``  comma-separated; policy matches via string_to_array.
     """
     if allowed is None:
@@ -373,11 +374,16 @@ def _rls_read_tx(conn, allowed: list[str] | None):
 
     Two operating modes:
     - Pool mode (``conn.autocommit=True``): temporarily disables autocommit,
-      begins an explicit transaction, sets the GUC, yields, then commits.
-      The ``finally`` block restores ``autocommit=True`` even on error.
-    - Test/injected-conn mode (``conn.autocommit=False``): the caller already
-      manages the transaction; only ``SET LOCAL`` is executed and the caller
-      retains full control over BEGIN/COMMIT/ROLLBACK.
+      begins a transaction (psycopg2 opens one implicitly on the first execute
+      after ``autocommit=False``; there is no explicit ``BEGIN`` statement),
+      sets the GUC, yields, then commits.  The ``finally`` block restores
+      ``autocommit=True`` even on error.
+    - Caller-managed mode (``conn.autocommit=False``): the caller already owns
+      the transaction lifecycle; only ``SET LOCAL`` is executed here and the
+      caller retains full control over COMMIT/ROLLBACK.  Note: in the current
+      test suite the injected connections use ``autocommit=True``, so they
+      follow the pool-mode branch above.  This branch is wired for callers that
+      manage their own transaction (not currently used in the test suite).
 
     Armed-but-dormant: while the table owner (``odoo_semantic``) connects, RLS
     is ENABLED but NOT FORCED — PostgreSQL skips all policy evaluation for the

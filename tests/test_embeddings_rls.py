@@ -23,7 +23,9 @@ import pytest
 
 from tests.conftest import PG_EMBED_VERSION as V
 
-# All tests except T9 are postgres integration tests.
+# All 8 tests here are postgres integration tests.
+# The pure unit test for _allowed_to_guc lives in tests/test_rls_guc_unit.py
+# (no DB dependency, always runs without postgres marker).
 pytestmark = pytest.mark.postgres
 
 # ---------------------------------------------------------------------------
@@ -152,6 +154,11 @@ def forced_rls(clean_pg_embeddings):
         with pg.cursor() as cur:
             cur.execute("CREATE ROLE osm_reader NOLOGIN")
             cur.execute("GRANT SELECT ON embeddings TO osm_reader")
+            # Required so SET ROLE osm_reader succeeds for non-superuser CREATEROLE
+            # users: PostgreSQL requires caller to be superuser OR a member of the
+            # target role.  Without this GRANT, SET ROLE raises InsufficientPrivilege
+            # even if the user has CREATEROLE (which only grants CREATE, not BECOME).
+            cur.execute("GRANT osm_reader TO CURRENT_USER")
             cur.execute("ALTER TABLE embeddings FORCE ROW LEVEL SECURITY")
         pg.commit()
     except psycopg2.errors.InsufficientPrivilege as exc:

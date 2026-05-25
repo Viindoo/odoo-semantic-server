@@ -1002,10 +1002,10 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
   - Acceptance: `osm_reader` bị filter; prod không đọc FERNET từ plain env file; smoke pass.
 
 - [~] **WI-7 — `FERNET_KEY` → secrets manager + RLS enforcement cutover** — MED (security)
-  - **Dev-side shipped (PR feat/osm-rls-hardening):**
+  - **Dev-side shipped (PR feat/m13-close-rls):**
     - `migrations/m13_004_embeddings_rls.sql` — `ENABLE ROW LEVEL SECURITY` + policy
       `embeddings_tenant` (GUC `app.allowed_profiles`, sentinels `'*'`/`IS NULL`/`ANY`).
-    - GUC wiring (`SET LOCAL app.allowed_profiles` per request) in `src/db/`.
+    - GUC wiring (`SET LOCAL app.allowed_profiles` per request) in `src/mcp/server.py`.
     - `get_fernet_key()` / `get_fernet()` central getter (`src/crypto.py`) — two-source
       resolution: `$CREDENTIALS_DIRECTORY/FERNET_KEY` (LoadCredential) → `$FERNET_KEY` env.
     - `docs/deploy/odoo-semantic-webui.service` — `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`.

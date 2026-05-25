@@ -836,7 +836,9 @@ gì, nhưng hiệu lực RLS chỉ xuất hiện sau khi đổi DSN. Nếu đổ
 ```sql
 -- Cần kết nối bằng superuser hoặc owner của DB (odoo_semantic / postgres):
 -- Đặt password bằng secret store (Vault, 1Password, credstore), KHÔNG hardcode:
-CREATE ROLE osm_reader NOLOGIN;             -- tạo login role; bỏ NOLOGIN nếu dùng NOLOGIN trước
+-- Bước 1a: tạo role chưa cho login (NOLOGIN là default; sẽ cấp LOGIN ở bước sau khi đã có secret).
+CREATE ROLE osm_reader NOLOGIN;
+-- Bước 1b: cấp LOGIN + gán password từ secret store (Vault / 1Password / credstore):
 ALTER ROLE osm_reader LOGIN PASSWORD '<secret-từ-credstore>';
 GRANT CONNECT ON DATABASE odoo_semantic TO osm_reader;
 GRANT USAGE ON SCHEMA public TO osm_reader;

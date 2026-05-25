@@ -37,7 +37,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 - **`migrations/m13_004_embeddings_rls.sql`** — `ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY`
   + `CREATE POLICY embeddings_tenant` dùng GUC `app.allowed_profiles` (sentinels: `'*'` = admin,
   `IS NULL` = shared, `= ANY(string_to_array(...))` = tenant). Policy wired vào read path MCP tier
-  qua `SET LOCAL app.allowed_profiles` per request (code trong `src/db/`).
+  qua `SET LOCAL app.allowed_profiles` per request (code trong `src/mcp/server.py`).
 - **`docs/deploy/odoo-semantic-webui.service`** — thêm `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
   (Option B preferred — xem `deploy.md §12`; `EnvironmentFile=` fallback vẫn còn).
 
