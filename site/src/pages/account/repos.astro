@@ -1,0 +1,93 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// My Repositories — customer self-service portal page (W2, ADR-0038).
+// SSR: fetch profiles (tenant-scoped) + account tenants, then render island.
+import AccountLayout from '../../layouts/AccountLayout.astro';
+import ReposIsland from './_repos-island';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type Repo = {
+  id: number;
+  url: string;
+  branch: string;
+  clone_status: string;
+  tenant_id: number | null;
+  status?: string;
+};
+
+type Profile = {
+  id: number;
+  name: string;
+  odoo_version: string;
+  tenant_id: number | null;
+  repos: Repo[];
+};
+
+type TenantEntry = {
+  tenant_id: number;
+  name: string;
+  role: string;
+};
+
+let profiles: Profile[] = [];
+let tenants: TenantEntry[] = [];
+let fetchError: string | null = null;
+
+try {
+  const [profilesRes, tenantsRes] = await Promise.allSettled([
+    fetch(`${FASTAPI_BASE}/api/repos/profiles`, { headers: { cookie: cookieHeader } }),
+    fetch(`${FASTAPI_BASE}/api/account/tenants`, { headers: { cookie: cookieHeader } }),
+  ]);
+
+  if (profilesRes.status === 'fulfilled' && profilesRes.value.ok) {
+    const data = await profilesRes.value.json();
+    profiles = (data.profiles ?? []) as Profile[];
+    if (data.error) fetchError = data.error;
+  } else if (profilesRes.status === 'fulfilled') {
+    fetchError = `Profiles API error: ${profilesRes.value.status}`;
+  }
+
+  if (tenantsRes.status === 'fulfilled' && tenantsRes.value.ok) {
+    const data = await tenantsRes.value.json();
+    tenants = (data.tenants ?? []) as TenantEntry[];
+  }
+} catch (e) {
+  fetchError = 'Could not connect to API server.';
+}
+
+const noMembership = tenants.length === 0 && profiles.filter(p => p.tenant_id !== null).length === 0;
+---
+
+<AccountLayout title="My Repositories">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">My Repositories</h1>
+      <p class="text-sm text-gray-500 mt-1">Manage repositories within your organisation</p>
+    </div>
+  </div>
+
+  {fetchError && (
+    <div data-testid="repos-fetch-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      ⚠️ {fetchError}
+    </div>
+  )}
+
+  {noMembership ? (
+    <div data-testid="no-membership-state" class="bg-white rounded-xl border border-gray-200 shadow-sm py-16 text-center">
+      <p class="text-4xl mb-3">🏢</p>
+      <p class="text-lg font-semibold text-gray-700">You have not been assigned to any organisation yet.</p>
+      <p class="text-sm text-gray-500 mt-2">Contact an admin to be added to your organisation.</p>
+    </div>
+  ) : (
+    <ReposIsland
+      client:load
+      initialProfiles={profiles}
+      initialTenants={tenants}
+    />
+  )}
+</AccountLayout>

@@ -609,8 +609,8 @@ class TestW0GatePreserved:
 
     _GATED_ROUTES = [
         ("POST", "/api/repos/profiles", {"name": "x", "version": "17.0"}),
-        ("POST", "/api/repos/repos",
-         {"profile": "x", "url": "https://x.com/x.git", "branch": "17.0"}),
+        # POST /api/repos/repos intentionally excluded: opened to non-admin in W2
+        # with tenant_write_allowed scope check. See test_w2_portal.py for coverage.
         ("POST", "/api/tenants", {"name": "evil_tenant"}),
         ("PATCH", "/api/tenants/1", {"name": "evil"}),
         ("DELETE", "/api/tenants/1", None),

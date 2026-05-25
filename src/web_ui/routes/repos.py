@@ -18,15 +18,40 @@ from starlette.requests import Request
 
 from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import require_admin
+from src.web_ui.auth import (
+    ALL_TENANTS,
+    is_in_scope,
+    require_admin,
+    resolve_tenant_scope_web,
+    tenant_write_allowed,
+)
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos")
 
 
+async def _require_authenticated(request: Request) -> int:
+    """FastAPI dependency: require an authenticated session (not necessarily admin).
+
+    Returns user_id. Raises 401 if not authenticated.
+    Used by W2 routes that are open to non-admin tenant members.
+    """
+    from src.web_ui.auth import current_user_id
+    user_id = current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user_id
+
+
 @router.get("/profiles")
 async def list_profiles(request: Request):
-    """Return all profiles with their repos."""
+    """Return all profiles with their repos, filtered to the session's tenant scope.
+
+    W2: tenant-scoped read-side filter. Admin sees all; non-admin sees only profiles
+    in their tenant scope (own tenant + shared/null). tenant_id is included in every
+    profile and repo entry so the portal can route writes correctly.
+    """
+    scope = resolve_tenant_scope_web(request)
     profiles = []
     error = None
     all_job_id = None
@@ -35,17 +60,26 @@ async def list_profiles(request: Request):
         from src.db.pg import job_store, repo_store
 
         for p in repo_store().list_profiles():
+            profile_tenant_id = p.get("tenant_id")
+            # READ filter: is_in_scope allows null (shared) for all; admin sees all
+            if not is_in_scope(scope, profile_tenant_id):
+                continue
             repos = repo_store().get_repos_for_profile(p["name"])
-            # Attach last_job to each repo for status badge
+            # Attach last_job to each repo for status badge; expose tenant_id
             for repo in repos:
                 repo["last_job"] = job_store().get_last_job(p["name"])
-            profiles.append({**p, "repos": repos})
+            profiles.append({
+                **p,
+                "tenant_id": profile_tenant_id,
+                "repos": repos,
+            })
 
-        # Fetch most recent bulk "all" job for top-of-page badge
-        all_job = job_store().get_last_job("all")
-        if all_job:
-            all_job_id = all_job["id"]
-            all_job_status = all_job["status"]
+        # Fetch most recent bulk "all" job for top-of-page badge (admin-only usage)
+        if scope is ALL_TENANTS:
+            all_job = job_store().get_last_job("all")
+            if all_job:
+                all_job_id = all_job["id"]
+                all_job_status = all_job["status"]
     except Exception as e:
         error = str(e)
 
@@ -465,9 +499,13 @@ class AddRepoBody(BaseModel):
 @router.post("/repos")
 @audit_action("repo.create")
 async def add_repo(
-    body: AddRepoBody, request: Request, _user_id: int = Depends(require_admin)
+    body: AddRepoBody, request: Request, _user_id: int = Depends(_require_authenticated)
 ):
     """Add a repo to a profile. Triggers async clone for SSH URLs.
+
+    W2: open to authenticated non-admin users within their tenant scope.
+    Non-admin may only add repos to profiles belonging to their tenant
+    (shared/null profiles are admin-only; cross-tenant is 403).
 
     local_path is always server-derived via default_clone_dir(profile, url) —
     user-supplied local_path values are not accepted (WI-G server-managed paths).
@@ -475,10 +513,6 @@ async def add_repo(
     from src.git_utils import default_clone_dir, is_ssh_url
 
     # Bug (i) fix: early 404 guard for both SSH and HTTPS paths (W1, ADR-0038).
-    # Previously: HTTPS path silently no-op'd and returned {"ok":true} when profile
-    # was not found; SSH path returned 500 "Failed to add SSH repo". Both were wrong.
-    # Now: resolve profile ONCE before branching SSH/HTTPS; return 404 immediately
-    # so both paths see the same behavior.
     try:
         from src.db.pg import repo_store
         profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
@@ -491,7 +525,17 @@ async def add_repo(
             _json_safe({"error": f"Profile '{body.profile}' not found."}),
             status_code=404,
         )
-    profile_id = profiles_list[0]["id"]
+    profile_row = profiles_list[0]
+    profile_id = profile_row["id"]
+    profile_tenant_id = profile_row.get("tenant_id")
+
+    # W2: write-scope check — tenant_write_allowed is stricter than is_in_scope
+    scope = resolve_tenant_scope_web(request)
+    if not tenant_write_allowed(scope, profile_tenant_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Write access denied: outside your tenant scope",
+        )
 
     if is_ssh_url(body.url):
         if not body.ssh_key_id or not body.ssh_key_id.strip().isdigit():
@@ -518,6 +562,7 @@ async def add_repo(
                 # immediately transitions it to 'pending'. `status` defaults to 'pending'
                 # (indexer lifecycle) — repo is freshly added, not yet indexed.
                 clone_status="manual",
+                tenant_id=profile_tenant_id,  # W2: inherit tenant from profile
             )
         except Exception as e:
             _logger.warning("Add SSH repo failed: %s", e)
@@ -555,6 +600,7 @@ async def add_repo(
             # via the normal index flow. `status` (indexer lifecycle) defaults to
             # 'pending' — correct, repo is new and has not been indexed yet.
             clone_status="manual",
+            tenant_id=profile_tenant_id,  # W2: inherit tenant from profile
         )
     except Exception as e:
         _logger.warning("Add repo failed: %s", e)
@@ -587,9 +633,15 @@ class UpdateRepoBody(BaseModel):
 @router.patch("/repos/{repo_id}")
 @audit_action("repo.update", target_param="repo_id")
 async def update_repo(
-    repo_id: int, body: UpdateRepoBody, request: Request, _user_id: int = Depends(require_admin)
+    repo_id: int,
+    body: UpdateRepoBody,
+    request: Request,
+    _user_id: int = Depends(_require_authenticated),
 ):
     """Update URL / branch / SSH key of an existing repo.
+
+    W2: open to authenticated non-admin users within their tenant scope.
+    Non-admin may only patch repos belonging to their tenant (shared/null is admin-only).
 
     head_sha is intentionally preserved so the incremental indexer can still
     use the stored sha — avoiding a costly full reindex after a metadata edit.
@@ -607,6 +659,14 @@ async def update_repo(
         existing = repo_store().get_repo_by_id(repo_id)
         if existing is None:
             return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
+
+        # W2: write-scope check on repo's tenant_id
+        scope = resolve_tenant_scope_web(request)
+        if not tenant_write_allowed(scope, existing.get("tenant_id")):
+            raise HTTPException(
+                status_code=403,
+                detail="Write access denied: outside your tenant scope",
+            )
 
         # Capture before-snapshot for forensic audit detail (non-sensitive fields only)
         try:
@@ -658,6 +718,8 @@ async def update_repo(
         except Exception:
             pass
 
+    except HTTPException:
+        raise  # W2: re-raise 403 scope denials before generic catch
     except RepoNotFoundError:
         return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
     except RepoConflictError as e:
@@ -677,9 +739,13 @@ async def update_repo(
 @router.delete("/repos/{repo_id}")
 @audit_action("repo.delete", target_param="repo_id")
 async def delete_repo(
-    request: Request, repo_id: int, _user_id: int = Depends(require_admin)
+    request: Request, repo_id: int, _user_id: int = Depends(_require_authenticated)
 ):
-    """Delete a single repo, then clean Neo4j + pgvector scoped to that repo."""
+    """Delete a single repo, then clean Neo4j + pgvector scoped to that repo.
+
+    W2: open to authenticated non-admin users within their tenant scope.
+    Non-admin may only delete repos belonging to their tenant (shared/null is admin-only).
+    """
     from pathlib import Path
 
     try:
@@ -689,6 +755,14 @@ async def delete_repo(
         repo = repo_store().get_repo_by_id(repo_id)
         if repo is None:
             return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
+
+        # W2: write-scope check on repo's tenant_id
+        scope = resolve_tenant_scope_web(request)
+        if not tenant_write_allowed(scope, repo.get("tenant_id")):
+            raise HTTPException(
+                status_code=403,
+                detail="Write access denied: outside your tenant scope",
+            )
 
         profile_name = repo["profile_name"]
         odoo_version = repo["odoo_version"]
@@ -708,6 +782,8 @@ async def delete_repo(
         # PG delete
         repo_store().delete_repo(repo_id)
 
+    except HTTPException:
+        raise  # W2: re-raise 403 scope denials before generic catch
     except Exception as e:
         _logger.warning("Delete repo %s failed: %s", repo_id, e)
         return JSONResponse(_json_safe({"error": f"Delete failed: {e}"}), status_code=500)
@@ -854,9 +930,16 @@ class IndexRepoBody(BaseModel):
 @router.post("/repos/{repo_id}/index")
 @audit_action("operations.index_repo", target_param="repo_id")
 async def index_repo(
-    request: Request, repo_id: int, body: IndexRepoBody, _user_id: int = Depends(require_admin)
+    request: Request,
+    repo_id: int,
+    body: IndexRepoBody,
+    _user_id: int = Depends(_require_authenticated),
 ):
-    """Trigger indexer for a specific repo's profile (non-blocking subprocess)."""
+    """Trigger indexer for a specific repo's profile (non-blocking subprocess).
+
+    W2: open to authenticated non-admin users within their tenant scope.
+    Non-admin may only trigger index for repos in their tenant (shared/null is admin-only).
+    """
     # Validate max_workers before acquiring a DB connection
     try:
         max_workers_int = int(body.max_workers)
@@ -894,6 +977,14 @@ async def index_repo(
                 status_code=400,
             )
 
+        # W2: write-scope check on repo's tenant_id
+        scope = resolve_tenant_scope_web(request)
+        if not tenant_write_allowed(scope, repo.get("tenant_id")):
+            raise HTTPException(
+                status_code=403,
+                detail="Write access denied: outside your tenant scope",
+            )
+
         with get_pool().checkout() as conn:
             running = indexer_is_running(conn, repo["profile_name"])
         if running:
@@ -919,6 +1010,8 @@ async def index_repo(
 
         job_id = spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
         return JSONResponse(_json_safe({"ok": True, "job_id": job_id}))
+    except HTTPException:
+        raise  # W2: re-raise 403 scope denials before generic catch
     except Exception as e:
         _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
