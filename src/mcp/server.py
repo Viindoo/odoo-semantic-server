@@ -350,6 +350,69 @@ def _effective_allowed(profile_name: str | None) -> list[str] | None:
     return allowed
 
 
+def _allowed_to_guc(allowed: list[str] | None) -> str:
+    """Convert ``_effective_allowed`` output to a GUC string for ``app.allowed_profiles``.
+
+    Pure function (no I/O) — easy to unit-test.
+
+    - ``None``  → ``'*'``    admin sentinel: policy USING clause returns TRUE.
+    - ``[]``    → ``''``     tenant with no profiles: deny-all
+      (``string_to_array('', ',') = {''}``; ``ANY({''})`` is FALSE for any real profile_name).
+    - ``[...]`` → ``'a,b'``  comma-separated; policy matches via string_to_array.
+    """
+    if allowed is None:
+        return "*"
+    return ",".join(allowed)
+
+
+@contextmanager
+def _rls_read_tx(conn, allowed: list[str] | None):
+    """Set ``app.allowed_profiles`` GUC for the duration of one read transaction.
+
+    Uses ``SET LOCAL`` so the GUC is scoped to the current transaction and
+    automatically cleared on COMMIT/ROLLBACK — zero pool-leak risk.
+
+    Two operating modes:
+    - Pool mode (``conn.autocommit=True``): temporarily disables autocommit,
+      begins a transaction (psycopg2 opens one implicitly on the first execute
+      after ``autocommit=False``; there is no explicit ``BEGIN`` statement),
+      sets the GUC, yields, then commits.  The ``finally`` block restores
+      ``autocommit=True`` even on error.
+    - Caller-managed mode (``conn.autocommit=False``): the caller already owns
+      the transaction lifecycle; only ``SET LOCAL`` is executed here and the
+      caller retains full control over COMMIT/ROLLBACK.  Note: in the current
+      test suite the injected connections use ``autocommit=True``, so they
+      follow the pool-mode branch above.  This branch is wired for callers that
+      manage their own transaction (not currently used in the test suite).
+
+    Armed-but-dormant: while the table owner (``odoo_semantic``) connects, RLS
+    is ENABLED but NOT FORCED — PostgreSQL skips all policy evaluation for the
+    owner, so this context manager is a no-op in production until the operator
+    runs ``ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`` and switches to a
+    non-owner read role (ADR-0034 WI-7 ops runbook).
+    """
+    guc_val = _allowed_to_guc(allowed)
+    caller_autocommit = conn.autocommit
+    if caller_autocommit:
+        # Pool mode: wrap in an explicit transaction so SET LOCAL is scoped.
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL app.allowed_profiles = %s", (guc_val,))
+            yield
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = True  # restore for pool reuse
+    else:
+        # Test/injected-conn mode: caller owns the transaction; just set GUC.
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL app.allowed_profiles = %s", (guc_val,))
+        yield
+
+
 def _scope_pred(alias: str) -> str:
     """Canonical fail-closed tenant choke-point predicate for Neo4j node *alias*.
 
@@ -1085,52 +1148,57 @@ def _find_examples(
 
     selected_types = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
 
+    # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer. The
+    # Neo4j rerank only deprioritises non-allowed modules — it does NOT drop
+    # their chunks — so isolation MUST be enforced here, in the SQL, before
+    # rows are fetched. allowed=None → admin/unrestricted (no clause);
+    # allowed=[] → deny-all (ANY('{}') matches nothing). profile_name IS NULL
+    # chunks (legacy/unscoped) are excluded when scoped — fail-closed.
+    allowed = _effective_allowed(profile_name)
+    prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
+
     # Use injected connection (test path) or check out from pool (production).
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
-        # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer. The
-        # Neo4j rerank only deprioritises non-allowed modules — it does NOT drop
-        # their chunks — so isolation MUST be enforced here, in the SQL, before
-        # rows are fetched. allowed=None → admin/unrestricted (no clause);
-        # allowed=[] → deny-all (ANY('{}') matches nothing). profile_name IS NULL
-        # chunks (legacy/unscoped) are excluded when scoped — fail-closed.
-        allowed = _effective_allowed(profile_name)
-        prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
-        with pg.cursor() as cur:
-            if selected_types:
-                placeholders = ",".join(["%s"] * len(selected_types))
-                params = [query_vec, odoo_version, *selected_types]
-                if allowed is not None:
-                    params.append(allowed)
-                params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
-                cur.execute(
-                    f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
-                               line_start, repo, repo_id
-                        FROM embeddings
-                        WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
-                        ORDER BY vec <=> %s::vector LIMIT %s""",
-                    params,
-                )
-            else:
-                params = [query_vec, odoo_version]
-                if allowed is not None:
-                    params.append(allowed)
-                params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
-                cur.execute(
-                    f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                              chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
-                              line_start, repo, repo_id
-                       FROM embeddings WHERE odoo_version = %s{prof_sql}
-                       ORDER BY vec <=> %s::vector LIMIT %s""",
-                    params,
-                )
-            raw = [
-                dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
-                     file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]),
-                     line_start=r[8], repo=r[9], repo_id=r[10])
-                for r in cur.fetchall()
-            ]
+        # RLS wiring (WI-7 / ADR-0034 A2): set app.allowed_profiles GUC for
+        # the duration of this read transaction. Armed-but-dormant: owner
+        # bypass means this is a no-op until ops enables FORCE RLS.
+        with _rls_read_tx(pg, allowed):
+            with pg.cursor() as cur:
+                if selected_types:
+                    placeholders = ",".join(["%s"] * len(selected_types))
+                    params = [query_vec, odoo_version, *selected_types]
+                    if allowed is not None:
+                        params.append(allowed)
+                    params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
+                    cur.execute(
+                        f"""SELECT chunk_type, module, entity_name, model_name, file_path,
+                                   chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
+                                   line_start, repo, repo_id
+                            FROM embeddings
+                            WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
+                            ORDER BY vec <=> %s::vector LIMIT %s""",
+                        params,
+                    )
+                else:
+                    params = [query_vec, odoo_version]
+                    if allowed is not None:
+                        params.append(allowed)
+                    params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
+                    cur.execute(
+                        f"""SELECT chunk_type, module, entity_name, model_name, file_path,
+                                  chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
+                                  line_start, repo, repo_id
+                           FROM embeddings WHERE odoo_version = %s{prof_sql}
+                           ORDER BY vec <=> %s::vector LIMIT %s""",
+                        params,
+                    )
+                raw = [
+                    dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
+                         file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]),
+                         line_start=r[8], repo=r[9], repo_id=r[10])
+                    for r in cur.fetchall()
+                ]
 
     raw = [c for c in raw if c["module"] != "__unresolved__"]
 
@@ -2517,6 +2585,10 @@ def _suggest_pattern(
         )
 
     # Use injected connection (test path) or check out from pool (production).
+    # RLS note (WI-7 / ADR-0034 D3/A2): pattern catalogue chunks are stored
+    # with module='__patterns__' and profile_name IS NULL (global shared rows).
+    # The embeddings_tenant policy passes them unconditionally via the
+    # "profile_name IS NULL" branch — no GUC wiring needed here.
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
         with pg.cursor() as cur:
@@ -5871,31 +5943,36 @@ def _find_style_override(
             f"{hints_for('find_style_override', module='', ver=odoo_version)}"
         )
 
+    # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer (see
+    # _find_examples). No explicit profile arg here → tenant boundary only.
+    allowed = _effective_allowed(None)
+    prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
+
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
-        # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer (see
-        # _find_examples). No explicit profile arg here → tenant boundary only.
-        allowed = _effective_allowed(None)
-        prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
-        with pg.cursor() as cur:
-            placeholders = "%s, %s, %s"
-            params = [query_vec, odoo_version, "css", "scss", "less"]
-            if allowed is not None:
-                params.append(allowed)
-            params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
-            cur.execute(
-                f"""SELECT chunk_type, module, entity_name, file_path,
-                           chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
-                    FROM embeddings
-                    WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
-                    ORDER BY vec <=> %s::vector LIMIT %s""",
-                params,
-            )
-            raw = [
-                dict(chunk_type=r[0], module=r[1], entity_name=r[2],
-                     file_path=r[3], chunk_idx=r[4], content=r[5], cosine=float(r[6]))
-                for r in cur.fetchall()
-            ]
+        # RLS wiring (WI-7 / ADR-0034 A2): set app.allowed_profiles GUC for
+        # the duration of this read transaction. Armed-but-dormant: owner
+        # bypass means this is a no-op until ops enables FORCE RLS.
+        with _rls_read_tx(pg, allowed):
+            with pg.cursor() as cur:
+                placeholders = "%s, %s, %s"
+                params = [query_vec, odoo_version, "css", "scss", "less"]
+                if allowed is not None:
+                    params.append(allowed)
+                params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
+                cur.execute(
+                    f"""SELECT chunk_type, module, entity_name, file_path,
+                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
+                        FROM embeddings
+                        WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
+                        ORDER BY vec <=> %s::vector LIMIT %s""",
+                    params,
+                )
+                raw = [
+                    dict(chunk_type=r[0], module=r[1], entity_name=r[2],
+                         file_path=r[3], chunk_idx=r[4], content=r[5], cosine=float(r[6]))
+                    for r in cur.fetchall()
+                ]
 
     header = (
         f'find_style_override: "{selector_or_variable}" ({odoo_version})\n'

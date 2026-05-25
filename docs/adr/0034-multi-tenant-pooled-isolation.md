@@ -411,6 +411,45 @@ only hide a dependency the tenant itself declared whenever the name collides wit
 another tenant's private module (A3) — UX loss, zero confidentiality gain. Documented
 here so a future audit does not re-flag the asymmetry as a bug.
 
+## Amendment A4 — RLS partial landing (WI-7, migration m13_004)
+
+**Ngày:** 2026-05-25  
+**PR:** feat/m13-close-rls (WI-A + WI-B + WI-C)
+
+Migration `m13_004` ship **hai DDL** lên production:
+
+1. `ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY` — bật RLS ở mức bảng.
+2. `CREATE POLICY embeddings_tenant ON embeddings USING (...)` — policy dùng GUC
+   `app.allowed_profiles` với ba sentinel:
+   - `'*'` = admin/unrestricted (bypass filter),
+   - `IS NULL` = shared/global chunks (luôn hiển thị),
+   - `= ANY(string_to_array(current_setting('app.allowed_profiles', true), ','))` = tenant filter.
+
+GUC wiring (code đặt `SET LOCAL app.allowed_profiles` per request) cũng ship trong PR này.
+
+**Tại sao vẫn no-op trên production:** App connect bằng owner role (`odoo_semantic`).
+`ENABLE ROW LEVEL SECURITY` không có `FORCE` = owner role bypass toàn bộ policy. Owner bypass
+là đúng hành vi của PostgreSQL (protects indexer + admin + migrate paths khỏi bị filter bởi
+chính policy). Enforcement thật chỉ khi OPS chạy `FORCE ROW LEVEL SECURITY` + tạo non-owner
+read role `osm_reader` + tách read-DSN của MCP tier sang `osm_reader` — ba bước này là OPS
+runbook (§5.14), KHÔNG phải migration.
+
+**Known constraint — GUC delimiter:** Policy dùng `string_to_array(..., ',')` để parse
+`app.allowed_profiles`. Nếu `profiles.name` chứa dấu `,` thì `string_to_array` sẽ tách
+sai và có thể leak hoặc deny sai. Tuy nhiên đây là lớp phụ: guard thực sự là SQL
+`AND profile_name = ANY(%s)` với array-param (safe, không liên quan đến GUC string). Rủi ro
+chỉ xuất hiện sau khi OPS bật FORCE + đổi sang `osm_reader`. Trước khi bật FORCE, xem xét
+thêm `CHECK (name NOT LIKE '%,%')` vào `profiles` hoặc đổi delimiter GUC sang ký tự ít
+xung đột hơn (e.g. `|`).
+
+**Quan hệ với A2:** Đây là **tiến bộ hợp lệ của A2 (partial)** — A2 đã giải thích tại sao
+RLS cần FORCE + non-owner read role (không thể chỉ ENABLE) và đã re-scope sang WI-7. A4
+ship phần DDL (ENABLE + policy + GUC wiring) còn phần deployment (FORCE + role + DSN-split)
+là OPS runbook §5.14. Quyết định của A2 (SQL filter là guard thực) **không đảo ngược**;
+RLS sau khi cutover là defense-in-depth trên cùng `profile_name = ANY(...)` invariant.
+
+**Runbook tham chiếu:** [`docs/deploy/reindex-v8-v19-runbook.md §5.14`](../deploy/reindex-v8-v19-runbook.md#514-rls-enforcement-cutover-ops--sau-khi-deploy-code--m13_004-đã-chạy)
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).

@@ -2,7 +2,7 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-## [Unreleased] — WI-7 FERNET hardening + Path portability (ADR-0037)
+## [Unreleased] — WI-7 FERNET hardening + RLS armed-but-dormant + Path portability (ADR-0037)
 
 ### WI-7 — FERNET secrets hardening (M13)
 
@@ -28,6 +28,31 @@ All notable changes to Odoo Semantic MCP are documented here.
 - ADR-0020 updated: WI-7 findings, central getter, LoadCredential delivery,
   extended rotation atomicity, Consequences section.
 - `docs/deploy.md` §12: LoadCredential OPS cutover steps + rotation flow update.
+
+### WI-7 — RLS policy armed-but-dormant (M13, migration m13_004)
+
+**Security / defense-in-depth.** No reindex required. Tool count stays **24**.
+
+#### Added
+- **`migrations/m13_004_embeddings_rls.sql`** — `ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY`
+  + `CREATE POLICY embeddings_tenant` dùng GUC `app.allowed_profiles` (sentinels: `'*'` = admin,
+  `IS NULL` = shared, `= ANY(string_to_array(...))` = tenant). Policy wired vào read path MCP tier
+  qua `SET LOCAL app.allowed_profiles` per request (code trong `src/mcp/server.py`).
+- **`docs/deploy/odoo-semantic-webui.service`** — thêm `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
+  (Option B preferred — xem `deploy.md §12`; `EnvironmentFile=` fallback vẫn còn).
+
+#### Behaviour note
+Migration này là **no-op trên production cho đến khi OPS chạy runbook §5.14**: app connect
+bằng owner role (`odoo_semantic`), `ENABLE` không `FORCE` = owner bypass = policy không có
+hiệu lực. Read-guard thực sự vẫn là SQL `AND profile_name = ANY(%s)` (WI-4, shipped v0.10.0).
+`FORCE ROW LEVEL SECURITY` + non-owner read role `osm_reader` + tách read-DSN của MCP tier
+là các bước OPS thủ công (reindex runbook §5.14), KHÔNG chạy tự động.
+
+#### Docs
+- ADR-0034 Amendment A4: giải thích partial landing, known-constraint GUC delimiter,
+  quan hệ với A2.
+- Reindex runbook §5.14: hướng dẫn FORCE + role + DSN-split + verify + rollback.
+- `m13_001` comment cập nhật: trỏ đúng sang m13_004 thay vì "deferred to a later migration".
 
 ---
 
