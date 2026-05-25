@@ -72,10 +72,12 @@ class UsageLogMiddleware(Middleware):
         # to None for unauthenticated paths (e.g. /health via custom_route).
         api_key_id: str | None = None
         tenant_id: int | None = None
+        key_prefix: str | None = None
         try:
             req = get_http_request()
             api_key_id = getattr(req.state, "api_key_id", None)
             tenant_id = getattr(req.state, "tenant_id", None)
+            key_prefix = getattr(req.state, "key_prefix", None)
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
@@ -96,6 +98,16 @@ class UsageLogMiddleware(Middleware):
         )
         _BG_TASKS.add(task)
         task.add_done_callback(_BG_TASKS.discard)
+
+        # ADR-0034 §D4 / ADR-0021 §3: emit exactly one audit row per unscoped
+        # (global/admin) tool call — tenant_id IS NULL means the request bypassed
+        # tenant isolation.  Tenant-scoped calls are excluded (tenant_id is set).
+        if tenant_id is None and api_key_id is not None:
+            audit_task = asyncio.create_task(
+                _audit_unscoped_tool_call_async(key_prefix, tool_name)
+            )
+            _BG_TASKS.add(audit_task)
+            audit_task.add_done_callback(_BG_TASKS.discard)
 
         return result
 
@@ -193,3 +205,37 @@ async def _log_tool_call_async(
         )
     except Exception:
         pass  # best-effort — swallow silently
+
+
+async def _audit_unscoped_tool_call_async(
+    key_prefix: str | None,
+    tool_name: str,
+) -> None:
+    """Emit one admin_audit_log row for an unscoped (global/admin) MCP tool call.
+
+    ADR-0034 §D4: "the only unscoped path is audit-logged".
+    ADR-0021 §3: action taxonomy entry «mcp.query.unscoped».
+
+    Fires fire-and-forget from on_call_tool; never raises.  The audit INSERT
+    uses a dedicated pool connection (transaction-independent) via write_audit_log.
+
+    Actor format: "api_key:<prefix>" where prefix is the first 12 chars of the
+    raw API key, pre-computed in AuthMiddleware.dispatch() and stored in
+    request.state.key_prefix — zero additional DB queries on the hot path.
+    If key_prefix is unavailable (e.g. stdio transport), actor falls back to
+    "api_key:unknown".
+    """
+    try:
+        from src.db.audit import write_audit_log
+
+        actor = f"api_key:{key_prefix}" if key_prefix else "api_key:unknown"
+        await asyncio.to_thread(
+            write_audit_log,
+            actor,
+            "mcp.query.unscoped",
+            tool_name,
+            True,
+            {"tool": tool_name},
+        )
+    except Exception:
+        pass  # best-effort — audit failure must never break tool response

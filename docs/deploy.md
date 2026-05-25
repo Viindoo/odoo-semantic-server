@@ -1252,9 +1252,15 @@ Web UI có thể generate Ed25519 keypair để clone private Odoo repos.
 
 ### Yêu cầu: FERNET_KEY
 
-Private key được encrypt bằng Fernet symmetric encryption. `FERNET_KEY`
-chỉ đọc từ env var (không từ INI). Production deploy đặt trong
-`/etc/odoo-semantic/webui.env` (đã document ở §3.5):
+Private key (SSH + TOTP secret) được encrypt bằng Fernet symmetric encryption.
+`src.crypto.get_fernet_key()` là single source of truth — resolution order:
+
+1. **`$CREDENTIALS_DIRECTORY/FERNET_KEY`** — systemd `LoadCredential` (preferred
+   cho new deployments; key không vào process env).
+2. **`$FERNET_KEY`** env var — fallback cho `EnvironmentFile=` deployments
+   (existing setups không cần thay đổi).
+
+**Option A — EnvironmentFile (existing deployments, tiếp tục hoạt động):**
 
 ```bash
 # Generate key (chạy một lần, lưu an toàn):
@@ -1267,12 +1273,49 @@ sudo chown odoo-semantic:odoo-semantic /etc/odoo-semantic/webui.env
 sudo systemctl restart odoo-semantic-webui
 ```
 
+**Option B — LoadCredential (preferred cho new deployments):**
+
+```bash
+# 1. Tạo credstore dir (chỉ một lần):
+sudo install -d -m 0700 -o odoo-semantic /etc/credstore
+
+# 2. Lưu FERNET_KEY vào credstore:
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  | sudo tee /etc/credstore/FERNET_KEY > /dev/null
+sudo chmod 0600 /etc/credstore/FERNET_KEY
+sudo chown odoo-semantic:odoo-semantic /etc/credstore/FERNET_KEY
+
+# 3. Thêm vào service unit:
+#    [Service]
+#    LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
+sudo systemctl daemon-reload
+sudo systemctl restart odoo-semantic-webui
+```
+
 Dev mode (chạy `python -m src.web_ui` trực tiếp): export `FERNET_KEY` trong shell hoặc thêm vào `.env` rồi `set -a; source .env; set +a`.
 
-⚠️ **Nếu mất FERNET_KEY**: mọi SSH private key đã lưu sẽ không giải
-mã được. Backup `webui.env` an toàn (vd password manager). Indexer/MCP
-server không cần FERNET_KEY runtime — chỉ Web UI và CLI
-`rotate-fernet` cần.
+⚠️ **Nếu mất FERNET_KEY**: mọi SSH private key và TOTP secret đã lưu sẽ không giải
+mã được. Backup key an toàn (vd password manager). Indexer/MCP
+server không cần FERNET_KEY runtime — chỉ Web UI và CLI `rotate-fernet` cần.
+
+**Rotation (WI-7 update — `--old-key`/`--new-key` flags REMOVED):**
+
+```bash
+# 1. Backup trước:
+python -m src.cli backup --output pre-rotation-$(date +%Y%m%d).tar.gz
+
+# 2. Generate new key:
+NEW_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+
+# 3. Rotate (dùng env var, không dùng CLI flag):
+OLD_FERNET_KEY=<current-key> NEW_FERNET_KEY=$NEW_KEY python -m src.cli rotate-fernet
+# Output: Rotated N SSH key(s) + M TOTP secret(s). Total: N+M row(s).
+
+# 4. Cập nhật key (chọn Option A hoặc B ở trên) rồi restart service.
+```
+
+Re-encrypt cả `ssh_key_pairs.private_key_encrypted` lẫn `totp_secrets.secret_encrypted`
+trong một transaction atomic (ADR-0020 WI-7).
 
 ### Generate keypair
 

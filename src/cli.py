@@ -4,7 +4,7 @@
 Usage:
     python -m src.cli backup --output backup/dump.tar.gz [--bundle-passphrase-env ENV_NAME]
     python -m src.cli restore <bundle.tar.gz | dump.sql>
-    python -m src.cli rotate-fernet --old-key-env OLD_FERNET_KEY --new-key-env NEW_FERNET_KEY
+    python -m src.cli rotate-fernet [--old-key-env OLD_FERNET_KEY] [--new-key-env NEW_FERNET_KEY]
     python -m src.cli diagnose [--json]
 """
 import argparse
@@ -315,6 +315,10 @@ def _cmd_backup(args) -> int:
       - neo4j.dump         (neo4j-admin database dump, if neo4j-admin is in PATH)
       - fernet.enc         (FERNET_KEY encrypted with --bundle-passphrase-env passphrase)
       - manifest.json      (timestamps, schema_version, component checksums)
+
+    FERNET_KEY is read via ``src.crypto.get_fernet_key()`` which checks
+    ``$CREDENTIALS_DIRECTORY/FERNET_KEY`` (systemd LoadCredential) first, then
+    the ``$FERNET_KEY`` environment variable as a fallback.
     """
     output_path = Path(args.output)
 
@@ -456,7 +460,8 @@ def _cmd_backup(args) -> int:
                 if args.bundle_passphrase_env:
                     pp = os.getenv(args.bundle_passphrase_env)
                     if pp:
-                        fernet_key = os.getenv("FERNET_KEY", "")
+                        from src.crypto import get_fernet_key as _gfk
+                        fernet_key = _gfk() or ""
                         encrypted_key = _encrypt_with_passphrase(fernet_key, pp)
                         fernet_out = tmpdir / "fernet.enc"
                         fernet_out.write_bytes(encrypted_key)
@@ -677,7 +682,8 @@ def _restore_bundle(path: Path, args) -> int:
                     )
                     print(
                         "Note: fernet.enc decryption not implemented "
-                        "— set FERNET_KEY manually."
+                        "— set FERNET_KEY manually (via $FERNET_KEY env var or "
+                        "systemd LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY)."
                     )
                 else:
                     print(
@@ -695,33 +701,19 @@ def _restore_bundle(path: Path, args) -> int:
 
 
 def _cmd_rotate_fernet(args) -> int:
-    """Re-encrypt SSH private keys in ssh_key_pairs with a new FERNET_KEY.
+    """Re-encrypt FERNET-encrypted rows in ssh_key_pairs AND totp_secrets with a new FERNET_KEY.
 
     Keys must be delivered via environment variables (not CLI flags) to avoid
-    leaking secrets via /proc/<pid>/cmdline. Legacy --old-key/--new-key flags
-    are still accepted for backward compatibility but emit a deprecation warning.
+    leaking secrets via /proc/<pid>/cmdline.
 
-    The rotation is fully atomic: if any row fails to decrypt with the old key,
-    the entire transaction is rolled back (no partial state). A successful rotation
-    writes an audit row to ``key_rotation_log``.
+    The rotation is fully atomic across both tables: if any row in either table
+    fails to decrypt with the old key, the entire transaction is rolled back
+    (no partial state). A successful rotation writes an audit row to
+    ``key_rotation_log``.
     """
-    # Resolve keys: legacy flags (deprecated) or env var names (preferred).
-    old_key_str: str | None = None
-    new_key_str: str | None = None
-
-    if args.old_key or args.new_key:
-        log.warning(
-            "--old-key/--new-key flags leak secrets via /proc/PID/cmdline. "
-            "Use --old-key-env/--new-key-env instead. These flags will be removed in M10."
-        )
-        old_key_str = args.old_key
-        new_key_str = args.new_key
-
-    # Env var names take precedence when --old-key-env/--new-key-env are used.
-    if not old_key_str:
-        old_key_str = os.getenv(args.old_key_env)
-    if not new_key_str:
-        new_key_str = os.getenv(args.new_key_env)
+    # Resolve keys via env var names (--old-key-env / --new-key-env).
+    old_key_str: str | None = os.getenv(args.old_key_env)
+    new_key_str: str | None = os.getenv(args.new_key_env)
 
     if not old_key_str or not new_key_str:
         print(
@@ -764,14 +756,16 @@ def _cmd_rotate_fernet(args) -> int:
         cur = conn.cursor()
         try:
             cur.execute("BEGIN")
+
+            # --- 1. Re-encrypt ssh_key_pairs.private_key_encrypted ---
             cur.execute(
                 "SELECT id, private_key_encrypted FROM ssh_key_pairs "
                 "WHERE private_key_encrypted IS NOT NULL FOR UPDATE"
             )
-            rows = cur.fetchall()
-            failures = []
-            updated = 0
-            for row_id, encrypted in rows:
+            ssh_rows = cur.fetchall()
+            ssh_failures = []
+            ssh_updated = 0
+            for row_id, encrypted in ssh_rows:
                 try:
                     plaintext = old_f.decrypt(
                         encrypted.encode() if isinstance(encrypted, str) else encrypted
@@ -784,10 +778,42 @@ def _cmd_rotate_fernet(args) -> int:
                         "WHERE id = %s",
                         (new_encrypted.decode(), row_id),
                     )
-                    updated += 1
+                    ssh_updated += 1
                 except InvalidToken:
-                    failures.append(row_id)
+                    ssh_failures.append(("ssh_key_pairs", row_id))
 
+            # --- 2. Re-encrypt totp_secrets.secret_encrypted ---
+            # Table may not exist on older deployments; skip gracefully if absent.
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'totp_secrets' AND table_schema = 'public')"
+            )
+            totp_table_exists = cur.fetchone()[0]
+
+            totp_failures = []
+            totp_updated = 0
+            if totp_table_exists:
+                cur.execute(
+                    "SELECT user_id, secret_encrypted FROM totp_secrets "
+                    "WHERE secret_encrypted IS NOT NULL FOR UPDATE"
+                )
+                totp_rows = cur.fetchall()
+                for user_id, encrypted in totp_rows:
+                    try:
+                        plaintext = old_f.decrypt(
+                            encrypted.encode() if isinstance(encrypted, str) else encrypted
+                        )
+                        new_encrypted = new_f.encrypt(plaintext)
+                        cur.execute(
+                            "UPDATE totp_secrets SET secret_encrypted = %s WHERE user_id = %s",
+                            (new_encrypted.decode(), user_id),
+                        )
+                        totp_updated += 1
+                    except InvalidToken:
+                        totp_failures.append(("totp_secrets", user_id))
+
+            # --- 3. Atomic check: any failure → rollback everything ---
+            failures = ssh_failures + totp_failures
             if failures:
                 conn.rollback()
                 log.error(
@@ -802,16 +828,46 @@ def _cmd_rotate_fernet(args) -> int:
                 )
                 raise SystemExit(2)
 
-            # All rows re-encrypted successfully — write audit entry then commit.
+            # --- 4. All rows re-encrypted — write audit entry then commit ---
+            total_updated = ssh_updated + totp_updated
             cur.execute(
                 "INSERT INTO key_rotation_log "
                 "(rotated_at, actor, row_count, old_key_id, new_key_id) "
                 "VALUES (NOW(), %s, %s, %s, %s)",
-                (actor, updated, old_fp, new_fp),
+                (actor, total_updated, old_fp, new_fp),
             )
             conn.commit()
-            log.info("Rotated %d row(s) successfully.", updated)
-            print(f"Rotated {updated} key(s).")
+            log.info(
+                "Rotated %d ssh_key_pairs + %d totp_secrets row(s) successfully.",
+                ssh_updated,
+                totp_updated,
+            )
+            print(
+                f"Rotated {ssh_updated} SSH key(s) + {totp_updated} TOTP secret(s). "
+                f"Total: {total_updated} row(s)."
+            )
+            # Write admin_audit_log entry for fernet.rotate (ADR-0021 taxonomy).
+            # Fire-and-forget; never raises — audit failure must not abort rotation.
+            try:
+                from src.db.audit import write_audit_log
+                write_audit_log(
+                    actor=f"cli:{actor}",
+                    action="fernet.rotate",
+                    target=f"old={old_fp},new={new_fp}",
+                    success=True,
+                    detail={
+                        "ssh_rows": ssh_updated,
+                        "totp_rows": totp_updated,
+                        "total_rows": total_updated,
+                        "old_key_fingerprint": old_fp,
+                        "new_key_fingerprint": new_fp,
+                    },
+                )
+            except Exception as _audit_exc:
+                log.warning(
+                    "admin_audit_log write for fernet.rotate failed (non-fatal): %s",
+                    _audit_exc,
+                )
         except SystemExit:
             raise
         except Exception:
@@ -971,7 +1027,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     rot = sub.add_parser(
-        "rotate-fernet", help="Re-encrypt SSH private keys with new FERNET_KEY."
+        "rotate-fernet",
+        help="Re-encrypt SSH keys + TOTP secrets with a new FERNET_KEY.",
     )
     rot.add_argument(
         "--old-key-env",
@@ -983,10 +1040,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default="NEW_FERNET_KEY",
         help="Name of env var holding the new FERNET key (default: NEW_FERNET_KEY).",
     )
-    # Deprecated: use --old-key-env/--new-key-env instead.  Kept for backward
-    # compatibility until M10.  Hidden from --help to discourage use.
-    rot.add_argument("--old-key", help=argparse.SUPPRESS)
-    rot.add_argument("--new-key", help=argparse.SUPPRESS)
 
     diag = sub.add_parser(
         "diagnose",

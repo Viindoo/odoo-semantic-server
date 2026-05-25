@@ -15,6 +15,7 @@ import sys
 
 import uvicorn
 
+from src.crypto import get_fernet_key
 from src.logging_config import configure_logging
 from src.web_ui.app import create_app
 
@@ -58,17 +59,19 @@ def main() -> None:
     if env_file:
         check_env_file_perms(env_file)
 
-    if not os.getenv("FERNET_KEY"):
+    if not get_fernet_key():
         if os.getenv("ENVIRONMENT", "").lower() == "production":
             log.error(
                 "FERNET_KEY required in production. "
+                "Set FERNET_KEY env var or configure LoadCredential=FERNET_KEY "
+                "in the systemd unit. "
                 "Generate: python -c \"from cryptography.fernet import Fernet; "
                 "print(Fernet.generate_key().decode())\""
             )
             raise SystemExit(1)
         else:
             log.warning(
-                "FERNET_KEY unset — SSH key features disabled (dev mode). "
+                "FERNET_KEY unset — SSH key + TOTP features disabled (dev mode). "
                 "Generate: python -c \"from cryptography.fernet import Fernet; "
                 "print(Fernet.generate_key().decode())\""
             )

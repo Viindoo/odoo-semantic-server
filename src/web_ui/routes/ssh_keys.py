@@ -2,13 +2,13 @@
 # src/web_ui/routes/ssh_keys.py
 """SSH key pair management — generate Ed25519 keypair, store Fernet-encrypted (M8 W1 pure JSON)."""
 import logging
-import os
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.crypto import get_fernet, get_fernet_key
 from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
 
@@ -17,17 +17,12 @@ router = APIRouter(prefix="/api/ssh-keys")
 
 
 def _get_fernet():
-    """Return Fernet instance. Raises RuntimeError if FERNET_KEY not set."""
-    from cryptography.fernet import Fernet
+    """Return Fernet instance. Raises RuntimeError if FERNET_KEY not set.
 
-    key = os.getenv("FERNET_KEY")
-    if not key:
-        raise RuntimeError(
-            "FERNET_KEY is not set. SSH key storage requires FERNET_KEY. "
-            "Generate one: python -c \"from cryptography.fernet import Fernet; "
-            "print(Fernet.generate_key().decode())\""
-        )
-    return Fernet(key.encode())
+    Delegates to the central ``src.crypto.get_fernet`` getter which resolves
+    the key from systemd LoadCredential or FERNET_KEY env var (in that order).
+    """
+    return get_fernet()
 
 
 def generate_ed25519_keypair() -> tuple[str, str]:
@@ -109,7 +104,7 @@ async def list_ssh_keys(request: Request):
     """Return list of SSH keys as JSON."""
     keys = []
     error = None
-    fernet_missing = not os.getenv("FERNET_KEY")
+    fernet_missing = not get_fernet_key()
 
     try:
         from src.db.pg import auth_store
@@ -132,7 +127,7 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
     error = None
     new_public_key = None
     keys = []
-    fernet_missing = not os.getenv("FERNET_KEY")
+    fernet_missing = not get_fernet_key()
 
     if fernet_missing:
         return JSONResponse(
@@ -176,7 +171,7 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
     error = None
     new_public_key = None
     keys = []
-    fernet_missing = not os.getenv("FERNET_KEY")
+    fernet_missing = not get_fernet_key()
 
     if fernet_missing:
         return JSONResponse(

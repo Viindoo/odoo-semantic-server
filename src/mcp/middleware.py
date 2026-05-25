@@ -201,10 +201,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return Response("Missing X-API-Key header", status_code=401)
 
         # Check cache first to avoid DB round-trip per request.
-        # Try key_id cache; also probe tenant cache in case this is a warm hit.
+        # Fail-closed: BOTH caches must hit for a cache-served response.
+        # If _KEY_CACHE hits but _TENANT_CACHE misses (e.g. post-deploy window
+        # where old code wrote key_id but not tenant_id), we do NOT fall back to
+        # tenant_id=None — that would silently escalate a tenant key to admin/unscoped
+        # scope (cross-tenant read). Instead we treat it as a full miss and go to DB.
         hit, key_id = _cache_get(raw_key)
         tenant_hit, tenant_id = _cache_get_tenant(raw_key)
-        if not hit:
+        if not hit or not tenant_hit:
             def _do_verify():
                 from src.db.pg import auth_store
                 store = auth_store()
@@ -263,12 +267,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 key_id, tenant_id = result
             _cache_set(raw_key, key_id)
             _cache_set_tenant(raw_key, tenant_id)
-        elif not tenant_hit:
-            # _KEY_CACHE hit but _TENANT_CACHE miss — can happen when cache was
-            # pre-populated by an old code path that did not call _cache_set_tenant.
-            # Treat as global key (tenant_id=None) for this request; will be
-            # refreshed on next cache miss.
-            tenant_id = None
 
         if key_id is None:
             return Response("Invalid or inactive API key", status_code=401)
@@ -286,6 +284,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         request.state.api_key_id = key_id
         request.state.tenant_id = tenant_id  # ADR-0034 D4.1 — None for global/admin keys
+        # Store key_prefix (first 12 chars of raw key) for audit actor resolution.
+        # Derived from raw_key in-process — zero extra DB query on the hot path.
+        request.state.key_prefix = raw_key[:12]
         start = time.monotonic()
         response = await call_next(request)
         ms = int((time.monotonic() - start) * 1000)

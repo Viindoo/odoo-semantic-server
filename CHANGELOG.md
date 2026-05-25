@@ -2,7 +2,34 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-## [Unreleased] — Path portability (ADR-0037)
+## [Unreleased] — WI-7 FERNET hardening + Path portability (ADR-0037)
+
+### WI-7 — FERNET secrets hardening (M13)
+
+**Security / breaking change.** No reindex required.
+
+#### Changed
+- **Central FERNET key getter (`src/crypto.py`)** — new `get_fernet_key()` /
+  `get_fernet()` with two-source resolution: `$CREDENTIALS_DIRECTORY/FERNET_KEY`
+  (systemd `LoadCredential`, preferred) → `$FERNET_KEY` env var (backward-compatible
+  fallback). All five call sites refactored to use the central getter.
+- **`rotate-fernet` now covers `totp_secrets`** — `totp_secrets.secret_encrypted`
+  is re-encrypted in the same atomic transaction as `ssh_key_pairs.private_key_encrypted`.
+  `row_count` in `key_rotation_log` = ssh_rows + totp_rows. If any row in either
+  table fails to decrypt → rollback all.
+
+#### Removed (breaking)
+- **`--old-key` / `--new-key` CLI flags** removed from `rotate-fernet` sub-command.
+  These flags were deprecated in M9 (ADR-0020 F13) and promised removal in M10.
+  **Migration:** use `--old-key-env OLD_FERNET_KEY --new-key-env NEW_FERNET_KEY`
+  (already the default) or set env vars directly.
+
+#### Docs
+- ADR-0020 updated: WI-7 findings, central getter, LoadCredential delivery,
+  extended rotation atomicity, Consequences section.
+- `docs/deploy.md` §12: LoadCredential OPS cutover steps + rotation flow update.
+
+---
 
 Single PR. File paths are now **repo-relative everywhere** instead of server-absolute,
 so an AI client on a different machine can map them onto its own checkout, and moving
