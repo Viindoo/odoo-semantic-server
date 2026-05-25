@@ -990,8 +990,8 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
   - Acceptance: after full `--full` reindex v8→v19, run `[ ] ops/cleanup_absolute_path_nodes.cypher` and verify: Neo4j `Stylesheet`/`LintViolation` nodes with `file_path STARTS WITH '/'` = 0; `SELECT count(*) FROM embeddings WHERE file_path LIKE '/%'` = 0.
   - Dependency: full reindex v8→v19 (OPS) must complete first.
 
-### P6b — Parser fidelity pre-reindex (GAP1/3/5, code in branch wt/parser-src)
-- [~] **Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19):** `Reference`/`Image`/`Many2oneReference` → `kind='field_type'` instead of `'class'` (all versions — GAP1); v19 Domain subclasses `DomainCondition`/`DomainNot`/`DomainBool`/`DomainNary`/`DomainCustom` added to curated coverage (GAP3); v19 `parse_field_expr`/`is_model_class`/`is_model_definition` from `odoo/orm/utils.py` + `model_classes.py` added (GAP5). Code in branch `wt/parser-src`; rides the full reindex v8→v19. Verify assertions in runbook §5.13 after reindex completes.
+### P6b — Parser fidelity pre-reindex (GAP1/3/5)
+- [~] **Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19):** `Reference`/`Image`/`Many2oneReference` → `kind='field_type'` instead of `'class'` (all versions — GAP1); v19 Domain subclasses `DomainCondition`/`DomainNot`/`DomainBool`/`DomainNary`/`DomainCustom` added to curated coverage (GAP3); v19 `parse_field_expr`/`is_model_class`/`is_model_definition` from `odoo/orm/utils.py` + `model_classes.py` added (GAP5). **Code shipped: PR #170, CI green (unit/integration/browser/smoke/lint all pass).** `[~]` because full acceptance still requires: (a) full reindex v8→v19 (OPS item `[ ]` below) to materialize fixes into the graph, and (b) verify assertions in runbook §5.13 post-reindex. Not a code blocker — reindex is an admin OPS task on prod.
 
 ### P5 — Hardening (debt, schedule after P1–P4)
 - [ ] **WI-7 — `FERNET_KEY` → secrets manager; audit unscoped admin paths** — MED (security) **[DEFERRED]**

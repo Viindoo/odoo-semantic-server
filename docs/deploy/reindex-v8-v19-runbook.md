@@ -695,9 +695,9 @@ not yet active. Premature activation = data exposure without isolation.
 
 ## 5.13 Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19)
 
-Run after deploying the branch `wt/parser-src` fix-wave and completing the full reindex
+Run after deploying PR #170 and completing the full reindex
 v8→v19 (§2 + §3). These three assertions verify the three parser gaps identified in the
-v18/v19 deep-dive and fixed in that branch before the ride-along reindex.
+v18/v19 deep-dive and fixed in that PR before the ride-along reindex.
 
 **Property note:** CoreSymbol uses `qualified_name` (NOT `name`) and `kind` in Neo4j —
 confirmed against `CoreSymbolInfo` dataclass (`src/indexer/models.py`) and the MERGE
@@ -724,7 +724,7 @@ cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
 Expected: 3 rows (one per symbol), all with `kind = 'field_type'`.
 
 Alert: if any row shows `kind = 'class'`, the parser fix is not deployed — check that
-`wt/parser-src` is merged and `index-core --version 17.0` has re-run. Spot-check a second
+PR #170 is merged and `index-core --version 17.0` has re-run. Spot-check a second
 version (e.g. `16.0`) for the same 3 names.
 
 **5.13b — GAP3: v19 Domain subclasses present**
