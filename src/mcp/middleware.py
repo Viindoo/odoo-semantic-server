@@ -286,6 +286,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         request.state.api_key_id = key_id
         request.state.tenant_id = tenant_id  # ADR-0034 D4.1 — None for global/admin keys
+        # Store key_prefix (first 12 chars of raw key) for audit actor resolution.
+        # Derived from raw_key in-process — zero extra DB query on the hot path.
+        request.state.key_prefix = raw_key[:12]
         start = time.monotonic()
         response = await call_next(request)
         ms = int((time.monotonic() - start) * 1000)

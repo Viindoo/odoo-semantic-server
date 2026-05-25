@@ -30,6 +30,7 @@ Action taxonomy — see ADR-0021 for full list:
   totp.*         Setup, verify, disable
   operations.*   Backup, restore, apply_preset, index_repo, index_core, seed_patterns, reset_embed
   fernet.*       Rotate
+  mcp.query.*    unscoped — MCP tool call on global/admin (tenant_id IS NULL) path (ADR-0034 §D4)
 """
 
 import json

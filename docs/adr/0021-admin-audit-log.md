@@ -58,7 +58,17 @@ operations.index_repo  operations.index_core  operations.seed_patterns
 operations.reset_embed
 
 fernet.rotate
+
+mcp.query.unscoped
 ```
+
+`mcp.query.unscoped` — emitted once per MCP tool call that reaches the global/admin
+path (`tenant_id IS NULL`).  Per ADR-0034 §D4: "the only unscoped path is
+audit-logged."  Fields: `actor="api_key:<prefix>"`, `target=<tool_name>`,
+`success=True`, `detail={"tool": <tool_name>}`.  Emitted fire-and-forget by
+`UsageLogMiddleware.on_call_tool` in `src/mcp/tool_log_middleware.py`.
+Tenant-scoped calls (`tenant_id IS NOT NULL`) are excluded — they are governed
+by per-tenant isolation, not the unscoped audit path.
 
 ### 4. Failure Mode — Best-Effort, Never Block
 
