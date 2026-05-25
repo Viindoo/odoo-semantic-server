@@ -759,11 +759,11 @@ class TestSessionRevokeAfterLogout:
 
                 await client.post("/api/auth/logout")
 
-                # Replay the old cookie
-                resp_after = await client.get(
-                    "/api/dashboard/stats",
-                    cookies=cookie_before,
-                )
+                # Replay the old cookie: re-attach the pre-logout cookie to the
+                # client instance (logout cleared it server-side + on the client)
+                # so the next request sends the revoked session cookie again.
+                client.cookies.update(cookie_before)
+                resp_after = await client.get("/api/dashboard/stats")
         finally:
             _restore_patches(app)
 

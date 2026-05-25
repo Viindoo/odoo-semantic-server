@@ -474,6 +474,25 @@ async def add_repo(
     """
     from src.git_utils import default_clone_dir, is_ssh_url
 
+    # Bug (i) fix: early 404 guard for both SSH and HTTPS paths (W1, ADR-0038).
+    # Previously: HTTPS path silently no-op'd and returned {"ok":true} when profile
+    # was not found; SSH path returned 500 "Failed to add SSH repo". Both were wrong.
+    # Now: resolve profile ONCE before branching SSH/HTTPS; return 404 immediately
+    # so both paths see the same behavior.
+    try:
+        from src.db.pg import repo_store
+        profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
+    except Exception as e:
+        _logger.warning("Add repo: could not list profiles: %s", e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+
+    if not profiles_list:
+        return JSONResponse(
+            _json_safe({"error": f"Profile '{body.profile}' not found."}),
+            status_code=404,
+        )
+    profile_id = profiles_list[0]["id"]
+
     if is_ssh_url(body.url):
         if not body.ssh_key_id or not body.ssh_key_id.strip().isdigit():
             return JSONResponse(
@@ -485,19 +504,21 @@ async def add_repo(
         ssh_key_id_int = int(body.ssh_key_id.strip())
         repo_id: int | None = None
         try:
-            from src.db.pg import repo_store
-
-            profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
-            if profiles_list:
-                target_dir = default_clone_dir(body.profile, body.url)
-                repo_id = repo_store().add_repo(
-                    profile_id=profiles_list[0]["id"],
-                    url=body.url,
-                    branch=body.branch,
-                    local_path=str(target_dir),
-                    ssh_key_id=ssh_key_id_int,
-                    clone_status="manual",
-                )
+            target_dir = default_clone_dir(body.profile, body.url)
+            repo_id = repo_store().add_repo(
+                profile_id=profile_id,
+                url=body.url,
+                branch=body.branch,
+                local_path=str(target_dir),
+                ssh_key_id=ssh_key_id_int,
+                # clone_status is the git-clone lifecycle (manual/pending/cloned/error),
+                # set by set_clone_status. Distinct from `status` (indexer lifecycle:
+                # pending/running/done/error, set by update_repo_status). The repo starts
+                # with clone_status='manual' (not yet cloned); a background clone process
+                # immediately transitions it to 'pending'. `status` defaults to 'pending'
+                # (indexer lifecycle) — repo is freshly added, not yet indexed.
+                clone_status="manual",
+            )
         except Exception as e:
             _logger.warning("Add SSH repo failed: %s", e)
 
@@ -522,19 +543,19 @@ async def add_repo(
 
     # HTTPS / file:// — derive local_path server-side (WI-G: no user-supplied path)
     try:
-        from src.db.pg import repo_store
-
-        profiles_list = [p for p in repo_store().list_profiles() if p["name"] == body.profile]
-        if profiles_list:
-            target_dir = default_clone_dir(body.profile, body.url)
-            repo_store().add_repo(
-                profile_id=profiles_list[0]["id"],
-                url=body.url,
-                branch=body.branch,
-                local_path=str(target_dir),
-                ssh_key_id=None,
-                clone_status="manual",
-            )
+        target_dir = default_clone_dir(body.profile, body.url)
+        repo_store().add_repo(
+            profile_id=profile_id,
+            url=body.url,
+            branch=body.branch,
+            local_path=str(target_dir),
+            ssh_key_id=None,
+            # clone_status is the git-clone lifecycle (not the indexer lifecycle).
+            # 'manual' means "no auto-clone triggered"; the indexer will pick it up
+            # via the normal index flow. `status` (indexer lifecycle) defaults to
+            # 'pending' — correct, repo is new and has not been indexed yet.
+            clone_status="manual",
+        )
     except Exception as e:
         _logger.warning("Add repo failed: %s", e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
