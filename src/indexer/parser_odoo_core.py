@@ -5,6 +5,9 @@
 Boil-the-Lake principle: complete top-down inventory across stable v17/v18/v19+
 core API surface — but bounded by an allow-list of 8 well-known files. We do NOT
 walk the full Odoo source (1000+ files), nor parse third-party addons here.
+For v19+, a curated supplement (_V19_CURATED_FILES) indexes split-ORM public APIs
+(Domain, table_objects, utils, model_classes) via name allowlist — 4 small files,
+v19-only, emitting only public symbols.
 
 Per ADR-0002 §6 — the 8 allow-list paths cover the entire surface area surveyed
 across v17→v19 changes (~80 unique symbol changes). Allow-list is intentional:
