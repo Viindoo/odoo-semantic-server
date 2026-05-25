@@ -4,6 +4,7 @@
 // Middleware enforces requireAdmin before rendering this page.
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import UserTable from '../../components/UserTable.astro';
+import CreateUserIsland from './_create-user-island';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
@@ -44,10 +45,22 @@ try {
       <h1 class="text-2xl font-bold text-gray-900">Users</h1>
       <p class="text-sm text-gray-500 mt-1">Manage web UI user accounts</p>
     </div>
-    <span class="text-xs bg-violet-100 text-violet-800 px-3 py-1 rounded-full font-medium">
-      {usersData.users.length} user{usersData.users.length !== 1 ? 's' : ''}
-    </span>
+    <div class="flex items-center gap-3">
+      <span class="text-xs bg-violet-100 text-violet-800 px-3 py-1 rounded-full font-medium">
+        {usersData.users.length} user{usersData.users.length !== 1 ? 's' : ''}
+      </span>
+      <!-- W3 B: Create User island trigger -->
+      <button
+        id="btn-open-create-user"
+        class="text-xs px-3 py-1.5 rounded-lg bg-viindoo-primary text-white font-medium hover:opacity-90"
+      >
+        + Create User
+      </button>
+    </div>
   </div>
+
+  <!-- W3 B: Create User island (modal) -->
+  <CreateUserIsland client:load />
 
   {usersData.error && (
     <div data-testid="users-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">

@@ -1,0 +1,68 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Admin Audit Log page — SSR (W3 C)
+// Middleware enforces requireAdmin before rendering this page.
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AuditLogIsland from './_audit-log-island';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type AuditEntry = {
+  id: number;
+  ts: string | null;
+  actor: string;
+  action: string;
+  target: string | null;
+  success: boolean | null;
+  detail: Record<string, unknown> | null;
+};
+
+let initialEntries: AuditEntry[] = [];
+let initialTotal = 0;
+let fetchError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/audit-log?limit=50&offset=0`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const d = await res.json();
+    initialEntries = d.entries ?? [];
+    initialTotal = d.total ?? 0;
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  } else {
+    fetchError = `API error ${res.status}`;
+  }
+} catch {
+  fetchError = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="Audit Log — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Audit Log</h1>
+      <p class="text-sm text-gray-500 mt-1">Admin action history — filterable and paginated</p>
+    </div>
+    <span class="text-xs bg-violet-100 text-violet-800 px-3 py-1 rounded-full font-medium">
+      {initialTotal} total entr{initialTotal !== 1 ? 'ies' : 'y'}
+    </span>
+  </div>
+
+  {fetchError && (
+    <div data-testid="audit-log-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {fetchError}
+    </div>
+  )}
+
+  <AuditLogIsland
+    client:load
+    initialEntries={initialEntries}
+    initialTotal={initialTotal}
+  />
+</AdminLayout>

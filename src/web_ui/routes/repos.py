@@ -1072,6 +1072,7 @@ class IndexAllBody(BaseModel):
 
 
 @router.post("/index-all")
+@audit_action("operations.index_all")
 async def index_all(
     request: Request, body: IndexAllBody, _user_id: int = Depends(require_admin)
 ):
