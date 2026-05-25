@@ -1067,6 +1067,7 @@ async def reset_embed(
 class IndexAllBody(BaseModel):
     no_embed: str = ""
     full: str = ""
+    gc: str = ""
     max_workers: str = "1"
     profile_workers: str = "1"
 
@@ -1142,6 +1143,8 @@ async def index_all(
             argv += ["--no-embed"]
         if body.full:
             argv += ["--full"]
+        if body.gc:
+            argv += ["--gc"]
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]
         if profile_workers_int != 1:

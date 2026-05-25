@@ -233,6 +233,11 @@ def create_app() -> FastAPI:
 
     app.include_router(admin_audit.router)
 
+    # W4: Reference data — GET /api/versions (any logged-in user)
+    from src.web_ui.routes import versions
+
+    app.include_router(versions.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:
