@@ -223,6 +223,11 @@ def create_app() -> FastAPI:
 
     app.include_router(tenants.router)
 
+    # W2: Customer self-service portal — account/tenant membership endpoint (ADR-0038)
+    from src.web_ui.routes import account
+
+    app.include_router(account.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:

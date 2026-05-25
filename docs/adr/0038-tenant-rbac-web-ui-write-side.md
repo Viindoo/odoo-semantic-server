@@ -162,18 +162,71 @@ strictly more expressive.
 
 ---
 
+## Decisions — Wave 2 (W2): Customer self-service portal
+
+### D9 — Read-visibility vs Write-authorisation are separate helpers
+
+`is_in_scope` (read-side) allows `tenant_id IS NULL` (shared) to be readable by all.
+`tenant_write_allowed` (write-side, added W2) DENIES writes to `tenant_id IS NULL` for
+non-admin users. Shared resources are admin-mutate-only. Using `is_in_scope` for mutation
+checks is explicitly PROHIBITED (would allow any non-admin to mutate shared data).
+
+```python
+def tenant_write_allowed(scope, tenant_id: int | None) -> bool:
+    if scope is ALL_TENANTS: return True      # admin
+    if tenant_id is None: return False        # shared = admin-only write
+    return tenant_id in scope
+```
+
+### D10 — Subset of write routes opened for non-admin
+
+The following routes are opened for authenticated non-admin users with tenant membership,
+using `tenant_write_allowed` for scope check:
+- `POST /api/repos/repos` — add repo to a tenant-owned profile
+- `POST /api/repos/repos/{id}/index` — trigger index for a repo in scope
+- `PATCH /api/repos/repos/{id}` — update repo metadata in scope
+- `DELETE /api/repos/repos/{id}` — delete repo in scope
+
+New repo inherits `tenant_id` from its profile (set at insert time).
+
+The following remain admin-only (UNCHANGED from W0/W1):
+- All profile CRUD (`POST/PATCH/DELETE /api/repos/profiles*`)
+- Tenant CRUD + member management (`/api/tenants*`)
+- Bulk operations (`/api/repos/index-all`, `reset-embed`, SSH keys)
+- All `routes/operations.py` routes
+
+### D11 — GET /api/repos/profiles scoped for non-admin
+
+`GET /api/repos/profiles` was previously unfiltered. W2 applies `is_in_scope` on the
+profile's `tenant_id` — non-admin users see only profiles in their tenant scope plus
+shared (null) profiles. `tenant_id` field is included in every profile/repo in the
+response so the portal can route writes correctly.
+
+### D12 — GET /api/account/tenants for portal header
+
+New route `GET /api/account/tenants` returns `[{tenant_id, name, role}]` for the
+current session user. Admin: all tenants with `role='admin'`. Non-admin: membership
+rows joined with tenant names. Used by the self-service portal to show org context.
+
+---
+
 ## Files
 
 | File | Change |
 |------|--------|
 | `migrations/m13_005_tenant_members.sql` | New — 3-part migration |
-| `src/db/auth_registry.py` | New methods: tenant CRUD + member management |
-| `src/web_ui/auth.py` | New: `ALL_TENANTS`, `resolve_tenant_scope_web`, `is_in_scope` |
-| `src/web_ui/routes/tenants.py` | New — admin-only tenant/member/resource routes |
-| `src/web_ui/app.py` | Wire tenants.router |
-| `src/web_ui/routes/repos.py` | Bug (i): early 404 for missing profile; bug (ii): comment status/clone_status |
+| `src/db/auth_registry.py` | New methods: tenant CRUD + member management (W1); `list_tenant_memberships_for_user` (W2) |
+| `src/web_ui/auth.py` | W1: `ALL_TENANTS`, `resolve_tenant_scope_web`, `is_in_scope`; W2: `tenant_write_allowed` |
+| `src/web_ui/routes/tenants.py` | New — admin-only tenant/member/resource routes (W1) |
+| `src/web_ui/routes/account.py` | New — `GET /api/account/tenants` self-service (W2) |
+| `src/web_ui/app.py` | Wire tenants.router (W1); account.router (W2) |
+| `src/web_ui/routes/repos.py` | W1 Bug (i): early 404; W2: read filter + 4 route write-scope opened |
 | `src/db/repo_registry.py` | Docstring: clarify status vs clone_status in add_repo |
 | `site/src/middleware.ts` | requireAdmin gate for `/admin/tenants` |
+| `site/src/layouts/AccountLayout.astro` | W2: add My Repositories nav item |
 | `site/src/pages/admin/tenants.astro` | New — admin tenant management page |
-| `site/src/pages/admin/_tenants-island.tsx` | New — React island for mutations |
-| `tests/test_w1_tenant_rbac.py` | New — 14-case test suite |
+| `site/src/pages/admin/_tenants-island.tsx` | New — React island for mutations (W1) |
+| `site/src/pages/account/repos.astro` | New — customer self-service repos page (W2) |
+| `site/src/pages/account/_repos-island.tsx` | New — React island for repo add/index/delete (W2) |
+| `tests/test_w1_tenant_rbac.py` | New — 14-case test suite (W1) |
+| `tests/test_w2_portal.py` | New — cross-tenant + write-gate test suite (W2) |

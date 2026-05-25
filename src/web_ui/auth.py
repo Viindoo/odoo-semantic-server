@@ -250,6 +250,27 @@ def resolve_tenant_scope_web(request: Request) -> set[int] | _AllTenants:
         return set()                      # fail-closed on DB error
 
 
+def tenant_write_allowed(scope: set[int] | _AllTenants, tenant_id: int | None) -> bool:
+    """True if the session user may WRITE to a resource with the given tenant_id.
+
+    Write rules (ADR-0038 W2 bất biến an toàn):
+    - Admin (scope is ALL_TENANTS) → always allowed.
+    - tenant_id is None (shared/global) → DENIED for non-admin (admin-only mutate).
+    - else → tenant_id must be in the user's scope set.
+
+    This is intentionally STRICTER than is_in_scope (read-side):
+    is_in_scope allows null → True (shared readable by all); this helper
+    blocks null → False (shared writable by admin only).
+
+    NEVER reuse is_in_scope for mutation checks.
+    """
+    if scope is ALL_TENANTS:            # admin bypass
+        return True
+    if tenant_id is None:               # shared/global = admin-only for writes
+        return False
+    return tenant_id in scope           # type: ignore[operator]
+
+
 def is_in_scope(scope: set[int] | _AllTenants, tenant_id: int | None) -> bool:
     """True if a resource carrying tenant_id is visible/mutable under scope.
 
