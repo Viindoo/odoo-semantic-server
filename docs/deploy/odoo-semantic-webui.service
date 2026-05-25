@@ -34,6 +34,9 @@ Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
 # Order matters: webui.env wins on conflict, since it loads last.
 EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
 EnvironmentFile=-/home/odoo-semantic/etc/webui.env
+# Option B preferred: inject FERNET_KEY bằng systemd credential store (xem deploy.md §12).
+# Fallback: EnvironmentFile= ở trên vẫn hoạt động nếu LoadCredential chưa cấu hình.
+LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.web_ui
 Restart=on-failure
 RestartSec=5

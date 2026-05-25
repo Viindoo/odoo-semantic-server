@@ -994,10 +994,31 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 - [~] **Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19):** `Reference`/`Image`/`Many2oneReference` → `kind='field_type'` instead of `'class'` (all versions — GAP1); v19 Domain subclasses `DomainCondition`/`DomainNot`/`DomainBool`/`DomainNary`/`DomainCustom` added to curated coverage (GAP3); v19 `parse_field_expr`/`is_model_class`/`is_model_definition` from `odoo/orm/utils.py` + `model_classes.py` added (GAP5). **Code shipped: PR #170, CI green (unit/integration/browser/smoke/lint all pass).** `[~]` because full acceptance still requires: (a) full reindex v8→v19 (OPS item `[ ]` below) to materialize fixes into the graph, and (b) verify assertions in runbook §5.13 post-reindex. Not a code blocker — reindex is an admin OPS task on prod.
 
 ### P5 — Hardening (debt, schedule after P1–P4)
-- [ ] **WI-7 — `FERNET_KEY` → secrets manager; audit unscoped admin paths** — MED (security) **[DEFERRED]**
-  - Scope: move `FERNET_KEY` out of the plain env file into a secrets manager; audit-log the admin/global-key unscoped query path; revisit per-tenant envelope encryption (per-tenant DEK + KMS — ADR-0034 D8 deferred it) and decide whether the pooled blast-radius now justifies it.
-  - Acceptance: prod no longer reads `FERNET_KEY` from a systemd env file; audit row emitted on every unscoped admin query.
-  - Dependency: P1–P4 functional.
+- [ ] **OPS: RLS enforcement cutover + FERNET credstore (hand-off to admin)** — MED (ops)
+  - Chạy TAY trên production SAU khi deploy code WI-7 + migration m13_004. Xem runbook §5.14:
+    (a) tạo role `osm_reader` + GRANT SELECT, (b) `FORCE ROW LEVEL SECURITY`, (c) tách
+    read-DSN MCP tier sang `osm_reader`, (d) verify smoke + `test_embeddings_rls.py`,
+    (e) cut FERNET_KEY vào `/etc/credstore/` (deploy.md §12 Option B).
+  - Acceptance: `osm_reader` bị filter; prod không đọc FERNET từ plain env file; smoke pass.
+
+- [~] **WI-7 — `FERNET_KEY` → secrets manager + RLS enforcement cutover** — MED (security)
+  - **Dev-side shipped (PR feat/osm-rls-hardening):**
+    - `migrations/m13_004_embeddings_rls.sql` — `ENABLE ROW LEVEL SECURITY` + policy
+      `embeddings_tenant` (GUC `app.allowed_profiles`, sentinels `'*'`/`IS NULL`/`ANY`).
+    - GUC wiring (`SET LOCAL app.allowed_profiles` per request) in `src/db/`.
+    - `get_fernet_key()` / `get_fernet()` central getter (`src/crypto.py`) — two-source
+      resolution: `$CREDENTIALS_DIRECTORY/FERNET_KEY` (LoadCredential) → `$FERNET_KEY` env.
+    - `docs/deploy/odoo-semantic-webui.service` — `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`.
+    - ADR-0034 Amendment A4; reindex runbook §5.14; m13_001 comment update.
+  - **OPS pending (runbook hand-off — chạy TAY trên prod sau deploy + reindex):**
+    - `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT ON embeddings.
+    - `[ ]` `ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`.
+    - `[ ]` Tách read-DSN MCP service (:8002) sang `osm_reader` (env var `PG_READ_DSN`).
+    - `[ ]` Verify smoke + `pytest tests/test_embeddings_rls.py`.
+    - `[ ]` Cut FERNET_KEY vào `/etc/credstore/FERNET_KEY` (Option B — `deploy.md §12`).
+  - Acceptance (full): prod không đọc `FERNET_KEY` từ plain env file; `osm_reader` bị
+    filter bởi RLS; audit row emitted trên unscoped admin query.
+  - Dependency: P1–P4 functional; full reindex v8→v19 (§5.11g phải pass trước).
 
 > **Test discipline (per AI-Memory feedback):** any subagent touching `src/` in this milestone MUST run the Postgres integration suite (`pytest -m "(postgres or integration)"`), not just unit tests — and self-verify, don't trust subagent claims. The WI-4 cross-tenant leak test is the milestone release gate.
 
