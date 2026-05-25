@@ -451,6 +451,32 @@ class RepoStore:
         clone_status: str = "manual",
         tenant_id: int | None = None,
     ) -> int:
+        """Insert a new repo row and return its id.
+
+        Two distinct lifecycle columns (W1 clarification — ADR-0038):
+          ``clone_status`` — git-clone lifecycle: manual/pending/cloned/error.
+              Set by :meth:`set_clone_status`. Managed by the clone subprocess.
+              Default 'manual' means "no auto-clone requested; indexer will
+              handle the local path directly if it already exists on disk."
+          ``status`` — indexer lifecycle: pending/running/done/error.
+              Set by :meth:`update_repo_status`. Managed by the indexer.
+              Defaults to 'pending' (migrate.py:70) — repo is freshly added and
+              has not been indexed yet. This is intentional: the indexer picks up
+              'pending' repos in its next run. Callers MUST NOT pass status explicitly
+              unless they have a specific reason to override the default.
+
+        Args:
+            profile_id: profiles.id the repo belongs to.
+            url: Remote URL (https or SSH).
+            branch: Branch to index/clone.
+            local_path: Server-managed path (derived via default_clone_dir).
+            ssh_key_id: ssh_key_pairs.id for SSH auth; None for HTTPS.
+            clone_status: git-clone lifecycle start state (default 'manual').
+            tenant_id: tenants.id for tenant isolation; None = shared/global.
+
+        Returns:
+            Integer id of the newly inserted repo row.
+        """
         with self._pool.checkout() as conn:
             with conn.cursor() as cur:
                 cur.execute(

@@ -196,6 +196,24 @@ export const onRequest = defineMiddleware(async (context, next) => {
 
   const cookieHeader = context.request.headers.get('cookie') ?? '';
 
+  // /admin/tenants requires admin privilege — redirect non-admins to dashboard.
+  // W1 (ADR-0038): tenant management is admin-only (non-admin portal is W2).
+  if (path === '/admin/tenants' || path.startsWith('/admin/tenants/')) {
+    const adminPayload = await requireAdmin(cookieHeader);
+    if (!adminPayload) {
+      const sessionPayload = await verifySession(cookieHeader);
+      if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+      return _redirectWithHeaders('/admin?error=admin_required');
+    }
+    context.locals.user = {
+      username: adminPayload.username!,
+      is_admin: true,
+    };
+    const response = await next();
+    _addSecurityHeaders(response, path);
+    return response;
+  }
+
   // /admin/users/* requires admin privilege — redirect non-admins to dashboard.
   if (path === '/admin/users' || path.startsWith('/admin/users/')) {
     const adminPayload = await requireAdmin(cookieHeader);

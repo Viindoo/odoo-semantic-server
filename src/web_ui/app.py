@@ -218,6 +218,11 @@ def create_app() -> FastAPI:
 
     app.include_router(admin_migrations.router)
 
+    # W1: Tenant CRUD + member/resource assignment (admin-only, ADR-0038)
+    from src.web_ui.routes import tenants
+
+    app.include_router(tenants.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:

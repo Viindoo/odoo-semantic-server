@@ -206,6 +206,66 @@ async def require_admin_with_fresh_mfa(request: Request) -> int:
     return user_id
 
 
+# ---------------------------------------------------------------------------
+# W1: Tenant-scope helpers for web-UI write-side (ADR-0038)
+# ---------------------------------------------------------------------------
+
+class _AllTenants:
+    """Singleton sentinel: admin sees ALL tenants (bypass scope filter)."""
+    _instance: "_AllTenants | None" = None
+
+    def __new__(cls) -> "_AllTenants":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "ALL_TENANTS"
+
+
+# Module-level sentinel — callers check `scope is ALL_TENANTS`
+ALL_TENANTS = _AllTenants()
+
+
+def resolve_tenant_scope_web(request: Request) -> set[int] | _AllTenants:
+    """Return the set of tenant_ids the current session user may act within.
+
+    Resolution:
+      - Global admin (webui_users.is_admin=TRUE)  -> ALL_TENANTS sentinel (bypass).
+      - Non-admin                                  -> {tenant_id, ...} from tenant_members.
+      - Unauthenticated / malformed session        -> empty set (fail-closed, deny-all).
+
+    NAME: *_web suffix to disambiguate from RepoStore.resolve_tenant_scope
+    (read-side, tenant_id->profile names). This is request->tenant_ids.
+    """
+    uid = current_user_id(request)
+    if uid is None:
+        return set()                      # fail-closed: unauthenticated
+    if is_admin_session(request):         # DB-sourced (ADR-0026)
+        return ALL_TENANTS
+    try:
+        from src.db.pg import auth_store
+        return set(auth_store().list_tenant_ids_for_user(uid))
+    except Exception:
+        return set()                      # fail-closed on DB error
+
+
+def is_in_scope(scope: set[int] | _AllTenants, tenant_id: int | None) -> bool:
+    """True if a resource carrying tenant_id is visible/mutable under scope.
+
+    - scope is ALL_TENANTS                -> True (admin sees everything).
+    - tenant_id is None (shared/global)   -> True for everyone (shared resources
+                                            are readable by all); callers must gate
+                                            WRITE to shared separately (admin-only).
+    - else                                -> tenant_id in scope.
+    """
+    if scope is ALL_TENANTS:
+        return True
+    if tenant_id is None:
+        return True          # shared/global resources are always visible
+    return tenant_id in scope  # type: ignore[operator]
+
+
 def is_test_bypass_active() -> bool:
     """Return True only when BOTH test-bypass env vars are set.
 
