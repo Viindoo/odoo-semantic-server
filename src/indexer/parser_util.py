@@ -34,11 +34,32 @@ Why this does NOT violate the "never hide errors" rule (CLAUDE.md / MEMORY):
 * ``SyntaxError`` is NOT suppressed. The caller still sees it and keeps its
   existing behaviour (e.g. v8/v9 Python-2 text-regex fallback). We only silence
   the non-fatal ``SyntaxWarning`` noise from input we neither own nor can fix.
+
+Thread safety (why the module-level lock is required):
+
+* ``warnings.catch_warnings()`` saves and restores the *process-global*
+  ``warnings.filters`` list; on CPython < 3.14 (we run 3.12) it is NOT
+  thread-safe. The indexer parses under a ``ThreadPoolExecutor`` and production
+  runs ``--profile-workers 2`` (``docs/deploy.md``), so two concurrent
+  ``parse_external_source`` calls would otherwise interleave their save/restore
+  and could leak the ``ignore SyntaxWarning`` filter process-wide — silencing
+  genuine ``SyntaxWarning``s from our own ``src/`` for the rest of the run.
+* We therefore serialise the (very fast) save → simplefilter → parse → restore
+  sequence behind ``_FILTER_LOCK``. ``ast.parse`` of a single file is cheap; the
+  brief serialisation does not meaningfully dent ``--profile-workers``
+  throughput, and it makes the "scoped to ONLY this one call" guarantee hold
+  under concurrency.
 """
 from __future__ import annotations
 
 import ast
+import threading
 import warnings
+
+# Guards the process-global ``warnings.filters`` mutation performed by
+# ``warnings.catch_warnings()`` below. See the "Thread safety" note in the module
+# docstring: ``catch_warnings`` is not thread-safe on CPython < 3.14.
+_FILTER_LOCK = threading.Lock()
 
 
 def parse_external_source(source: str, filename: str | None = None) -> ast.AST:
@@ -57,7 +78,10 @@ def parse_external_source(source: str, filename: str | None = None) -> ast.AST:
         SyntaxError: propagated unchanged — callers handle their own fallback.
                      (Only the non-fatal ``SyntaxWarning`` is suppressed.)
     """
-    with warnings.catch_warnings():
+    # Hold the lock across the WHOLE catch_warnings block so concurrent indexer
+    # worker threads cannot interleave the save/restore of the process-global
+    # warnings.filters list (catch_warnings is not thread-safe on CPython < 3.14).
+    with _FILTER_LOCK, warnings.catch_warnings():
         # Scoped to THIS parse only: silence the non-fatal escape-sequence noise
         # from third-party source. Restored automatically on block exit.
         warnings.simplefilter("ignore", SyntaxWarning)

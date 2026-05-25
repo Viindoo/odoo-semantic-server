@@ -12,6 +12,7 @@ external parse and threads a real filename so future diagnostics aren't
 ``<unknown>``. It must NOT swallow SyntaxError (callers depend on the py2 fallback).
 """
 import ast
+import threading
 import warnings
 
 import pytest
@@ -73,6 +74,57 @@ def test_filter_scope_is_restored_after_call():
         ast.parse(_REGEX_SRC)
     assert [w for w in caught if issubclass(w.category, SyntaxWarning)], (
         "helper must NOT leave a process-wide SyntaxWarning filter installed"
+    )
+
+
+def test_concurrent_calls_do_not_leak_filter_process_wide():
+    # Regression for the thread-safety bug: the indexer parses under a
+    # ThreadPoolExecutor (prod: --profile-workers 2). warnings.catch_warnings()
+    # saves/restores the PROCESS-GLOBAL warnings.filters and is not thread-safe on
+    # CPython < 3.14, so without serialisation two concurrent parses can interleave
+    # their save/restore and leak the `ignore SyntaxWarning` filter process-wide.
+    #
+    # We run many parses across threads, then assert the global filter state was
+    # NOT left mutated: a subsequent bare ast.parse of external-style source must
+    # still emit its SyntaxWarning. This single-threaded check would pass either
+    # way, so we ALSO verify no exception escaped any worker (the interleave can
+    # raise from filters.pop on a list mutated by another thread) and that no
+    # `ignore`/SyntaxWarning filter survived in the global list.
+    n_threads = 16
+    iters = 40
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(n_threads)
+
+    def worker():
+        try:
+            barrier.wait()
+            for _ in range(iters):
+                parse_external_source(_SQL_LIKE_SRC, filename="odoo/tools/sql.py")
+                parse_external_source(_REGEX_SRC, filename="odoo/models.py")
+        except BaseException as exc:  # noqa: BLE001 - surface any worker failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"worker(s) raised during concurrent parses: {errors!r}"
+
+    # No SyntaxWarning-suppressing filter must have leaked into the global list.
+    leaked = [
+        f for f in warnings.filters
+        if f[0] == "ignore" and f[2] is SyntaxWarning
+    ]
+    assert not leaked, f"helper leaked a process-global SyntaxWarning filter: {leaked!r}"
+
+    # And the suppression is genuinely gone: bare external-style parse warns again.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ast.parse(_SQL_LIKE_SRC)
+    assert [w for w in caught if issubclass(w.category, SyntaxWarning)], (
+        "after concurrent helper use, the global filter must not silence SyntaxWarning"
     )
 
 
