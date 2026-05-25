@@ -21,8 +21,8 @@ Canonical actor formats:
   - "anonymous"          No session / unresolvable context
 
 Action taxonomy — see ADR-0021 for full list:
-  user.*         Login, logout, register, reset_password, delete, deactivate, reactivate,
-                 set_admin, create
+  user.*         Login, logout, register, reset_password, reset_password_link, delete,
+                 deactivate, reactivate, set_admin, create
   profile.*      Create, update, delete, clone, set_parent, clone_all, assign_tenant
   repo.*         Create, update, delete, clone, assign_tenant
   tenant.*       Create, update, delete, add_member, remove_member  (ADR-0038 — W1 tenant RBAC)
@@ -263,6 +263,9 @@ def audit_action(action: str, *, target_param: str | None = None) -> Callable:
                 write_audit_log(actor, action, target, success=False, detail=detail)
                 raise
 
+        # Reliable introspection markers — set on wrapper (not lost through @wraps)
+        wrapper.__audit_action__ = action
+        wrapper.__audit_target_param__ = target_param
         return wrapper
     return decorator
 

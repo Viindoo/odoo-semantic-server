@@ -434,26 +434,35 @@ class TestAuditGap175:
 class TestAuditCoverageRegression:
     """Anti-recurrence gate: every mutating admin-gated route must have @audit_action.
 
-    Mechanism: explicit allowlist of (method, exact_path) -> expected_audit_action.
-    The ``audit_action`` decorator uses ``functools.wraps(handler)`` which sets
-    ``__wrapped__`` on the decorated function. We detect coverage by:
-      - ``__wrapped__`` is set on the route's endpoint function, AND
-      - at least one closure cell contains a dot-separated string (the action name).
+    Two-layer guard:
+      1. ENUMERATE app.routes (chiều app→): all routes with mutating HTTP methods
+         (POST/PUT/PATCH/DELETE) AND Depends(require_admin) or
+         Depends(require_admin_with_fresh_mfa) MUST carry the ``__audit_action__``
+         marker set by the @audit_action decorator. Adding a new gated route and
+         forgetting the decorator causes this check to fail immediately.
+      2. CROSS-CHECK action names: for every route in KNOWN_AUDITED_ROUTES, verify
+         the ``__audit_action__`` attribute equals the expected action string.
+         This catches typos in the action name.
 
-    Detection is reliable because ``audit_action`` is the only decorator in this
-    codebase that (a) wraps async route handlers with @wraps and (b) captures an
-    action string in its closure.
+    Detection uses the reliable ``__audit_action__`` marker set directly on the
+    wrapper by audit_action() after @wraps. Closure introspection is NOT used —
+    it is fragile and can produce false positives.
 
-    IMPORTANT: If you add a new mutating admin-gated route, you MUST add it to
-    ``KNOWN_AUDITED_ROUTES`` below (with its audit action). This test will fail
-    and tell you exactly what is missing — that is the intention.
+    IMPORTANT: KNOWN_AUDITED_ROUTES below is the authoritative cross-check for
+    action *names* — it is NOT the completeness gate (that is the enumerate-app
+    check). If you add a new mutating admin-gated route you do NOT need to add it
+    here for the test to go red — but you SHOULD add it so the action name is
+    verified too.
     """
 
-    # Explicit map: (HTTP_METHOD, exact_route_path) -> audit_action_name.
-    # exact_route_path must match the FastAPI route path string exactly.
+    # Cross-check map: (HTTP_METHOD, exact_route_path) -> expected_audit_action_name.
+    # exact_route_path must match the FastAPI route path string exactly (as seen in
+    # the app after prefix mounting — use create_app() + enumerate routes to verify).
+    # Routes here that are NOT require_admin-gated are still checked for audit marker
+    # + correct action name; they just won't appear in the enumerate-app completeness check.
     KNOWN_AUDITED_ROUTES: list[tuple[str, str, str]] = [
         # Operations
-        ("POST", "/api/operations/index-core",   "operations.index_core"),
+        ("POST", "/api/operations/index-core",    "operations.index_core"),
         ("POST", "/api/operations/seed-patterns", "operations.seed_patterns"),
         ("POST", "/api/operations/apply-preset",  "operations.apply_preset"),
         ("POST", "/api/operations/backup",        "operations.backup"),
@@ -475,57 +484,78 @@ class TestAuditCoverageRegression:
         ("POST",   "/api/ssh-keys/import",   "ssh_key.import"),
         ("DELETE", "/api/ssh-keys/{key_id}", "ssh_key.delete"),
         # API keys
-        ("POST",  "/api/api-keys/{key_id}/deactivate",   "api_key.deactivate"),
-        ("PATCH", "/api/admin/api-keys/{key_id}/owner",  "api_key.assign_owner"),
+        ("POST",  "/api/api-keys/{key_id}/deactivate",  "api_key.deactivate"),
+        ("PATCH", "/api/admin/api-keys/{key_id}/owner", "api_key.assign_owner"),
         # Jobs
         ("POST", "/api/jobs/{job_id}/reset", "jobs.reset"),
         # Admin users
-        ("POST",  "/api/admin/users",                  "user.create"),
-        ("PATCH", "/api/admin/users/{user_id}/admin",  "user.set_admin"),
+        ("POST",  "/api/admin/users",                                  "user.create"),
+        ("PATCH", "/api/admin/users/{user_id}/admin",                  "user.set_admin"),
+        ("POST",  "/api/admin/users/{user_id}/deactivate",             "user.deactivate"),
+        ("POST",  "/api/admin/users/{user_id}/reactivate",             "user.reactivate"),
+        ("POST",  "/api/admin/users/{user_id}/reset-password-link",    "user.reset_password_link"),
     ]
 
     def _has_audit_action(self, endpoint_func) -> bool:
-        """Return True if endpoint_func is wrapped by audit_action.
+        """Return True if endpoint_func carries the __audit_action__ marker.
 
-        audit_action uses ``functools.wraps(handler)`` which sets ``__wrapped__``
-        on the wrapper function. The closure of the wrapper captures the action
-        string (e.g. "user.login"). We detect audit coverage by:
-          1. __wrapped__ is set (wraps was called), AND
-          2. A dot-separated string appears in the closure cells.
-
-        This is reliable because audit_action is the only decorator that both
-        (a) uses @wraps on async route handlers AND (b) captures an action
-        string (containing a dot) in its closure.
+        audit_action() sets ``wrapper.__audit_action__ = action`` directly on
+        the wrapper after @wraps. This is a reliable marker — no closure
+        introspection, no false positives.
         """
-        fn = endpoint_func
-        if not hasattr(fn, "__wrapped__"):
-            return False
-        # Check closure cells for a dot-separated action string
-        if hasattr(fn, "__closure__") and fn.__closure__:
-            for cell in fn.__closure__:
-                try:
-                    val = cell.cell_contents
-                    if isinstance(val, str) and "." in val and not val.startswith("/"):
-                        return True
-                except ValueError:
-                    pass
-        return False
+        return getattr(endpoint_func, "__audit_action__", None) is not None
 
     def test_all_mutating_admin_routes_have_audit_action(self, migrated_pg):
-        """Every route in KNOWN_AUDITED_ROUTES must exist in the app and have @audit_action.
+        """Enumerate app.routes: every mutating admin-gated route must have @audit_action.
 
-        Two checks per entry:
-          1. The route (method + exact path) exists in the app — typo guard.
-          2. The endpoint is wrapped by @audit_action — coverage guard.
+        Guard (1) — completeness (chiều app→):
+          Walk every APIRoute in the app. For each route with a mutating HTTP method
+          (POST/PUT/PATCH/DELETE) that depends on require_admin or
+          require_admin_with_fresh_mfa, assert the endpoint carries ``__audit_action__``.
+          This catches new admin-gated routes added without the decorator.
 
-        If you add a new mutating admin-gated route, add it to KNOWN_AUDITED_ROUTES.
-        If you add it to the list but forget the decorator, check (2) will catch it.
-        If you add the decorator but forget the list, you must also update the list.
+        Guard (2) — action name cross-check:
+          For each entry in KNOWN_AUDITED_ROUTES, assert the route exists in the app
+          and that ``endpoint.__audit_action__`` equals the expected action string.
+          This catches typos and action-name drift.
         """
         from fastapi.routing import APIRoute
 
+        from src.web_ui.auth import require_admin, require_admin_with_fresh_mfa
+
+        _ADMIN_DEPS = {require_admin, require_admin_with_fresh_mfa}
+        _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
         app = create_app()
 
+        def _is_admin_gated(route: APIRoute) -> bool:
+            """Return True if the route has require_admin* in its direct dependencies."""
+            try:
+                for dep in route.dependant.dependencies:
+                    if dep.call in _ADMIN_DEPS:
+                        return True
+            except Exception:
+                pass
+            return False
+
+        # ---- Guard (1): enumerate app.routes for completeness ----
+        missing_decorator: list[str] = []
+        for route in app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            if not _is_admin_gated(route):
+                continue
+            for method in route.methods or []:
+                if method.upper() not in _MUTATING:
+                    continue
+                if not self._has_audit_action(route.endpoint):
+                    missing_decorator.append(
+                        f"{method.upper()} {route.path} — endpoint "
+                        f"'{getattr(route.endpoint, '__qualname__', route.endpoint)}' "
+                        f"has no @audit_action decorator"
+                    )
+
+        # ---- Guard (2): cross-check action names from KNOWN_AUDITED_ROUTES ----
         # Build lookup: (method, path) -> endpoint_func
         route_lookup: dict[tuple[str, str], object] = {}
         for route in app.routes:
@@ -535,32 +565,38 @@ class TestAuditCoverageRegression:
                 route_lookup[(method.upper(), route.path)] = route.endpoint
 
         not_found: list[str] = []
-        not_audited: list[str] = []
+        wrong_action: list[str] = []
 
         for method, path, expected_action in self.KNOWN_AUDITED_ROUTES:
             fn = route_lookup.get((method, path))
             if fn is None:
-                not_found.append(
-                    f"{method} {path} (expected action: {expected_action})"
-                )
+                not_found.append(f"{method} {path} (expected action: {expected_action})")
                 continue
-
-            if not self._has_audit_action(fn):
-                not_audited.append(
-                    f"{method} {path} (expected audit action '{expected_action}') — "
-                    f"endpoint: {getattr(fn, '__qualname__', fn)}"
+            actual_action = getattr(fn, "__audit_action__", None)
+            if actual_action != expected_action:
+                wrong_action.append(
+                    f"{method} {path}: expected action '{expected_action}', "
+                    f"got '{actual_action}'"
                 )
 
+        # ---- Collect all failures and report together ----
         messages = []
+        if missing_decorator:
+            messages.append(
+                "Mutating admin-gated routes missing @audit_action "
+                "(add the decorator to fix):\n  "
+                + "\n  ".join(missing_decorator)
+            )
         if not_found:
             messages.append(
-                "Routes in KNOWN_AUDITED_ROUTES not found in app:\n  "
+                "Routes in KNOWN_AUDITED_ROUTES not found in app "
+                "(path typo or route removed?):\n  "
                 + "\n  ".join(not_found)
             )
-        if not_audited:
+        if wrong_action:
             messages.append(
-                "Mutating admin-gated routes missing @audit_action:\n  "
-                + "\n  ".join(not_audited)
+                "Routes have wrong audit action name:\n  "
+                + "\n  ".join(wrong_action)
             )
 
         assert not messages, "\n\n".join(messages)

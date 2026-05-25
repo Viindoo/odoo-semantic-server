@@ -205,6 +205,7 @@ async def list_users(request: Request, actor_id: int = Depends(require_admin)):
 
 
 @router.post("/api/admin/users/{user_id}/deactivate")
+@audit_action("user.deactivate", target_param="user_id")
 async def deactivate_user(
     user_id: int, request: Request, actor_id: int = Depends(require_admin)
 ):
@@ -250,6 +251,7 @@ async def deactivate_user(
 
 
 @router.post("/api/admin/users/{user_id}/reactivate")
+@audit_action("user.reactivate", target_param="user_id")
 async def reactivate_user(
     user_id: int, request: Request, actor_id: int = Depends(require_admin)
 ):
@@ -285,6 +287,7 @@ async def reactivate_user(
 
 
 @router.post("/api/admin/users/{user_id}/reset-password-link")
+@audit_action("user.reset_password_link", target_param="user_id")
 async def reset_password_link(
     user_id: int, request: Request, actor_id: int = Depends(require_admin)
 ):
