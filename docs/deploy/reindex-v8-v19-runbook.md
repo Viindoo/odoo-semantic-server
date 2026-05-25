@@ -857,16 +857,27 @@ Owner `odoo_semantic` vẫn bypass — indexer + admin + migrate giữ nguyên D
 
 ### Bước 3 — Tách read-DSN: MCP service dùng osm_reader
 
-Trong file `/home/odoo-semantic/etc/webui.env` (hoặc file env của MCP service `:8002`),
-thêm biến mới cho read-DSN:
+MCP server (`:8002`) đọc DSN của nó từ biến `PG_DSN` (env, ưu tiên trước) hoặc
+`[database] pg_dsn` trong file conf — xem `src/mcp/server.py` `init_pool` +
+`config.from_env_or_ini("PG_DSN", "database", "pg_dsn")`. Hiện CHƯA có biến
+`PG_READ_DSN` riêng trong code, nên cutover thực hiện bằng cách **override `PG_DSN`
+chỉ cho process MCP `:8002`** sang `osm_reader`, trong khi indexer + admin + migrate
+chạy bằng process/env khác giữ nguyên DSN owner.
+
+Trong file env của riêng MCP service `:8002` (KHÔNG dùng chung với indexer/admin),
+ví dụ `/home/odoo-semantic/etc/mcp.env`:
 
 ```bash
-# Read-DSN cho MCP tier (osm_reader — bị filter bởi RLS policy)
-PG_READ_DSN=postgresql://osm_reader:<password>@localhost:5432/odoo_semantic
+# DSN cho MCP read tier (osm_reader — bị filter bởi RLS policy).
+# Chỉ áp cho process MCP :8002; indexer/admin/migrate dùng env khác với DSN owner.
+PG_DSN=postgresql://osm_reader:<password>@localhost:5432/odoo_semantic
 ```
 
 > Indexer + admin + migrate tiếp tục dùng DSN owner (`odoo_semantic`) — giữ nguyên
-> `PG_DSN` / `DATABASE_URL` hiện có. Chỉ MCP read tier (:8002) chuyển sang `PG_READ_DSN`.
+> `PG_DSN` owner trong env/conf của chúng. Chỉ process MCP `:8002` nhận `PG_DSN` trỏ
+> `osm_reader`. Nếu sau này muốn một biến read-DSN tường minh tách bạch, cần thêm code
+> đọc `PG_READ_DSN` trong `src/mcp/server.py` (hiện chưa wired — đừng đặt biến này và
+> kỳ vọng có hiệu lực).
 
 Reload service:
 ```bash
@@ -878,15 +889,25 @@ sudo systemctl restart odoo-semantic-mcp
 
 **Smoke cross-tenant bằng psql (dùng osm_reader role):**
 ```bash
-# Kết nối bằng osm_reader, set GUC = chỉ tenant A, query tenant B chunks:
+# Kết nối bằng osm_reader, set GUC = chỉ tenant A, query tenant B chunks.
+# QUAN TRỌNG: SET LOCAL chỉ có hiệu lực TRONG transaction → phải bọc BEGIN/COMMIT.
+# Nếu chạy SET LOCAL ở chế độ autocommit (mỗi câu 1 tx), GUC mất ngay sau câu đó →
+# query sẽ trả 0 vì lý do SAI (không có GUC → chỉ thấy NULL rows), false-positive.
 psql "postgresql://osm_reader:<password>@localhost:5432/odoo_semantic" <<'SQL'
+BEGIN;
 SET LOCAL app.allowed_profiles = 'tenant_a_profile';
 SELECT count(*) AS should_be_zero
 FROM embeddings
 WHERE profile_name = 'tenant_b_profile';
+-- Đối chứng (phải > 0): tenant A thấy được chunk của chính mình.
+SELECT count(*) AS tenant_a_visible
+FROM embeddings
+WHERE profile_name = 'tenant_a_profile';
+COMMIT;
 SQL
 ```
-Expected: `should_be_zero = 0` (RLS policy chặn đúng).
+Expected: `should_be_zero = 0` (RLS chặn cross-tenant) VÀ `tenant_a_visible > 0`
+(GUC thực sự có hiệu lực — loại trừ false-positive do GUC rỗng).
 
 **Chạy integration test (nếu có staging với testcontainers):**
 ```bash
@@ -909,8 +930,8 @@ Expected: trả về tổng số chunk (không bị filter).
 # 1. Tắt FORCE (RLS vẫn còn nhưng owner bypass lại):
 psql -U odoo_semantic -c "ALTER TABLE embeddings NO FORCE ROW LEVEL SECURITY;"
 
-# 2. Trỏ read-DSN MCP service về owner (xoá PG_READ_DSN hoặc đổi về PG_DSN):
-#    Sửa /home/odoo-semantic/etc/webui.env, rồi:
+# 2. Trỏ PG_DSN của process MCP :8002 về DSN owner (odoo_semantic):
+#    Sửa env riêng của MCP service (vd /home/odoo-semantic/etc/mcp.env), rồi:
 sudo systemctl restart odoo-semantic-mcp
 ```
 

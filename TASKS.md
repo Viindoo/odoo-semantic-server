@@ -1013,7 +1013,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
   - **OPS pending (runbook hand-off — chạy TAY trên prod sau deploy + reindex):**
     - `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT ON embeddings.
     - `[ ]` `ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`.
-    - `[ ]` Tách read-DSN MCP service (:8002) sang `osm_reader` (env var `PG_READ_DSN`).
+    - `[ ]` Trỏ `PG_DSN` của process MCP service (:8002) sang `osm_reader` (env riêng cho :8002; indexer/admin/migrate giữ DSN owner). Lưu ý: code CHƯA đọc biến `PG_READ_DSN` riêng — override `PG_DSN` cho process MCP, KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực.
     - `[ ]` Verify smoke + `pytest tests/test_embeddings_rls.py`.
     - `[ ]` Cut FERNET_KEY vào `/etc/credstore/FERNET_KEY` (Option B — `deploy.md §12`).
   - Acceptance (full): prod không đọc `FERNET_KEY` từ plain env file; `osm_reader` bị
