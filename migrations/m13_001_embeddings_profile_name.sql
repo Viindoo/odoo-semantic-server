@@ -2,10 +2,11 @@
 -- WI-B (ADR-0034 WI-5 schema half): add profile_name column to embeddings table.
 -- NULL = shared/global (pattern chunks, legacy rows before multi-tenant).
 --
--- IMPORTANT: Row Level Security (RLS) is NOT enabled here.
--- Enabling RLS requires runtime `SET LOCAL app.allowed_profiles` wiring
--- which is deferred to a later migration. Enabling it now would default-deny
--- and break all queries.
+-- IMPORTANT: Row Level Security (RLS) is NOT enabled in this migration.
+-- RLS (ENABLE + policy embeddings_tenant) was added in m13_004.
+-- FORCE ROW LEVEL SECURITY + non-owner read role osm_reader + read-DSN split
+-- are deferred to the OPS runbook (reindex-v8-v19-runbook.md §5.14) to prevent
+-- accidental fail-closed before GUC wiring + osm_reader role are in place.
 --
 -- Idempotent: all DDL is guarded so it is safe to re-run.
 -- The embeddings table is created by migrate.py _EMBEDDINGS_SQL (requires

@@ -799,6 +799,131 @@ Expected: 3 rows; `kind = 'function'` for all three.
 
 ---
 
+## 5.14 RLS Enforcement Cutover (ops — sau khi deploy code + m13_004 đã chạy)
+
+> Bước này là **ops thủ công trên production** — KHÔNG tự chạy lúc deploy. Chạy SAU khi:
+> (a) code WI-7 (GUC wiring + `get_fernet_key`) đã deploy,
+> (b) migration `m13_004` đã chạy (`ENABLE ROW LEVEL SECURITY` + policy `embeddings_tenant`),
+> (c) reindex v8→v19 (§2 + §3) đã hoàn tất,
+> (d) §5.11g cross-tenant leak test đang pass.
+
+### Bối cảnh — tại sao m13_004 là no-op
+
+`m13_004` đã chạy `ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY` và tạo policy
+`embeddings_tenant` (dùng GUC `app.allowed_profiles` với sentinel `'*'` = admin,
+`IS NULL` = shared, `= ANY(string_to_array(...))` = tenant). Tuy nhiên, **app hiện tại
+connect bằng owner role** (`odoo_semantic`), và `ENABLE` không `FORCE` = owner bypass
+= RLS hoàn toàn không có hiệu lực với owner. Bước 5.14 biến RLS thành lớp bảo vệ
+DB thật bằng cách tách read-DSN sang non-owner read role.
+
+> **Read-guard hiện tại (đã ship v0.10.0, WI-4) vẫn là SQL filter `AND profile_name = ANY(%s)`**
+> — đây là guard thực sự, đã pass cross-tenant leak test. RLS là defense-in-depth, KHÔNG
+> phải guard duy nhất.
+
+### Thứ tự an toàn (ordering hazard)
+
+**KHÔNG `FORCE ROW LEVEL SECURITY` trước khi:**
+1. Code GUC wiring (`SET LOCAL app.allowed_profiles`) đã deploy và đang chạy,
+2. Read-DSN của MCP service (:8002) đã được đổi sang `osm_reader`.
+
+Lý do: nếu FORCE sớm mà read-DSN vẫn là owner thì owner bypass vẫn còn — không có vấn đề
+gì, nhưng hiệu lực RLS chỉ xuất hiện sau khi đổi DSN. Nếu đổi DSN sớm mà chưa FORCE thì
+`osm_reader` bị chặn bởi policy default-deny cho mọi row — **fail-closed sai, dịch vụ sập**.
+Đúng thứ tự: tạo role + FORCE trước, rồi mới đổi DSN.
+
+### Bước 1 — Tạo non-owner read role (cần superuser hoặc owner)
+
+```sql
+-- Cần kết nối bằng superuser hoặc owner của DB (odoo_semantic / postgres):
+-- Đặt password bằng secret store (Vault, 1Password, credstore), KHÔNG hardcode:
+CREATE ROLE osm_reader NOLOGIN;             -- tạo login role; bỏ NOLOGIN nếu dùng NOLOGIN trước
+ALTER ROLE osm_reader LOGIN PASSWORD '<secret-từ-credstore>';
+GRANT CONNECT ON DATABASE odoo_semantic TO osm_reader;
+GRANT USAGE ON SCHEMA public TO osm_reader;
+GRANT SELECT ON embeddings TO osm_reader;
+```
+
+> Nếu role đã tồn tại từ lần trước: bỏ qua `CREATE ROLE`, chỉ chạy `GRANT` (idempotent).
+
+### Bước 2 — FORCE ROW LEVEL SECURITY (cần table owner / superuser)
+
+```sql
+-- Cần kết nối bằng owner của table embeddings (thường là odoo_semantic):
+ALTER TABLE embeddings FORCE ROW LEVEL SECURITY;
+```
+
+Sau bước này, kể cả role `osm_reader` (non-owner) sẽ bị filter bởi policy `embeddings_tenant`.
+Owner `odoo_semantic` vẫn bypass — indexer + admin + migrate giữ nguyên DSN owner.
+
+### Bước 3 — Tách read-DSN: MCP service dùng osm_reader
+
+Trong file `/home/odoo-semantic/etc/webui.env` (hoặc file env của MCP service `:8002`),
+thêm biến mới cho read-DSN:
+
+```bash
+# Read-DSN cho MCP tier (osm_reader — bị filter bởi RLS policy)
+PG_READ_DSN=postgresql://osm_reader:<password>@localhost:5432/odoo_semantic
+```
+
+> Indexer + admin + migrate tiếp tục dùng DSN owner (`odoo_semantic`) — giữ nguyên
+> `PG_DSN` / `DATABASE_URL` hiện có. Chỉ MCP read tier (:8002) chuyển sang `PG_READ_DSN`.
+
+Reload service:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart odoo-semantic-mcp
+```
+
+### Bước 4 — Verify
+
+**Smoke cross-tenant bằng psql (dùng osm_reader role):**
+```bash
+# Kết nối bằng osm_reader, set GUC = chỉ tenant A, query tenant B chunks:
+psql "postgresql://osm_reader:<password>@localhost:5432/odoo_semantic" <<'SQL'
+SET LOCAL app.allowed_profiles = 'tenant_a_profile';
+SELECT count(*) AS should_be_zero
+FROM embeddings
+WHERE profile_name = 'tenant_b_profile';
+SQL
+```
+Expected: `should_be_zero = 0` (RLS policy chặn đúng).
+
+**Chạy integration test (nếu có staging với testcontainers):**
+```bash
+cd /opt/odoo-semantic-mcp
+<VENV> -m pytest tests/test_embeddings_rls.py -v --tb=short
+```
+
+**Verify admin (owner) vẫn bypass:**
+```bash
+psql "postgresql://odoo_semantic:<password>@localhost:5432/odoo_semantic" <<'SQL'
+-- Owner bypass: không SET GUC, vẫn thấy mọi row
+SELECT count(*) AS total_embeddings FROM embeddings;
+SQL
+```
+Expected: trả về tổng số chunk (không bị filter).
+
+### Rollback
+
+```bash
+# 1. Tắt FORCE (RLS vẫn còn nhưng owner bypass lại):
+psql -U odoo_semantic -c "ALTER TABLE embeddings NO FORCE ROW LEVEL SECURITY;"
+
+# 2. Trỏ read-DSN MCP service về owner (xoá PG_READ_DSN hoặc đổi về PG_DSN):
+#    Sửa /home/odoo-semantic/etc/webui.env, rồi:
+sudo systemctl restart odoo-semantic-mcp
+```
+
+> Read-guard WI-4 (`AND profile_name = ANY(%s)`) vẫn active sau rollback — đây là lớp
+> bảo vệ chính, không bị ảnh hưởng bởi RLS rollback.
+
+### FERNET LoadCredential cutover
+
+Xem `docs/deploy.md §12 Option B` để biết đầy đủ các bước cắt chuyển FERNET key từ
+plain env file sang systemd `LoadCredential` (đã có đầy đủ steps, không lặp lại ở đây).
+
+---
+
 ## Known Constraints (post-wave3)
 
 ### MED-2 — Private forges require manual known_hosts onboarding
