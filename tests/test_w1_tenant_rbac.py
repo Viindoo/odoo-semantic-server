@@ -10,6 +10,7 @@ Business intent (14 cases):
   T4  resolve_tenant_scope_web: admin session -> ALL_TENANTS sentinel.
   T5  resolve_tenant_scope_web: non-admin session with membership -> correct set.
   T6  resolve_tenant_scope_web: unauthenticated -> empty set (fail-closed).
+  T6b resolve_tenant_scope_web: DB error during lookup -> empty set (fail-closed).
   T7  Admin can create tenant + add member via API.
   T8  Cross-tenant write block: is_in_scope rejects tenant_id not in user scope.
   T9  Admin can assign profile to tenant; invalidate_allowed_profiles called.
@@ -50,9 +51,9 @@ def migrated_pg(clean_pg):
     return clean_pg
 
 
-def _async_client(app):
+def _async_client(app, cookies=None):
     transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1")
+    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1", cookies=cookies)
 
 
 def _seed_users(pg_conn) -> tuple[int, int]:
@@ -250,47 +251,56 @@ class TestGucDelimiterGuard:
 # ---------------------------------------------------------------------------
 
 
+def _make_request(session: dict):
+    """Build a minimal Starlette Request carrying the given session dict.
+
+    resolve_tenant_scope_web reads only request.session (via current_user_id /
+    is_admin_session), so a bare ASGI scope with a 'session' key is enough to
+    drive the real helper through all of its branches — admin, non-admin, and
+    fail-closed. Tests must exercise the function itself, not its sub-helpers.
+    """
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [],
+            "query_string": b"",
+            "session": session,
+        }
+    )
+
+
 class TestResolveTenantScopeWeb:
-    """T4/T5/T6: resolve_tenant_scope_web returns correct scope for each session type."""
+    """T4/T5/T6: resolve_tenant_scope_web returns the correct scope per session type.
+
+    These drive the real helper (not its sub-dependencies), so an inverted admin
+    branch or a missing fail-closed `except` would turn the test red.
+    """
 
     @pytest.fixture(autouse=True)
     def _disable_bypass(self, monkeypatch):
         monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
 
-    @pytest.mark.asyncio
-    async def test_admin_returns_all_tenants(self, migrated_pg):
-        """T4: Admin session returns ALL_TENANTS sentinel."""
-        from src.web_ui.auth import ALL_TENANTS
+    def test_admin_returns_all_tenants(self, migrated_pg):
+        """T4: Admin session -> ALL_TENANTS sentinel (scope bypass)."""
+        from src.web_ui.auth import ALL_TENANTS, resolve_tenant_scope_web
 
-        _seed_users(migrated_pg)
-
-        # We seed the real admin user and verify helper properties
-        app = create_app()
-        _ = await _login_session(app, "w1_admin", "AdminPass123!")
-
-        # Use real request via app transport to test the helper indirectly via route
-        # (direct function test is simpler — we test the helper function directly)
-        # Directly test with the seeded admin id
         admin_id, _ = _seed_users(migrated_pg)
-        from src.db.pg import auth_store
-        # Verify admin lookup works
-        is_admin = auth_store().get_user_field(admin_id, "is_admin")
-        assert bool(is_admin), "Admin must be seeded correctly"
+        scope = resolve_tenant_scope_web(_make_request({"user_id": admin_id}))
+        assert scope is ALL_TENANTS, (
+            f"Admin session must resolve to the ALL_TENANTS sentinel, got {scope!r}"
+        )
 
-        # Test via mock: admin (is_admin=True) should return ALL_TENANTS
-        # We test this by calling the helper through the app route below (T7)
-        # and by direct unit test here
-        assert ALL_TENANTS is not None, "ALL_TENANTS sentinel must exist"
-        assert repr(ALL_TENANTS) == "ALL_TENANTS"
+    def test_non_admin_with_membership_returns_tenant_set(self, migrated_pg):
+        """T5: Non-admin with membership in T1 -> exactly {T1}, never T2."""
+        from src.web_ui.auth import ALL_TENANTS, resolve_tenant_scope_web
 
-    @pytest.mark.asyncio
-    async def test_non_admin_with_membership_returns_tenant_set(self, migrated_pg):
-        """T5: Non-admin with membership in T1 returns {T1}, not T2."""
         _, nonadmin_id = _seed_users(migrated_pg)
         t1_id = _seed_tenant(migrated_pg, "w1_tenant_1")
         t2_id = _seed_tenant(migrated_pg, "w1_tenant_2")
-
-        # Assign non-admin to T1 only
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "INSERT INTO tenant_members (user_id, tenant_id, role)"
@@ -300,33 +310,41 @@ class TestResolveTenantScopeWeb:
             )
         migrated_pg.commit()
 
-        from src.db.pg import auth_store
-        tenant_ids = auth_store().list_tenant_ids_for_user(nonadmin_id)
-        assert t1_id in tenant_ids, "Non-admin must see tenant T1 (has membership)"
-        assert t2_id not in tenant_ids, "Non-admin must NOT see tenant T2 (no membership)"
+        scope = resolve_tenant_scope_web(_make_request({"user_id": nonadmin_id}))
+        assert scope is not ALL_TENANTS, "Non-admin must NOT get the admin bypass"
+        assert scope == {t1_id}, f"Non-admin scope must be exactly {{T1}}, got {scope!r}"
+        assert t2_id not in scope, "Non-admin must NOT see tenant T2 (no membership)"
 
-    def test_empty_set_for_no_membership(self, migrated_pg):
-        """T6 proxy: User with no membership rows gets empty list (-> deny-all scope).
+    def test_unauthenticated_returns_empty_set(self, migrated_pg):
+        """T6: Unauthenticated session -> empty set (fail-closed deny-all)."""
+        from src.web_ui.auth import resolve_tenant_scope_web
 
-        Uses a unique user not seeded by other tests in this class to avoid
-        cross-test contamination via shared pool state.
+        scope = resolve_tenant_scope_web(_make_request({}))
+        assert scope == set(), (
+            f"Unauthenticated session must fail closed to empty set, got {scope!r}"
+        )
+
+    def test_db_error_fails_closed(self, migrated_pg, monkeypatch):
+        """T6b: A DB error while resolving a non-admin's tenants fails closed.
+
+        The most security-load-bearing branch: if the membership lookup raises,
+        resolve_tenant_scope_web must deny-all (empty set), never leak scope.
         """
-        # Insert a completely fresh user not used by any other test in this class
-        nonadmin_hash = hash_password("IsolatedUserPass123!")
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "INSERT INTO webui_users"
-                " (username, password_hash, email, email_verified, is_admin, is_active)"
-                " VALUES ('w1_isolated_noauth', %s, 'isolated@test.invalid', TRUE, FALSE, TRUE)"
-                " ON CONFLICT (username) DO UPDATE"
-                "   SET password_hash=EXCLUDED.password_hash RETURNING id",
-                (nonadmin_hash,),
-            )
-            isolated_id = cur.fetchone()[0]
-        migrated_pg.commit()
-        from src.db.pg import auth_store
-        tenant_ids = auth_store().list_tenant_ids_for_user(isolated_id)
-        assert tenant_ids == [], "User with no membership rows must get empty list"
+        from src.db import pg
+        from src.web_ui.auth import resolve_tenant_scope_web
+
+        _, nonadmin_id = _seed_users(migrated_pg)
+
+        def _boom(_uid):
+            raise RuntimeError("simulated DB outage during membership lookup")
+
+        # Patch the singleton instance method used by the non-admin branch; the
+        # admin check (get_user_field) stays intact so the branch is reached.
+        monkeypatch.setattr(pg.auth_store(), "list_tenant_ids_for_user", _boom)
+        scope = resolve_tenant_scope_web(_make_request({"user_id": nonadmin_id}))
+        assert scope == set(), (
+            f"A DB error during scope resolution must fail closed (deny-all), got {scope!r}"
+        )
 
     def test_is_in_scope_all_tenants(self):
         """T4 extension: is_in_scope with ALL_TENANTS sentinel always returns True."""
@@ -370,12 +388,11 @@ class TestAdminTenantCrud:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=admin_cookies) as client:
             # Create tenant
             resp = await client.post(
                 "/api/tenants",
                 json={"name": "T7_tenant"},
-                cookies=admin_cookies,
             )
             assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"
             data = resp.json()
@@ -387,7 +404,6 @@ class TestAdminTenantCrud:
             resp = await client.post(
                 f"/api/tenants/{tenant_id}/members",
                 json={"user_id": nonadmin_id, "role": "member"},
-                cookies=admin_cookies,
             )
             assert resp.status_code == 200, f"Add member failed: {resp.status_code}: {resp.text}"
             assert resp.json().get("ok") is True
@@ -406,8 +422,8 @@ class TestAdminTenantCrud:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.get("/api/tenants", cookies=admin_cookies)
+        async with _async_client(app, cookies=admin_cookies) as client:
+            resp = await client.get("/api/tenants")
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         data = resp.json()
         assert "tenants" in data
@@ -476,11 +492,10 @@ class TestAssignProfileTenant:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=admin_cookies) as client:
             resp = await client.patch(
                 f"/api/profiles/{profile_id}/tenant",
                 json={"tenant_id": t1_id},
-                cookies=admin_cookies,
             )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         assert resp.json().get("ok") is True
@@ -513,7 +528,7 @@ class TestAddRepoProfileNotFoundHTTPS:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=admin_cookies) as client:
             resp = await client.post(
                 "/api/repos/repos",
                 json={
@@ -521,7 +536,6 @@ class TestAddRepoProfileNotFoundHTTPS:
                     "url": "https://example.com/t10-test.git",
                     "branch": "17.0",
                 },
-                cookies=admin_cookies,
             )
         assert resp.status_code == 404, (
             f"Expected 404 for missing profile (HTTPS), got {resp.status_code}: {resp.text}"
@@ -562,7 +576,7 @@ class TestAddRepoProfileNotFoundSSH:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=admin_cookies) as client:
             resp = await client.post(
                 "/api/repos/repos",
                 json={
@@ -571,7 +585,6 @@ class TestAddRepoProfileNotFoundSSH:
                     "branch": "17.0",
                     "ssh_key_id": str(ssh_key_id),
                 },
-                cookies=admin_cookies,
             )
         assert resp.status_code == 404, (
             f"Expected 404 for missing profile (SSH), got {resp.status_code}: {resp.text}"
@@ -615,10 +628,56 @@ class TestW0GatePreserved:
         app = create_app()
         nonadmin_cookies = await _login_session(app, "w1_user", "UserPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.request(method, path, json=body or {}, cookies=nonadmin_cookies)
+        async with _async_client(app, cookies=nonadmin_cookies) as client:
+            resp = await client.request(method, path, json=body or {})
         assert resp.status_code == 403, (
             f"{method} {path}: expected 403, got {resp.status_code}: {resp.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T12b: Unauthenticated (no session) -> 401 on every new W1 route
+# ---------------------------------------------------------------------------
+
+
+class TestUnauthenticatedRejectedW1:
+    """T12b: Session-less callers get 401 at AuthRequiredMiddleware on the new routes.
+
+    Complements T12 (authenticated non-admin -> 403): together they document the
+    full 401 -> 403 -> admin-OK contract and guard against a new route being
+    accidentally added to the middleware exempt list (where 403 tests would still
+    pass but the earlier 401 line of defence would be silently gone). Mirrors
+    TestUnauthenticatedRejected in test_wave0_admin_gate.py for the W1 surface.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+
+    # Every route the tenants router adds. Dummy ids are fine: the 401 fires in
+    # middleware before the path param or handler is reached.
+    _NEW_ROUTES = [
+        ("GET", "/api/tenants"),
+        ("POST", "/api/tenants"),
+        ("PATCH", "/api/tenants/1"),
+        ("DELETE", "/api/tenants/1"),
+        ("GET", "/api/tenants/1/members"),
+        ("POST", "/api/tenants/1/members"),
+        ("DELETE", "/api/tenants/1/members/1"),
+        ("PATCH", "/api/profiles/1/tenant"),
+        ("PATCH", "/api/repos/1/tenant"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,path", _NEW_ROUTES)
+    async def test_unauthenticated_request_returns_401(self, migrated_pg, method, path):
+        """Every new W1 route rejects a session-less caller with 401."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.request(method, path, json={})
+        assert resp.status_code == 401, (
+            f"{method} {path} must return 401 without a session, "
+            f"got {resp.status_code}: {resp.text}"
         )
 
 
@@ -641,8 +700,8 @@ class TestGetTenantsAdminOnly:
         app = create_app()
         nonadmin_cookies = await _login_session(app, "w1_user", "UserPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.get("/api/tenants", cookies=nonadmin_cookies)
+        async with _async_client(app, cookies=nonadmin_cookies) as client:
+            resp = await client.get("/api/tenants")
         assert resp.status_code == 403, (
             f"Expected 403 for non-admin GET /api/tenants, got {resp.status_code}: {resp.text}"
         )
@@ -654,8 +713,8 @@ class TestGetTenantsAdminOnly:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.get("/api/tenants", cookies=admin_cookies)
+        async with _async_client(app, cookies=admin_cookies) as client:
+            resp = await client.get("/api/tenants")
         assert resp.status_code == 200, (
             f"Expected 200 for admin GET /api/tenants, got {resp.status_code}: {resp.text}"
         )
@@ -684,8 +743,8 @@ class TestDeleteTenantWithResources:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.delete(f"/api/tenants/{t_id}", cookies=admin_cookies)
+        async with _async_client(app, cookies=admin_cookies) as client:
+            resp = await client.delete(f"/api/tenants/{t_id}")
         assert resp.status_code == 409, (
             f"Expected 409 (tenant has repos), got {resp.status_code}: {resp.text}"
         )
@@ -700,8 +759,8 @@ class TestDeleteTenantWithResources:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.delete(f"/api/tenants/{t_id}", cookies=admin_cookies)
+        async with _async_client(app, cookies=admin_cookies) as client:
+            resp = await client.delete(f"/api/tenants/{t_id}")
         assert resp.status_code == 409, (
             f"Expected 409 (tenant has profiles), got {resp.status_code}: {resp.text}"
         )
@@ -715,8 +774,8 @@ class TestDeleteTenantWithResources:
         app = create_app()
         admin_cookies = await _login_session(app, "w1_admin", "AdminPass123!")
 
-        async with _async_client(app) as client:
-            resp = await client.delete(f"/api/tenants/{t_id}", cookies=admin_cookies)
+        async with _async_client(app, cookies=admin_cookies) as client:
+            resp = await client.delete(f"/api/tenants/{t_id}")
         assert resp.status_code == 200, (
             f"Expected 200 for deleting empty tenant, got {resp.status_code}: {resp.text}"
         )

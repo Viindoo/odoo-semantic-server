@@ -1058,6 +1058,16 @@ class AuthStore:
         Raises ValueError if the tenant still has repos or profiles assigned to it
         (D8 — no silent cascade-to-NULL; membership CASCADE is allowed).
 
+        TOCTOU safety: the tenant row is locked with SELECT ... FOR UPDATE before the
+        resource-count check, and the count + DELETE run in a single transaction. A
+        concurrent PATCH that assigns a repo/profile to this tenant takes a FOR KEY
+        SHARE lock on this same row (the FK reference), which conflicts with FOR
+        UPDATE — so the assign is serialised against the delete and cannot slip in
+        between the count check and the DELETE. Without this, the count and DELETE ran
+        in two separate pool checkouts; because repos.tenant_id / profiles.tenant_id
+        are ON DELETE CASCADE (m13_002), a raced assign would have been silently
+        cascade-deleted — exactly the data loss D8 forbids. Mirrors set_user_admin().
+
         Args:
             tenant_id: The tenant to delete.
 
@@ -1068,33 +1078,50 @@ class AuthStore:
             ValueError: tenant still has repo or profile resources assigned.
         """
         with self._pool.checkout() as conn:
-            repo_count = self._pool.fetch_one(
-                conn,
-                "SELECT count(*) AS cnt FROM repos WHERE tenant_id = %s",
-                (tenant_id,),
-            )
-            profile_count = self._pool.fetch_one(
-                conn,
-                "SELECT count(*) AS cnt FROM profiles WHERE tenant_id = %s",
-                (tenant_id,),
-            )
-        if repo_count and int(repo_count["cnt"]) > 0:
-            raise ValueError(
-                f"Tenant {tenant_id} still has {repo_count['cnt']} repo(s) assigned. "
-                "Unassign them before deleting the tenant."
-            )
-        if profile_count and int(profile_count["cnt"]) > 0:
-            raise ValueError(
-                f"Tenant {tenant_id} still has {profile_count['cnt']} profile(s) assigned. "
-                "Unassign them before deleting the tenant."
-            )
-        with self._pool.checkout() as conn:
-            rowcount = self._pool.execute(
-                conn,
-                "DELETE FROM tenants WHERE id = %s",
-                (tenant_id,),
-            )
-        return rowcount > 0
+            conn.autocommit = False
+            try:
+                # Lock the tenant row first — serialises concurrent resource-assigns
+                # (their FK FOR KEY SHARE lock conflicts with this FOR UPDATE).
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM tenants WHERE id = %s FOR UPDATE",
+                        (tenant_id,),
+                    )
+                    if cur.fetchone() is None:
+                        conn.commit()
+                        return False  # not found
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT count(*) FROM repos WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    repo_count = cur.fetchone()[0]
+                if repo_count > 0:
+                    raise ValueError(
+                        f"Tenant {tenant_id} still has {repo_count} repo(s) assigned. "
+                        "Unassign them before deleting the tenant."
+                    )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT count(*) FROM profiles WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    profile_count = cur.fetchone()[0]
+                if profile_count > 0:
+                    raise ValueError(
+                        f"Tenant {tenant_id} still has {profile_count} profile(s) "
+                        "assigned. Unassign them before deleting the tenant."
+                    )
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
+                    rowcount = cur.rowcount
+                conn.commit()
+                return rowcount > 0
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
 
     def list_tenant_ids_for_user(self, user_id: int) -> list[int]:
         """Return tenant_ids the user has a membership row for. [] if none.

@@ -42,9 +42,9 @@ def migrated_pg(clean_pg):
     return clean_pg
 
 
-def _async_client(app):
+def _async_client(app, cookies=None):
     transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1")
+    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1", cookies=cookies)
 
 
 def _seed_users(pg_conn) -> tuple[int, int]:
@@ -84,17 +84,17 @@ async def _login_session(app, username: str, password: str) -> dict:
         return dict(resp.cookies)
 
 
-async def _post_with_session(client, url, *, cookies: dict, json_body: dict | None = None):
-    """Helper: POST with session cookies."""
-    return await client.post(url, json=json_body or {}, cookies=cookies)
+async def _post_with_session(client, url, *, json_body: dict | None = None):
+    """Helper: POST through a client that already carries the session cookies."""
+    return await client.post(url, json=json_body or {})
 
 
-async def _patch_with_session(client, url, *, cookies: dict, json_body: dict | None = None):
-    return await client.patch(url, json=json_body or {}, cookies=cookies)
+async def _patch_with_session(client, url, *, json_body: dict | None = None):
+    return await client.patch(url, json=json_body or {})
 
 
-async def _delete_with_session(client, url, *, cookies: dict):
-    return await client.delete(url, cookies=cookies)
+async def _delete_with_session(client, url):
+    return await client.delete(url)
 
 
 # ---------------------------------------------------------------------------
@@ -174,11 +174,10 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/repos/profiles",
-                cookies=cookies,
                 json_body={"name": "attacker_profile", "version": "17.0"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -189,11 +188,10 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/repos/profiles",
-                cookies=cookies,
                 json_body={"name": "admin_created_profile", "version": "17.0"},
             )
         sc = resp.status_code
@@ -206,11 +204,10 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _patch_with_session(
                 client,
                 f"/api/repos/profiles/{pid}",
-                cookies=cookies,
                 json_body={"description": "hacked"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -222,11 +219,10 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _patch_with_session(
                 client,
                 f"/api/repos/profiles/{pid}",
-                cookies=cookies,
                 json_body={"description": "legit update"},
             )
         sc = resp.status_code
@@ -239,11 +235,10 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _patch_with_session(
                 client,
                 f"/api/repos/profiles/{pid}/parent",
-                cookies=cookies,
                 json_body={"parent_id": None},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -255,11 +250,10 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _delete_with_session(
                 client,
                 f"/api/repos/profiles/{pid}",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -270,11 +264,10 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 f"/api/repos/profiles/{pid}/clone-all",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -284,11 +277,10 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/repos/repos",
-                cookies=cookies,
                 json_body={
                     "profile": "wave0_test_profile",
                     "url": "https://example.com/evil.git",
@@ -305,11 +297,10 @@ class TestReposRoutesAdminGate:
         rid = _seed_test_repo(migrated_pg, pid)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _patch_with_session(
                 client,
                 f"/api/repos/repos/{rid}",
-                cookies=cookies,
                 json_body={"branch": "evil"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -322,11 +313,10 @@ class TestReposRoutesAdminGate:
         rid = _seed_test_repo(migrated_pg, pid)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _delete_with_session(
                 client,
                 f"/api/repos/repos/{rid}",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -338,11 +328,10 @@ class TestReposRoutesAdminGate:
         rid = _seed_test_repo(migrated_pg, pid)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 f"/api/repos/repos/{rid}/index",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -354,11 +343,10 @@ class TestReposRoutesAdminGate:
         rid = _seed_test_repo(migrated_pg, pid)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 f"/api/repos/repos/{rid}/reset-embed",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -368,11 +356,10 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/repos/index-all",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -393,11 +380,10 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _patch_with_session(
                 client,
                 f"/api/repos/profiles/{pid}/parent",
-                cookies=cookies,
                 json_body={"parent_id": None},
             )
         sc = resp.status_code
@@ -410,9 +396,9 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _delete_with_session(
-                client, f"/api/repos/profiles/{pid}", cookies=cookies
+                client, f"/api/repos/profiles/{pid}"
             )
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
@@ -424,9 +410,9 @@ class TestReposRoutesAdminGate:
         pid = _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
-                client, f"/api/repos/profiles/{pid}/clone-all", cookies=cookies
+                client, f"/api/repos/profiles/{pid}/clone-all"
             )
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
@@ -438,11 +424,10 @@ class TestReposRoutesAdminGate:
         _seed_test_profile(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/repos/repos",
-                cookies=cookies,
                 json_body={
                     "profile": "wave0_test_profile",
                     "url": "https://example.com/legit.git",
@@ -460,11 +445,10 @@ class TestReposRoutesAdminGate:
         rid = _seed_test_repo(migrated_pg, pid)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _patch_with_session(
                 client,
                 f"/api/repos/repos/{rid}",
-                cookies=cookies,
                 json_body={"branch": "18.0"},
             )
         sc = resp.status_code
@@ -478,9 +462,9 @@ class TestReposRoutesAdminGate:
         rid = _seed_test_repo(migrated_pg, pid)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _delete_with_session(
-                client, f"/api/repos/repos/{rid}", cookies=cookies
+                client, f"/api/repos/repos/{rid}"
             )
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
@@ -491,9 +475,9 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
-                client, "/api/repos/repos/999999/index", cookies=cookies
+                client, "/api/repos/repos/999999/index"
             )
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
@@ -504,9 +488,9 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
-                client, "/api/repos/repos/999999/reset-embed", cookies=cookies
+                client, "/api/repos/repos/999999/reset-embed"
             )
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
@@ -517,11 +501,10 @@ class TestReposRoutesAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/repos/index-all",
-                cookies=cookies,
                 json_body={"max_workers": "not-an-int"},
             )
         sc = resp.status_code
@@ -541,11 +524,10 @@ class TestSshKeysAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/ssh-keys",
-                cookies=cookies,
                 json_body={"name": "evil_key"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -559,11 +541,10 @@ class TestSshKeysAdminGate:
         monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode())
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/ssh-keys",
-                cookies=cookies,
                 json_body={"name": "legit_key"},
             )
         # Should not be 403 (may be 500 if other infra missing — we only check ≠403)
@@ -576,11 +557,10 @@ class TestSshKeysAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/ssh-keys/import",
-                cookies=cookies,
                 json_body={"name": "evil", "private_key_pem": "FAKE"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -592,11 +572,10 @@ class TestSshKeysAdminGate:
         kid = _seed_test_ssh_key(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _delete_with_session(
                 client,
                 f"/api/ssh-keys/{kid}",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -607,11 +586,10 @@ class TestSshKeysAdminGate:
         kid = _seed_test_ssh_key(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _delete_with_session(
                 client,
                 f"/api/ssh-keys/{kid}",
-                cookies=cookies,
             )
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
@@ -630,11 +608,10 @@ class TestOperationsAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/operations/index-core",
-                cookies=cookies,
                 json_body={"source": "/tmp", "version": "17.0"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -645,11 +622,10 @@ class TestOperationsAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/operations/seed-patterns",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -659,11 +635,10 @@ class TestOperationsAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/operations/apply-preset",
-                cookies=cookies,
                 json_body={"name": "viindoo17"},
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
@@ -674,11 +649,10 @@ class TestOperationsAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/operations/backup",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -688,11 +662,10 @@ class TestOperationsAdminGate:
         _seed_users(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 "/api/operations/index-core",
-                cookies=cookies,
                 json_body={"source": str(tmp_path), "version": "17.0"},
             )
         sc = resp.status_code
@@ -713,11 +686,10 @@ class TestJobsAdminGate:
         jid = _seed_test_job(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 f"/api/jobs/{jid}/reset",
-                cookies=cookies,
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
@@ -728,11 +700,10 @@ class TestJobsAdminGate:
         jid = _seed_test_job(migrated_pg)
         app = create_app()
         cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
-        async with _async_client(app) as client:
+        async with _async_client(app, cookies=cookies) as client:
             resp = await _post_with_session(
                 client,
                 f"/api/jobs/{jid}/reset",
-                cookies=cookies,
             )
         # PID 99999999 is dead → handler resets the job and returns 200.
         # (A live PID would return 409; either way the check is: NOT 403.)
