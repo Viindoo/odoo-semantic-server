@@ -230,3 +230,17 @@ rows joined with tenant names. Used by the self-service portal to show org conte
 | `site/src/pages/account/_repos-island.tsx` | New — React island for repo add/index/delete (W2) |
 | `tests/test_w1_tenant_rbac.py` | New — 14-case test suite (W1) |
 | `tests/test_w2_portal.py` | New — cross-tenant + write-gate test suite (W2) |
+
+---
+
+## Implementation status
+
+| Wave | PR | Nội dung | ADR sections realized |
+|---|---|---|---|
+| W0 | #174 | `require_admin` gate 19 mutating routes + `SIGNUP_ENABLED` flag | precondition cho D4 |
+| W1 | #177 | `tenant_members` (m13_005) + `resolve_tenant_scope_web` + `/admin/tenants` CRUD | D1, D2, D3, D4, D5, D6, D7, D8 |
+| W2 | #179 | `tenant_write_allowed` + 4 repo routes open + `/account/repos` portal | D9, D10, D11, D12 |
+| W3 | #180 | `GET /api/operations/diagnose` + `POST /api/admin/users` + audit-log viewer + audit coverage guard | ADR-0021 (audit taxonomy) |
+| W4 | #181 | `GET /api/versions` + version dropdowns + worker controls + branch hint | - |
+
+Cross-ref: ADR-0021 (audit log taxonomy + `@audit_action` scope), ADR-0026 (RBAC `is_admin_session` + `require_admin`), ADR-0034 (read-side isolation `resolve_tenant_scope` MCP layer).

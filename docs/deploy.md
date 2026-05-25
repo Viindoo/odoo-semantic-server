@@ -892,6 +892,62 @@ sudo systemctl reload caddy
 Từ M5, mọi request tới `/mcp` **phải** có header `X-API-Key` hợp lệ.
 Request thiếu key hoặc key không active → `401 Unauthorized`. Không có bypass.
 
+#### 4.3a SIGNUP_ENABLED — kiểm soát public self-registration (W0)
+
+Cờ `SIGNUP_ENABLED` quyết định người dùng có thể tự đăng ký tài khoản Web UI hay không.
+**Default: `False` (invite-only).** Khi `False`, `POST /api/auth/register` và OAuth
+new-account path trả `403 Forbidden` — chỉ admin mới tạo được user mới qua `/admin/users`.
+
+Bật self-registration (cho SaaS public signup):
+```ini
+# odoo-semantic.conf
+[webui]
+signup_enabled = true
+```
+hoặc qua env var: `export SIGNUP_ENABLED=1`
+
+> **Phân định OPS vs UI:** Sau khi bật `signup_enabled`, tenant membership và permission
+> vẫn phải admin assign thủ công qua `/admin/tenants`. Non-admin user mới signup sẽ có
+> `scope = set()` (deny-all write) cho đến khi admin add vào tenant.
+
+#### 4.3b Nginx `/api/` và app-layer admin gate (defense-in-depth)
+
+Nginx hiện tại chỉ reverse-proxy `/api/*` sang FastAPI — **không có `auth_request`** cấp
+nginx cho `/api/*`. Admin gate là **app-layer** (`Depends(require_admin)` trong routes.py),
+được enforce bởi FastAPI trước khi handler chạy. Đây là design đúng (single enforcement
+point, dễ test), nginx là defense-in-depth cho các mối lo khác (rate-limit, TLS, caching).
+
+Nếu muốn thêm IP allowlist cho `/api/*` ở nginx level (defense-in-depth tùy chọn):
+```nginx
+location /api/ {
+    # Optional: allow only known office IPs
+    # allow 203.0.113.10;
+    # deny all;
+    proxy_pass http://127.0.0.1:8003;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+> **`PG_READ_DSN` caveat (OPS-SKIP):** Code hiện tại CHƯA đọc biến `PG_READ_DSN` riêng.
+> Nếu admin muốn tách read-DSN cho process MCP (:8002) sang `osm_reader` role (sau khi
+> chạy `FORCE ROW LEVEL SECURITY`), cần override `PG_DSN` trong env của service `:8002`,
+> KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực. Xem runbook §5.14.
+
+#### 4.3c Phân định OPS vs UI cho M13 hardening
+
+Các bước sau là **OPS production thủ công** (chạy trên server) — KHÔNG phải tính năng
+UI và KHÔNG phải gate để mở Web UI W0-W4:
+
+| OPS item | Runbook | Trạng thái |
+|---|---|---|
+| `FORCE ROW LEVEL SECURITY` + `osm_reader` role | §5.14 | `[ ]` pending |
+| Tách read-DSN MCP sang `osm_reader` | §5.14 | `[ ]` pending (xem caveat 4.3b) |
+| FERNET_KEY vào `/etc/credstore/` (LoadCredential) | §12 Option B | `[ ]` pending |
+| Reindex v8→v19 + cleanup_absolute_path_nodes | §5.11 + §3b | `[ ]` pending |
+| MED-2 forge known_hosts cho self-hosted git | §MED-2 | `[ ]` khi cần |
+
+Xem danh sách đầy đủ tại TASKS.md → "UI Completion — OPS-SKIP (7)".
+
 **Tạo API key (admin):**
 
 ```bash

@@ -2,6 +2,72 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — Web-UI multi-tenant RBAC + self-service portal (W0-W4)
+
+Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
+
+### W0 (#174) — Admin gate + SIGNUP_ENABLED
+
+#### Added
+- **`SIGNUP_ENABLED` config flag** (`src/web_ui/config.py`) — default `False` (invite-only). Đọc từ env var `SIGNUP_ENABLED=1` hoặc INI `[webui] signup_enabled = true`. Khi `False`, `POST /api/auth/register` và OAuth new-account path trả 403. Xem `docs/deploy.md §Auth - SIGNUP_ENABLED`.
+- **`Depends(require_admin)` áp lên 19 route mutating** — repos, ssh_keys, operations, jobs. Route `restore` giữ `require_admin_with_fresh_mfa`. Self-service routes (api_keys/totp/feedback) giữ ownership-scope.
+
+### W1 (#177) — Tenant membership + admin tenant CRUD (ADR-0038)
+
+#### Added (migration required)
+- **`migrations/m13_005_tenant_members.sql`** — 3-part migration:
+  - `tenant_members(user_id, tenant_id, role, created_at)` M:N join table; `PRIMARY KEY (user_id, tenant_id)`.
+  - `ALTER TABLE webui_users ALTER COLUMN password_hash DROP NOT NULL` — đóng issue #176 (OAuth-only users đã INSERT NULL trên prod).
+  - `CHECK (profiles.name NOT LIKE '%,%')` — GUC-delimiter guard ngăn profile name chứa dấu phẩy, bảo vệ RLS `string_to_array` (ADR-0034 A4).
+- **`resolve_tenant_scope_web(request)` / `ALL_TENANTS` / `is_in_scope`** trong `src/web_ui/auth.py` — write-side scope helper (admin = `ALL_TENANTS` sentinel; non-admin = set of tenant_id from `tenant_members`).
+- **`routes/tenants.py`** — admin-only tenant/member/resource CRUD: `GET/POST /api/tenants`, `DELETE /api/tenants/{id}` (409 nếu còn resources), `GET/POST/DELETE /api/tenants/{id}/members`.
+- **Astro page `/admin/tenants`** — quản lý tenant + thành viên (admin-only).
+- **Membership model (b)** — user đa-tenant (consultant/agency persona). Active-tenant = **Option A** (explicit `tenant_id` trong request body, stateless, auditable).
+
+#### Notes
+- `#175` (audit coverage) đã FOLD vào W3; `#176` (password_hash nullable) đã FOLD vào W1 m13_005. Cả hai CLOSED.
+- ADR-0038 `docs/adr/0038-tenant-rbac-web-ui-write-side.md` committed.
+
+### W2 (#179) — Customer self-service portal
+
+#### Added
+- **`tenant_write_allowed(scope, tenant_id)`** trong `src/web_ui/auth.py` — write-side guard STRICTER than `is_in_scope`: `tenant_id IS NULL` (shared) → admin-only write; non-admin chỉ write vào tenant của mình.
+- **`GET /api/repos/profiles` tenant-filtered** — non-admin chỉ thấy profile trong scope (`is_in_scope`) + shared; `tenant_id` field có trong mỗi profile/repo response.
+- **4 route repo mở cho non-admin với tenant scope:**
+  - `POST /api/repos/repos` — thêm repo vào tenant-owned profile
+  - `PATCH /api/repos/repos/{id}` — cập nhật repo metadata trong scope
+  - `DELETE /api/repos/repos/{id}` — xóa repo trong scope
+  - `POST /api/repos/repos/{id}/index` — trigger index cho repo trong scope
+- **`GET /api/account/tenants`** (`routes/account.py`) — trả danh sách tenant của session user kèm `role` (portal header).
+- **Astro page `/account/repos`** — customer self-service repo management.
+
+#### Notes (ADR-0038 D9-D12)
+- Admin-only routes (profile CRUD, bulk ops, tenant CRUD, SSH keys, operations) KHÔNG thay đổi từ W0/W1.
+
+### W3 (#180) — Diagnostics + admin user creation + audit coverage
+
+#### Added
+- **`GET /api/operations/diagnose`** — delegate sang `src/diagnostics.py` (SSOT dùng chung với CLI `diagnose` subcommand). Trả trạng thái Postgres, Neo4j, Ollama, FERNET_KEY, config.
+- **`src/diagnostics.py`** — module SSOT, tách khỏi `cli.py`.
+- **`POST /api/admin/users`** (`routes/admin_users.py`) — admin tạo user mới với temp-pass hoặc invite link (one-time).
+- **`GET /api/admin/audit-log`** — paginated + filterable audit log viewer (admin-only).
+- **Trang `/admin/audit-log`** (Astro SSR).
+- **`@audit_action` mở rộng** — bổ sung cho: `operations.index_all`, `jobs.reset`, `user.deactivate`, `user.reactivate`, `user.reset_password_link` (5 action mới).
+- **Regression guard `enumerate-app`** — test kiểm tra mọi route mutating (HTTP method != GET) gắn với admin phải có `__audit_action__` marker; fail khi thêm route mới mà quên audit.
+
+#### Changed
+- ADR-0021 taxonomy cập nhật với 5 action mới.
+
+### W4 (#181) — Data-driven version list + worker controls
+
+#### Added
+- **`GET /api/versions`** (`routes/versions.py`) — đọc `src/indexer/spec_data/bootstrap_versions.json` (12 phiên bản v8-v19), sort numeric, trả `{"versions": ["8.0", ..., "19.0"]}`. Dùng cho các dropdown version trong Admin UI.
+- **3 dropdown version trong Admin UI** — index-core, seed-patterns (thêm option 'all'), add-repo (populate từ `GET /api/versions`).
+- **Worker controls trong index-all:** `profile_workers` (1-4, parallel profiles) + `max_workers` (1-8, parallel repos per profile) + `--gc` flag (cleanup stale Module nodes).
+- **Branch hint** trong form add-repo — gợi ý tên branch theo version chọn (ví dụ version `17.0` → branch hint `17.0`).
+
+---
+
 ## [Unreleased] — WI-7 FERNET hardening + RLS armed-but-dormant + Path portability (ADR-0037)
 
 ### WI-7 — FERNET secrets hardening (M13)
