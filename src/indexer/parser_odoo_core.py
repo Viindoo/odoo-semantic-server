@@ -35,6 +35,11 @@ _CORE_FILES: tuple[str, ...] = (
     "odoo/api.py",
     "odoo/sql_db.py",
     "odoo/exceptions.py",
+    # FIX-3 (v19): new public API files in the split ORM package.
+    # These paths resolve to real files only on v19+; _resolve_core_paths returns []
+    # for v8–v18 (no odoo/orm/ dir) and the entries are silently skipped.
+    "odoo/orm/utils.py",          # parse_field_expr + OriginIds (v19 public API)
+    "odoo/orm/model_classes.py",  # is_model_class / is_model_definition (v19 public API)
 )
 
 # v19-only curated public APIs from the split ORM package (boil-the-lake, curated).
@@ -47,7 +52,22 @@ _CORE_FILES: tuple[str, ...] = (
 # (The `Command` enum is NOT here — it kept its v18 qname `odoo.fields.Command`
 #  and is resolved via the odoo/fields.py entry; see _resolve_core_paths.)
 _V19_CURATED_FILES: dict[str, frozenset[str]] = {
-    "odoo/orm/domains.py": frozenset({"Domain", "DomainAnd", "DomainOr"}),
+    # FIX-2 (v19): expanded Domain allowlist.
+    # Scanned /home/tuan/git/odoo19/odoo/orm/domains.py — public classes:
+    #   Domain (base), DomainBool, DomainNot, DomainNary, DomainAnd(DomainNary),
+    #   DomainOr(DomainNary), DomainCustom, DomainCondition.
+    # Excluded: OptimizationLevel (IntEnum, not a domain builder) +
+    #   ~48 internal helpers (_optimize_*, etc.) per "curated, not maximal" policy.
+    "odoo/orm/domains.py": frozenset({
+        "Domain",
+        "DomainAnd",
+        "DomainOr",
+        "DomainCondition",
+        "DomainNot",
+        "DomainBool",
+        "DomainNary",
+        "DomainCustom",
+    }),
     "odoo/orm/table_objects.py": frozenset(
         {"TableObject", "Constraint", "Index", "UniqueIndex"}
     ),
@@ -59,6 +79,14 @@ _V19_CURATED_FILES: dict[str, frozenset[str]] = {
 # recursive AST climb (per ADR-0002 KISS policy).
 # v18+ split hierarchy: _Relational, _String (v18 fields.py); BaseString, BaseDate,
 # _RelationalMulti (v19 orm/fields*.py).
+#
+# FIX-1: also include concrete intermediate bases for 2nd-level field subclasses:
+#   Image(Binary), Reference(Selection), Many2oneReference(Integer)
+# Scanned v17/v18 odoo/fields.py + v19 odoo/orm/fields*.py — these are the ONLY
+# classes that extend a concrete (non-abstract) field class. No further 3rd-level
+# subclasses exist. Binary/Selection/Integer do not appear as class bases in any
+# other parsed file (models.py, api.py, exceptions.py, sql_db.py, tools/*), so
+# adding them here causes zero false positives.
 _FIELD_BASE_NAMES = {
     "Field",
     "_Relational",
@@ -66,6 +94,10 @@ _FIELD_BASE_NAMES = {
     "_String",
     "BaseString",
     "BaseDate",
+    # 2nd-level concrete bases (FIX-1)
+    "Binary",
+    "Selection",
+    "Integer",
 }
 # Direct stdlib + Odoo's primary user-facing base. The hierarchy is shallow in
 # practice (one indirection through UserError); deeper trees would need a
