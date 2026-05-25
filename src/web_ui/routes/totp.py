@@ -27,12 +27,12 @@ from datetime import UTC, datetime
 import pyotp
 import qrcode
 import qrcode.image.pil
-from cryptography.fernet import Fernet
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.crypto import get_fernet
 from src.web_ui._json import _json_safe
 from src.web_ui.auth import is_test_bypass_active, verify_password
 
@@ -51,15 +51,14 @@ ISSUER_NAME = "Odoo Semantic MCP"
 # ---------------------------------------------------------------------------
 
 
-def _get_fernet() -> Fernet:
-    """Return a Fernet instance from FERNET_KEY env var.
+def _get_fernet():
+    """Return a Fernet instance for TOTP secret encryption/decryption.
 
-    Raises RuntimeError if FERNET_KEY is not set (production guard).
+    Delegates to the central ``src.crypto.get_fernet`` getter which resolves
+    the key from systemd LoadCredential or FERNET_KEY env var (in that order).
+    Raises RuntimeError if the key is absent (production guard).
     """
-    key = os.environ.get("FERNET_KEY")
-    if not key:
-        raise RuntimeError("FERNET_KEY environment variable is not set")
-    return Fernet(key.encode() if isinstance(key, str) else key)
+    return get_fernet()
 
 
 def _encrypt_secret(plaintext: str) -> str:
