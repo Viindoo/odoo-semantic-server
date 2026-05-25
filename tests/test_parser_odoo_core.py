@@ -116,12 +116,13 @@ def test_core_files_allowlist_is_curated_and_matches_documented_set():
     This test encodes the full documented set so any unreviewed addition/removal
     causes a failure.
 
-    FIX-3 (v19): two odoo/orm/ files were added to cover v19 public ORM API
-    (parse_field_expr, is_model_class, is_model_definition). These paths resolve
-    to real files only on v19+; _resolve_core_paths returns [] for v8-v18
-    (no odoo/orm/ dir exists) and the entries are silently skipped.
+    _CORE_FILES is version-AGNOSTIC (exactly 8 entries). The resolver fan-out
+    (_resolve_core_paths) handles v19 package-dir splits automatically.
+    v19-only curated files (utils.py, model_classes.py, domains.py, table_objects.py)
+    are registered in _V19_CURATED_FILES (not here) — they carry a name_allowlist to
+    index only their public symbols, not internal plumbing.
     """
-    # Exact documented set — any unreviewed change to this set must update this test.
+    # Exact documented set of 8 version-agnostic files — any unreviewed change fails.
     expected = (
         "odoo/tools/safe_eval.py",
         "odoo/tools/query.py",
@@ -131,9 +132,10 @@ def test_core_files_allowlist_is_curated_and_matches_documented_set():
         "odoo/api.py",
         "odoo/sql_db.py",
         "odoo/exceptions.py",
-        # v19-only ORM split files (added by FIX-3): skip safely on v8-v18.
-        "odoo/orm/utils.py",           # parse_field_expr + OriginIds (v19 public API)
-        "odoo/orm/model_classes.py",   # is_model_class / is_model_definition (v19)
+    )
+    assert len(_CORE_FILES) == 8, (
+        f"Allow-list must have exactly 8 version-agnostic entries, got {len(_CORE_FILES)}. "
+        f"v19-specific files belong in _V19_CURATED_FILES with a name_allowlist."
     )
     assert len(_CORE_FILES) == len(expected), (
         f"Allow-list size changed: expected {len(expected)}, got {len(_CORE_FILES)}. "
@@ -143,10 +145,13 @@ def test_core_files_allowlist_is_curated_and_matches_documented_set():
         f"Allow-list contents differ. New paths: {set(_CORE_FILES) - set(expected)}. "
         f"Removed paths: {set(expected) - set(_CORE_FILES)}."
     )
-    # Sanity: all paths look right (no walk-entire-source escape).
+    # Sanity: all paths look right (no walk-entire-source escape, no orm/ files).
     for path in _CORE_FILES:
         assert path.startswith("odoo/")
         assert path.endswith(".py")
+        assert "orm/" not in path, (
+            f"v19-specific orm/ path {path!r} must be in _V19_CURATED_FILES, not _CORE_FILES."
+        )
 
 
 @pytest.mark.skipif(
@@ -361,18 +366,36 @@ def test_v19_curated_files_registry_is_curated_not_maximal():
 
     FIX-2 (v19): expanded Domain allowlist from 3 to 8 public classes after scanning
     real Odoo 19 odoo/orm/domains.py. DomainBool, DomainNot, DomainNary, DomainCustom,
-    DomainCondition were added as they are genuine public domain builder classes.
+    DomainCondition were added as genuine public domain builder classes.
+    DomainNary is a concrete (not abstract) base for n-ary AND/OR — it IS public API.
     OptimizationLevel (IntEnum, internal) remains excluded.
 
-    Still satisfies "curated, not maximal": domains.py has ~48 internal helpers
-    (_optimize_*, etc.) that are NOT in this list. The registry surface stays small.
+    FIX-3 (v19): utils.py and model_classes.py added to _V19_CURATED_FILES (not to
+    _CORE_FILES). Correct mechanism: _CORE_FILES uses name_allowlist=None (emit ALL
+    top-level symbols), which would have indexed internal plumbing. _V19_CURATED_FILES
+    uses a curated name_allowlist so only the documented public symbols are emitted.
+    - utils.py: parse_field_expr (dotted-path parser), OriginIds (origin-id helper).
+      Excluded: check_method_name (deprecated since 19.0), check_pg_name / check_object_name
+      (internal validators), expand_ids (internal id-dedup generator).
+    - model_classes.py: is_model_class, is_model_definition (public introspection API).
+      Excluded: add_to_registry, setup_model_classes, add_field, pop_field (internal
+      registry machinery) and all _private helpers.
+
+    Still satisfies "curated, not maximal": the curated allowlists cover only the
+    documented public API from each file, not all top-level symbols.
     """
-    # Exact file set (no whole-source walk).
+    # Exact file set (no whole-source walk) — 4 files after FIX-3.
     assert set(_V19_CURATED_FILES) == {
         "odoo/orm/domains.py",
         "odoo/orm/table_objects.py",
-    }
+        "odoo/orm/utils.py",
+        "odoo/orm/model_classes.py",
+    }, (
+        f"_V19_CURATED_FILES file set mismatch. Got: {set(_V19_CURATED_FILES)}. "
+        f"Any unreviewed addition/removal must update this test with justification."
+    )
     # Domains: 8 public domain builder classes (scanned from real Odoo 19).
+    # DomainNary: concrete (not abstract), documents n-ary AND/OR semantics — public.
     # Excluded: OptimizationLevel (IntEnum, internal machinery).
     assert _V19_CURATED_FILES["odoo/orm/domains.py"] == frozenset({
         "Domain",
@@ -392,10 +415,38 @@ def test_v19_curated_files_registry_is_curated_not_maximal():
     assert _V19_CURATED_FILES["odoo/orm/table_objects.py"] == frozenset(
         {"TableObject", "Constraint", "Index", "UniqueIndex"}
     )
+    # utils.py: 2 public symbols (parse_field_expr + OriginIds). Internal plumbing excluded.
+    assert _V19_CURATED_FILES["odoo/orm/utils.py"] == frozenset({
+        "parse_field_expr",
+        "OriginIds",
+    }), (
+        f"utils.py curated set mismatch. Got: {_V19_CURATED_FILES['odoo/orm/utils.py']}. "
+        f"Internal helpers (check_pg_name, check_method_name, expand_ids) must remain excluded."
+    )
+    # model_classes.py: 2 public introspection functions. Registry machinery excluded.
+    assert _V19_CURATED_FILES["odoo/orm/model_classes.py"] == frozenset({
+        "is_model_class",
+        "is_model_definition",
+    }), (
+        "model_classes.py curated set mismatch. "
+        f"Got: {_V19_CURATED_FILES['odoo/orm/model_classes.py']}. "
+        "Internal plumbing (add_to_registry, setup_model_classes, add_field, pop_field) "
+        "must be excluded."
+    )
     # Guard: OptimizationLevel must remain excluded from all curated sets.
     for filename, allowlist in _V19_CURATED_FILES.items():
         assert "OptimizationLevel" not in allowlist, (
             f"OptimizationLevel (IntEnum, internal) must NOT be in curated list for {filename}."
+        )
+    # Guard: internal plumbing must not leak through into any curated set.
+    internal_plumbing = {
+        "check_pg_name", "check_method_name", "add_to_registry",
+        "setup_model_classes", "add_field", "pop_field", "expand_ids",
+    }
+    for filename, allowlist in _V19_CURATED_FILES.items():
+        leaked = allowlist & internal_plumbing
+        assert not leaked, (
+            f"Internal plumbing symbols {leaked!r} must NOT appear in curated set for {filename}."
         )
 
 
@@ -1313,22 +1364,34 @@ def test_fix2_domain_condition_and_all_8_public_domains_emitted(tmp_path):
 
 
 def test_fix3_v19_orm_utils_emits_parse_field_expr_and_is_model_class(tmp_path):
-    """FIX-3: parse_odoo_core v19 emits parse_field_expr (from orm/utils.py) and
-    is_model_class (from orm/model_classes.py).
+    """FIX-3: parse_odoo_core v19 emits parse_field_expr + OriginIds (from orm/utils.py)
+    and is_model_class + is_model_definition (from orm/model_classes.py).
 
     Business rule: v19 introduced public ORM utility functions in the split orm/
     package. These must be indexed so AI clients can discover/use them via
-    lookup_core_api and api_version_diff. Before FIX-3, these files were not in
-    _CORE_FILES and were silently ignored.
+    lookup_core_api and api_version_diff.
+
+    Curation contract: utils.py and model_classes.py are in _V19_CURATED_FILES (with
+    name_allowlist) — NOT in _CORE_FILES (which uses name_allowlist=None = emit ALL).
+    This ensures internal plumbing (check_pg_name, add_to_registry, etc.) is NEVER
+    emitted, even if those functions exist in the file.
+
+    This test verifies BOTH the positive (public symbols present) AND the negative
+    (internal plumbing absent) to protect the curation contract.
     """
-    # Arrange: v19 layout with orm/ directory and the two new files
+    # Arrange: v19 layout with orm/ directory and the two new files.
+    # Include both public symbols AND internal plumbing that must be excluded.
     orm_dir = tmp_path / "odoo" / "orm"
     orm_dir.mkdir(parents=True)
     (orm_dir / "utils.py").write_text(
         "def parse_field_expr(field_expr: str):\n"
         "    '''Parse a dotted field path.'''\n"
         "    return field_expr.split('.')\n\n"
-        "def check_method_name(name):\n"
+        "def check_method_name(name):\n"   # INTERNAL — deprecated since 19.0
+        "    pass\n\n"
+        "def check_pg_name(name):\n"       # INTERNAL — PG identifier validator
+        "    pass\n\n"
+        "def expand_ids(id0, ids):\n"      # INTERNAL — id dedup generator
         "    pass\n\n"
         "class OriginIds:\n"
         "    '''Container for original record ids.'''\n"
@@ -1340,20 +1403,25 @@ def test_fix3_v19_orm_utils_emits_parse_field_expr_and_is_model_class(tmp_path):
         "    return hasattr(cls, '_name')\n\n"
         "def is_model_definition(cls):\n"
         "    '''Return True if cls defines a new model (has explicit _name).'''\n"
-        "    return bool(getattr(cls, '_name', None))\n"
+        "    return bool(getattr(cls, '_name', None))\n\n"
+        "def add_to_registry(registry, model_def):\n"   # INTERNAL — registry machinery
+        "    pass\n\n"
+        "def setup_model_classes(env):\n"               # INTERNAL — setup machinery
+        "    pass\n"
     )
 
     # Act: parse v19
     out = parse_odoo_core(str(tmp_path), "19.0")
     qnames = {s.qualified_name for s in out}
 
-    # Assert: parse_field_expr from orm/utils.py is present
+    # --- Positive assertions: public symbols must be present ---
     assert "odoo.orm.utils.parse_field_expr" in qnames, (
         "parse_field_expr must be indexed from odoo/orm/utils.py in v19. "
         f"Got orm.utils symbols: {[q for q in qnames if 'orm.utils' in q]}"
     )
-
-    # Assert: is_model_class and is_model_definition from orm/model_classes.py present
+    assert "odoo.orm.utils.OriginIds" in qnames, (
+        "OriginIds class from orm/utils.py must also be indexed."
+    )
     assert "odoo.orm.model_classes.is_model_class" in qnames, (
         "is_model_class must be indexed from odoo/orm/model_classes.py in v19. "
         f"Got: {[q for q in qnames if 'model_classes' in q]}"
@@ -1362,19 +1430,33 @@ def test_fix3_v19_orm_utils_emits_parse_field_expr_and_is_model_class(tmp_path):
         "is_model_definition must be indexed from odoo/orm/model_classes.py in v19."
     )
 
-    # Assert: OriginIds class (from utils.py) is also present
-    assert "odoo.orm.utils.OriginIds" in qnames, (
-        "OriginIds class from orm/utils.py must also be indexed."
+    # --- Negative assertions: internal plumbing must be EXCLUDED by curation ---
+    assert "odoo.orm.utils.check_method_name" not in qnames, (
+        "check_method_name is deprecated since 19.0 and is internal — "
+        "the name_allowlist in _V19_CURATED_FILES must exclude it."
+    )
+    assert "odoo.orm.utils.check_pg_name" not in qnames, (
+        "check_pg_name (internal PG identifier validator) must be excluded by curation."
+    )
+    assert "odoo.orm.utils.expand_ids" not in qnames, (
+        "expand_ids (internal id-dedup generator) must be excluded by curation."
+    )
+    assert "odoo.orm.model_classes.add_to_registry" not in qnames, (
+        "add_to_registry (internal registry machinery) must be excluded by curation."
+    )
+    assert "odoo.orm.model_classes.setup_model_classes" not in qnames, (
+        "setup_model_classes (internal setup machinery) must be excluded by curation."
     )
 
 
 def test_fix3_v17_and_v18_skip_orm_utils_silently(tmp_path):
-    """FIX-3 guard: v17/v18 do NOT have odoo/orm/ directory — the two new _CORE_FILES
-    entries (orm/utils.py, orm/model_classes.py) must resolve to [] and be silently
-    skipped. No exception, no false indexing.
+    """FIX-3 guard: v17/v18 do NOT have odoo/orm/ directory — the two _V19_CURATED_FILES
+    entries for utils.py and model_classes.py must resolve to [] and be silently skipped.
+    No exception, no false indexing.
 
     Business rule: the skip is safe because _resolve_core_paths returns [] when the
-    resolved file does not exist. This test verifies v17 and v18 behaviour is unchanged.
+    resolved file does not exist. This test verifies v17 and v18 behaviour is unchanged
+    regardless of whether the paths are in _CORE_FILES or _V19_CURATED_FILES.
     """
     # --- v17 ---
     (tmp_path / "v17" / "odoo").mkdir(parents=True)
