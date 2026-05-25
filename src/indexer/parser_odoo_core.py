@@ -26,6 +26,7 @@ from pathlib import Path
 from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
 
 from .models import CoreSymbolInfo
+from .parser_util import parse_external_source
 from .version_registry import VersionRegistry
 
 # --- Allow-list (ADR-0002 §6) -----------------------------------------------
@@ -315,7 +316,9 @@ def _extract_from_source(
     public classes should be indexed.
     """
     try:
-        tree = ast.parse(source)
+        # External Odoo upstream source — scope away SyntaxWarning noise, pass the
+        # real path so any diagnostic is attributable (not <unknown>). See parser_util.
+        tree = parse_external_source(source, filename=file_path)
     except SyntaxError:
         return []
 

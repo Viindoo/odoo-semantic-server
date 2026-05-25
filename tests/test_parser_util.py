@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# tests/test_parser_util.py
+"""Tests for parse_external_source — the shared external-source AST choke-point.
+
+Root-cause coverage for the reindex-log noise:
+    <unknown>:NN: SyntaxWarning: invalid escape sequence '\\s' (etc.)
+
+These warnings come from THIRD-PARTY Odoo source (their own non-raw regex/SQL
+string literals such as ``odoo/tools/sql.py`` doing ``.replace('%', '\\%')``),
+not from this project's code. The helper scopes the suppression to the single
+external parse and threads a real filename so future diagnostics aren't
+``<unknown>``. It must NOT swallow SyntaxError (callers depend on the py2 fallback).
+"""
+import ast
+import threading
+import warnings
+
+import pytest
+
+from src.indexer.parser_util import parse_external_source
+
+# Source snippets mirroring real Odoo upstream patterns. Built at runtime via
+# chr(92) so the backslash lands in the *target* string under test, while this
+# test module itself stays free of invalid escape sequences (own code = clean).
+BS = chr(92)  # a single backslash
+_SQL_LIKE_SRC = (
+    "def esc(s):\n"
+    f"    return s.replace('%', '{BS}%').replace('_', '{BS}_')\n"
+)
+_REGEX_SRC = (
+    "import re\n"
+    f"PAT = re.compile('^({BS}s*[a-z]+)$')\n"
+)
+
+
+def test_suppresses_syntaxwarning_from_external_sql_like():
+    # Mirrors odoo/tools/sql.py: non-raw '\%' / '\_' LIKE-escape literals.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tree = parse_external_source(_SQL_LIKE_SRC, filename="odoo/tools/sql.py")
+    assert isinstance(tree, ast.Module)
+    syntax_warns = [w for w in caught if issubclass(w.category, SyntaxWarning)]
+    assert syntax_warns == [], (
+        f"external SyntaxWarning leaked out: {[str(w.message) for w in syntax_warns]}"
+    )
+
+
+def test_suppresses_syntaxwarning_from_external_regex():
+    # Mirrors odoo/models.py: non-raw '\s' regex literal.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tree = parse_external_source(_REGEX_SRC, filename="odoo/models.py")
+    assert isinstance(tree, ast.Module)
+    assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]
+
+
+def test_raw_ast_parse_would_warn_proving_helper_is_what_suppresses():
+    # Control: the SAME source through bare ast.parse DOES emit the warning, so the
+    # silence above is the helper's scoped filter — not the snippet being benign.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ast.parse(_SQL_LIKE_SRC)
+    assert [w for w in caught if issubclass(w.category, SyntaxWarning)], (
+        "expected bare ast.parse to emit SyntaxWarning for the non-raw '\\%' literal"
+    )
+
+
+def test_filter_scope_is_restored_after_call():
+    # The suppression must be scoped: after the helper returns, a subsequent bare
+    # parse of external-style source must warn again (filter not left installed).
+    parse_external_source(_SQL_LIKE_SRC, filename="odoo/tools/sql.py")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ast.parse(_REGEX_SRC)
+    assert [w for w in caught if issubclass(w.category, SyntaxWarning)], (
+        "helper must NOT leave a process-wide SyntaxWarning filter installed"
+    )
+
+
+def test_concurrent_calls_do_not_leak_filter_process_wide():
+    # Regression for the thread-safety bug: the indexer parses under a
+    # ThreadPoolExecutor (prod: --profile-workers 2). warnings.catch_warnings()
+    # saves/restores the PROCESS-GLOBAL warnings.filters and is not thread-safe on
+    # CPython < 3.14, so without serialisation two concurrent parses can interleave
+    # their save/restore and leak the `ignore SyntaxWarning` filter process-wide.
+    #
+    # We run many parses across threads, then assert the global filter state was
+    # NOT left mutated: a subsequent bare ast.parse of external-style source must
+    # still emit its SyntaxWarning. This single-threaded check would pass either
+    # way, so we ALSO verify no exception escaped any worker (the interleave can
+    # raise from filters.pop on a list mutated by another thread) and that no
+    # `ignore`/SyntaxWarning filter survived in the global list.
+    n_threads = 16
+    iters = 40
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(n_threads)
+
+    def worker():
+        try:
+            barrier.wait()
+            for _ in range(iters):
+                parse_external_source(_SQL_LIKE_SRC, filename="odoo/tools/sql.py")
+                parse_external_source(_REGEX_SRC, filename="odoo/models.py")
+        except BaseException as exc:  # noqa: BLE001 - surface any worker failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"worker(s) raised during concurrent parses: {errors!r}"
+
+    # No SyntaxWarning-suppressing filter must have leaked into the global list.
+    leaked = [
+        f for f in warnings.filters
+        if f[0] == "ignore" and f[2] is SyntaxWarning
+    ]
+    assert not leaked, f"helper leaked a process-global SyntaxWarning filter: {leaked!r}"
+
+    # And the suppression is genuinely gone: bare external-style parse warns again.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ast.parse(_SQL_LIKE_SRC)
+    assert [w for w in caught if issubclass(w.category, SyntaxWarning)], (
+        "after concurrent helper use, the global filter must not silence SyntaxWarning"
+    )
+
+
+def test_syntaxerror_is_not_swallowed():
+    # SyntaxError is a real error (e.g. Python-2-only syntax) — callers rely on it
+    # to trigger their regex fallback. The helper must propagate it unchanged.
+    with pytest.raises(SyntaxError):
+        parse_external_source("def (:\n    pass\n", filename="broken.py")
+
+
+def test_filename_is_threaded_into_diagnostics():
+    # A real filename must replace <unknown> in error attribution.
+    with pytest.raises(SyntaxError) as exc:
+        parse_external_source("def (:\n", filename="addons/foo/models/bar.py")
+    assert exc.value.filename == "addons/foo/models/bar.py"
+
+
+def test_default_filename_when_none_given():
+    with pytest.raises(SyntaxError) as exc:
+        parse_external_source("def (:\n")
+    assert exc.value.filename == "<external>"

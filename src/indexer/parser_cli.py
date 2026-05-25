@@ -29,6 +29,7 @@ from pathlib import Path
 from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
 
 from .models import CLICommandInfo, CLIFlagInfo
+from .parser_util import parse_external_source
 from .version_registry import VersionRegistry
 
 _CLI_OPTION_FUNCS = {"add_option", "add_argument"}
@@ -70,7 +71,9 @@ def _parse_cli_module(
 ) -> list[CLICommandInfo]:
     """Extract `class X(Command):` definitions → CLICommandInfo list."""
     try:
-        tree = ast.parse(source)
+        # External Odoo CLI source — scope away SyntaxWarning noise, pass the real
+        # path so any diagnostic is attributable (not <unknown>). See parser_util.
+        tree = parse_external_source(source, filename=file_path)
     except SyntaxError:
         return []
     out: list[CLICommandInfo] = []
@@ -204,10 +207,13 @@ def _flag_name_from_args(args: list[ast.expr]) -> str | None:
 
 def _parse_options_calls(
     source: str, odoo_version: str, command_name: str = "server",
+    file_path: str | None = None,
 ) -> list[CLIFlagInfo]:
     """Walk source AST, extract every `<X>.add_option(...)` / `<X>.add_argument(...)`."""
     try:
-        tree = ast.parse(source)
+        # External Odoo config source — scope away SyntaxWarning noise, pass the real
+        # path so any diagnostic is attributable (not <unknown>). See parser_util.
+        tree = parse_external_source(source, filename=file_path)
     except SyntaxError:
         return []
 
@@ -298,7 +304,9 @@ def parse_cli_flags(
     if config_path.is_file():
         try:
             src = config_path.read_text(encoding="utf-8", errors="ignore")
-            for f in _parse_options_calls(src, odoo_version, command_name="server"):
+            for f in _parse_options_calls(
+                src, odoo_version, command_name="server", file_path=str(config_path),
+            ):
                 _add(f)
         except OSError:
             pass

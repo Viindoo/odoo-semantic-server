@@ -9,6 +9,7 @@ from pathlib import Path
 from src.constants import LEGACY_ERA_MAX_MAJOR
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
+from .parser_util import parse_external_source
 from .version_registry import VersionRegistry
 
 # v10+ class-level field declarations: name = fields.Char(...)
@@ -417,7 +418,13 @@ def _derive_copyright_owner(manifest: dict, license_value: str) -> str | None:
     """
     if license_value == "OEEL-1":
         return "Odoo S.A."
-    author = (manifest.get("author") or "").strip()
+    raw_author = manifest.get("author") or ""
+    # Odoo manifests allow `author` as str OR list[str] (e.g. CE l10n_* modules:
+    # ['Odoo S.A.', 'Vauxoo']). literal_eval preserves the native type, so coerce.
+    if isinstance(raw_author, (list, tuple)):
+        author = ", ".join(str(a) for a in raw_author).strip()
+    else:
+        author = str(raw_author).strip()
     if "Odoo S.A." in author:
         return "Odoo S.A."
     if "Viindoo" in author or "TVTMA" in author:
@@ -727,14 +734,18 @@ def _parse_class(
     )
 
 
-def _parse_era2_ast(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
+def _parse_era2_ast(
+    source: str, module_info: ModuleInfo, filename: str | None = None,
+) -> list[ModelInfo]:
     """Modern AST parser (v10+ and v8/v9 when source happens to be Py3-compatible).
 
     Builds a per-file import scope map and module-level local def set once, then
     passes them into each _parse_class call so that _extract_core_symbol_refs (V0.5)
     can filter false-positive USES_CORE_SYMBOL refs caused by local name collisions.
     """
-    tree = ast.parse(source)
+    # External third-party addon source — scope away SyntaxWarning noise, pass the
+    # real path so any diagnostic is attributable (not <unknown>). See parser_util.
+    tree = parse_external_source(source, filename=filename)
     scope_map = _build_import_scope_map(tree)
     local_defs = _collect_module_local_defs(tree)
     models = []
@@ -1185,13 +1196,13 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
 
     if era == "era1":
         try:
-            models = _parse_era2_ast(source, module_info)
+            models = _parse_era2_ast(source, module_info, filename=filepath)
         except SyntaxError:
             models = _parse_era1_text(source, module_info)
     else:
         # era2: AST-only
         try:
-            models = _parse_era2_ast(source, module_info)
+            models = _parse_era2_ast(source, module_info, filename=filepath)
         except SyntaxError:
             models = []
 
