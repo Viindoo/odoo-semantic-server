@@ -11,13 +11,14 @@ import subprocess
 import sys
 import threading
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
 from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
+from src.web_ui.auth import require_admin
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos")
@@ -65,7 +66,9 @@ class CreateProfileBody(BaseModel):
 
 @router.post("/profiles")
 @audit_action("profile.create")
-async def create_profile(body: CreateProfileBody, request: Request):
+async def create_profile(
+    body: CreateProfileBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Create a new profile.
 
     Optional ``parent_id`` links this profile under another profile (version
@@ -101,7 +104,10 @@ class SetProfileParentBody(BaseModel):
 @router.patch("/profiles/{profile_id}/parent")
 @audit_action("profile.set_parent", target_param="profile_id")
 async def set_profile_parent(
-    profile_id: int, body: SetProfileParentBody, request: Request
+    profile_id: int,
+    body: SetProfileParentBody,
+    request: Request,
+    _user_id: int = Depends(require_admin),
 ):
     """Update parent_profile_id for an existing profile.
 
@@ -149,7 +155,10 @@ class UpdateProfileBody(BaseModel):
 @router.patch("/profiles/{profile_id}")
 @audit_action("profile.update", target_param="profile_id")
 async def update_profile(
-    profile_id: int, body: UpdateProfileBody, request: Request
+    profile_id: int,
+    body: UpdateProfileBody,
+    request: Request,
+    _user_id: int = Depends(require_admin),
 ):
     """Update name, version, and/or description for an existing profile.
 
@@ -234,7 +243,9 @@ async def update_profile(
 
 @router.delete("/profiles/{profile_id}")
 @audit_action("profile.delete", target_param="profile_id")
-async def delete_profile(request: Request, profile_id: int):
+async def delete_profile(
+    request: Request, profile_id: int, _user_id: int = Depends(require_admin)
+):
     """Delete a profile (and cascade-delete its repos), then clean Neo4j + pgvector."""
     from pathlib import Path
 
@@ -453,7 +464,9 @@ class AddRepoBody(BaseModel):
 
 @router.post("/repos")
 @audit_action("repo.create")
-async def add_repo(body: AddRepoBody, request: Request):
+async def add_repo(
+    body: AddRepoBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Add a repo to a profile. Triggers async clone for SSH URLs.
 
     local_path is always server-derived via default_clone_dir(profile, url) —
@@ -552,7 +565,9 @@ class UpdateRepoBody(BaseModel):
 
 @router.patch("/repos/{repo_id}")
 @audit_action("repo.update", target_param="repo_id")
-async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
+async def update_repo(
+    repo_id: int, body: UpdateRepoBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Update URL / branch / SSH key of an existing repo.
 
     head_sha is intentionally preserved so the incremental indexer can still
@@ -640,7 +655,9 @@ async def update_repo(repo_id: int, body: UpdateRepoBody, request: Request):
 
 @router.delete("/repos/{repo_id}")
 @audit_action("repo.delete", target_param="repo_id")
-async def delete_repo(request: Request, repo_id: int):
+async def delete_repo(
+    request: Request, repo_id: int, _user_id: int = Depends(require_admin)
+):
     """Delete a single repo, then clean Neo4j + pgvector scoped to that repo."""
     from pathlib import Path
 
@@ -691,7 +708,9 @@ async def delete_repo(request: Request, repo_id: int):
 
 @router.post("/profiles/{profile_id}/clone-all")
 @audit_action("profile.clone_all", target_param="profile_id")
-async def clone_all_pending(profile_id: int, request: Request):
+async def clone_all_pending(
+    profile_id: int, request: Request, _user_id: int = Depends(require_admin)
+):
     """Bulk-clone all pending/manual/error repos for a profile.
 
     file:// URLs pointing to existing local directories are short-circuited
@@ -813,7 +832,9 @@ class IndexRepoBody(BaseModel):
 
 @router.post("/repos/{repo_id}/index")
 @audit_action("operations.index_repo", target_param="repo_id")
-async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
+async def index_repo(
+    request: Request, repo_id: int, body: IndexRepoBody, _user_id: int = Depends(require_admin)
+):
     """Trigger indexer for a specific repo's profile (non-blocking subprocess)."""
     # Validate max_workers before acquiring a DB connection
     try:
@@ -884,7 +905,9 @@ async def index_repo(request: Request, repo_id: int, body: IndexRepoBody):
 
 @router.post("/repos/{repo_id}/reset-embed")
 @audit_action("operations.reset_embed", target_param="repo_id")
-async def reset_embed(request: Request, repo_id: int):
+async def reset_embed(
+    request: Request, repo_id: int, _user_id: int = Depends(require_admin)
+):
     """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile."""
     try:
         from src.db.pg import get_pool, repo_store
@@ -935,7 +958,9 @@ class IndexAllBody(BaseModel):
 
 
 @router.post("/index-all")
-async def index_all(request: Request, body: IndexAllBody):
+async def index_all(
+    request: Request, body: IndexAllBody, _user_id: int = Depends(require_admin)
+):
     """Trigger bulk index-repo --all for every registered profile."""
     # Validate max_workers in [1, 8]
     try:

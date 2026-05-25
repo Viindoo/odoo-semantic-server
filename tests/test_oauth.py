@@ -147,6 +147,17 @@ def _oauth_body(
 class TestNewUserCreation:
     """oauth_login creates a new user when no matching oauth or email record exists."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_signup(self, monkeypatch):
+        """Enable OAuth new-user creation for TestNewUserCreation tests.
+
+        SIGNUP_ENABLED defaults to False (Wave 0 invite-only hardening).
+        Tests that verify new-user creation flows must enable it explicitly;
+        tests that verify the blocked-by-default behaviour live in
+        test_wave0_admin_gate.TestOAuthSignupGate.
+        """
+        monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", True)
+
     @pytest.mark.asyncio
     async def test_oauth_login_new_user_creates_account(self):
         app = _make_app_no_loopback()

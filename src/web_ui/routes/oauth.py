@@ -31,6 +31,7 @@ from pydantic import BaseModel, field_validator
 from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
+from src.web_ui.config import SIGNUP_ENABLED
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
@@ -303,7 +304,43 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
         else:
             # ---------------------------------------------------------------
             # 3. No match at all → create new OAuth-only user
+            #    Blocked when SIGNUP_ENABLED=False (invite-only mode).
+            #    Existing linked accounts always log in (steps 1+2 above run
+            #    before this check, so returning users are never blocked).
             # ---------------------------------------------------------------
+            if not SIGNUP_ENABLED:
+                logger.warning(
+                    "OAuth new-user creation blocked: signup disabled "
+                    "(provider=%s, email=%s)",
+                    body.provider,
+                    body.email,
+                )
+                _insert_audit_log(
+                    actor=f"oauth:{body.provider}:{body.oauth_id}",
+                    action="user.oauth_login",
+                    target=body.email,
+                    success=False,
+                    detail={
+                        "ip": (
+                            request.headers.get("x-real-ip")
+                            or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+                            or (request.client.host if request.client else "unknown")
+                        ),
+                        "reason": "signup_disabled",
+                        "provider": body.provider,
+                    },
+                )
+                return JSONResponse(
+                    _json_safe({
+                        "error": "signup_disabled",
+                        "detail": (
+                            "New account creation via OAuth is disabled. "
+                            "Contact an administrator to get access."
+                        ),
+                    }),
+                    status_code=403,
+                )
+
             try:
                 user = _create_oauth_user(
                     provider=body.provider,

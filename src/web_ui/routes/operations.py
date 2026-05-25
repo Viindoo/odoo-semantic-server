@@ -38,7 +38,7 @@ from starlette.requests import Request
 from src.db.audit import audit_action
 from src.indexer.version_presets import PRESETS
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import require_admin_with_fresh_mfa
+from src.web_ui.auth import require_admin, require_admin_with_fresh_mfa
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/operations")
@@ -104,7 +104,9 @@ class IndexCoreBody(BaseModel):
 
 @router.post("/index-core")
 @audit_action("operations.index_core")
-async def post_index_core(body: IndexCoreBody, request: Request):
+async def post_index_core(
+    body: IndexCoreBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Validate inputs, spawn index-core subprocess, return job info."""
     # --- Validation ---
     error: str | None = None
@@ -155,7 +157,9 @@ class SeedPatternsBody(BaseModel):
 
 @router.post("/seed-patterns")
 @audit_action("operations.seed_patterns")
-async def post_seed_patterns(body: SeedPatternsBody, request: Request):
+async def post_seed_patterns(
+    body: SeedPatternsBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Validate inputs, spawn seed-patterns subprocess, return job info."""
     # --- Validation ---
     error: str | None = None
@@ -218,7 +222,9 @@ class ApplyPresetBody(BaseModel):
 
 @router.post("/apply-preset")
 @audit_action("operations.apply_preset")
-async def post_apply_preset(body: ApplyPresetBody, request: Request):
+async def post_apply_preset(
+    body: ApplyPresetBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Validate inputs, run apply-preset synchronously, return result."""
     # --- Validation ---
     error: str | None = None
@@ -358,7 +364,9 @@ def _spawn_backup_subprocess(job_id: str, output_path: str, bundle_passphrase_en
 
 @router.post("/backup")
 @audit_action("operations.backup")
-async def trigger_backup(request: Request, body: BackupBody):
+async def trigger_backup(
+    request: Request, body: BackupBody, _user_id: int = Depends(require_admin)
+):
     """Trigger a backup job. Returns job_id; poll or stream via /backup/{job_id}/status."""
     import uuid
 

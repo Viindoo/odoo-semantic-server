@@ -123,6 +123,17 @@ def signup_pg(pg_conn):
 
 
 class TestRegister:
+    @pytest.fixture(autouse=True)
+    def _enable_signup(self, monkeypatch):
+        """Enable public signup for all TestRegister tests.
+
+        SIGNUP_ENABLED defaults to False (invite-only) since Wave 0 security
+        hardening.  These tests exercise the registration flow itself, so they
+        must enable it explicitly.  Tests that verify the disabled-by-default
+        behaviour live in TestSignupGate (below).
+        """
+        monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", True)
+
     @pytest.mark.asyncio
     async def test_register_creates_unverified_user_and_token(self, signup_pg):
         """Happy path: new user → 201, unverified row + token in DB."""

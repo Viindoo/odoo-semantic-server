@@ -1,0 +1,728 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# tests/test_wave0_admin_gate.py
+"""Wave 0 security gate tests: admin-only mutating routes + signup disabled by default.
+
+Business intent:
+  - Every mutating control-plane route (POST/PATCH/DELETE on repos, profiles,
+    ssh-keys, operations, jobs) must return 403 for an authenticated non-admin
+    user, and must succeed (not 403) for an admin.
+  - Public signup is DISABLED by default (SIGNUP_ENABLED=False).
+    POST /api/auth/register → 403 when disabled, 201 when enabled.
+  - OAuth new-user creation is also blocked when SIGNUP_ENABLED=False.
+    Existing linked accounts must still log in.
+
+All tests use httpx.AsyncClient with ASGI transport — no real server.
+PostgreSQL is required (pytestmark postgres) for DB-layer route handlers.
+"""
+import os
+
+import httpx
+import pytest
+
+from src.db.migrate import run_migrations
+from src.web_ui.app import create_app
+from src.web_ui.auth import hash_password
+
+pytestmark = pytest.mark.postgres
+
+# ---------------------------------------------------------------------------
+# Session secret must be set before app creation
+# ---------------------------------------------------------------------------
+os.environ.setdefault("WEBUI_SESSION_SECRET", "test-secret-wave0-admin-gate-32bytes!!")
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def migrated_pg(clean_pg):
+    run_migrations(clean_pg)
+    return clean_pg
+
+
+def _async_client(app):
+    transport = httpx.ASGITransport(app=app)
+    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1")
+
+
+def _seed_users(pg_conn) -> tuple[int, int]:
+    """Insert one admin user and one non-admin user. Return (admin_id, nonadmin_id)."""
+    admin_hash = hash_password("AdminPass123!")
+    nonadmin_hash = hash_password("UserPass123!")
+    cols = "(username, password_hash, email, email_verified, is_admin, is_active)"
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO webui_users {cols}"
+            " VALUES ('wave0_admin', %s, 'wave0_admin@test.invalid', TRUE, TRUE, TRUE)"
+            " ON CONFLICT (username) DO UPDATE"
+            "   SET password_hash=EXCLUDED.password_hash, is_admin=TRUE RETURNING id",
+            (admin_hash,),
+        )
+        admin_id = cur.fetchone()[0]
+        cur.execute(
+            f"INSERT INTO webui_users {cols}"
+            " VALUES ('wave0_user', %s, 'wave0_user@test.invalid', TRUE, FALSE, TRUE)"
+            " ON CONFLICT (username) DO UPDATE"
+            "   SET password_hash=EXCLUDED.password_hash, is_admin=FALSE RETURNING id",
+            (nonadmin_hash,),
+        )
+        nonadmin_id = cur.fetchone()[0]
+    pg_conn.commit()
+    return admin_id, nonadmin_id
+
+
+async def _login_session(app, username: str, password: str) -> dict:
+    """Async helper: log in and return the session cookie dict."""
+    async with _async_client(app) as client:
+        resp = await client.post(
+            "/api/auth/login",
+            json={"username": username, "password": password},
+        )
+        assert resp.status_code == 200, f"Login failed for {username}: {resp.text}"
+        return dict(resp.cookies)
+
+
+async def _post_with_session(client, url, *, cookies: dict, json_body: dict | None = None):
+    """Helper: POST with session cookies."""
+    return await client.post(url, json=json_body or {}, cookies=cookies)
+
+
+async def _patch_with_session(client, url, *, cookies: dict, json_body: dict | None = None):
+    return await client.patch(url, json=json_body or {}, cookies=cookies)
+
+
+async def _delete_with_session(client, url, *, cookies: dict):
+    return await client.delete(url, cookies=cookies)
+
+
+# ---------------------------------------------------------------------------
+# Helpers: create test resources needed for PATCH/DELETE routes
+# ---------------------------------------------------------------------------
+
+
+def _seed_test_profile(pg_conn) -> int:
+    """Insert a test profile. Returns profile id."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version, description)"
+            " VALUES ('wave0_test_profile', '17.0', 'wave0 sec test')"
+            " ON CONFLICT (name) DO UPDATE SET odoo_version='17.0' RETURNING id",
+        )
+        pid = cur.fetchone()[0]
+    pg_conn.commit()
+    return pid
+
+
+def _seed_test_repo(pg_conn, profile_id: int) -> int:
+    """Insert a test repo under profile_id. Returns repo id."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO repos (profile_id, url, branch, local_path, clone_status)"
+            " VALUES (%s, 'https://example.com/repo.git', '17.0', '/tmp/wave0_repo', 'manual')"
+            " RETURNING id",
+            (profile_id,),
+        )
+        rid = cur.fetchone()[0]
+    pg_conn.commit()
+    return rid
+
+
+def _seed_test_ssh_key(pg_conn) -> int:
+    """Insert a minimal SSH key row. Returns key id."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted)"
+            " VALUES ('wave0_test_key', 'ssh-ed25519 AAAA...', 'encrypted_stub')"
+            " RETURNING id",
+        )
+        kid = cur.fetchone()[0]
+    pg_conn.commit()
+    return kid
+
+
+def _seed_test_job(pg_conn) -> int:
+    """Insert a minimal indexer_jobs row in 'running' state. Returns job id."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO indexer_jobs (profile_name, status, pid)"
+            " VALUES ('wave0_test_profile', 'running', 99999999)"
+            " RETURNING id",
+        )
+        jid = cur.fetchone()[0]
+    pg_conn.commit()
+    return jid
+
+
+# ---------------------------------------------------------------------------
+# TASK 1: Admin gate tests
+# ---------------------------------------------------------------------------
+
+
+class TestReposRoutesAdminGate:
+    """POST/PATCH/DELETE /api/repos/* routes must require admin."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        """Real auth — no bypass allowed for these tests."""
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_create_profile_non_admin_403(self, migrated_pg):
+        """Non-admin user cannot create a profile — must get 403."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/repos/profiles",
+                cookies=cookies,
+                json_body={"name": "attacker_profile", "version": "17.0"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_create_profile_admin_not_403(self, migrated_pg):
+        """Admin user can create a profile — must not get 403."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/repos/profiles",
+                cookies=cookies,
+                json_body={"name": "admin_created_profile", "version": "17.0"},
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_update_profile_non_admin_403(self, migrated_pg):
+        """Non-admin cannot PATCH a profile."""
+        admin_id, _ = _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _patch_with_session(
+                client,
+                f"/api/repos/profiles/{pid}",
+                cookies=cookies,
+                json_body={"description": "hacked"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_update_profile_admin_not_403(self, migrated_pg):
+        """Admin can PATCH a profile."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _patch_with_session(
+                client,
+                f"/api/repos/profiles/{pid}",
+                cookies=cookies,
+                json_body={"description": "legit update"},
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_set_profile_parent_non_admin_403(self, migrated_pg):
+        """Non-admin cannot PATCH /profiles/{id}/parent."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _patch_with_session(
+                client,
+                f"/api/repos/profiles/{pid}/parent",
+                cookies=cookies,
+                json_body={"parent_id": None},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_delete_profile_non_admin_403(self, migrated_pg):
+        """Non-admin cannot DELETE a profile."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _delete_with_session(
+                client,
+                f"/api/repos/profiles/{pid}",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_clone_all_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /profiles/{id}/clone-all."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                f"/api/repos/profiles/{pid}/clone-all",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_add_repo_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /repos (add repo)."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/repos/repos",
+                cookies=cookies,
+                json_body={
+                    "profile": "wave0_test_profile",
+                    "url": "https://example.com/evil.git",
+                    "branch": "17.0",
+                },
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_update_repo_non_admin_403(self, migrated_pg):
+        """Non-admin cannot PATCH /repos/{id}."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        rid = _seed_test_repo(migrated_pg, pid)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _patch_with_session(
+                client,
+                f"/api/repos/repos/{rid}",
+                cookies=cookies,
+                json_body={"branch": "evil"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_delete_repo_non_admin_403(self, migrated_pg):
+        """Non-admin cannot DELETE /repos/{id}."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        rid = _seed_test_repo(migrated_pg, pid)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _delete_with_session(
+                client,
+                f"/api/repos/repos/{rid}",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_index_repo_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /repos/{id}/index."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        rid = _seed_test_repo(migrated_pg, pid)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                f"/api/repos/repos/{rid}/index",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_reset_embed_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /repos/{id}/reset-embed."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        rid = _seed_test_repo(migrated_pg, pid)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                f"/api/repos/repos/{rid}/reset-embed",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_index_all_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /index-all."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/repos/index-all",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+
+class TestSshKeysAdminGate:
+    """SSH key routes must require admin."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_create_ssh_key_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/ssh-keys (generate keypair)."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/ssh-keys",
+                cookies=cookies,
+                json_body={"name": "evil_key"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_create_ssh_key_admin_not_403(self, migrated_pg, monkeypatch):
+        """Admin can POST /api/ssh-keys."""
+        _seed_users(migrated_pg)
+        # Provide FERNET_KEY so the handler doesn't fail at key-gen
+        from cryptography.fernet import Fernet
+        monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode())
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/ssh-keys",
+                cookies=cookies,
+                json_body={"name": "legit_key"},
+            )
+        # Should not be 403 (may be 500 if other infra missing — we only check ≠403)
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_import_ssh_key_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/ssh-keys/import."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/ssh-keys/import",
+                cookies=cookies,
+                json_body={"name": "evil", "private_key_pem": "FAKE"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_delete_ssh_key_non_admin_403(self, migrated_pg):
+        """Non-admin cannot DELETE /api/ssh-keys/{id}."""
+        _seed_users(migrated_pg)
+        kid = _seed_test_ssh_key(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _delete_with_session(
+                client,
+                f"/api/ssh-keys/{kid}",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_delete_ssh_key_admin_not_403(self, migrated_pg):
+        """Admin can DELETE /api/ssh-keys/{id}."""
+        _seed_users(migrated_pg)
+        kid = _seed_test_ssh_key(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _delete_with_session(
+                client,
+                f"/api/ssh-keys/{kid}",
+                cookies=cookies,
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+
+class TestOperationsAdminGate:
+    """Operations routes must require admin."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_index_core_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/operations/index-core."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/operations/index-core",
+                cookies=cookies,
+                json_body={"source": "/tmp", "version": "17.0"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_seed_patterns_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/operations/seed-patterns."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/operations/seed-patterns",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_apply_preset_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/operations/apply-preset."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/operations/apply-preset",
+                cookies=cookies,
+                json_body={"name": "viindoo17"},
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_backup_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/operations/backup."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/operations/backup",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_index_core_admin_not_403(self, migrated_pg, tmp_path):
+        """Admin can POST /api/operations/index-core (non-403 regardless of business errors)."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/operations/index-core",
+                cookies=cookies,
+                json_body={"source": str(tmp_path), "version": "17.0"},
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+
+class TestJobsAdminGate:
+    """Jobs reset route must require admin."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_reset_stuck_job_non_admin_403(self, migrated_pg):
+        """Non-admin cannot POST /api/jobs/{id}/reset."""
+        _seed_users(migrated_pg)
+        jid = _seed_test_job(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_user", "UserPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                f"/api/jobs/{jid}/reset",
+                cookies=cookies,
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_reset_stuck_job_admin_not_403(self, migrated_pg):
+        """Admin can POST /api/jobs/{id}/reset (may get 409 if PID alive — not 403)."""
+        _seed_users(migrated_pg)
+        jid = _seed_test_job(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                f"/api/jobs/{jid}/reset",
+                cookies=cookies,
+            )
+        # 409 is expected (PID 99999999 doesn't exist → process lookup)
+        # The important check: NOT 403
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+
+# ---------------------------------------------------------------------------
+# TASK 2: Signup gate tests
+# ---------------------------------------------------------------------------
+
+
+class TestSignupGate:
+    """SIGNUP_ENABLED=False blocks new registrations (default behaviour)."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+        # Ensure the module-level constant is False (default)
+        monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", False)
+
+    @pytest.mark.asyncio
+    async def test_register_disabled_returns_403(self, migrated_pg):
+        """POST /api/auth/register → 403 when SIGNUP_ENABLED=False."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/auth/register",
+                json={
+                    "email": "attacker@example.com",
+                    "username": "attacker",
+                    "password": "SecurePass123!",
+                    "confirm_password": "SecurePass123!",
+                    "hcaptcha_token": "",
+                },
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert resp.json().get("error") == "signup_disabled"
+
+    @pytest.mark.asyncio
+    async def test_register_no_user_created_when_disabled(self, migrated_pg):
+        """Disabled signup must NOT create any DB row."""
+        from src.db.pg import get_pool
+        app = create_app()
+        async with _async_client(app) as client:
+            await client.post(
+                "/api/auth/register",
+                json={
+                    "email": "ghost@example.com",
+                    "username": "ghost_user",
+                    "password": "SecurePass123!",
+                    "confirm_password": "SecurePass123!",
+                    "hcaptcha_token": "",
+                },
+            )
+        with get_pool().checkout() as conn:
+            row = get_pool().fetch_one(
+                conn,
+                "SELECT id FROM webui_users WHERE username = 'ghost_user'",
+            )
+        assert row is None, "Disabled signup must not create any user in DB"
+
+    @pytest.mark.asyncio
+    async def test_register_enabled_returns_201(self, migrated_pg, monkeypatch):
+        """POST /api/auth/register → 201 when SIGNUP_ENABLED=True."""
+        monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", True)
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/auth/register",
+                json={
+                    "email": "newuser@example.com",
+                    "username": "wave0_newuser",
+                    "password": "SecurePass123!",
+                    "confirm_password": "SecurePass123!",
+                    "hcaptcha_token": "",
+                },
+            )
+        assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"
+
+
+class TestOAuthSignupGate:
+    """SIGNUP_ENABLED=False blocks OAuth new-user creation but allows existing users to log in."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+        monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", False)
+
+    @pytest.mark.asyncio
+    async def test_oauth_new_user_blocked_when_signup_disabled(self, migrated_pg):
+        """Brand-new OAuth user (no existing account) → 403 when signup disabled."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/auth/oauth-login",
+                json={
+                    "provider": "google",
+                    "oauth_id": "google_new_user_999",
+                    "email": "brandnew@google.example",
+                    "email_verified": True,
+                    "name": "Brand New",
+                },
+            )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert resp.json().get("error") == "signup_disabled"
+
+    @pytest.mark.asyncio
+    async def test_oauth_existing_user_can_still_login_when_signup_disabled(self, migrated_pg):
+        """Existing OAuth-linked user must still be able to log in even when signup is disabled."""
+        # Pre-create a user with OAuth credentials (simulates existing account).
+        # password_hash uses a placeholder — the NOT NULL constraint on the column
+        # predates the OAuth migration that would drop it; using a stub satisfies
+        # the constraint while still letting the OAuth login path work (it never
+        # reads password_hash for OAuth users).
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO webui_users"
+                " (username, password_hash, oauth_provider, oauth_id,"
+                "  email, email_verified, is_admin, is_active)"
+                " VALUES ('existing_oauth_user', 'OAUTH_USER_NO_PW',"
+                "  'google', 'google_existing_999',"
+                "  'existing@google.example', TRUE, FALSE, TRUE)"
+                " ON CONFLICT (username) DO NOTHING",
+            )
+        migrated_pg.commit()
+
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/api/auth/oauth-login",
+                json={
+                    "provider": "google",
+                    "oauth_id": "google_existing_999",
+                    "email": "existing@google.example",
+                    "email_verified": True,
+                    "name": "Existing User",
+                },
+            )
+        # Existing user must be allowed (fast path: matched by oauth_id)
+        assert resp.status_code == 200, (
+            f"Existing OAuth user must not be blocked by signup gate, "
+            f"got {resp.status_code}: {resp.text}"
+        )

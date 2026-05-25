@@ -3,7 +3,7 @@
 """SSH key pair management — generate Ed25519 keypair, store Fernet-encrypted (M8 W1 pure JSON)."""
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
@@ -11,6 +11,7 @@ from starlette.requests import Request
 from src.crypto import get_fernet, get_fernet_key
 from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
+from src.web_ui.auth import require_admin
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ssh-keys")
@@ -122,7 +123,9 @@ async def list_ssh_keys(request: Request):
 
 @router.post("")
 @audit_action("ssh_key.create")
-async def create_ssh_key(body: CreateSshKeyBody, request: Request):
+async def create_ssh_key(
+    body: CreateSshKeyBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Generate a new Ed25519 keypair, store encrypted, return public key once."""
     error = None
     new_public_key = None
@@ -165,7 +168,9 @@ async def create_ssh_key(body: CreateSshKeyBody, request: Request):
 
 @router.post("/import")
 @audit_action("ssh_key.import")
-async def import_ssh_key(body: ImportSshKeyBody, request: Request):
+async def import_ssh_key(
+    body: ImportSshKeyBody, request: Request, _user_id: int = Depends(require_admin)
+):
     """Import an existing Ed25519 private key (PEM). Server derives public key,
     validates Ed25519, encrypts with Fernet, stores in DB."""
     error = None
@@ -224,7 +229,7 @@ async def import_ssh_key(body: ImportSshKeyBody, request: Request):
 
 @router.delete("/{key_id}")
 @audit_action("ssh_key.delete", target_param="key_id")
-async def delete_ssh_key(request: Request, key_id: int):
+async def delete_ssh_key(request: Request, key_id: int, _user_id: int = Depends(require_admin)):
     """Delete an SSH key pair by id."""
     try:
         from src.db.pg import auth_store
