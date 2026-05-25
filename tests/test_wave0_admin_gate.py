@@ -376,6 +376,157 @@ class TestReposRoutesAdminGate:
             )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
 
+    # ----------------------------------------------------------------------
+    # Admin positive-path regression guard.
+    # The class contract (docstring) is "must succeed (not 403) for an admin"
+    # for EVERY gated route — not just create/update profile. The tests below
+    # prove an admin is not over-gated on the remaining routes. Each hits a
+    # pre-spawn return path (DB op, 404 on a missing id, 422 on bad input, or
+    # "no pending repos") so no indexer/clone subprocess is started — we only
+    # assert status != 403.
+    # ----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_set_profile_parent_admin_not_403(self, migrated_pg):
+        """Admin can PATCH /profiles/{id}/parent."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _patch_with_session(
+                client,
+                f"/api/repos/profiles/{pid}/parent",
+                cookies=cookies,
+                json_body={"parent_id": None},
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_delete_profile_admin_not_403(self, migrated_pg):
+        """Admin can DELETE a profile."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _delete_with_session(
+                client, f"/api/repos/profiles/{pid}", cookies=cookies
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_clone_all_admin_not_403(self, migrated_pg):
+        """Admin can POST /profiles/{id}/clone-all (no pending repos → 200, no spawn)."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client, f"/api/repos/profiles/{pid}/clone-all", cookies=cookies
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_add_repo_admin_not_403(self, migrated_pg):
+        """Admin can POST /repos (HTTPS URL → DB insert, no clone subprocess)."""
+        _seed_users(migrated_pg)
+        _seed_test_profile(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/repos/repos",
+                cookies=cookies,
+                json_body={
+                    "profile": "wave0_test_profile",
+                    "url": "https://example.com/legit.git",
+                    "branch": "17.0",
+                },
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_update_repo_admin_not_403(self, migrated_pg):
+        """Admin can PATCH /repos/{id}."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        rid = _seed_test_repo(migrated_pg, pid)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _patch_with_session(
+                client,
+                f"/api/repos/repos/{rid}",
+                cookies=cookies,
+                json_body={"branch": "18.0"},
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_delete_repo_admin_not_403(self, migrated_pg):
+        """Admin can DELETE /repos/{id}."""
+        _seed_users(migrated_pg)
+        pid = _seed_test_profile(migrated_pg)
+        rid = _seed_test_repo(migrated_pg, pid)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _delete_with_session(
+                client, f"/api/repos/repos/{rid}", cookies=cookies
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_index_repo_admin_not_403(self, migrated_pg):
+        """Admin reaches POST /repos/{id}/index (missing repo → 404, no spawn)."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client, "/api/repos/repos/999999/index", cookies=cookies
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_reset_embed_admin_not_403(self, migrated_pg):
+        """Admin reaches POST /repos/{id}/reset-embed (missing repo → 404, no spawn)."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client, "/api/repos/repos/999999/reset-embed", cookies=cookies
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
+    @pytest.mark.asyncio
+    async def test_index_all_admin_not_403(self, migrated_pg):
+        """Admin reaches POST /index-all (bad max_workers → 422, no spawn)."""
+        _seed_users(migrated_pg)
+        app = create_app()
+        cookies = await _login_session(app, "wave0_admin", "AdminPass123!")
+        async with _async_client(app) as client:
+            resp = await _post_with_session(
+                client,
+                "/api/repos/index-all",
+                cookies=cookies,
+                json_body={"max_workers": "not-an-int"},
+            )
+        sc = resp.status_code
+        assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
+
 
 class TestSshKeysAdminGate:
     """SSH key routes must require admin."""
@@ -583,8 +734,8 @@ class TestJobsAdminGate:
                 f"/api/jobs/{jid}/reset",
                 cookies=cookies,
             )
-        # 409 is expected (PID 99999999 doesn't exist → process lookup)
-        # The important check: NOT 403
+        # PID 99999999 is dead → handler resets the job and returns 200.
+        # (A live PID would return 409; either way the check is: NOT 403.)
         sc = resp.status_code
         assert sc != 403, f"Admin should not get 403, got {sc}: {resp.text}"
 
@@ -724,5 +875,61 @@ class TestOAuthSignupGate:
         # Existing user must be allowed (fast path: matched by oauth_id)
         assert resp.status_code == 200, (
             f"Existing OAuth user must not be blocked by signup gate, "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TASK 3: Unauthenticated requests are rejected (defense layer 1)
+# ---------------------------------------------------------------------------
+
+
+class TestUnauthenticatedRejected:
+    """No session → 401 on every gated mutating route.
+
+    Complements the non-admin (403) tests: those prove an authenticated
+    non-admin is blocked at the require_admin layer; these prove a session-less
+    caller is blocked earlier, at AuthRequiredMiddleware. Together they document
+    the full auth contract (401 → 403 → admin OK) and guard against a gated
+    route being accidentally added to the middleware exempt list.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disable_bypass(self, monkeypatch):
+        monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+
+    # (method, path) for every route admin-gated in Wave 0. Dummy ids are fine:
+    # the 401 fires in middleware before the path param or handler is reached.
+    _GATED_ROUTES = [
+        ("POST", "/api/repos/profiles"),
+        ("PATCH", "/api/repos/profiles/1/parent"),
+        ("PATCH", "/api/repos/profiles/1"),
+        ("DELETE", "/api/repos/profiles/1"),
+        ("POST", "/api/repos/repos"),
+        ("PATCH", "/api/repos/repos/1"),
+        ("DELETE", "/api/repos/repos/1"),
+        ("POST", "/api/repos/profiles/1/clone-all"),
+        ("POST", "/api/repos/repos/1/index"),
+        ("POST", "/api/repos/repos/1/reset-embed"),
+        ("POST", "/api/repos/index-all"),
+        ("POST", "/api/ssh-keys"),
+        ("POST", "/api/ssh-keys/import"),
+        ("DELETE", "/api/ssh-keys/1"),
+        ("POST", "/api/operations/index-core"),
+        ("POST", "/api/operations/seed-patterns"),
+        ("POST", "/api/operations/apply-preset"),
+        ("POST", "/api/operations/backup"),
+        ("POST", "/api/jobs/1/reset"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,path", _GATED_ROUTES)
+    async def test_unauthenticated_request_returns_401(self, migrated_pg, method, path):
+        """Every gated mutating route rejects a session-less caller with 401."""
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.request(method, path, json={})
+        assert resp.status_code == 401, (
+            f"{method} {path} must return 401 without a session, "
             f"got {resp.status_code}: {resp.text}"
         )

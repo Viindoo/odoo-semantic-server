@@ -11,7 +11,9 @@ Account-linking policy (F5 security gate):
     2. Match by email + email_verified=TRUE  → merge (set oauth columns).
     3. Match by email + email_verified=FALSE → reject 409 (prevents takeover
        via unverified email at the provider).
-    4. No match                              → create new user (is_admin=FALSE).
+    4. No match                              → create new user (is_admin=FALSE),
+       unless SIGNUP_ENABLED=False (default)  → reject 403 (invite-only mode;
+       steps 1-2 above still let existing linked accounts log in).
 
 OAuth-only users have password_hash = NULL.  The login.py password path forces
 a dummy-hash bcrypt compare for NULL password_hash so timing matches a
@@ -321,11 +323,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
                     target=body.email,
                     success=False,
                     detail={
-                        "ip": (
-                            request.headers.get("x-real-ip")
-                            or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-                            or (request.client.host if request.client else "unknown")
-                        ),
+                        "ip": client_ip,
                         "reason": "signup_disabled",
                         "provider": body.provider,
                     },
