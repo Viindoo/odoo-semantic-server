@@ -19,6 +19,8 @@ Self-deactivation is blocked (403).
 
 import logging
 import os
+import re
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -28,7 +30,9 @@ from starlette.requests import Request
 from src.db.audit import audit_action
 from src.db.auth_registry import LastAdminProtectedError, UserNotFoundError
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import require_admin
+from src.web_ui.auth import hash_password, require_admin
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_@.\-]{1,64}$")
 
 _logger = logging.getLogger(__name__)
 
@@ -53,9 +57,128 @@ class AssignOwnerBody(BaseModel):
     user_id: int | None
 
 
+class CreateUserBody(BaseModel):
+    username: str
+    email: str | None = None
+    is_admin: bool = False
+    password: str | None = None  # if omitted, a temp password is generated
+
+
 # ---------------------------------------------------------------------------
 # List users
 # ---------------------------------------------------------------------------
+
+
+@router.post("/api/admin/users")
+@audit_action("user.create", target_param=None)
+async def create_user(
+    body: CreateUserBody,
+    request: Request,
+    actor_id: int = Depends(require_admin),
+):
+    """Create a new web UI user (admin only — W3 B).
+
+    Body: {username, email?, is_admin?, password?}
+
+    - If ``password`` is provided: use it (hashed with bcrypt cost=12).
+    - If ``password`` is omitted: generate a cryptographically random 20-char
+      temp password, return it **once** in the response body. It is never
+      persisted in plaintext and not logged.
+
+    Duplicate username or email -> 409. Invalid username format -> 422.
+    The created user has ``email_verified=TRUE`` (admin-created accounts need
+    no verification step). If the user was created with a temp-password, the
+    admin must convey it to the user out-of-band.
+    """
+    username = (body.username or "").strip()
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(
+            status_code=422,
+            detail="Username invalid: 1-64 chars, alphanumeric + _ @ . -",
+        )
+
+    # Generate or use provided password (never log plaintext)
+    temp_password: str | None = None
+    if body.password:
+        pw_hash = hash_password(body.password)
+    else:
+        temp_password = secrets.token_urlsafe(15)  # 120 bits entropy, ~20 chars
+        pw_hash = hash_password(temp_password)
+
+    try:
+        from src.db.pg import get_pool
+        with get_pool().checkout() as conn:
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    # Check username uniqueness
+                    cur.execute(
+                        "SELECT id FROM webui_users WHERE username = %s",
+                        (username,),
+                    )
+                    if cur.fetchone():
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Username '{username}' already exists",
+                        )
+                    # Check email uniqueness if provided
+                    email = (body.email or "").strip() or None
+                    if email:
+                        cur.execute(
+                            "SELECT id FROM webui_users WHERE email = %s",
+                            (email,),
+                        )
+                        if cur.fetchone():
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"Email '{email}' already registered",
+                            )
+                    # Insert user — admin-created accounts are email_verified by default
+                    cur.execute(
+                        "INSERT INTO webui_users"
+                        " (username, password_hash, email, email_verified, is_admin, is_active)"
+                        " VALUES (%s, %s, %s, TRUE, %s, TRUE)"
+                        " RETURNING id",
+                        (username, pw_hash, email, body.is_admin),
+                    )
+                    new_id = cur.fetchone()[0]
+                conn.commit()
+            except HTTPException:
+                conn.rollback()
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.error("create_user DB error: %s", exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    from src.db.audit import write_audit_log
+    write_audit_log(
+        actor=f"user:{actor_id}",
+        action="user.create",
+        target=str(new_id),
+        success=True,
+        detail={
+            "username": username,
+            "is_admin": body.is_admin,
+            "temp_password": temp_password is not None,
+        },
+    )
+    _logger.info(
+        "Admin %s created user %s (id=%s is_admin=%s temp_pw=%s)",
+        actor_id, username, new_id, body.is_admin, temp_password is not None,
+    )
+
+    response_body: dict = {"ok": True, "user_id": new_id, "username": username}
+    if temp_password is not None:
+        # Return once — caller must convey this out-of-band. Not persisted or logged.
+        response_body["temp_password"] = temp_password
+    return JSONResponse(_json_safe(response_body))
 
 
 @router.get("/api/admin/users")
@@ -82,6 +205,7 @@ async def list_users(request: Request, actor_id: int = Depends(require_admin)):
 
 
 @router.post("/api/admin/users/{user_id}/deactivate")
+@audit_action("user.deactivate", target_param="user_id")
 async def deactivate_user(
     user_id: int, request: Request, actor_id: int = Depends(require_admin)
 ):
@@ -127,6 +251,7 @@ async def deactivate_user(
 
 
 @router.post("/api/admin/users/{user_id}/reactivate")
+@audit_action("user.reactivate", target_param="user_id")
 async def reactivate_user(
     user_id: int, request: Request, actor_id: int = Depends(require_admin)
 ):
@@ -162,6 +287,7 @@ async def reactivate_user(
 
 
 @router.post("/api/admin/users/{user_id}/reset-password-link")
+@audit_action("user.reset_password_link", target_param="user_id")
 async def reset_password_link(
     user_id: int, request: Request, actor_id: int = Depends(require_admin)
 ):

@@ -228,6 +228,11 @@ def create_app() -> FastAPI:
 
     app.include_router(account.router)
 
+    # W3: Admin audit log viewer (C) — GET /api/admin/audit-log
+    from src.web_ui.routes import admin_audit
+
+    app.include_router(admin_audit.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:

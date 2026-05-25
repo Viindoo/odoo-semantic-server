@@ -55,7 +55,11 @@ totp.setup             totp.verify            totp.disable
 
 operations.backup      operations.restore     operations.apply_preset
 operations.index_repo  operations.index_core  operations.seed_patterns
-operations.reset_embed
+operations.reset_embed operations.index_all
+
+jobs.reset
+
+user.create
 
 fernet.rotate
 

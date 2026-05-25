@@ -21,7 +21,8 @@ Canonical actor formats:
   - "anonymous"          No session / unresolvable context
 
 Action taxonomy — see ADR-0021 for full list:
-  user.*         Login, logout, register, reset_password, delete, deactivate, reactivate, set_admin
+  user.*         Login, logout, register, reset_password, reset_password_link, delete,
+                 deactivate, reactivate, set_admin, create
   profile.*      Create, update, delete, clone, set_parent, clone_all, assign_tenant
   repo.*         Create, update, delete, clone, assign_tenant
   tenant.*       Create, update, delete, add_member, remove_member  (ADR-0038 — W1 tenant RBAC)
@@ -29,7 +30,9 @@ Action taxonomy — see ADR-0021 for full list:
   ssh_key.*      Create, import, delete
   oauth.*        login.google, login.github
   totp.*         Setup, verify, disable
-  operations.*   Backup, restore, apply_preset, index_repo, index_core, seed_patterns, reset_embed
+  operations.*   Backup, restore, apply_preset, index_repo, index_core, seed_patterns,
+                 reset_embed, index_all
+  jobs.*         reset
   fernet.*       Rotate
   feedback.*     submit
   mcp.query.*    unscoped — MCP tool call on global/admin (tenant_id IS NULL) path (ADR-0034 §D4)
@@ -260,6 +263,9 @@ def audit_action(action: str, *, target_param: str | None = None) -> Callable:
                 write_audit_log(actor, action, target, success=False, detail=detail)
                 raise
 
+        # Reliable introspection markers — set on wrapper (not lost through @wraps)
+        wrapper.__audit_action__ = action
+        wrapper.__audit_target_param__ = target_param
         return wrapper
     return decorator
 

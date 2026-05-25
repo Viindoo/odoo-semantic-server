@@ -895,6 +895,9 @@ def _cmd_diagnose(args) -> int:
     """Cross-tier health diagnostic. Reports PG container, Neo4j container,
     MCP /health endpoint, and bind-mount source types declared in compose.
 
+    Delegates all check logic to ``src.diagnostics.run_diagnostics()`` (SSOT)
+    so the HTTP endpoint can reuse the same checks without code duplication.
+
     Output: human-readable text by default; `--json` emits a single object
     suitable for piping into a remote alert pipeline.
 
@@ -903,98 +906,26 @@ def _cmd_diagnose(args) -> int:
         1  at least one check FAILED — see output for which
     """
     import json as _json
-    import urllib.error
-    import urllib.request
 
-    checks: list[dict] = []
+    from src.diagnostics import run_diagnostics
+    result = run_diagnostics()
+    checks = result["checks"]
 
-    # Check 1: PG container running
-    pg_container = os.getenv("POSTGRES_CONTAINER", "odoo-semantic-mcp-postgres-1")
-    pg_running = _is_pg_container_running()
-    if pg_running is None:
-        checks.append({"check": "pg_container_running", "status": "skipped",
-                       "detail": "docker not available or container unknown"})
-    elif pg_running:
-        checks.append({"check": "pg_container_running", "status": "ok",
-                       "detail": pg_container})
-    else:
-        checks.append({"check": "pg_container_running", "status": "fail",
-                       "detail": f"{pg_container} not running"})
-
-    # Check 2: Neo4j container healthy
-    neo4j_container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
-    try:
-        r = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Health.Status}}", neo4j_container],
-            capture_output=True, text=True, shell=False,
-        )
-        if r.returncode != 0:
-            checks.append({"check": "neo4j_container_healthy", "status": "skipped",
-                           "detail": f"{neo4j_container} not found"})
-        elif r.stdout.strip() == "healthy":
-            checks.append({"check": "neo4j_container_healthy", "status": "ok",
-                           "detail": neo4j_container})
-        else:
-            checks.append({"check": "neo4j_container_healthy", "status": "fail",
-                           "detail": f"{neo4j_container} state={r.stdout.strip() or 'unknown'}"})
-    except FileNotFoundError:
-        checks.append({"check": "neo4j_container_healthy", "status": "skipped",
-                       "detail": "docker not in PATH"})
-
-    # Check 3: MCP /health endpoint reachable
-    from src.constants import MCP_HEALTH_PROBE_TIMEOUT_SECONDS
-    mcp_url = os.getenv("MCP_HEALTH_URL", "http://127.0.0.1:8002/health")
-    try:
-        with urllib.request.urlopen(
-            mcp_url, timeout=MCP_HEALTH_PROBE_TIMEOUT_SECONDS,
-        ) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            try:
-                parsed = _json.loads(body)
-                health_status = parsed.get("status", "unknown")
-            except _json.JSONDecodeError:
-                health_status = "unparseable"
-            if resp.status == 200 and health_status == "ok":
-                checks.append({"check": "mcp_health", "status": "ok",
-                               "detail": f"HTTP {resp.status} status={health_status}"})
-            else:
-                checks.append({"check": "mcp_health", "status": "fail",
-                               "detail": f"HTTP {resp.status} status={health_status}"})
-    except urllib.error.URLError as e:
-        checks.append({"check": "mcp_health", "status": "fail",
-                       "detail": f"unreachable: {str(e)[:200]}"})
-    except Exception as e:
-        checks.append({"check": "mcp_health", "status": "fail",
-                       "detail": f"unexpected: {str(e)[:200]}"})
-
-    # Check 4: bind-mount source declared in compose is a directory
-    # (regression guard for the May 2026 incident — Docker daemon auto-creates
-    # an empty *file* as a directory if it doesn't exist before the next `up`,
-    # so we verify the declared source path is intact and the correct type).
-    init_dir = _diagnose_initdb_dir()
-    if init_dir.exists():
-        if init_dir.is_dir():
-            checks.append({"check": "compose_initdb_mount_type", "status": "ok",
-                           "detail": f"{init_dir} is a directory"})
-        else:
-            checks.append({"check": "compose_initdb_mount_type", "status": "fail",
-                           "detail": f"{init_dir} exists but is NOT a directory — fix immediately"})
-    else:
-        checks.append({"check": "compose_initdb_mount_type", "status": "skipped",
-                       "detail": f"{init_dir} missing (repo not deployed here?)"})
-
-    failures = [c for c in checks if c["status"] == "fail"]
+    # Map shared status names to CLI legacy names for human-readable output
+    _status_symbol = {"ok": "✓", "error": "✗", "skipped": "~"}
+    errors = [c for c in checks if c["status"] == "error"]
 
     if getattr(args, "json", False):
-        print(_json.dumps({"checks": checks, "failures": len(failures)}, indent=2))
+        # Emit JSON using the shared schema (name/status/detail) + failure count
+        print(_json.dumps({"checks": checks, "failures": len(errors)}, indent=2))
     else:
         print("=== osm diagnose ===")
         for c in checks:
-            symbol = {"ok": "✓", "fail": "✗", "skipped": "~"}[c["status"]]
-            print(f"  {symbol} {c['check']:<30} {c['detail']}")
-        print(f"\n{len(failures)} failure(s) of {len(checks)} checks")
+            symbol = _status_symbol.get(c["status"], "?")
+            print(f"  {symbol} {c['name']:<30} {c['detail']}")
+        print(f"\n{len(errors)} failure(s) of {len(checks)} checks")
 
-    return 1 if failures else 0
+    return 1 if errors else 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
