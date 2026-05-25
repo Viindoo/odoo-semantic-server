@@ -108,10 +108,42 @@ def test_parse_odoo_core_skips_missing_files(tmp_path):
     assert all("odoo.fields" not in qn for qn in qnames)
 
 
-def test_core_files_allowlist_has_eight_paths():
-    """ADR-0002 §6 — allow-list is exactly 8 stable Odoo core files."""
-    assert len(_CORE_FILES) == 8
-    # Sanity: paths look right (no walk-toàn-bộ-source escape)
+def test_core_files_allowlist_is_curated_and_matches_documented_set():
+    """ADR-0002 §6 — allow-list is CURATED (bounded), not a full source walk.
+
+    Intent: the allowlist must exactly match the documented set of stable core
+    API files. Adding new files requires explicit justification (not automatic).
+    This test encodes the full documented set so any unreviewed addition/removal
+    causes a failure.
+
+    FIX-3 (v19): two odoo/orm/ files were added to cover v19 public ORM API
+    (parse_field_expr, is_model_class, is_model_definition). These paths resolve
+    to real files only on v19+; _resolve_core_paths returns [] for v8-v18
+    (no odoo/orm/ dir exists) and the entries are silently skipped.
+    """
+    # Exact documented set — any unreviewed change to this set must update this test.
+    expected = (
+        "odoo/tools/safe_eval.py",
+        "odoo/tools/query.py",
+        "odoo/tools/sql.py",
+        "odoo/fields.py",
+        "odoo/models.py",
+        "odoo/api.py",
+        "odoo/sql_db.py",
+        "odoo/exceptions.py",
+        # v19-only ORM split files (added by FIX-3): skip safely on v8-v18.
+        "odoo/orm/utils.py",           # parse_field_expr + OriginIds (v19 public API)
+        "odoo/orm/model_classes.py",   # is_model_class / is_model_definition (v19)
+    )
+    assert len(_CORE_FILES) == len(expected), (
+        f"Allow-list size changed: expected {len(expected)}, got {len(_CORE_FILES)}. "
+        f"Update this test if the change is intentional and documented."
+    )
+    assert set(_CORE_FILES) == set(expected), (
+        f"Allow-list contents differ. New paths: {set(_CORE_FILES) - set(expected)}. "
+        f"Removed paths: {set(expected) - set(_CORE_FILES)}."
+    )
+    # Sanity: all paths look right (no walk-entire-source escape).
     for path in _CORE_FILES:
         assert path.startswith("odoo/")
         assert path.endswith(".py")
@@ -240,24 +272,55 @@ def test_v19_command_enum_resolves_via_fields_with_continuity_qname(tmp_path):
 
 
 def test_v19_curated_domains_emits_only_public_symbols(tmp_path):
-    """orm/domains.py: only the curated public classes are emitted; helpers excluded."""
+    """orm/domains.py: the curated 8 public Domain builder classes are emitted;
+    OptimizationLevel (internal IntEnum) and _optimize_* helpers are excluded.
+
+    Intent: _V19_CURATED_FILES applies a name_allowlist so only the documented
+    public domain-builder API surface reaches the graph. The curated list includes
+    DomainBool (a real domain node, not a helper), while it excludes:
+    - OptimizationLevel (IntEnum, internal optimization machinery, not a domain builder)
+    - _optimize_nary and similar internal helper functions
+
+    Scanned from real Odoo 19 odoo/orm/domains.py — public classes:
+    Domain, DomainBool, DomainNot, DomainNary, DomainAnd, DomainOr,
+    DomainCustom, DomainCondition.
+    """
     orm_dir = tmp_path / "odoo" / "orm"
     orm_dir.mkdir(parents=True)
     (orm_dir / "domains.py").write_text(
+        "import enum\n\n"
+        "class OptimizationLevel(enum.IntEnum):\n"
+        "    BASIC = 0\n"
+        "    FULL = 1\n\n"
         "class Domain:\n    def optimize(self):\n        pass\n\n"
-        "class DomainBool(Domain):\n    pass\n\n"      # internal — excluded
-        "class DomainAnd(Domain):\n    pass\n\n"
-        "class DomainOr(Domain):\n    pass\n\n"
+        "class DomainBool(Domain):\n    pass\n\n"       # PUBLIC — in curated list
+        "class DomainNot(Domain):\n    pass\n\n"        # PUBLIC — in curated list
+        "class DomainNary(Domain):\n    pass\n\n"       # PUBLIC — in curated list
+        "class DomainAnd(Domain):\n    pass\n\n"        # PUBLIC — in curated list
+        "class DomainOr(Domain):\n    pass\n\n"         # PUBLIC — in curated list
+        "class DomainCustom(Domain):\n    pass\n\n"     # PUBLIC — in curated list
+        "class DomainCondition(Domain):\n    pass\n\n"  # PUBLIC — in curated list
         "def _optimize_nary(a, b):\n    return a\n"     # internal helper — excluded
     )
     out = parse_odoo_core(str(tmp_path), "19.0")
     qnames = {s.qualified_name for s in out}
-    assert "odoo.orm.domains.Domain" in qnames
-    assert "odoo.orm.domains.DomainAnd" in qnames
-    assert "odoo.orm.domains.DomainOr" in qnames
-    # Curation: internal helpers must NOT leak into the graph.
-    assert "odoo.orm.domains.DomainBool" not in qnames
-    assert "odoo.orm.domains._optimize_nary" not in qnames
+
+    # All 8 public domain builder classes must be present.
+    for cls in ("Domain", "DomainBool", "DomainNot", "DomainNary",
+                "DomainAnd", "DomainOr", "DomainCustom", "DomainCondition"):
+        assert f"odoo.orm.domains.{cls}" in qnames, (
+            f"Public domain class {cls} must be in output. "
+            f"Got: {[q for q in qnames if 'domains' in q]}"
+        )
+
+    # Curation: internal symbols must NOT leak into the graph.
+    assert "odoo.orm.domains.OptimizationLevel" not in qnames, (
+        "OptimizationLevel (IntEnum, internal) must NOT appear in graph — "
+        "it is optimization machinery, not a domain builder API."
+    )
+    assert "odoo.orm.domains._optimize_nary" not in qnames, (
+        "_optimize_nary (internal helper function) must NOT appear in graph."
+    )
 
 
 def test_v19_curated_table_objects_emits_constraint_index(tmp_path):
@@ -290,14 +353,50 @@ def test_pre_v19_skips_curated_orm_files(tmp_path):
 
 
 def test_v19_curated_files_registry_is_curated_not_maximal():
-    """Sanity: the curated map lists only a small public set, not whole files."""
+    """Sanity: _V19_CURATED_FILES is curated (small public set), not maximal (whole files).
+
+    Intent: the registry must exactly enumerate the documented public API from each
+    curated file. This test encodes the full documented set so any unreviewed
+    addition/removal causes an immediate failure.
+
+    FIX-2 (v19): expanded Domain allowlist from 3 to 8 public classes after scanning
+    real Odoo 19 odoo/orm/domains.py. DomainBool, DomainNot, DomainNary, DomainCustom,
+    DomainCondition were added as they are genuine public domain builder classes.
+    OptimizationLevel (IntEnum, internal) remains excluded.
+
+    Still satisfies "curated, not maximal": domains.py has ~48 internal helpers
+    (_optimize_*, etc.) that are NOT in this list. The registry surface stays small.
+    """
+    # Exact file set (no whole-source walk).
     assert set(_V19_CURATED_FILES) == {
         "odoo/orm/domains.py",
         "odoo/orm/table_objects.py",
     }
-    assert _V19_CURATED_FILES["odoo/orm/domains.py"] == frozenset(
-        {"Domain", "DomainAnd", "DomainOr"}
+    # Domains: 8 public domain builder classes (scanned from real Odoo 19).
+    # Excluded: OptimizationLevel (IntEnum, internal machinery).
+    assert _V19_CURATED_FILES["odoo/orm/domains.py"] == frozenset({
+        "Domain",
+        "DomainBool",
+        "DomainNot",
+        "DomainNary",
+        "DomainAnd",
+        "DomainOr",
+        "DomainCustom",
+        "DomainCondition",
+    }), (
+        f"Domain curated set mismatch. Got: {_V19_CURATED_FILES['odoo/orm/domains.py']}. "
+        f"If adding a new Domain class, verify it is a public builder (not internal machinery) "
+        f"and document the reasoning here."
     )
+    # Table objects: 4 public declarative API classes.
+    assert _V19_CURATED_FILES["odoo/orm/table_objects.py"] == frozenset(
+        {"TableObject", "Constraint", "Index", "UniqueIndex"}
+    )
+    # Guard: OptimizationLevel must remain excluded from all curated sets.
+    for filename, allowlist in _V19_CURATED_FILES.items():
+        assert "OptimizationLevel" not in allowlist, (
+            f"OptimizationLevel (IntEnum, internal) must NOT be in curated list for {filename}."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1059,3 +1158,255 @@ def test_v18_api_py_flat_emits_newid_without_identifiers(tmp_path):
     assert not orm_identifiers, (
         f"v18 must not produce identifiers.py symbols (file absent in v18), got {orm_identifiers}"
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX-1 — 2nd-level field subclasses classify as 'field_type' (Binary/Selection/Integer bases)
+# ---------------------------------------------------------------------------
+
+
+def test_fix1_image_binary_reference_many2onereference_are_field_type(tmp_path):
+    """FIX-1: Image(Binary), Reference(Selection), Many2oneReference(Integer) → kind='field_type'.
+
+    Business rule: ALL subclasses of field types (direct or one-level deep) must be
+    classified as kind='field_type', not 'class'. Before FIX-1, only direct Field
+    subclasses were recognized. After FIX-1, the 3 concrete intermediate bases
+    (Binary, Selection, Integer) are in _FIELD_BASE_NAMES so 2nd-level field classes
+    classify correctly.
+
+    These are the ONLY 2-level field subclasses in the Odoo core source tree
+    (scanned v17/v18/v19). No false-positives exist because Binary/Selection/Integer
+    do not appear as base classes in any other parsed file (models.py, api.py, etc.).
+    """
+    # Arrange: simulate the Odoo fields hierarchy with 2-level inheritance
+    (tmp_path / "odoo").mkdir(parents=True)
+    (tmp_path / "odoo" / "fields.py").write_text(
+        "class Field:\n    pass\n\n"
+        "class Binary(Field):\n    pass\n\n"
+        "class Selection(Field):\n    pass\n\n"
+        "class Integer(Field):\n    pass\n\n"
+        # 2nd-level: these are the FIX-1 target classes
+        "class Image(Binary):\n    '''Thumbnail field.'''\n    pass\n\n"
+        "class Reference(Selection):\n    '''Pseudo-relational field.'''\n    pass\n\n"
+        "class Many2oneReference(Integer):\n"
+        "    '''Integer referencing a model record.'''\n    pass\n"
+    )
+
+    # Act
+    out = parse_odoo_core(str(tmp_path), "17.0")
+    qnames = {s.qualified_name: s for s in out}
+
+    # Assert: 2nd-level field subclasses must be kind='field_type'
+    for cls_name in ("Image", "Reference", "Many2oneReference"):
+        sym = qnames.get(f"odoo.fields.{cls_name}")
+        assert sym is not None, f"{cls_name} not found in output"
+        assert sym.kind == "field_type", (
+            f"odoo.fields.{cls_name} inherits from a field base; must be kind='field_type', "
+            f"got {sym.kind!r}. FIX-1 should have added its base to _FIELD_BASE_NAMES."
+        )
+
+    # Sanity: direct Field subclasses still work.
+    for cls_name in ("Binary", "Selection", "Integer"):
+        sym = qnames.get(f"odoo.fields.{cls_name}")
+        assert sym is not None, f"{cls_name} not found"
+        assert sym.kind == "field_type", f"Direct field {cls_name} should be field_type"
+
+
+def test_fix1_non_field_class_not_misclassified_as_field_type(tmp_path):
+    """FIX-1 guard: adding Binary/Selection/Integer to _FIELD_BASE_NAMES must NOT
+    cause false positives for non-field classes in other parsed files.
+
+    Business rule: only classes that ARE field types must be classified as
+    kind='field_type'. A class like CacheMiss(Exception) or Query that inherits
+    from something other than a field base must remain kind='class' or 'exception'.
+
+    This guard ensures FIX-1 did not widen the classification net too broadly.
+    """
+    # Arrange: simulate exceptions.py — contains non-field classes
+    (tmp_path / "odoo").mkdir(parents=True)
+    (tmp_path / "odoo" / "exceptions.py").write_text(
+        "class UserError(Exception):\n    pass\n\n"
+        "class ValidationError(UserError):\n    pass\n\n"
+        # CacheMiss inherits from Exception via RuntimeError — definitely not field_type
+        "class CacheMiss(RuntimeError):\n    pass\n"
+    )
+
+    # Act
+    out = parse_odoo_core(str(tmp_path), "17.0")
+    qnames = {s.qualified_name: s for s in out}
+
+    # Assert: exception-hierarchy classes must NOT be field_type
+    for cls_name in ("UserError", "ValidationError"):
+        sym = qnames.get(f"odoo.exceptions.{cls_name}")
+        assert sym is not None, f"{cls_name} not found"
+        assert sym.kind == "exception", (
+            f"{cls_name} must be kind='exception', not 'field_type'. "
+            f"FIX-1 must not have caused False Positive in exceptions.py."
+        )
+
+    cache_miss = qnames.get("odoo.exceptions.CacheMiss")
+    assert cache_miss is not None, "CacheMiss not found"
+    assert cache_miss.kind == "class", (
+        f"CacheMiss(RuntimeError) should be kind='class', got {cache_miss.kind!r}. "
+        f"FIX-1 must not have classified RuntimeError subclasses as field_type."
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX-2 — v19 DomainCondition and other new Domain subclasses are emitted
+# ---------------------------------------------------------------------------
+
+
+def test_fix2_domain_condition_and_all_8_public_domains_emitted(tmp_path):
+    """FIX-2: parse_odoo_core v19 emits DomainCondition and all 8 public Domain subclasses.
+
+    Business rule: the v19 domain builder API exposes 8 public classes
+    (Domain + 7 concrete builders). All must appear in the graph so that
+    AI clients can discover the full domain construction API.
+
+    Before FIX-2, only Domain/DomainAnd/DomainOr were in the curated allowlist (3 entries).
+    After FIX-2, the allowlist was expanded to 8 entries after scanning real Odoo 19.
+    """
+    # Arrange: v19 layout with all 8 public domain classes + internal class to exclude
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+    (orm_dir / "domains.py").write_text(
+        "import enum\n\n"
+        "class OptimizationLevel(enum.IntEnum):\n    BASIC = 0\n    FULL = 1\n\n"
+        "class Domain:\n    pass\n\n"
+        "class DomainBool(Domain):\n    pass\n\n"
+        "class DomainNot(Domain):\n    pass\n\n"
+        "class DomainNary(Domain):\n    pass\n\n"
+        "class DomainAnd(Domain):\n    pass\n\n"
+        "class DomainOr(Domain):\n    pass\n\n"
+        "class DomainCustom(Domain):\n    pass\n\n"
+        "class DomainCondition(Domain):\n    pass\n\n"   # key FIX-2 addition
+        "def _optimize_nary(a, b):\n    return a\n"
+    )
+
+    # Act
+    out = parse_odoo_core(str(tmp_path), "19.0")
+    qnames = {s.qualified_name for s in out}
+
+    # Assert: DomainCondition (the key FIX-2 addition) is present
+    assert "odoo.orm.domains.DomainCondition" in qnames, (
+        "DomainCondition must appear in v19 output after FIX-2 expanded the Domain allowlist. "
+        f"Got domain symbols: {[q for q in qnames if 'domains' in q]}"
+    )
+
+    # Assert: all 8 public domain builder classes present
+    for cls in ("Domain", "DomainBool", "DomainNot", "DomainNary",
+                "DomainAnd", "DomainOr", "DomainCustom", "DomainCondition"):
+        assert f"odoo.orm.domains.{cls}" in qnames, (
+            f"Public domain class {cls} must be in v19 output."
+        )
+
+    # Assert: OptimizationLevel (internal IntEnum) excluded by curation
+    assert "odoo.orm.domains.OptimizationLevel" not in qnames, (
+        "OptimizationLevel must remain excluded — it is internal optimization machinery."
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX-3 — odoo/orm/utils.py and model_classes.py indexed for v19, skipped for v8-v18
+# ---------------------------------------------------------------------------
+
+
+def test_fix3_v19_orm_utils_emits_parse_field_expr_and_is_model_class(tmp_path):
+    """FIX-3: parse_odoo_core v19 emits parse_field_expr (from orm/utils.py) and
+    is_model_class (from orm/model_classes.py).
+
+    Business rule: v19 introduced public ORM utility functions in the split orm/
+    package. These must be indexed so AI clients can discover/use them via
+    lookup_core_api and api_version_diff. Before FIX-3, these files were not in
+    _CORE_FILES and were silently ignored.
+    """
+    # Arrange: v19 layout with orm/ directory and the two new files
+    orm_dir = tmp_path / "odoo" / "orm"
+    orm_dir.mkdir(parents=True)
+    (orm_dir / "utils.py").write_text(
+        "def parse_field_expr(field_expr: str):\n"
+        "    '''Parse a dotted field path.'''\n"
+        "    return field_expr.split('.')\n\n"
+        "def check_method_name(name):\n"
+        "    pass\n\n"
+        "class OriginIds:\n"
+        "    '''Container for original record ids.'''\n"
+        "    pass\n"
+    )
+    (orm_dir / "model_classes.py").write_text(
+        "def is_model_class(cls):\n"
+        "    '''Return True if cls is an Odoo model class.'''\n"
+        "    return hasattr(cls, '_name')\n\n"
+        "def is_model_definition(cls):\n"
+        "    '''Return True if cls defines a new model (has explicit _name).'''\n"
+        "    return bool(getattr(cls, '_name', None))\n"
+    )
+
+    # Act: parse v19
+    out = parse_odoo_core(str(tmp_path), "19.0")
+    qnames = {s.qualified_name for s in out}
+
+    # Assert: parse_field_expr from orm/utils.py is present
+    assert "odoo.orm.utils.parse_field_expr" in qnames, (
+        "parse_field_expr must be indexed from odoo/orm/utils.py in v19. "
+        f"Got orm.utils symbols: {[q for q in qnames if 'orm.utils' in q]}"
+    )
+
+    # Assert: is_model_class and is_model_definition from orm/model_classes.py present
+    assert "odoo.orm.model_classes.is_model_class" in qnames, (
+        "is_model_class must be indexed from odoo/orm/model_classes.py in v19. "
+        f"Got: {[q for q in qnames if 'model_classes' in q]}"
+    )
+    assert "odoo.orm.model_classes.is_model_definition" in qnames, (
+        "is_model_definition must be indexed from odoo/orm/model_classes.py in v19."
+    )
+
+    # Assert: OriginIds class (from utils.py) is also present
+    assert "odoo.orm.utils.OriginIds" in qnames, (
+        "OriginIds class from orm/utils.py must also be indexed."
+    )
+
+
+def test_fix3_v17_and_v18_skip_orm_utils_silently(tmp_path):
+    """FIX-3 guard: v17/v18 do NOT have odoo/orm/ directory — the two new _CORE_FILES
+    entries (orm/utils.py, orm/model_classes.py) must resolve to [] and be silently
+    skipped. No exception, no false indexing.
+
+    Business rule: the skip is safe because _resolve_core_paths returns [] when the
+    resolved file does not exist. This test verifies v17 and v18 behaviour is unchanged.
+    """
+    # --- v17 ---
+    (tmp_path / "v17" / "odoo").mkdir(parents=True)
+    (tmp_path / "v17" / "odoo" / "fields.py").write_text(
+        "class Field:\n    pass\n\nclass Char(Field):\n    pass\n"
+    )
+    out17 = parse_odoo_core(str(tmp_path / "v17"), "17.0")
+    qnames17 = {s.qualified_name for s in out17}
+
+    # parse_field_expr and is_model_class must NOT appear in v17 output
+    assert "odoo.orm.utils.parse_field_expr" not in qnames17, (
+        "parse_field_expr must NOT appear in v17 — orm/utils.py doesn't exist in v17."
+    )
+    assert "odoo.orm.model_classes.is_model_class" not in qnames17, (
+        "is_model_class must NOT appear in v17 — orm/model_classes.py doesn't exist in v17."
+    )
+    # Sanity: v17 symbols from flat fields.py are still indexed
+    assert "odoo.fields.Char" in qnames17, "v17 flat fields.py must still be indexed"
+
+    # --- v18 ---
+    (tmp_path / "v18" / "odoo").mkdir(parents=True)
+    (tmp_path / "v18" / "odoo" / "fields.py").write_text(
+        "class Field:\n    pass\n\nclass Integer(Field):\n    pass\n"
+    )
+    out18 = parse_odoo_core(str(tmp_path / "v18"), "18.0")
+    qnames18 = {s.qualified_name for s in out18}
+
+    assert "odoo.orm.utils.parse_field_expr" not in qnames18, (
+        "parse_field_expr must NOT appear in v18 — orm/utils.py doesn't exist in v18."
+    )
+    assert "odoo.orm.model_classes.is_model_class" not in qnames18, (
+        "is_model_class must NOT appear in v18."
+    )
+    # Sanity: v18 symbols still indexed
+    assert "odoo.fields.Integer" in qnames18, "v18 flat fields.py must still be indexed"
