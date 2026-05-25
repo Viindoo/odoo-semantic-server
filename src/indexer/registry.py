@@ -15,6 +15,7 @@ from .parser_python import (
     _detect_viindoo_equivalent,
     _resolve_effective_license,
 )
+from .parser_util import parse_external_source
 from .scanner import get_git_branch, get_module_commit_sha, is_odoo_version_branch
 
 _logger = logging.getLogger(__name__)
@@ -133,7 +134,9 @@ def parse_manifest(manifest_path: str) -> dict:
         return {}
 
     try:
-        tree = ast.parse(source)
+        # External manifest source — scope away SyntaxWarning noise, pass the real
+        # path so any diagnostic is attributable (not <unknown>). See parser_util.
+        tree = parse_external_source(source, filename=manifest_path)
         for stmt in tree.body:
             if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Dict):
                 return ast.literal_eval(stmt.value)

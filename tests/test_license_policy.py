@@ -112,6 +112,30 @@ def test_copyright_no_author_opl1_returns_none():
     assert _derive_copyright_owner({}, "OPL-1") is None
 
 
+def test_copyright_author_as_list_odoo_sa():
+    # Regression: Odoo CE l10n_* manifests ship author as list e.g. ['Odoo S.A.', 'Vauxoo']
+    # Must NOT raise AttributeError: 'list' object has no attribute 'strip'.
+    manifest = {"author": ["Odoo S.A.", "Vauxoo"]}
+    assert _derive_copyright_owner(manifest, "LGPL-3") == "Odoo S.A."
+
+
+def test_copyright_author_as_str_unchanged():
+    # Normal string path must still work after coerce refactor.
+    manifest = {"author": "Odoo S.A."}
+    assert _derive_copyright_owner(manifest, "LGPL-3") == "Odoo S.A."
+
+
+def test_copyright_author_is_none():
+    # author=None (or missing) must not crash; treated as empty.
+    assert _derive_copyright_owner({"author": None}, "LGPL-3") == "Odoo S.A."
+
+
+def test_copyright_author_as_tuple():
+    # Tuple is a valid sequence type in some manifest parsers.
+    manifest = {"author": ("Viindoo Technology", "Some Partner")}
+    assert _derive_copyright_owner(manifest, "OPL-1") == "Viindoo"
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: license_policy_action
 # ---------------------------------------------------------------------------

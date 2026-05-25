@@ -25,17 +25,22 @@ from pathlib import Path
 from src.constants import LINT_RULES_MIN_MAJOR
 
 from .models import LintRuleInfo
+from .parser_util import parse_external_source
 
 # --- pylint-odoo source parsing --------------------------------------------
 
-def _parse_pylint_odoo_source(source: str, odoo_version: str) -> list[LintRuleInfo]:
+def _parse_pylint_odoo_source(
+    source: str, odoo_version: str, file_path: str | None = None,
+) -> list[LintRuleInfo]:
     """Parse a pylint-odoo checker .py file.
 
     Looks for: `class X(BaseChecker): msgs = {"<rule_id>": ("<msg>", "<sym>", "<doc>")}`.
     Multiple class definitions per file are supported.
     """
     try:
-        tree = ast.parse(source)
+        # External pylint-odoo checker source — scope away SyntaxWarning noise, pass
+        # the real path so any diagnostic is attributable (not <unknown>). See parser_util.
+        tree = parse_external_source(source, filename=file_path)
     except SyntaxError:
         return []
 
@@ -220,7 +225,7 @@ def parse_lint_rules_for_version(
                     src = f.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
-                for r in _parse_pylint_odoo_source(src, odoo_version):
+                for r in _parse_pylint_odoo_source(src, odoo_version, file_path=str(f)):
                     _add(r)
         # ESLint config (the file name is `eslintrc`, no extension, JSON content)
         eslint_path = checker_dir / "eslintrc"
