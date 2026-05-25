@@ -315,6 +315,10 @@ def _cmd_backup(args) -> int:
       - neo4j.dump         (neo4j-admin database dump, if neo4j-admin is in PATH)
       - fernet.enc         (FERNET_KEY encrypted with --bundle-passphrase-env passphrase)
       - manifest.json      (timestamps, schema_version, component checksums)
+
+    FERNET_KEY is read via ``src.crypto.get_fernet_key()`` which checks
+    ``$CREDENTIALS_DIRECTORY/FERNET_KEY`` (systemd LoadCredential) first, then
+    the ``$FERNET_KEY`` environment variable as a fallback.
     """
     output_path = Path(args.output)
 
@@ -678,7 +682,8 @@ def _restore_bundle(path: Path, args) -> int:
                     )
                     print(
                         "Note: fernet.enc decryption not implemented "
-                        "— set FERNET_KEY manually."
+                        "— set FERNET_KEY manually (via $FERNET_KEY env var or "
+                        "systemd LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY)."
                     )
                 else:
                     print(
@@ -781,7 +786,7 @@ def _cmd_rotate_fernet(args) -> int:
             # Table may not exist on older deployments; skip gracefully if absent.
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                "WHERE table_name = 'totp_secrets')"
+                "WHERE table_name = 'totp_secrets' AND table_schema = 'public')"
             )
             totp_table_exists = cur.fetchone()[0]
 
@@ -841,6 +846,28 @@ def _cmd_rotate_fernet(args) -> int:
                 f"Rotated {ssh_updated} SSH key(s) + {totp_updated} TOTP secret(s). "
                 f"Total: {total_updated} row(s)."
             )
+            # Write admin_audit_log entry for fernet.rotate (ADR-0021 taxonomy).
+            # Fire-and-forget; never raises — audit failure must not abort rotation.
+            try:
+                from src.db.audit import write_audit_log
+                write_audit_log(
+                    actor=f"cli:{actor}",
+                    action="fernet.rotate",
+                    target=f"old={old_fp},new={new_fp}",
+                    success=True,
+                    detail={
+                        "ssh_rows": ssh_updated,
+                        "totp_rows": totp_updated,
+                        "total_rows": total_updated,
+                        "old_key_fingerprint": old_fp,
+                        "new_key_fingerprint": new_fp,
+                    },
+                )
+            except Exception as _audit_exc:
+                log.warning(
+                    "admin_audit_log write for fernet.rotate failed (non-fatal): %s",
+                    _audit_exc,
+                )
         except SystemExit:
             raise
         except Exception:

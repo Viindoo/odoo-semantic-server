@@ -71,7 +71,7 @@ def main() -> None:
             raise SystemExit(1)
         else:
             log.warning(
-                "FERNET_KEY unset — SSH key features disabled (dev mode). "
+                "FERNET_KEY unset — SSH key + TOTP features disabled (dev mode). "
                 "Generate: python -c \"from cryptography.fernet import Fernet; "
                 "print(Fernet.generate_key().decode())\""
             )

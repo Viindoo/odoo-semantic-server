@@ -155,8 +155,19 @@ class TestRotationAtomicOnInvalidToken:
         mock_conn.rollback.assert_called_once()
         mock_conn.commit.assert_not_called()
 
-    def test_no_rows_changed_on_rollback(self, monkeypatch):
-        """When rollback is triggered, UPDATE must not have been committed."""
+    def test_rollback_prevents_commit_on_decrypt_failure(self, monkeypatch):
+        """When a row fails to decrypt, rollback is called and commit is never reached.
+
+        Intent: atomicity guarantee — UPDATEs issued for valid rows before the
+        failure MUST be rolled back, not committed.  The code path is:
+          1. UPDATE may be issued for rows that decrypt successfully before the
+             bad row is encountered.
+          2. InvalidToken detected → conn.rollback() called.
+          3. conn.commit() is NEVER called.
+        The real DB round-trip is covered by the integration test
+        ``test_rotation_covers_ssh_and_totp`` which verifies that ciphertext in
+        the DB is unchanged after a failed rotation (old key still decrypts).
+        """
         old_key = Fernet.generate_key()
         new_key = Fernet.generate_key()
         bad_f = Fernet(Fernet.generate_key())
@@ -174,8 +185,8 @@ class TestRotationAtomicOnInvalidToken:
                 with pytest.raises(SystemExit):
                     _cmd_rotate_fernet(args)
 
-        mock_conn.commit.assert_not_called()
         mock_conn.rollback.assert_called_once()
+        mock_conn.commit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -538,3 +549,97 @@ def test_rotation_covers_ssh_and_totp(clean_pg):
         row = cur.fetchone()
     assert row is not None, "key_rotation_log should have an entry"
     assert row[0] == 2, f"Expected row_count=2, got {row[0]}"
+
+
+@pytest.mark.postgres
+def test_rotation_rollback_leaves_db_unchanged(clean_pg):
+    """Integration: failed rotation must not change any row in the DB.
+
+    Atomicity contract: if any row fails to decrypt, rollback must revert ALL
+    updates including rows that were successfully re-encrypted before the failure.
+    After a failed rotation the old key must still decrypt all rows.
+    """
+    import os
+
+    from cryptography.fernet import InvalidToken
+
+    from src.db.migrate import run_migrations
+
+    run_migrations(clean_pg)
+
+    old_key = Fernet.generate_key()
+    new_key = Fernet.generate_key()
+    wrong_key = Fernet.generate_key()
+    old_f = Fernet(old_key)
+    wrong_f = Fernet(wrong_key)
+
+    ssh_plaintext = b"-----BEGIN OPENSSH PRIVATE KEY-----\ngood\n-----END"
+    totp_secret = b"BADTOTPSECRET"
+
+    ssh_enc_old = old_f.encrypt(ssh_plaintext).decode()
+    # TOTP row encrypted with wrong key — will fail to decrypt with old_key
+    totp_enc_bad = wrong_f.encrypt(totp_secret).decode()
+
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted) "
+            "VALUES ('rollback-test', 'ssh-ed25519 AAAA...', %s) RETURNING id",
+            (ssh_enc_old,),
+        )
+        ssh_id = cur.fetchone()[0]
+
+        cur.execute(
+            "INSERT INTO webui_users (username, password_hash) "
+            "VALUES ('rollback-totp-user', 'x') RETURNING id"
+        )
+        user_id = cur.fetchone()[0]
+
+        cur.execute(
+            "INSERT INTO totp_secrets (user_id, secret_encrypted, enabled, backup_codes_hash) "
+            "VALUES (%s, %s, FALSE, '[]'::jsonb)",
+            (user_id, totp_enc_bad),
+        )
+        clean_pg.commit()
+
+    # Snapshot key_rotation_log count before the (failing) rotation
+    with clean_pg.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM key_rotation_log")
+        count_before = cur.fetchone()[0]
+
+    args = _make_rotate_args()
+
+    from tests.conftest import PG_TEST_DSN
+
+    with patch.dict(os.environ, {
+        "OLD_FERNET_KEY": old_key.decode(),
+        "NEW_FERNET_KEY": new_key.decode(),
+    }):
+        with patch("src.cli._get_pg_dsn", return_value=PG_TEST_DSN):
+            with pytest.raises(SystemExit) as exc_info:
+                _cmd_rotate_fernet(args)
+
+    assert exc_info.value.code == 2
+
+    # DB must be unchanged: old key still decrypts SSH row
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT private_key_encrypted FROM ssh_key_pairs WHERE id = %s", (ssh_id,)
+        )
+        stored_ssh = cur.fetchone()[0]
+    assert old_f.decrypt(stored_ssh.encode()) == ssh_plaintext, (
+        "SSH row was modified despite rollback — atomicity broken"
+    )
+
+    # new key must NOT decrypt the SSH row (rollback reverted any UPDATE)
+    new_f = Fernet(new_key)
+    with pytest.raises(InvalidToken):
+        new_f.decrypt(stored_ssh.encode())
+
+    # key_rotation_log must have NO new entry (no commit happened)
+    with clean_pg.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM key_rotation_log")
+        count_after = cur.fetchone()[0]
+    assert count_after == count_before, (
+        f"Expected key_rotation_log count unchanged ({count_before}), "
+        f"but got {count_after} — a commit occurred despite the rotation failure"
+    )

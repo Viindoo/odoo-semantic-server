@@ -11,9 +11,17 @@ Resolution order (first wins):
 Backward compatibility: existing deployments using ``EnvironmentFile=`` +
 ``FERNET_KEY=...`` continue to work without any change.
 
-Production fail-fast: callers that set ``require=True`` (or call
-``get_fernet()``) will raise ``RuntimeError`` if neither source is available.
-The startup assertion in ``src/web_ui/__main__.py`` uses this path.
+Two calling conventions:
+
+* **Route handlers / feature code** — call ``get_fernet()`` (or
+  ``get_fernet_key(require=True)``).  Both raise ``RuntimeError`` immediately
+  when neither key source is configured.
+
+* **Startup code** (``src/web_ui/__main__.py``) — calls
+  ``get_fernet_key()`` (``require=False``) and checks the return value
+  manually.  On ``None`` in production it calls ``raise SystemExit(1)`` itself;
+  in dev mode it logs a warning and continues with SSH/TOTP features disabled.
+  This avoids a bare ``RuntimeError`` leaking into the uvicorn startup log.
 """
 import logging
 import os
