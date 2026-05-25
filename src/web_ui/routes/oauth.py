@@ -11,7 +11,9 @@ Account-linking policy (F5 security gate):
     2. Match by email + email_verified=TRUE  → merge (set oauth columns).
     3. Match by email + email_verified=FALSE → reject 409 (prevents takeover
        via unverified email at the provider).
-    4. No match                              → create new user (is_admin=FALSE).
+    4. No match                              → create new user (is_admin=FALSE),
+       unless SIGNUP_ENABLED=False (default)  → reject 403 (invite-only mode;
+       steps 1-2 above still let existing linked accounts log in).
 
 OAuth-only users have password_hash = NULL.  The login.py password path forces
 a dummy-hash bcrypt compare for NULL password_hash so timing matches a
@@ -31,6 +33,7 @@ from pydantic import BaseModel, field_validator
 from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
+from src.web_ui.config import SIGNUP_ENABLED
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
@@ -303,7 +306,39 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
         else:
             # ---------------------------------------------------------------
             # 3. No match at all → create new OAuth-only user
+            #    Blocked when SIGNUP_ENABLED=False (invite-only mode).
+            #    Existing linked accounts always log in (steps 1+2 above run
+            #    before this check, so returning users are never blocked).
             # ---------------------------------------------------------------
+            if not SIGNUP_ENABLED:
+                logger.warning(
+                    "OAuth new-user creation blocked: signup disabled "
+                    "(provider=%s, email=%s)",
+                    body.provider,
+                    body.email,
+                )
+                _insert_audit_log(
+                    actor=f"oauth:{body.provider}:{body.oauth_id}",
+                    action="user.oauth_login",
+                    target=body.email,
+                    success=False,
+                    detail={
+                        "ip": client_ip,
+                        "reason": "signup_disabled",
+                        "provider": body.provider,
+                    },
+                )
+                return JSONResponse(
+                    _json_safe({
+                        "error": "signup_disabled",
+                        "detail": (
+                            "New account creation via OAuth is disabled. "
+                            "Contact an administrator to get access."
+                        ),
+                    }),
+                    status_code=403,
+                )
+
             try:
                 user = _create_oauth_user(
                     provider=body.provider,

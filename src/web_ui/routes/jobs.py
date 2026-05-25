@@ -10,11 +10,12 @@ import datetime as _dt
 import logging
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
+from src.web_ui.auth import require_admin
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -62,7 +63,7 @@ async def job_status(request: Request, job_id: int):
 
 
 @router.post("/{job_id}/reset")
-async def reset_stuck_job(request: Request, job_id: int):
+async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends(require_admin)):
     """Force-mark a stuck running job as error when its PID is dead."""
     try:
         from src.db.pg import job_store

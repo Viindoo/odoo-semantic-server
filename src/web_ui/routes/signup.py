@@ -16,6 +16,9 @@ Security decisions:
     • HTML email: user input escaped via html.escape before embedding in body.
     • hCaptcha: skipped (dev mode) when HCAPTCHA_SECRET unset.
     • Audit: every action logged at INFO (success) or WARNING (failure).
+    • SIGNUP_ENABLED gate: register is disabled by default (invite-only model,
+      ADR-0034 / Wave 0). POST /api/auth/register returns 403 until an operator
+      sets SIGNUP_ENABLED=1 — see src/web_ui/config.py.
 """
 
 import hashlib
@@ -33,6 +36,7 @@ from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
 from src.web_ui.auth import hash_password
+from src.web_ui.config import SIGNUP_ENABLED
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
@@ -175,7 +179,19 @@ async def register(body: RegisterBody, request: Request):
     Returns 201 on success. Returns 409 if username/email already taken (generic
     message to prevent enumeration). Returns 400 for validation failures.
     Skips hCaptcha when HCAPTCHA_SECRET is unset (dev mode).
+    Returns 403 when SIGNUP_ENABLED=False (invite-only mode, default).
     """
+    if not SIGNUP_ENABLED:
+        logger.warning(
+            "Signup blocked: SIGNUP_ENABLED=False (invite-only) — email=%s username=%s",
+            body.email,
+            body.username,
+        )
+        return JSONResponse(
+            _json_safe({"error": "signup_disabled", "detail": "Public signup is not enabled."}),
+            status_code=403,
+        )
+
     client_ip = _get_client_ip(request)
 
     # Basic field validation
