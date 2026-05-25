@@ -194,6 +194,32 @@ def test_reembed_stubs_idempotent(clean_neo4j, clean_pg, tmp_path):
         after_first = cur.fetchone()[0]
     assert after_first > 0, "Expected embeddings after reembed run"
 
+    # ADR-0037 D4: reembedded chunks must KEEP repo provenance — build_registry
+    # inside reembed_stubs_for_profile is called with repo_url + repo_id, so the
+    # rows carry the owning repo_id (not NULL).  Regression guard: before the fix
+    # the registry omitted repo_id and every reembedded row was repo_id=NULL.
+    expected_repo_id = repo_store().get_repos_for_profile("stub_prof")[0]["id"]
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM embeddings "
+            "WHERE module = 'stub_mod' AND odoo_version = %s AND repo_id IS NULL",
+            (TEST_VERSION,),
+        )
+        null_repo_rows = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(*) FROM embeddings "
+            "WHERE module = 'stub_mod' AND odoo_version = %s AND repo_id = %s",
+            (TEST_VERSION, expected_repo_id),
+        )
+        scoped_rows = cur.fetchone()[0]
+    assert null_repo_rows == 0, (
+        f"reembedded chunks lost repo provenance (repo_id NULL on {null_repo_rows} rows)"
+    )
+    assert scoped_rows == after_first, (
+        "all reembedded rows must carry the owning repo_id "
+        f"(got {scoped_rows}/{after_first} with repo_id={expected_repo_id})"
+    )
+
     # Second reembed run — should be a no-op (all modules already embedded).
     call_count_before = embedder.call_count
     summary2 = reembed_stubs_for_profile(clean_pg, profile_name="stub_prof",

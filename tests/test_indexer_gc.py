@@ -57,9 +57,10 @@ class TestGcDeletesRenamedModule:
 
         driver = clean_neo4j
 
-        # Seed two Module nodes — simulating pre-rename state
-        _create_module_node(driver, "stock", path="/repo/addons/stock")
-        _create_module_node(driver, "inventory", path="/repo/addons/inventory")
+        # Seed two Module nodes — simulating pre-rename state.
+        # ADR-0037: Module.path + live_paths are repo-RELATIVE now.
+        _create_module_node(driver, "stock", path="addons/stock")
+        _create_module_node(driver, "inventory", path="addons/inventory")
 
         writer = Neo4jWriter(
             uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
@@ -68,7 +69,7 @@ class TestGcDeletesRenamedModule:
         )
         try:
             # Scanner only sees 'inventory' (stock was renamed → inventory)
-            live_paths = {"/repo/addons/inventory"}
+            live_paths = {"addons/inventory"}
             deleted = writer.gc_stale_modules(TEST_REPO, TEST_VERSION, live_paths)
         finally:
             writer.close()
@@ -87,8 +88,9 @@ class TestGcDeletesRenamedModule:
         from src.indexer.writer_neo4j import Neo4jWriter
 
         driver = clean_neo4j
-        _create_module_node(driver, "sale", path="/repo/addons/sale")
-        _create_module_node(driver, "purchase", path="/repo/addons/purchase")
+        # ADR-0037: Module.path + live_paths are repo-RELATIVE now.
+        _create_module_node(driver, "sale", path="addons/sale")
+        _create_module_node(driver, "purchase", path="addons/purchase")
 
         writer = Neo4jWriter(
             uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
@@ -96,7 +98,7 @@ class TestGcDeletesRenamedModule:
             password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
         )
         try:
-            live_paths = {"/repo/addons/sale", "/repo/addons/purchase"}
+            live_paths = {"addons/sale", "addons/purchase"}
             deleted = writer.gc_stale_modules(TEST_REPO, TEST_VERSION, live_paths)
         finally:
             writer.close()
@@ -104,6 +106,51 @@ class TestGcDeletesRenamedModule:
         assert deleted == 0, f"Expected 0 deleted (all live), got {deleted}"
         assert _module_exists(driver, "sale")
         assert _module_exists(driver, "purchase")
+
+
+# ---------------------------------------------------------------------------
+# Test 1b (ADR-0037): mixed-graph guard skips GC when absolute paths linger
+# ---------------------------------------------------------------------------
+
+class TestGcMixedGraphGuard:
+    """ADR-0037: GC must SKIP (not delete) when the graph still holds pre-ADR-0037
+    ABSOLUTE Module.path for this repo+version.  live_paths is now repo-relative;
+    running relative-path GC against absolute-keyed nodes would mark EVERY module
+    stale and DETACH DELETE the whole repo.
+    """
+
+    def test_gc_skips_when_absolute_paths_present(self, clean_neo4j, caplog):
+        """Seed legacy absolute Module.path; GC with relative live_paths must
+        delete NOTHING and warn the operator to run a full reindex first."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+        # Legacy state: absolute Module.path (pre-ADR-0037).
+        _create_module_node(driver, "stock", path="/srv/clones/repo/addons/stock")
+        _create_module_node(driver, "inventory", path="/srv/clones/repo/addons/inventory")
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+                # Relative live_paths (new contract) — would mismatch every
+                # absolute node, but the guard must stop the delete.
+                deleted = writer.gc_stale_modules(
+                    TEST_REPO, TEST_VERSION, {"addons/inventory"},
+                )
+        finally:
+            writer.close()
+
+        assert deleted == 0, f"guard must skip GC (delete 0) on mixed graph, got {deleted}"
+        assert _module_exists(driver, "stock"), "absolute-path node must survive the guard"
+        assert _module_exists(driver, "inventory"), "absolute-path node must survive the guard"
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("ABSOLUTE" in m and "skipped" in m.lower() for m in warnings), (
+            f"expected a mixed-graph GC-skip warning; got: {warnings}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +324,7 @@ class TestGcDoesNotDeleteOtherRepoModules:
                 """,
                 name="gc_blast_mod_a", v=TEST_VERSION,
                 repo="repo_a_gc_blast",
-                path="/repo_a/addons/gc_blast_mod_a",
+                path="addons/gc_blast_mod_a",
             )
             session.run(
                 """
@@ -286,7 +333,7 @@ class TestGcDoesNotDeleteOtherRepoModules:
                 """,
                 name="gc_blast_mod_b", v=TEST_VERSION,
                 repo="repo_b_gc_blast",
-                path="/repo_b/addons/gc_blast_mod_b",
+                path="addons/gc_blast_mod_b",
             )
 
         writer = Neo4jWriter(

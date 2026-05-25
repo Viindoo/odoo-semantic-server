@@ -41,7 +41,7 @@ const EXAMPLES: Example[] = [
         { text: '   ├─ sale_loyalty      // +4 fields, +2 methods' },
         { text: '   ├─ sale_subscription // EE-only, +18 fields' },
         { text: '   ├─ sale_purchase     // +3 fields, +5 methods' },
-        { text: '   └─ acme_addons17     // customer addon' },
+        { text: '   └─ [github.com/acme/addons]  // customer addon' },
         { text: '' },
         { text: '✓ 6 modules · all verified against Neo4j index', cls: 'text-viindoo-success' },
       ],

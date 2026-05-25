@@ -423,8 +423,16 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
                 source = full.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
+            # ADR-0037: store the path relative to the Odoo source root
+            # (e.g. "odoo/orm/models.py") — never the server-absolute path.
+            # CoreSymbol has no repos.local_path anchor, so the source root is
+            # the only meaningful relativization base.
+            try:
+                rel_fp = str(full.relative_to(root))
+            except ValueError:
+                rel_fp = str(full)
             out.extend(_extract_from_source(
-                source, module_qname, odoo_version, file_path=str(full),
+                source, module_qname, odoo_version, file_path=rel_fp,
                 name_allowlist=allow,
             ))
     return out

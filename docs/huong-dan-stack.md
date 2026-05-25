@@ -373,10 +373,10 @@ def resolve_model(model_name: str, odoo_version: str = "auto") -> str:
 
 ```
 account.move (Odoo 17.0)
-├─ Định nghĩa tại: [odoo_ce] account
+├─ Định nghĩa tại: [github.com/odoo/odoo] account
 ├─ Kế thừa từ:    mail.thread, mail.activity.mixin
 ├─ Mở rộng bởi:
-│   └─ [viin_addons] viin_account
+│   └─ [github.com/viindoo/viin_addons] viin_account
 ├─ Tổng số field:  47
 └─ Tổng số method: 23
 ```

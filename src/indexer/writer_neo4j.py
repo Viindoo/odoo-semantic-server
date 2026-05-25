@@ -33,6 +33,7 @@ from .models import (
     PatternExample,
     StylesheetInfo,
     ViewParseResult,
+    to_repo_relative,
 )
 
 _logger = logging.getLogger(__name__)
@@ -70,7 +71,8 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
             m.copyright_owner = $copyright_owner,
             m.license_notice = $license_notice
     """, name=module.name, v=module.odoo_version,
-         repo=module.repo, path=module.path, version_raw=module.version_raw,
+         repo=module.repo, path=module.relative_path(module.path),
+         version_raw=module.version_raw,
          edition=module.edition,
          vvq=module.viindoo_equivalent_qname,
          commit_sha=module.commit_sha,
@@ -415,7 +417,8 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             MERGE (c)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=comp.module, v=comp.odoo_version,
              name=comp.name, template=comp.template, extends=comp.extends,
-             bound_model=comp.bound_model, file_path=comp.file_path,
+             bound_model=comp.bound_model,
+             file_path=result.module.relative_path(comp.file_path),
              profiles=profiles)
 
         # EXTENDS edge — only when parent OWLComp exists in same version (no placeholder)
@@ -449,7 +452,9 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             MERGE (j)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=patch.module, v=patch.odoo_version,
              target=patch.target, patch_name=patch.patch_name,
-             era=patch.era, file_path=patch.file_path, profiles=profiles)
+             era=patch.era,
+             file_path=result.module.relative_path(patch.file_path),
+             profiles=profiles)
 
         # PATCHES edge — try resolve to existing OWLComp, else create placeholder
         rec = tx.run("""
@@ -606,7 +611,8 @@ def _write_cli_flag_replacements(tx, replaced: list[tuple[str, str]],
 # ---------------------------------------------------------------------------
 
 def _write_stylesheets_batch(
-    tx, stylesheets: list[StylesheetInfo], profiles: list[str]
+    tx, stylesheets: list[StylesheetInfo], profiles: list[str],
+    repo_root=None, repo_id=None,
 ) -> None:
     """MERGE :Stylesheet nodes + :DEFINED_IN -> :Module + :IMPORTS edges.
 
@@ -615,6 +621,7 @@ def _write_stylesheets_batch(
       - language ∈ {css, scss, less}
       - selector_count, variable_count, import_count, mixin_count
       - profile[] — ancestor profile name array (per ADR-0016 Option Y)
+      - repo_id — owning repo id (ADR-0037: disambiguates the :IMPORTS target)
 
     Relationships:
       - :Stylesheet -[:DEFINED_IN]-> :Module  (always written)
@@ -626,8 +633,25 @@ def _write_stylesheets_batch(
     written yet (forward-reference race in parallel indexing), we create a
     stub so the Stylesheet is never orphaned.  The real Module write later
     in the same batch idempotently fills in repo/path/version_raw/etc.
+
+    ADR-0037: *repo_root* (the repo checkout root) relativizes both the
+    Stylesheet's own file_path (MERGE key) AND each resolved @import target so
+    the :IMPORTS edge matches relative↔relative.  All stylesheets in one
+    indexer run share the same repo_root.  None → paths stored verbatim
+    (back-compat for callers that don't pass it).
+
+    ADR-0037: *repo_id* scopes the :IMPORTS target MATCH.  Once file_path is
+    repo-relative, two repos at the same odoo_version can hold the SAME relative
+    path (e.g. community + enterprise overlay both ship
+    ``addons/web/static/src/scss/variables.scss``).  Without repo_id the target
+    MATCH would be ambiguous and create spurious cross-repo :IMPORTS edges.  A
+    SCSS @import always resolves within the SAME repo as the importer, so we
+    scope src+tgt to the same repo_id.  None → both src and tgt match only
+    other repo_id-NULL nodes (back-compat: legacy nodes carry no repo_id; a
+    None-id run still never crosses into a repo_id-bearing node).
     """
     for s in stylesheets:
+        fp_rel = to_repo_relative(s.file_path, repo_root)
         # MERGE the Stylesheet node + set properties + DEFINED_IN edge.
         # Module is MERGE'd (not MATCH'd) to avoid orphan Stylesheet nodes
         # if the host Module is written by a later batch (parallel-indexer
@@ -639,12 +663,14 @@ def _write_stylesheets_batch(
                           ss.variable_count = $var,
                           ss.import_count = $imp,
                           ss.mixin_count = $mix,
+                          ss.repo_id = $repo_id,
                           ss.profile = $profiles
             ON MATCH  SET ss.language = $lang,
                           ss.selector_count = $sel,
                           ss.variable_count = $var,
                           ss.import_count = $imp,
                           ss.mixin_count = $mix,
+                          ss.repo_id = coalesce($repo_id, ss.repo_id),
                           ss.profile =
                               [x IN coalesce(ss.profile, []) WHERE NOT x IN $profiles]
                               + $profiles
@@ -654,18 +680,29 @@ def _write_stylesheets_batch(
             ON MATCH  SET mod.profile =
                 [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (ss)-[:{REL_DEFINED_IN}]->(mod)
-        """, fp=s.file_path, mod=s.module, v=s.odoo_version,
+        """, fp=fp_rel, mod=s.module, v=s.odoo_version,
              lang=s.language, sel=s.selector_count, var=s.variable_count,
-             imp=s.import_count, mix=s.mixin_count, profiles=profiles)
+             imp=s.import_count, mix=s.mixin_count, repo_id=repo_id,
+             profiles=profiles)
 
-        # Write IMPORTS edges — silent skip when target Stylesheet not yet indexed
+        # Write IMPORTS edges — silent skip when target Stylesheet not yet indexed.
+        # Relativize the resolved target path the same way as the source so the
+        # MERGE key match is relative↔relative (ADR-0037).  Scope BOTH src and
+        # tgt by repo_id so a relative path shared across repos at the same
+        # version can't create a cross-repo :IMPORTS edge (ADR-0037).
         for import_path in s.imports:
+            # Cypher has no IS NOT DISTINCT FROM (Neo4j 5.x); use explicit
+            # null-safe equality so a None repo_id matches only other None rows.
             tx.run(f"""
                 MATCH (src:Stylesheet {{file_path: $src_fp, module: $mod, odoo_version: $v}})
+                WHERE src.repo_id = $repo_id
+                   OR (src.repo_id IS NULL AND $repo_id IS NULL)
                 MATCH (tgt:Stylesheet {{file_path: $tgt_fp, odoo_version: $v}})
+                WHERE tgt.repo_id = $repo_id
+                   OR (tgt.repo_id IS NULL AND $repo_id IS NULL)
                 MERGE (src)-[:{REL_IMPORTS}]->(tgt)
-            """, src_fp=s.file_path, mod=s.module, v=s.odoo_version,
-                 tgt_fp=import_path)
+            """, src_fp=fp_rel, mod=s.module, v=s.odoo_version, repo_id=repo_id,
+                 tgt_fp=to_repo_relative(import_path, repo_root))
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +711,7 @@ def _write_stylesheets_batch(
 
 def _write_lint_violations_batch(
     tx, violations: list[LintViolationInfo], profiles: list[str],
+    repo_root=None,
 ) -> None:
     """MERGE :LintViolation nodes + :HAS_VIOLATION edge from owning :View.
 
@@ -682,8 +720,14 @@ def _write_lint_violations_batch(
     odoo_version) — i.e. (view)-[:HAS_VIOLATION]->(lv).  Silent skip when the
     View does not yet exist — the edge will be created once the View is written
     (idempotent MERGE on next run).
+
+    ADR-0037: *repo_root* relativizes file_path (a MERGE-key component) the same
+    way as Stylesheet — without this, fresh nodes stay absolute-keyed and the
+    post-reindex cleanup (ops/cleanup_absolute_path_nodes.cypher) would wrongly
+    delete them.  None → stored verbatim (back-compat for callers without it).
     """
     for v in violations:
+        fp_rel = to_repo_relative(v.file_path, repo_root)
         # Upsert the LintViolation node.
         # Composite key (file_path, line, rule, odoo_version) collapses multiple
         # same-line/same-rule messages into one node (last-write-wins, by design).
@@ -704,7 +748,7 @@ def _write_lint_violations_batch(
                           lv.profile =
                               [x IN coalesce(lv.profile, []) WHERE NOT x IN $profiles]
                               + $profiles
-        """, fp=v.file_path, line=v.line, rule=v.rule, ver=v.odoo_version,
+        """, fp=fp_rel, line=v.line, rule=v.rule, ver=v.odoo_version,
              msg=v.message, sev=v.severity, xmlid=v.view_xmlid,
              vtype=v.view_type, profiles=profiles)
 
@@ -718,7 +762,7 @@ def _write_lint_violations_batch(
             }})
             MERGE (view)-[:{REL_HAS_VIOLATION}]->(lv)
         """, xmlid=v.view_xmlid, ver=v.odoo_version,
-             fp=v.file_path, line=v.line, rule=v.rule)
+             fp=fp_rel, line=v.line, rule=v.rule)
 
 
 class Neo4jWriter:
@@ -978,11 +1022,18 @@ class Neo4jWriter:
         self,
         stylesheets: list[StylesheetInfo],
         profiles: list[str] | None = None,
+        repo_root=None,
+        repo_id=None,
     ) -> None:
         """Persist :Stylesheet nodes + :DEFINED_IN + :IMPORTS edges.
 
         Idempotent MERGE on composite key (file_path, module, odoo_version).
         *profiles* is the ancestor profile name array (per ADR-0016 Option Y).
+        *repo_root* relativizes file_path + @import targets to repo-relative
+        form (ADR-0037); all stylesheets in one run share one repo_root.
+        *repo_id* scopes the :IMPORTS target MATCH so a relative path shared
+        across repos at the same version cannot create a cross-repo edge
+        (ADR-0037); all stylesheets in one run share one repo_id.
         Batched at NEO4J_WRITE_BATCH_SIZE per transaction.
         IMPORTS edge write silently skips when the target file_path is not indexed.
         """
@@ -991,17 +1042,22 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for batch in _chunked(stylesheets, NEO4J_WRITE_BATCH_SIZE):
-                session.execute_write(_write_stylesheets_batch, batch, _profiles)
+                session.execute_write(
+                    _write_stylesheets_batch, batch, _profiles, repo_root, repo_id,
+                )
 
     def write_lint_violations(
         self,
         violations: list[LintViolationInfo],
         profiles: list[str] | None = None,
+        repo_root=None,
     ) -> None:
         """Persist :LintViolation nodes + :HAS_VIOLATION edges to :View (WI-E, M11).
 
         Idempotent MERGE on composite key (file_path, line, rule, odoo_version).
         *profiles* is the ancestor profile name array (per ADR-0016 Option Y).
+        *repo_root* relativizes file_path (MERGE-key component) per ADR-0037 — all
+        violations in one run share one repo_root.
         Batched at NEO4J_WRITE_BATCH_SIZE per transaction.
         The :HAS_VIOLATION edge is silently skipped when the target :View has
         not yet been written — the edge is written on the next incremental run.
@@ -1012,7 +1068,9 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for batch in _chunked(violations, NEO4J_WRITE_BATCH_SIZE):
-                session.execute_write(_write_lint_violations_batch, batch, _profiles)
+                session.execute_write(
+                    _write_lint_violations_batch, batch, _profiles, repo_root,
+                )
 
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
         """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.
@@ -1087,12 +1145,43 @@ class Neo4jWriter:
         Args:
             repo:         m.repo value (repo root dir name, e.g. 'odoo_17.0').
             odoo_version: Odoo version label, e.g. '17.0'.
-            live_paths:   Absolute path strings returned by the scanner for this
-                          repo in this run. Modules NOT in this set are stale.
+            live_paths:   Repo-relative module path strings for this repo in this
+                          run (ADR-0037: must match the relative form stored in
+                          Module.path).  Modules NOT in this set are stale.  The
+                          caller (pipeline) is responsible for relativizing the
+                          scanner output before passing it here — a mismatch
+                          (absolute live_paths vs relative Module.path) would
+                          mark every node stale and DETACH DELETE the graph.
 
         Risk gate (enforced by caller): only called when len(live_paths) >= 1.
+
+        ADR-0037 mixed-graph guard: live_paths is now repo-RELATIVE.  If this
+        runs against a graph still holding pre-ADR-0037 ABSOLUTE Module.path
+        (starts with '/'), EVERY module would mismatch live_paths and be DETACH
+        DELETEd.  So before deleting, count absolute-path Module nodes for this
+        repo+version; if any exist the graph is mixed/legacy — SKIP GC, log a
+        warning, and return 0 so the operator runs a full ``--full`` reindex
+        first (per docs/deploy/reindex-v8-v19-runbook.md).
         """
         with self.driver.session() as session:
+            abs_count = session.run(
+                """
+                MATCH (m:Module {repo: $repo, odoo_version: $version})
+                WHERE m.path STARTS WITH '/'
+                RETURN count(m) AS n
+                """,
+                repo=repo,
+                version=odoo_version,
+            ).single()
+            if abs_count is not None and abs_count["n"] > 0:
+                _logger.warning(
+                    "Module GC skipped: %d Module node(s) for repo %s version %s "
+                    "still carry ABSOLUTE paths (pre-ADR-0037). Running relative-path "
+                    "GC against them would delete the whole repo. Run a full --full "
+                    "reindex first (see reindex-v8-v19-runbook.md).",
+                    abs_count["n"], repo, odoo_version,
+                )
+                return 0
             row = session.run(
                 """
                 MATCH (m:Module {repo: $repo, odoo_version: $version})

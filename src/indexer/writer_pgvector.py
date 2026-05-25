@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from psycopg2.extras import execute_values
 
 from .embedder import EmbedderClient
-from .models import CSSChunk, JSChunk, ParseResult, PatternExample, SCSSChunk, ViewParseResult
+from .models import (
+    CSSChunk,
+    JSChunk,
+    ModuleInfo,
+    ParseResult,
+    PatternExample,
+    SCSSChunk,
+    ViewParseResult,
+)
 
 _WINDOW_CHARS = 2048
 _OVERLAP_CHARS = 256
@@ -114,7 +122,9 @@ def make_chunks(
 
     for model in parse_result.models:
         # A3: use real source file_path when available; fall back to module dir.
-        model_fp = model.file_path or mod.path
+        # ADR-0037: relativize to repo root so the stored file_path is portable
+        # (idempotent — a path already relative is returned unchanged).
+        model_fp = mod.relative_path(model.file_path or mod.path)
 
         for method in model.methods:
             prefix = f"[{module}] {model.name}.{method.name} ({version})"
@@ -141,7 +151,7 @@ def make_chunks(
             inherit_str = f", inherit={view.inherit_xmlid}" if view.inherit_xmlid else ""
             prefix = f"[{module}] {view.xmlid} ({view.view_type}{inherit_str})"
             body = view.arch or f"<!-- arch missing for {view.xmlid} -->"
-            fp = view.file_path or mod.path
+            fp = mod.relative_path(view.file_path or mod.path)
             chunks.extend(
                 _sliding(
                     f"{prefix}\n{body}", view.xmlid, "view", module, version, fp, view.model,
@@ -152,7 +162,7 @@ def make_chunks(
         for qweb in view_result.qweb:
             prefix = f"[{module}] {qweb.xmlid}"
             body = qweb.content or f"<!-- content missing for {qweb.xmlid} -->"
-            fp = qweb.file_path or mod.path
+            fp = mod.relative_path(qweb.file_path or mod.path)
             chunks.extend(
                 _sliding(
                     f"{prefix}\n{body}", qweb.xmlid, "qweb", module, version, fp, None,
@@ -164,61 +174,86 @@ def make_chunks(
         chunk_type = f"js_{jsc.era}"
         chunks.append(EmbeddingChunk(
             chunk_type, module, version,
-            jsc.entity_name, None, jsc.file_path, jsc.chunk_idx, jsc.content,
+            jsc.entity_name, None, mod.relative_path(jsc.file_path),
+            jsc.chunk_idx, jsc.content,
             repo=mod_repo, repo_id=mod_repo_id,
         ))
 
     return chunks
 
 
-def make_css_chunks(css_chunks: list[CSSChunk]) -> list[EmbeddingChunk]:
+def make_css_chunks(
+    css_chunks: list[CSSChunk], module_info: ModuleInfo | None = None,
+) -> list[EmbeddingChunk]:
     """Convert CSSChunk list → EmbeddingChunk list (chunk_type='css').
 
     Each CSSChunk (variable block, selector group, @media query, or raw window)
     becomes one EmbeddingChunk. entity_name encodes the semantic unit label
     (selector text, mixin name, variable group prefix, etc.) for ANN filtering.
     model_name is always None — CSS has no model binding.
+
+    ADR-0037: *module_info* (when supplied) stamps repo + repo_id provenance —
+    parity with method/field/view chunks so stylesheet chunks keep their repo
+    identity after the file_path is relativized — and relativizes file_path to
+    repo-relative form.  None → file_path verbatim, repo/repo_id NULL (back-compat).
     """
+    repo = module_info.repo if module_info else None
+    repo_id = module_info.repo_id if module_info else None
     chunks: list[EmbeddingChunk] = []
     for c in css_chunks:
+        fp = module_info.relative_path(c.file_path) if module_info else c.file_path
         chunks.append(EmbeddingChunk(
             chunk_type="css",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=c.entity_name,
             model_name=None,
-            file_path=c.file_path,
+            file_path=fp,
             chunk_idx=c.chunk_idx,
             content=c.content,
+            repo=repo,
+            repo_id=repo_id,
         ))
     return chunks
 
 
-def make_scss_chunks(scss_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
+def make_scss_chunks(
+    scss_chunks: list[SCSSChunk], module_info: ModuleInfo | None = None,
+) -> list[EmbeddingChunk]:
     """Convert SCSSChunk list → EmbeddingChunk list (chunk_type='scss').
 
     Same pattern as make_css_chunks. chunk_kind is embedded into entity_name
     as ``<kind>:<entity_name>`` so ANN results can be filtered by kind
     (e.g. find only mixin definitions across versions) without schema changes.
     model_name is always None — SCSS has no model binding.
+
+    ADR-0037: *module_info* stamps repo + repo_id and relativizes file_path
+    (see make_css_chunks).
     """
+    repo = module_info.repo if module_info else None
+    repo_id = module_info.repo_id if module_info else None
     chunks: list[EmbeddingChunk] = []
     for c in scss_chunks:
         entity = f"{c.chunk_kind}:{c.entity_name}"
+        fp = module_info.relative_path(c.file_path) if module_info else c.file_path
         chunks.append(EmbeddingChunk(
             chunk_type="scss",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=entity,
             model_name=None,
-            file_path=c.file_path,
+            file_path=fp,
             chunk_idx=c.chunk_idx,
             content=c.content,
+            repo=repo,
+            repo_id=repo_id,
         ))
     return chunks
 
 
-def make_less_chunks(less_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
+def make_less_chunks(
+    less_chunks: list[SCSSChunk], module_info: ModuleInfo | None = None,
+) -> list[EmbeddingChunk]:
     """Convert SCSSChunk list (from parser_less) → EmbeddingChunk list (chunk_type='less').
 
     Mirrors make_scss_chunks exactly — LESS chunks share the SCSSChunk dataclass
@@ -226,19 +261,27 @@ def make_less_chunks(less_chunks: list[SCSSChunk]) -> list[EmbeddingChunk]:
     chunk_kind is embedded into entity_name as ``<kind>:<entity_name>`` for ANN
     kind-filtering without schema changes.
     model_name is always None — LESS has no model binding.
+
+    ADR-0037: *module_info* stamps repo + repo_id and relativizes file_path
+    (see make_css_chunks).
     """
+    repo = module_info.repo if module_info else None
+    repo_id = module_info.repo_id if module_info else None
     chunks: list[EmbeddingChunk] = []
     for c in less_chunks:
         entity = f"{c.chunk_kind}:{c.entity_name}"
+        fp = module_info.relative_path(c.file_path) if module_info else c.file_path
         chunks.append(EmbeddingChunk(
             chunk_type="less",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=entity,
             model_name=None,
-            file_path=c.file_path,
+            file_path=fp,
             chunk_idx=c.chunk_idx,
             content=c.content,
+            repo=repo,
+            repo_id=repo_id,
         ))
     return chunks
 

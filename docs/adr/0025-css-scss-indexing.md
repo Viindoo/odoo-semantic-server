@@ -34,7 +34,7 @@ New label `:Stylesheet` with composite MERGE key `(file_path, module, odoo_versi
 **Properties:**
 | Property | Type | Description |
 |---|---|---|
-| `file_path` | string | Absolute path on disk (part of composite key) |
+| `file_path` | string | Repo-relative path (e.g. `addons/web/static/src/scss/foo.scss`); absolute anchor is `repos.local_path` (ADR-0037 D1) |
 | `module` | string | Odoo module name (part of composite key) |
 | `odoo_version` | string | Odoo version label e.g. "17.0" (part of composite key) |
 | `language` | string | `"css"`, `"scss"`, or `"less"` |
@@ -46,7 +46,7 @@ New label `:Stylesheet` with composite MERGE key `(file_path, module, odoo_versi
 
 **Rationale for per-file granularity:** One `:Stylesheet` node per file rather than per-module aggregate because:
 1. `@import` chain analysis requires file-level source/target nodes.
-2. `find_examples` ANN results reference `file_path` — clients need the exact file for click-through.
+2. `find_examples` ANN results reference `file_path` — clients need the repo-relative path (ADR-0037 D1) to map onto their own checkout for click-through.
 3. Future MCP tools (`resolve_stylesheet`, `find_style_override`) will query at file level.
 
 ### §2 Relationships
@@ -92,6 +92,10 @@ Key: `(file_path, module, odoo_version)`.
 - `module + odoo_version` alone is not unique when one module ships multiple CSS files.
 - The triple is unique in practice (one Stylesheet node per physical file per version context).
 - Mirrors the Module/Model/Field composite key convention from ADR-0001.
+
+**ADR-0037 addendum (path portability):** `file_path` is now stored **repo-relative** (`addons/web/static/src/scss/variables.scss`), never absolute. `repos.local_path` remains the sole absolute anchor (ADR-0037 D1). Relativization prevents the MERGE key from being host-specific and allows server migration without a reindex.
+
+Cross-repo collision: two repos at the same `odoo_version` can share the same relative path. The `:IMPORTS` writer's target MATCH is now scoped by the new `repo_id` property stamped on each `:Stylesheet` node (ADR-0037 D8). The MERGE key `(file_path, module, odoo_version)` is **unchanged** — it remains sufficient for uniqueness within one repo context; `repo_id` is a non-key property used only to scope `:IMPORTS` resolution.
 
 ### D2 — tree-sitter-css vs regex fallback
 
