@@ -64,7 +64,7 @@ Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count
 - **`GET /api/versions`** (`routes/versions.py`) — đọc `src/indexer/spec_data/bootstrap_versions.json` (12 phiên bản v8-v19), sort numeric, trả `{"versions": ["8.0", ..., "19.0"]}`. Dùng cho các dropdown version trong Admin UI.
 - **3 dropdown version trong Admin UI** — index-core, seed-patterns (thêm option 'all'), add-repo (populate từ `GET /api/versions`).
 - **Worker controls trong index-all:** `profile_workers` (1-4, parallel profiles) + `max_workers` (1-8, parallel repos per profile) + `--gc` flag (cleanup stale Module nodes).
-- **Branch hint** trong form add-repo — gợi ý tên branch theo version chọn (ví dụ version `17.0` → branch hint `17.0`).
+- **Branch hint** trong form add-repo — chọn version ở dropdown tự pre-fill ô branch input (ví dụ chọn `17.0` → branch input điền sẵn `17.0`); user vẫn sửa được.
 
 ---
 
