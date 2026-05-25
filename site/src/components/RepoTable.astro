@@ -31,9 +31,12 @@ export interface Props {
   repos: Repo[];
   profiles: Profile[];
   sshKeys: SshKey[];
+  odooVersions?: string[];
 }
 
-const { repos = [], profiles = [], sshKeys = [] } = Astro.props;
+const { repos = [], profiles = [], sshKeys = [], odooVersions = [] } = Astro.props;
+// Default selection: latest version (last in numeric-sorted list from /api/versions)
+const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length - 1] : '';
 
 const cloneStatusColor: Record<string, string> = {
   manual:  'bg-gray-100 text-gray-600',
@@ -95,13 +98,32 @@ function truncate(text: string | null | undefined, maxLen: number): string {
         required
       />
     </div>
+    <!-- W4 B: version select — pre-fills branch; no name so not submitted separately -->
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Odoo Version (suggests branch)</label>
+      <select
+        data-testid="repos-version-select"
+        id="repo-version-select"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+      >
+        {odooVersions.length === 0 ? (
+          <option value="">— no versions available —</option>
+        ) : (
+          odooVersions.map((v) => (
+            <option value={v} selected={v === latestVersion}>{v}</option>
+          ))
+        )}
+      </select>
+    </div>
+    <!-- W4 D: branch pre-filled from version select; user can override -->
     <div>
       <label class="block text-xs font-medium text-gray-600 mb-1">Branch</label>
       <input
         name="branch"
         type="text"
-        placeholder="17.0"
+        placeholder={latestVersion || "17.0"}
         data-testid="repos-branch-input"
+        id="repo-branch-input"
         class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
         required
       />
@@ -136,7 +158,41 @@ function truncate(text: string | null | undefined, maxLen: number): string {
   <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
     <h2 class="text-base font-semibold text-gray-800">Repositories ({repos.length})</h2>
     {repos.length > 0 && (
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <!-- W4 C: worker controls -->
+        <label class="flex items-center gap-1 text-xs text-gray-600">
+          <span class="whitespace-nowrap">Profile workers:</span>
+          <input
+            type="number"
+            min="1"
+            max="4"
+            value="1"
+            data-testid="index-all-profile-workers"
+            class="w-14 border border-gray-300 rounded px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-1 focus:ring-viindoo-info"
+            title="Parallel profiles (1–4)"
+          />
+        </label>
+        <label class="flex items-center gap-1 text-xs text-gray-600">
+          <span class="whitespace-nowrap">Max workers:</span>
+          <input
+            type="number"
+            min="1"
+            max="8"
+            value="1"
+            data-testid="index-all-max-workers"
+            class="w-14 border border-gray-300 rounded px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-1 focus:ring-viindoo-info"
+            title="Repo-level workers per profile (1–8)"
+          />
+        </label>
+        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            data-testid="index-all-gc-checkbox"
+            class="w-4 h-4 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
+            title="Run GC (garbage-collect stale nodes)"
+          />
+          <span>GC</span>
+        </label>
         <label class="flex items-center gap-1.5 text-xs text-gray-600">
           <input
             type="checkbox"
@@ -456,13 +512,22 @@ function truncate(text: string | null | undefined, maxLen: number): string {
     });
   });
 
-  // Index all button
+  // Index all button — W4 C: read actual worker values + gc toggle
   document.querySelector('[data-testid="index-all-button"]')?.addEventListener('click', async () => {
     if (!confirm('Trigger index for ALL profiles?')) return;
     const fullCheckbox = document.querySelector('[data-testid="index-all-full-checkbox"]') as HTMLInputElement | null;
-    const body: Record<string, string> = { max_workers: '1', profile_workers: '1' };
+    const gcCheckbox = document.querySelector('[data-testid="index-all-gc-checkbox"]') as HTMLInputElement | null;
+    const profileWorkersInput = document.querySelector('[data-testid="index-all-profile-workers"]') as HTMLInputElement | null;
+    const maxWorkersInput = document.querySelector('[data-testid="index-all-max-workers"]') as HTMLInputElement | null;
+    const body: Record<string, string> = {
+      max_workers: maxWorkersInput?.value || '1',
+      profile_workers: profileWorkersInput?.value || '1',
+    };
     if (fullCheckbox?.checked) {
       body.full = '1';
+    }
+    if (gcCheckbox?.checked) {
+      body.gc = '1';
     }
     const res = await fetch('/api/repos/index-all', {
       method: 'POST',
@@ -476,6 +541,28 @@ function truncate(text: string | null | undefined, maxLen: number): string {
       showFlash(data.error ?? 'Index-all failed.', 'error');
     }
   });
+
+  // W4 D: version select → branch input suggestion
+  const versionSelect = document.querySelector('#repo-version-select') as HTMLSelectElement | null;
+  const branchInput = document.querySelector('#repo-branch-input') as HTMLInputElement | null;
+  if (versionSelect && branchInput) {
+    // Set initial value from version select if branch is empty
+    if (!branchInput.value && versionSelect.value) {
+      branchInput.value = versionSelect.value;
+    }
+    versionSelect.addEventListener('change', () => {
+      // Only update branch if user hasn't manually changed it
+      // (we track this via a data attribute set on manual input)
+      if (!branchInput.dataset.userEdited) {
+        branchInput.value = versionSelect.value;
+        branchInput.placeholder = versionSelect.value;
+      }
+    });
+    branchInput.addEventListener('input', () => {
+      // Mark as user-edited so auto-suggestion stops overwriting
+      branchInput.dataset.userEdited = '1';
+    });
+  }
 
   // Edit repo buttons — toggle inline edit form row
   document.querySelectorAll('.edit-repo-btn').forEach((btn) => {

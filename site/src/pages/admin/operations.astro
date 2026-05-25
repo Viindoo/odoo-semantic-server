@@ -39,6 +39,22 @@ const migrationsRes = await fetch(`${FASTAPI_BASE}/api/admin/migrations`, {
 }).catch(() => null);
 const migrationsData: { migrations: { id: string; applied_at: string | null }[]; count: number } =
   migrationsRes?.ok ? await migrationsRes.json() : { migrations: [], count: 0 };
+
+// W4 B: fetch version list for dropdowns (data-driven, non-blocking)
+let odooVersions: string[] = [];
+try {
+  const vres = await fetch(`${FASTAPI_BASE}/api/versions`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (vres.ok) {
+    const vd = await vres.json();
+    odooVersions = Array.isArray(vd.versions) ? (vd.versions as string[]) : [];
+  }
+} catch {
+  // non-blocking — dropdowns fall back to empty (user can still type)
+}
+// Default to latest (last in numeric-sorted list)
+const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length - 1] : '';
 ---
 
 <AdminLayout title="Operations — Admin">
@@ -136,14 +152,20 @@ const migrationsData: { migrations: { id: string; applied_at: string | null }[];
       </div>
       <div>
         <label class="block text-xs font-medium text-gray-600 mb-1">Version</label>
-        <input
+        <select
           name="version"
-          type="text"
-          placeholder="17.0"
           data-testid="ops-index-core-version-input"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
           required
-        />
+        >
+          {odooVersions.length === 0 ? (
+            <option value="">— no versions available —</option>
+          ) : (
+            odooVersions.map((v) => (
+              <option value={v} selected={v === latestVersion}>{v}</option>
+            ))
+          )}
+        </select>
       </div>
       <div>
         <label class="block text-xs font-medium text-gray-600 mb-1">Static data dir (optional)</label>
@@ -179,13 +201,16 @@ const migrationsData: { migrations: { id: string; applied_at: string | null }[];
     <form data-testid="seed-patterns-form" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       <div>
         <label class="block text-xs font-medium text-gray-600 mb-1">Version (optional)</label>
-        <input
+        <select
           name="version"
-          type="text"
-          placeholder="17.0 (leave blank for all)"
           data-testid="ops-seed-patterns-version-input"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
-        />
+        >
+          <option value="">— all versions —</option>
+          {odooVersions.map((v) => (
+            <option value={v}>{v}</option>
+          ))}
+        </select>
       </div>
       <div>
         <label class="block text-xs font-medium text-gray-600 mb-1">Patterns file (optional)</label>
