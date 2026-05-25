@@ -629,6 +629,164 @@ def test_write_js_graph_creates_owlcomp_node(writer, neo4j_driver):
     assert rec["c"]["file_path"] == "/sale/static/src/components/sale_widget.js"
 
 
+def test_write_relativizes_paths_when_repo_root_set(writer, neo4j_driver):
+    """ADR-0037: with ModuleInfo.repo_root set, Module.path + JSPatch/OWLComp
+    file_path are stored REPO-RELATIVE (never the server-absolute path)."""
+    from pathlib import Path
+    module = ModuleInfo(
+        name="relmod", odoo_version=TEST_VERSION, repo="odoo_17.0_repo",
+        path="/srv/clones/odoo_17.0_repo/addons/relmod", depends=[],
+        repo_root=Path("/srv/clones/odoo_17.0_repo"),
+    )
+    abs_js = "/srv/clones/odoo_17.0_repo/addons/relmod/static/src/js/a.js"
+    patch = JSPatchInfo(
+        target="W", patch_name="p", module="relmod",
+        odoo_version=TEST_VERSION, era="patch", file_path=abs_js,
+    )
+    comp = OWLCompInfo(
+        name="W", module="relmod", odoo_version=TEST_VERSION, file_path=abs_js,
+    )
+    writer.write_results([ParseResult(module=module, models=[])])
+    writer.write_js_graph_results([
+        JSGraphResult(module=module, patches=[patch], components=[comp])
+    ])
+
+    with neo4j_driver.session() as session:
+        mod_fp = session.run(
+            "MATCH (m:Module {name:'relmod', odoo_version:$v}) RETURN m.path AS p",
+            v=TEST_VERSION,
+        ).single()["p"]
+        jp_fp = session.run(
+            "MATCH (j:JSPatch {module:'relmod', odoo_version:$v}) RETURN j.file_path AS fp",
+            v=TEST_VERSION,
+        ).single()["fp"]
+        oc_fp = session.run(
+            "MATCH (c:OWLComp {name:'W', module:'relmod', odoo_version:$v}) "
+            "RETURN c.file_path AS fp",
+            v=TEST_VERSION,
+        ).single()["fp"]
+
+    assert mod_fp == "addons/relmod", f"Module.path must be repo-relative, got {mod_fp!r}"
+    assert jp_fp == "addons/relmod/static/src/js/a.js", jp_fp
+    assert oc_fp == "addons/relmod/static/src/js/a.js", oc_fp
+    for fp in (mod_fp, jp_fp, oc_fp):
+        assert not fp.startswith("/"), f"absolute path leaked into storage: {fp!r}"
+
+
+def test_write_stylesheet_relative_with_repo_root(writer, neo4j_driver):
+    """ADR-0037: write_stylesheets(repo_root=...) stores Stylesheet.file_path
+    repo-relative (MERGE key), and the GC live_paths/Module.path stay aligned."""
+    from pathlib import Path
+
+    from src.indexer.models import StylesheetInfo
+    repo_root = Path("/srv/clones/odoo_17.0_repo")
+    ss = StylesheetInfo(
+        file_path="/srv/clones/odoo_17.0_repo/addons/web/static/src/scss/m.scss",
+        module="web", odoo_version=TEST_VERSION, language="scss",
+        selector_count=1,
+    )
+    writer.write_stylesheets([ss], profiles=["odoo_17.0_repo"], repo_root=repo_root)
+    with neo4j_driver.session() as session:
+        fp = session.run(
+            "MATCH (s:Stylesheet {module:'web', odoo_version:$v}) RETURN s.file_path AS fp",
+            v=TEST_VERSION,
+        ).single()["fp"]
+    assert fp == "addons/web/static/src/scss/m.scss", fp
+    assert not fp.startswith("/")
+
+
+def test_stylesheet_imports_no_cross_repo_edge_on_shared_relative_path(
+    writer, neo4j_driver,
+):
+    """ADR-0037 regression: two repos at the SAME odoo_version that share an
+    identical relative stylesheet path (community + enterprise overlay both ship
+    ``addons/web/static/src/scss/variables.scss``) must NOT produce a spurious
+    cross-repo :IMPORTS edge.  A SCSS @import resolves within the importing
+    repo, so the :IMPORTS target MATCH is scoped by repo_id.
+
+    Repo A (id=101): main.scss @imports variables.scss (same repo).
+    Repo B (id=202): an unrelated variables.scss at the SAME relative path.
+    Expected: exactly ONE :IMPORTS edge (A.main -> A.variables); zero edges
+    cross into repo B's node.
+    """
+    from pathlib import Path
+
+    from src.indexer.models import StylesheetInfo
+
+    rel_vars = "addons/web/static/src/scss/variables.scss"
+    rel_main = "addons/web/static/src/scss/main.scss"
+    abs_vars_a = f"/srv/clones/repo_a/{rel_vars}"
+    abs_main_a = f"/srv/clones/repo_a/{rel_main}"
+    abs_vars_b = f"/srv/clones/repo_b/{rel_vars}"
+
+    # Repo A: main.scss imports variables.scss (resolved to the same-repo abs path).
+    main_a = StylesheetInfo(
+        file_path=abs_main_a, module="web", odoo_version=TEST_VERSION,
+        language="scss", import_count=1, imports=[abs_vars_a],
+    )
+    vars_a = StylesheetInfo(
+        file_path=abs_vars_a, module="web", odoo_version=TEST_VERSION,
+        language="scss",
+    )
+    # Repo B: an unrelated variables.scss at the identical RELATIVE path.
+    vars_b = StylesheetInfo(
+        file_path=abs_vars_b, module="web", odoo_version=TEST_VERSION,
+        language="scss",
+    )
+
+    writer.write_stylesheets(
+        [vars_b], profiles=["repo_b"],
+        repo_root=Path("/srv/clones/repo_b"), repo_id=202,
+    )
+    # Target (vars_a) listed before the importer (main_a) so the :IMPORTS MATCH
+    # finds it within the same batch (single-pass writer; ADR-0025 §D3 skips
+    # when the target is not yet indexed).
+    writer.write_stylesheets(
+        [vars_a, main_a], profiles=["repo_a"],
+        repo_root=Path("/srv/clones/repo_a"), repo_id=101,
+    )
+
+    with neo4j_driver.session() as session:
+        edges = session.run(
+            """
+            MATCH (src:Stylesheet {odoo_version:$v})-[:IMPORTS]->(tgt:Stylesheet)
+            RETURN src.repo_id AS src_repo, tgt.repo_id AS tgt_repo
+            """,
+            v=TEST_VERSION,
+        ).data()
+
+    assert len(edges) == 1, f"expected exactly one same-repo IMPORTS edge, got {edges!r}"
+    assert edges[0]["src_repo"] == 101 and edges[0]["tgt_repo"] == 101, (
+        f"IMPORTS edge crossed repos (must stay within repo 101): {edges[0]!r}"
+    )
+
+
+def test_write_lint_violation_relative_with_repo_root(writer, neo4j_driver):
+    """ADR-0037: LintViolation.file_path (a MERGE-key component) is stored
+    repo-relative when repo_root is passed — so the post-reindex cleanup cypher
+    (which deletes absolute-keyed nodes) never deletes freshly-written data."""
+    from pathlib import Path
+
+    from src.indexer.models import LintViolationInfo
+    lv = LintViolationInfo(
+        file_path="/srv/clones/odoo_17.0_repo/addons/sale/views/sale_views.xml",
+        line=12, rule="relaxng.tree_view", message="bad", view_xmlid="sale.v",
+        odoo_version=TEST_VERSION, view_type="tree",
+    )
+    writer.write_lint_violations(
+        [lv], profiles=["odoo_17.0_repo"],
+        repo_root=Path("/srv/clones/odoo_17.0_repo"),
+    )
+    with neo4j_driver.session() as session:
+        fp = session.run(
+            "MATCH (lv:LintViolation {odoo_version:$v, rule:'relaxng.tree_view'}) "
+            "RETURN lv.file_path AS fp",
+            v=TEST_VERSION,
+        ).single()["fp"]
+    assert fp == "addons/sale/views/sale_views.xml", fp
+    assert not fp.startswith("/"), f"absolute path leaked into LintViolation key: {fp!r}"
+
+
 def test_write_js_graph_patches_edge_resolved(writer, neo4j_driver):
     """PATCHES edge is created without unresolved flag when OWLComp target exists."""
     module = make_js_module("viin_sale")

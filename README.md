@@ -67,7 +67,7 @@ MCP server also exposes **7 Resources** (`odoo://` URI scheme — M11 Wave F, AD
 
 The `{version}` segment accepts sentinels (`auto`, `default`, `latest`) that resolve to the API key's active version (set via `set_active_version`). Resource bodies are cached (LRU 1000 entries / 300s TTL, per-resolved-version so different active-version tenants never share a cache entry).
 
-Indexer also covers **CSS/SCSS files** (M9 Coverage Fill): `:Stylesheet` Neo4j nodes with composite key `(file_path, module, odoo_version)`, `IMPORTS` edge chain for SCSS `@import` resolution, and pgvector semantic chunks (selector groups, variable definitions, media queries, mixin definitions) for stylesheet override analysis + branding/theme discovery.
+Indexer also covers **CSS/SCSS files** (M9 Coverage Fill): `:Stylesheet` Neo4j nodes with composite key `(file_path, module, odoo_version)` (paths stored repo-relative per ADR-0037 D1; `repo_id` property scopes `:IMPORTS` edges to prevent cross-repo collisions — ADR-0037 D8), `IMPORTS` edge chain for SCSS `@import` resolution, and pgvector semantic chunks (selector groups, variable definitions, media queries, mixin definitions) for stylesheet override analysis + branding/theme discovery.
 
 → [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
 
@@ -182,10 +182,10 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **Production deploy:** 2026-05-17 — PR #119 go-live batch deployed. Admin-invite signup model active. See [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) for signoff state. PRs #160 + wave3 pending prod deploy (admin must run full reindex v8→v19 per runbook after deploy, plus `python -m src.db.migrate` for m13_001 + m13_002).
 
-**Active work (feat/osm-pre-reindex-hardening):** M13 pre-reindex hardening wave (#165) — parser/writer correctness v8-v19 + cheap enrichment, on top of the already-shipped P2 enforcement gate (WI-3/WI-4 + cross-tenant leak gate shipped v0.10.0 #163, refined #165). **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + WI-7 FERNET secrets / Postgres RLS hardening. **Deferred to later waves:** M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
+**Active work:** `feat/osm-pre-reindex-hardening` (#165) — M13 parser/writer correctness v8-v19 + cheap enrichment, on top of the already-shipped P2 enforcement gate (WI-3/WI-4 + cross-tenant leak gate shipped v0.10.0 #163, refined #165). `feat/portable-paths` (ADR-0037) — stored paths now repo-relative, `[repo]` output label shows portable git URL (`github.com/org/repo`), `:Stylesheet` nodes gain `repo_id` for IMPORTS scoping. **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + `ops/cleanup_absolute_path_nodes.cypher` post-reindex cleanup + WI-7 FERNET secrets / Postgres RLS hardening. **Deferred to later waves:** M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
 
 **Next milestones (roadmap):**
-- **M13 close** — production reindex v8→v19 (OPS) + WI-7 FERNET secrets / Postgres RLS hardening (RLS needs `FORCE` + non-owner read role). The P2 read-side enforcement gate (WI-3 `resolve_tenant_scope` + WI-4 mandatory fail-closed filter at 61 Neo4j + 4 ORM + 3 pgvector sites + cross-tenant leak test) already shipped in v0.10.0 (#163) and was refined in #165.
+- **M13 close** — production reindex v8→v19 (OPS) + run `ops/cleanup_absolute_path_nodes.cypher` post-reindex (removes absolute-path orphan nodes from Neo4j Stylesheet/LintViolation + verifies pgvector `file_path LIKE '/%'` = 0) + WI-7 FERNET secrets / Postgres RLS hardening (RLS needs `FORCE` + non-owner read role). The P2 read-side enforcement gate (WI-3 `resolve_tenant_scope` + WI-4 mandatory fail-closed filter at 61 Neo4j + 4 ORM + 3 pgvector sites + cross-tenant leak test) already shipped in v0.10.0 (#163) and was refined in #165.
 - **M10B "Billing Wow"** — Stripe subscription + plan tiers.
 - **M10C remaining** — Prometheus `embedder_batch_duration_seconds` histogram, nonce-based CSP (blocked — awaits Astro v5.1+ nonce API).
 

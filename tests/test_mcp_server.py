@@ -3585,7 +3585,14 @@ def test_b1_describe_module_renders_repo_and_path(neo4j_driver):
         assert "Repo:" in out, f"B1: expected 'Repo:' line in describe_module output.\n{out}"
         assert "odoo_community" in out, f"B1: expected repo value in output.\n{out}"
         assert "Path:" in out, f"B1: expected 'Path:' line in describe_module output.\n{out}"
-        assert "/opt/odoo/addons/sale" in out, f"B1: expected path value in output.\n{out}"
+        # ADR-0037: Path must be repo-relative — the server-absolute prefix must
+        # NOT leak to the client, but the relative tail stays for navigation.
+        assert "/opt/odoo/addons/sale" not in out, (
+            f"B1: absolute server path must not leak to client.\n{out}"
+        )
+        assert "addons/sale" in out, (
+            f"B1: expected repo-relative path tail in output.\n{out}"
+        )
     finally:
         _cleanup_b1(neo4j_driver)
 

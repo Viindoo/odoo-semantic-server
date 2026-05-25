@@ -148,7 +148,13 @@ def parse_cli_commands(
                 src = f.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            for cmd in _parse_cli_module(src, odoo_version, str(f)):
+            # ADR-0037: store source-root-relative path (e.g. "odoo/cli/server.py"),
+            # matching the static cli_flags_*.json convention — never absolute.
+            try:
+                cli_fp = str(f.relative_to(Path(odoo_source_root)))
+            except ValueError:
+                cli_fp = str(f)
+            for cmd in _parse_cli_module(src, odoo_version, cli_fp):
                 if cmd.name not in seen:
                     seen.add(cmd.name)
                     out.append(cmd)

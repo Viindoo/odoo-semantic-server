@@ -208,6 +208,47 @@ Expected: non-zero rows for each version with relational fields (v10+).
 
 ---
 
+## 3b. Cypher Cleanup — Post-reindex absolute-path nodes (ADR-0037, 2 min)
+
+Run AFTER §3 has fully reindexed ALL repos for ALL versions (not before/between).
+ADR-0037 switched stored file paths to repo-relative. `Stylesheet` and
+`LintViolation` use `file_path` in their composite MERGE key, so the reindex
+created new relative-keyed nodes while the old absolute-keyed nodes (starting
+with `/`) linger as orphans. Other node types are SET-after-MERGE and overwrite
+in place — no cleanup needed.
+
+```bash
+# Diagnose first (expect > 0 on a freshly-migrated graph, 0 if already clean):
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (ss:Stylesheet) WHERE ss.file_path STARTS WITH '/' RETURN count(ss) AS stale_ss;"
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (lv:LintViolation) WHERE lv.file_path STARTS WITH '/' RETURN count(lv) AS stale_lv;"
+
+# Cleanup (idempotent; safe no-op on a clean graph):
+cat ops/cleanup_absolute_path_nodes.cypher | cypher-shell -u neo4j -p "$NEO4J_PASSWORD"
+
+# Verify all three are 0:
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (n) WHERE (n:Stylesheet OR n:LintViolation) AND n.file_path STARTS WITH '/'
+     RETURN count(n) AS remaining_abs_nodes;"
+psql -U odoo_semantic -c "SELECT count(*) AS abs_embeddings FROM embeddings WHERE file_path LIKE '/%';"
+```
+Expected: `remaining_abs_nodes = 0` AND `abs_embeddings = 0`.
+
+**Result:** [ ] stale Stylesheet/LintViolation = 0; embeddings with absolute path = 0
+
+> **Known constraint — Module GC is auto-disabled on a not-yet-migrated graph.**
+> ADR-0037 made GC's `live_paths` repo-relative. To prevent an incremental
+> `--gc` run from blasting an entire repo when the graph still holds pre-ADR-0037
+> absolute `Module.path` values, `gc_stale_modules` first counts absolute-path
+> Module nodes for the repo+version and SKIPS GC (returns 0, logs a warning) when
+> any exist. So you may see `Module GC skipped: N Module node(s) ... still carry
+> ABSOLUTE paths` in logs until the FULL `--full` reindex (§3) has rewritten
+> every Module.path to relative. This is expected and protective — run the full
+> reindex, then GC re-enables itself automatically on subsequent runs.
+
+---
+
 ## 4. Re-embed Stubs (run overnight, off-peak)
 
 Re-embeds modules with `field_count > 0` but `embeddings_count == 0`. Includes:

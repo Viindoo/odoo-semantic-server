@@ -156,6 +156,95 @@ def _render_capped(
 # SSOT (WI-A2). Imported below alongside the FastMCP setup.
 
 
+def _portable_path(
+    file_path: str | None,
+    *,
+    repo: str | None = None,
+    module: str | None = None,
+) -> str:
+    """Strip a server-absolute prefix so tool output is portable (ADR-0037).
+
+    AI clients run on a different machine than the indexer; an absolute server
+    path (``/home/tuan/git/odoo_17.0/addons/sale/...``) is useless to them.
+    This returns the repo-relative tail (``addons/sale/...``) they can map onto
+    their own checkout.
+
+    Strategy (first match wins):
+      1. Already relative (no leading "/") → returned unchanged.  Idempotent, so
+         it is a safe no-op on reindexed data that already stores relative paths
+         (this function is the read-side safety-net for legacy absolute rows).
+      2. ``/{repo}/`` segment → cut *through* it → repo-root-relative
+         (``addons/sale/models/x.py``), matching the relative form the indexer
+         now stores. The ``[repo]`` label already names the repo, so the dir
+         name is dropped from the path to avoid redundancy.
+      3. ``/{module}/`` segment (when repo dirname unavailable, e.g. stylesheet
+         tools) → cut just *before* it so the module dir is kept
+         (``css_mod/static/...``) — a close approximation of repo-relative.
+      4. No anchor (e.g. CoreSymbol) → first ``/odoo/`` or ``/openerp/`` package
+         segment kept (Odoo core source layout → ``odoo/orm/models.py``).
+      5. Last resort → strip the leading "/" so no absolute path ever leaks.
+    """
+    if not file_path:
+        return file_path or ""
+    if not file_path.startswith("/"):
+        return file_path
+    if repo:
+        marker = f"/{repo}/"
+        # rfind (LAST occurrence): the repo root is the deepest "/{repo}/"
+        # segment before the in-repo tail.  A checkout whose parent dirs repeat
+        # the repo name (e.g. /srv/odoo/repos/odoo/addons/sale/x.py, repo=odoo)
+        # would strip at the wrong segment with find() (FIRST occurrence).
+        idx = file_path.rfind(marker)
+        if idx != -1:
+            # Cut through the repo dir → repo-root-relative (matches write side).
+            return file_path[idx + len(marker):]
+    if module:
+        marker = f"/{module}/"
+        idx = file_path.find(marker)
+        if idx != -1:
+            # Keep the module dir segment (cut at its leading "/").
+            return file_path[idx + 1:]
+    for core_seg in ("/odoo/", "/openerp/"):
+        idx = file_path.find(core_seg)
+        if idx != -1:
+            return file_path[idx + 1:]
+    return file_path.lstrip("/")
+
+
+_REPO_URL_CACHE: dict[int, str | None] = {}
+
+
+def _repo_url_for_id(repo_id: int | None) -> str | None:
+    """Resolve a repo's portable git URL from its id (ADR-0037, cached).
+
+    The ``[repo]`` label must show a *semantic* identity an AI client can map
+    to its own checkout — the git URL (``github.com/odoo/odoo``) — never the
+    server checkout directory name (``odoo_17.0``), which is host-specific
+    detail the client neither knows nor needs.
+
+    Returns None when repo_id is None, the repo is unknown, or the repo has no
+    URL (locally-registered repos) — callers then fall back to the dirname.
+    Successful lookups (incl. a genuine NULL url) are memoised; transient DB
+    failures are not cached so a later call can retry.  Note: the cache has no
+    TTL/invalidation — a url set AFTER the first lookup serves the stale value
+    (or dirname fallback) until process restart.  Acceptable: display-only, and
+    a restart clears it (same restart that ADR-0037 D1 prescribes after a
+    local_path re-point).
+    """
+    if repo_id is None:
+        return None
+    if repo_id in _REPO_URL_CACHE:
+        return _REPO_URL_CACHE[repo_id]
+    try:
+        from src.db.pg import repo_store
+        row = repo_store().get_repo_by_id(repo_id)
+    except Exception:
+        return None
+    url = (row or {}).get("url")
+    _REPO_URL_CACHE[repo_id] = url
+    return url
+
+
 mcp = FastMCP("odoo-semantic")
 # Register 7 MCP resources (odoo:// URIs) — Pattern 8, Wave F.
 register_resources(mcp)
@@ -535,7 +624,7 @@ def _resolve_model(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
-            RETURN m.module AS module_name, mod.repo AS repo,
+            RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo,
                    mod.edition AS edition, mod.license AS license,
                    COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
                    COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
@@ -657,7 +746,7 @@ def _resolve_field(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
-            RETURN f, f.module AS module_name, mod.repo AS repo
+            RETURN f, f.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
         """, fn=field_name, mn=model_name, v=odoo_version, **_scope(profile_name),
@@ -751,7 +840,7 @@ def _resolve_method(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
-            RETURN mth, mth.module AS module_name, mod.repo AS repo
+            RETURN mth, mth.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
         """, mn=method_name, model=model_name, v=odoo_version,
@@ -810,7 +899,7 @@ def _resolve_view(
             WHERE ($own IS NULL OR (size(v.profile) > 0
                    AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
             OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
-            RETURN v, mod.name AS module_name, mod.repo AS repo
+            RETURN v, mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
 
         if not view_rec:
@@ -838,7 +927,7 @@ def _resolve_view(
             RETURN ext.xmlid AS ext_xmlid,
                    ext.xpaths_exprs AS xpaths_exprs,
                    ext.xpaths_positions AS xpaths_positions,
-                   mod.name AS module_name, mod.repo AS repo
+                   mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).data()
 
     v_props = view_rec["v"]
@@ -1017,7 +1106,7 @@ def _find_examples(
                 cur.execute(
                     f"""SELECT chunk_type, module, entity_name, model_name, file_path,
                                chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
-                               line_start, repo
+                               line_start, repo, repo_id
                         FROM embeddings
                         WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
                         ORDER BY vec <=> %s::vector LIMIT %s""",
@@ -1031,7 +1120,7 @@ def _find_examples(
                 cur.execute(
                     f"""SELECT chunk_type, module, entity_name, model_name, file_path,
                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
-                              line_start, repo
+                              line_start, repo, repo_id
                        FROM embeddings WHERE odoo_version = %s{prof_sql}
                        ORDER BY vec <=> %s::vector LIMIT %s""",
                     params,
@@ -1039,7 +1128,7 @@ def _find_examples(
             raw = [
                 dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
                      file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]),
-                     line_start=r[8], repo=r[9])
+                     line_start=r[8], repo=r[9], repo_id=r[10])
                 for r in cur.fetchall()
             ]
 
@@ -1103,8 +1192,14 @@ def _find_examples(
         lines.append(sep)
         lines.append(f"#{i} · score {chunk['score']:.2f} · {chunk_label} · {entity}")
         # B2: render [repo] file_path:line_start when provenance data is present (A3).
-        file_path = chunk["file_path"] or ""
-        repo_pfx = f"[{chunk['repo']}] " if chunk.get("repo") else ""
+        # ADR-0037: emit a repo-relative path, never a server-absolute one.
+        file_path = _portable_path(
+            chunk["file_path"] or "",
+            repo=chunk.get("repo"), module=chunk.get("module"),
+        )
+        # ADR-0037: prefer the portable git URL; fall back to dirname only when absent.
+        repo_label = _repo_url_for_id(chunk.get("repo_id")) or chunk.get("repo")
+        repo_pfx = f"[{repo_label}] " if repo_label else ""
         line_sfx = f":{chunk['line_start']}" if chunk.get("line_start") is not None else ""
         lines.append(f"   File: {repo_pfx}{file_path}{line_sfx}")
         lines.append("   ┌" + "─" * 42)
@@ -1160,7 +1255,7 @@ def find_examples(
         → find_examples: "confirm sale order and send email" (17.0)
           Found 3 results
           #1 · score 0.82 · method · [sale] sale.order.action_confirm
-             File: sale/models/sale_order.py
+             File: [odoo_17.0] addons/sale/models/sale_order.py:412
     """
     return _find_examples(
         query, odoo_version, limit, context_module, chunk_types, profile_name
@@ -1566,7 +1661,9 @@ def _format_core_symbol(rec: dict, version: str) -> str:
     if removed_in:
         lines.append(f"├─ Removed in:  {removed_in}")
     if file_path:
-        loc = file_path + (f":{line}" if line else "")
+        # ADR-0037: CoreSymbol has no repo anchor → core-source relative form
+        # (e.g. "odoo/orm/models.py").  Idempotent on already-relative data.
+        loc = _portable_path(file_path) + (f":{line}" if line else "")
         lines.append(f"├─ Source:      {loc}")
     # Wave 5: Next-step footer per ADR-0023 §4. Always ├─ above and append
     # the Next line as the final └─.
@@ -1795,7 +1892,7 @@ def _find_deprecated_usage(
                    cs.qualified_name AS deprecated_symbol,
                    cs.status AS status,
                    cs.replacement_qname AS replacement,
-                   mod.repo AS repo
+                   coalesce(mod.repo_url, mod.repo) AS repo
             ORDER BY mth.module, mth.model, mth.name
             LIMIT $cap_plus_one
         """
@@ -2757,15 +2854,20 @@ def _describe_module(
 
     lines = [f"{name} (Odoo {odoo_version})"]
 
-    # B1: render repo + path so agents can locate the module on disk (#1 navigation blocker).
-    if mod_rec.get("repo"):
-        lines.append(f"├─ Repo: {mod_rec['repo']}")
-    if mod_rec.get("path"):
-        lines.append(f"├─ Path: {mod_rec['path']}")
-
-    # B2: render repo_url (A2c — populated after reindex; absent pre-reindex).
+    # B1/ADR-0037: render repo identity + repo-relative path so agents can locate
+    # the module in their OWN checkout. Prefer the portable git URL (Repo URL);
+    # the server checkout dirname (Repo:) is host-specific, shown only as a
+    # fallback when no URL is known — never both (it would be redundant noise).
     if mod_rec.get("repo_url"):
         lines.append(f"├─ Repo URL: {mod_rec['repo_url']}")
+    elif mod_rec.get("repo"):
+        lines.append(f"├─ Repo: {mod_rec['repo']}")
+    if mod_rec.get("path"):
+        # Anchor strip on the dirname (mod_rec['repo']) for legacy absolute rows;
+        # post-reindex mod_rec['path'] is already relative → idempotent no-op.
+        lines.append(
+            f"├─ Path: {_portable_path(mod_rec['path'], repo=mod_rec.get('repo'), module=name)}"
+        )
 
     # B2: render auto_install / application flags (only when True — not noise).
     if mod_rec.get("auto_install"):
@@ -3004,7 +3106,7 @@ def _list_fields(
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN f.name AS name, f.ttype AS ttype,
-                   f.module AS module, mod.repo AS repo,
+                   f.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
                    f.stored AS stored, f.compute AS compute,
                    f.comodel_name AS comodel_name,
                    edition_rank, mod_name
@@ -3228,7 +3330,7 @@ def _list_methods(
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN mth.name AS name, mth.convention_kind AS kind,
-                   mth.module AS module, mod.repo AS repo,
+                   mth.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
             SKIP $skip
@@ -3413,7 +3515,7 @@ def _list_views_core(
                      {_edition_rank_cypher("mod")},
                      mod.name AS mod_name
                 RETURN v.xmlid AS xmlid, v.type AS type,
-                       v.module AS module, mod.repo AS repo,
+                       v.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
                        edition_rank, mod_name
                 ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
                 SKIP $skip
@@ -3448,7 +3550,7 @@ def _list_views_core(
                      {_edition_rank_cypher("mod")},
                      mod.name AS mod_name
                 RETURN v.xmlid AS xmlid, v.type AS type,
-                       v.module AS module, mod.repo AS repo,
+                       v.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
                        edition_rank, mod_name
                 ORDER BY edition_rank ASC, mod_name ASC, v.xmlid ASC
                 SKIP $skip
@@ -3957,7 +4059,7 @@ def _list_js_patches(
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
             RETURN j.target AS target, j.patch_name AS patch_name,
-                   j.era AS era, j.module AS module, mod.repo AS repo,
+                   j.era AS era, j.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
                    j.file_path AS file_path,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, j.target ASC, j.patch_name ASC
@@ -4029,12 +4131,19 @@ def _list_js_patches(
             f" with limit={max(limit * 2, total)} for full list"
         )
         raw_rows = [r for r, _ in sub_items]
+
+        def _fmt_js_patch(r: dict) -> str:
+            base = f"{r['target']}.{r['patch_name']} : era={r.get('era') or '?'}"
+            if r.get("file_path"):
+                # ADR-0037: repo-relative path. Anchor on module (r['repo'] is now
+                # the portable git URL via coalesce, not a path-prefix anchor).
+                pp = _portable_path(r["file_path"], module=r.get("module"))
+                base += f" | {pp}"
+            return base
+
         rendered = _render_capped(
             raw_rows,
-            lambda r: (
-                f"{r['target']}.{r['patch_name']} : era={r.get('era') or '?'}"
-                + (f" | {r['file_path']}" if r.get("file_path") else "")
-            ),
+            _fmt_js_patch,
             cap=cap,
             more_hint=more_hint,
         )
@@ -4293,7 +4402,7 @@ def _find_override_point(
             RETURN mth.module AS module, mth.convention_kind AS ck,
                    mth.super_safety AS ss, mth.return_required AS rr,
                    coalesce(mth.has_super_call, false) AS has_super,
-                   mod.repo AS repo, mod.edition AS edition
+                   coalesce(mod.repo_url, mod.repo) AS repo, mod.edition AS edition
             ORDER BY mth.module
         """, method=method, model=model, v=v, **_scope(None)).data()
 
@@ -4515,7 +4624,7 @@ def _resolve_model_structured(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
                  {_edition_rank_cypher("mod")},
                  mod.name AS mod_name
-            RETURN m.module AS module_name, mod.repo AS repo,
+            RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo,
                    coalesce(m.is_definition, false) AS is_definition,
                    mod.edition AS edition,
                    COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
@@ -5684,7 +5793,7 @@ def _resolve_stylesheet(
         #   last row:     sub_prefix="    " → import lines start with "│       ├─" (valid)
         # Nesting import entries one level deeper (│   {sub_prefix}    {imp_pfx}) would
         # produce "│           ├─" for last-row which is NOT in allowed_starts.
-        lines.append(f"│   {row_prefix} {fp}")
+        lines.append(f"│   {row_prefix} {_portable_path(fp, module=module)}")
         sub_prefix = "    " if is_last_row else "│   "
         import_rows = imports_by_fp.get(fp, []) if imp > 0 else []
 
@@ -5695,7 +5804,8 @@ def _resolve_stylesheet(
                 is_last_imp = i_idx == len(import_rows) - 1
                 imp_prefix = "└─" if is_last_imp else "├─"
                 lines.append(
-                    f"│   {sub_prefix}{imp_prefix} {ir['import_path']}"
+                    f"│   {sub_prefix}{imp_prefix} "
+                    f"{_portable_path(ir['import_path'], module=ir.get('import_module'))}"
                     f" [{ir['import_module']}]"
                 )
         elif imp > 0:
@@ -5806,7 +5916,9 @@ def _find_style_override(
             chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
         lines.append(sep)
         lines.append(f"#{i} · score {chunk['cosine']:.2f} · {chunk_label} · {entity}")
-        lines.append(f"   File: {chunk['file_path']}")
+        lines.append(
+            f"   File: {_portable_path(chunk['file_path'], module=chunk.get('module'))}"
+        )
 
         # Find stylesheets that import this file (override chain — BFS depth 1)
         with driver.session() as session:
@@ -5825,7 +5937,9 @@ def _find_style_override(
             lines.append(f"   Override chain ({len(importers)} importer(s)):")
             for imp in importers:
                 lines.append(
-                    f"   ├─ {imp['importer_path']} [{imp['importer_module']}]"
+                    f"   ├─ "
+                    f"{_portable_path(imp['importer_path'], module=imp.get('importer_module'))}"
+                    f" [{imp['importer_module']}]"
                 )
         else:
             lines.append("   Override chain: no importers found (no :IMPORTS edges).")
@@ -5871,13 +5985,13 @@ def resolve_stylesheet(
         resolve_stylesheet("web", "17.0")
         → resolve_stylesheet('web', '17.0')
           ├─ Stylesheets: 2 file(s)
-          │   ├─ /path/web/static/src/css/main.css
+          │   ├─ addons/web/static/src/css/main.css
           │   │   ├─ Stats: lang=css, selectors=42, vars=0
           │   │   └─ Imports: none
-          │   └─ /path/web/static/src/scss/variables.scss
+          │   └─ addons/web/static/src/scss/variables.scss
           │       ├─ Stats: lang=scss, selectors=0, vars=15, mixins=3, imports=1
           │       ├─ Imports (1):
-          │       └─ /path/web/static/src/scss/base.scss [web]
+          │       └─ addons/web/static/src/scss/base.scss [web]
           └─ Next: find_style_override(...) | describe_module(...)
 
     See also: odoo://{version}/stylesheet/{module}/{file_path*}
@@ -5921,9 +6035,9 @@ def find_style_override(
           Found 2 result(s)
           ─────...
           #1 · score 0.87 · css · [web] selector:.o_list_view
-             File: /path/web/static/src/css/views.css
+             File: addons/web/static/src/css/views.css
              Override chain (1 importer(s)):
-             ├─ /path/website/static/src/scss/views.scss [website]
+             ├─ addons/website/static/src/scss/views.scss [website]
     """
     return _find_style_override(selector_or_variable, odoo_version, limit)
 

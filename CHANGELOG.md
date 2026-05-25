@@ -2,6 +2,51 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — Path portability (ADR-0037)
+
+Single PR. File paths are now **repo-relative everywhere** instead of server-absolute,
+so an AI client on a different machine can map them onto its own checkout, and moving
+the server to a new host no longer requires a reindex. Tool surface stays **24**.
+Requires a full reindex v8→v19 after deploy + post-reindex cleanup (see below).
+
+### Changed
+- **Stored paths are repo-relative** (`addons/sale/models/sale_order.py`), not absolute.
+  `repos.local_path` is the single absolute anchor. Relativization happens at the writer
+  boundary via a transient `ModuleInfo.repo_root` (set in `build_registry`): `Module.path`,
+  `OWLComp/JSPatch.file_path`, `Stylesheet.file_path` + `@import` targets (writer_neo4j),
+  and `embeddings.file_path` for method/field/view/qweb/js + css/scss/less (writer_pgvector).
+- **CoreSymbol / CLICommand** relativize against the Odoo source root in their parser
+  (`odoo/orm/models.py`, `odoo/cli/server.py`) — they have no `repos` anchor.
+- **8 MCP render sites** emit repo-relative paths via the new `_portable_path()` helper
+  (find_examples, lookup_core_api, describe_module, module_inspect JS, resolve_stylesheet,
+  find_style_override, + import/override chains). Idempotent → permanent safety-net for
+  any legacy absolute row even before the reindex lands.
+- **Repo identity is the portable git URL, not the server dirname.** Every `[repo]` label
+  and the `describe_module` repo line now show `repo_url` (e.g. `github.com/odoo/odoo`)
+  instead of the host checkout dirname (`odoo_17.0`) — the dirname is server-detail an AI
+  client can't use. Neo4j-sourced tools coalesce `repo_url`→`repo` in-query (zero render
+  edits); `find_examples` resolves `repo_id`→url at render (cached); dirname remains a
+  fallback only when no URL is known. (PR review — AI-client lens.)
+- **Server migration is now a `local_path` re-point, no reindex**: the `odoo://stylesheet`
+  resource reconstructs the absolute on-disk path dynamically from `repos.local_path`
+  (`resources.py`), and the DR runbook documents the re-point + cache-clear procedure.
+
+### Fixed
+- **Provenance gap**: css/scss/less embedding chunks now carry `repo` + `repo_id`
+  (previously only `module` + `odoo_version`), so dropping the absolute path loses no
+  identifying information.
+- **GC alignment**: `live_paths` is relativized to match the relative `Module.path` —
+  prevents the catastrophic case where every module looks stale and gets deleted.
+
+### Ops
+- Full reindex v8→v19 required. **After** it completes, run
+  `ops/cleanup_absolute_path_nodes.cypher` to drop stale absolute-keyed Stylesheet /
+  LintViolation nodes (their `file_path` is a MERGE-key component). Verify Neo4j +
+  `embeddings WHERE file_path LIKE '/%'` are 0. See reindex runbook §3b.
+
+### Docs
+- ADR-0037 (path portability); reindex runbook §3b; disaster-recovery §Migration to New Host.
+
 ## [0.11.1] — 2026-05-23 — Pre-LIVE hygiene (read-side; no reindex)
 
 Small follow-up after #165 (v0.11.0). **Read-side only** — no parser/writer change, no

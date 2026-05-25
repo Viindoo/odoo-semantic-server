@@ -1,6 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/models.py
 from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def to_repo_relative(abs_path: str | None, repo_root: Path | str | None) -> str | None:
+    """Return *abs_path* expressed relative to *repo_root* (portable form).
+
+    Path portability (ADR-0037): stored/served paths must be relative to the
+    repo root (e.g. ``addons/sale/models/sale_order.py``) so an AI client on a
+    different machine can map them onto their own checkout — never the server's
+    absolute filesystem path.
+
+    Behaviour:
+      * ``None``/empty in → returned unchanged.
+      * ``repo_root is None`` → returned unchanged (caller had no anchor).
+      * *abs_path* already relative (or simply not under *repo_root*) →
+        ``relative_to`` raises ``ValueError`` → returned unchanged.  This makes
+        the function idempotent: applying it to an already-relative path is a
+        no-op, so it is safe to run on both legacy (absolute) and reindexed
+        (relative) data.
+    """
+    if not abs_path:
+        return abs_path
+    if repo_root is None:
+        return abs_path
+    try:
+        return str(Path(abs_path).relative_to(repo_root))
+    except ValueError:
+        return abs_path
 
 
 @dataclass
@@ -37,6 +65,18 @@ class ModuleInfo:
     # A2c — repo provenance
     repo_url: str | None = None
     repo_id: int | None = None
+    # ADR-0037 — transient absolute repo checkout root (NOT persisted to Neo4j).
+    # Set by build_registry so writers can relativize file paths before storage.
+    repo_root: Path | None = field(default=None, repr=False)
+
+    def relative_path(self, abs_path: str | None) -> str | None:
+        """Express *abs_path* relative to this module's repo root (ADR-0037).
+
+        Idempotent: a path that is already relative (or not under repo_root)
+        is returned unchanged.  Returns *abs_path* verbatim when repo_root is
+        unset (e.g. ModuleInfo built outside build_registry, as in some tests).
+        """
+        return to_repo_relative(abs_path, self.repo_root)
 
 
 @dataclass

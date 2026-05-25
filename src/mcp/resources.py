@@ -37,6 +37,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -327,6 +328,33 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
     return "\n".join(lines), MIME_MARKDOWN
 
 
+def _reconstruct_abs_path(stored_path: str | None, repo_id: int | None) -> str | None:
+    """Map a stored repo-relative Stylesheet path to an absolute disk path (ADR-0037).
+
+    The file lives at ``repos.local_path / <relative>``.  Resolving local_path
+    *dynamically* per serve (rather than baking an absolute path into the graph)
+    is what makes a server migration a one-line ``local_path`` re-point with no
+    reindex — the relative paths in Neo4j/pgvector stay valid across hosts.
+
+    Returns *stored_path* unchanged when it is already absolute (legacy row) or
+    when repo_id / local_path are unavailable — the caller's ``open()`` then
+    fails gracefully via the existing OSError handler.
+    """
+    if not stored_path or stored_path.startswith("/"):
+        return stored_path
+    if repo_id is None:
+        return stored_path
+    from src.db.pg import repo_store
+    try:
+        repo_row = repo_store().get_repo_by_id(repo_id)
+    except Exception:
+        return stored_path
+    local_path = repo_row.get("local_path") if repo_row else None
+    if not local_path:
+        return stored_path
+    return str(Path(local_path) / stored_path)
+
+
 def _render_stylesheet(
     version: str, module: str, file_path: str,
 ) -> tuple[str, str]:
@@ -338,10 +366,15 @@ def _render_stylesheet(
     arbitrary-file reads via crafted URIs.
 
     The ``file_path*`` segment uses RFC 6570 list-pattern syntax so the path
-    may contain slashes (e.g. ``static/src/scss/foo.scss``).  FastMCP passes
-    the multi-segment value as a single string with the leading slash
-    *stripped* — re-add a leading ``/`` before disk read since indexer stores
-    absolute paths.
+    may contain slashes (e.g. ``addons/web/static/src/scss/foo.scss``).
+
+    ADR-0037 (path portability + server migration): the indexer now stores
+    ``ss.file_path`` **repo-relative** (e.g. ``addons/web/static/...``).  To
+    read the file off disk we reconstruct the absolute path *dynamically* at
+    serve time from ``repos.local_path`` (via the owning Module's ``repo_id``),
+    so moving the server to a new host only requires re-pointing ``local_path``
+    — no reindex.  Legacy rows that still hold an absolute path are opened
+    verbatim (back-compat); the query matches both ``$fp`` and ``$fp_abs``.
     """
     from src.mcp import server as _srv
 
@@ -353,17 +386,21 @@ def _render_stylesheet(
         # The file_path FastMCP hands us is the URL-decoded raw value with
         # the leading slash stripped (URIs cannot encode a leading "/" in
         # a path segment).  Try both the as-received string and a
-        # leading-slash variant so we match indexer absolute paths *and*
-        # any future indexer that stores repo-relative paths.
+        # leading-slash variant so we match repo-relative paths (ADR-0037)
+        # *and* legacy absolute paths.
         # WG-3t: tenant choke point — guards a raw on-disk file read, so a
         # foreign tenant must not be able to confirm/read another tenant's
         # stylesheet via a crafted odoo://stylesheet URI.
+        # repo_id (via DEFINED_IN → Module) lets us reconstruct the absolute
+        # on-disk path from repos.local_path at serve time.
         rec = neo4j_session.run(
             f"""
             MATCH (ss:Stylesheet {{module: $mod, odoo_version: $v}})
             WHERE (ss.file_path = $fp OR ss.file_path = $fp_abs)
               AND {_srv._scope_pred("ss")}
-            RETURN ss.file_path AS file_path, ss.language AS language
+            OPTIONAL MATCH (ss)-[:DEFINED_IN]->(m:Module)
+            RETURN ss.file_path AS file_path, ss.language AS language,
+                   m.repo_id AS repo_id
             LIMIT 1
             """,
             mod=module, v=v, fp=file_path, fp_abs="/" + file_path,
@@ -379,7 +416,7 @@ def _render_stylesheet(
         )
         return text, MIME_MARKDOWN
 
-    on_disk_path = rec["file_path"]
+    on_disk_path = _reconstruct_abs_path(rec["file_path"], rec.get("repo_id"))
     language = rec["language"]
     mime = MIME_SCSS if language == "scss" else MIME_CSS
 

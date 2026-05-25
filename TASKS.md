@@ -912,7 +912,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Milestone 13 — "Multi-Tenant Wow"
 
-**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + WI-7 (FERNET secrets / RLS hardening).
+**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. **Path portability active (feat/portable-paths, ADR-0037)** — stored paths are now repo-relative; `[repo]` output label shows git URL. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + `ops/cleanup_absolute_path_nodes.cypher` post-reindex cleanup + WI-7 (FERNET secrets / RLS hardening).
 
 > **v0.11.0 fix-wave (WG-1..WG-6):** Parser correctness v8-v19 (v9 Py2, field types, JS OWLComp/JSPatch, query.py path, NewId); writer schema (arch_snippet, F-5/F-8/F-12/F-13/V16-G2); 13-site tenant leak closed + leak test extended; query/render (F-4, list↔tree, file:line); enrichment (edition, summary, OWL widget pattern); bootstrap_versions.json corrected; ADR-0034/0005/runbook docs. See CHANGELOG.md `[0.11.0]`.
 > **v0.10.0 wave (PR #163):** P2 enforcement — WI-3 `resolve_tenant_scope` + WI-4 fail-closed own/shared filter at 61+4 Cypher + 3 pgvector sites + cross-tenant leak test (RELEASE GATE, PASSED). Plus Group A reindex-forcing enrichment (v19 core, docstring/manifest-deps/repo-provenance/USES_FIELD edges, Field.string/help, embeddings provenance m13_003) + Group B agent-convenient output + `module_inspect(method='dependencies')`. See CHANGELOG.md `[0.10.0]`.
@@ -984,6 +984,12 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 - [x] **WI-G — Git-URL-only repo registration + server-managed `local_path` + tenant ownership** *(feat/m13pre-wave3 — src/db/repo_registry.py, src/web_ui/routes/repos.py)*
   - Repos registered by git URL only; `local_path` computed server-side from URL + branch. `tenant_id` FK propagated on repo creation. Per-profile UNIQUE(url, branch, profile_id) allows cross-profile duplicates.
 
+### P6 — Path portability (ADR-0037, feat/portable-paths)
+- [~] **ADR-0037 — Repo-relative path storage + portable `[repo]` output label** — HIGH (portability) *(feat/portable-paths — src/indexer/writer_neo4j.py, src/indexer/writer_pgvector.py, src/mcp/server.py, ops/cleanup_absolute_path_nodes.cypher)*
+  - Stored paths converted to repo-relative (`addons/sale/models/x.py`); `repos.local_path` is the sole absolute anchor (ADR-0037 D1/D2). `:Stylesheet` nodes gain `repo_id` property scoping `:IMPORTS` MATCH to prevent cross-repo spurious edges (ADR-0037 D8). `[repo]` output label shows portable git URL (`github.com/odoo/odoo`) instead of server checkout dirname (ADR-0037 D7). Read-side `_portable_path()` safety-net idempotent on already-relative input (ADR-0037 D5).
+  - Acceptance: after full `--full` reindex v8→v19, run `[ ] ops/cleanup_absolute_path_nodes.cypher` and verify: Neo4j `Stylesheet`/`LintViolation` nodes with `file_path STARTS WITH '/'` = 0; `SELECT count(*) FROM embeddings WHERE file_path LIKE '/%'` = 0.
+  - Dependency: full reindex v8→v19 (OPS) must complete first.
+
 ### P5 — Hardening (debt, schedule after P1–P4)
 - [ ] **WI-7 — `FERNET_KEY` → secrets manager; audit unscoped admin paths** — MED (security) **[DEFERRED]**
   - Scope: move `FERNET_KEY` out of the plain env file into a secrets manager; audit-log the admin/global-key unscoped query path; revisit per-tenant envelope encryption (per-tenant DEK + KMS — ADR-0034 D8 deferred it) and decide whether the pooled blast-radius now justifies it.
@@ -1009,6 +1015,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
+| Path portability (ADR-0037) + post-reindex cleanup | | | `[ ]` run `ops/cleanup_absolute_path_nodes.cypher` + verify Neo4j `Stylesheet`/`LintViolation` absolute-path nodes = 0 AND `SELECT count(*) FROM embeddings WHERE file_path LIKE '/%'` = 0 |
 | Full sign-off | | | Phân phát key sau khi ký |
 
 ---

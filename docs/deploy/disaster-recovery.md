@@ -198,6 +198,28 @@ rsync -avz ~/backups/ <new-host>:~/backups/
 # Trên host mới — setup từ đầu (§1–§3.3 trong deploy.md), rồi restore theo order ở trên
 ```
 
+### Re-point `repos.local_path` (ADR-0037 — bắt buộc khi checkout path đổi)
+
+Stored file paths là **repo-relative** (ADR-0037), nên graph + embeddings vẫn hợp lệ
+trên host mới — KHÔNG cần reindex chỉ vì đổi server. Cái DUY NHẤT cần cập nhật là
+`repos.local_path` (anchor tuyệt đối tới checkout trên đĩa). Nếu đường dẫn checkout
+trên host mới khác host cũ:
+
+```bash
+# Auto-clone repos: re-clone tự tính lại default_clone_dir theo $HOME mới + ghi local_path.
+curl -X POST localhost:8003/api/repos/repos/<id>/clone   # cho từng repo, hoặc clone-all
+
+# Manual repos (admin tự nhập path) — cập nhật trực tiếp tới checkout mới:
+psql -U odoo_semantic -c "UPDATE repos SET local_path = '/new/path/to/<repo>' WHERE id = <id>;"
+
+# Sau khi cập nhật local_path, restart MCP service để xoá in-memory resource cache
+# (stylesheet resource reconstruct đọc local_path động mỗi lần serve):
+sudo systemctl restart odoo-semantic-mcp
+```
+
+Verify: `resolve_stylesheet(...)` trả nội dung file OK (không "file unreadable on this server").
+Không cần reindex trừ khi git HEAD cũng đổi (xem Post-Restore Behaviour bên dưới).
+
 ---
 
 ## Post-Restore Behaviour

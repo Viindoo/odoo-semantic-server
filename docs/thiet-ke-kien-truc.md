@@ -178,8 +178,10 @@ Scan ~/git/*/ (hoặc thư mục user cấu hình)
                 └─ ghi vào registry:
 
 registry["17.0"]["sale"] = {
-    repo: "odoo_17.0",
-    path: "/home/.../git/odoo_17.0/addons/sale",
+    repo: "odoo_17.0",           # transient dirname (used as path-strip anchor only)
+    repo_url: "github.com/odoo/odoo",  # [repo] output label per ADR-0037 D7
+    path: "/home/.../git/odoo_17.0/addons/sale",  # transient absolute (scanning only)
+    # stored as repo-relative: "addons/sale" — repos.local_path is the sole anchor (ADR-0037 D1)
     depends: ["base", "account", "product"]
 }
 ```
@@ -235,8 +237,10 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
                                                     // era: extend | include | patch
 (:OWLComp  { name, odoo_version, module, template })
 (:Stylesheet { file_path, module, odoo_version, language, selector_count,
-               variable_count, import_count, mixin_count })
+               variable_count, import_count, mixin_count, repo_id })
                                                     // KEY = (file_path, module, odoo_version)
+                                                    // file_path: repo-relative (ADR-0037 D1)
+                                                    // repo_id added ADR-0037 D8 — scopes :IMPORTS MATCH
                                                     // language: css|scss
                                                     // mixin_count always 0 for CSS
 ```
@@ -248,8 +252,10 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 ```
 // M9 — CSS/SCSS stylesheet indexing
 (:Stylesheet { file_path, module, odoo_version, language, selector_count,
-               variable_count, import_count, mixin_count })
+               variable_count, import_count, mixin_count, repo_id })
                                   // KEY = (file_path, module, odoo_version)
+                                  // file_path: repo-relative (ADR-0037 D1)
+                                  // repo_id added ADR-0037 D8 — scopes :IMPORTS MATCH
                                   // language ∈ {css, scss}
                                   // Embedding vectors ở pgvector embeddings table
                                   // (chunk_type ∈ {css, scss}, module, odoo_version)
@@ -422,13 +428,14 @@ Tất cả tools đều nhận `odoo_version` (mặc định: version cao nhất
 Input:  "sale.order", "17.0"
 Output:
   sale.order (Odoo 17.0)
-  ├─ Định nghĩa tại:   [odoo] addons/sale/models/sale_order.py
+  ├─ Định nghĩa tại:   [github.com/odoo/odoo] addons/sale/models/sale_order.py
   ├─ Kế thừa từ:       account.move.mixin, mail.thread, mail.activity.mixin
   ├─ Mở rộng bởi:
-  │   ├─ [addons]               viin_sale        → thêm: x_approval_state
-  │   └─ [enterprise-addons]   to_sale_ext      → override: action_confirm()
+  │   ├─ [github.com/viindoo/viin_addons]       viin_sale        → thêm: x_approval_state
+  │   └─ [github.com/viindoo/enterprise-addons] to_sale_ext      → override: action_confirm()
   ├─ Tổng số field:    47 (12 từ extension)
   └─ Tổng số method:   23 (8 bị override)
+  // [repo] label = git URL per ADR-0037 D7; path = repo-relative per ADR-0037 D1
 ```
 
 #### `resolve_field(model_name, field_name, odoo_version?)`

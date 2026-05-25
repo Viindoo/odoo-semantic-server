@@ -281,6 +281,8 @@ def build_registry(
                 # A2c — repo provenance
                 repo_url=repo_url,
                 repo_id=repo_id,
+                # ADR-0037 — repo checkout root for path relativization at write time.
+                repo_root=repo_root,
             )
 
             if odoo_version not in registry:

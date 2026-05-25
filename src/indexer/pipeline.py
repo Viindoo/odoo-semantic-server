@@ -293,8 +293,10 @@ def _index_repo(
     # Collect live_paths (all module paths found on disk) BEFORE incremental filter.
     # GC compares these against Neo4j Module nodes to detect stale (renamed/removed) modules.
     # Must use the FULL scan (not the incremental-filtered subset) so GC sees ALL live dirs.
+    # ADR-0037: relativize to repo root so live_paths matches the relative form now
+    # stored in Module.path — a mismatch would mark every node stale and delete the graph.
     live_paths: set[str] = {
-        info.path
+        info.relative_path(info.path)
         for mods in registry.values()
         for info in mods.values()
     }
@@ -432,10 +434,12 @@ def _index_repo(
                 )
                 js_chunks = parser_js.parse_module(info)
                 chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
-                # Append CSS, SCSS, and LESS embedding chunks
-                chunks.extend(make_css_chunks(css_chunks_mod))
-                chunks.extend(make_scss_chunks(scss_chunks_mod))
-                chunks.extend(make_less_chunks(less_chunks_mod))
+                # Append CSS, SCSS, and LESS embedding chunks.
+                # Pass `info` (ModuleInfo) so chunks carry repo/repo_id provenance
+                # and file_path is relativized to repo root (ADR-0037, WS-C).
+                chunks.extend(make_css_chunks(css_chunks_mod, info))
+                chunks.extend(make_scss_chunks(scss_chunks_mod, info))
+                chunks.extend(make_less_chunks(less_chunks_mod, info))
                 embed_calls = write_module_embeddings(
                     mod_name, version, chunks, embedder,
                     profile_name=profile_name,
@@ -459,12 +463,23 @@ def _index_repo(
         )
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
-    # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist
+    # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist.
+    # ADR-0037: pass repo_root so file_path (a MERGE-key component) is stored
+    # repo-relative — keeps it consistent with Stylesheet + the cleanup cypher.
     all_lint_violations = [v for vr in view_results for v in vr.lint_violations]
-    writer.write_lint_violations(all_lint_violations, profiles=_profiles_arr)
+    writer.write_lint_violations(
+        all_lint_violations, profiles=_profiles_arr, repo_root=repo_path,
+    )
     writer.write_js_graph_results(js_graph_results, profiles=_profiles_arr)
-    # WI-A1: write Stylesheet nodes (CSS + SCSS) after module writes
-    writer.write_stylesheets(all_stylesheet_infos, profiles=_profiles_arr)
+    # WI-A1: write Stylesheet nodes (CSS + SCSS) after module writes.
+    # ADR-0037: pass repo_root so Stylesheet.file_path + @import targets are
+    # stored repo-relative (all stylesheets in this repo share one repo_root).
+    # Pass repo_id so the :IMPORTS target MATCH is repo-scoped — without it two
+    # repos at the same version sharing a relative path would cross-link.
+    writer.write_stylesheets(
+        all_stylesheet_infos, profiles=_profiles_arr, repo_root=repo_path,
+        repo_id=repo.get("id"),
+    )
 
     # === Module GC (M7 C4): delete stale Module nodes after successful writes ===
     # Risk gate: only run when scanner found ≥1 module to avoid data loss when
@@ -1252,9 +1267,16 @@ def reembed_stubs_for_profile(
                 ).data()
 
             # Build registry once per repo (not per module) to avoid N+1 rglob scans.
+            # ADR-0037 D4: pass repo_url + repo_id so re-embedded css/scss/less
+            # chunks keep their repo provenance (mirror the _index_repo path) —
+            # without these the ModuleInfo carries repo_id=None and provenance is lost.
             from src.indexer.registry import build_registry  # noqa: PLC0415
 
-            _registry = build_registry([(local_path, odoo_version)])
+            _registry = build_registry(
+                [(local_path, odoo_version)],
+                repo_url=repo.get("url"),
+                repo_id=repo.get("id"),
+            )
             # Flatten to {module_name: ModuleInfo} for O(1) lookup in the inner loop.
             _modules_map: dict = {}
             for _ver, _mmap in _registry.items():
@@ -1325,9 +1347,11 @@ def reembed_stubs_for_profile(
                     less_chunks_mod, _ = parser_less.parse_module(info)
 
                     chunks = make_chunks(mod_name, odoo_version, py_result, merged, js_chunks)
-                    chunks.extend(make_css_chunks(css_chunks_mod))
-                    chunks.extend(make_scss_chunks(scss_chunks_mod))
-                    chunks.extend(make_less_chunks(less_chunks_mod))
+                    # WS-C: pass info so stylesheet chunks carry repo/repo_id +
+                    # relative file_path (ADR-0037), consistent with the main path.
+                    chunks.extend(make_css_chunks(css_chunks_mod, info))
+                    chunks.extend(make_scss_chunks(scss_chunks_mod, info))
+                    chunks.extend(make_less_chunks(less_chunks_mod, info))
 
                     if not chunks:
                         _logger.debug(
