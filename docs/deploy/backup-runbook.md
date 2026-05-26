@@ -40,9 +40,16 @@ sudo logrotate --debug /etc/logrotate.d/odoo-semantic
 
 ## FERNET Key Delivery
 
-The backup bundle includes `fernet.enc` (SSH private keys + TOTP secrets encrypted at
-rest — ADR-0018). The `odoo-semantic-backup.service` unit now receives `FERNET_KEY` via
-the systemd credential store (WI-7 holistic cut):
+`fernet.enc` is the `FERNET_KEY` re-encrypted under a separate bundle passphrase, and is
+included in a bundle **only** when the backup runs with `--bundle-passphrase-env`
+(disaster-recovery bundles — see ADR-0018). The **nightly** bundle is just
+`postgres.sql` + `neo4j.dump` + `manifest.json`; it does **not** contain `fernet.enc`
+and does not read `FERNET_KEY` at all. (SSH private keys + TOTP secrets are encrypted at
+rest *inside* the database, so they travel in `postgres.sql`, not in `fernet.enc`.)
+
+The `odoo-semantic-backup.service` unit still receives `FERNET_KEY` via the systemd
+credential store (WI-7 holistic cut) so that the opt-in passphrase-bundle path keeps
+working now that the key is gone from `.env`:
 
 ```ini
 # Active in the shipped unit:
@@ -50,8 +57,10 @@ LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
 ```
 
 The systemd timer (`odoo-semantic-backup.timer`) and the `systemctl start` manual run
-already have `LoadCredential` — no extra steps needed for the nightly or on-demand
-`systemctl start odoo-semantic-backup.service` path.
+both carry this `LoadCredential` — no extra steps needed for either the nightly run or an
+on-demand `--bundle-passphrase-env` (DR) run. Note the credential *source* must exist
+regardless: a missing `/etc/credstore/FERNET_KEY` hard-fails the unit at startup
+(243/CREDENTIALS) even for the nightly run, which otherwise never touches FERNET.
 
 For **ad-hoc CLI backup/restore** (debug or manual-run outside systemd), use
 `osm-fernet-run`:
