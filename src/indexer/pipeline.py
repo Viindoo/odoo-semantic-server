@@ -503,6 +503,13 @@ def _index_repo(
                 "skipping to avoid data loss (repo %s version %s)",
                 repo.get("url", local_path), odoo_version,
             )
+
+        # Placeholder GC (ADR-0007 §D5 extension): delete inert __unresolved__
+        # placeholder nodes that have accumulated in the graph.  Safe at any time
+        # (server.py filters them at read time); running after module writes
+        # maximises the chance that newly indexed parents already resolved some
+        # of the pending placeholders so they will be absent from the graph.
+        writer.gc_unresolved_placeholders(odoo_version)
     # === End Module GC ===
 
     # Observability summary log (M7 C5) — one line per repo, readable by admins.

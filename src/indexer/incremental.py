@@ -118,8 +118,19 @@ def filter_modules_by_changed(
     """Return subset of modules dict whose `path` field matches any
     entry in changed_module_paths.
 
-    Comparison is on string equality of `ModuleInfo.path` (which is
-    typically the relative path from repo root, e.g. "addons/sale").
+    Comparison is on string equality of `ModuleInfo.path`.
+
+    Path conventions (important — both sides must be absolute):
+    - `ModuleInfo.path` holds the ABSOLUTE module directory path as set by
+      `registry.py:266` (`path=str(module_dir)`), e.g.
+      "/srv/clones/odoo_17.0/addons/sale".
+    - `compute_changed_module_paths()` returns repo-RELATIVE paths from
+      `git diff` (e.g. "addons/sale").  `pipeline.py:312` converts them to
+      absolute via `str(repo_path / rel)` before passing here, so the set
+      elements in `changed_module_paths` are also absolute.
+    - The equality check is therefore absolute-vs-absolute and is correct;
+      do NOT pass relative paths in `changed_module_paths` without that
+      conversion step.
     """
     return {
         name: m for name, m in modules.items()

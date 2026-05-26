@@ -6,6 +6,37 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
 
+### Fixed — M13 index hygiene (feat/m13-cleanup-automation, #194)
+
+- **`ops/cleanup_test_sentinel_modules.cypher`** (new) — removes 2 test-sentinel Module nodes
+  (`lt_globex_only` v97.0 + `lt_globex_only2` v96.0) that leaked into prod Neo4j from a test
+  run against the live DB.  Nodes have `path=NULL`, `repo_id=NULL`, 0 edges; inert but pollute
+  raw Neo4j version queries.  Scoped by exact `(name, odoo_version)` pair; idempotent.
+- **`src/indexer/incremental.py` docstring fix** — `filter_modules_by_changed` docstring
+  incorrectly claimed `ModuleInfo.path` is "typically relative".  Corrected: `ModuleInfo.path`
+  holds the ABSOLUTE module directory (`str(module_dir)`, `registry.py:266`); `pipeline.py:312`
+  converts `git diff` relative paths to absolute before passing them to `filter_modules_by_changed`
+  so the equality is absolute-vs-absolute and correct.  No logic change.
+- **`src/indexer/writer_neo4j.py` — View / QWebTmpl placeholder MERGE key fix** — placeholder
+  nodes for unresolved `INHERITS_VIEW` / `EXTENDS_TMPL` targets previously used a 3-property
+  MERGE key `{xmlid, module:'__unresolved__', odoo_version}` while the real node uses 2-property
+  `{xmlid, odoo_version}`.  Key divergence produced 54 "shadow" View pairs on prod (one real +
+  one placeholder for the same `xmlid+version`).  Fix: placeholder MERGE now uses the same 2-key
+  so it converges on the real node when it already exists; `ON CREATE` stamps `unresolved=true` +
+  `module='__unresolved__'` only for genuinely new placeholders.  No schema migration; no reindex.
+- **`src/indexer/writer_neo4j.py::gc_unresolved_placeholders`** (new method) — DETACH DELETEs
+  all `{unresolved:true, module:'__unresolved__'}` placeholder nodes scoped by `odoo_version`.
+  MCP server already filters these at read time (30+ `module <> '__unresolved__'` sites); safe to
+  remove.  Called automatically when `--gc` is requested (alongside existing `gc_stale_modules`).
+- **`ops/cleanup_unresolved_placeholders.cypher`** (new) — one-time ops script for existing prod
+  graph (2,068 placeholder nodes / ~5,404 `{unresolved:true}` edges / 54 View shadow pairs).
+  Run before or after deploying this PR; `--gc` handles future accumulation.
+- **`docs/adr/0007-incremental-indexer.md` §D5** — updated to document M13 placeholder GC
+  extension and View MERGE-key fix.
+- **`tests/test_gc_unresolved_placeholders.py`** (new, 7 tests) — regression: no shadow View
+  after writer fix; gc removes placeholders; gc preserves real nodes; gc is idempotent; gc is
+  version-scoped.  All pass.
+
 ### Added — WI-7 FERNET credstore cut (feat/wi7-fernet-credstore-cut)
 
 - **[WI-7] FERNET key delivered via systemd credential store (webui+backup `LoadCredential`,
