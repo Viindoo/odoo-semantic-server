@@ -14,8 +14,11 @@ Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count
     now active (replaces the commented-out line from #185). Key lives root:root 0600 at
     `/etc/credstore/FERNET_KEY`; PREREQUISITE: provision before enabling the unit
     (missing source = 243/CREDENTIALS hard-fail, NOT a soft fallback).
-  - `docs/deploy/odoo-semantic-backup.service` — same `LoadCredential=` added; backup bundle
-    (`fernet.enc`, ADR-0018) now sourced from credstore.
+  - `docs/deploy/odoo-semantic-backup.service` — same `LoadCredential=` added so the opt-in
+    `--bundle-passphrase-env` DR bundle (`fernet.enc`, ADR-0018) sources `FERNET_KEY` from
+    credstore. The nightly bundle (`postgres.sql` + `neo4j.dump` + `manifest.json`) contains
+    no `fernet.enc` and does not read FERNET (the credstore source must still exist, else the
+    unit hard-fails 243/CREDENTIALS at startup).
   - `docs/deploy/osm-fernet-run` (new, mode 0755) — `systemd-run -p LoadCredential=` wrapper
     for ad-hoc CLI (indexer/rotate-fernet/restore); closes the CLI delivery gap; must run as root.
   - `docs/adr/0020-fernet-key-delivery.md` — §5 and §6 updated: holistic cut realized;
