@@ -1154,6 +1154,32 @@ one `find_examples` call to generate a histogram observation, then re-check.
 
 ---
 
+### PA4b — Harden /metrics at nginx (network defense-in-depth)
+
+> **Audit note (zero-trust LOW):** `/metrics` has no application-layer auth by design (`_PUBLIC_PATHS`
+> in `src/mcp/middleware.py`). Content is non-sensitive - only `embedder_batch_duration_seconds`
+> histogram (batch timing), no tenant/profile/entity data. Defense-in-depth: restrict at nginx so
+> only the Prometheus scraper IP (or internal CIDR) can reach it; public gets 403.
+
+`docs/deploy/nginx-m8.conf` does not yet contain a `/metrics` location block. OPS should add one
+during nginx config review (not automated - requires site-specific scraper IP):
+
+```nginx
+# Restrict /metrics to Prometheus scraper only
+location = /metrics {
+    allow <scraper-ip-or-cidr>;  # e.g. 10.0.0.0/8 for internal, or specific scraper IP
+    deny all;
+    proxy_pass http://127.0.0.1:8002;
+}
+```
+
+Add this block **before** the catch-all `location /` in `docs/deploy/nginx-m8.conf`.
+If scraper runs on the same host (localhost only), use `allow 127.0.0.1; deny all;`.
+
+**Result:** [ ] /metrics restricted to scraper IP at nginx (public deny)
+
+---
+
 ### PA5 — Verify Neo4j online backup (WI-D2)
 
 No migration needed. Verify backup now includes `neo4j.cypher`.
