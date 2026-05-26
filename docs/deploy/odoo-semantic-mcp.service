@@ -44,6 +44,12 @@ Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
 # systemd-level EnvironmentFile= remains the recommended injection point for
 # non-CWD env files.
 EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# Read-tier split (ADR-0034 RLS cutover §5.14): override PG_DSN → osm_reader read
+# role CHILD only for the MCP :8002 process. Loaded AFTER .env so its PG_DSN wins
+# (systemd: later EnvironmentFile overrides earlier keys). Optional (`-`) so a host
+# that has not run the RLS cutover boots fine — mcp.env absent → PG_DSN stays owner.
+# webui/backup/indexer do NOT load this file and keep the owner DSN (writes + admin).
+EnvironmentFile=-/home/odoo-semantic/etc/mcp.env
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
 Restart=on-failure
 RestartSec=5

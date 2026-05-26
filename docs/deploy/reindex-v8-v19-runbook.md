@@ -805,7 +805,12 @@ Expected: 3 rows; `kind = 'function'` for all three.
 > (a) code WI-7 (GUC wiring + `get_fernet_key`) đã deploy,
 > (b) migration `m13_004` đã chạy (`ENABLE ROW LEVEL SECURITY` + policy `embeddings_tenant`),
 > (c) reindex v8→v19 (§2 + §3) đã hoàn tất,
-> (d) §5.11g cross-tenant leak test đang pass.
+> (d) §5.11g cross-tenant leak test đang pass,
+> (e) **health.py GAP1 fix đã deploy** (PR `feat/wi7-rls-cutover-health`) — `/health`
+>     count queries bọc `_rls_read_tx(conn, None)` (GUC `'*'`). BẮT BUỘC trước khi flip
+>     DSN: nếu chưa, sau khi MCP đổi sang `osm_reader` + FORCE, `SELECT COUNT(*)` ở
+>     `/health` chỉ thấy rows `profile_name IS NULL` → `embeddings_total` tụt từ ~591k
+>     xuống vài trăm (hỏng observability, không phải lỗ bảo mật).
 
 ### Bối cảnh — tại sao m13_004 là no-op
 
@@ -925,6 +930,15 @@ SELECT count(*) AS total_embeddings FROM embeddings;
 SQL
 ```
 Expected: trả về tổng số chunk (không bị filter).
+
+**Verify `/health` vẫn báo đúng tổng (chứng minh GAP1 fix hoạt động qua osm_reader):**
+```bash
+curl -s localhost:8002/health | jq '{status, embeddings_total, embeddings_by_chunk_type}'
+```
+Expected: `embeddings_total` vẫn ~591k (KHÔNG tụt về vài trăm). MCP giờ connect bằng
+`osm_reader` nhưng 2 query đếm bọc `_rls_read_tx(conn, None)` (GUC `'*'`) nên thấy full
+count. Nếu thấy con số nhỏ bất thường → prerequisite (e) chưa deploy, rollback và deploy
+health.py fix trước.
 
 ### Rollback
 

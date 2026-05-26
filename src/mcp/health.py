@@ -55,15 +55,22 @@ async def _get_embeddings_total() -> int | None:
     Defensive pattern mirrors the pg_status check in health_handler — any
     exception produces None rather than propagating (keeps /health always live).
     """
-    from src.mcp.server import _checkout_pg
+    from src.mcp.server import _checkout_pg, _rls_read_tx
 
     try:
         def _count() -> int:
             with _checkout_pg() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM embeddings")
-                    row = cur.fetchone()
-                    return row[0] if row else 0
+                # RLS GAP1 (ADR-0034): once the MCP read tier connects as the
+                # non-owner osm_reader role under FORCE ROW LEVEL SECURITY, an
+                # unscoped COUNT(*) would see only NULL-profile rows and badly
+                # under-report. Wrap in the admin sentinel (GUC '*') so this
+                # monitoring total stays accurate. On the owner DSN this is a
+                # harmless no-op (the owner bypasses RLS regardless).
+                with _rls_read_tx(conn, None):
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT COUNT(*) FROM embeddings")
+                        row = cur.fetchone()
+                        return row[0] if row else 0
 
         return await asyncio.to_thread(_count)
     except Exception as e:
@@ -81,17 +88,21 @@ async def _get_embeddings_by_chunk_type() -> dict[str, int] | None:
     Defensive pattern mirrors _get_embeddings_total — any exception produces
     None rather than propagating (keeps /health always live).
     """
-    from src.mcp.server import _checkout_pg
+    from src.mcp.server import _checkout_pg, _rls_read_tx
 
     try:
         def _count_by_type() -> dict[str, int]:
             with _checkout_pg() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT chunk_type, COUNT(*) FROM embeddings GROUP BY chunk_type"
-                    )
-                    rows = cur.fetchall()
-                    return {row[0]: row[1] for row in rows} if rows else {}
+                # RLS GAP1 (ADR-0034): same admin-sentinel wrap as
+                # _get_embeddings_total — keeps the per-chunk_type breakdown
+                # accurate under the osm_reader read tier; no-op on the owner DSN.
+                with _rls_read_tx(conn, None):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT chunk_type, COUNT(*) FROM embeddings GROUP BY chunk_type"
+                        )
+                        rows = cur.fetchall()
+                        return {row[0]: row[1] for row in rows} if rows else {}
 
         return await asyncio.to_thread(_count_by_type)
     except Exception as e:
