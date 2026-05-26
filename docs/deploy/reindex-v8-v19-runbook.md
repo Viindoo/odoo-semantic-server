@@ -838,19 +838,29 @@ gì, nhưng hiệu lực RLS chỉ xuất hiện sau khi đổi DSN. Nếu đổ
 
 ### Bước 1 — Tạo non-owner read role (cần superuser hoặc owner)
 
-```sql
--- Cần kết nối bằng superuser hoặc owner của DB (odoo_semantic / postgres):
--- Đặt password bằng secret store (Vault, 1Password, credstore), KHÔNG hardcode:
--- Bước 1a: tạo role chưa cho login (NOLOGIN là default; sẽ cấp LOGIN ở bước sau khi đã có secret).
-CREATE ROLE osm_reader NOLOGIN;
--- Bước 1b: cấp LOGIN + gán password từ secret store (Vault / 1Password / credstore):
-ALTER ROLE osm_reader LOGIN PASSWORD '<secret-từ-credstore>';
-GRANT CONNECT ON DATABASE odoo_semantic TO osm_reader;
-GRANT USAGE ON SCHEMA public TO osm_reader;
-GRANT SELECT ON embeddings TO osm_reader;
+> ⚠️ **Grant set KHÔNG chỉ là `embeddings`.** Process MCP `:8002` còn mount feedback +
+> deploy-key router (`src/mcp/server.py`) và làm API-key auth + session pinning (ADR-0029)
+> + usage/audit log. `GRANT SELECT ON embeddings` một mình → MCP **gãy** (auth 401, session,
+> feedback HTTP 500). osm_reader cần grant đúng 9 bảng + 4 sequence — nhưng vẫn **non-owner,
+> non-superuser, non-BYPASSRLS, SELECT-only trên `embeddings`** nên RLS vẫn engage. Xem audit
+> đầy đủ ở [ADR-0034 A5](../adr/0034-multi-tenant-pooled-isolation.md).
+
+Grant set canonical sống trong **[`ops/rls_create_osm_reader.sql`](../../ops/rls_create_osm_reader.sql)**
+(idempotent, password qua psql var — KHÔNG hardcode). Chạy bằng owner/superuser:
+
+```bash
+# Password sinh ngẫu nhiên (cutover script Stage 1C tự làm + ghi cùng giá trị vào mcp.env):
+OSM_PW="$(openssl rand -hex 24)"
+docker exec -i odoo-semantic-mcp-postgres-1 \
+  psql -U odoo_semantic -d odoo_semantic \
+  -v ON_ERROR_STOP=1 -v osm_pw="$OSM_PW" \
+  -f - < ops/rls_create_osm_reader.sql
 ```
 
-> Nếu role đã tồn tại từ lần trước: bỏ qua `CREATE ROLE`, chỉ chạy `GRANT` (idempotent).
+File này cấp: `SELECT` trên `embeddings`/`api_keys`/`profiles`/`repos`; `SELECT,INSERT,UPDATE`
+trên `api_key_session_state`; `UPDATE` trên `api_keys` (last_used_at); `INSERT` trên
+`usage_log`/`admin_audit_log`/`pattern_feedback`/`ssh_key_pairs` + `USAGE` trên 4 sequence
+tương ứng. **KHÔNG** cấp write trên `embeddings`. Idempotent — chạy lại an toàn.
 
 ### Bước 2 — FORCE ROW LEVEL SECURITY (cần table owner / superuser)
 

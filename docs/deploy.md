@@ -762,6 +762,26 @@ sudo -u odoo-semantic -H tmux new -d -s odoo-semantic-mcp \
 sudo -u odoo-semantic tmux attach -t odoo-semantic-mcp   # để xem logs
 ```
 
+### 3.8 RLS read-tier hardening (tùy chọn — multi-tenant isolation)
+
+Mặc định MCP `:8002` connect Postgres bằng owner role → RLS trên `embeddings` (ENABLE qua
+migration m13_004) **không enforce** (owner-superuser bypass). Để bật enforcement thật (MCP
+đọc embeddings dưới non-owner role `osm_reader`, bị tenant policy chi phối), chạy cutover
+**idempotent** sau khi đã `make install` + migrate (+ tùy chọn index xong):
+
+```bash
+sudo ops/rls_cutover.sh
+# → in password osm_reader: LƯU vào secrets manager (cùng chỗ FERNET). Cũng nằm ở
+#   /home/odoo-semantic/etc/mcp.env (0600) — file CHỈ MCP :8002 load để override PG_DSN.
+```
+
+Script tạo `osm_reader` (non-superuser, non-owner, SELECT-only trên embeddings + đúng grants
+mà :8002 cần — xem `ops/rls_create_osm_reader.sql`), `FORCE ROW LEVEL SECURITY`, ghi `mcp.env`,
+restart MCP, verify (cross-tenant + `/health`), rollback nếu fail. Bỏ qua bước này = MCP chạy
+owner DSN, RLS off (chấp nhận được nếu single-tenant). Re-runnable trên mọi host (install mới
+/ migration). Chi tiết: [runbook §5.14](deploy/reindex-v8-v19-runbook.md) +
+[ADR-0034 A5](adr/0034-multi-tenant-pooled-isolation.md).
+
 ---
 
 ## 4. Proxy Tier — Nginx hoặc Caddy

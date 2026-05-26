@@ -220,6 +220,22 @@ sudo systemctl restart odoo-semantic-mcp
 Verify: `resolve_stylesheet(...)` trả nội dung file OK (không "file unreadable on this server").
 Không cần reindex trừ khi git HEAD cũng đổi (xem Post-Restore Behaviour bên dưới).
 
+### Re-create osm_reader RLS role (cluster-global — KHÔNG nằm trong backup)
+
+Postgres role là **cluster-global** → `pg_dump` (per-DB, file `postgres.sql` trong bundle)
+**KHÔNG** chứa role `osm_reader`. Dump CÓ mang theo policy `embeddings_tenant` + `FORCE` + các
+câu `GRANT ... TO osm_reader`, nhưng khi restore mà role chưa tồn tại thì các GRANT đó **báo
+lỗi và bị bỏ** (restore không `ON_ERROR_STOP` nên vẫn chạy tiếp). Hệ quả trên host mới:
+embeddings có FORCE+policy nhưng thiếu role + grants.
+
+- Bật lại RLS enforcement: chạy **`sudo ops/rls_cutover.sh`** (idempotent — tạo lại role +
+  grants + FORCE, ghi `mcp.env` với password MỚI, restart MCP, verify). Xem [deploy.md §3.8](../deploy.md).
+- ⚠️ Nếu copy `mcp.env` cũ (trỏ osm_reader) sang host mới mà CHƯA tạo lại role → MCP không
+  connect được. Tạo lại role TRƯỚC khi start MCP, hoặc bỏ `mcp.env` (MCP chạy owner DSN, RLS
+  off — chấp nhận được nếu single-tenant) rồi cutover sau.
+- Muốn mang theo cả role kèm password hash: `pg_dumpall --roles-only` trên host cũ — backup
+  mặc định của OSM (per-DB) không làm việc này.
+
 ---
 
 ## Post-Restore Behaviour
