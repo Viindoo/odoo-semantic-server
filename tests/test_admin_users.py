@@ -356,8 +356,11 @@ class TestResetPasswordLink:
         assert count >= 1
 
         # Verify audit log entry — W-AL canonical schema uses `target TEXT`
-        # and dot-namespaced action (`user.reset_password`). Legacy `target_id`
-        # column is still present for W-UM call sites; see backlog cleanup.
+        # and dot-namespaced action. The admin "generate reset link" route emits
+        # `user.reset_password_link` (it issues a one-time link; it does NOT reset
+        # the password — that is the separate `user.reset_password` action written
+        # by the /reset-password consume route in login.py). See ADR-0021 taxonomy
+        # and the @audit_action decorator on reset_password_link in admin_users.py.
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "SELECT action FROM admin_audit_log WHERE target = %s",
@@ -365,7 +368,7 @@ class TestResetPasswordLink:
             )
             rows = cur.fetchall()
         actions = [r[0] for r in rows]
-        assert "user.reset_password" in actions
+        assert "user.reset_password_link" in actions
 
 
 # ---------------------------------------------------------------------------

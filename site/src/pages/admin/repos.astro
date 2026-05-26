@@ -9,15 +9,17 @@ import { FASTAPI_BASE } from '../../lib/fastapi';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
-const [profilesRes, reposRes, sshKeysRes] = await Promise.allSettled([
+const [profilesRes, reposRes, sshKeysRes, versionsRes] = await Promise.allSettled([
   fetch(`${FASTAPI_BASE}/api/repos/profiles`, { headers: { cookie: cookieHeader } }),
   fetch(`${FASTAPI_BASE}/api/repos/repos`, { headers: { cookie: cookieHeader } }),
   fetch(`${FASTAPI_BASE}/api/repos/ssh-keys-list`, { headers: { cookie: cookieHeader } }),
+  fetch(`${FASTAPI_BASE}/api/versions`, { headers: { cookie: cookieHeader } }),
 ]);
 
 let profilesData: { profiles: unknown[]; all_job_id?: number | null; all_job_status?: string | null; error?: string | null } = { profiles: [] };
 let repos: unknown[] = [];
 let sshKeys: { id: number; name: string }[] = [];
+let odooVersions: string[] = [];
 
 if (profilesRes.status === 'fulfilled' && profilesRes.value.ok) {
   profilesData = await profilesRes.value.json();
@@ -28,6 +30,10 @@ if (reposRes.status === 'fulfilled' && reposRes.value.ok) {
 }
 if (sshKeysRes.status === 'fulfilled' && sshKeysRes.value.ok) {
   sshKeys = await sshKeysRes.value.json();
+}
+if (versionsRes.status === 'fulfilled' && versionsRes.value.ok) {
+  const vd = await versionsRes.value.json();
+  odooVersions = Array.isArray(vd.versions) ? (vd.versions as string[]) : [];
 }
 
 // Flatten repos from profiles if direct endpoint returns empty
@@ -245,6 +251,7 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     repos={repos as Parameters<typeof RepoTable>[0]['repos']}
     profiles={profilesData.profiles as Parameters<typeof RepoTable>[0]['profiles']}
     sshKeys={sshKeys}
+    odooVersions={odooVersions}
   />
 </AdminLayout>
 

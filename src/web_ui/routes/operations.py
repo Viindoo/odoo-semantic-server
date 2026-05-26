@@ -90,6 +90,26 @@ def _strip_ansi(text: str) -> str:
     return _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 
 
+@router.get("/diagnose")
+async def diagnose(request: Request, _user_id: int = Depends(require_admin)):
+    """Cross-tier health check — admin only (W3 A).
+
+    Delegates to ``src.diagnostics.run_diagnostics()`` (SSOT shared with CLI).
+    Returns structured JSON: ``{checks: [{name, status, detail}], overall}``.
+
+    Distinct from ``/api/health`` which only checks FastAPI process liveness.
+    This endpoint checks: PG container, Neo4j container, MCP /health, compose
+    bind-mount type.
+
+    Status values: ``ok`` | ``error`` | ``skipped``.
+    ``overall``: ``ok`` if no errors, ``degraded`` if any check is error.
+    """
+    from src.diagnostics import run_diagnostics
+    result = run_diagnostics()
+    status_code = 200 if result["overall"] == "ok" else 503
+    return JSONResponse(_json_safe(result), status_code=status_code)
+
+
 @router.get("/presets")
 async def list_presets(request: Request):
     """Return available version presets."""

@@ -146,6 +146,23 @@ def is_admin_session(request: Request) -> bool:
         return False
 
 
+async def require_authenticated(request: Request) -> int:
+    """FastAPI Depends: return user_id for any authenticated session (any role).
+
+    Unlike require_admin this does NOT require admin — it is the shared home for
+    routes open to non-admin tenant members (W2 portal) and reference-data routes
+    (e.g. GET /api/versions). Tenant write authorization is enforced separately by
+    tenant_write_allowed; this dependency only proves the caller is logged in.
+
+    Raises:
+        HTTPException 401: session not authenticated.
+    """
+    user_id = current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user_id
+
+
 async def require_admin(request: Request) -> int:
     """FastAPI Depends: return user_id if session user is an admin.
 
@@ -234,10 +251,14 @@ def resolve_tenant_scope_web(request: Request) -> set[int] | _AllTenants:
       - Global admin (webui_users.is_admin=TRUE)  -> ALL_TENANTS sentinel (bypass).
       - Non-admin                                  -> {tenant_id, ...} from tenant_members.
       - Unauthenticated / malformed session        -> empty set (fail-closed, deny-all).
+      - Test bypass (WEBUI_AUTH_DISABLED=1 + PYTEST_CURRENT_TEST) -> ALL_TENANTS sentinel.
 
     NAME: *_web suffix to disambiguate from RepoStore.resolve_tenant_scope
     (read-side, tenant_id->profile names). This is request->tenant_ids.
     """
+    if is_test_bypass_active():
+        return ALL_TENANTS
+
     uid = current_user_id(request)
     if uid is None:
         return set()                      # fail-closed: unauthenticated
@@ -248,6 +269,27 @@ def resolve_tenant_scope_web(request: Request) -> set[int] | _AllTenants:
         return set(auth_store().list_tenant_ids_for_user(uid))
     except Exception:
         return set()                      # fail-closed on DB error
+
+
+def tenant_write_allowed(scope: set[int] | _AllTenants, tenant_id: int | None) -> bool:
+    """True if the session user may WRITE to a resource with the given tenant_id.
+
+    Write rules (ADR-0038 W2 bất biến an toàn):
+    - Admin (scope is ALL_TENANTS) → always allowed.
+    - tenant_id is None (shared/global) → DENIED for non-admin (admin-only mutate).
+    - else → tenant_id must be in the user's scope set.
+
+    This is intentionally STRICTER than is_in_scope (read-side):
+    is_in_scope allows null → True (shared readable by all); this helper
+    blocks null → False (shared writable by admin only).
+
+    NEVER reuse is_in_scope for mutation checks.
+    """
+    if scope is ALL_TENANTS:            # admin bypass
+        return True
+    if tenant_id is None:               # shared/global = admin-only for writes
+        return False
+    return tenant_id in scope           # type: ignore[operator]
 
 
 def is_in_scope(scope: set[int] | _AllTenants, tenant_id: int | None) -> bool:
