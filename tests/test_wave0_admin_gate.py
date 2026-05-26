@@ -273,8 +273,14 @@ class TestReposRoutesAdminGate:
 
     @pytest.mark.asyncio
     async def test_add_repo_non_admin_403(self, migrated_pg):
-        """Non-admin cannot POST /repos (add repo)."""
+        """Non-admin cannot POST /repos (add repo) to shared/null profile.
+
+        W2: route opened to non-admin, but scope check still denies shared(null)
+        profile writes for non-admin (tenant_write_allowed returns False for null).
+        Seed the profile so 404 doesn't mask the 403 scope denial.
+        """
         _seed_users(migrated_pg)
+        _seed_test_profile(migrated_pg)  # shared (tenant_id=NULL) — non-admin write denied
         app = create_app()
         cookies = await _login_session(app, "wave0_user", "UserPass123!")
         async with _async_client(app, cookies=cookies) as client:

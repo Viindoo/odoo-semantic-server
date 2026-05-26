@@ -170,7 +170,7 @@ def test_diagnose_json_output_is_parseable(_isolated_cwd, monkeypatch, capsys):
     payload = json.loads(out)
     assert "checks" in payload
     assert payload["failures"] == 0
-    assert all("check" in c and "status" in c for c in payload["checks"])
+    assert all("name" in c and "status" in c for c in payload["checks"])
 
 
 def test_diagnose_initdb_dir_anchored_to_file_not_cwd(monkeypatch, tmp_path):

@@ -331,7 +331,7 @@ class TestIndexCore:
             page.goto(f"{astro_server}{OPS_URL}")
             page.wait_for_load_state("load")
             page.get_by_test_id("ops-index-core-source-input").fill(str(tmp_path))
-            page.get_by_test_id("ops-index-core-version-input").fill("17.0")
+            page.get_by_test_id("ops-index-core-version-input").select_option("17.0")
             page.get_by_test_id("index-core-button").click()
             page.wait_for_load_state("load")
 
@@ -344,7 +344,7 @@ class TestIndexCore:
         page.goto(f"{astro_server}{OPS_URL}")
         page.wait_for_load_state("load")
         page.get_by_test_id("ops-index-core-source-input").fill("/does/not/exist/odoo_17")
-        page.get_by_test_id("ops-index-core-version-input").fill("17.0")
+        page.get_by_test_id("ops-index-core-version-input").select_option("17.0")
         page.get_by_test_id("index-core-button").click()
         page.wait_for_load_state("load")
 
@@ -477,7 +477,7 @@ class TestSeedPatterns:
         with mock.patch("subprocess.Popen"):
             page.goto(f"{astro_server}{OPS_URL}")
             page.wait_for_load_state("load")
-            page.get_by_test_id("ops-seed-patterns-version-input").fill("17.0")
+            page.get_by_test_id("ops-seed-patterns-version-input").select_option("17.0")
             page.get_by_test_id("seed-patterns-button").click()
             page.wait_for_load_state("load")
 

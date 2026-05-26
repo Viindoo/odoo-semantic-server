@@ -1140,6 +1140,39 @@ class AuthStore:
             )
         return [r["tenant_id"] for r in rows]
 
+    def list_tenant_memberships_for_user(self, user_id: int) -> list[dict]:
+        """Return [{tenant_id, name, role}] for all tenants the user belongs to.
+
+        Joins tenant_members with tenants to include the tenant name.
+        Used by GET /api/account/tenants (W2 self-service portal).
+
+        Args:
+            user_id: webui_users.id to look up.
+
+        Returns:
+            List of dicts with keys: tenant_id, name, role. Empty list if no memberships.
+        """
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                """
+                SELECT tm.tenant_id, t.name, tm.role
+                FROM tenant_members tm
+                JOIN tenants t ON t.id = tm.tenant_id
+                WHERE tm.user_id = %s
+                ORDER BY t.name
+                """,
+                (user_id,),
+            )
+        return [
+            {
+                "tenant_id": r["tenant_id"],
+                "name": r["name"],
+                "role": r["role"],
+            }
+            for r in rows
+        ]
+
     def user_is_member_of(self, user_id: int, tenant_id: int) -> bool:
         """True iff a tenant_members row exists for (user_id, tenant_id).
 

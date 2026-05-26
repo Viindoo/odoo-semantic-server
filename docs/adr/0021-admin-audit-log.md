@@ -37,15 +37,20 @@ Single source of truth for all audit log writes. Three entry points:
 ```
 user.login             user.login.mfa         user.logout
 user.register          user.verify_email      user.reset_password
-user.delete            user.deactivate        user.reactivate
-user.oauth_login
+user.reset_password_link
+user.create            user.delete            user.deactivate        user.reactivate
+user.set_admin         user.oauth_login
 
 profile.create         profile.update         profile.delete
-profile.clone          profile.set_parent     profile.clone_all
+profile.clone          profile.set_parent     profile.clone_all      profile.assign_tenant
 
 repo.create            repo.update            repo.delete            repo.clone
+repo.assign_tenant
 
-api_key.create         api_key.deactivate
+tenant.create          tenant.update          tenant.delete
+tenant.add_member      tenant.remove_member
+
+api_key.create         api_key.deactivate     api_key.assign_owner
 
 ssh_key.create         ssh_key.import         ssh_key.delete
 
@@ -55,7 +60,11 @@ totp.setup             totp.verify            totp.disable
 
 operations.backup      operations.restore     operations.apply_preset
 operations.index_repo  operations.index_core  operations.seed_patterns
-operations.reset_embed
+operations.reset_embed operations.index_all
+
+jobs.reset
+
+feedback.submit
 
 fernet.rotate
 
@@ -88,10 +97,19 @@ W-UM introduced `actor_id`, `target_id`, `detail_text` columns alongside the can
 
 `@audit_action("action.name")` supports:
 - `target_param="param_name"` to extract path param as audit target.
+- `request.state.audit_target` — handler-set target for create-style ops whose id is
+  generated inside the handler (e.g. `POST /api/admin/users`); takes precedence over
+  `target_param`. The handler sets it before returning and must NOT call
+  `write_audit_log` directly (that would write a second, duplicate row).
+- `request.state.audit_detail` — handler-set dict merged into the audit row's detail
+  (safe, non-sensitive fields only). Lets a create/update handler record a forensic
+  before/after snapshot through the single decorator-written row.
 - Automatic IP + user_agent capture from request headers.
 - status_code capture from JSONResponse return value.
 - HTTPException → success=False with status_code+reason in detail.
 - Unhandled exception → success=False with error_type+error_message in detail.
+- `wrapper.__audit_action__` / `__audit_target_param__` introspection markers — used by
+  the W3 enumerate-app regression guard to assert every mutating admin route is audited.
 
 ### 8. Privacy Constraints
 

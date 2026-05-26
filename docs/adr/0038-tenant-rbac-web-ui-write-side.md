@@ -162,18 +162,116 @@ strictly more expressive.
 
 ---
 
+## Decisions — Wave 2 (W2): Customer self-service portal
+
+### D9 — Read-visibility vs Write-authorisation are separate helpers
+
+`is_in_scope` (read-side) allows `tenant_id IS NULL` (shared) to be readable by all.
+`tenant_write_allowed` (write-side, added W2) DENIES writes to `tenant_id IS NULL` for
+non-admin users. Shared resources are admin-mutate-only. Using `is_in_scope` for mutation
+checks is explicitly PROHIBITED (would allow any non-admin to mutate shared data).
+
+```python
+def tenant_write_allowed(scope, tenant_id: int | None) -> bool:
+    if scope is ALL_TENANTS: return True      # admin
+    if tenant_id is None: return False        # shared = admin-only write
+    return tenant_id in scope
+```
+
+### D10 — Subset of write routes opened for non-admin
+
+The following routes are opened for authenticated non-admin users with tenant membership,
+using `tenant_write_allowed` for scope check:
+- `POST /api/repos/repos` — add repo to a tenant-owned profile
+- `POST /api/repos/repos/{id}/index` — trigger index for a repo in scope
+- `PATCH /api/repos/repos/{id}` — update repo metadata in scope
+- `DELETE /api/repos/repos/{id}` — delete repo in scope
+
+New repo inherits `tenant_id` from its profile (set at insert time).
+
+The following remain admin-only (UNCHANGED from W0/W1):
+- All profile CRUD (`POST/PATCH/DELETE /api/repos/profiles*`)
+- Tenant CRUD + member management (`/api/tenants*`)
+- Bulk operations (`/api/repos/index-all`, `reset-embed`, SSH keys)
+- All `routes/operations.py` routes
+
+### D11 — GET /api/repos/profiles scoped for non-admin
+
+`GET /api/repos/profiles` was previously unfiltered. W2 applies `is_in_scope` on the
+profile's `tenant_id` — non-admin users see only profiles in their tenant scope plus
+shared (null) profiles. `tenant_id` field is included in every profile/repo in the
+response so the portal can route writes correctly.
+
+### D12 — GET /api/account/tenants for portal header
+
+New route `GET /api/account/tenants` returns `[{tenant_id, name, role}]` for the
+current session user. Admin: all tenants with `role='admin'`. Non-admin: membership
+rows joined with tenant names. Used by the self-service portal to show org context.
+
+### D13 — Non-admin SSH key is always server-resolved (`add_repo` and `update_repo`)
+
+A non-admin managing an SSH (`git@…`) repo via the portal does **not** choose a key.
+The deployment uses a single shared admin-managed **access key**
+(`ssh_key_pairs.key_type='access_key'`): the admin publishes its public key and each
+user adds that public key as a read-only deploy key on their own git host.
+
+On `POST /api/repos/repos` (`add_repo`) from a non-admin:
+- any client-supplied `ssh_key_id` is **ignored** (closes the cross-tenant
+  arbitrary-key-selection hole — a tenant member must not be able to clone via
+  another tenant's stored key);
+- the server resolves the first `access_key` row (`auth_store().list_ssh_keys()`,
+  ordered by id) and only the server-side cloner ever decrypts the private key;
+- if no access key is configured, the request returns HTTP 400 with a message asking
+  the user to contact an admin.
+
+The **same rule applies to `PATCH /api/repos/repos/{id}` (`update_repo`)**, which D10
+opened to non-admin tenant members. A non-admin's client-supplied `ssh_key_id` **and**
+`clear_ssh_key` are ignored: the repo's existing key is preserved (so a member cannot
+repoint an in-scope repo at another tenant's `deploy_key`). Only if the (effective) URL
+is now SSH and the repo has no key yet does the server resolve the shared `access_key`
+exactly as `add_repo` does — otherwise no key change is persisted. The audit `after`
+snapshot records the resolved value, not the ignored client request. Without this, the
+PATCH path would re-open the very hole the POST path closes (code review PR #183).
+
+The admin path is unchanged (admin still selects a specific stored key from the
+dropdown, on both POST and PATCH). Per-tenant `deploy_key` keypairs (ADR-0034 D7) are a
+separate, deferred self-service surface and never appear in the admin SSH-key dropdown
+or this resolution path. Cross-ref: ADR-0034 D7 (deploy-key model), ADR-0035 (git
+access model).
+
+---
+
 ## Files
 
 | File | Change |
 |------|--------|
 | `migrations/m13_005_tenant_members.sql` | New — 3-part migration |
-| `src/db/auth_registry.py` | New methods: tenant CRUD + member management |
-| `src/web_ui/auth.py` | New: `ALL_TENANTS`, `resolve_tenant_scope_web`, `is_in_scope` |
-| `src/web_ui/routes/tenants.py` | New — admin-only tenant/member/resource routes |
-| `src/web_ui/app.py` | Wire tenants.router |
-| `src/web_ui/routes/repos.py` | Bug (i): early 404 for missing profile; bug (ii): comment status/clone_status |
+| `src/db/auth_registry.py` | New methods: tenant CRUD + member management (W1); `list_tenant_memberships_for_user` (W2) |
+| `src/web_ui/auth.py` | W1: `ALL_TENANTS`, `resolve_tenant_scope_web`, `is_in_scope`; W2: `tenant_write_allowed` |
+| `src/web_ui/routes/tenants.py` | New — admin-only tenant/member/resource routes (W1) |
+| `src/web_ui/routes/account.py` | New — `GET /api/account/tenants` self-service (W2) |
+| `src/web_ui/app.py` | Wire tenants.router (W1); account.router (W2) |
+| `src/web_ui/routes/repos.py` | W1 Bug (i): early 404; W2: read filter + 4 route write-scope opened + non-admin SSH shared-key resolution on `add_repo` **and** `update_repo` (D13) |
 | `src/db/repo_registry.py` | Docstring: clarify status vs clone_status in add_repo |
 | `site/src/middleware.ts` | requireAdmin gate for `/admin/tenants` |
+| `site/src/layouts/AccountLayout.astro` | W2: add My Repositories nav item |
 | `site/src/pages/admin/tenants.astro` | New — admin tenant management page |
-| `site/src/pages/admin/_tenants-island.tsx` | New — React island for mutations |
-| `tests/test_w1_tenant_rbac.py` | New — 14-case test suite |
+| `site/src/pages/admin/_tenants-island.tsx` | New — React island for mutations (W1) |
+| `site/src/pages/account/repos.astro` | New — customer self-service repos page (W2) |
+| `site/src/pages/account/_repos-island.tsx` | New — React island for repo add/index/delete (W2) |
+| `tests/test_w1_tenant_rbac.py` | New — 14-case test suite (W1) |
+| `tests/test_w2_portal.py` | New — cross-tenant + write-gate test suite (W2) |
+
+---
+
+## Implementation status
+
+| Wave | PR | Nội dung | ADR sections realized |
+|---|---|---|---|
+| W0 | #174 | `require_admin` gate 19 mutating routes + `SIGNUP_ENABLED` flag | precondition cho D4 |
+| W1 | #177 | `tenant_members` (m13_005) + `resolve_tenant_scope_web` + `/admin/tenants` CRUD | D1, D2, D3, D4, D5, D6, D7, D8 |
+| W2 | #179 | `tenant_write_allowed` + 4 repo routes open + `/account/repos` portal + non-admin shared-key resolution | D9, D10, D11, D12, D13 |
+| W3 | #180 | `GET /api/operations/diagnose` + `POST /api/admin/users` + audit-log viewer + audit coverage guard | ADR-0021 (audit taxonomy) |
+| W4 | #181 | `GET /api/versions` + version dropdowns + worker controls + branch hint | - |
+
+Cross-ref: ADR-0021 (audit log taxonomy + `@audit_action` scope), ADR-0026 (RBAC `is_admin_session` + `require_admin`), ADR-0034 (read-side isolation `resolve_tenant_scope` MCP layer).

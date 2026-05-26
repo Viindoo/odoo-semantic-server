@@ -8,6 +8,7 @@ Integration tests requiring PostgreSQL are in test_audit_log_integration.py.
 
 import os
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,6 +53,11 @@ def _make_mock_request(user_id=None, username=None):
     req.session = session
     req.headers = {}
     req.path_params = {}
+    # Faithful to Starlette's request.state: a plain namespace that raises
+    # AttributeError for unset attributes (so getattr(..., default) works as in
+    # production). A bare MagicMock would auto-fabricate state.audit_target /
+    # state.audit_detail as truthy mocks and corrupt the decorator's reads.
+    req.state = SimpleNamespace()
     return req
 
 
@@ -347,6 +353,52 @@ class TestAuditActionDecorator:
 
         args = mock_write.call_args[0]
         assert args[2] == "99"
+
+    @pytest.mark.asyncio
+    async def test_audit_action_state_target_used_for_generated_id(self):
+        """Handler-set request.state.audit_target becomes the row target when there
+        is no usable target_param (create-style op whose id is generated)."""
+        from fastapi.responses import JSONResponse
+
+        from src.db.audit import audit_action
+
+        @audit_action("user.create", target_param=None)
+        async def handler(request):
+            request.state.audit_target = "777"
+            request.state.audit_detail.update({"username": "neo"})
+            return JSONResponse({"ok": True}, status_code=200)  # noqa  - test stub (lint-json-response bypass: no datetime)
+
+        req = _make_mock_request(user_id=1)
+
+        with patch("src.db.audit.write_audit_log") as mock_write:
+            with patch("src.db.audit.resolve_actor", return_value="user:1"):
+                await handler(request=req)
+
+        args = mock_write.call_args[0]
+        assert args[2] == "777"  # target taken from state.audit_target
+        assert args[4].get("username") == "neo"  # detail enrichment merged
+
+    @pytest.mark.asyncio
+    async def test_audit_action_state_target_overrides_target_param(self):
+        """request.state.audit_target takes precedence over target_param."""
+        from fastapi.responses import JSONResponse
+
+        from src.db.audit import audit_action
+
+        @audit_action("user.set_admin", target_param="user_id")
+        async def handler(request, user_id: int):
+            request.state.audit_target = "999"
+            return JSONResponse({"ok": True}, status_code=200)  # noqa  - test stub (lint-json-response bypass: no datetime)
+
+        req = _make_mock_request(user_id=1)
+        req.path_params = {"user_id": 5}
+
+        with patch("src.db.audit.write_audit_log") as mock_write:
+            with patch("src.db.audit.resolve_actor", return_value="user:1"):
+                await handler(request=req, user_id=5)
+
+        args = mock_write.call_args[0]
+        assert args[2] == "999"  # state target wins over path param "5"
 
     @pytest.mark.asyncio
     async def test_audit_action_preserves_return_value(self):

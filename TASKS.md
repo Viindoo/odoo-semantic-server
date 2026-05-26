@@ -910,6 +910,41 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ---
 
+## UI Completion — Web-UI multi-tenant RBAC + self-service portal (W0-W4)
+
+**Status:** `[x]` DONE — W0 #174, W1 #177, W2 #179, W3 #180, W4 #181 (tất cả đã merge vào master). Docs consolidation: W5 (wave này).
+
+**Tóm tắt từng wave:**
+
+- **W0 (#174) — Mutatig-route admin gate:** `Depends(require_admin)` áp lên 19 route mutating (repos/ssh_keys/operations/jobs). Route `restore` giữ `require_admin_with_fresh_mfa`. Cờ `SIGNUP_ENABLED` thêm vào `src/web_ui/config.py` — default `False` (invite-only), gate toàn bộ `POST /api/auth/register` và OAuth new-account path. Self-service route (api_keys/totp/feedback) giữ nguyên ownership-scope (không yêu cầu admin).
+- **W1 (#177) — Tenant membership + admin tenant CRUD (ADR-0038):** Migration `m13_005_tenant_members.sql` (3 phần: `tenant_members` M:N join table + `password_hash DROP NOT NULL` [đóng #176] + GUC-delimiter `CHECK(profiles.name NOT LIKE '%,%')`). Helper write-side `resolve_tenant_scope_web` / `ALL_TENANTS` / `is_in_scope` trong `src/web_ui/auth.py`. Router `routes/tenants.py` + Astro page `/admin/tenants` (admin-only). Membership model = **(b)** (user đa-tenant). Active-tenant = **Option A** (explicit `tenant_id` trong request body, stateless). `#175` (audit coverage) và `#176` (password_hash nullable) đã FOLD + CLOSED — KHÔNG nằm trong DEFER.
+- **W2 (#179) — Customer self-service portal:** `tenant_write_allowed` trong `src/web_ui/auth.py` (write-side STRICTER than `is_in_scope`: shared/null → admin-only). `GET /api/repos/profiles` tenant-filtered với `tenant_id` trong response. 4 route repo mở cho non-admin với tenant scope: `POST /api/repos/repos`, `PATCH/DELETE /api/repos/repos/{id}`, `POST /api/repos/repos/{id}/index`. Route `GET /api/account/tenants` (self-service portal header). Astro page `/account/repos`. ADR-0038 D9-D12.
+- **W3 (#180) — Diagnostics + admin user creation + audit coverage:** `GET /api/operations/diagnose` (delegate sang `src/diagnostics.py` SSOT, CLI dùng chung). `POST /api/admin/users` (admin tạo user với temp-pass/invite link). Audit-log viewer: `GET /api/admin/audit-log` + trang `/admin/audit-log`. `@audit_action` bổ sung cho `index_all`, `jobs.reset`, 3 route user (`deactivate`/`reactivate`/`reset_password_link`). Regression guard: enumerate-app test kiểm tra mọi route mutating admin-gated phải audited. ADR-0021 taxonomy cập nhật.
+- **W4 (#181) — Data-driven version list + worker controls:** `GET /api/versions` (đọc `bootstrap_versions.json`, 12 phiên bản, sort numeric). 3 dropdown version trong Admin UI (index-core / seed-patterns [+'all'] / add-repo). Worker controls cho index-all: `profile_workers` (1-4) và `max_workers` (1-8). `--gc` flag. Branch hint: chọn version ở dropdown tự pre-fill ô branch trong form add-repo (user vẫn sửa được).
+
+**DEFER (chưa làm, ngoài scope W0-W4):**
+- FERNET rotation UI
+- DB migrate-trigger UI
+- `reembed-stubs` UI
+- `audit-repo` coverage UI
+- `clone-profile --include-ancestors` UI
+- `seed-master-data --reset` UI
+- Nonce-CSP (blocked — chờ Astro v5.1+ nonce API)
+- Active-tenant switcher Option B (Odoo-style session switcher)
+
+**OPS-SKIP (7 items — việc production-server, KHÔNG phải UI gate):**
+- `[ ]` RLS FORCE cutover (`ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`)
+- `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT
+- `[ ]` Tách read-DSN MCP tier sang `osm_reader` (**caveat:** code CHƯA đọc biến `PG_READ_DSN` riêng — override `PG_DSN` cho process MCP :8002, KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực)
+- `[ ]` FERNET credstore cut (`/etc/credstore/FERNET_KEY` — deploy.md §12 Option B)
+- `[ ]` Reindex v8→v19 đầy đủ (OPS, §5.11 gate)
+- `[ ]` Chạy `ops/cleanup_absolute_path_nodes.cypher` post-reindex
+- `[ ]` MED-2 forge known_hosts cho self-hosted git forge
+
+**ADR:** [`docs/adr/0038-tenant-rbac-web-ui-write-side.md`](docs/adr/0038-tenant-rbac-web-ui-write-side.md)
+
+---
+
 ## Milestone 13 — "Multi-Tenant Wow"
 
 **Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. **Path portability active (feat/portable-paths, ADR-0037)** — stored paths are now repo-relative; `[repo]` output label shows git URL. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + `ops/cleanup_absolute_path_nodes.cypher` post-reindex cleanup + WI-7 (FERNET secrets / RLS hardening).
