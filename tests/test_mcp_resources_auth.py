@@ -246,33 +246,40 @@ def test_anonymous_fallback_returns_content_not_exception(
 def test_two_api_keys_reading_same_uri_get_same_body(
     mcp_with_resources, fresh_resources_module,
 ) -> None:
-    """API-key-A and API-key-B reading the same URI share one cache entry.
+    """API-key-A and API-key-B reading the same URI share one cache entry
+    when they belong to the same tenant (both admin/None here).
 
-    Design note:
-        Cache key = raw URI string.  Version resolution (e.g., 'auto' → '17.0')
-        is baked into the concrete URI *before* cache lookup when the version
-        sentinel is concrete (like FA_99.0 here).  Two different API keys
-        reading odoo://FA_99.0/model/fa.order must get byte-identical bodies
-        because the content is not personalized.
+    Design note (updated for R1 fix, ADR-0030 + ADR-0034):
+        Cache key = ``odoo://{version}/{kind}/{entity}::t{tenant_id}``.
+        Two different API keys with the SAME tenant_id (e.g., both admin/None)
+        reading the same URI still share one cache entry — the body is
+        identical because both see the same scoped data.
 
-        This is the intentional design per ADR-0030 — resource bodies are
-        read-only, version-pinned content.  Billing / access-control
-        differentiation happens at the transport layer, not inside handlers.
+        Before R1: cache was per-URI only (content-addressed), so ANY two
+        callers shared the same cache slot. Now: callers with the same
+        tenant see the same slot; different-tenant callers get separate
+        slots to prevent cross-tenant cache contamination.
+
+        In this test: both API keys are admin (tenant_id=None) → same
+        ``::t_admin`` slot → same cached body. The behaviour is unchanged
+        for same-tenant API keys.
     """
     import src.mcp.server as _srv
 
     cache = fresh_resources_module.get_cache()
     cache.clear()
     uri = f"odoo://{FA_VERSION}/model/{FA_MODEL}"
+    # R1: cache key includes tenant suffix; for admin (tenant=None) = "::t_admin"
+    expected_key = f"{uri}::t_admin"
 
-    # --- Read as API-key-A ---
+    # --- Read as API-key-A (admin tenant) ---
     token_a = _srv._api_key_id_var.set("api-key-a-9901")
     try:
         body_a = _read(mcp_with_resources, uri)
     finally:
         _srv._api_key_id_var.reset(token_a)
 
-    # --- Read as API-key-B ---
+    # --- Read as API-key-B (also admin tenant) ---
     token_b = _srv._api_key_id_var.set("api-key-b-9902")
     try:
         body_b = _read(mcp_with_resources, uri)
@@ -283,20 +290,22 @@ def test_two_api_keys_reading_same_uri_get_same_body(
     assert body_a, "API-key-A read must return a non-empty body"
     assert body_b, "API-key-B read must return a non-empty body"
 
-    # Same URI → same cached body (cache is content-addressed, not tenant-addressed).
+    # Same URI + same tenant → same cached body.
     assert body_a == body_b, (
-        "Two different API keys reading the same URI must get identical bodies "
-        "(cache is per-URI, not per-tenant).  "
+        "Two admin API keys reading the same URI must get identical bodies "
+        "(same tenant_id = same cache slot).  "
         f"body_a[:100]={body_a[:100]!r}, body_b[:100]={body_b[:100]!r}"
     )
 
-    # The URI must be in the cache after the two reads.
-    assert uri in cache, "URI must be present in the cache after reads"
+    # The tenant-scoped cache key must be present after the reads.
+    assert expected_key in cache, (
+        f"Expected cache key {expected_key!r} not found after reads"
+    )
 
-    # Only one cache entry for this URI (not two, one per tenant).
-    uri_count = sum(1 for k in list(cache._data.keys()) if k == uri)
-    assert uri_count == 1, (
-        f"Cache must hold exactly one entry for URI {uri!r}; found {uri_count}"
+    # Only one cache entry for this (URI, tenant) combination.
+    key_count = sum(1 for k in list(cache._data.keys()) if k == expected_key)
+    assert key_count == 1, (
+        f"Cache must hold exactly one entry for key {expected_key!r}; found {key_count}"
     )
 
 

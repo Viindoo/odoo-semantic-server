@@ -18,6 +18,7 @@ from src.constants import (
     EDITION_PRIORITY,
     EDITION_PRIORITY_ELSE,
     FIND_EXAMPLES_ANN_LIMIT,
+    IMPACT_MODULES_MAX,
     IMPACT_RISK_HIGH_THRESHOLD,
     IMPACT_RISK_MED_THRESHOLD,
     LIST_PREVIEW_FIELDS_MAX,
@@ -940,18 +941,34 @@ def _resolve_method(
     if base_mth.get("docstring"):
         first_line = base_mth["docstring"].strip().splitlines()[0][:120]
         lines.append(f"├─ Docstring:   {first_line}")
-    lines.append(f"├─ Override chain ({len(records)}):")
-    last_idx = len(records) - 1
-    for i, r in enumerate(records):
+    chain_total = len(records)
+    lines.append(f"├─ Override chain ({chain_total}):")
+
+    def _fmt_override(r: dict) -> str:
         mth = r["mth"]
         super_info = "✓ calls super()" if mth.get("has_super_call") else "✗ no super()"
         decs = ", ".join(mth.get("decorators") or []) or "—"
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
-        connector = "└─" if i == last_idx else "├─"
-        lines.append(
-            f"│   {connector} {repo_str}{r['module_name']}"
-            f" — {super_info} — decorators: {decs}"
-        )
+        return f"{repo_str}{r['module_name']} — {super_info} — decorators: {decs}"
+
+    # G4: cap override chain at LIST_PREVIEW_MAX_ITEMS with disclosure (ADR-0023 §3)
+    capped_chain = _render_capped(
+        records[:LIST_PREVIEW_MAX_ITEMS],
+        _fmt_override,
+        cap=LIST_PREVIEW_MAX_ITEMS,
+        total=chain_total,
+        more_hint=(
+            f"find_override_point(model='{model_name}', method='{method_name}'"
+            f", odoo_version='{odoo_version}') for full override chain"
+        ),
+    )
+    for i, line in enumerate(capped_chain):
+        is_last = i == len(capped_chain) - 1 and chain_total <= LIST_PREVIEW_MAX_ITEMS
+        connector = "└─" if is_last else "├─"
+        if line.startswith("..."):
+            lines.append(f"│   {line}")
+        else:
+            lines.append(f"│   {connector} {line}")
     lines.append(format_next_step([
         f"find_override_point(model='{model_name}', method='{method_name}'"
         f", odoo_version='{odoo_version}') for safe hook spot",
@@ -1254,7 +1271,24 @@ def _find_examples(
 
     reranked = sorted(raw, key=lambda c: c["score"], reverse=True)[:limit]
 
-    header = f'find_examples: "{query}" ({odoo_version})\nFound {len(reranked)} results\n'
+    # G2: disclose ANN candidate cap so callers know the search pool size.
+    ann_used = min(limit, FIND_EXAMPLES_ANN_LIMIT)
+    if ann_used >= FIND_EXAMPLES_ANN_LIMIT:
+        # User requested limit >= ANN cap: the search pool is hard-capped.
+        ann_note = (
+            f"Note: ANN search capped at {FIND_EXAMPLES_ANN_LIMIT} candidates"
+            " — results beyond this pool are not considered"
+        )
+    else:
+        # User requested fewer results than the ANN cap allows.
+        ann_note = (
+            f"showing {len(reranked)} of up to {ann_used} semantic candidates"
+            f" — increase `limit` (max {FIND_EXAMPLES_ANN_LIMIT}) for broader search"
+        )
+    header = (
+        f'find_examples: "{query}" ({odoo_version})\n'
+        f"Found {len(reranked)} results  [{ann_note}]\n"
+    )
     if not reranked:
         return header
 
@@ -1554,7 +1588,8 @@ def _impact_analysis(
             ).data()
 
     # ---------------------------------------------------------------------- #
-    # Build output tree                                                        #
+    # Build output tree — G1: all sections capped + disclosure (ADR-0023 §3) #
+    # Risk score and counts in labels use the REAL total, not the cap.        #
     # ---------------------------------------------------------------------- #
     view_count = len(views)
     method_count = len(methods)
@@ -1562,87 +1597,170 @@ def _impact_analysis(
     total = view_count + method_count + js_count
     risk = _compute_risk(view_count, method_count, js_count)
 
+    # Helper: append a capped sub-list (items already formatted as strings)
+    # Each sub-item is indented under its section header with tree connectors.
+    def _append_capped_section(
+        out: list[str],
+        header: str,
+        items: list,
+        formatter,  # (item) -> str
+        cap: int,
+        total_count: int,
+        more_hint: str,
+    ) -> None:
+        out.append(f"├─ {header}:")
+        capped = _render_capped(
+            items[:cap], formatter,
+            cap=cap, total=total_count,
+            more_hint=more_hint,
+        )
+        for i, line in enumerate(capped):
+            connector = "└─" if i == len(capped) - 1 and total_count <= cap else "├─"
+            if line.startswith("..."):
+                out.append(f"│   {line}")
+            else:
+                out.append(f"│   {connector} {line}")
+
     lines = [f"impact_analysis({entity_type}, {entity_name}, {odoo_version})"]
     lines.append(f"├─ Risk: {risk} ({total} affected entities)")
 
-    # Views section
+    # --- Views section ---
     if views:
-        lines.append(f"├─ Views ({view_count}):")
-        for i, v_item in enumerate(views):
-            connector = "└─" if i == view_count - 1 else "├─"
-            lines.append(f"│   {connector} [{v_item['module']}] {v_item['xmlid']}")
+        _append_capped_section(
+            lines,
+            f"Views ({view_count})",
+            views,
+            lambda v_item: f"[{v_item['module']}] {v_item['xmlid']}",
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            total_count=view_count,
+            more_hint=(
+                f"model_inspect(model='{model_name}', method='views'"
+                f", odoo_version='{odoo_version}') for full view list"
+            ),
+        )
     else:
         lines.append("├─ Views: none")
 
-    # Methods section
+    # --- Methods section ---
     if entity_type == "field":
         methods_label = (
             f"Methods on {model_name} with super() ({method_count})"
             f" — field-level filter not yet implemented (M5)"
         )
     elif entity_type == "method":
-        methods_label = "Override chain"
+        methods_label = f"Override chain ({method_count})"
     else:
-        methods_label = "Methods"
+        methods_label = f"Methods ({method_count})"
 
     if entity_type == "field":
-        # For field: use pre-built label that already contains count
+        # For field: capped list of super()-calling methods
         if methods:
-            lines.append(f"├─ {methods_label}:")
-            for i, m_item in enumerate(methods):
-                connector = "└─" if i == method_count - 1 else "├─"
-                lines.append(f"│   {connector} [{m_item['module']}] {m_item['name']}")
+            _append_capped_section(
+                lines,
+                methods_label,
+                methods,
+                lambda m_item: f"[{m_item['module']}] {m_item['name']}",
+                cap=LIST_PREVIEW_MAX_ITEMS,
+                total_count=method_count,
+                more_hint=(
+                    f"model_inspect(model='{model_name}', method='methods'"
+                    f", odoo_version='{odoo_version}') for full method list"
+                ),
+            )
         else:
             lines.append(f"├─ {methods_label}: none")
         # B2: field-level blast radius from USES_FIELD / DEPENDS_ON_FIELD edges (A2d).
         # Omit sections entirely when empty (pre-reindex: edges not present yet).
         if uses_field_methods:
-            lines.append(f"├─ Methods using this field ({len(uses_field_methods)}):")
-            last_u = len(uses_field_methods) - 1
-            for i, m_item in enumerate(uses_field_methods):
-                connector = "└─" if i == last_u else "├─"
-                lines.append(
-                    f"│   {connector} [{m_item['module']}] {m_item['model']}.{m_item['name']}"
-                )
-        if depends_on_field_methods:
-            lines.append(
-                f"├─ Compute-dependent methods ({len(depends_on_field_methods)}):"
+            uses_count = len(uses_field_methods)
+            _append_capped_section(
+                lines,
+                f"Methods using this field ({uses_count})",
+                uses_field_methods,
+                lambda m_item: f"[{m_item['module']}] {m_item['model']}.{m_item['name']}",
+                cap=LIST_PREVIEW_MAX_ITEMS,
+                total_count=uses_count,
+                more_hint=(
+                    f"model_inspect(model='{model_name}', method='methods'"
+                    f", odoo_version='{odoo_version}') for full method list"
+                ),
             )
-            last_d = len(depends_on_field_methods) - 1
-            for i, m_item in enumerate(depends_on_field_methods):
-                connector = "└─" if i == last_d else "├─"
-                lines.append(
-                    f"│   {connector} [{m_item['module']}] {m_item['model']}.{m_item['name']}"
-                )
+        if depends_on_field_methods:
+            dep_count = len(depends_on_field_methods)
+            _append_capped_section(
+                lines,
+                f"Compute-dependent methods ({dep_count})",
+                depends_on_field_methods,
+                lambda m_item: f"[{m_item['module']}] {m_item['model']}.{m_item['name']}",
+                cap=LIST_PREVIEW_MAX_ITEMS,
+                total_count=dep_count,
+                more_hint=(
+                    f"model_inspect(model='{model_name}', method='methods'"
+                    f", odoo_version='{odoo_version}') for full method list"
+                ),
+            )
     elif methods:
-        lines.append(f"├─ {methods_label} ({method_count}):")
-        for i, m_item in enumerate(methods):
-            connector = "└─" if i == method_count - 1 else "├─"
-            lines.append(f"│   {connector} [{m_item['module']}] {m_item['name']}")
+        _append_capped_section(
+            lines,
+            methods_label,
+            methods,
+            lambda m_item: f"[{m_item['module']}] {m_item['name']}",
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            total_count=method_count,
+            more_hint=(
+                f"model_inspect(model='{model_name}', method='methods'"
+                f", odoo_version='{odoo_version}') for full method list"
+            ),
+        )
     else:
         lines.append(f"├─ {methods_label}: none")
 
-    # JS patches section
+    # --- JS patches section ---
     if js_patches:
-        lines.append(f"├─ JS patches ({js_count}):")
-        for i, jp in enumerate(js_patches):
-            connector = "└─" if i == js_count - 1 else "├─"
-            lines.append(
-                f"│   {connector} [{jp['module']}] {jp['target']}"
+        _append_capped_section(
+            lines,
+            f"JS patches ({js_count})",
+            js_patches,
+            lambda jp: (
+                f"[{jp['module']}] {jp['target']}"
                 f" via {jp['patch_name']} (era: {jp['era']})"
-            )
+            ),
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            total_count=js_count,
+            more_hint=(
+                f"model_inspect(model='{model_name}', method='summary'"
+                f", odoo_version='{odoo_version}') for JS overview"
+            ),
+        )
     else:
         lines.append("├─ JS patches: none")
 
-    # For model entity_type: extension modules section
+    # --- For model entity_type: extension modules section (capped) ---
     if entity_type == "model" and def_modules:
-        mod_names = [d["module_name"] for d in def_modules]
-        lines.append(f"├─ Defined/extended in ({len(mod_names)}): {', '.join(mod_names)}")
+        def_count = len(def_modules)
+        mod_names_preview = [d["module_name"] for d in def_modules[:LIST_PREVIEW_MAX_ITEMS]]
+        preview_str = ", ".join(mod_names_preview)
+        if def_count > LIST_PREVIEW_MAX_ITEMS:
+            overflow = def_count - LIST_PREVIEW_MAX_ITEMS
+            preview_str += (
+                f", ... and {overflow} more"
+                f" (use model_inspect(model='{model_name}', method='summary'"
+                f", odoo_version='{odoo_version}') for full list)"
+            )
+        lines.append(f"├─ Defined/extended in ({def_count}): {preview_str}")
 
-    # Dependent modules section
+    # --- Dependent modules section (capped at IMPACT_MODULES_MAX) ---
     if dep_modules:
-        dep_names = [d["dep_name"] for d in dep_modules]
-        lines.append(f"├─ Dependent modules ({len(dep_names)}): {', '.join(dep_names)}")
+        dep_total = len(dep_modules)
+        dep_names_preview = [d["dep_name"] for d in dep_modules[:IMPACT_MODULES_MAX]]
+        preview_str = ", ".join(dep_names_preview)
+        if dep_total > IMPACT_MODULES_MAX:
+            overflow = dep_total - IMPACT_MODULES_MAX
+            preview_str += (
+                f", ... and {overflow} more"
+                " (run with profile_name=<profile> to scope)"
+            )
+        lines.append(f"├─ Dependent modules ({dep_total}): {preview_str}")
     else:
         lines.append("├─ Dependent modules: none")
 
@@ -1935,12 +2053,14 @@ def _format_deprecated_usage(
         lines.append(f"{sub_indent}├─ uses: {sym} (status={status})")
         lines.append(f"{sub_indent}└─ replacement: {repl}")
     if overflow:
+        shown = len(records)
         more_hint = (
-            f"find_deprecated_usage(odoo_version='{version}', kind=<filter>)"
-            " to narrow the scan"
+            f"find_deprecated_usage(odoo_version='{version}', kind=<kind>)"
+            " to narrow by kind"
         )
         lines.append(
-            f"├─ ... more results may exist beyond preview cap (refine filter via {more_hint})"
+            f"├─ ... showing {shown} of {shown}+ hits"
+            f" (cap={shown}) — use {more_hint}"
         )
     lines.append(next_line)
     return "\n".join(lines)
@@ -2697,7 +2817,11 @@ def _format_suggest_pattern(
                 lines.append(f"{prefix}│   {sl}")
             if len(snippet_lines) > SNIPPET_PREVIEW_MAX_LINES:
                 extra = len(snippet_lines) - SNIPPET_PREVIEW_MAX_LINES
-                lines.append(f"{prefix}│   ... ({extra} more lines)")
+                # G7: add escape-hatch hint to odoo://pattern/{id} resource
+                lines.append(
+                    f"{prefix}│   ... ({extra} more lines"
+                    f" — read full via odoo://{version}/pattern/{pid})"
+                )
         gotchas = rec.get("g") or []
         if gotchas:
             lines.append(f"{prefix}└─ Gotchas:")
@@ -2984,10 +3108,14 @@ def _describe_module(
     lines.append("├─ Manifest:")
     manifest_rows: list[tuple[str, str]] = []
     if depends:
-        # Inline list with cap (no extra disclosure — depends is rarely > 20).
-        dep_names = ", ".join(d["name"] for d in depends[:20])
-        if len(depends) > 20:
-            dep_names += f", ... and {len(depends) - 20} more"
+        # Inline list with cap + escape-hatch hint when truncated (G6).
+        dep_names = ", ".join(d["name"] for d in depends[:LIST_PREVIEW_MAX_ITEMS])
+        if len(depends) > LIST_PREVIEW_MAX_ITEMS:
+            dep_names += (
+                f", ... and {len(depends) - LIST_PREVIEW_MAX_ITEMS} more"
+                f" (use module_inspect(name='{name}', method='dependencies'"
+                f", odoo_version='{odoo_version}') for full list)"
+            )
         manifest_rows.append(("Depends", dep_names))
     else:
         manifest_rows.append(("Depends", "—"))
@@ -5986,9 +6114,21 @@ def _find_style_override(
                     for r in cur.fetchall()
                 ]
 
+    # G2: disclose ANN candidate cap so callers know the search pool size.
+    ann_used_style = min(limit, FIND_EXAMPLES_ANN_LIMIT)
+    if ann_used_style >= FIND_EXAMPLES_ANN_LIMIT:
+        ann_note_style = (
+            f"Note: ANN search capped at {FIND_EXAMPLES_ANN_LIMIT} candidates"
+            " — results beyond this pool are not considered"
+        )
+    else:
+        ann_note_style = (
+            f"showing {len(raw)} of up to {ann_used_style} semantic candidates"
+            f" — increase `limit` (max {FIND_EXAMPLES_ANN_LIMIT}) for broader search"
+        )
     header = (
         f'find_style_override: "{selector_or_variable}" ({odoo_version})\n'
-        f"Found {len(raw)} result(s)\n"
+        f"Found {len(raw)} result(s)  [{ann_note_style}]\n"
     )
     if not raw:
         footer = hints_for("find_style_override", module="", ver=odoo_version)
@@ -6281,6 +6421,20 @@ def _mcp_port() -> int:
 async def health_check(request: Request):
     from src.mcp.health import health_handler
     return await health_handler(request)
+
+
+# Prometheus metrics endpoint — no auth (mirroring /health bypass in middleware.py).
+# Cross-process caveat: this endpoint only reflects metrics from the MCP server
+# process (:8002).  Batch-indexer embed calls run in a separate process and are
+# NOT visible here.  See src/mcp/metrics.py for full caveat.
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics_endpoint(request: Request):
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    output = generate_latest()
+    from starlette.responses import Response as _Response
+
+    return _Response(content=output, media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

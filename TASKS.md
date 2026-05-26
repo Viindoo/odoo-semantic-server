@@ -484,6 +484,20 @@ PR #87 + #88 added backend features absorbed into M8 branch. The Astro pages don
 
 - [x] MFA TOTP for Web UI session auth (ADR-0011 extension — security hardening before public launch). ADR-0022.
 - [x] **W-OSM Wave 1 — Tool output completeness (2026-05-16):** 14 → 21 MCP tools. Added 7 new tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) for module architecture overview + entity enumeration + UI-layer inventory. Retrofit grammar consistency across all 14 existing tools (tree connectors, sublist indent, truncation via `_render_capped`, `Next:` footer on 18 drill-down tools). ADR-0023 codifies tree grammar contract + English-only output policy + next-step hint mapping. Plan: internal plan (archived).
+- [x] **ADR-0023 output-completeness hardening wave (2026-05-26, feat/osm-data-completeness-rbac):** 7 output gaps + timeout fix + RBAC resource hardening + Era1 comodel fix. Code-complete; OPS re-index/re-embed actions tracked separately. Tool count stays **24** (no new tool params). No odoo-mcp-client mirror PR needed.
+  - [x] **G1 — `impact_analysis` cap:** views/methods/super-methods capped at `LIST_PREVIEW_MAX_ITEMS` (20); dependent-modules capped at `IMPACT_MODULES_MAX` (30); `_render_capped` disclosure + `_append_capped_section` connector fix. (`src/mcp/server.py`)
+  - [x] **G2 — `find_examples`/`find_style_override` ANN disclosure:** "N of M candidates" line when `limit < ANN_LIMIT`; "ANN capped at 20" hint when `ann_used == ANN_LIMIT`. (`src/mcp/server.py`)
+  - [x] **G3 — `find_deprecated_usage` overflow message:** shows "showing N of M+ hits"; total disclosed as lower-bound. No new param (avoids client mirror). (`src/mcp/server.py`)
+  - [x] **G4 — `_resolve_method` override chain cap:** capped at `LIST_PREVIEW_MAX_ITEMS` (20) with ├─/└─ connectors + disclosure. (`src/mcp/server.py`)
+  - [x] **G5 — `odoo://stylesheet` resource size cap:** `STYLESHEET_RESOURCE_MAX_BYTES = 131_072` (128 KB); disclosure prepended when truncated. (`src/mcp/resources.py`)
+  - [x] **G6 — `describe_module` depends hint:** adds `Next: module_inspect(method='dependencies')` hint when depends list > 20. (`src/mcp/server.py`)
+  - [x] **G7 — `suggest_pattern` escape-hatch hint:** adds `odoo://pattern/{id}` URI hint in snippet footer. (`src/mcp/server.py`)
+  - [x] **T1 — Method(model, odoo_version) Neo4j index:** new `CREATE INDEX IF NOT EXISTS FOR (n:Method) ON (n.model, n.odoo_version)` in `setup_indexes()` — resolves Q3 partial-scan timeout on `sale.order`/chain-50+. OPS: admin must re-run `python -m src.cli index --setup-indexes` on prod. (`src/indexer/writer_neo4j.py`)
+  - [x] **R1 — Resource cache tenant dimension:** cache key gains `::t{tenant_id}` suffix (Option A) — admin key → `::t_admin`; tenant key → `::t{id}`. Prevents cross-tenant cache pollution when private-tenant indexing is enabled. (`src/mcp/resources.py`)
+  - [x] **R2 — `resources_index` scope filter:** `_fetch_top_models` and `_fetch_indexed_versions` now use `_scope_pred` — discovery response is tenant-scoped (no content leak, avoids over-inclusive URIs). (`src/mcp/resources_index.py`)
+  - [x] **R3 — Cross-process scope cache invalidation:** DEFERRED. Staleness window bounded at 60s (TTL). Redis pub/sub or PG LISTEN/NOTIFY deferred to M14+.
+  - [x] **R5 — Cross-tenant isolation tests for 5 resource kinds:** 17 parametrized tests in `tests/test_resource_tenant_isolation.py` cover model/field/method/module/view resources. (`tests/test_resource_tenant_isolation.py`)
+  - [x] **C2 — Era1 comodel_name AST path fix:** `_extract_columns_dict_fields()` now extracts `comodel_name` for Many2one/One2many/Many2many via positional arg or `comodel_name` kwarg — matches era2 AST logic. Closes silent gap where AST-parseable v8/v9 files wrote NULL comodel to Neo4j. 2 regression tests added. OPS: re-index v8/v9 `--full` required to materialize fix. (`src/indexer/parser_python.py`)
 
 ### Stream G — Process Discipline Learnings from M8
 
@@ -561,7 +575,7 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 **Known followups (non-blocking, tracked in `docs/deploy/pre-launch-checklist.md` "Known follow-ups" §12-#15):**
 
 - [x] **#12 OWLComp pre-v14 anachronism (239 stubs):** *(stale marker — authoritative status is `[x]` at the M10.5/pre-reindex section ~L753; parser guard shipped 2026-05-21 PR #159 WI-1; this line is kept for cross-ref only.)* Post-reindex shows 239 `__unresolved__` OWLComp at v8-v13 created by JSPatch era3 detection. Read-side `list_owl_components` MCP tool already has era guard (skip v<14) so user-facing output is correct — impact is only raw-graph pollution. Fix: symmetric v14 guard in `_extract_era3_patches` (parser_js) OR belt-and-suspenders at writer PATCHES placeholder site. Plus Cypher cleanup of current 239 anachronisms. Defer to M10.
-- [ ] **#13 Neo4j online backup:** `neo4j-admin database dump` requires offline DB; fails on running container. Bundle currently postgres-only (manifest.json + postgres.sql). Replace with Cypher-driver-based export (`CALL apoc.export.cypher.all`) or upgrade to Enterprise for `neo4j-admin database backup`. Update `src/cli.py` + ADR-0018 bundle contract. Defer to M10.
+- [x] **#13 Neo4j online backup (2026-05-26, WI-D2):** Replaced offline `neo4j-admin dump` with Bolt-driver streaming export (`MATCH (n) RETURN …` → CREATE statements). Bundle now contains `neo4j.cypher` (text, truly online) instead of `neo4j.dump` (binary, offline). Backward compat: restore auto-detects `neo4j.cypher` vs legacy `neo4j.dump`. Zero new deps (uses existing `neo4j` Python package). Round-trip integration test passes (testcontainers). Neo4j restore failure is non-fatal (postgres.sql already restored). ADR-0018 updated. (`src/cli.py`, `docs/adr/0018-backup-contract.md`, `tests/test_cli_backup_bundle.py`, `tests/test_cli_restore_bundle.py`, `tests/test_neo4j_online_backup_roundtrip.py`)
 - [ ] **#14 Logrotate /var/log stanza 1 perms:** Pre-existing `/etc/logrotate.d/odoo-semantic` stanza 1 (`/var/log/odoo-semantic-reindex.log`) fails because `/var/log/` is world-writable. Fix: add `su root syslog` directive OR change log location. NOT introduced by WI-3 (stanza 2). Operational fix.
 - [ ] **#15 §6 tools 15-21 prod smoke:** 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) need end-to-end smoke against prod MCP endpoint via Claude Code or another MCP client. Deferred to next session per go-live decision. All 7 are code-complete + unit-tested.
 
@@ -663,7 +677,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ## Milestone 10 — "Billing Wow" + Tool Surface + Polish
 
-**Status:** `[~]` M10A + M10.5 P1+P2 shipped; M10C partially shipped PR #159 2026-05-21 (WI-1..5 + review-followup); M10B/M10C remaining pending. Prod reindex v8→v19 (comodel_name + mth.depends + migration m9_010) remains an OPS follow-up — admin run cuoi tuan.
+**Status:** `[~]` M10A + M10.5 P1+P2 shipped; M10C substantially complete (Prometheus histogram shipped 2026-05-26 WI-D1; NAMEGET/reembed/audit shipped PR #159; nonce-CSP BLOCKED awaits Astro v5.1+); M10B pending. Prod reindex v8→v19 (comodel_name + mth.depends + migration m9_010) remains an OPS follow-up — admin run pending.
 
 **Intent:** Three independent substreams launched after M9 ship. M10A delivers low-risk MCP tool surface expansion. M10B delivers Stripe billing core (largest scope). M10C absorbs polish + observability + carry-over fixes from M7.5/M8/M9.
 
@@ -716,11 +730,11 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
   - Dependency: WI-A2 (era1 field-gap fix) deployed in production.
   - OPS follow-up: admin runs `reembed-stubs` on prod profiles after applying migration m9_010.
 
-- [ ] **Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram** — MED
+- [x] **Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram (2026-05-26, WI-D1)** — MED
   - Source: WI-A7 absorption (M9 Coverage Fill deferred items); extends ADR-0010 §D7 follow-up.
-  - Scope: histogram metric exposed at `/metrics` Prometheus endpoint, recording one observation per `embed()` batch call. Bucket boundaries: 0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0.
-  - Acceptance: `GET /metrics` returns valid Prometheus text-format payload including `embedder_batch_duration_seconds_bucket` + `_count` + `_sum` series; metric tagged by `embedder_type` label; thread-safe under `--max-workers > 1`.
-  - Cross-ref: ADR-0010 §D7 forward-refs back to this entry.
+  - Scope: histogram metric exposed at `/metrics` endpoint on MCP port `:8002` (mirrors `/health`). Buckets: `(0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0, 60.0)` s. Per-sub-batch observation inside `Qwen3Embedder.embed()`. `FakeEmbedder` intentionally NOT instrumented. `/metrics` added to `_PUBLIC_PATHS` (Prometheus scraper auth bypass). Cross-process caveat: only query-embed calls (MCP :8002 process) are visible; batch indexer emits its own process histogram separately.
+  - `prometheus_client>=0.20` added to `pyproject.toml`. 9 unit tests + endpoint test pass.
+  - Cross-ref: ADR-0010 §D7 forward-refs back to this entry. (`src/mcp/metrics.py`, `src/mcp/middleware.py`, `src/indexer/embedder.py`, `pyproject.toml`)
 
 - [ ] **Nonce-based CSP** — MED (PR #118 follow-up)
   - Source: WI-A7 absorption (M9 Coverage Fill deferred items); also tracked in MEMORY `m9_csp_permissions_policy_gap`.
@@ -940,6 +954,9 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 - `[x]` Reindex v8→v19 đầy đủ (OPS, §5.11 gate) — DONE 2026-05-25; 591,108 embeddings; 48 repos; graph clean
 - `[x]` Post-reindex absolute-path cleanup (`ops/cleanup_absolute_path_nodes.cypher`) — graph verified clean 2026-05-26: stale_stylesheets=0, stale_violations=0, pgvector `file_path LIKE '/%'`=0
 - `[ ]` MED-2 forge known_hosts cho self-hosted git forge
+- `[ ]` **[wave này] Re-run `setup_indexes()` trên prod Neo4j** — tạo index `Method(model, odoo_version)` mới (WI-A T1 timeout fix). Lệnh: `python -m src.cli index --setup-indexes` hoặc wrapper CLI tương đương. Code done, awaiting OPS.
+- `[ ]` **[wave này] Re-index v8/v9 `--full`** — materialize `comodel_name` cho Field nodes (Era1 AST path fix, WI-C C2). Lệnh: `python -m src.indexer index-repo --profile odoo_8 --full && python -m src.indexer index-repo --profile odoo_9 --full`. Code done, awaiting OPS.
+- `[ ]` **[wave này] Re-embed v9.0** — `find_examples` v9 trả empty (OPS issue, không phải code bug — prod re-embed run có thể skip v9). Lệnh: `python -m src.indexer index-profile --profile odoo_9 --force --embedder-url http://localhost:11434`. Code done, awaiting OPS.
 
 **ADR:** [`docs/adr/0038-tenant-rbac-web-ui-write-side.md`](docs/adr/0038-tenant-rbac-web-ui-write-side.md)
 
@@ -952,7 +969,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 > **v0.11.0 fix-wave (WG-1..WG-6):** Parser correctness v8-v19 (v9 Py2, field types, JS OWLComp/JSPatch, query.py path, NewId); writer schema (arch_snippet, F-5/F-8/F-12/F-13/V16-G2); 13-site tenant leak closed + leak test extended; query/render (F-4, list↔tree, file:line); enrichment (edition, summary, OWL widget pattern); bootstrap_versions.json corrected; ADR-0034/0005/runbook docs. See CHANGELOG.md `[0.11.0]`.
 > **v0.10.0 wave (PR #163):** P2 enforcement — WI-3 `resolve_tenant_scope` + WI-4 fail-closed own/shared filter at 61+4 Cypher + 3 pgvector sites + cross-tenant leak test (RELEASE GATE, PASSED). Plus Group A reindex-forcing enrichment (v19 core, docstring/manifest-deps/repo-provenance/USES_FIELD edges, Field.string/help, embeddings provenance m13_003) + Group B agent-convenient output + `module_inspect(method='dependencies')`. See CHANGELOG.md `[0.10.0]`.
 > **v0.9.1 wave (WI-F):** WI-1/WI-2/WI-5 schema + WI-6 (deploy-key REST) + WI-8/WI-9 git hardening + WI-10 license policy + M11 RelaxNG. See CHANGELOG.md `[0.9.1]`.
-> **STILL DEFERRED:** WI-7 FERNET secrets manager + Postgres RLS (needs FORCE + non-owner read role), M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 prod smoke, VN persona docs, OBS-2/OBS-3.
+> **STILL DEFERRED:** WI-7 FERNET secrets manager + Postgres RLS (needs FORCE + non-owner read role), M10B Stripe, nonce-CSP (BLOCKED — Astro v5.1+), recall benchmark (BLOCKED — Ollama SSL), §6 prod smoke, VN persona docs, OBS-2/OBS-3. M10C Prometheus histogram SHIPPED 2026-05-26.
 > **ADR-0034 site-count correction:** the ADR text says "~27 user-data Cypher sites". Verified count post-wave3: **61 sites** (57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`) PLUS 3 embeddings queries with NO Neo4j filter (`find_examples` / `find_style_override` / `suggest_pattern`) — those rely on pgvector RLS (WI-5 partial: column added, RLS deferred to WI-4 enforcement wave).
 
 > Realizes **M12 Stream B WI-B3 path (b) "True profile authz"** (above), which was deferred pending a customer-demand signal: "*customer-A's index hidden from customer-B*". That signal has arrived — OSM will serve many customers, each with **private repositories**. Numbered M13 because M12 was repurposed for v0.6 shim removal; this supersedes the stale post-M8 roadmap line "M12 Multi-tenant Wow — Neo4j namespacing".

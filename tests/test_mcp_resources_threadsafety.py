@@ -188,7 +188,11 @@ def test_50_concurrent_reads_same_uri_all_equal(
         # --- Phase 1: warm the cache with a single sequential read ---
         warm_body = _read_sync(mcp, uri)
         assert warm_body, "Warm read must return a non-empty body"
-        assert uri in cache, "URI must be cached after warm read"
+        # R1 fix: cache key includes tenant suffix (::t_admin for no-tenant context).
+        expected_key = uri + "::t_admin"
+        assert expected_key in cache, (
+            f"Expected tenant-scoped cache key {expected_key!r} not found after warm read"
+        )
         assert call_count >= 1, "Warm read must invoke _render_model at least once"
 
         # Reset counter — subsequent concurrent reads must not increment it.
@@ -236,8 +240,10 @@ def test_50_concurrent_reads_same_uri_all_equal(
         "This indicates cache lookup is broken for concurrent readers."
     )
 
-    # URI still in the cache after all reads.
-    assert uri in cache, "URI must remain in the cache after 50 concurrent reads"
+    # Tenant-scoped cache key still in the cache after all reads.
+    assert expected_key in cache, (
+        f"Expected key {expected_key!r} must remain in cache after 50 concurrent reads"
+    )
 
 
 # ===========================================================================

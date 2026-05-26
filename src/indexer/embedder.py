@@ -24,6 +24,7 @@ from src.constants import (
     TIMEOUT_EMBEDDER_READ,
     TIMEOUT_EMBEDDER_WRITE,
 )
+from src.mcp.metrics import embedder_batch_duration_seconds
 
 
 def _normalize(vec: list[float]) -> list[float]:
@@ -126,23 +127,24 @@ class Qwen3Embedder:
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        _hist = embedder_batch_duration_seconds.labels(embedder_type="qwen3")
         if len(texts) > self._MAX_BATCH:
             out: list[list[float]] = []
             for i in range(0, len(texts), self._MAX_BATCH):
                 batch = texts[i : i + self._MAX_BATCH]
                 start = time.monotonic()
                 out.extend(self._embed_one(batch))
-                _logger.debug(
-                    "embed batch n=%d duration=%.2fs", len(batch), time.monotonic() - start
-                )
+                duration = time.monotonic() - start
+                _hist.observe(duration)
+                _logger.debug("embed batch n=%d duration=%.2fs", len(batch), duration)
             with self._lock:
                 self.call_count += 1
             return out
         start = time.monotonic()
         result = self._embed_one(texts)
-        _logger.debug(
-            "embed batch n=%d duration=%.2fs", len(texts), time.monotonic() - start
-        )
+        duration = time.monotonic() - start
+        _hist.observe(duration)
+        _logger.debug("embed batch n=%d duration=%.2fs", len(texts), duration)
         with self._lock:
             self.call_count += 1
         return result

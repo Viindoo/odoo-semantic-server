@@ -527,12 +527,23 @@ def _extract_columns_dict_fields(dict_node: ast.Dict) -> list[FieldInfo]:
         legacy_help = (
             _extract_string(legacy_kwargs["help"]) if "help" in legacy_kwargs else None
         )
+        # C2 fix — era1 comodel extraction for relational fields (AST path).
+        # Positional[0] of many2one/one2many/many2many is the target model name.
+        # Also honour explicit comodel_name kwarg (rare in v8/v9 but present in
+        # some Odoo community modules).
+        legacy_comodel: str | None = None
+        if ttype in RELATIONAL_FIELD_TYPES:
+            if v.args:
+                legacy_comodel = _extract_string(v.args[0])
+            elif "comodel_name" in legacy_kwargs:
+                legacy_comodel = _extract_string(legacy_kwargs["comodel_name"])
         fields_out.append(FieldInfo(
             name=field_name, ttype=ttype,
             related=None, compute=None,
             stored=True, required=False,
             string=legacy_string,
             help=legacy_help,
+            comodel_name=legacy_comodel,
         ))
     return fields_out
 

@@ -60,6 +60,9 @@ def list_resources_index() -> list[dict[str, str]]:
       3. Orders by dep_count DESC, model name ASC (deterministic tiebreak
          per CLAUDE.md Neo4j 5.x gotcha).
       4. Limits to 100 entries per version.
+      5. **R2 fix (ADR-0030 known gap):** applies the current tenant's
+         own/shared scope filter so private-tenant models from OTHER tenants
+         are not listed in the discovery index.
 
     Returns a list of dicts with keys: ``uri``, ``mimeType``, ``name``,
     ``description``. All values are strings. Empty list when the index is empty.
@@ -73,15 +76,16 @@ def list_resources_index() -> list[dict[str, str]]:
     """
     # Lazy import from server to avoid circular dependency at module load time.
     # server.py owns the _driver singleton and _get_driver() factory.
-    from src.mcp.server import _get_driver  # type: ignore[import]
+    from src.mcp.server import _get_driver, _scope  # type: ignore[import]
 
     driver = _get_driver()
     entries: list[dict[str, str]] = []
+    scope_params = _scope()
 
     with driver.session() as session:
         versions = _fetch_indexed_versions(session)
         for version in versions:
-            version_entries = _fetch_top_models(session, version)
+            version_entries = _fetch_top_models(session, version, scope_params)
             entries.extend(version_entries)
 
     return entries
@@ -109,22 +113,46 @@ def _fetch_indexed_versions(session) -> list[str]:
     return [r["v"] for r in records]
 
 
-def _fetch_top_models(session, version: str) -> list[dict[str, str]]:
+def _fetch_top_models(
+    session,
+    version: str,
+    scope_params: dict | None = None,
+) -> list[dict[str, str]]:
     """Return up to _MAX_PER_VERSION resource descriptors for *version*.
 
     The Cypher query:
       - Joins Model to its defining Module via DEFINED_IN (is_definition).
       - Counts inbound DEPENDS_ON on the Module as dep_count.
+      - Applies the current tenant's own/shared scope filter (R2 fix) so
+        private-tenant models from other tenants are excluded.
       - Orders by dep_count DESC, m.name ASC.
       - Limits to _MAX_PER_VERSION.
 
     Falls back gracefully: if no model has is_definition=true for a version
     (e.g. partial index), includes all models ordered by dep_count + name.
+
+    Args:
+        scope_params: Dict with ``own`` and ``shared`` keys as returned by
+            ``_scope()`` in server.py.  Pass ``None`` to skip scope filtering
+            (admin / test contexts where server is not initialised).
     """
+    from src.mcp.server import _scope_pred  # type: ignore[import]
+
+    # Build the scope predicate fragment for Model and Module nodes.
+    # _scope_pred(alias) generates the Cypher expression for the alias's
+    # .profile array against $own/$shared params.
+    if scope_params is not None:
+        scope_filter = f"AND {_scope_pred('m')} AND {_scope_pred('mod')}"
+        params: dict = {"v": version, **scope_params}
+    else:
+        scope_filter = ""
+        params = {"v": version}
+
     records = session.run(
         f"""
         MATCH (m:Model {{odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
         WHERE coalesce(m.is_definition, false) = true
+          {scope_filter}
         WITH m, mod,
              COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dep_count
         RETURN m.name AS model_name,
@@ -132,7 +160,7 @@ def _fetch_top_models(session, version: str) -> list[dict[str, str]]:
         ORDER BY dep_count DESC, m.name ASC
         LIMIT {_MAX_PER_VERSION}
         """,
-        v=version,
+        **params,
     ).data()
 
     # Fallback: if no model has is_definition=true yet (pre-reindex state),
@@ -141,6 +169,7 @@ def _fetch_top_models(session, version: str) -> list[dict[str, str]]:
         records = session.run(
             f"""
             MATCH (m:Model {{odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
+            WHERE true {scope_filter}
             WITH m, mod,
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dep_count
             RETURN m.name AS model_name,
@@ -148,7 +177,7 @@ def _fetch_top_models(session, version: str) -> list[dict[str, str]]:
             ORDER BY dep_count DESC, m.name ASC
             LIMIT {_MAX_PER_VERSION}
             """,
-            v=version,
+            **params,
         ).data()
 
     return [_make_entry(version, r["model_name"]) for r in records]
