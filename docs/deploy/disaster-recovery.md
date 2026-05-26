@@ -13,7 +13,7 @@ Hướng dẫn phục hồi khi server mất data, DB corrupt, hoặc cần migr
 | **PostgreSQL** | Daily (hằng ngày) | Chứa profiles, repos registry, API keys, job history, embeddings — thay đổi thường xuyên |
 | **Neo4j** | Weekly + on-demand trước major reindex | Graph data có thể rebuild từ source (xem §RTO), nhưng backup nhanh hơn re-index từ đầu |
 | **Odoo source repos** | Không cần backup riêng | `git pull` là đủ — repos là read-only input, không có data duy nhất ở đây |
-| **`webui.env` (FERNET_KEY)** | Ngay khi tạo lần đầu, và sau mỗi lần rotate | Mất key = không decrypt SSH private key — lưu vào secrets manager riêng biệt |
+| **FERNET_KEY** (`/etc/credstore/FERNET_KEY`, root:root 0600 — systemd LoadCredential) | Ngay khi tạo lần đầu, và sau mỗi lần rotate | Mất key = không decrypt SSH private key / TOTP secret — lưu vào secrets manager riêng biệt |
 | **`odoo-semantic.conf`** | Khi thay đổi config | Chứa DB DSN + passwords — cùng secrets manager với webui.env |
 
 ### Automated PG backup (cron ví dụ)
@@ -53,7 +53,7 @@ EOF
 ```
 1. PostgreSQL (registry + auth + embeddings)
 2. Neo4j (graph data — optional nếu sẽ re-index)
-3. webui.env (FERNET_KEY — cần trước khi start Web UI)
+3. FERNET_KEY → /etc/credstore/FERNET_KEY (cần trước khi start Web UI + backup)
 4. Services restart
 ```
 
@@ -110,16 +110,25 @@ docker compose exec neo4j \
 # Expected: modules > 0 (vd 100+ cho Odoo 17 base)
 ```
 
-### 3. Restore webui.env
+### 3. Restore FERNET_KEY
+
+Production delivers the key via the **systemd credential store** (`LoadCredential=` trong
+webui + backup units, per ADR-0020). Restore the **EXISTING** key (KHÔNG generate key mới —
+SSH/TOTP secrets đã mã hóa bằng key đó) tới credstore path, root:root 0600:
 
 ```bash
-sudo install -o odoo-semantic -g odoo-semantic -m 600 /dev/null \
-    /etc/odoo-semantic/webui.env
-# Paste FERNET_KEY từ secrets manager:
-echo "FERNET_KEY=<key từ secrets manager>" \
-    | sudo tee /etc/odoo-semantic/webui.env > /dev/null
-sudo chmod 600 /etc/odoo-semantic/webui.env
+# Primary (production) — khớp LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY:
+sudo install -d -m 0700 -o root -g root /etc/credstore
+printf '%s' "<FERNET_KEY từ secrets manager>" | sudo tee /etc/credstore/FERNET_KEY > /dev/null
+sudo chmod 600 /etc/credstore/FERNET_KEY && sudo chown root:root /etc/credstore/FERNET_KEY
 ```
+
+> ⚠️ Thiếu `/etc/credstore/FERNET_KEY` sẽ **hard-fail** webui + backup units ở
+> status=243/CREDENTIALS (KHÔNG soft-fallback) — provision TRƯỚC khi start các service đó.
+>
+> **Dev / non-credstore fallback only:** `src.crypto` cũng đọc `$FERNET_KEY` từ env file
+> `/home/odoo-semantic/etc/webui.env` (owner odoo-semantic, mode 600). Chỉ dùng path này
+> trên host không dùng systemd LoadCredential.
 
 ### 4. Restart services
 
