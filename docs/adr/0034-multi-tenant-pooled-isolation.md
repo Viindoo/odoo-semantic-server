@@ -470,9 +470,23 @@ thực sự gánh isolation **không phải `FORCE`** mà là **role đọc kế
 `ENABLE`* (không cần `FORCE`). `FORCE` giữ lại như defense-in-depth (phòng khi lỡ đọc bằng
 owner DSN).
 
-**`osm_reader` — thuộc tính bắt buộc:** `LOGIN`, **`NOSUPERUSER`**, **`NOBYPASSRLS`**, KHÔNG
-phải owner của `embeddings`; chỉ `GRANT CONNECT` + `GRANT USAGE ON SCHEMA public` +
-`GRANT SELECT ON embeddings`. Không INSERT/UPDATE/DELETE (indexer/admin/migrate giữ owner DSN).
+**`osm_reader` — thuộc tính bắt buộc:** `LOGIN`, **`NOSUPERUSER`**, **`NOBYPASSRLS`**,
+`NOINHERIT`, KHÔNG phải owner của `embeddings`. Đây là cái khiến RLS engage — KHÔNG phải FORCE.
+
+**Grant set — KHÔNG chỉ `embeddings`.** Audit runtime cho thấy process MCP `:8002` đụng
+**9 bảng**, vì ngoài ANN search nó còn: API-key auth (`SELECT api_keys` — fail-closed 401 nếu
+thiếu, + `UPDATE` last_used_at), tenant scope/profile (`SELECT profiles`), session pinning
+ADR-0029 (`SELECT/INSERT/UPDATE api_key_session_state`), repo URL (`SELECT repos`), usage/audit
+log (`INSERT usage_log`/`admin_audit_log` — best-effort), và **feedback + tenant deploy-key
+router mount ngay trên `:8002`** (`src/mcp/server.py`) → `SELECT/INSERT pattern_feedback` +
+`SELECT/INSERT ssh_key_pairs`. Cộng `USAGE` trên 4 sequence SERIAL của các bảng INSERT đó.
+`GRANT SELECT ON embeddings` một mình (runbook §5.14 bản cũ) sẽ làm MCP gãy. Grant set
+canonical, idempotent: [`ops/rls_create_osm_reader.sql`](../../ops/rls_create_osm_reader.sql).
+
+> osm_reader **không** write `embeddings` (read tier không bao giờ ghi) và **không** có quyền
+> trên bảng webui-only (webui_users, totp_secrets, active_sessions, tenants…). Dù grant rộng
+> hơn `embeddings`, vẫn là bước tiến bảo mật lớn so với owner-superuser hiện tại: non-superuser
+> + non-owner → bị RLS chi phối trên `embeddings`; non-BYPASSRLS; no DDL.
 
 **GAP1 — `/health` under-report (fix trong PR này).** `src/mcp/health.py`
 (`_get_embeddings_total`, `_get_embeddings_by_chunk_type`) chạy `SELECT COUNT(*) FROM embeddings`
