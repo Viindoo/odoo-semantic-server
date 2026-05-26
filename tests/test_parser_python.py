@@ -1166,6 +1166,86 @@ def test_era1_non_relational_field_comodel_none(tmp_path):
     assert field_map["amount"].comodel_name is None
 
 
+def test_era1_comodel_one2many_many2many_columns(tmp_path):
+    """era1 text-regex path: one2many and many2many in _columns → comodel_name extracted.
+
+    C2 regression guard: both field types must resolve their comodel from the
+    first positional string literal, matching the era2 AST behaviour.
+    """
+    v8_mod = ModuleInfo(
+        name="sale", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model.py"
+    # print statement forces text-regex path (Python 2 syntax)
+    src.write_text(
+        "print 'era1'\n\n"
+        "class SaleOrder(osv.osv):\n"
+        "    _name = 'sale.order'\n"
+        "    _columns = {\n"
+        "        'line_ids': fields.one2many('sale.order.line', 'order_id', 'Order Lines'),\n"
+        "        'tag_ids': fields.many2many(\n"
+        "            'crm.tag', 'sale_order_tag_rel', 'order_id', 'tag_id', 'Tags'),\n"
+        "    }\n"
+    )
+    result = parse_file(str(tmp_path / "model.py"), v8_mod)
+    assert len(result) == 1
+    field_map = {fld.name: fld for fld in result[0].fields}
+    # one2many: first positional arg is the comodel
+    assert field_map["line_ids"].ttype == "one2many"
+    assert field_map["line_ids"].comodel_name == "sale.order.line", (
+        "one2many comodel must be extracted from first positional string arg"
+    )
+    # many2many: first positional arg is the comodel (relation table is positional[1])
+    assert field_map["tag_ids"].ttype == "many2many"
+    assert field_map["tag_ids"].comodel_name == "crm.tag", (
+        "many2many comodel must be extracted from first positional string arg"
+    )
+
+
+def test_era1_ast_path_comodel_extracted(tmp_path):
+    """era1 AST path: Python-3-parseable v8/v9 file with _columns → comodel_name set.
+
+    C2 regression guard: era1 files that do NOT use Python-2-only syntax go
+    through _extract_columns_dict_fields() (AST). That function must also set
+    comodel_name for relational fields, not just the text-regex fallback.
+    """
+    v8_mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0",
+    )
+    src = tmp_path / "model.py"
+    # No Python-2-only syntax → ast.parse succeeds → AST path (_extract_columns_dict_fields)
+    src.write_text(
+        "from openerp.osv import osv, fields\n\n"
+        "class ResPartner(osv.osv):\n"
+        "    _name = 'res.partner'\n"
+        "    _columns = {\n"
+        "        'country_id': fields.many2one('res.country', 'Country'),\n"
+        "        'child_ids': fields.one2many('res.partner', 'parent_id', 'Contacts'),\n"
+        "        'category_id': fields.many2many(\n"
+        "            'res.partner.category',\n"
+        "            'res_partner_res_partner_category_rel',\n"
+        "            'partner_id', 'category_id', 'Tags'),\n"
+        "        'name': fields.char('Name', size=64),\n"
+        "    }\n"
+    )
+    result = parse_file(str(src), v8_mod)
+    assert len(result) == 1
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert field_map["country_id"].comodel_name == "res.country", (
+        "many2one comodel must be extracted via AST path (C2 fix)"
+    )
+    assert field_map["child_ids"].comodel_name == "res.partner", (
+        "one2many comodel must be extracted via AST path (C2 fix)"
+    )
+    assert field_map["category_id"].comodel_name == "res.partner.category", (
+        "many2many comodel must be extracted via AST path (C2 fix)"
+    )
+    # non-relational fields must remain None
+    assert field_map["name"].comodel_name is None
+
+
 # ---------------------------------------------------------------------------
 # A2a — Method.docstring
 # ---------------------------------------------------------------------------

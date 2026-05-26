@@ -2,6 +2,61 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — Data completeness + resource RBAC + observability + backup (feat/osm-data-completeness-rbac)
+
+7 tool output gaps (G1-G7) + timeout fix (T1) + resource RBAC hardening (R1/R2/R5) + Era1 comodel fix (C2) + Prometheus histogram (M10C) + Neo4j online backup (#13).
+**Tool count stays 24** (no new tool signatures, no new params) — no odoo-mcp-client mirror PR needed.
+No new Postgres migration. No reindex auto-triggered; OPS re-index/re-embed actions documented in runbook.
+
+### Added
+
+- **`src/mcp/metrics.py`** — Prometheus `embedder_batch_duration_seconds` histogram (M10C WI-D1). Registered at `GET /metrics` on MCP port `:8002` (public, no auth — mirrors `/health`). Buckets: `(0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0, 60.0)` s. Per-sub-batch observation inside `Qwen3Embedder.embed()`. Cross-process caveat: only query-embed calls in MCP process are visible (batch indexer runs in a separate OS process). `prometheus_client>=0.20` added to `pyproject.toml`.
+- **`tests/test_metrics_endpoint.py`** — 9 unit + endpoint tests for Prometheus histogram.
+- **`tests/test_resource_tenant_isolation.py`** — 17 parametrized tests for resource RBAC: model/field/method/module/view handlers return scoped data when tenant context is set; no cross-tenant content leak.
+- **`tests/test_neo4j_online_backup_roundtrip.py`** — integration round-trip test (export + restore) using testcontainers Neo4j Community image. Marked `neo4j`.
+
+### Changed
+
+#### Tool output completeness (ADR-0023 hardening — G1-G7)
+
+- **`impact_analysis`** — views/methods/super-methods capped at 20 (`LIST_PREVIEW_MAX_ITEMS`) with `├─`/`└─` tree connectors + `... and N more` disclosure. Dependent-modules capped at 30 (`IMPACT_MODULES_MAX`, new constant) with "run with `profile_name=<p>` to scope" hint. Risk score computed from full count (not capped). (`src/mcp/server.py` G1)
+- **`find_examples` / `find_style_override`** — adds ANN disclosure line: "showing N of M semantic candidates — increase `limit`" when `limit < ANN_LIMIT`; "ANN capped at 20 candidates" when `limit >= ANN_LIMIT`. (`src/mcp/server.py` G2)
+- **`find_deprecated_usage`** — overflow message shows "showing N of M+ hits" (lower-bound total) + kind-filter hint. No new `start_index` parameter (avoids client mirror; full pagination deferred). (`src/mcp/server.py` G3)
+- **`_resolve_method` override chain** — capped at 20 with `├─`/`└─` connectors + `... and N more` disclosure + `entity_lookup(method='…')` escape-hatch hint. (`src/mcp/server.py` G4)
+- **`odoo://stylesheet` resource** — truncated at `STYLESHEET_RESOURCE_MAX_BYTES = 131_072` (128 KB); `# [truncated at 128 KB — full file: {N} bytes]` prepended. (`src/mcp/resources.py` G5)
+- **`describe_module`** — adds `Next: module_inspect(method='dependencies')` hint when depends list > 20 entries. (`src/mcp/server.py` G6)
+- **`suggest_pattern`** — adds `odoo://{version}/pattern/{id}` URI escape-hatch in snippet footer. (`src/mcp/server.py` G7)
+
+#### Timeout fix (T1)
+
+- **`setup_indexes()`** — new `CREATE INDEX IF NOT EXISTS FOR (n:Method) ON (n.model, n.odoo_version)` — resolves partial-scan timeout on `model_inspect`/`module_inspect`/`describe_module` for models with 50+ extending modules (e.g. `sale.order`). OPS: admin must re-run `python -m src.cli index --setup-indexes` on prod to create the index on existing data. (`src/indexer/writer_neo4j.py` T1)
+
+#### Resource RBAC hardening (R1/R2)
+
+- **Resource cache key** — gains `::t{tenant_id}` suffix (Option A): admin key → `::t_admin`, tenant key → `::t{id}`. Prevents cross-tenant cache pollution ahead of private-tenant indexing. Pattern + stylesheet handlers exempt (already globally scoped or use `_scope_pred`). (`src/mcp/resources.py` R1)
+- **`resources_index` scope filter** — `_fetch_top_models` and `_fetch_indexed_versions` now use `_scope_pred` — discovery URIs are tenant-scoped; avoids over-inclusive `resources/list` response. (`src/mcp/resources_index.py` R2)
+- **Cross-process scope cache invalidation** — DEFERRED (R3): staleness bounded at 60s TTL; Redis/PG-NOTIFY deferred to M14+.
+
+#### Era1 comodel fix (C2)
+
+- **`parser_python.py` `_extract_columns_dict_fields()`** — now extracts `comodel_name` for Many2one/One2many/Many2many from AST-parseable v8/v9 files (positional arg or `comodel_name` kwarg). Previously only the text-regex fallback path did this. Fixes `resolve_orm_chain` on v8/v9 AST-path modules. 2 regression tests added. OPS: re-index v8/v9 `--full` required. (`src/indexer/parser_python.py` C2)
+
+#### Neo4j online backup (ADR-0018 update — WI-D2)
+
+- **`src/cli.py`** — `backup` command now exports Neo4j via Bolt driver streaming (`MATCH (n) RETURN …` → CREATE + MATCH/MERGE relationship statements). Bundle contains `neo4j.cypher` (text, online) instead of `neo4j.dump` (binary, offline). Neo4j stays running during backup. Zero new server-side deps (uses existing `neo4j` Python package; no APOC, no Enterprise). `restore` auto-detects `neo4j.cypher` vs legacy `neo4j.dump` (prints manual-restore note for old bundles). Neo4j restore failure is non-fatal (postgres.sql already restored; Neo4j can be rebuilt via reindex).
+- **`docs/adr/0018-backup-contract.md`** — updated contract (neo4j.dump → neo4j.cypher), rationale, restore prerequisites, consequences. (`src/cli.py`, `docs/adr/0018-backup-contract.md`)
+
+### OPS — admin actions required on production (code done, not yet run)
+
+See `docs/deploy/reindex-v8-v19-runbook.md §Post-PR Wave (feat/osm-data-completeness-rbac)` for the full checklist. Summary:
+
+1. **Re-run `setup_indexes()`** — creates `Method(model, odoo_version)` index (T1 timeout fix).
+2. **Re-index v8/v9 `--full`** — materializes `comodel_name` on Field nodes (Era1 C2 fix).
+3. **Re-embed v9.0** — `find_examples` v9 returns empty; suspected partial re-embed on prod.
+4. **M13 close OPS (pre-existing):** `ops/cleanup_absolute_path_nodes.cypher`, RLS FORCE cutover (`osm_reader` role + DSN split), FERNET credstore cut — see runbook §5.14.
+
+---
+
 ## [Unreleased] — Web-UI multi-tenant RBAC + self-service portal (W0-W4)
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.

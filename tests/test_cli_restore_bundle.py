@@ -7,6 +7,8 @@ Tests cover:
 - Missing manifest.json aborts restore
 - Missing postgres.sql aborts restore
 - Valid bundle completes restore with safety backup
+- neo4j.cypher restore via _restore_neo4j_cypher (online Bolt driver)
+- Legacy neo4j.dump detected and manual-restore note printed
 """
 import io
 import json
@@ -14,13 +16,20 @@ import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.cli import _build_parser, _cmd_restore
+from src.cli import _build_parser, _cmd_restore, _restore_neo4j_cypher
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_minimal_bundle(tmp_path: Path, *, include_manifest=True, include_pg=True) -> Path:
+def _make_minimal_bundle(
+    tmp_path: Path,
+    *,
+    include_manifest: bool = True,
+    include_pg: bool = True,
+    neo4j_cypher: bytes | None = None,
+    neo4j_dump: bytes | None = None,
+) -> Path:
     """Create a .tar.gz bundle with optional contents."""
     bundle = tmp_path / "bundle.tar.gz"
     with tarfile.open(bundle, "w:gz") as tar:
@@ -34,6 +43,14 @@ def _make_minimal_bundle(tmp_path: Path, *, include_manifest=True, include_pg=Tr
             info2 = tarfile.TarInfo("postgres.sql")
             info2.size = len(pg_data)
             tar.addfile(info2, io.BytesIO(pg_data))
+        if neo4j_cypher is not None:
+            info3 = tarfile.TarInfo("neo4j.cypher")
+            info3.size = len(neo4j_cypher)
+            tar.addfile(info3, io.BytesIO(neo4j_cypher))
+        if neo4j_dump is not None:
+            info4 = tarfile.TarInfo("neo4j.dump")
+            info4.size = len(neo4j_dump)
+            tar.addfile(info4, io.BytesIO(neo4j_dump))
     return bundle
 
 
@@ -187,3 +204,166 @@ def test_bundle_safety_backup_failure_aborts(tmp_path, monkeypatch):
 
     assert result != 0
     assert "psql" not in call_order, "psql must NOT be called if safety backup fails"
+
+
+# ---------------------------------------------------------------------------
+# Neo4j Cypher restore via _restore_neo4j_cypher
+# ---------------------------------------------------------------------------
+
+_CYPHER_STUB = (
+    b"// neo4j.cypher\n"
+    b"CREATE (n:Module {name: \"sale\", __eid__: \"elem:0\"});\n"
+    b"MATCH (a {__eid__: \"elem:0\"}), (b {__eid__: \"elem:0\"}) "
+    b"CREATE (a)-[:SELF]->(b);\n"
+    b"MATCH (n) WHERE n.__eid__ IS NOT NULL REMOVE n.__eid__;\n"
+)
+
+
+def test_bundle_with_neo4j_cypher_calls_restore_neo4j_cypher(tmp_path, monkeypatch):
+    """Bundle with neo4j.cypher must trigger _restore_neo4j_cypher, not manual note."""
+    monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setenv("NEO4J_PASSWORD", "pw")
+
+    bundle = _make_minimal_bundle(tmp_path, neo4j_cypher=_CYPHER_STUB)
+    args = _args_for(bundle)
+
+    called_with: list[Path] = []
+
+    def _fake_restore_neo4j(cypher_path):
+        called_with.append(cypher_path)
+        return True, "Restored 2 statements"
+
+    def mock_run(cmd, **kwargs):
+        if cmd[0] == "pg_dump":
+            stdout = kwargs.get("stdout")
+            if stdout and hasattr(stdout, "write"):
+                stdout.write(b"-- mock dump\n")
+            return MagicMock(returncode=0, stderr=b"")
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            with patch("src.cli._restore_neo4j_cypher", side_effect=_fake_restore_neo4j):
+                result = _cmd_restore(args)
+
+    assert result == 0
+    assert len(called_with) == 1, "_restore_neo4j_cypher must be called exactly once"
+    assert called_with[0].name == "neo4j.cypher"
+
+
+def test_bundle_neo4j_restore_failure_is_non_fatal(tmp_path, monkeypatch, capsys):
+    """If _restore_neo4j_cypher fails, overall restore still returns 0 but prints warning."""
+    monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setenv("NEO4J_PASSWORD", "pw")
+
+    bundle = _make_minimal_bundle(tmp_path, neo4j_cypher=_CYPHER_STUB)
+    args = _args_for(bundle)
+
+    def mock_run(cmd, **kwargs):
+        if cmd[0] == "pg_dump":
+            stdout = kwargs.get("stdout")
+            if stdout and hasattr(stdout, "write"):
+                stdout.write(b"-- mock dump\n")
+            return MagicMock(returncode=0, stderr=b"")
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    def _failing_restore(cypher_path):
+        return False, "Neo4j connection failed: Connection refused"
+
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            with patch("src.cli._restore_neo4j_cypher", side_effect=_failing_restore):
+                result = _cmd_restore(args)
+
+    # Postgres restore succeeded; Neo4j failure is non-fatal (warning only)
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err or "Neo4j restore failed" in captured.err
+
+
+def test_bundle_with_legacy_neo4j_dump_prints_manual_note(tmp_path, monkeypatch, capsys):
+    """Legacy bundles with neo4j.dump must print a manual-restore note, not call cypher restore."""
+    monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+
+    bundle = _make_minimal_bundle(tmp_path, neo4j_dump=b"NEO4J_DUMP_PLACEHOLDER")
+    args = _args_for(bundle)
+
+    def mock_run(cmd, **kwargs):
+        if cmd[0] == "pg_dump":
+            stdout = kwargs.get("stdout")
+            if stdout and hasattr(stdout, "write"):
+                stdout.write(b"-- mock dump\n")
+            return MagicMock(returncode=0, stderr=b"")
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    restore_called: list[bool] = []
+
+    def _should_not_be_called(cypher_path):
+        restore_called.append(True)
+        return True, "should not be called"
+
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            with patch("src.cli._restore_neo4j_cypher", side_effect=_should_not_be_called):
+                result = _cmd_restore(args)
+
+    assert result == 0
+    assert not restore_called, "_restore_neo4j_cypher must NOT be called for legacy .dump"
+    captured = capsys.readouterr()
+    assert "neo4j-admin" in captured.out or "manual" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# _restore_neo4j_cypher unit tests (mocked driver)
+# ---------------------------------------------------------------------------
+
+def test_restore_neo4j_cypher_executes_statements(tmp_path, monkeypatch):
+    """_restore_neo4j_cypher must parse and execute non-comment statements."""
+    monkeypatch.setenv("NEO4J_PASSWORD", "pw")
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+
+    cypher_file = tmp_path / "neo4j.cypher"
+    cypher_file.write_text(
+        "// header comment\n"
+        "\n"
+        "CREATE (n:Test {x: 1});\n"
+        "MATCH (n) WHERE n.__eid__ IS NOT NULL REMOVE n.__eid__;\n",
+        encoding="utf-8",
+    )
+
+    executed: list[str] = []
+
+    mock_result = MagicMock()
+    mock_result.consume.return_value = None
+
+    mock_session = MagicMock()
+    mock_session.__enter__ = lambda s: s
+    mock_session.__exit__ = MagicMock(return_value=False)
+    mock_session.run.side_effect = lambda stmt: (executed.append(stmt), mock_result)[1]
+
+    mock_driver = MagicMock()
+    mock_driver.verify_connectivity.return_value = None
+    mock_driver.session.return_value = mock_session
+    mock_driver.close.return_value = None
+
+    with patch("neo4j.GraphDatabase.driver", return_value=mock_driver):
+        ok, msg = _restore_neo4j_cypher(cypher_file)
+
+    assert ok, f"Expected success, got: {msg}"
+    assert len(executed) == 2, f"Expected 2 statements executed, got {len(executed)}: {executed}"
+
+
+def test_restore_neo4j_cypher_missing_password(tmp_path, monkeypatch):
+    """_restore_neo4j_cypher returns False when NEO4J_PASSWORD is unset."""
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+
+    cypher_file = tmp_path / "neo4j.cypher"
+    cypher_file.write_text("CREATE (n:X);", encoding="utf-8")
+
+    ok, msg = _restore_neo4j_cypher(cypher_file)
+    assert not ok
+    assert "NEO4J_PASSWORD" in msg or "password" in msg.lower()

@@ -1001,6 +1001,192 @@ reads).
 
 ---
 
+## Post-PR OPS Actions — feat/osm-data-completeness-rbac Wave
+
+> Run AFTER deploying the `feat/osm-data-completeness-rbac` PR (data completeness +
+> resource RBAC + Prometheus + Neo4j online backup). These actions are SEPARATE from
+> the full v8→v19 reindex (§§1-5 above) — some can run independently; all are
+> non-destructive.
+>
+> **Prerequisites:**
+> - Code deployed: `git pull && pip install -e ".[all]" --quiet`
+> - All 3 systemd services running: `systemctl status odoo-semantic-mcp odoo-semantic-webui odoo-semantic-astro`
+
+### PA1 — Create Method(model, odoo_version) Neo4j index (T1 timeout fix)
+
+Creates the new compound index that resolves `model_inspect`/`module_inspect`/`describe_module`
+timeouts on models with 50+ extending modules (e.g. `sale.order`, `res.partner`).
+**Existing data not affected — index built on live nodes.** Takes < 1 minute.
+
+```bash
+# <VENV> = ~/.venv/odoo-semantic-mcp/bin/python
+<VENV> -m src.cli index --setup-indexes
+```
+
+**Verify:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "SHOW INDEXES WHERE labelsOrTypes = ['Method']
+     AND properties = ['model', 'odoo_version'];"
+```
+Expected: 1 row with `state = 'ONLINE'`.
+
+**Result:** [ ] index `Method(model, odoo_version)` is ONLINE
+
+---
+
+### PA2 — Re-index v8 and v9 (Era1 comodel_name fix, C2)
+
+The `_extract_columns_dict_fields()` fix (C2) populates `comodel_name` for
+Many2one/One2many/Many2many in Python-3-parseable v8/v9 files. Requires `--full`
+to force reparse of all modules (incremental `head_sha` check would skip unchanged files).
+
+Estimated time: 5-15 min per profile (depends on repo size).
+
+```bash
+<VENV> -m src.indexer index-repo --profile odoo_8 --full --no-embed
+<VENV> -m src.indexer index-repo --profile odoo_9 --full --no-embed
+```
+
+**Verify:**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (f:Field)
+     WHERE f.odoo_version IN ['8.0','9.0']
+       AND f.field_type IN ['many2one','one2many','many2many']
+       AND f.comodel_name IS NOT NULL
+     RETURN f.odoo_version AS version, count(f) AS fields_with_comodel;"
+```
+Expected: non-zero counts for both v8.0 and v9.0.
+
+**MCP smoke — `resolve_orm_chain` on a v9 relational field should no longer break at
+the first hop:**
+```bash
+curl -s -X POST "https://<MCP_HOST>/mcp" \
+    -H "X-API-Key: <API_KEY>" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+          "name":"resolve_orm_chain",
+          "arguments":{"model":"res.partner","dotted_path":"country_id.code","odoo_version":"9.0"}}}' \
+    | python3 -m json.tool | grep -E '"text"|BROKEN|country_id'
+```
+Expected: hop resolution output, NOT `BROKEN at country_id (reason: missing_comodel)`.
+
+**Result:** [ ] comodel_name populated for v8/v9 relational fields; resolve_orm_chain not BROKEN at first hop
+
+---
+
+### PA3 — Re-embed v9.0 profiles (find_examples empty, C1 OPS issue)
+
+v9.0 `find_examples` returns 0 results while v8 and v10 return results. Root cause:
+prod re-embed run may have skipped v9 (Ollama unavailability mid-run, or low-signal
+source_code for text-regex path). This is an OPS issue, NOT a code bug.
+
+```bash
+<VENV> -m src.indexer index-profile --profile odoo_9 --force \
+    --embedder-url http://localhost:11434
+```
+
+> Use `--embedder-url` if the Ollama service runs at a non-default URL.
+> `--force` bypasses the auto-reseed sha256 sentinel so the embed actually runs.
+
+**Verify:**
+```bash
+docker compose exec postgres psql -U odoo_semantic -c "
+SELECT count(*) AS v9_embeddings
+FROM embeddings
+WHERE odoo_version = '9.0';"
+```
+Expected: `v9_embeddings > 0`. If still 0, check Ollama service health and retry.
+
+**MCP smoke:**
+```bash
+curl -s -X POST "https://<MCP_HOST>/mcp" \
+    -H "X-API-Key: <API_KEY>" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+          "name":"find_examples",
+          "arguments":{"query":"compute tax partner","odoo_version":"9.0","limit":3}}}' \
+    | python3 -m json.tool | grep -E '"text"|score|module'
+```
+Expected: ≥ 1 result with a non-zero `score`.
+
+**Result:** [ ] v9.0 embeddings > 0; find_examples returns results
+
+---
+
+### PA4 — Verify /metrics endpoint (Prometheus, WI-D1)
+
+No OPS action needed — endpoint is live after code deploy. Verify it responds correctly.
+
+```bash
+curl -s "https://<MCP_HOST>/metrics" | grep embedder_batch_duration_seconds
+```
+Expected: lines containing `embedder_batch_duration_seconds_bucket`, `_count`, `_sum`.
+If no lines returned: no embed calls have been made yet in the current process — make
+one `find_examples` call to generate a histogram observation, then re-check.
+
+**Result:** [ ] /metrics returns Prometheus text format including embedder histogram
+
+---
+
+### PA5 — Verify Neo4j online backup (WI-D2)
+
+No migration needed. Verify backup now includes `neo4j.cypher`.
+
+```bash
+<VENV> -m src.cli backup --output /tmp/osm-test-backup-$(date +%Y%m%d).tar.gz
+```
+
+Inspect the bundle:
+```bash
+tar -tzf /tmp/osm-test-backup-*.tar.gz
+```
+Expected: bundle contains `neo4j.cypher` (NOT `neo4j.dump`), `postgres.sql`, `manifest.json`.
+
+```bash
+# Optional: check manifest shows neo4j.cypher component
+tar -xOf /tmp/osm-test-backup-*.tar.gz manifest.json | python3 -m json.tool | grep neo4j
+```
+Expected: `"neo4j.cypher"` in the components list.
+
+Cleanup: `rm /tmp/osm-test-backup-*.tar.gz`
+
+**Result:** [ ] backup bundle contains neo4j.cypher; manifest lists neo4j.cypher
+
+---
+
+### PA6 — M13 close OPS (pre-existing — consolidated here for reference)
+
+The following OPS actions were documented in earlier releases and are still pending
+on production. They are independent of the wave above and can be run at any time
+after reindex v8→v19 completes (§§1-5).
+
+**PA6a — Cleanup absolute-path orphan nodes (post full reindex, ADR-0037):**
+```bash
+cat ops/cleanup_absolute_path_nodes.cypher | cypher-shell -u neo4j -p "$NEO4J_PASSWORD"
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (n) WHERE (n:Stylesheet OR n:LintViolation) AND n.file_path STARTS WITH '/'
+     RETURN count(n) AS remaining_abs;"
+docker compose exec postgres psql -U odoo_semantic -c \
+    "SELECT count(*) AS abs_embeddings FROM embeddings WHERE file_path LIKE '/%';"
+```
+Expected: both = 0.
+
+**PA6b — RLS FORCE cutover + FERNET credstore:** see runbook §5.14 for full procedure.
+Thứ tự bắt buộc: tạo `osm_reader` → FORCE RLS → đổi `PG_DSN` MCP process → verify
+`pytest tests/test_embeddings_rls.py` → cắt FERNET vào credstore.
+
+**PA6c — snap_mod cleanup (if not already done):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (m:Module {odoo_version: '96.0', name: 'snap_mod'}) DETACH DELETE m
+     RETURN count(m) AS deleted;"
+```
+Expected: `deleted = 1` (or 0 if already removed).
+
+---
+
 ## 6. Post-Ops Verification Checklist
 
 | Item | Expected | Checked |

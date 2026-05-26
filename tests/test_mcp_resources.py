@@ -272,7 +272,11 @@ def test_cache_hit_short_circuits_second_read(
     assert call_count == 1, (
         f"_render_model must run exactly once across 2 reads; got {call_count}"
     )
-    assert uri in cache, "URI must be stored in the cache after first read"
+    # R1 fix: cache key includes tenant suffix (::t_admin for admin/None context).
+    expected_key = uri + "::t_admin"
+    assert expected_key in cache, (
+        f"Expected tenant-scoped cache key {expected_key!r} not found after reads"
+    )
 
 
 # ---------------------------------------------------------------------------
