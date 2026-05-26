@@ -93,6 +93,36 @@ node was later indexed.  The writer fix prevents new shadows going forward; the 
 existing ones.  A one-time ops script (`ops/cleanup_unresolved_placeholders.cypher`) clears the
 existing prod backlog without waiting for the next `--gc` run.
 
+**Residual gap (fixed in same PR, second commit):** After key convergence, a real View/QWebTmpl
+write lands on the same node as the placeholder (correct — no shadow), but the original real SET
+block did not clear `unresolved=true`.  The converged node ended up with `module=<real>` but
+`unresolved=true`, causing node-level filters in `server.py` to wrongly hide the view.
+
+Fix: the real View SET and real QWebTmpl SET now unconditionally write `v.unresolved = false` /
+`t.unresolved = false`.  A node appearing in `result.views`/`result.qweb` IS real/resolved by
+definition, so clearing unconditionally is correct.
+
+**Scope: View and QWebTmpl ONLY.**  Model (`{name, module, odoo_version}`) and OWLComp
+(`{name, module, odoo_version}`) include `module` in their MERGE key, so a real write with
+`module=<real>` always produces a distinct node from the placeholder (`module='__unresolved__'`).
+A real write can never land on a Model/OWLComp placeholder — the gap does not apply to them.
+
+**Edge-staleness:** when a child view is indexed before its parent, the placeholder path creates
+an `INHERITS_VIEW` / `EXTENDS_TMPL` edge with `{unresolved:true}`.  After the parent is later
+indexed for real (clearing `node.unresolved`), that old edge property is stale.  Two options:
+
+1. *Automatic per-child-reindex (chosen)*: the resolved-edge MERGE in the writer now includes
+   `ON MATCH SET r.unresolved = false`, so the next time the child is re-indexed the old stale
+   edge is updated in place.  This is a one-liner with no performance cost (the MATCH already
+   runs when the child is re-indexed) and no schema change.
+
+2. *Deferred to `--gc`*: DETACH DELETE on placeholder nodes (see above) already removes any
+   `{unresolved:true}` edges incident to the placeholder.  Once the placeholder node is GC'd,
+   the child's edge to it is also gone; the child's next re-index creates a clean edge to the
+   now-real parent.
+
+Both paths converge.  Option 1 is proactive and requires no manual operator action.
+
 ### D6 — Auto-reseed gated via `_SeedMeta` Neo4j sentinel + sha256
 
 `seed_patterns()` is called at the end of every `index_profile()` so admins don't need to remember a separate command. To make this cheap, the seed function:
@@ -157,7 +187,7 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 - `tests/test_pipeline_seed_integration.py` — D6 wired into index_profile
 - `tests/test_indexer_gc.py` — D5 GC flag: delete renamed module, risk gate, default-off
 - `tests/test_dual_store_integrity.py` — D6-split invariants: --no-embed sets only patterns_neo4j, embedder=None leaves patterns_pgvector absent, legacy sentinel fallback, divergence detection
-- `tests/test_gc_unresolved_placeholders.py` — D5 M13 extension: no shadow View after writer fix; gc_unresolved_placeholders removes placeholders, preserves real nodes, is idempotent, scoped by version
+- `tests/test_gc_unresolved_placeholders.py` — D5 M13 extension: no shadow View after writer fix; `unresolved` flag cleared after real View/QWebTmpl write (residual-gap regression); gc_unresolved_placeholders removes placeholders, preserves real nodes, is idempotent, scoped by version
 
 ## Out of scope (recorded for future ADRs)
 

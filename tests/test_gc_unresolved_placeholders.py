@@ -176,6 +176,179 @@ class TestNoShadowViewAfterRealViewIndexed:
 
 
 # ---------------------------------------------------------------------------
+# Test 1b: unresolved flag cleared after real View/QWebTmpl write
+#
+# Residual gap from commit f4e9306: placeholder MERGE key converges with real
+# node key {xmlid, odoo_version}, so the real write lands on the same node —
+# but the real SET block never cleared `unresolved=true` left by the placeholder.
+# Result: node ends up with module=<real> AND unresolved=true, which causes
+# node-level filters (server.py ~986, ~1421, ~3986) to wrongly hide the view.
+# ---------------------------------------------------------------------------
+
+def _view_unresolved(driver, xmlid: str) -> bool | None:
+    """Return the `unresolved` property of the single View node, or None if absent."""
+    with driver.session() as session:
+        row = session.run(
+            "MATCH (v:View {xmlid: $xmlid, odoo_version: $v}) RETURN v.unresolved AS u",
+            xmlid=xmlid, v=TEST_VERSION,
+        ).single()
+    return row["u"] if row else None
+
+
+def _qweb_unresolved(driver, xmlid: str) -> bool | None:
+    """Return the `unresolved` property of the single QWebTmpl node, or None if absent."""
+    with driver.session() as session:
+        row = session.run(
+            "MATCH (t:QWebTmpl {xmlid: $xmlid, odoo_version: $v}) RETURN t.unresolved AS u",
+            xmlid=xmlid, v=TEST_VERSION,
+        ).single()
+    return row["u"] if row else None
+
+
+def _view_module(driver, xmlid: str) -> str | None:
+    """Return module property of the View node."""
+    with driver.session() as session:
+        row = session.run(
+            "MATCH (v:View {xmlid: $xmlid, odoo_version: $v}) RETURN v.module AS m",
+            xmlid=xmlid, v=TEST_VERSION,
+        ).single()
+    return row["m"] if row else None
+
+
+def _qweb_module(driver, xmlid: str) -> str | None:
+    """Return module property of the QWebTmpl node."""
+    with driver.session() as session:
+        row = session.run(
+            "MATCH (t:QWebTmpl {xmlid: $xmlid, odoo_version: $v}) RETURN t.module AS m",
+            xmlid=xmlid, v=TEST_VERSION,
+        ).single()
+    return row["m"] if row else None
+
+
+class TestUnresolvedFlagClearedAfterRealWrite:
+    """Regression tests for the residual gap in commit f4e9306.
+
+    After the MERGE key convergence fix, a real View/QWebTmpl write lands on
+    the same node as the placeholder (correct — no shadow). But the real SET
+    block must ALSO clear the `unresolved` flag so the node is not hidden by
+    server.py node-level filters.
+    """
+
+    def test_view_unresolved_cleared_after_real_write(self, writer, clean_neo4j):
+        """After indexing the real parent View, the converged node must have
+        coalesce(v.unresolved, false) = false AND module = <real module>."""
+        driver = clean_neo4j
+        child_xmlid = "sale.view_order_form_ext2"
+        parent_xmlid = "sale.view_order_form2"
+
+        # Step 1: index child → creates placeholder for parent with unresolved=true
+        child_module = _make_module("sale_ext2")
+        child_view = ViewInfo(
+            xmlid=child_xmlid,
+            name="Sale Order Form Extension 2",
+            model="sale.order",
+            module="sale_ext2",
+            odoo_version=TEST_VERSION,
+            view_type="form",
+            mode="extension",
+            inherit_xmlid=parent_xmlid,
+        )
+        writer.write_view_results(
+            [ViewParseResult(module=child_module, views=[child_view])],
+            profiles=["test_profile"],
+        )
+
+        # Confirm placeholder was created with unresolved=true
+        assert _view_unresolved(driver, parent_xmlid) is True, (
+            "Placeholder must have unresolved=true after child indexed"
+        )
+        assert _view_module(driver, parent_xmlid) == "__unresolved__", (
+            "Placeholder must have module='__unresolved__'"
+        )
+
+        # Step 2: index the real parent view
+        parent_module = _make_module("sale")
+        parent_view = ViewInfo(
+            xmlid=parent_xmlid,
+            name="Sale Order Form 2",
+            model="sale.order",
+            module="sale",
+            odoo_version=TEST_VERSION,
+            view_type="form",
+            mode="primary",
+            inherit_xmlid=None,
+        )
+        writer.write_view_results(
+            [ViewParseResult(module=parent_module, views=[parent_view])],
+            profiles=["test_profile"],
+        )
+
+        # After real write: unresolved must be false (or absent), module must be real
+        unresolv = _view_unresolved(driver, parent_xmlid)
+        assert not unresolv, (
+            f"View node must have unresolved=false after real write, got unresolved={unresolv!r}. "
+            "Real SET block does not clear the placeholder flag — node-level filters in "
+            "server.py (~986, ~1421, ~3986) will wrongly hide this view."
+        )
+        assert _view_module(driver, parent_xmlid) == "sale", (
+            "View node must have module='sale' after real write"
+        )
+
+    def test_qweb_unresolved_cleared_after_real_write(self, writer, clean_neo4j):
+        """After indexing the real parent QWebTmpl, the converged node must have
+        coalesce(t.unresolved, false) = false AND module = <real module>."""
+        driver = clean_neo4j
+        child_xmlid = "sale.qweb_child2"
+        parent_xmlid = "sale.qweb_parent2"
+
+        # Step 1: index child → creates placeholder for parent with unresolved=true
+        child_module = _make_module("sale_ext2")
+        child_qweb = QWebInfo(
+            xmlid=child_xmlid,
+            module="sale_ext2",
+            odoo_version=TEST_VERSION,
+            inherit_xmlid=parent_xmlid,
+        )
+        writer.write_view_results(
+            [ViewParseResult(module=child_module, qweb=[child_qweb])],
+            profiles=["test_profile"],
+        )
+
+        # Confirm placeholder was created with unresolved=true
+        assert _qweb_unresolved(driver, parent_xmlid) is True, (
+            "Placeholder must have unresolved=true after child indexed"
+        )
+        assert _qweb_module(driver, parent_xmlid) == "__unresolved__", (
+            "Placeholder must have module='__unresolved__'"
+        )
+
+        # Step 2: index the real parent template
+        parent_module = _make_module("sale")
+        parent_qweb = QWebInfo(
+            xmlid=parent_xmlid,
+            module="sale",
+            odoo_version=TEST_VERSION,
+            inherit_xmlid=None,
+        )
+        writer.write_view_results(
+            [ViewParseResult(module=parent_module, qweb=[parent_qweb])],
+            profiles=["test_profile"],
+        )
+
+        # After real write: unresolved must be false (or absent), module must be real
+        unresolv = _qweb_unresolved(driver, parent_xmlid)
+        assert not unresolv, (
+            f"QWebTmpl node must have unresolved=false after real write, "
+            f"got unresolved={unresolv!r}. "
+            "Real SET block does not clear the placeholder flag — node-level filters in "
+            "server.py (~986, ~3986) will wrongly hide this template."
+        )
+        assert _qweb_module(driver, parent_xmlid) == "sale", (
+            "QWebTmpl node must have module='sale' after real write"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Test 2: gc_unresolved_placeholders removes inert placeholder nodes
 # ---------------------------------------------------------------------------
 

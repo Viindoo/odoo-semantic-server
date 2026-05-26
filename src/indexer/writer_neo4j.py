@@ -310,7 +310,8 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 v.type = $view_type, v.mode = $mode,
                 v.xpaths_exprs = $xpaths_exprs,
                 v.xpaths_positions = $xpaths_positions,
-                v.arch_snippet = $arch_snippet
+                v.arch_snippet = $arch_snippet,
+                v.unresolved = false
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
              view_type=view.view_type, mode=view.mode,
@@ -338,7 +339,8 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 MATCH (ext:View {{xmlid: $xmlid, odoo_version: $ver}})
                 MATCH (base:View {{xmlid: $inherit_xmlid, odoo_version: $ver}})
                 WHERE NOT coalesce(base.unresolved, false)
-                MERGE (ext)-[:{REL_INHERITS_VIEW}]->(base)
+                MERGE (ext)-[r:{REL_INHERITS_VIEW}]->(base)
+                ON MATCH SET r.unresolved = false
                 RETURN 1 AS ok
             """, xmlid=view.xmlid, ver=view.odoo_version,
                  inherit_xmlid=view.inherit_xmlid).single()
@@ -373,7 +375,8 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             ON CREATE SET t.profile = $profiles
             ON MATCH  SET t.profile =
                 [x IN coalesce(t.profile, []) WHERE NOT x IN $profiles] + $profiles
-            SET t.module = $module
+            SET t.module = $module,
+                t.unresolved = false
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module, profiles=profiles)
 
         tx.run(f"""
@@ -387,7 +390,8 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
                 MATCH (base:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
                 WHERE NOT coalesce(base.unresolved, false)
-                MERGE (ext)-[:EXTENDS_TMPL]->(base)
+                MERGE (ext)-[r:EXTENDS_TMPL]->(base)
+                ON MATCH SET r.unresolved = false
                 RETURN 1 AS ok
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                  inherit_xmlid=qweb.inherit_xmlid).single()

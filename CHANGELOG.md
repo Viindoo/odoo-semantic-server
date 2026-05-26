@@ -24,6 +24,20 @@ Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count
   one placeholder for the same `xmlid+version`).  Fix: placeholder MERGE now uses the same 2-key
   so it converges on the real node when it already exists; `ON CREATE` stamps `unresolved=true` +
   `module='__unresolved__'` only for genuinely new placeholders.  No schema migration; no reindex.
+- **`src/indexer/writer_neo4j.py` — View / QWebTmpl `unresolved` flag cleared on real write**
+  (residual gap from MERGE-key fix above) — after key convergence, a real View/QWebTmpl write
+  lands on the same node as the placeholder (no shadow), but the real SET block did not clear
+  `unresolved=true`.  The converged node ended up `module=<real>, unresolved=true`, causing
+  node-level filters in `server.py` (~l.986, ~l.977, ~l.722, ~l.1421, ~l.3986) to wrongly hide
+  the view even though its module was already resolved.  Fix: real View and QWebTmpl SET blocks
+  now unconditionally write `v.unresolved = false` / `t.unresolved = false` (a node appearing in
+  `result.views`/`result.qweb` IS real/resolved by definition).  Model and OWLComp are NOT
+  affected: their MERGE key includes `module` (`{name, module, odoo_version}`), so a real write
+  never lands on a placeholder — their placeholder (`module='__unresolved__'`) and real
+  (`module=<real>`) are always distinct nodes.  Edge-staleness one-liner also applied: resolved
+  `INHERITS_VIEW` and `EXTENDS_TMPL` MERGEs now include `ON MATCH SET r.unresolved = false` so
+  an old `{unresolved:true}` edge from the placeholder phase is cleared the next time the child
+  is re-indexed (rather than waiting for a `--gc` run).
 - **`src/indexer/writer_neo4j.py::gc_unresolved_placeholders`** (new method) — DETACH DELETEs
   all `{unresolved:true, module:'__unresolved__'}` placeholder nodes scoped by `odoo_version`.
   MCP server already filters these at read time (30+ `module <> '__unresolved__'` sites); safe to
@@ -33,8 +47,9 @@ Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count
   Run before or after deploying this PR; `--gc` handles future accumulation.
 - **`docs/adr/0007-incremental-indexer.md` §D5** — updated to document M13 placeholder GC
   extension and View MERGE-key fix.
-- **`tests/test_gc_unresolved_placeholders.py`** (new, 7 tests) — regression: no shadow View
-  after writer fix; gc removes placeholders; gc preserves real nodes; gc is idempotent; gc is
+- **`tests/test_gc_unresolved_placeholders.py`** (9 tests, 2 new for the `unresolved` flag gap) —
+  regression: no shadow View after writer fix; `unresolved` flag cleared after real write for both
+  View and QWebTmpl; gc removes placeholders; gc preserves real nodes; gc is idempotent; gc is
   version-scoped.  All pass.
 
 ### Added — WI-7 FERNET credstore cut (feat/wi7-fernet-credstore-cut)
