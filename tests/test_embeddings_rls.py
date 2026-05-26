@@ -567,3 +567,61 @@ def test_pattern_catalogue_not_blocked_by_rls(forced_rls):
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 9 — FORCED RLS: GUC never set (unset, not '') sees only NULL-profile rows
+# Business rule: the fail-closed default that motivates the /health GAP1 fix.
+# Distinct from test 6 (GUC set to empty string '') — here the GUC is never
+# set at all, so current_setting('app.allowed_profiles', true) returns NULL.
+# ---------------------------------------------------------------------------
+
+def test_forced_rls_no_guc_set_undercounts_fail_closed(forced_rls):
+    """Unset GUC under FORCE + osm_reader → only the 2 NULL-profile rows.
+
+    This is the exact scenario behind the /health GAP1 fix: a read path that
+    forgets to set app.allowed_profiles (no _rls_read_tx wrapper) does NOT leak
+    — it under-reports, seeing only the shared + pattern (NULL-profile) rows,
+    never the 2 tenant rows. Proves (a) the role default is fail-closed, so
+    (b) src/mcp/health.py MUST wrap its COUNT(*) in _rls_read_tx(conn, None)
+    (GUC '*') to report the true total. The wrapped-count path is covered by
+    test_forced_rls_admin_sentinel_sees_all (GUC '*' → all 4).
+    """
+    info = forced_rls
+    if not info["has_privilege"]:
+        pytest.skip(info["skip_reason"])
+
+    pg = info["pg"]
+
+    with pg.cursor() as cur:
+        cur.execute("SET ROLE osm_reader")
+        # Deliberately DO NOT set app.allowed_profiles — mimics an unwrapped query.
+        cur.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE odoo_version = %s",
+            (V,),
+        )
+        count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT module, profile_name FROM embeddings "
+            "WHERE odoo_version = %s ORDER BY module",
+            (V,),
+        )
+        rows = cur.fetchall()
+        cur.execute("RESET ROLE")
+    pg.commit()
+
+    modules = [r[0] for r in rows]
+    assert count == 2, (
+        f"Unset GUC under FORCE must see only the 2 NULL-profile rows "
+        f"(shared + pattern), got {count}. This is the fail-closed default — "
+        "an unwrapped COUNT(*) under-reports rather than leaks."
+    )
+    assert all(r[1] is None for r in rows), (
+        f"Unset GUC must return only NULL-profile rows. Got: {rows}"
+    )
+    assert "rls_acme_mod" not in modules and "rls_globex_mod" not in modules, (
+        f"Unset GUC must not reveal any tenant rows. Got modules: {modules}"
+    )
+    assert "rls_shared_mod" in modules, (
+        f"Shared (NULL-profile) rows must remain visible. Got modules: {modules}"
+    )
+
+

@@ -16,6 +16,13 @@ def _count_embeddings() -> int | None:
     Handles the case where pgvector is absent (table doesn't exist yet) or
     the connection is unavailable — returns None so the response can show
     null instead of crashing the dashboard.
+
+    RLS GAP2 (ADR-0034): the web UI keeps the owner DSN, so this COUNT(*)
+    intentionally bypasses RLS (the owner is exempt even under FORCE) and
+    returns the true global total — admin-only data on a loopback, session-gated
+    service, NOT a tenant leak. Do NOT flip the web UI to the osm_reader read
+    role; only the MCP :8002 read tier moves to the non-owner role. (The MCP
+    /health count wraps in _rls_read_tx(conn, None) instead.)
     """
     try:
         from src.db.pg import get_pool

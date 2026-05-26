@@ -450,6 +450,52 @@ RLS sau khi cutover là defense-in-depth trên cùng `profile_name = ANY(...)` i
 
 **Runbook tham chiếu:** [`docs/deploy/reindex-v8-v19-runbook.md §5.14`](../deploy/reindex-v8-v19-runbook.md#514-rls-enforcement-cutover-ops--sau-khi-deploy-code--m13_004-đã-chạy)
 
+## Amendment A5 — RLS cutover precision: superuser bypass + /health GAP (WI-7)
+
+**Ngày:** 2026-05-26  
+**PR:** feat/wi7-rls-cutover-health
+
+Thẩm định prod (`relrowsecurity=t`, `relforcerowsecurity=f`; chỉ có role `odoo_semantic`,
+`rolsuper=t`) làm rõ một điểm A4 nói chưa đủ chính xác:
+
+**`FORCE` KHÔNG đủ một mình — và lý do "owner bypass" của A4 mới chỉ là một nửa.**
+`odoo_semantic` vừa là **owner** vừa là **SUPERUSER**. PostgreSQL có hai cơ chế bypass
+tách biệt (PG16 docs, *Row Security Policies*):
+- **Owner bypass** → `FORCE ROW LEVEL SECURITY` *chữa được* (owner trở thành subject của policy).
+- **Superuser / `BYPASSRLS` bypass** → *"always bypass the row security system"*, **`FORCE` KHÔNG ảnh hưởng**.
+
+Vì `odoo_semantic` là superuser, `FORCE` không bao giờ khiến nó bị policy chi phối. Thứ
+thực sự gánh isolation **không phải `FORCE`** mà là **role đọc kết nối**: chỉ cần một role
+**non-owner + non-superuser + non-`BYPASSRLS`** là đã bị policy chi phối *ngay cả khi chỉ
+`ENABLE`* (không cần `FORCE`). `FORCE` giữ lại như defense-in-depth (phòng khi lỡ đọc bằng
+owner DSN).
+
+**`osm_reader` — thuộc tính bắt buộc:** `LOGIN`, **`NOSUPERUSER`**, **`NOBYPASSRLS`**, KHÔNG
+phải owner của `embeddings`; chỉ `GRANT CONNECT` + `GRANT USAGE ON SCHEMA public` +
+`GRANT SELECT ON embeddings`. Không INSERT/UPDATE/DELETE (indexer/admin/migrate giữ owner DSN).
+
+**GAP1 — `/health` under-report (fix trong PR này).** `src/mcp/health.py`
+(`_get_embeddings_total`, `_get_embeddings_by_chunk_type`) chạy `SELECT COUNT(*) FROM embeddings`
+KHÔNG set GUC. Sau khi MCP đổi sang `osm_reader` + FORCE, query này chỉ thấy rows
+`profile_name IS NULL` → `embeddings_total` tụt từ ~591k xuống vài trăm (hỏng observability,
+**không phải lỗ bảo mật**). Fix: bọc trong `_rls_read_tx(conn, None)` → GUC `'*'` (admin
+sentinel) → đếm full. Trên owner DSN là no-op vô hại.
+
+> **Quyết định thiết kế (bọc query, KHÔNG `ALTER ROLE osm_reader SET app.allowed_profiles='*'`):**
+> giữ GUC mặc-định-của-role **unset = fail-closed**. Nếu set default `'*'` ở role, mọi read
+> path tương lai *quên* bọc `_rls_read_tx` sẽ **fail-OPEN** (thấy hết). Giữ unset → path quên
+> bọc chỉ thấy rows `profile_name IS NULL` (under-report, an toàn). Regression test:
+> `tests/test_embeddings_rls.py::test_forced_rls_no_guc_set_undercounts_fail_closed`.
+
+**GAP2 — web UI (`:8003`) `dashboard.py` đếm `COUNT(*)` bằng owner DSN → vẫn bypass sau FORCE.**
+Có chủ đích: web UI là admin-only, loopback, session-gated; số liệu là dữ liệu admin (toàn cục),
+KHÔNG phải tenant leak. **Không** flip DSN web UI sang `osm_reader`; chỉ MCP `:8002` đổi. Đã ghi
+comment tại `src/web_ui/routes/dashboard.py::_count_embeddings`.
+
+**Fail-closed khi GUC unset (xác nhận):** `current_setting('app.allowed_profiles', true)=NULL`
+→ `'*'` branch = NULL, `ANY(string_to_array(NULL,','))` = NULL → chỉ branch `profile_name IS NULL`
+pass. Rows tenant-private bị chặn; chỉ shared/global (D3) hiển thị. KHÔNG fail-open.
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).
