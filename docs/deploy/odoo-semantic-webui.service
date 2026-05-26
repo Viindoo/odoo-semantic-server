@@ -51,10 +51,12 @@ StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-# Writable: app dir (audit log writes) + repos (indexer subprocess spawned
-# from Web UI). The indexer inherits this unit's cgroup + restrictions.
+# Writable XDG data dir holds indexer clones + known_hosts; moved from
+# /home/odoo-semantic/repos per ADR-0027 operational path-migration (2026-05-25).
+# App dir carve-out covers audit log writes; indexer subprocess spawned from
+# Web UI inherits this unit's cgroup + sandbox restrictions.
 ReadWritePaths=/home/odoo-semantic/odoo-semantic-mcp
-ReadWritePaths=/home/odoo-semantic/repos
+ReadWritePaths=/home/odoo-semantic/.local/share/odoo-semantic-mcp
 PrivateTmp=true
 
 [Install]

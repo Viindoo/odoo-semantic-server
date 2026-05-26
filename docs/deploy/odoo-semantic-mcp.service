@@ -60,10 +60,11 @@ ProtectSystem=strict
 # `read-only` (not `true`) — service venv + app binaries live under
 # /home/odoo-semantic per ADR-0027 §3; `true` would hide them entirely.
 ProtectHome=read-only
-# Writable carve-outs under the read-only home (repos for indexer subprocess,
-# app dir for migration audit log writes + any process-local cache).
+# Writable XDG data dir holds indexer clones + known_hosts; moved from
+# /home/odoo-semantic/repos per ADR-0027 operational path-migration (2026-05-25).
+# App dir carve-out covers migration audit log writes + process-local cache.
 ReadWritePaths=/home/odoo-semantic/odoo-semantic-mcp
-ReadWritePaths=/home/odoo-semantic/repos
+ReadWritePaths=/home/odoo-semantic/.local/share/odoo-semantic-mcp
 PrivateTmp=true
 
 [Install]
