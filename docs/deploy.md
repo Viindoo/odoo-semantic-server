@@ -729,26 +729,38 @@ sudo systemctl daemon-reload
 Lý do: thiếu dấu `-` khiến systemd fail unit khi `.env` vắng mặt (vd fresh deploy chưa tạo file),
 gây vòng lặp restart vô hạn (`Result: resources`). Với `-` systemd bỏ qua nếu file không tồn tại.
 
-### 3.6 Re-index định kỳ (cron, M6 Wave 2 incremental ready)
+### 3.6 Re-index định kỳ (M6 Wave 2 incremental)
+
+**Khuyến nghị — systemd timer** (load `.env` → có sẵn `PG_DSN` + `NEO4J_PASSWORD`; một entry
+cron.d KHÔNG load `.env` nên sẽ fail auth trừ khi creds nằm sẵn trong `odoo-semantic.conf`):
 
 ```bash
-sudo tee /etc/cron.d/odoo-semantic-reindex > /dev/null << 'EOF'
-# Re-index toàn bộ profiles mỗi giờ — M6 Wave 2 incremental skips unchanged repos.
-0 * * * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
-    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all \
-    --profile-workers 2 \
-    >> /var/log/odoo-semantic/odoo-semantic-reindex.log 2>&1
-
-# Monthly --full reindex để clean stale Module nodes từ rename/move (per ADR-0007).
-0 4 1 * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
-    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --full \
-    >> /var/log/odoo-semantic/odoo-semantic-reindex.log 2>&1
-EOF
+sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic        # nếu chưa có
+sudo cp docs/deploy/odoo-semantic-reindex.service \
+        docs/deploy/odoo-semantic-reindex.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now odoo-semantic-reindex.timer
+systemctl list-timers odoo-semantic-reindex.timer --no-pager   # verify lần chạy kế
 ```
 
-> **Log dir:** tạo một lần `sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic`.
-> Reindex log ghi vào `/var/log/odoo-semantic/odoo-semantic-reindex.log` → được logrotate stanza
-> cover (xem `docs/deploy/logrotate.d/odoo-semantic`; bare `/var/log/...` cũ đã bỏ — followup #14).
+Incremental `index-repo --all` chạy hằng đêm 03:30. Monthly `--full --gc` (dọn stale Module
+nodes từ rename/move, per ADR-0007) chạy thủ công — vẫn nạp `.env` qua `systemd-run`:
+
+```bash
+sudo systemd-run --uid=odoo-semantic --gid=odoo-semantic --pipe --wait \
+  -p EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env \
+  -p Environment=ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf \
+  --working-directory=/home/odoo-semantic/odoo-semantic-mcp \
+  /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --full --gc
+```
+
+> **Alternative — cron.d** (CHỈ khi `odoo-semantic.conf` đã chứa `pg_dsn` + neo4j creds, vì cron
+> không load `.env`). Dùng đúng conf path prod + log đã relocate (followup #14):
+> ```
+> 30 3 * * * odoo-semantic ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf \
+>     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --profile-workers 2 \
+>     >> /var/log/odoo-semantic/odoo-semantic-reindex.log 2>&1
+> ```
 >
 > **M6 Wave 2 — incremental indexer:** `pipeline._index_repo` so sánh git HEAD với
 > `repos.head_sha` stored. Repo unchanged → zero-cost skip. Otherwise `git diff` để

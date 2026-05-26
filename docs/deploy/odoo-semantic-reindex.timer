@@ -1,0 +1,19 @@
+# odoo-semantic-reindex.timer — fires odoo-semantic-reindex.service daily at 03:30
+# Đặt tại: /etc/systemd/system/odoo-semantic-reindex.timer
+#
+# 03:30 = off-peak; after the 00:10 TTL cleanup window. Incremental reindex
+# skips unchanged repos (head_sha) so most nights this is near-zero-cost.
+#
+# Persistent=true: if the host was offline at the scheduled time, run once on
+# next boot instead of skipping the window.
+
+[Unit]
+Description=Daily OSM incremental reindex (index-repo --all)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=odoo-semantic-reindex.service
+
+[Install]
+WantedBy=timers.target

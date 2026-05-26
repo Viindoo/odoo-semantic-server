@@ -1,0 +1,49 @@
+# odoo-semantic-reindex.service — systemd oneshot for periodic incremental reindex
+# Đặt tại: /etc/systemd/system/odoo-semantic-reindex.service
+# Companion timer: /etc/systemd/system/odoo-semantic-reindex.timer
+#
+# After copying both files:
+#   sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic   # nếu chưa có
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now odoo-semantic-reindex.timer
+#
+# Runs `index-repo --all` — M6 Wave 2 incremental: head_sha skip → zero-cost for
+# unchanged repos; git diff filters scan to changed modules only. See ADR-0007.
+#
+# WHY a systemd timer (not a bare cron.d entry): the indexer reads PG_DSN +
+# NEO4J_PASSWORD via config; a cron.d line does NOT load .env, so it would fail
+# auth unless the secrets happen to live in odoo-semantic.conf. EnvironmentFile=
+# here loads the same .env as the other units — creds guaranteed present.
+#
+# Monthly `--full --gc` cleanup of stale Module nodes (renames/moves) stays a
+# separate/manual step — see deploy.md §3.6.
+#
+# Override container/worker knobs via .env ($POSTGRES_CONTAINER, ...).
+# Canonical layout = ADR-0027 (system-user odoo-semantic, /home/odoo-semantic/...).
+
+[Unit]
+Description=OSM periodic incremental reindex (index-repo --all)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitBurst=3
+StartLimitIntervalSec=1800
+OnFailure=osm-alert@%n
+
+[Service]
+Type=oneshot
+User=odoo-semantic
+Group=odoo-semantic
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
+# Loads PG_DSN + NEO4J_PASSWORD (+ optional $POSTGRES_CONTAINER) — same as the
+# MCP/webui/backup units. This is what makes a periodic reindex viable off-cron.
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# Pre-flight: wait up to 60s for Postgres (indexer needs PG + Neo4j reachable).
+ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
+ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --profile-workers 2
+# Incremental is usually fast, but a first/large run can be long — never kill it.
+TimeoutStartSec=0
+# Append to the relocated reindex log (logrotate stanza covers /var/log/odoo-semantic/*.log).
+StandardOutput=append:/var/log/odoo-semantic/odoo-semantic-reindex.log
+StandardError=append:/var/log/odoo-semantic/odoo-semantic-reindex.log

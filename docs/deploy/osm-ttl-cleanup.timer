@@ -9,7 +9,7 @@
 # fired, run once on next boot instead of skipping the cleanup window.
 
 [Unit]
-Description=Daily OSM TTL cleanup (login_attempts/email_verifications/active_sessions)
+Description=Daily OSM TTL cleanup (login_attempts/email_verifications/active_sessions/admin_audit_log)
 
 [Timer]
 OnCalendar=*-*-* 00:10:00
