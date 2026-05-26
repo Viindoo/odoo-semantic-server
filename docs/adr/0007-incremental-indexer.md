@@ -45,7 +45,7 @@ The CLI flag `--full` bypasses the skip-unchanged check + the diff filter — fo
 
 `--full` does NOT reset head_sha to NULL — at the end of a successful `--full` run, head_sha advances to current HEAD just like an incremental run. Operationally, `--full` is "re-write what we have, then continue normally."
 
-### D5 — Module rename: explicit `--gc` flag available (M7 C4)
+### D5 — Module rename: explicit `--gc` flag available (M7 C4) + placeholder cleanup (M13)
 
 When `addons/stock` is renamed to `addons/inventory`, `git diff --name-only` shows both paths as changed. The scanner finds the new `addons/inventory` module → Module node MERGEd; the old `addons/stock` directory no longer exists → no scanner pass → its Module node remains in Neo4j as a stale orphan.
 
@@ -64,13 +64,34 @@ DETACH DELETE m
 RETURN count(m) AS n
 ```
 
-DETACH DELETE removes the Module node plus all incident edges (DEFINED_IN, DEPENDS_ON, etc.). Model/Field/Method nodes that were DEFINED_IN the stale module are NOT deleted by this query — they remain as orphan domain nodes. This is intentional: orphan domain nodes are inert (no DEFINED_IN edge to follow) and will be overwritten if the module re-appears. A future pass may clean these too, but the current scope is Module-level GC only.
+DETACH DELETE removes the Module node plus all incident edges (DEFINED_IN, DEPENDS_ON, etc.). Model/Field/Method nodes that were DEFINED_IN the stale module are NOT deleted by this query — they remain as orphan domain nodes. This is intentional: orphan domain nodes are inert (no DEFINED_IN edge to follow) and will be overwritten if the module re-appears.
 
 **Risk gate:** `--gc` only executes when the scanner returned ≥1 module for the repo+version. If the scanner returns 0 modules (filesystem permission error, empty repo, git error), GC is skipped with a WARNING log line. This prevents accidentally wiping all Module nodes when the scanner fails silently.
 
 **Rename caveat:** when a module dir is renamed (e.g. `addons/stock` → `addons/inventory`), both the old and new path appear in `git diff --name-only`. The scanner re-indexes the new path; `--gc` then detects the old path as absent from `live_paths` and DETACH DELETEs its Module node. Net result: one GC pass cleanly removes the stale orphan.
 
 **Recommendation:** run `--gc` monthly or after any module directory rename. `--full --gc` together is the safest cleanup (forces full re-scan of all modules + removes stale ones).
+
+**M13 extension — `__unresolved__` placeholder cleanup (also part of `--gc`):**
+
+`--gc` now also calls `gc_unresolved_placeholders(odoo_version)` after the Module GC step.
+The writer creates placeholder nodes (Model, View, QWebTmpl, OWLComp with
+`module='__unresolved__'` + `unresolved=true`) when a referenced parent has not yet been indexed.
+All MCP server queries already filter these at read time (`module <> '__unresolved__'`), so they are
+invisible to users but accumulate as graph bloat.
+
+`gc_unresolved_placeholders` DETACH DELETEs all such nodes scoped to the `odoo_version` being
+GC'd.  DETACH DELETE also removes incident `{unresolved:true}` edges.  The operation is:
+- **Safe:** no user-visible data is removed (server.py filters all of these at 30+ Cypher sites).
+- **Idempotent:** returns zero on a clean graph.
+- **Scoped by odoo_version:** cross-tenant/cross-version data is never touched.
+
+Companion writer fix (also M13): View and QWebTmpl placeholder MERGEs now use the same 2-property
+key `{xmlid, odoo_version}` as the real node MERGE — eliminating "shadow" node pairs where the old
+3-property key `{xmlid, module:'__unresolved__', odoo_version}` produced a duplicate when the real
+node was later indexed.  The writer fix prevents new shadows going forward; the gc cleanup removes
+existing ones.  A one-time ops script (`ops/cleanup_unresolved_placeholders.cypher`) clears the
+existing prod backlog without waiting for the next `--gc` run.
 
 ### D6 — Auto-reseed gated via `_SeedMeta` Neo4j sentinel + sha256
 
@@ -136,6 +157,7 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 - `tests/test_pipeline_seed_integration.py` — D6 wired into index_profile
 - `tests/test_indexer_gc.py` — D5 GC flag: delete renamed module, risk gate, default-off
 - `tests/test_dual_store_integrity.py` — D6-split invariants: --no-embed sets only patterns_neo4j, embedder=None leaves patterns_pgvector absent, legacy sentinel fallback, divergence detection
+- `tests/test_gc_unresolved_placeholders.py` — D5 M13 extension: no shadow View after writer fix; gc_unresolved_placeholders removes placeholders, preserves real nodes, is idempotent, scoped by version
 
 ## Out of scope (recorded for future ADRs)
 

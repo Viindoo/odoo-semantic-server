@@ -347,16 +347,23 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     "unresolved INHERITS_VIEW: %s → %s (version %s) — parent view not indexed",
                     view.xmlid, view.inherit_xmlid, view.odoo_version,
                 )
+                # Placeholder MERGE uses the same 2-property key as the real View
+                # {xmlid, odoo_version} so that a subsequent real-View write converges
+                # on the SAME node (avoiding "shadow" duplicates — see gc_unresolved).
+                # ON CREATE stamps unresolved=true + module='__unresolved__';
+                # ON MATCH leaves those fields untouched so a real View node already
+                # indexed is never corrupted (only profile is merged in).
                 tx.run(f"""
                     MATCH (ext:View {{xmlid: $xmlid, odoo_version: $ver}})
-                    MERGE (placeholder:View {{xmlid: $inherit_xmlid,
-                                             module: '__unresolved__', odoo_version: $ver}})
+                    MERGE (placeholder:View {{xmlid: $inherit_xmlid, odoo_version: $ver}})
                     ON CREATE SET placeholder.unresolved = true,
+                                  placeholder.module = '__unresolved__',
                                   placeholder.profile = $profiles
                     ON MATCH  SET placeholder.profile =
                         [x IN coalesce(placeholder.profile, [])
                          WHERE NOT x IN $profiles] + $profiles
-                    MERGE (ext)-[:{REL_INHERITS_VIEW} {{unresolved: true}}]->(placeholder)
+                    MERGE (ext)-[r:{REL_INHERITS_VIEW}]->(placeholder)
+                    ON CREATE SET r.unresolved = true
                 """, xmlid=view.xmlid, ver=view.odoo_version,
                      inherit_xmlid=view.inherit_xmlid, profiles=profiles)
 
@@ -389,16 +396,20 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     "unresolved EXTENDS_TMPL: %s → %s (version %s) — base template not indexed",
                     qweb.xmlid, qweb.inherit_xmlid, qweb.odoo_version,
                 )
+                # Same key-convergence fix as View: use 2-property MERGE key
+                # {xmlid, odoo_version} to prevent shadow QWebTmpl nodes when the
+                # real template is indexed before or after the placeholder.
                 tx.run("""
                     MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-                    MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid,
-                                                 module: '__unresolved__', odoo_version: $ver})
+                    MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
                     ON CREATE SET placeholder.unresolved = true,
+                                  placeholder.module = '__unresolved__',
                                   placeholder.profile = $profiles
                     ON MATCH  SET placeholder.profile =
                         [x IN coalesce(placeholder.profile, [])
                          WHERE NOT x IN $profiles] + $profiles
-                    MERGE (ext)-[:EXTENDS_TMPL {unresolved: true}]->(placeholder)
+                    MERGE (ext)-[r:EXTENDS_TMPL]->(placeholder)
+                    ON CREATE SET r.unresolved = true
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                      inherit_xmlid=qweb.inherit_xmlid, profiles=profiles)
 
@@ -1194,6 +1205,63 @@ class Neo4jWriter:
                 live_paths=list(live_paths),
             ).single()
         return row["n"] if row is not None else 0
+
+    def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
+        """DETACH DELETE inert '__unresolved__' placeholder nodes for odoo_version.
+
+        Placeholder nodes are created when the writer encounters a reference to
+        a Model / View / QWebTmpl / OWLComp that has not been indexed yet (parent
+        not found at write time).  All queries in server.py already filter these
+        out at read time (``module <> '__unresolved__'`` / ``coalesce(unresolved,
+        false) = false``), so they are invisible to users.  Over time they
+        accumulate (2,068 on prod as of 2026-05-26) and produce "shadow" View
+        pairs when the real View is later indexed against the old 3-key MERGE.
+
+        This method deletes ALL placeholder nodes that carry ``unresolved=true``
+        AND ``module='__unresolved__'``, scoped strictly to ``odoo_version``.
+        DETACH DELETE removes incident edges (the ``{unresolved:true}`` relation
+        edges) along with the node — no orphan edges remain.
+
+        Safety argument:
+        - server.py filters every placeholder at read time → deleting them
+          changes nothing visible to MCP clients or the Web UI.
+        - Scoped by ``odoo_version`` so cross-version/tenant data is never touched.
+        - Idempotent: a second run returns zeros.
+        - This is the companion cleanup for the writer fix (ADR-0007 §D5 extension)
+          that closes the shadow-View producer going forward; this gc removes
+          existing stale placeholders on the current graph.
+
+        Returns a dict with per-label deleted counts, e.g.::
+
+            {"Model": 260, "View": 629, "QWebTmpl": 373, "OWLComp": 806}
+        """
+        counts: dict[str, int] = {}
+        labels = ["Model", "View", "QWebTmpl", "OWLComp"]
+        with self.driver.session() as session:
+            for label in labels:
+                row = session.run(
+                    f"""
+                    MATCH (n:{label})
+                    WHERE n.odoo_version = $version
+                      AND n.module = '__unresolved__'
+                      AND coalesce(n.unresolved, false) = true
+                    DETACH DELETE n
+                    RETURN count(n) AS deleted
+                    """,
+                    version=odoo_version,
+                ).single()
+                counts[label] = row["deleted"] if row is not None else 0
+                if counts[label] > 0:
+                    _logger.info(
+                        "Placeholder GC: deleted %d __unresolved__ %s nodes for version %s",
+                        counts[label], label, odoo_version,
+                    )
+        total = sum(counts.values())
+        _logger.info(
+            "Placeholder GC complete for version %s: %d total nodes deleted %s",
+            odoo_version, total, counts,
+        )
+        return counts
 
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,
