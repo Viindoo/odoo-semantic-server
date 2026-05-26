@@ -51,6 +51,10 @@ Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
 Environment="TMPDIR=/var/tmp"
 Environment="BACKUP_DIR=/var/backups/odoo-semantic"
 EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# FERNET_KEY for the backup bundle (fernet.enc, ADR-0018) via systemd credential
+# store — see odoo-semantic-webui.service + deploy.md §12 (WI-7). PREREQUISITE:
+# /etc/credstore/FERNET_KEY must exist or this oneshot hard-fails (243/CREDENTIALS).
+LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
 # Pre-flight: wait up to 60s for Postgres to be ready (mirrors osm-ttl-cleanup,
 # issue #142). Exits non-zero on timeout → triggers Restart= below instead of
 # a hard fail. Override container name via $POSTGRES_CONTAINER in .env.

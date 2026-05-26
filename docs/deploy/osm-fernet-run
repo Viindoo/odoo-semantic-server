@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# osm-fernet-run — run an OSM CLI command (indexer / rotate-fernet / restore) with
+# FERNET_KEY delivered via the systemd credential store, the standards-compliant
+# way: the key stays root:root 0600 in /etc/credstore/FERNET_KEY and is delivered
+# to a TRANSIENT systemd unit (this run) by the service manager — NOT by widening
+# credstore permissions and NOT by putting the key in the environment file.
+#
+# Install: sudo install -m0755 docs/deploy/osm-fernet-run /usr/local/bin/osm-fernet-run
+#
+# Usage (MUST be root — `systemd-run --uid=` requires root):
+#   sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli index --profile ...
+#   sudo OLD_FERNET_KEY=... NEW_FERNET_KEY=... osm-fernet-run \
+#        /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet ...
+#
+# The transient unit runs as odoo-semantic, loads the same .env as the services
+# (PG_DSN, NEO4J_PASSWORD, …), and exposes $CREDENTIALS_DIRECTORY so src.crypto
+# resolves FERNET_KEY from the credstore (precedence: $CREDENTIALS_DIRECTORY/FERNET_KEY
+# → $FERNET_KEY). Works identically on Ubuntu 24.04 (systemd 255) and 26.04 (259).
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "osm-fernet-run: must run as root (systemd-run --uid needs root). Try: sudo $0 ..." >&2
+    exit 1
+fi
+
+exec systemd-run \
+    --uid=odoo-semantic --gid=odoo-semantic \
+    --pipe --wait --collect \
+    -p Type=exec \
+    -p LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY \
+    -p EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env \
+    -p Environment=HOME=/home/odoo-semantic \
+    --working-directory=/home/odoo-semantic/odoo-semantic-mcp \
+    "$@"

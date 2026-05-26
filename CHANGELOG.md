@@ -6,6 +6,33 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
 
+### Added — WI-7 FERNET credstore cut (feat/wi7-fernet-credstore-cut)
+
+- **[WI-7] FERNET key delivered via systemd credential store (webui+backup `LoadCredential`,
+  CLI via `osm-fernet-run`); removed from `.env`/`webui.env`. RLS enforcement still pending.**
+  - `docs/deploy/odoo-semantic-webui.service` — `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
+    now active (replaces the commented-out line from #185). Key lives root:root 0600 at
+    `/etc/credstore/FERNET_KEY`; PREREQUISITE: provision before enabling the unit
+    (missing source = 243/CREDENTIALS hard-fail, NOT a soft fallback).
+  - `docs/deploy/odoo-semantic-backup.service` — same `LoadCredential=` added; backup bundle
+    (`fernet.enc`, ADR-0018) now sourced from credstore.
+  - `docs/deploy/osm-fernet-run` (new, mode 0755) — `systemd-run -p LoadCredential=` wrapper
+    for ad-hoc CLI (indexer/rotate-fernet/restore); closes the CLI delivery gap; must run as root.
+  - `docs/adr/0020-fernet-key-delivery.md` — §5 and §6 updated: holistic cut realized;
+    "zero net hardening / commented out" caveat resolved; 243/CREDENTIALS hard-fail warning retained;
+    `$FERNET_KEY` env fallback for dev/non-systemd preserved.
+  - `docs/deploy.md §12` Option B — updated to final design: provision credstore with EXISTING
+    key, strict ordering, CLI via wrapper, 24.04+26.04 compatibility.
+  - `docs/deploy/install-runbook.md` — REQUIRED credstore-provision step added before
+    `systemctl enable --now` of webui/backup units.
+  - `docs/deploy/reindex-v8-v19-runbook.md §FERNET cutover` — updated from "commented out /
+    provision before uncommenting" to "LoadCredential now active; provision credstore as prerequisite".
+  - `docs/deploy/backup-runbook.md` — FERNET delivery section added; ad-hoc CLI via `osm-fernet-run`.
+  - `TASKS.md WI-7` — FERNET credstore sub-items marked `[x]` DONE; RLS sub-items remain `[ ]` pending.
+  - Prod unaffected until the /tmp ops scripts (credstore provision + restart sequence) run.
+  - RLS enforcement (`osm_reader`, `FORCE ROW LEVEL SECURITY`, DSN switch) explicitly OUT of
+    scope for this PR — separate effort requiring prior code changes.
+
 ### Fixed — webui unit LoadCredential decoupled (#185)
 
 - **`docs/deploy/odoo-semantic-webui.service`** — commented out
