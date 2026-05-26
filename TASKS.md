@@ -740,9 +740,9 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 - [x] **`odoo.tools` curated CoreSymbol coverage (ADR-0033)** — *(2026-05-22, PR #160 WI-4 — bundled in "reindex-prep DB-impact wave v8→v19")* 12 `spec_data/tools_symbols_X.0.json` files (v8-v19) curate version-aware `tool_export` CoreSymbols. `lookup_core_api("odoo.tools.SQL","16.0")` returns not-available; `"17.0"` returns stable. `_DEPRECATED_API_SYMBOLS` expanded: +4 image_resize_image* entries (removed v13) + `pycompat` (dropped `__init__` v19) = 19 total. `safe_eval` dedup: parsed CoreSymbol wins over curated (WI-4 review fix). Test: `test_parser_tools_symbols.py` + `test_tools_symbols_integration.py`. See `docs/adr/0033-odoo-tools-symbol-coverage.md`.
 
-- [ ] **Production reindex v8→v19 (DB-impact wave)** — OPS work after PR #160 deploys. Admin must run the full reindex sequence per `docs/deploy/reindex-v8-v19-runbook.md`. Covers: index-core v8-v19 (tools symbols, LESS nodes, CLICommand v8/v9, lint rules ≥50, field_type v18/v19 fix); index-repo --all --full (LESS nodes + mth.depends backfill); Cypher cleanup (OWLComp pre-v14 + snap_mod); reembed-stubs per profile. **Do NOT mark done until admin confirms runbook completion.**
+- [x] **Production reindex v8→v19 (DB-impact wave)** — *(COMPLETED 2026-05-25, confirmed 2026-05-26)* Full reindex sequence per `docs/deploy/reindex-v8-v19-runbook.md` run on prod. Result: 591,108 embeddings confirmed live; OWLComp pre-v14 stubs cleaned. Post-reindex graph verified clean (2026-05-26): stale_stylesheets=0, stale_violations=0 (`ops/cleanup_absolute_path_nodes.cypher` predicate), pgvector `file_path LIKE '/%'`=0 — ADR-0037 cleanup satisfied. Do NOT re-run — 16h operation, already complete.
 
-**feat/osm-final-stretch enrichment wave (code-complete, reindex pending):**
+**feat/osm-final-stretch enrichment wave (code-complete, reindex DONE):**
 
 - [x] **A1 — v19 ORM curated coverage:** `Command` preserved at `odoo.fields.Command` (resolved via `orm/commands.py`); `Domain`/`DomainAnd`/`DomainOr` (`orm/domains.py`) and `TableObject`/`Constraint`/`Index`/`UniqueIndex` (`orm/table_objects.py`) added to `_V19_CURATED_FILES`. Closes residual gap in ADR-0005 v19 coverage claim. (commit 997fa74)
 - [x] **A2 — Neo4j node/edge enrichment:** Module nodes gain `auto_install`/`application`/`category`/`external_python`/`external_bin`/`repo_url`/`repo_id` from manifest + repo provenance. Method nodes gain `docstring`. New edges: `USES_FIELD` (method→field from `self.<x>` access) and `DEPENDS_ON_FIELD` (from `@api.depends`). (commit a0fe0c0)
@@ -770,7 +770,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [x] **`FieldInfo.comodel_name` field** — extend dataclass in `src/indexer/models.py:28-35` with `comodel_name: str | None = None`. (2026-05-21, PR #156)
 - [x] **Parser extraction** — `src/indexer/parser_python.py`: for `fields.Many2one`/`One2many`/`Many2many` calls, extract first positional arg (the comodel string) and populate `FieldInfo.comodel_name`. Handle both era1 (text-regex `_columns` dict) and era2 (AST). (2026-05-21, PR #156)
 - [x] **Writer persist** — `src/indexer/writer_neo4j.py:182`: add `SET f.comodel_name = $comodel_name` clause when writing Field nodes. (2026-05-21, PR #156)
-- [ ] **Production reindex** — after migration deploys, run `python -m src.indexer index-repo --all --full` to populate `f.comodel_name` for existing Field nodes (otherwise queries return null). **Note:** ops follow-up — also backfills the new `mth.depends` (Phase 2). Run `index-repo --all --full` on prod.
+- [x] **Production reindex** — *(COMPLETED 2026-05-25 as part of full v8→v19 reindex, confirmed 2026-05-26)* `index-repo --all --full` was run on prod. `f.comodel_name` and `mth.depends` are populated. 591,108 embeddings confirmed live.
 
 ### Phase 1b — Data layer for validate_depends (Phase 2 prerequisite, shipped v0.8.0)
 
@@ -937,8 +937,8 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 - `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT
 - `[ ]` Tách read-DSN MCP tier sang `osm_reader` (**caveat:** code CHƯA đọc biến `PG_READ_DSN` riêng — override `PG_DSN` cho process MCP :8002, KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực)
 - `[ ]` FERNET credstore cut (`/etc/credstore/FERNET_KEY` — deploy.md §12 Option B)
-- `[ ]` Reindex v8→v19 đầy đủ (OPS, §5.11 gate)
-- `[ ]` Chạy `ops/cleanup_absolute_path_nodes.cypher` post-reindex
+- `[x]` Reindex v8→v19 đầy đủ (OPS, §5.11 gate) — DONE 2026-05-25; 591,108 embeddings; 48 repos; graph clean
+- `[x]` Post-reindex absolute-path cleanup (`ops/cleanup_absolute_path_nodes.cypher`) — graph verified clean 2026-05-26: stale_stylesheets=0, stale_violations=0, pgvector `file_path LIKE '/%'`=0
 - `[ ]` MED-2 forge known_hosts cho self-hosted git forge
 
 **ADR:** [`docs/adr/0038-tenant-rbac-web-ui-write-side.md`](docs/adr/0038-tenant-rbac-web-ui-write-side.md)
@@ -947,7 +947,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Milestone 13 — "Multi-Tenant Wow"
 
-**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. **Path portability active (feat/portable-paths, ADR-0037)** — stored paths are now repo-relative; `[repo]` output label shows git URL. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Remaining for M13 close:** production reindex v8→v19 (OPS, §5.11 gate must pass) + `ops/cleanup_absolute_path_nodes.cypher` post-reindex cleanup + WI-7 (FERNET secrets / RLS hardening).
+**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. **Path portability active (feat/portable-paths, ADR-0037)** — stored paths are now repo-relative; `[repo]` output label shows git URL. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Reindex v8→v19 DONE (2026-05-25): 591,108 embeddings; 48 repos; graph clean (0 stale absolute-path nodes); `ops/cleanup_absolute_path_nodes.cypher` run. Remaining for M13 close:** WI-7 (FERNET secrets / RLS hardening).
 
 > **v0.11.0 fix-wave (WG-1..WG-6):** Parser correctness v8-v19 (v9 Py2, field types, JS OWLComp/JSPatch, query.py path, NewId); writer schema (arch_snippet, F-5/F-8/F-12/F-13/V16-G2); 13-site tenant leak closed + leak test extended; query/render (F-4, list↔tree, file:line); enrichment (edition, summary, OWL widget pattern); bootstrap_versions.json corrected; ADR-0034/0005/runbook docs. See CHANGELOG.md `[0.11.0]`.
 > **v0.10.0 wave (PR #163):** P2 enforcement — WI-3 `resolve_tenant_scope` + WI-4 fail-closed own/shared filter at 61+4 Cypher + 3 pgvector sites + cross-tenant leak test (RELEASE GATE, PASSED). Plus Group A reindex-forcing enrichment (v19 core, docstring/manifest-deps/repo-provenance/USES_FIELD edges, Field.string/help, embeddings provenance m13_003) + Group B agent-convenient output + `module_inspect(method='dependencies')`. See CHANGELOG.md `[0.10.0]`.
@@ -1074,7 +1074,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
-| Path portability (ADR-0037) + post-reindex cleanup | | | `[ ]` run `ops/cleanup_absolute_path_nodes.cypher` + verify Neo4j `Stylesheet`/`LintViolation` absolute-path nodes = 0 AND `SELECT count(*) FROM embeddings WHERE file_path LIKE '/%'` = 0 |
+| Path portability (ADR-0037) + post-reindex cleanup | ✓ | 2026-05-25 | `[x]` post v8→v19 reindex graph verified clean (2026-05-26): Neo4j `Stylesheet`/`LintViolation` absolute-path nodes = 0; embeddings `file_path LIKE '/%'` = 0 |
 | Full sign-off | | | Phân phát key sau khi ký |
 
 ---
