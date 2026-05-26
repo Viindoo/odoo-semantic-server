@@ -7,10 +7,11 @@
 #   sudo systemctl enable osm-ttl-cleanup.timer
 #   sudo systemctl start osm-ttl-cleanup.timer
 #
-# Three M9-introduced tables pruned nightly:
+# Four tables pruned nightly (unbounded-growth guard):
 #   login_attempts       — rows older than 30 days (rate-limiting + audit)
 #   email_verifications  — rows where expires_at < NOW() - 7 days
 #   active_sessions      — rows where expires_at < NOW()
+#   admin_audit_log      — rows older than 90 days (ADR-0021 retention)
 #
 # Resilience (issue #142): up to 3 retries spaced 30s apart within a
 # 10-minute window. ExecStartPre polls `pg_isready` for up to 30s before
@@ -26,7 +27,7 @@
 # docs/deploy/install-runbook.md.
 
 [Unit]
-Description=OSM nightly TTL cleanup (login_attempts/email_verifications/active_sessions)
+Description=OSM nightly TTL cleanup (login_attempts/email_verifications/active_sessions/admin_audit_log)
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
@@ -43,8 +44,8 @@ EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
 # Pre-flight: wait up to 30s for Postgres to be ready. Exits non-zero on
 # timeout, which triggers Restart= below.
 ExecStartPre=/bin/sh -c 'timeout 30 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
-# Main cleanup: single psql session, three DELETE statements.
-ExecStart=/bin/sh -c 'docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} psql -U odoo_semantic -d odoo_semantic -v ON_ERROR_STOP=1 -c "DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL '"'"'30 days'"'"'; DELETE FROM email_verifications WHERE expires_at < NOW() - INTERVAL '"'"'7 days'"'"'; DELETE FROM active_sessions WHERE expires_at < NOW();"'
+# Main cleanup: single psql session, four DELETE statements.
+ExecStart=/bin/sh -c 'docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} psql -U odoo_semantic -d odoo_semantic -v ON_ERROR_STOP=1 -c "DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL '"'"'30 days'"'"'; DELETE FROM email_verifications WHERE expires_at < NOW() - INTERVAL '"'"'7 days'"'"'; DELETE FROM active_sessions WHERE expires_at < NOW(); DELETE FROM admin_audit_log WHERE created_at < NOW() - INTERVAL '"'"'90 days'"'"';"'
 Restart=on-failure
 RestartSec=30s
 StandardOutput=journal
