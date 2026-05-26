@@ -6,6 +6,18 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
 
+### Fixed — webui unit LoadCredential decoupled (#185)
+
+- **`docs/deploy/odoo-semantic-webui.service`** — commented out
+  `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` (was added in #173, caused
+  status=243/CREDENTIALS on prod where `/etc/credstore/FERNET_KEY` does not yet exist).
+  Root cause: systemd `LoadCredential` with a missing source is a **hard fail**, not a
+  soft fallback to `EnvironmentFile=`. Additionally, `src/cli.py` (indexer +
+  `rotate-fernet`) reads FERNET_KEY from env/`.env` only (no credential access), so
+  a webui-only LoadCredential provides zero net hardening while risking a boot failure.
+  The holistic WI-7 OPS cut (credstore + CLI coverage + `.env` removal) is the correct
+  path; env delivery is the uniform source until then. No code change; unit template + docs only.
+
 ### W0 (#174) — Admin gate + SIGNUP_ENABLED
 
 #### Added
@@ -106,8 +118,12 @@ Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count
   + `CREATE POLICY embeddings_tenant` dùng GUC `app.allowed_profiles` (sentinels: `'*'` = admin,
   `IS NULL` = shared, `= ANY(string_to_array(...))` = tenant). Policy wired vào read path MCP tier
   qua `SET LOCAL app.allowed_profiles` per request (code trong `src/mcp/server.py`).
-- **`docs/deploy/odoo-semantic-webui.service`** — thêm `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
-  (Option B preferred — xem `deploy.md §12`; `EnvironmentFile=` fallback vẫn còn).
+- **`docs/deploy/odoo-semantic-webui.service`** — `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
+  initially added (#173), then **commented out** (#185): a missing `/etc/credstore/FERNET_KEY`
+  hard-fails the unit at status=243/CREDENTIALS (NOT a soft fallback); `src/cli.py` (indexer +
+  `rotate-fernet`) also needs FERNET_KEY via env and has no systemd credential access — env
+  delivery is the uniform source for all consumers until WI-7 holistic OPS cut. The shipped
+  template uses `EnvironmentFile=` only; LoadCredential will be uncommented at cut time.
 
 #### Behaviour note
 Migration này là **no-op trên production cho đến khi OPS chạy runbook §5.14**: app connect

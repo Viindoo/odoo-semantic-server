@@ -1312,9 +1312,11 @@ Private key (SSH + TOTP secret) được encrypt bằng Fernet symmetric encrypt
 `src.crypto.get_fernet_key()` là single source of truth — resolution order:
 
 1. **`$CREDENTIALS_DIRECTORY/FERNET_KEY`** — systemd `LoadCredential` (preferred
-   cho new deployments; key không vào process env).
-2. **`$FERNET_KEY`** env var — fallback cho `EnvironmentFile=` deployments
-   (existing setups không cần thay đổi).
+   cho new deployments; key không vào process env). Webui service only.
+2. **`$FERNET_KEY`** env var — delivery method cho `EnvironmentFile=` deployments
+   (existing setups không cần thay đổi). **Đây là nguồn duy nhất cho CLI**
+   (`src/cli.py` — indexer + `rotate-fernet`): CLI chạy như plain process,
+   không có systemd credential access.
 
 **Option A — EnvironmentFile (existing deployments, tiếp tục hoạt động):**
 
@@ -1341,12 +1343,25 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 sudo chmod 0600 /etc/credstore/FERNET_KEY
 sudo chown odoo-semantic:odoo-semantic /etc/credstore/FERNET_KEY
 
-# 3. Thêm vào service unit:
+# 3. Uncomment LoadCredential in the installed service unit (the shipped template
+#    has it commented out — do NOT uncomment until step 2 is complete on this host):
 #    [Service]
 #    LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
 sudo systemctl daemon-reload
 sudo systemctl restart odoo-semantic-webui
 ```
+
+> ⚠️ **Hard-fail:** `LoadCredential` with a missing source hard-fails the unit
+> at status=243/CREDENTIALS — it is NOT a soft fallback to `EnvironmentFile=`.
+> Always complete step 2 (provision the credstore file) **before** step 3
+> (uncomment LoadCredential). The shipped `odoo-semantic-webui.service` template
+> ships with this line commented out for exactly this reason.
+>
+> ⚠️ **CLI gap:** `src/cli.py` (indexer + `rotate-fernet`) runs as a plain process
+> with no systemd credential access and reads FERNET_KEY from `.env` / the shell
+> environment. Switching the webui unit to Option B does NOT remove FERNET_KEY
+> from `.env`. A true holistic cut (WI-7) requires also ensuring CLI delivery and
+> removing FERNET_KEY from `.env` as one coordinated change.
 
 Dev mode (chạy `python -m src.web_ui` trực tiếp): export `FERNET_KEY` trong shell hoặc thêm vào `.env` rồi `set -a; source .env; set +a`.
 

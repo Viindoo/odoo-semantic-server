@@ -936,7 +936,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 - `[ ]` RLS FORCE cutover (`ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`)
 - `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT
 - `[ ]` Tách read-DSN MCP tier sang `osm_reader` (**caveat:** code CHƯA đọc biến `PG_READ_DSN` riêng — override `PG_DSN` cho process MCP :8002, KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực)
-- `[ ]` FERNET credstore cut (`/etc/credstore/FERNET_KEY` — deploy.md §12 Option B)
+- `[ ]` FERNET credstore cut (holistic WI-7: provision `/etc/credstore/FERNET_KEY` + uncomment LoadCredential in installed unit + cover CLI delivery + remove from `.env` — deploy.md §12 Option B; LoadCredential is commented out in shipped template pending this step)
 - `[x]` Reindex v8→v19 đầy đủ (OPS, §5.11 gate) — DONE 2026-05-25; 591,108 embeddings; 48 repos; graph clean
 - `[x]` Post-reindex absolute-path cleanup (`ops/cleanup_absolute_path_nodes.cypher`) — graph verified clean 2026-05-26: stale_stylesheets=0, stale_violations=0, pgvector `file_path LIKE '/%'`=0
 - `[ ]` MED-2 forge known_hosts cho self-hosted git forge
@@ -1043,14 +1043,21 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
     - GUC wiring (`SET LOCAL app.allowed_profiles` per request) in `src/mcp/server.py`.
     - `get_fernet_key()` / `get_fernet()` central getter (`src/crypto.py`) — two-source
       resolution: `$CREDENTIALS_DIRECTORY/FERNET_KEY` (LoadCredential) → `$FERNET_KEY` env.
-    - `docs/deploy/odoo-semantic-webui.service` — `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`.
+    - `docs/deploy/odoo-semantic-webui.service` — `LoadCredential` line is **commented out** in the shipped template (PR #185: missing `/etc/credstore/FERNET_KEY` hard-fails unit at 243/CREDENTIALS; CLI also needs FERNET via env → holistic cut required). Line will be uncommented at WI-7 OPS cut time.
     - ADR-0034 Amendment A4; reindex runbook §5.14; m13_001 comment update.
   - **OPS pending (runbook hand-off — chạy TAY trên prod sau deploy + reindex):**
     - `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT ON embeddings.
     - `[ ]` `ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`.
     - `[ ]` Trỏ `PG_DSN` của process MCP service (:8002) sang `osm_reader` (env riêng cho :8002; indexer/admin/migrate giữ DSN owner). Lưu ý: code CHƯA đọc biến `PG_READ_DSN` riêng — override `PG_DSN` cho process MCP, KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực.
     - `[ ]` Verify smoke + `pytest tests/test_embeddings_rls.py`.
-    - `[ ]` Cut FERNET_KEY vào `/etc/credstore/FERNET_KEY` (Option B — `deploy.md §12`).
+    - `[ ]` Holistic FERNET credstore cut (WI-7 OPS):
+      1. Provision `/etc/credstore/FERNET_KEY` (mode 0600, owned `odoo-semantic`).
+      2. Uncomment `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` in installed unit.
+      3. Ensure CLI delivery is also covered (CLI reads from env/`.env` — either keep
+         FERNET_KEY in `.env` for CLI use, or provide a wrapper that sets it from credstore).
+      4. Only then remove FERNET_KEY from plain `.env` (acceptance: prod không đọc từ plain env).
+      5. `systemctl daemon-reload && systemctl restart odoo-semantic-webui`.
+      See `deploy.md §12 Option B`.
   - Acceptance (full): prod không đọc `FERNET_KEY` từ plain env file; `osm_reader` bị
     filter bởi RLS; audit row emitted trên unscoped admin query.
   - Dependency: P1–P4 functional; full reindex v8→v19 (§5.11g phải pass trước).

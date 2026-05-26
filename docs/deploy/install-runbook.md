@@ -138,7 +138,18 @@ FERNET_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.ge
 WEBUI_SESSION_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 EOF
 sudo chown odoo-semantic:odoo-semantic /home/odoo-semantic/etc/webui.env
+```
 
+> **FERNET delivery note:** The shipped `odoo-semantic-webui.service` template
+> delivers `FERNET_KEY` via `EnvironmentFile=` (the `webui.env` file provisioned
+> above). The `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` line is
+> **intentionally commented out** in the shipped template — do NOT uncomment it
+> unless you have first provisioned `/etc/credstore/FERNET_KEY` on this host.
+> A missing credstore source hard-fails the unit at status=243/CREDENTIALS (NOT
+> a soft fallback). The credstore cut is the WI-7 OPS step; see `docs/deploy.md
+> §12 Option B` and `TASKS.md WI-7`.
+
+```bash
 # 4. Enable + start
 sudo systemctl enable --now odoo-semantic-mcp.service
 sudo systemctl enable --now odoo-semantic-webui.service
