@@ -1331,37 +1331,63 @@ sudo chown odoo-semantic:odoo-semantic /etc/odoo-semantic/webui.env
 sudo systemctl restart odoo-semantic-webui
 ```
 
-**Option B — LoadCredential (preferred cho new deployments):**
+**Option B — LoadCredential (WI-7 holistic cut — now the active shipped design):**
+
+The shipped `odoo-semantic-webui.service` and `odoo-semantic-backup.service` now carry
+**active** `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` directives. The CLI
+(indexer, `rotate-fernet`, `restore`) is covered by the `osm-fernet-run` wrapper.
+FERNET_KEY has been removed from `.env` / `webui.env`.
+
+**Deploy ordering — STRICT (provision credstore BEFORE enabling units):**
 
 ```bash
-# 1. Tạo credstore dir (chỉ một lần):
-sudo install -d -m 0700 -o odoo-semantic /etc/credstore
+# 1. Create credstore dir (once):
+sudo install -d -m 0700 -o root -g root /etc/credstore
 
-# 2. Lưu FERNET_KEY vào credstore:
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
-  | sudo tee /etc/credstore/FERNET_KEY > /dev/null
+# 2. Provision the EXISTING key (do NOT generate new — existing SSH/TOTP secrets
+#    encrypted under current key must stay decryptable):
+#    Retrieve <current-key> from your current webui.env / .env / secrets manager.
+echo "<current-base64-fernet-key>" | sudo tee /etc/credstore/FERNET_KEY > /dev/null
 sudo chmod 0600 /etc/credstore/FERNET_KEY
-sudo chown odoo-semantic:odoo-semantic /etc/credstore/FERNET_KEY
+sudo chown root:root /etc/credstore/FERNET_KEY
 
-# 3. Uncomment LoadCredential in the installed service unit (the shipped template
-#    has it commented out — do NOT uncomment until step 2 is complete on this host):
-#    [Service]
-#    LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
+# 3. Install the wrapper (CLI credential delivery):
+sudo install -m 0755 docs/deploy/osm-fernet-run /usr/local/bin/osm-fernet-run
+
+# 4. Remove FERNET_KEY from .env / webui.env (key is now in credstore only):
+#    sudo sed -i '/^FERNET_KEY=/d' /home/odoo-semantic/odoo-semantic-mcp/.env
+#    sudo sed -i '/^FERNET_KEY=/d' /home/odoo-semantic/etc/webui.env
+
+# 5. Reload + restart (credstore must be provisioned BEFORE this step):
 sudo systemctl daemon-reload
-sudo systemctl restart odoo-semantic-webui
+sudo systemctl restart odoo-semantic-webui odoo-semantic-backup.timer
 ```
 
-> ⚠️ **Hard-fail:** `LoadCredential` with a missing source hard-fails the unit
-> at status=243/CREDENTIALS — it is NOT a soft fallback to `EnvironmentFile=`.
-> Always complete step 2 (provision the credstore file) **before** step 3
-> (uncomment LoadCredential). The shipped `odoo-semantic-webui.service` template
-> ships with this line commented out for exactly this reason.
+> ⚠️ **Hard-fail — same as before:** `LoadCredential` with a missing source hard-fails
+> the unit at status=243/CREDENTIALS — it is NOT a soft fallback to `EnvironmentFile=`.
+> The credstore file MUST exist before the units are enabled/started. Operators on
+> env-only deployments may comment the `LoadCredential=` line via a drop-in override;
+> `src.crypto` still honors `$FERNET_KEY` env fallback for dev/non-systemd runs.
 >
-> ⚠️ **CLI gap:** `src/cli.py` (indexer + `rotate-fernet`) runs as a plain process
-> with no systemd credential access and reads FERNET_KEY from `.env` / the shell
-> environment. Switching the webui unit to Option B does NOT remove FERNET_KEY
-> from `.env`. A true holistic cut (WI-7) requires also ensuring CLI delivery and
-> removing FERNET_KEY from `.env` as one coordinated change.
+> ⚠️ **24.04/26.04 compatibility:** verified on Ubuntu 24.04 (systemd 255) and
+> 26.04 (systemd 259). The `osm-fernet-run` wrapper uses `systemd-run --uid=` which
+> requires root — always invoke via `sudo osm-fernet-run ...`.
+>
+> **CLI usage after cut:**
+> ```bash
+> # Indexer:
+> sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+>     -m src.cli index --profile ...
+> # rotate-fernet:
+> sudo OLD_FERNET_KEY=<old> NEW_FERNET_KEY=<new> osm-fernet-run \
+>     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet
+> # Backup service already has LoadCredential — just run via systemctl:
+> sudo systemctl start odoo-semantic-backup.service
+> ```
+>
+> Note: the /tmp ops scripts that provision the credstore and restart the units
+> on prod include gates and rollback — run those scripts rather than the raw commands
+> above on production.
 
 Dev mode (chạy `python -m src.web_ui` trực tiếp): export `FERNET_KEY` trong shell hoặc thêm vào `.env` rồi `set -a; source .env; set +a`.
 

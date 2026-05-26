@@ -86,64 +86,88 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
    ExecStart=...
    ```
 
-5. **Preferred systemd setup (via `LoadCredential`, new deployments).**
+5. **Preferred systemd setup via `LoadCredential` — now the active shipped design (WI-7 holistic cut realized).**
 
-   Keeps the key out of the process environment entirely (not visible in
-   `/proc/<pid>/environ`):
+   The key lives at `/etc/credstore/FERNET_KEY` (root:root 0600). Both the
+   `odoo-semantic-webui.service` and `odoo-semantic-backup.service` units ship
+   with an **active** (not commented-out) `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
+   directive. The ad-hoc CLI (indexer, `rotate-fernet`, `restore`) receives the key via
+   the `osm-fernet-run` wrapper (`systemd-run -p LoadCredential=`), which spawns a
+   transient unit as `odoo-semantic` with the credstore credential injected — NOT by
+   widening credstore permissions and NOT by keeping the key in the process environment.
+   `FERNET_KEY` has been removed from `.env` / `webui.env`.
 
    ```bash
-   # One-time setup:
-   sudo install -d -m 0700 -o odoo-semantic /etc/credstore
-   sudo install -m 0600 -o odoo-semantic /dev/stdin /etc/credstore/FERNET_KEY \
-     <<< "<base64-fernet-key>"
+   # One-time provision (MUST happen BEFORE enabling the webui or backup units):
+   sudo install -d -m 0700 -o root -g root /etc/credstore
+   # Reuse the existing key (do NOT generate a new one — existing SSH/TOTP secrets
+   # are encrypted under the current key and must remain decryptable):
+   echo "<current-base64-fernet-key>" | sudo tee /etc/credstore/FERNET_KEY > /dev/null
+   sudo chmod 0600 /etc/credstore/FERNET_KEY
+   sudo chown root:root /etc/credstore/FERNET_KEY
    ```
 
    ```ini
-   # /etc/systemd/system/odoo-semantic-webui.service
+   # /etc/systemd/system/odoo-semantic-webui.service  (shipped — active directive)
    [Service]
    LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
    ExecStart=...
    ```
 
-   The `src.crypto.get_fernet_key()` getter reads
-   `$CREDENTIALS_DIRECTORY/FERNET_KEY` when `CREDENTIALS_DIRECTORY` is set
-   by systemd.
-
-   > **⚠️ Hard-fail warning:** `LoadCredential` with a missing source file
-   > causes systemd to refuse to start the unit (exit code 243/CREDENTIALS).
-   > This is **not** a soft fallback — the unit will not fall back to the
-   > `EnvironmentFile=` path. Do NOT add `LoadCredential` to the shipped unit
-   > file until the credstore source (`/etc/credstore/FERNET_KEY`) has been
-   > provisioned on every host where the unit runs.
-   >
-   > **CLI consumer constraint:** `src/cli.py` (indexer + `rotate-fernet`)
-   > runs as a plain process with no systemd credential access. It reads
-   > FERNET_KEY from the environment / `.env` file regardless of whether the
-   > webui unit uses `LoadCredential`. Therefore, adding `LoadCredential`
-   > to the webui unit alone leaves FERNET_KEY in `.env` anyway — zero net
-   > hardening. The holistic WI-7 cut (credstore provisioning + ensuring
-   > CLI delivery + removing FERNET_KEY from `.env`) must be done as **one
-   > atomic change**. Until then, the shipped unit uses env delivery only.
-
-6. **CLI key delivery via env var (F13 + F15 — breaking removal in WI-7).**  
-   `rotate-fernet` uses only `--old-key-env` / `--new-key-env` (default:
-   `OLD_FERNET_KEY` / `NEW_FERNET_KEY`).  The flags `--old-key` / `--new-key`
-   are **removed** (they were deprecated in M9 ADR-0020 and promised removal
-   in M10; WI-7 completes this).
-
-   Recommended invocation:
-
    ```bash
-   OLD_FERNET_KEY=<old> NEW_FERNET_KEY=<new> \
-     python -m src.cli rotate-fernet
+   # CLI access (indexer / rotate-fernet / restore) — via osm-fernet-run wrapper:
+   sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+       -m src.cli index --profile ...
+   # For rotate-fernet (two keys needed — pass via env):
+   sudo OLD_FERNET_KEY=<old> NEW_FERNET_KEY=<new> osm-fernet-run \
+       /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet
    ```
 
-   Or with custom env var names:
+   The `src.crypto.get_fernet_key()` getter reads
+   `$CREDENTIALS_DIRECTORY/FERNET_KEY` when `CREDENTIALS_DIRECTORY` is set
+   by systemd (works identically on Ubuntu 24.04 / systemd 255 and 26.04 / 259).
+
+   > **⚠️ Hard-fail — still applies:** `LoadCredential` with a missing source file
+   > causes systemd to refuse to start the unit (exit code 243/CREDENTIALS).
+   > This is **not** a soft fallback to `EnvironmentFile=`. Provision
+   > `/etc/credstore/FERNET_KEY` **before** enabling or starting the webui/backup
+   > units. Operators on env-only deployments may comment the `LoadCredential=` line
+   > in a drop-in override (see install-runbook.md).
+   >
+   > **`$FERNET_KEY` env fallback preserved for dev/non-systemd:** `src.crypto`
+   > still honors `$FERNET_KEY` as a fallback when `CREDENTIALS_DIRECTORY` is not
+   > set — local dev and non-systemd operators are unaffected.
+
+6. **CLI key delivery via `osm-fernet-run` wrapper (WI-7 holistic cut — RESOLVED).**  
+   The holistic cut is now realized: `src/cli.py` (indexer + `rotate-fernet` + `restore`)
+   receives the FERNET key via the `osm-fernet-run` wrapper (`docs/deploy/osm-fernet-run`,
+   install to `/usr/local/bin/`). The wrapper uses `systemd-run -p LoadCredential=` to
+   spawn a transient unit as `odoo-semantic` with `CREDENTIALS_DIRECTORY` set — the key
+   is sourced from `/etc/credstore/FERNET_KEY` and never appears in the process environment
+   of the calling shell. FERNET_KEY has been removed from `.env` / `webui.env`.
+
+   The earlier "zero net hardening / commented out" caveat is **RESOLVED**: the shipped
+   units now carry active `LoadCredential=` directives, and the CLI delivery gap is closed
+   by `osm-fernet-run`. The `--old-key` / `--new-key` flags are **removed** (deprecated
+   in M9, removed in WI-7); scripts must use `--old-key-env` / `--new-key-env` (default:
+   `OLD_FERNET_KEY` / `NEW_FERNET_KEY`).
+
+   Recommended CLI invocations via wrapper:
 
    ```bash
+   # Indexer:
+   sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+     -m src.cli index --profile ...
+
+   # rotate-fernet (supply both keys via env vars, then via wrapper):
+   sudo OLD_FERNET_KEY=<old> NEW_FERNET_KEY=<new> osm-fernet-run \
+     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet
+
+   # With custom env var names:
    export MY_OLD_KEY=<old>
    export MY_NEW_KEY=<new>
-   python -m src.cli rotate-fernet \
+   sudo osm-fernet-run \
+     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.cli rotate-fernet \
      --old-key-env MY_OLD_KEY --new-key-env MY_NEW_KEY
    ```
 
@@ -254,10 +278,10 @@ rotation, suspected compromise, or operator departure).
 - **WI-7 breaking change:** `--old-key` / `--new-key` CLI flags are **removed**.
   Scripts that used these flags must switch to `--old-key-env` / `--new-key-env`
   (or the default `OLD_FERNET_KEY` / `NEW_FERNET_KEY` env vars).
-- **Backward compatibility:** deployments using `EnvironmentFile=` +
-  `FERNET_KEY=...` continue to work without any change. `LoadCredential` is
-  an opt-in upgrade, but it requires **provisioning the credstore source
-  first** — a missing source file hard-fails the unit at status=243/CREDENTIALS
-  (NOT a soft fallback). The holistic WI-7 cut must also cover the CLI consumer
-  (`src/cli.py`) which has no systemd credential access; see the hard-fail
-  warning in §Decision 5 above.
+- **WI-7 holistic cut shipped:** The shipped units now carry active `LoadCredential=`
+  directives (not commented-out). Operators on env-only deployments may comment the
+  `LoadCredential=` line via a drop-in override; `src.crypto` honors `$FERNET_KEY` env
+  as a fallback for dev / non-systemd contexts. A missing `/etc/credstore/FERNET_KEY`
+  still hard-fails the unit at status=243/CREDENTIALS (NOT a soft fallback) — provision
+  the credstore source **before** enabling units. CLI delivery gap is closed by
+  `osm-fernet-run` (see §Decision 6 above); FERNET_KEY has been removed from `.env`.

@@ -942,18 +942,21 @@ sudo systemctl restart odoo-semantic-mcp
 
 ### FERNET LoadCredential cutover
 
-> ⚠️ **Pre-requisite:** The shipped `odoo-semantic-webui.service` has
-> `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` **commented out**.
-> A missing credstore source hard-fails the unit (status=243/CREDENTIALS) —
-> it is NOT a soft fallback. Provision `/etc/credstore/FERNET_KEY` BEFORE
-> uncommenting that line in the installed unit.
+> **WI-7 holistic cut is now ACTIVE in the shipped unit templates.**
+> Both `odoo-semantic-webui.service` and `odoo-semantic-backup.service` ship with
+> `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` as an **active** directive.
+> CLI delivery is covered by the `osm-fernet-run` wrapper (`docs/deploy/osm-fernet-run`,
+> installed to `/usr/local/bin/`). FERNET_KEY has been removed from `.env`/`webui.env`.
 >
-> ⚠️ **Holistic cut required:** `src/cli.py` (indexer + `rotate-fernet`) reads
-> FERNET_KEY from the environment / `.env` file (no systemd credential access).
-> FERNET_KEY must stay in `.env` until the CLI delivery is also covered and
-> `.env` removal is done as one coordinated change.
+> ⚠️ **Hard-fail still applies:** A missing `/etc/credstore/FERNET_KEY` source
+> hard-fails the unit at status=243/CREDENTIALS (NOT a soft fallback). Provision
+> the credstore as a prerequisite BEFORE enabling or restarting the webui/backup units.
+>
+> ⚠️ **Provision the EXISTING key** — do NOT generate a new one. Existing SSH/TOTP
+> secrets are encrypted under the current key; reuse it at `/etc/credstore/FERNET_KEY`
+> (root:root 0600). See `docs/deploy.md §12` for the full step sequence.
 
-Xem `docs/deploy.md §12 Option B` để biết đầy đủ các bước cắt chuyển.
+Xem `docs/deploy.md §12` và `docs/adr/0020-fernet-key-delivery.md` để biết đầy đủ các bước cắt chuyển và CLI usage via `osm-fernet-run`.
 
 ---
 

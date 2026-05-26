@@ -38,6 +38,40 @@ sudo logrotate --debug /etc/logrotate.d/odoo-semantic
 
 ---
 
+## FERNET Key Delivery
+
+The backup bundle includes `fernet.enc` (SSH private keys + TOTP secrets encrypted at
+rest — ADR-0018). The `odoo-semantic-backup.service` unit now receives `FERNET_KEY` via
+the systemd credential store (WI-7 holistic cut):
+
+```ini
+# Active in the shipped unit:
+LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
+```
+
+The systemd timer (`odoo-semantic-backup.timer`) and the `systemctl start` manual run
+already have `LoadCredential` — no extra steps needed for the nightly or on-demand
+`systemctl start odoo-semantic-backup.service` path.
+
+For **ad-hoc CLI backup/restore** (debug or manual-run outside systemd), use
+`osm-fernet-run`:
+
+```bash
+# Manual backup via CLI:
+sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+    -m src.cli backup --output /var/backups/odoo-semantic/osm-manual-$(date +%Y%m%d-%H%M%S).tar.gz
+
+# Manual restore via CLI:
+sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+    -m src.cli restore /var/backups/odoo-semantic/osm-<YYYYMMDD>-<HHMMSS>.tar.gz
+```
+
+> ⚠️ **PREREQUISITE:** `/etc/credstore/FERNET_KEY` (root:root 0600) must exist before
+> enabling the backup unit or running `osm-fernet-run`. A missing source hard-fails
+> with status=243/CREDENTIALS. See `docs/deploy.md §12` + `docs/adr/0020`.
+
+---
+
 ## Environment Requirements
 
 Backup CLI cần `PG_DSN` để kết nối PostgreSQL. Có 2 cách cung cấp (theo thứ tự ưu tiên):

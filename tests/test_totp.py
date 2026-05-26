@@ -303,7 +303,7 @@ class TestLoginMfaRequiredForEnabledUser:
                     )
                     return resp
 
-        resp = asyncio.get_event_loop().run_until_complete(_test())
+        resp = asyncio.run(_test())
 
         # Cleanup
         with pg_conn.cursor() as cur:

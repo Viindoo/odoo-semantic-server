@@ -140,14 +140,27 @@ EOF
 sudo chown odoo-semantic:odoo-semantic /home/odoo-semantic/etc/webui.env
 ```
 
-> **FERNET delivery note:** The shipped `odoo-semantic-webui.service` template
-> delivers `FERNET_KEY` via `EnvironmentFile=` (the `webui.env` file provisioned
-> above). The `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` line is
-> **intentionally commented out** in the shipped template — do NOT uncomment it
-> unless you have first provisioned `/etc/credstore/FERNET_KEY` on this host.
-> A missing credstore source hard-fails the unit at status=243/CREDENTIALS (NOT
-> a soft fallback). The credstore cut is the WI-7 OPS step; see `docs/deploy.md
-> §12 Option B` and `TASKS.md WI-7`.
+> **FERNET credstore — REQUIRED step (WI-7 holistic cut):**
+> The shipped `odoo-semantic-webui.service` and `odoo-semantic-backup.service`
+> templates now carry **active** `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
+> directives (not commented-out). You MUST provision `/etc/credstore/FERNET_KEY`
+> **before** running `systemctl enable --now` on these units — a missing source
+> hard-fails the unit at status=243/CREDENTIALS (NOT a soft fallback to EnvironmentFile).
+>
+> ```bash
+> # Provision credstore BEFORE enabling units:
+> sudo install -d -m 0700 -o root -g root /etc/credstore
+> echo "<current-base64-fernet-key>" | sudo tee /etc/credstore/FERNET_KEY > /dev/null
+> sudo chmod 0600 /etc/credstore/FERNET_KEY
+> sudo chown root:root /etc/credstore/FERNET_KEY
+>
+> # Install the CLI wrapper (for indexer / rotate-fernet / restore):
+> sudo install -m 0755 docs/deploy/osm-fernet-run /usr/local/bin/osm-fernet-run
+> ```
+>
+> Operators on env-only deployments (no credstore) may comment the `LoadCredential=`
+> line via a drop-in override; `src.crypto` still honors `$FERNET_KEY` env for dev /
+> non-systemd runs. See `docs/deploy.md §12` and `docs/adr/0020-fernet-key-delivery.md`.
 
 ```bash
 # 4. Enable + start
