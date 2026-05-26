@@ -1085,6 +1085,11 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 > **Test discipline (per AI-Memory feedback):** any subagent touching `src/` in this milestone MUST run the Postgres integration suite (`pytest -m "(postgres or integration)"`), not just unit tests — and self-verify, don't trust subagent claims. The WI-4 cross-tenant leak test is the milestone release gate.
 
+- [ ] **M5 follow-up — fold field-level usage into `_compute_risk` + re-calibrate** (enhancement, separate PR)
+  - Context: `_compute_risk(view_count, method_count, js_count)` in `src/mcp/server.py:1367` labels HIGH/MEDIUM/LOW using only views + methods-with-super + js patches. The "Methods using this field" section (USES_FIELD edges, added v0.10.0/M13 A2) renders with a real count in the `impact_analysis` output header but is NOT fed into the risk score. Likewise "Compute-dependent methods" (DEPENDS_ON_FIELD) and "Dependent modules" are display-only. Design is intentional: thresholds were calibrated to macro-F1=1.0 on 25 cases (`test_calibration_eval.py`); dependent-modules signal is too coarse. Field-level filter note at `src/mcp/server.py:1636` says "not yet implemented (M5)".
+  - Task: add `uses_field_count` parameter to `_compute_risk`; fold USES_FIELD signal in; re-run `test_calibration_eval.py::test_risk_threshold_validation` against updated thresholds. No data change needed (USES_FIELD edges already in prod graph post full reindex 2026-05-25).
+  - Not a defect - all counts display correctly; only the 1-word label is conservative. Ship as standalone PR, not a gate for M13 close.
+
 ---
 
 ## Pre-launch Signoff
