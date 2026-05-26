@@ -290,5 +290,6 @@ def license_policy_action(license_value: str) -> str:
 # Maximum bytes served for odoo://stylesheet/{...} resources.
 # Large compiled CSS/Bootstrap bundles can exceed MCP response budget; per-file
 # SCSS sources are typically 2–20 KB so 128 KB is generous for real stylesheet
-# files while blocking accidental huge-file reads (ADR-0030 G5).
+# files while blocking accidental huge-file reads (ADR-0030 stylesheet resource;
+# output-gap G5).
 STYLESHEET_RESOURCE_MAX_BYTES: int = 131_072  # 128 KB

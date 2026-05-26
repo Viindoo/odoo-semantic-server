@@ -1302,8 +1302,15 @@ def test_resolve_method_override_chain_cap_contract(snapshot_db):
 # G3 contract — find_deprecated_usage overflow disclosure format
 # ---------------------------------------------------------------------------
 
-def test_find_deprecated_usage_overflow_disclosure_format(spec_snapshot_db):
-    """G3 contract: overflow message shows 'showing N of N+ hits (cap=N)' format."""
+def test_find_deprecated_usage_overflow_discloses_more_available(spec_snapshot_db):
+    """G3 contract: overflow line must disclose that results are capped and MORE
+    exist (a non-tautological lower-bound signal), plus carry a next-step hint.
+
+    Business rule (ADR-0023 §4): when the hit count exceeds the preview cap the
+    output must tell the AI client (a) only the first `cap` hits are shown and
+    (b) the true total is GREATER than `cap` — not the meaningless
+    "showing N of N+ (cap=N)" where all three numbers are identical.
+    """
     from src.constants import LIST_PREVIEW_MAX_ITEMS
     from src.mcp.server import _format_deprecated_usage
 
@@ -1327,14 +1334,21 @@ def test_find_deprecated_usage_overflow_disclosure_format(spec_snapshot_db):
     assert f"{LIST_PREVIEW_MAX_ITEMS}+" in result, (
         f"Header must show '{LIST_PREVIEW_MAX_ITEMS}+' when overflow=True"
     )
-    # Overflow line must mention count shown and cap
+    # Disclosure line must signal that this is the first `cap` and more remain.
     overflow_line = next(
-        (ln for ln in lines if "showing" in ln and "cap=" in ln), None
+        (ln for ln in lines if "showing" in ln and "more than" in ln), None
     )
     assert overflow_line is not None, (
-        "Missing 'showing N of N+ hits (cap=N)' disclosure line in overflow output."
+        "Missing capped-disclosure line conveying 'first N hits, more than N total'."
         " Lines:\n" + "\n".join(lines)
     )
+    assert f"first {LIST_PREVIEW_MAX_ITEMS} hits" in overflow_line, (
+        "Overflow line must state the cap as the count actually shown"
+    )
+    assert f"more than {LIST_PREVIEW_MAX_ITEMS} total" in overflow_line, (
+        "Overflow line must convey the true total exceeds the cap (lower bound)"
+    )
+    # Next-step hint preserved (ADR-0023 disclosure + drill-down).
     assert "kind" in overflow_line, (
         "Overflow line must include kind-filter hint"
     )

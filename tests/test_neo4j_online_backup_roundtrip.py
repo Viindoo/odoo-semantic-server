@@ -125,3 +125,120 @@ def test_export_restore_roundtrip(clean_backup_graph):
         assert eid_count == 0, (
             f"__eid__ cleanup failed: {eid_count} nodes still have __eid__ property"
         )
+
+
+def test_restore_onto_nonempty_graph_does_not_duplicate(clean_backup_graph):
+    """Business rule (FIX 1): restore REPLACES the graph — it must wipe existing
+    nodes first so restoring onto a non-empty graph does NOT duplicate.
+
+    The Cypher export replays CREATE (not MERGE) statements; without an upfront
+    wipe, a second restore (or a restore onto a live graph) would double every
+    node and relationship. This test seeds DIFFERENT pre-existing nodes, restores
+    the bundle, and asserts the final graph contains EXACTLY the bundle's nodes —
+    the pre-existing nodes are gone and there are no duplicates. It deliberately
+    does NOT call DETACH DELETE itself: the wipe must come from
+    _restore_neo4j_cypher, not the test fixture.
+    """
+    driver = clean_backup_graph
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cypher_path = Path(tmpdir) / "neo4j.cypher"
+
+        # _export_neo4j_online() captures the WHOLE graph (MATCH (n)), so the
+        # invariant is expressed relative to the exported set, not an absolute
+        # count — this is robust whether the instance is pristine or shared.
+        with driver.session() as session:
+            exported_nodes = session.run(
+                "MATCH (n) RETURN count(n) AS c"
+            ).single()["c"]
+            exported_rels = session.run(
+                "MATCH ()-[r]->() RETURN count(r) AS c"
+            ).single()["c"]
+
+        # Export the current graph (includes the 2 seeded test nodes + 1 rel).
+        ok, msg = _export_neo4j_online(cypher_path)
+        assert ok, f"Export failed: {msg}"
+
+        # Seed DIFFERENT nodes AFTER the export — these are NOT in the bundle, so
+        # a correct restore (wipe-first) must remove them; a buggy additive
+        # restore would leave them AND duplicate the exported nodes.
+        with driver.session() as session:
+            session.run(
+                "CREATE (:_BackupTestNode {name: '_StaleAfterExport1', value: -1})"
+            ).consume()
+            session.run(
+                "CREATE (:_BackupTestNode {name: '_StaleAfterExport2', value: -2})"
+            ).consume()
+
+        # Restore — internal wipe must run; NO manual DETACH DELETE here.
+        ok2, msg2 = _restore_neo4j_cypher(cypher_path)
+        assert ok2, f"Restore failed: {msg2}"
+
+        with driver.session() as session:
+            total_nodes = session.run(
+                "MATCH (n) RETURN count(n) AS c"
+            ).single()["c"]
+            total_rels = session.run(
+                "MATCH ()-[r]->() RETURN count(r) AS c"
+            ).single()["c"]
+            stale_left = session.run(
+                "MATCH (n:_BackupTestNode) "
+                "WHERE n.name IN ['_StaleAfterExport1', '_StaleAfterExport2'] "
+                "RETURN count(n) AS c"
+            ).single()["c"]
+
+        # Wipe-first restore reproduces EXACTLY the exported set (no doubling)
+        # and the post-export stale nodes are gone.
+        assert total_nodes == exported_nodes, (
+            f"Restore duplicated/leaked nodes: exported {exported_nodes}, "
+            f"got {total_nodes} after restore onto non-empty graph"
+        )
+        assert total_rels == exported_rels, (
+            f"Restore duplicated/leaked relationships: exported {exported_rels}, "
+            f"got {total_rels}"
+        )
+        assert stale_left == 0, (
+            f"Post-export stale nodes survived restore (wipe did not run): "
+            f"{stale_left} left"
+        )
+
+
+def test_export_node_with_no_serialisable_props_yields_valid_cypher(clean_backup_graph):
+    """Business rule (FIX 3): a node whose every property is None (no serialisable
+    props) must export to VALID Cypher — no leading-comma `CREATE (n:Label {, ...})`.
+
+    The export tags each node with __eid__; the guard must emit
+    `CREATE (n:Label {__eid__: ...})` (no stray comma) when props_cypher is empty,
+    so the file replays without a syntax error. We assert by round-tripping: a
+    node with only a None-valued property survives export → wipe → restore.
+    """
+    driver = clean_backup_graph
+
+    # Add a node whose only property is None → _props_to_cypher() returns "".
+    with driver.session() as session:
+        session.run(
+            "CREATE (:_BackupTestNode {name: 'NullProps', value: null})"
+        ).consume()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cypher_path = Path(tmpdir) / "neo4j.cypher"
+        ok, msg = _export_neo4j_online(cypher_path)
+        assert ok, f"Export failed: {msg}"
+
+        content = cypher_path.read_text(encoding="utf-8")
+        # No CREATE node statement may start its property map with a comma.
+        assert "{, " not in content, (
+            "Zero-prop node produced invalid leading-comma Cypher:\n" + content
+        )
+
+        # Round-trip proves the generated Cypher is replayable (parses + runs).
+        ok2, msg2 = _restore_neo4j_cypher(cypher_path)
+        assert ok2, f"Restore of zero-prop-node export failed (invalid Cypher?): {msg2}"
+
+        with driver.session() as session:
+            null_node = session.run(
+                "MATCH (n:_BackupTestNode {name: 'NullProps'}) RETURN count(n) AS c"
+            ).single()["c"]
+        assert null_node == 1, (
+            f"Zero-prop node not faithfully restored, got count={null_node}"
+        )

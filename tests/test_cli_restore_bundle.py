@@ -321,7 +321,12 @@ def test_bundle_with_legacy_neo4j_dump_prints_manual_note(tmp_path, monkeypatch,
 # ---------------------------------------------------------------------------
 
 def test_restore_neo4j_cypher_executes_statements(tmp_path, monkeypatch):
-    """_restore_neo4j_cypher must parse and execute non-comment statements."""
+    """_restore_neo4j_cypher must parse and execute non-comment statements.
+
+    FIX 1: restore is a REPLACE — it must run `MATCH (n) DETACH DELETE n` FIRST
+    (to avoid duplicating onto a non-empty graph) and then replay the file's
+    statements in order.
+    """
     monkeypatch.setenv("NEO4J_PASSWORD", "pw")
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
     monkeypatch.setenv("NEO4J_USER", "neo4j")
@@ -354,7 +359,16 @@ def test_restore_neo4j_cypher_executes_statements(tmp_path, monkeypatch):
         ok, msg = _restore_neo4j_cypher(cypher_file)
 
     assert ok, f"Expected success, got: {msg}"
-    assert len(executed) == 2, f"Expected 2 statements executed, got {len(executed)}: {executed}"
+    # The wipe must be the FIRST statement executed (replace, not merge).
+    assert executed[0] == "MATCH (n) DETACH DELETE n", (
+        f"Restore must DETACH DELETE the graph before replaying; got first "
+        f"statement {executed[0]!r}"
+    )
+    # Then the 2 file statements (CREATE + __eid__ cleanup) replay in order.
+    assert executed[1:] == [
+        "CREATE (n:Test {x: 1})",
+        "MATCH (n) WHERE n.__eid__ IS NOT NULL REMOVE n.__eid__",
+    ], f"File statements not replayed correctly: {executed[1:]}"
 
 
 def test_restore_neo4j_cypher_missing_password(tmp_path, monkeypatch):

@@ -83,7 +83,7 @@ def list_resources_index() -> list[dict[str, str]]:
     scope_params = _scope()
 
     with driver.session() as session:
-        versions = _fetch_indexed_versions(session)
+        versions = _fetch_indexed_versions(session, scope_params)
         for version in versions:
             version_entries = _fetch_top_models(session, version, scope_params)
             entries.extend(version_entries)
@@ -96,20 +96,46 @@ def list_resources_index() -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_indexed_versions(session) -> list[str]:
+def _fetch_indexed_versions(
+    session,
+    scope_params: dict | None = None,
+) -> list[str]:
     """Return all indexed Odoo versions, newest first (numeric sort).
 
     Excludes ``'unknown'`` and any non-semver strings (same filter as
     ``_latest_version()`` in server.py).
+
+    **R2 fix (ADR-0034):** applies the current tenant's own/shared scope
+    filter on the Module alias so a scoped tenant only discovers versions it
+    actually has data for. Admin (``$own IS NULL``) bypasses the filter and
+    sees every indexed version — identical mechanism to ``_fetch_top_models``.
+
+    Args:
+        scope_params: Dict with ``own`` and ``shared`` keys as returned by
+            ``_scope()`` in server.py.  Pass ``None`` to skip scope filtering
+            (admin / test contexts where server is not initialised).
     """
-    records = session.run("""
+    from src.mcp.server import _scope_pred  # type: ignore[import]
+
+    if scope_params is not None:
+        where_scope = f"AND {_scope_pred('m')}"
+        params: dict = {**scope_params}
+    else:
+        where_scope = ""
+        params = {}
+
+    records = session.run(
+        f"""
         MATCH (m:Module)
+        WHERE m.odoo_version <> 'unknown' AND m.odoo_version =~ '\\d+\\.\\d+'
+          {where_scope}
         WITH DISTINCT m.odoo_version AS v
-        WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
         RETURN v
         ORDER BY toInteger(split(v, '.')[0]) DESC,
                  toInteger(split(v, '.')[1]) DESC
-    """).data()
+        """,
+        **params,
+    ).data()
     return [r["v"] for r in records]
 
 

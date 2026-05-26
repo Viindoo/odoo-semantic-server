@@ -111,13 +111,15 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
         return False, "NEO4J_PASSWORD not set — skipping Neo4j export"
 
     uri, user, password = creds
+    # Single try/finally covers driver creation, verify_connectivity and use so
+    # the driver is always closed — even when verify_connectivity() raises.
+    driver = GraphDatabase.driver(uri, auth=(user, password))
     try:
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        driver.verify_connectivity()
-    except Exception as exc:
-        return False, f"Neo4j connection failed: {exc}"
+        try:
+            driver.verify_connectivity()
+        except Exception as exc:
+            return False, f"Neo4j connection failed: {exc}"
 
-    try:
         lines: list[str] = [
             f"// neo4j.cypher — exported {datetime.now(UTC).isoformat()}",
             "// Replay: cypher-shell -u <user> -p <pass> < neo4j.cypher",
@@ -139,10 +141,12 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
                 props = record["props"]
                 label_str = ":" + ":".join(lbls) if lbls else ""
                 props_cypher = _props_to_cypher(props)
-                # Tag node with __eid__ so relationship MATCH can locate it
-                lines.append(
-                    f"CREATE (n{label_str} {{{props_cypher}, __eid__: {json.dumps(eid)}}});"
-                )
+                # Tag node with __eid__ so relationship MATCH can locate it.
+                # Guard against a leading comma when the node has no serialisable
+                # properties (props_cypher == "") — symmetric with the rel branch.
+                inner = f"{props_cypher}, __eid__: {json.dumps(eid)}" if props_cypher \
+                    else f"__eid__: {json.dumps(eid)}"
+                lines.append(f"CREATE (n{label_str} {{{inner}}});")
                 node_count += 1
 
             # --- Export relationships ---
@@ -158,7 +162,7 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
                 rtype = record["rtype"]
                 props = record["props"]
                 props_cypher = _props_to_cypher(props)
-                rel_props = f" {{{props_cypher}}}" if props else ""
+                rel_props = f" {{{props_cypher}}}" if props_cypher else ""
                 lines.append(
                     f"MATCH (a {{__eid__: {json.dumps(aeid)}}}), "
                     f"(b {{__eid__: {json.dumps(beid)}}}) "
@@ -231,13 +235,15 @@ def _restore_neo4j_cypher(cypher_path: Path) -> tuple[bool, str]:
         return False, "NEO4J_PASSWORD not set — cannot restore Neo4j"
 
     uri, user, password = creds
+    # Single try/finally covers driver creation, verify_connectivity and use so
+    # the driver is always closed — even when verify_connectivity() raises.
+    driver = GraphDatabase.driver(uri, auth=(user, password))
     try:
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        driver.verify_connectivity()
-    except Exception as exc:
-        return False, f"Neo4j connection failed: {exc}"
+        try:
+            driver.verify_connectivity()
+        except Exception as exc:
+            return False, f"Neo4j connection failed: {exc}"
 
-    try:
         content = cypher_path.read_text(encoding="utf-8")
         # Split on semicolon-terminated lines; skip comments and blanks.
         statements: list[str] = []
@@ -256,6 +262,14 @@ def _restore_neo4j_cypher(cypher_path: Path) -> tuple[bool, str]:
         executed = 0
         errors: list[str] = []
         with driver.session() as session:
+            # Restore replays CREATE statements (not MERGE), so it is a
+            # replace operation: wipe the existing graph first to avoid
+            # duplicating every node/relationship onto a non-empty graph.
+            # The legacy offline path (neo4j-admin database load) was
+            # destructive by design; this preserves that contract.
+            print("Wiping existing Neo4j graph before restore...")
+            log.warning("Wiping existing Neo4j graph before Cypher restore")
+            session.run("MATCH (n) DETACH DELETE n").consume()
             for stmt in statements:
                 try:
                     session.run(stmt).consume()

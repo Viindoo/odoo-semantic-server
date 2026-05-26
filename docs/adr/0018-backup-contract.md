@@ -136,7 +136,16 @@ To restore from a bundle:
 1. **PostgreSQL:** `psql` the `postgres.sql` into a fresh database.
 2. **Neo4j (new bundles):** The `restore` command automatically loads
    `neo4j.cypher` via the Bolt driver when `NEO4J_PASSWORD` is set.
-   To replay manually: `cypher-shell -u neo4j -p <pass> < neo4j.cypher`.
+   **Restore is a REPLACE, not a merge:** the Cypher file replays `CREATE`
+   statements (not `MERGE`), so the restore first runs `MATCH (n) DETACH DELETE n`
+   to wipe the existing graph before replaying — otherwise restoring onto a
+   non-empty graph would duplicate every node and relationship. This preserves
+   the destructive semantics of the old offline `neo4j-admin database load`
+   path. A `Wiping existing Neo4j graph before restore...` line is printed to
+   stdout before the wipe.
+   To replay manually, wipe first then load:
+   `cypher-shell -u neo4j -p <pass> "MATCH (n) DETACH DELETE n"` then
+   `cypher-shell -u neo4j -p <pass> < neo4j.cypher`.
 3. **Neo4j (legacy bundles pre-2026-05-26):** `neo4j.dump` is present instead.
    Load via `neo4j-admin database load --from-path=/path neo4j` (requires DB offline).
    See `docs/deploy.md §Backup` for the offline load procedure.

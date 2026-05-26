@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_resource_tenant_isolation.py
-"""R5 — cross-tenant isolation tests for 5 odoo:// resource kinds.
+"""R5 — cross-tenant isolation tests for 6 odoo:// resource kinds.
 
 Verifies that the ``odoo://`` resource handlers (model, field, method, module,
-view) do NOT leak private-tenant data across tenant boundaries, both on the
-cache-MISS path (first read) AND the cache-HIT path (second read with same key).
+view, stylesheet) do NOT leak private-tenant data across tenant boundaries, both
+on the cache-MISS path (first read) AND the cache-HIT path (second read with
+same key).
 
 Why cache-HIT must be tested separately:
   Prior to the R1 fix, cache keys were global per-URI (no tenant dimension).
@@ -186,6 +187,15 @@ def world(clean_pg_embeddings, clean_neo4j):
                     vw.xpaths_exprs=[], vw.xpaths_positions=[]
                 """,
                 x=xmlid, v=V, p=profiles, model=model, mod=module,
+            )
+            # Stylesheet (carries profile[] → private-tenant stylesheet exists).
+            ss_path = f"addons/{module}/static/src/scss/secret.scss"
+            s.run(
+                """
+                MERGE (ss:Stylesheet {file_path:$fp, module:$mod, odoo_version:$v})
+                SET ss.profile=$p, ss.language='scss'
+                """,
+                fp=ss_path, mod=module, v=V, p=profiles,
             )
 
         _mk_module(f"{_PFX}acme_mod", [acme_p, base_p])
@@ -488,6 +498,76 @@ def test_resource_view_admin_and_tenant_cache_independent(world):
 
 
 # ---------------------------------------------------------------------------
+# FIX 5 — stylesheet resource isolation (odoo://version/stylesheet/...)
+#
+# Stylesheets carry a profile[] array, so a private-tenant stylesheet can exist.
+# Before FIX 5 the stylesheet handler used a plain per-URI cache key (no tenant
+# dimension), so an admin/other-tenant cache HIT could serve a foreign body
+# without re-running _render_stylesheet's _scope_pred. These tests cover both
+# the render-side scope (cache-MISS) and the cache-KEY tenant dimension.
+# ---------------------------------------------------------------------------
+
+_SS_FILE = "addons/{mod}/static/src/scss/secret.scss"
+
+
+def test_resource_stylesheet_no_cross_tenant_leak_cache_miss(world):
+    """Cache-MISS: acme cannot read globex's private stylesheet via odoo://stylesheet/."""
+    from src.mcp.resources import _render_stylesheet
+
+    _clear_resource_cache()
+    fp = _SS_FILE.format(mod=f"{_PFX}globex_mod")
+    with as_tenant(world["acme"]):
+        body, _ = _render_stylesheet(V, f"{_PFX}globex_mod", fp)
+    assert "not found" in body.lower(), (
+        f"CROSS-TENANT STYLESHEET RESOURCE LEAK (cache-MISS): {body!r}"
+    )
+
+
+def test_resource_stylesheet_no_cross_tenant_leak_cache_hit(world):
+    """Cache-HIT: second call must return the same scoped denial."""
+    from src.mcp.resources import _render_stylesheet
+
+    _clear_resource_cache()
+    fp = _SS_FILE.format(mod=f"{_PFX}globex_mod")
+    with as_tenant(world["acme"]):
+        _render_stylesheet(V, f"{_PFX}globex_mod", fp)
+        body, _ = _render_stylesheet(V, f"{_PFX}globex_mod", fp)
+    assert "not found" in body.lower(), (
+        f"CROSS-TENANT STYLESHEET RESOURCE LEAK (cache-HIT): {body!r}"
+    )
+
+
+def test_stylesheet_cache_key_is_tenant_scoped(world):
+    """FIX 5 core: the stylesheet cache key MUST carry a tenant dimension so a
+    cache HIT can never serve one tenant a body computed for another.
+
+    Before the fix the stylesheet handler keyed solely on the URI (tenant-blind),
+    so admin's cached body would be returned to a scoped tenant on HIT. This
+    asserts admin and tenant resolve to DISTINCT cache slots — identical to the
+    other 5 tenant-scoped kinds.
+    """
+    from src.mcp.resources import _tenant_cache_key
+
+    fp = _SS_FILE.format(mod=f"{_PFX}globex_mod")
+    entity = f"{_PFX}globex_mod/{fp}"
+    with as_tenant(None):
+        admin_key = _tenant_cache_key(V, "stylesheet", entity)
+    with as_tenant(world["acme"]):
+        acme_key = _tenant_cache_key(V, "stylesheet", entity)
+
+    assert admin_key != acme_key, (
+        "Stylesheet cache key is NOT tenant-scoped — admin and tenant share a "
+        f"cache slot (latent cross-tenant leak). admin={admin_key!r} acme={acme_key!r}"
+    )
+    assert admin_key.endswith("::t_admin"), (
+        f"admin stylesheet key missing ::t_admin dimension: {admin_key!r}"
+    )
+    assert "::t" in acme_key and not acme_key.endswith("::t_admin"), (
+        f"tenant stylesheet key missing per-tenant dimension: {acme_key!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # R2 — resources_index scope filter
 # ---------------------------------------------------------------------------
 
@@ -508,4 +588,63 @@ def test_resources_index_excludes_foreign_tenant_models(world):
     assert globex_model not in model_names, (
         f"R2 OVER-INCLUSIVE DISCOVERY: acme's resources/list includes "
         f"globex's private model {globex_model!r}: {model_names!r}"
+    )
+
+
+# A second indexed version that ONLY globex has data for — lets us prove that
+# version discovery (not just model discovery) is tenant-scoped (FIX 4).
+_V_GLOBEX_ONLY = "98.0"
+
+
+@pytest.fixture
+def world_with_globex_only_version(world, clean_neo4j):
+    """Augment `world` with a Module at version 98.0 carrying ONLY globex's
+    private profile — no acme, no shared profile. So acme must never discover
+    98.0, but admin must.
+    """
+    drv = clean_neo4j
+    with drv.session() as s:
+        s.run(
+            "MERGE (m:Module {name:$mod, odoo_version:$v}) "
+            "SET m.profile=$p, m.edition='community'",
+            mod=f"{_PFX}globex_only_mod", v=_V_GLOBEX_ONLY,
+            p=[world["globex_p"]],
+        )
+    yield world
+    with drv.session() as s:
+        s.run(
+            "MATCH (m:Module {name:$mod, odoo_version:$v}) DETACH DELETE m",
+            mod=f"{_PFX}globex_only_mod", v=_V_GLOBEX_ONLY,
+        )
+
+
+def test_fetch_indexed_versions_tenant_scoped(world_with_globex_only_version):
+    """FIX 4: _fetch_indexed_versions must be tenant-scoped.
+
+    Business rule: a scoped tenant only discovers Odoo versions it actually has
+    (own or shared) data for. Version 98.0 exists ONLY behind globex's private
+    profile, so acme must NOT see 98.0 in the discovery index, while admin
+    (unrestricted) must.
+    """
+    from src.mcp.resources_index import _fetch_indexed_versions
+    from src.mcp.server import _get_driver, _scope
+
+    # Scoped tenant (acme) — must NOT see the globex-only version.
+    with as_tenant(world_with_globex_only_version["acme"]):
+        scope_acme = _scope()
+        with _get_driver().session() as s:
+            acme_versions = _fetch_indexed_versions(s, scope_acme)
+    assert _V_GLOBEX_ONLY not in acme_versions, (
+        f"FIX 4 VERSION LEAK: acme discovered globex-only version "
+        f"{_V_GLOBEX_ONLY!r}: {acme_versions!r}"
+    )
+
+    # Admin (own=None) — must see every indexed version, including 98.0.
+    with as_tenant(None):
+        scope_admin = _scope()
+        with _get_driver().session() as s:
+            admin_versions = _fetch_indexed_versions(s, scope_admin)
+    assert _V_GLOBEX_ONLY in admin_versions, (
+        f"FIX 4 ADMIN BYPASS BROKEN: admin missing version {_V_GLOBEX_ONLY!r}: "
+        f"{admin_versions!r}"
     )

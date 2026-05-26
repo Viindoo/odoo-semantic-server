@@ -2053,14 +2053,14 @@ def _format_deprecated_usage(
         lines.append(f"{sub_indent}├─ uses: {sym} (status={status})")
         lines.append(f"{sub_indent}└─ replacement: {repl}")
     if overflow:
-        shown = len(records)
+        cap = len(records)  # truncated to LIST_PREVIEW_MAX_ITEMS by the caller
         more_hint = (
             f"find_deprecated_usage(odoo_version='{version}', kind=<kind>)"
             " to narrow by kind"
         )
         lines.append(
-            f"├─ ... showing {shown} of {shown}+ hits"
-            f" (cap={shown}) — use {more_hint}"
+            f"├─ ... showing first {cap} hits (more than {cap} total)"
+            f" — use {more_hint}"
         )
     lines.append(next_line)
     return "\n".join(lines)

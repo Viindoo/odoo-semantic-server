@@ -127,6 +127,11 @@ class Qwen3Embedder:
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        # ADR-0010 D7: histogram observation lives in the same critical section
+        # as `call_count += 1` so /metrics counter and histogram never reflect a
+        # torn intermediate state for a concurrent reader. (prometheus_client is
+        # itself thread-safe; co-locating under the lock keeps the two
+        # observability signals mutually consistent.)
         _hist = embedder_batch_duration_seconds.labels(embedder_type="qwen3")
         if len(texts) > self._MAX_BATCH:
             out: list[list[float]] = []
@@ -135,7 +140,8 @@ class Qwen3Embedder:
                 start = time.monotonic()
                 out.extend(self._embed_one(batch))
                 duration = time.monotonic() - start
-                _hist.observe(duration)
+                with self._lock:
+                    _hist.observe(duration)
                 _logger.debug("embed batch n=%d duration=%.2fs", len(batch), duration)
             with self._lock:
                 self.call_count += 1
@@ -143,10 +149,10 @@ class Qwen3Embedder:
         start = time.monotonic()
         result = self._embed_one(texts)
         duration = time.monotonic() - start
-        _hist.observe(duration)
-        _logger.debug("embed batch n=%d duration=%.2fs", len(texts), duration)
         with self._lock:
+            _hist.observe(duration)
             self.call_count += 1
+        _logger.debug("embed batch n=%d duration=%.2fs", len(texts), duration)
         return result
 
     def _embed_one(self, texts: list[str]) -> list[list[float]]:

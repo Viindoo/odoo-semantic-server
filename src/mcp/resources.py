@@ -25,6 +25,11 @@ short-circuits repeat reads.  Each handler resolves the ``{version}`` sentinel
 via :func:`_resolved_version_for` **before** forming the cache key, so two
 callers with different session versions (e.g., A→17.0, B→16.0) reading
 ``odoo://auto/model/sale.order`` receive correctly distinct cached bodies.
+The cache key also carries a tenant dimension (``::t{tenant_id}``, admin as
+``::t_admin``) for every tenant-scoped kind — model, field, method, module,
+view, and stylesheet — so a cache HIT can never serve one tenant a body that
+was computed for another (ADR-0034); only the global ``pattern`` kind is
+keyed by version alone. See :func:`_tenant_cache_key`.
 
 See ``docs/adr/0030-mcp-resources-uri-scheme.md`` for the design rationale and
 internal design notes (cross-server pattern: stable URI resources) for prior art.
@@ -202,10 +207,14 @@ def _tenant_cache_key(resolved_version: str, kind: str, entity: str) -> str:
     entries.  For realistic deployments (≤10 tenants, ≤100 popular models) this is
     well within budget.
 
-    Pattern and stylesheet resources are EXEMPT:
+    Only ``pattern`` resources are EXEMPT:
       - ``pattern`` — global spec data (no profile property); no tenant dimension needed.
-      - ``stylesheet`` — already uses ``_scope_pred`` in its Cypher query so the
-        body is already scoped; body is tenant-neutral for shared data.
+
+    Stylesheet resources DO use this key (FIX 5): although ``_render_stylesheet``
+    applies ``_scope_pred`` on a cache MISS, a plain per-URI key would let a
+    cache HIT return a previously-cached foreign-tenant body without re-running
+    that filter. Keying stylesheets per-tenant closes that latent leak — the
+    same dimension as model/field/method/module/view.
     """
     from src.mcp import server as _srv
 
@@ -619,7 +628,11 @@ def register_resources(mcp_instance) -> None:
         version: str, module: str, file_path: str,
     ) -> str:
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/stylesheet/{module}/{file_path}"
+        # Tenant-scoped cache key: stylesheets carry a profile[] array, so a
+        # private-tenant stylesheet can exist. A plain per-URI key would let a
+        # cache HIT bypass _render_stylesheet (and its _scope_pred filter),
+        # leaking a foreign tenant's body. Same dimension as the other 5 kinds.
+        key = _tenant_cache_key(resolved, "stylesheet", f"{module}/{file_path}")
         return cache.get_or_compute(
-            uri, lambda: _render_stylesheet(resolved, module, file_path),
+            key, lambda: _render_stylesheet(resolved, module, file_path),
         )[0]

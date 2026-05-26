@@ -140,7 +140,7 @@ Rationale for `dict` return in JSON (not list of tuples):
 
 ## Follow-up (M10 ops) — WI-A7 absorption
 
-### D7 (planned) — `embedder_batch_duration_seconds` Prometheus histogram
+### D7 (implemented — M10C) — `embedder_batch_duration_seconds` Prometheus histogram
 
 **Context:** D1's thread-safe `call_count` provides a per-run counter, and D3
 deferred Prometheus/OpenTelemetry to "a dedicated observability milestone". M10
@@ -148,16 +148,27 @@ ops is that milestone — Stripe billing requires per-tenant usage metering and
 the natural unit is "embed call latency", which feeds both billing (per-call
 cost projection) and SRE alerting (Ollama timeout regression).
 
-**Decision (when implemented):**
+**Decision (as implemented):**
 - Histogram metric `embedder_batch_duration_seconds` recorded once per `embed()`
-  batch call, labelled by `embedder_type` ∈ `{fake, qwen3}`.
-- Bucket boundaries `[0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0]` — chosen
-  from production indexer logs showing median batch ≈1.5s and P99 ≈8s.
+  batch call, labelled by `embedder_type` ∈ `{qwen3}`.
+  - Only the real `Qwen3Embedder` is instrumented. `FakeEmbedder` (the CI / test
+    double — no GPU, no network) is **intentionally not** instrumented: it must
+    not emit synthetic latency samples that would pollute the `/metrics` series a
+    production scraper reads. The `{fake}` label is therefore NOT part of the
+    contract.
+- Bucket boundaries `[0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0, 60.0]` —
+  the `0.1`…`30.0` band is chosen from production indexer logs showing median
+  batch ≈1.5s and P99 ≈8s; the trailing `60.0` bucket captures slow/near-timeout
+  batches (Ollama read timeout regime) so a latency-regression alert can fire on
+  the `30.0`–`60.0` band instead of dumping everything into `+Inf`.
 - Exposed via FastAPI `/metrics` endpoint (new route, mounted on the existing
   app — no separate Prometheus exporter sidecar).
 - Reuses D1's `threading.Lock` pattern for thread-safety under
-  `--max-workers > 1`; observation is taken inside the same critical section
-  as `call_count += 1`.
+  `--max-workers > 1`; the histogram observation is taken inside the same
+  critical section as `call_count += 1` so a concurrent `/metrics` scrape never
+  reads a torn counter/histogram pair. (`prometheus_client` is itself
+  thread-safe; co-locating under the lock is for mutual consistency of the two
+  signals, not for the histogram's own safety.)
 
 **Tracked in:** `TASKS.md` Milestone 10 § M10C item
 "Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram".
