@@ -109,6 +109,22 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
    `$CREDENTIALS_DIRECTORY/FERNET_KEY` when `CREDENTIALS_DIRECTORY` is set
    by systemd.
 
+   > **⚠️ Hard-fail warning:** `LoadCredential` with a missing source file
+   > causes systemd to refuse to start the unit (exit code 243/CREDENTIALS).
+   > This is **not** a soft fallback — the unit will not fall back to the
+   > `EnvironmentFile=` path. Do NOT add `LoadCredential` to the shipped unit
+   > file until the credstore source (`/etc/credstore/FERNET_KEY`) has been
+   > provisioned on every host where the unit runs.
+   >
+   > **CLI consumer constraint:** `src/cli.py` (indexer + `rotate-fernet`)
+   > runs as a plain process with no systemd credential access. It reads
+   > FERNET_KEY from the environment / `.env` file regardless of whether the
+   > webui unit uses `LoadCredential`. Therefore, adding `LoadCredential`
+   > to the webui unit alone leaves FERNET_KEY in `.env` anyway — zero net
+   > hardening. The holistic WI-7 cut (credstore provisioning + ensuring
+   > CLI delivery + removing FERNET_KEY from `.env`) must be done as **one
+   > atomic change**. Until then, the shipped unit uses env delivery only.
+
 6. **CLI key delivery via env var (F13 + F15 — breaking removal in WI-7).**  
    `rotate-fernet` uses only `--old-key-env` / `--new-key-env` (default:
    `OLD_FERNET_KEY` / `NEW_FERNET_KEY`).  The flags `--old-key` / `--new-key`
@@ -208,6 +224,12 @@ rotation, suspected compromise, or operator departure).
    systemctl restart odoo-semantic-webui
    ```
 
+   > **CLI note:** `src/cli.py` (including `rotate-fernet`) reads FERNET_KEY
+   > from the environment / `.env` file, not from the credstore. After updating
+   > the credstore and restarting the webui service, also update `FERNET_KEY`
+   > in the `.env` / `webui.env` file used by CLI invocations, then re-run
+   > the rotation command pointing at the new key.
+
 5. **Verify** the service starts without error:
    ```bash
    journalctl -u odoo-semantic-webui -n 20
@@ -234,4 +256,8 @@ rotation, suspected compromise, or operator departure).
   (or the default `OLD_FERNET_KEY` / `NEW_FERNET_KEY` env vars).
 - **Backward compatibility:** deployments using `EnvironmentFile=` +
   `FERNET_KEY=...` continue to work without any change. `LoadCredential` is
-  an opt-in upgrade.
+  an opt-in upgrade, but it requires **provisioning the credstore source
+  first** — a missing source file hard-fails the unit at status=243/CREDENTIALS
+  (NOT a soft fallback). The holistic WI-7 cut must also cover the CLI consumer
+  (`src/cli.py`) which has no systemd credential access; see the hard-fail
+  warning in §Decision 5 above.

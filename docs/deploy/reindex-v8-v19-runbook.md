@@ -942,8 +942,18 @@ sudo systemctl restart odoo-semantic-mcp
 
 ### FERNET LoadCredential cutover
 
-Xem `docs/deploy.md §12 Option B` để biết đầy đủ các bước cắt chuyển FERNET key từ
-plain env file sang systemd `LoadCredential` (đã có đầy đủ steps, không lặp lại ở đây).
+> ⚠️ **Pre-requisite:** The shipped `odoo-semantic-webui.service` has
+> `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` **commented out**.
+> A missing credstore source hard-fails the unit (status=243/CREDENTIALS) —
+> it is NOT a soft fallback. Provision `/etc/credstore/FERNET_KEY` BEFORE
+> uncommenting that line in the installed unit.
+>
+> ⚠️ **Holistic cut required:** `src/cli.py` (indexer + `rotate-fernet`) reads
+> FERNET_KEY from the environment / `.env` file (no systemd credential access).
+> FERNET_KEY must stay in `.env` until the CLI delivery is also covered and
+> `.env` removal is done as one coordinated change.
+
+Xem `docs/deploy.md §12 Option B` để biết đầy đủ các bước cắt chuyển.
 
 ---
 
