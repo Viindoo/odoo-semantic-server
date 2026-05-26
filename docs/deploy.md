@@ -737,15 +737,19 @@ sudo tee /etc/cron.d/odoo-semantic-reindex > /dev/null << 'EOF'
 0 * * * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all \
     --profile-workers 2 \
-    >> /var/log/odoo-semantic-reindex.log 2>&1
+    >> /var/log/odoo-semantic/odoo-semantic-reindex.log 2>&1
 
 # Monthly --full reindex để clean stale Module nodes từ rename/move (per ADR-0007).
 0 4 1 * * odoo-semantic ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --full \
-    >> /var/log/odoo-semantic-reindex.log 2>&1
+    >> /var/log/odoo-semantic/odoo-semantic-reindex.log 2>&1
 EOF
 ```
 
+> **Log dir:** tạo một lần `sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic`.
+> Reindex log ghi vào `/var/log/odoo-semantic/odoo-semantic-reindex.log` → được logrotate stanza
+> cover (xem `docs/deploy/logrotate.d/odoo-semantic`; bare `/var/log/...` cũ đã bỏ — followup #14).
+>
 > **M6 Wave 2 — incremental indexer:** `pipeline._index_repo` so sánh git HEAD với
 > `repos.head_sha` stored. Repo unchanged → zero-cost skip. Otherwise `git diff` để
 > filter scan results to changed modules only. `--profile-workers N` để index multi-version

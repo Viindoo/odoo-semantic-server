@@ -1,11 +1,18 @@
-/var/log/odoo-semantic-reindex.log {
-    weekly
-    rotate 4
-    compress
-    missingok
-    notifempty
-    create 640 odoo-semantic odoo-semantic
-}
+# Logrotate for Odoo Semantic MCP — install:
+#   sudo cp docs/deploy/logrotate.d/odoo-semantic /etc/logrotate.d/odoo-semantic
+#   sudo logrotate --debug /etc/logrotate.d/odoo-semantic   # verify it parses clean
+#
+# All application logs live under /var/log/odoo-semantic/ (directory owned by the
+# odoo-semantic system user) and backup logs under /var/backups/odoo-semantic/.
+# The periodic reindex cron (deploy.md §3.6) writes to
+# /var/log/odoo-semantic/odoo-semantic-reindex.log, so it is covered by the
+# directory glob below.
+#
+# NOTE (followup #14): a former dedicated stanza for the bare file
+# /var/log/odoo-semantic-reindex.log was removed. /var/log is world-writable, so
+# logrotate refuses to rotate a file there without an explicit `su` directive.
+# Relocating the reindex log into /var/log/odoo-semantic/ sidesteps the problem —
+# create the dir once: `sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic`.
 
 /var/log/odoo-semantic/*.log /var/backups/odoo-semantic/*.log {
     daily
