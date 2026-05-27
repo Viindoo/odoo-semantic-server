@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Regression tests for WI-B1: on_read_resource sets api_key_id thread-local.
+"""Regression tests for WI-B1: on_read_resource sets api_key_id ContextVar.
 
-Prior to WI-B1, the UsageLogMiddleware only set server._api_key_id_local.value
+Prior to WI-B1, the UsageLogMiddleware only set the _api_key_id_var ContextVar
 in on_call_tool but not in on_read_resource.  Resource reads therefore always
 resolved to the 'default' sentinel, bypassing the sticky-session version set
 via set_active_version().
@@ -14,18 +14,18 @@ WI-B1 added on_read_resource to UsageLogMiddleware (mirrors on_call_tool exactly
 This file verifies the contract at two levels:
 
 Level A (unit, no DB) — _set_server_api_key mechanics:
-  A1. Calling _set_server_api_key(key_id) sets server._api_key_id_local.value
+  A1. Calling _set_server_api_key(key_id) sets the _api_key_id_var ContextVar
       to key_id, and _get_api_key_id() returns it.
-  A2. Calling _set_server_api_key(None) clears the thread-local so
+  A2. Calling _set_server_api_key(None) clears the ContextVar so
       _get_api_key_id() falls back to 'default'.
-  A3. The on_read_resource hook sets the thread-local before delegating to
+  A3. The on_read_resource hook sets the ContextVar before delegating to
       call_next and clears it in finally (mirrors on_call_tool behaviour).
 
 Level B (integration, Neo4j) — sticky session through resource read:
-  B1. After setting server._api_key_id_local.value to an api_key that has
+  B1. After setting the _api_key_id_var ContextVar to an api_key that has
       a seeded session version (TEST_VERSION), reading a resource via the
       resource manager resolves to TEST_VERSION content, NOT to the default
-      sentinel fall-through.  This confirms the thread-local is respected by
+      sentinel fall-through.  This confirms the ContextVar is respected by
       _resolved_version_for inside the resource handler.
 
 DB isolation:
@@ -42,6 +42,22 @@ pytestmark = pytest.mark.neo4j
 RS_VERSION = "RS_99.0"
 RS_MODULE = "rs_sale"
 RS_MODEL = "rs.order"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_server_context_vars():
+    """Snapshot and restore the server ContextVars around each test so a bare
+    ``_api_key_id_var.set(...)`` in setup/teardown cannot leak into the next test
+    (token discipline — M3 from the PR #197 review)."""
+    from src.mcp import server as _srv
+
+    ak_token = _srv._api_key_id_var.set(_srv._api_key_id_var.get())
+    tid_token = _srv._tenant_id_var.set(_srv._tenant_id_var.get())
+    try:
+        yield
+    finally:
+        _srv._api_key_id_var.reset(ak_token)
+        _srv._tenant_id_var.reset(tid_token)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +189,7 @@ class TestSetServerApiKeyMechanics:
         )
 
     def test_set_clear_is_idempotent_when_already_unset(self) -> None:
-        """_set_server_api_key(None) on an already-unset thread-local must not raise."""
+        """_set_server_api_key(None) on an already-unset ContextVar must not raise."""
         from src.mcp import server as srv
         from src.mcp.tool_log_middleware import _set_server_api_key
 
@@ -187,12 +203,12 @@ class TestSetServerApiKeyMechanics:
 
 
 # ===========================================================================
-# Level A — on_read_resource hook sets and clears thread-local
+# Level A — on_read_resource hook sets and clears ContextVar
 # ===========================================================================
 
 
 class TestOnReadResourceHook:
-    """UsageLogMiddleware.on_read_resource sets thread-local before call_next
+    """UsageLogMiddleware.on_read_resource sets ContextVar before call_next
     and clears it in finally (mirrors on_call_tool behaviour for WI-B1)."""
 
     def setup_method(self) -> None:
@@ -204,12 +220,12 @@ class TestOnReadResourceHook:
         srv._api_key_id_var.set("default")
 
     def test_on_read_resource_sets_thread_local_during_call_next(self) -> None:
-        """on_read_resource propagates api_key_id into thread-local for call_next.
+        """on_read_resource propagates api_key_id into ContextVar for call_next.
 
         We simulate the middleware by:
         1. Creating a UsageLogMiddleware instance.
         2. Building a fake context whose HTTP request carries api_key_id on state.
-        3. Providing a call_next that captures the thread-local value during execution.
+        3. Providing a call_next that captures the ContextVar value during execution.
         4. Asserting the captured value matches the api_key_id from request.state.
         5. Asserting the value is cleared after on_read_resource returns.
         """
@@ -258,7 +274,7 @@ class TestOnReadResourceHook:
         )
 
     def test_on_read_resource_clears_thread_local_even_on_exception(self) -> None:
-        """on_read_resource clears thread-local even if call_next raises."""
+        """on_read_resource clears ContextVar even if call_next raises."""
         from src.mcp import server as srv
         from src.mcp.tool_log_middleware import UsageLogMiddleware
 
@@ -297,7 +313,7 @@ class TestOnReadResourceHook:
 
 
 class TestStickySessionThroughResourceRead:
-    """With api_key_id set in thread-local, resource reads pick up the sticky
+    """With api_key_id set in ContextVar, resource reads pick up the sticky
     session version instead of falling through to _latest_version().
 
     This is the end-to-end regression for WI-B1: before the fix, resource
@@ -308,17 +324,17 @@ class TestStickySessionThroughResourceRead:
     def test_resource_read_resolves_to_seeded_version_when_thread_local_set(
         self, rs_db, fresh_resources_module
     ) -> None:
-        """Reading odoo://RS_VERSION/model/RS_MODEL with thread-local set resolves correctly.
+        """Reading odoo://RS_VERSION/model/RS_MODEL with ContextVar set resolves correctly.
 
         Strategy:
           1. Patch _resolved_version_for to return RS_VERSION only when the
-             thread-local api_key_id equals 'rs-sticky-key-101'.
-          2. Set server._api_key_id_local.value = 'rs-sticky-key-101'.
+             ContextVar api_key_id equals 'rs-sticky-key-101'.
+          2. Set the _api_key_id_var ContextVar = 'rs-sticky-key-101'.
           3. Read the resource via the resource manager.
           4. Assert the body contains RS_VERSION (not some other version).
-          5. Clean up thread-local.
+          5. Clean up ContextVar.
 
-        This confirms that on_read_resource propagating the thread-local
+        This confirms that on_read_resource propagating the ContextVar
         makes _resolved_version_for pick up the sticky session version.
         """
         from fastmcp import FastMCP
@@ -353,14 +369,14 @@ class TestStickySessionThroughResourceRead:
 
         assert body, "Body must be non-empty"
         assert RS_VERSION in body, (
-            f"Body must contain RS_VERSION '{RS_VERSION}' when thread-local is set; "
+            f"Body must contain RS_VERSION '{RS_VERSION}' when ContextVar is set; "
             f"got: {body[:300]!r}"
         )
 
     def test_resource_read_without_thread_local_uses_default_path(
         self, rs_db, fresh_resources_module
     ) -> None:
-        """Without thread-local set, resource read uses anonymous fallback ('default').
+        """Without ContextVar set, resource read uses anonymous fallback ('default').
 
         Confirms the negative case: no sticky session → 'default' key_id →
         _resolved_version_for gets 'auto' → falls through to latest.
@@ -389,7 +405,7 @@ class TestStickySessionThroughResourceRead:
             body = _read_resource(mcp, uri)
         except Exception as exc:
             raise AssertionError(
-                f"Resource read without thread-local must not raise; got: {exc!r}"
+                f"Resource read without ContextVar must not raise; got: {exc!r}"
             ) from exc
 
         assert isinstance(body, str), "Body must be a string"

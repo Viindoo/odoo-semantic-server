@@ -12,8 +12,8 @@ Fix: replaced threading.local() with contextvars.ContextVar for _api_key_id_var
 and _tenant_id_var.  ContextVar gives each coroutine its own isolated copy.
 
 Tests:
-  1. threading.local propagation FAILS under asyncio concurrency (proves the
-     old code was broken — this test would FAIL on the pre-fix implementation).
+  1. threading.local wipe between concurrent coroutines — deterministic
+     reproduction (asyncio.Event) of the historical race the fix removes.
   2. ContextVar propagation PASSES under asyncio concurrency (proves the fix).
   3. _get_api_key_id() / _get_tenant_id() return real values when middleware
      sets them via the ContextVar bridge.
@@ -21,6 +21,8 @@ Tests:
   5. session.py set_active_version_db gracefully skips non-numeric api_key_id.
   6. session.py set_active_profile_db gracefully skips non-numeric api_key_id.
   7. session.py _fetch_from_db returns None for non-numeric api_key_id.
+  8. End-to-end: a REAL sync @mcp.tool reads the context through the real
+     UsageLogMiddleware via an in-memory fastmcp.Client (the genuine prod path).
 """
 
 from __future__ import annotations
@@ -45,12 +47,18 @@ class TestThreadingLocalRace:
     """
 
     @pytest.mark.asyncio
-    async def test_threading_local_leaks_between_concurrent_coroutines(self):
-        """threading.local is shared across coroutines in the same event-loop thread.
+    async def test_threading_local_wipe_between_concurrent_coroutines(self):
+        """threading.local is shared across coroutines in one event-loop thread.
 
-        When coroutine A's finally deletes the thread-local before coroutine B's
-        tool body reads it, B sees the 'default' sentinel — the root cause of the
-        production crash.
+        Deterministic reproduction of the production race (forced via
+        asyncio.Event, no reliance on scheduler timing): coroutine A sets the
+        shared thread-local and yields; coroutine B sets then *resets* (del) the
+        SAME shared thread-local in its finally; when A resumes it reads the
+        'default' sentinel because B's reset wiped A's value.  That sentinel is
+        exactly what fed ``int('default')`` in the session-write path and crashed
+        ``set_active_version`` on the live (concurrent) server.  ContextVar — the
+        fix — makes this impossible because each coroutine gets its own copy
+        (see TestContextVarPropagation).  This test documents the historical bug.
         """
         _local = threading.local()
 
@@ -66,27 +74,30 @@ class TestThreadingLocalRace:
         def _get():
             return getattr(_local, "value", "default")
 
-        async def simulate_request(key_id: int) -> str:
-            _set(key_id)      # middleware sets local
-            await asyncio.sleep(0)  # yield — other coroutines interleave
-            result = _get()   # tool body reads local
-            _set(None)        # middleware finally resets local
-            return str(result)
+        a_has_set = asyncio.Event()
+        b_has_reset = asyncio.Event()
 
-        results = await asyncio.gather(
-            simulate_request(1),
-            simulate_request(2),
-            simulate_request(3),
-        )
+        async def coro_a() -> str:
+            _set("A")                 # A: middleware sets the shared local
+            a_has_set.set()           # release B to run now
+            await b_has_reset.wait()  # B sets+resets the SAME local meanwhile
+            return _get()             # A: tool body reads — value wiped by B
 
-        # With threading.local(), cross-contamination DOES occur:
-        # at least one result will NOT match its expected key_id.
-        expected = ["1", "2", "3"]
-        # We assert the race is observable (proves the bug was real):
-        assert results != expected, (
-            "Expected threading.local() to exhibit cross-contamination under "
-            "concurrent asyncio coroutines.  If all results match, the test "
-            "setup may not be triggering the race."
+        async def coro_b() -> str:
+            await a_has_set.wait()    # run only after A has set its value
+            _set("B")                 # B overwrites the shared local
+            _set(None)                # B: finally-reset wipes the shared local
+            b_has_reset.set()         # release A to resume and read
+            return _get()
+
+        a_result, _b_result = await asyncio.gather(coro_a(), coro_b())
+
+        # Deterministic contamination: A set "A" but reads the sentinel because
+        # the thread-local is shared and B's reset wiped it — the exact mechanism
+        # of the prod crash (sentinel → int('default') → ValueError).
+        assert a_result == "default", (
+            f"threading.local cross-coroutine wipe expected: A set 'A' but should "
+            f"read the wiped sentinel; got {a_result!r}"
         )
 
 
@@ -382,3 +393,65 @@ class TestSessionNonNumericGuard:
             result = _fetch_from_db("not-an-int")
             assert result is None
             mock_conn.__enter__.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 8. End-to-end: a REAL sync @mcp.tool reads the context through the REAL
+#    UsageLogMiddleware via an in-memory fastmcp.Client.
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndSyncToolThroughMiddleware:
+    """Drive a real synchronous ``@mcp.tool`` through the real ``UsageLogMiddleware``
+    via an in-memory ``fastmcp.Client`` and assert the tool body sees the
+    authenticated ``api_key_id`` / ``tenant_id`` — not the ``'default'`` sentinel.
+
+    Unlike the ContextVar-mechanics tests above, this exercises the genuine
+    FastMCP middleware -> sync-tool-body boundary that ``set_active_version`` /
+    ``set_active_profile`` use in production.  It would catch a regression if a
+    future change (or FastMCP upgrade) ever broke context propagation across
+    that boundary again.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sync_tool_sees_real_context_via_middleware(self, monkeypatch):
+        from fastmcp import Client, FastMCP
+
+        import src.mcp.tool_log_middleware as tlm
+        from src.mcp.server import _get_api_key_id, _get_tenant_id
+        from src.mcp.tool_log_middleware import UsageLogMiddleware
+
+        # Fake the authenticated HTTP request that AuthMiddleware populates on
+        # request.state before the FastMCP handler runs.
+        fake_state = type(
+            "State", (), {"api_key_id": 4321, "tenant_id": 7, "key_prefix": "k_probe"}
+        )()
+        fake_req = type("Req", (), {"state": fake_state})()
+        monkeypatch.setattr(tlm, "get_http_request", lambda: fake_req)
+
+        # Silence the fire-and-forget usage-log insert (no DB pool in unit tests).
+        async def _noop(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(tlm, "_log_tool_call_async", _noop)
+
+        mcp = FastMCP("test-e2e-ctx")
+        mcp.add_middleware(UsageLogMiddleware())
+
+        @mcp.tool()
+        def probe_ctx() -> str:
+            # A REAL synchronous tool body — the same execution path used by
+            # set_active_version / set_active_profile.
+            return f"{_get_api_key_id()}|{_get_tenant_id()}"
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("probe_ctx", {})
+
+        # Robustly extract the returned string across fastmcp result shapes.
+        text = getattr(result, "data", None)
+        if not isinstance(text, str):
+            text = result.content[0].text
+        assert text == "4321|7", (
+            "sync tool body must see the authenticated context via ContextVar; "
+            f"got {text!r} (a '|default' / '|None' value means the bridge failed)"
+        )

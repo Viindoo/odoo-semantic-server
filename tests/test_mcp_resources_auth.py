@@ -50,6 +50,22 @@ FA_MODEL = "fa.order"
 pytestmark = pytest.mark.neo4j
 
 
+@pytest.fixture(autouse=True)
+def _isolate_server_context_vars():
+    """Snapshot and restore the server ContextVars around each test so a bare
+    ``_api_key_id_var.set(...)`` / ``_tenant_id_var.set(...)`` in any test cannot
+    leak into the next (token discipline — M3 from the PR #197 review)."""
+    from src.mcp import server as _srv
+
+    ak_token = _srv._api_key_id_var.set(_srv._api_key_id_var.get())
+    tid_token = _srv._tenant_id_var.set(_srv._tenant_id_var.get())
+    try:
+        yield
+    finally:
+        _srv._api_key_id_var.reset(ak_token)
+        _srv._tenant_id_var.reset(tid_token)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
