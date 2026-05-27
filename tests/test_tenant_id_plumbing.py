@@ -5,8 +5,8 @@ Covers:
   - AuthStore.verify_api_key_tenant: returns (key_id, tenant_id) or None.
   - AuthStore.create_api_key: persists optional tenant_id.
   - AuthMiddleware.dispatch: sets request.state.tenant_id from verify_api_key_tenant.
-  - server._get_tenant_id(): exposes _tenant_id_local, defaults to None.
-  - Tool-call/resource middleware wires tenant_id through thread-local.
+  - server._get_tenant_id(): reads _tenant_id_var (ContextVar), defaults to None.
+  - Tool-call/resource middleware wires tenant_id through the ContextVar bridge.
   - Legacy keys (tenant_id IS NULL) resolve to None throughout the chain.
   - Tool output unchanged (plumbing only).
 
@@ -137,7 +137,7 @@ class TestTenantCacheFunctions:
 
 
 class TestGetTenantIdAccessor:
-    """server._get_tenant_id() — thread-local accessor."""
+    """server._get_tenant_id() — ContextVar accessor."""
 
     def test_returns_none_when_not_set(self):
         from src.mcp.server import _get_tenant_id
@@ -148,18 +148,18 @@ class TestGetTenantIdAccessor:
         from src.mcp import server as _server
         from src.mcp.server import _get_tenant_id
 
-        _server._tenant_id_local.value = 42
+        token = _server._tenant_id_var.set(42)
         try:
             assert _get_tenant_id() == 42
         finally:
-            del _server._tenant_id_local.value
+            _server._tenant_id_var.reset(token)
 
     def test_returns_none_after_clear(self):
         from src.mcp import server as _server
         from src.mcp.server import _get_tenant_id
 
-        _server._tenant_id_local.value = 99
-        del _server._tenant_id_local.value
+        token = _server._tenant_id_var.set(99)
+        _server._tenant_id_var.reset(token)
         assert _get_tenant_id() is None
 
 
@@ -363,35 +363,46 @@ class TestMiddlewareSetsRequestStateTenantId:
 
 
 # ---------------------------------------------------------------------------
-# Thread-local wiring via UsageLogMiddleware
+# ContextVar wiring via UsageLogMiddleware
 # ---------------------------------------------------------------------------
 
 
 class TestSetServerTenantIdHelper:
-    """_set_server_tenant_id correctly populates / clears _tenant_id_local."""
+    """_set_server_tenant_id / _reset_server_tenant_id correctly set + restore
+    the _tenant_id_var ContextVar via the token returned by .set()."""
 
-    def test_set_populates_thread_local(self):
+    def test_set_populates_context_var(self):
         from src.mcp.server import _get_tenant_id
-        from src.mcp.tool_log_middleware import _set_server_tenant_id
+        from src.mcp.tool_log_middleware import (
+            _reset_server_tenant_id,
+            _set_server_tenant_id,
+        )
 
-        _set_server_tenant_id(77)
+        token = _set_server_tenant_id(77)
         try:
             assert _get_tenant_id() == 77
         finally:
-            _set_server_tenant_id(None)
+            _reset_server_tenant_id(token)
 
-    def test_clear_resets_to_none(self):
+    def test_reset_restores_to_none(self):
         from src.mcp.server import _get_tenant_id
-        from src.mcp.tool_log_middleware import _set_server_tenant_id
+        from src.mcp.tool_log_middleware import (
+            _reset_server_tenant_id,
+            _set_server_tenant_id,
+        )
 
-        _set_server_tenant_id(55)
-        _set_server_tenant_id(None)
+        token = _set_server_tenant_id(55)
+        _reset_server_tenant_id(token)
         assert _get_tenant_id() is None
 
-    def test_set_none_when_already_none_is_safe(self):
-        """Calling clear when not set must not raise."""
+    def test_set_none_then_reset_is_safe(self):
+        """Setting None (the default) then resetting must not raise."""
         from src.mcp.server import _get_tenant_id
-        from src.mcp.tool_log_middleware import _set_server_tenant_id
+        from src.mcp.tool_log_middleware import (
+            _reset_server_tenant_id,
+            _set_server_tenant_id,
+        )
 
-        _set_server_tenant_id(None)  # no-op, must not raise
+        token = _set_server_tenant_id(None)  # no-op value, must not raise
+        _reset_server_tenant_id(token)
         assert _get_tenant_id() is None

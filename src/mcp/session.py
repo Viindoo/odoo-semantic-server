@@ -234,6 +234,12 @@ def get_session_state(
 
 def _fetch_from_db(api_key_id: str) -> SessionState | None:
     """Execute the DB lookup.  Returns ``None`` if row absent or >24h old."""
+    # Non-numeric api_key_id (e.g. 'default' sentinel in tests / stdio) → no session.
+    try:
+        key_int = int(api_key_id)
+    except (ValueError, TypeError):
+        return None
+
     from src.mcp.server import _checkout_pg  # lazy import avoids circular dependency
 
     sql = """
@@ -245,7 +251,7 @@ def _fetch_from_db(api_key_id: str) -> SessionState | None:
     try:
         with _checkout_pg() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (int(api_key_id),))
+                cur.execute(sql, (key_int,))
                 row = cur.fetchone()
     except Exception:
         # Pool not initialised (test context / cold start) → treat as no session.
@@ -270,8 +276,24 @@ def set_active_version_db(api_key_id: str, odoo_version: str) -> None:
 
     Args:
         api_key_id: The API key identifier (string form of the integer PK).
+            If *api_key_id* is the sentinel ``'default'`` or any other
+            non-numeric string (e.g. tests, CLI, stdio transport), the persist
+            is silently skipped — no DB write, no error.
         odoo_version: A concrete version string such as ``"17.0"``.
     """
+    # Belt-and-suspenders guard: the 'default' sentinel means no authenticated
+    # key is in scope (unit tests, CLI, stdio transport, or a context-propagation
+    # gap).  Silently skip rather than crash with ValueError: invalid literal.
+    try:
+        key_int = int(api_key_id)
+    except (ValueError, TypeError):
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "set_active_version_db: non-numeric api_key_id %r — skipping persist",
+            api_key_id,
+        )
+        return
+
     sql = """
         INSERT INTO api_key_session_state (api_key_id, odoo_version, updated_at)
         VALUES (%s, %s, NOW())
@@ -283,7 +305,7 @@ def set_active_version_db(api_key_id: str, odoo_version: str) -> None:
 
     with _checkout_pg() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (int(api_key_id), odoo_version))
+            cur.execute(sql, (key_int, odoo_version))
 
     _cache_invalidate(api_key_id)
 
@@ -297,9 +319,22 @@ def set_active_profile_db(api_key_id: str, profile_name: str | None) -> None:
 
     Args:
         api_key_id: The API key identifier (string form of the integer PK).
+            If *api_key_id* is the sentinel ``'default'`` or any other
+            non-numeric string, the persist is silently skipped.
         profile_name: Profile name such as ``"my-erp-prod"``, or ``None``
             to clear the active profile.
     """
+    # Belt-and-suspenders guard: skip persist for non-numeric api_key_id.
+    try:
+        key_int = int(api_key_id)
+    except (ValueError, TypeError):
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "set_active_profile_db: non-numeric api_key_id %r — skipping persist",
+            api_key_id,
+        )
+        return
+
     sql = """
         INSERT INTO api_key_session_state (api_key_id, profile_name, updated_at)
         VALUES (%s, %s, NOW())
@@ -311,7 +346,7 @@ def set_active_profile_db(api_key_id: str, profile_name: str | None) -> None:
 
     with _checkout_pg() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (int(api_key_id), profile_name))
+            cur.execute(sql, (key_int, profile_name))
 
     _cache_invalidate(api_key_id)
 

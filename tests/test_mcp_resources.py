@@ -328,9 +328,9 @@ def test_auto_version_uses_session_state(
         set_active_version_db(F1_SESSION_KEY, F1_VERSION)
         session_cache.clear()
 
-        # 2. Pin the thread-local API key so resources read the right session.
+        # 2. Pin the ContextVar API key so resources read the right session.
         from src.mcp import server as _srv
-        _srv._api_key_id_local.value = F1_SESSION_KEY
+        token = _srv._api_key_id_var.set(F1_SESSION_KEY)
         try:
             # 3.  Read with sentinel 'auto' — must resolve to F1_VERSION.
             body = _read(
@@ -338,11 +338,8 @@ def test_auto_version_uses_session_state(
                 f"odoo://auto/model/{F1_MODEL}",
             )
         finally:
-            # Always release the thread-local.
-            try:
-                del _srv._api_key_id_local.value
-            except AttributeError:
-                pass
+            # Always reset the ContextVar.
+            _srv._api_key_id_var.reset(token)
 
     # Cleanup row.
     with pg_conn.cursor() as cur:

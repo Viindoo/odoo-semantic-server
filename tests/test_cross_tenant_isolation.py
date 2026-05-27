@@ -32,17 +32,16 @@ _PFX = "lt_"  # all rows created here use this prefix → easy, collision-free c
 
 @contextmanager
 def as_tenant(tenant_id):
-    """Pin the request thread-local to *tenant_id* (None = admin) for the block."""
+    """Pin the request ContextVar to *tenant_id* (None = admin) for the block."""
     from src.mcp import session
-    from src.mcp.server import _tenant_id_local
+    from src.mcp.server import _tenant_id_var
 
     session.invalidate_allowed_profiles()
-    old = getattr(_tenant_id_local, "value", None)
-    _tenant_id_local.value = tenant_id
+    token = _tenant_id_var.set(tenant_id)
     try:
         yield
     finally:
-        _tenant_id_local.value = old
+        _tenant_id_var.reset(token)
         session.invalidate_allowed_profiles()
 
 

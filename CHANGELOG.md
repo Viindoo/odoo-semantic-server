@@ -6,6 +6,34 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
 
+### Fixed — sync-tool context propagation: ContextVar replaces threading.local() (fix/sync-tool-context-propagation, #197)
+
+- **Bug:** `set_active_version` / `set_active_profile` crashed on the live server with
+  `invalid literal for int() with base 10: 'default'`. Root cause is a **coroutine race**, not a
+  worker-thread issue: asyncio multiplexes all concurrent requests on a single event-loop thread, so
+  the `threading.local()` (`_api_key_id_local` / `_tenant_id_local`) populated by `UsageLogMiddleware`
+  was **shared** across coroutines — one request's `finally` (`del .value`) wiped the value mid-flight
+  of another, so the sync tool body read the `'default'` sentinel → `int('default')`. FastMCP 2.14.7
+  runs sync `@mcp.tool` bodies inline on the event-loop thread (no `anyio.to_thread`), so a single
+  sequential request never crashed — only concurrent prod traffic + fire-and-forget log/audit tasks
+  triggered it.
+- **Fix:** `src/mcp/server.py` — `_api_key_id_var` / `_tenant_id_var` are now `contextvars.ContextVar`
+  (each coroutine gets its own copy; also propagates into `anyio.to_thread` if FastMCP ever offloads
+  sync tools). `src/mcp/tool_log_middleware.py` — `_set_server_*` return tokens; `on_call_tool` /
+  `on_read_resource` use token-reset in `finally`. `src/mcp/session.py` — belt-and-suspenders: a
+  non-numeric `api_key_id` (the `'default'` sentinel / stdio transport) now skips the DB op instead of
+  raising.
+- **Blast radius:** `_tenant_id_var` had the same race; it feeds RLS/tenant scoping. The fix closes a
+  latent fail-OPEN window (a tenant request whose `tenant_id` got wiped → `None` → unrestricted). With
+  the ContextVar fix each coroutine's tenant_id is isolated. `tenant_id=None` remains "global/admin key
+  by design", never "lost → leak". Pre-existing (session/middleware last touched by #171/#162/#155, not
+  the #191–196 cleanup wave).
+- **Tests:** `tests/test_context_propagation.py` — ContextVar isolation under `asyncio.gather`; a
+  deterministic (`asyncio.Event`) reproduction of the historical `threading.local` wipe; an
+  **end-to-end** test driving a real sync `@mcp.tool` through the real `UsageLogMiddleware` via an
+  in-memory `fastmcp.Client` (asserts the tool body sees the authenticated context, not `'default'`);
+  session non-numeric guards. 5 existing test files migrated to the `_var.set()/.reset(token)` API.
+
 ### Fixed — M13 heal stale unresolved flags on already-resolved nodes/edges (fix/m13-heal-resolved-unresolved-flags)
 
 - **`ops/cleanup_resolved_unresolved_flags.cypher`** (new) — one-time prod heal for the "Residual 2"
