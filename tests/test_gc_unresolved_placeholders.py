@@ -610,30 +610,146 @@ class TestHealResolvedUnresolvedFlags:
             "Genuine placeholder module must be unchanged after heal"
         )
 
-    def test_heal_version_scoped(self, writer, clean_neo4j, neo4j_driver):
-        """heal_resolved_unresolved_flags must NOT touch stale flags at other versions."""
-        other_version = "98.0"
+    def test_heal_does_not_clear_edge_to_genuine_placeholder(self, writer, clean_neo4j):
+        """The edge-heal predicate guards against touching edges whose target is a
+        genuine placeholder (module='__unresolved__').  This test exercises that guard.
 
-        with neo4j_driver.session() as session:
-            # Plant a stale-flag View node at other_version
+        Scenario: a real child View has an INHERITS_VIEW {unresolved:true} edge pointing
+        to a genuine placeholder View (module='__unresolved__', unresolved=true).
+        heal_resolved_unresolved_flags must report edges==0 AND the edge's unresolved
+        property must still be true — the target-module guard
+        ``coalesce(t.module,'')<>'__unresolved__'`` must protect it.
+        """
+        driver = clean_neo4j
+        child_xmlid = "sale.edge_guard_child"
+        placeholder_xmlid = "sale.edge_guard_placeholder"
+
+        with driver.session() as session:
+            # Real child (already resolved — module is a real value)
             session.run("""
-                MERGE (n:View {xmlid: $xmlid, odoo_version: $v})
-                SET n.module = 'sale', n.unresolved = true
-            """, xmlid="sale.other_ver_heal", v=other_version)
+                MERGE (child:View {xmlid: $c, odoo_version: $v})
+                SET child.module = 'sale_ext', child.name = 'Edge Guard Child'
+            """, c=child_xmlid, v=TEST_VERSION)
+            # Genuine placeholder: module='__unresolved__', unresolved=true
+            session.run("""
+                MERGE (ph:View {xmlid: $ph, odoo_version: $v})
+                SET ph.module = '__unresolved__', ph.unresolved = true
+                WITH ph
+                MATCH (child:View {xmlid: $c, odoo_version: $v})
+                MERGE (child)-[r:INHERITS_VIEW {unresolved: true}]->(ph)
+            """, ph=placeholder_xmlid, c=child_xmlid, v=TEST_VERSION)
 
+        result = writer.heal_resolved_unresolved_flags(TEST_VERSION)
+
+        # Node heal: the placeholder node is excluded (module='__unresolved__'); child
+        # has no unresolved flag set — so nodes healed must be 0.
+        assert result["nodes"] == 0, (
+            "heal must not touch the genuine placeholder node (module='__unresolved__')"
+        )
+        # Edge heal: the target-module guard must prevent clearing this edge.
+        assert result["edges"] == 0, (
+            "heal must not clear the edge whose target is a genuine placeholder "
+            "(module='__unresolved__').  The target-module guard is broken."
+        )
+        # The edge's unresolved property must still be true
+        edge_u = _edge_unresolved(driver, child_xmlid, "INHERITS_VIEW", placeholder_xmlid)
+        assert edge_u is True, (
+            "INHERITS_VIEW edge to genuine placeholder must still have unresolved=true "
+            "after heal — the target-module guard coalesce(t.module,'')<>'__unresolved__' "
+            "must protect it."
+        )
+
+    def test_heal_version_scoped(self, writer, clean_neo4j, neo4j_driver):
+        """heal_resolved_unresolved_flags must heal TEST_VERSION nodes/edges and leave
+        identical stale nodes/edges at another version completely untouched.
+
+        Previous version of this test only planted data at other_version and expected
+        result["nodes"]==0 — a total no-op would also pass.  This rewrite plants
+        healable data at BOTH versions so version-scoping is actually exercised.
+        """
+        other_version = "98.0"
+        cur_parent_xmlid = "sale.ver_scope_parent_cur"
+        cur_child_xmlid = "sale.ver_scope_child_cur"
+        oth_parent_xmlid = "sale.ver_scope_parent_oth"
+        oth_child_xmlid = "sale.ver_scope_child_oth"
+
+        # --- plant stale data at TEST_VERSION (should be healed) ---
+        with neo4j_driver.session() as session:
+            session.run("""
+                MERGE (parent:View {xmlid: $p, odoo_version: $v})
+                SET parent.module = 'sale', parent.unresolved = true
+                WITH parent
+                MERGE (child:View {xmlid: $c, odoo_version: $v})
+                SET child.module = 'sale_ext'
+                WITH child, parent
+                MERGE (child)-[r:INHERITS_VIEW {unresolved: true}]->(parent)
+            """, p=cur_parent_xmlid, c=cur_child_xmlid, v=TEST_VERSION)
+
+        # --- plant identical stale data at other_version (must NOT be touched) ---
         try:
-            result = writer.heal_resolved_unresolved_flags(TEST_VERSION)
-            # No nodes at TEST_VERSION to heal (clean graph)
-            assert result["nodes"] == 0
-
-            # The other-version node must still be unresolved=true
             with neo4j_driver.session() as session:
-                row = neo4j_driver.session().run(
+                session.run("""
+                    MERGE (parent:View {xmlid: $p, odoo_version: $v})
+                    SET parent.module = 'sale', parent.unresolved = true
+                    WITH parent
+                    MERGE (child:View {xmlid: $c, odoo_version: $v})
+                    SET child.module = 'sale_ext'
+                    WITH child, parent
+                    MERGE (child)-[r:INHERITS_VIEW {unresolved: true}]->(parent)
+                """, p=oth_parent_xmlid, c=oth_child_xmlid, v=other_version)
+
+            result = writer.heal_resolved_unresolved_flags(TEST_VERSION)
+
+            # TEST_VERSION data must be healed
+            assert result["nodes"] >= 1, (
+                "heal must report at least 1 node healed at TEST_VERSION"
+            )
+            assert result["edges"] >= 1, (
+                "heal must report at least 1 edge healed at TEST_VERSION"
+            )
+            with neo4j_driver.session() as session:
+                row = session.run(
                     "MATCH (n:View {xmlid: $xmlid, odoo_version: $v}) RETURN n.unresolved AS u",
-                    xmlid="sale.other_ver_heal", v=other_version,
+                    xmlid=cur_parent_xmlid, v=TEST_VERSION,
+                ).single()
+            assert not row["u"], (
+                "TEST_VERSION node must have unresolved=false after heal"
+            )
+            with neo4j_driver.session() as session:
+                row = session.run(
+                    """
+                    MATCH (s:View {xmlid: $c, odoo_version: $v})
+                          -[r:INHERITS_VIEW]->
+                          (t:View {xmlid: $p, odoo_version: $v})
+                    RETURN r.unresolved AS u
+                    """,
+                    c=cur_child_xmlid, p=cur_parent_xmlid, v=TEST_VERSION,
+                ).single()
+            assert not row["u"], (
+                "TEST_VERSION edge must have unresolved=false after heal"
+            )
+
+            # other_version data must be UNTOUCHED (still stale)
+            with neo4j_driver.session() as session:
+                row = session.run(
+                    "MATCH (n:View {xmlid: $xmlid, odoo_version: $v}) RETURN n.unresolved AS u",
+                    xmlid=oth_parent_xmlid, v=other_version,
                 ).single()
             assert row["u"] is True, (
                 "Node at other_version must not be touched by heal scoped to TEST_VERSION"
+            )
+            with neo4j_driver.session() as session:
+                row = session.run(
+                    """
+                    MATCH (s:View {xmlid: $c, odoo_version: $v})
+                          -[r:INHERITS_VIEW]->
+                          (t:View {xmlid: $p, odoo_version: $v})
+                    RETURN r.unresolved AS u
+                    """,
+                    c=oth_child_xmlid, p=oth_parent_xmlid, v=other_version,
+                ).single()
+            assert row["u"] is True, (
+                "Edge at other_version must not be touched by heal scoped to TEST_VERSION"
             )
         finally:
             with neo4j_driver.session() as session:

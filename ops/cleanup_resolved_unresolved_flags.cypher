@@ -1,7 +1,7 @@
 // Heal stale unresolved=true flags on already-resolved View/QWebTmpl nodes and
 // their incident edges.
 //
-// PROVENANCE: After the placeholder-key convergence fix (PR #194 / commit e6d2d68),
+// PROVENANCE: After the placeholder-key convergence fix (PR #194 / commit f4e9306),
 // View and QWebTmpl MERGE keys became {xmlid, odoo_version} — the same for
 // placeholders and real writes.  A real write now lands on the same node as its
 // former placeholder and clears unresolved=false going forward.
