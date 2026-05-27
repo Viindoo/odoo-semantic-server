@@ -1226,6 +1226,13 @@ class Neo4jWriter:
         DETACH DELETE removes incident edges (the ``{unresolved:true}`` relation
         edges) along with the node — no orphan edges remain.
 
+        After deleting placeholders this method also calls
+        :meth:`heal_resolved_unresolved_flags` as a defense-in-depth step
+        (ADR-0007 §D5 extension).  That sibling clears ``unresolved=true`` flags
+        that survived on already-resolved nodes/edges (stale artefacts from the
+        old placeholder path before PR #194) — making 153 prod nodes and 326
+        prod edges visible to MCP clients again.
+
         Safety argument:
         - server.py filters every placeholder at read time → deleting them
           changes nothing visible to MCP clients or the Web UI.
@@ -1265,7 +1272,89 @@ class Neo4jWriter:
             "Placeholder GC complete for version %s: %d total nodes deleted %s",
             odoo_version, total, counts,
         )
+        # Defense-in-depth: heal any stale unresolved=true flags on already-resolved
+        # nodes/edges that survived from the pre-PR-#194 placeholder path.
+        self.heal_resolved_unresolved_flags(odoo_version)
         return counts
+
+    def heal_resolved_unresolved_flags(self, odoo_version: str) -> dict[str, int]:
+        """Clear stale ``unresolved=true`` flags on already-resolved View/QWebTmpl nodes
+        and their incident edges, scoped to ``odoo_version``.
+
+        **Why these flags are stale.**  Before PR #194, View/QWebTmpl placeholder MERGE
+        keys used three properties (``{xmlid, module:'__unresolved__', odoo_version}``).
+        When the real node was later indexed the old real-write SET block updated
+        ``module=<real>`` but never cleared ``unresolved=true``.  The subsequent
+        ``ops/cleanup_unresolved_placeholders.cypher`` deleted nodes where
+        ``module='__unresolved__'``, but these nodes already had their module rewritten
+        to the real value — so they survived with ``module=<real>`` AND
+        ``unresolved=true``.  Their incident edges kept ``unresolved=true`` too.
+
+        **Correctness argument.**  A node with ``module <> '__unresolved__'`` was
+        written by a real indexer pass.  Its ``unresolved=true`` is an artefact of
+        the old placeholder path; clearing it restores the correct visible state.
+        An edge whose target has ``module <> '__unresolved__'`` is a resolved
+        relationship; its ``unresolved=true`` is likewise stale.
+
+        **Scope.**  Only ``View`` and ``QWebTmpl`` nodes are affected — their real
+        MERGE key is ``{xmlid, odoo_version}`` (no module), so a real write can
+        converge onto a former placeholder.  ``Model`` / ``OWLComp`` include
+        ``module`` in their MERGE key, so real and placeholder are always distinct
+        nodes and this gap never applies to them.
+
+        **Safety.**  This method only SETs flag properties; it does NOT delete any
+        nodes or edges.  Scoped by ``odoo_version`` so cross-version/tenant data is
+        never touched.  Idempotent: a second run returns zeros.
+
+        This is called automatically by ``gc_unresolved_placeholders`` as a
+        defense-in-depth step (ADR-0007 §D5 extension).  A one-time ops script
+        (``ops/cleanup_resolved_unresolved_flags.cypher``) clears the existing prod
+        backlog independently of a GC run.
+
+        Returns a dict with heal counts, e.g.::
+
+            {"nodes": 153, "edges": 326}
+        """
+        with self.driver.session() as session:
+            node_row = session.run(
+                """
+                MATCH (n)
+                WHERE (n:View OR n:QWebTmpl)
+                  AND n.odoo_version = $version
+                  AND coalesce(n.unresolved, false) = true
+                  AND coalesce(n.module, '') <> '__unresolved__'
+                SET n.unresolved = false
+                RETURN count(n) AS healed
+                """,
+                version=odoo_version,
+            ).single()
+            nodes_healed = node_row["healed"] if node_row is not None else 0
+
+            edge_row = session.run(
+                """
+                MATCH ()-[r]->(t)
+                WHERE r.unresolved = true
+                  AND t.odoo_version = $version
+                  AND coalesce(t.module, '') <> '__unresolved__'
+                SET r.unresolved = false
+                RETURN count(r) AS healed
+                """,
+                version=odoo_version,
+            ).single()
+            edges_healed = edge_row["healed"] if edge_row is not None else 0
+
+        if nodes_healed > 0 or edges_healed > 0:
+            _logger.info(
+                "Heal resolved flags: cleared %d stale-unresolved nodes, "
+                "%d stale-unresolved edges for version %s",
+                nodes_healed, edges_healed, odoo_version,
+            )
+        else:
+            _logger.debug(
+                "Heal resolved flags: no stale flags found for version %s",
+                odoo_version,
+            )
+        return {"nodes": nodes_healed, "edges": edges_healed}
 
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,
