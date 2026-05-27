@@ -123,6 +123,28 @@ indexed for real (clearing `node.unresolved`), that old edge property is stale. 
 
 Both paths converge.  Option 1 is proactive and requires no manual operator action.
 
+**Residual 2 — already-resolved nodes with stale `unresolved=true` (fixed by `heal_resolved_unresolved_flags`):**
+
+The ops script `cleanup_unresolved_placeholders.cypher` only deleted nodes where
+`module='__unresolved__'`.  But some nodes had already had their module rewritten to a real
+value by an old real-write pass (which set `module=<real>` but never cleared `unresolved=true`),
+so the cleanup script left them intact.  Live prod counts: 63 View + 90 QWebTmpl = 153 real nodes
+with stale `unresolved=true`, and 326 incident edges also stale.
+
+Fix: `heal_resolved_unresolved_flags(odoo_version)` CLEARs `unresolved=true` on:
+1. Any `View` or `QWebTmpl` node whose `module <> '__unresolved__'` (real node by definition).
+2. Any edge whose target node has `module <> '__unresolved__'` (resolved relationship by definition).
+
+This method only SETs property values; it does NOT delete any nodes or edges.  It is called
+automatically at the end of `gc_unresolved_placeholders` as a defense-in-depth step, scoped by
+`odoo_version`.  A one-time ops script (`ops/cleanup_resolved_unresolved_flags.cypher`) clears the
+existing prod backlog without waiting for a `--gc` run.
+
+**Safety argument:** a node with `module <> '__unresolved__'` was written by a real indexer pass —
+its `unresolved=true` is a stale artefact; clearing it restores the correct visible state.  An edge
+whose target is a real node is a resolved relationship; its `unresolved=true` is likewise stale.
+No data is deleted or overwritten — only flags are cleared.
+
 ### D6 — Auto-reseed gated via `_SeedMeta` Neo4j sentinel + sha256
 
 `seed_patterns()` is called at the end of every `index_profile()` so admins don't need to remember a separate command. To make this cheap, the seed function:
@@ -177,6 +199,9 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 - `src/indexer/scanner.py::get_module_commit_sha` — D1 per-module sha source
 - `src/indexer/writer_neo4j.py` Module MERGE SET — D1 last_commit_sha persistence
 - `src/indexer/writer_neo4j.py::Neo4jWriter.gc_stale_modules` — D5 GC implementation
+- `src/indexer/writer_neo4j.py::Neo4jWriter.gc_unresolved_placeholders` — D5 M13 placeholder gc
+- `src/indexer/writer_neo4j.py::Neo4jWriter.heal_resolved_unresolved_flags` — D5 Residual-2 heal
+- `ops/cleanup_resolved_unresolved_flags.cypher` — one-time prod heal for Residual-2
 - `src/db/migrate.py` — D1 head_sha column ALTER (per ADR-0001 M6 schema window)
 
 ## Tests
@@ -187,7 +212,7 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 - `tests/test_pipeline_seed_integration.py` — D6 wired into index_profile
 - `tests/test_indexer_gc.py` — D5 GC flag: delete renamed module, risk gate, default-off
 - `tests/test_dual_store_integrity.py` — D6-split invariants: --no-embed sets only patterns_neo4j, embedder=None leaves patterns_pgvector absent, legacy sentinel fallback, divergence detection
-- `tests/test_gc_unresolved_placeholders.py` — D5 M13 extension: no shadow View after writer fix; `unresolved` flag cleared after real View/QWebTmpl write (residual-gap regression); gc_unresolved_placeholders removes placeholders, preserves real nodes, is idempotent, scoped by version
+- `tests/test_gc_unresolved_placeholders.py` — D5 M13 extension: no shadow View after writer fix; `unresolved` flag cleared after real View/QWebTmpl write (residual-gap regression); gc_unresolved_placeholders removes placeholders, preserves real nodes, is idempotent, scoped by version; heal_resolved_unresolved_flags clears stale flags on real nodes/edges, preserves genuine placeholders, version-scoped, idempotent
 
 ## Out of scope (recorded for future ADRs)
 

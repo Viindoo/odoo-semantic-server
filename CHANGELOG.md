@@ -6,6 +6,27 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
 
+### Fixed — M13 heal stale unresolved flags on already-resolved nodes/edges (fix/m13-heal-resolved-unresolved-flags)
+
+- **`ops/cleanup_resolved_unresolved_flags.cypher`** (new) — one-time prod heal for the "Residual 2"
+  scenario: 153 View/QWebTmpl nodes (`module<>'__unresolved__'`, `unresolved=true`) and 326 incident
+  edges (`unresolved=true`) that survived the previous `ops/cleanup_unresolved_placeholders.cypher`
+  because those nodes had already had their `module` rewritten to a real value by an old write pass,
+  so the placeholder-deletion script (which targets `module='__unresolved__'`) left them intact.
+  The heal script only SETs `unresolved=false`; it does NOT delete any nodes or edges.  Idempotent.
+  Run: `docker compose exec -T neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" -f /dev/stdin < ops/cleanup_resolved_unresolved_flags.cypher`
+  Expected: `nodes_healed ≈ 153`, `edges_healed ≈ 326`; zero on rerun.
+- **`src/indexer/writer_neo4j.py::Neo4jWriter.heal_resolved_unresolved_flags`** (new method) —
+  defense-in-depth heal called automatically at the end of `gc_unresolved_placeholders`.  Clears
+  `unresolved=true` on any `View`/`QWebTmpl` node whose `module <> '__unresolved__'` (real by
+  definition) and on any edge whose target is a real node, scoped by `odoo_version`.  Future
+  stragglers heal automatically at the next `--gc` run without operator action.
+- **`docs/adr/0007-incremental-indexer.md` §D5** — documented Residual-2 scenario, correctness
+  argument, and new method in implementation references.
+- **`tests/test_gc_unresolved_placeholders.py`** (6 new tests in `TestHealResolvedUnresolvedFlags`)
+  — View node+edge healed; QWebTmpl node+edge healed; genuine placeholder preserved (not
+  false-healed into a phantom real node); version scoping; idempotent; gc wires heal automatically.
+
 ### Fixed — M13 index hygiene (feat/m13-cleanup-automation, #194)
 
 - **`ops/cleanup_test_sentinel_modules.cypher`** (new) — removes 2 test-sentinel Module nodes
