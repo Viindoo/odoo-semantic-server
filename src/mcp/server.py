@@ -4,6 +4,7 @@ import math
 import os
 import threading
 from contextlib import asynccontextmanager, contextmanager, nullcontext
+from contextvars import ContextVar
 
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
@@ -285,24 +286,25 @@ _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
 
 
 def _get_api_key_id() -> str:
-    """Return the API key ID for the current sync context.
+    """Return the API key ID for the current async/sync context.
 
-    Sync MCP tool wrappers run outside Starlette request context, so we
-    cannot extract the real API key from the request.  Return a stable
-    sentinel so all sync callers share one ref namespace — per-call refs
-    minted by model_inspect/module_inspect tools are stored under the real
-    api_key_id, and entity_lookup / on_read_resource resolve under the same key.
-    In production, the middleware writes the api_key_id into a thread-local;
-    fall back to 'default' when not set (unit tests, CLI invocations).
+    Uses a ContextVar so the value is isolated per coroutine — concurrent
+    async requests running in the same event-loop thread cannot clobber each
+    other's api_key_id (the old threading.local() approach suffered this race
+    because asyncio is single-threaded but multiplexes coroutines).
+
+    In production the middleware writes the api_key_id via
+    _api_key_id_var.set() before each tool call and resets it in finally.
+    Falls back to 'default' when not set (unit tests, CLI invocations).
     """
-    return getattr(_api_key_id_local, "value", "default")
+    return _api_key_id_var.get()
 
 
 def _get_tenant_id() -> int | None:
-    """Return the tenant_id for the current sync context (ADR-0034 D4.1 plumbing).
+    """Return the tenant_id for the current async/sync context (ADR-0034 D4.1 plumbing).
 
     Populated by UsageLogMiddleware (tool_log_middleware.py) from
-    request.state.tenant_id before each tool call, cleared in the finally block.
+    request.state.tenant_id before each tool call, reset in the finally block.
     Returns None when not set — this covers:
       - Unit tests and CLI invocations (no request context)
       - Global/admin keys (tenant_id IS NULL in DB)
@@ -311,15 +313,25 @@ def _get_tenant_id() -> int | None:
     None means admin/global access (legacy NULL-tenant key, unit tests, CLI) —
     consumed by ``_effective_allowed`` (WI-4) as "unrestricted" while a real
     tenant id scopes every user-data query to that tenant's allowed profiles.
+
+    ContextVar semantics: each coroutine has its own isolated copy so
+    concurrent requests cannot interfere with each other's tenant scope.
     """
-    return getattr(_tenant_id_local, "value", None)
+    return _tenant_id_var.get()
 
 
-# Thread-local storage for API key ID — populated by middleware when available.
-_api_key_id_local = threading.local()
-# Thread-local storage for tenant_id — populated alongside _api_key_id_local
+# ContextVar storage for API key ID — populated by UsageLogMiddleware.
+# ContextVar is used instead of threading.local() because asyncio multiplexes
+# coroutines in a single thread: a threading.local write in coroutine A is
+# shared with coroutine B (same thread), so one request's finally-reset would
+# wipe another's value mid-execution → 'default' sentinel crash on
+# set_active_version / set_active_profile.  ContextVar gives each coroutine
+# its own isolated copy, propagated to worker threads by anyio (if needed).
+_api_key_id_var: ContextVar[str] = ContextVar("_api_key_id", default="default")
+
+# ContextVar storage for tenant_id — populated alongside _api_key_id_var
 # by UsageLogMiddleware from request.state.tenant_id (ADR-0034 D4.1).
-_tenant_id_local = threading.local()
+_tenant_id_var: ContextVar[int | None] = ContextVar("_tenant_id", default=None)
 
 
 # --- WI-4 fail-closed profile filter (ADR-0034 enforcement choke point) ------

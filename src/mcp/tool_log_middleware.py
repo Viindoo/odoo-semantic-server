@@ -44,10 +44,12 @@ class UsageLogMiddleware(Middleware):
     Must be registered via ``mcp.add_middleware(UsageLogMiddleware())`` before
     the server starts accepting connections (see server.py module-level setup).
 
-    Also writes api_key_id into server._api_key_id_local so that synchronous
-    tool wrappers (model_inspect, module_inspect, entity_lookup, describe_module)
-    share the same tenant namespace for ref minting and resolution (fixes HIGH-1
-    from Wave C Opus review).
+    Also writes api_key_id + tenant_id into server._api_key_id_var / _tenant_id_var
+    (ContextVars) so synchronous tool wrappers (model_inspect, module_inspect,
+    entity_lookup, describe_module, set_active_version, set_active_profile) share
+    the correct tenant namespace for ref minting and session persistence.
+    ContextVars are used (not threading.local) to prevent cross-request leakage
+    when concurrent asyncio coroutines share the same event-loop thread.
     """
 
     async def on_call_tool(
@@ -61,9 +63,10 @@ class UsageLogMiddleware(Middleware):
         fire-and-forget log insert.  Never raises — any error is silently
         swallowed so a logging failure never breaks the tool response.
 
-        Sets server._api_key_id_local.value for the duration of the call so
-        MCP tool wrappers share the same tenant api_key_id via
-        _get_api_key_id().  Cleared in finally to avoid cross-request leakage.
+        Sets server._api_key_id_var ContextVar for the duration of the call so
+        MCP tool wrappers share the correct tenant api_key_id via
+        _get_api_key_id().  Token-reset in finally prevents cross-request
+        leakage between concurrent asyncio coroutines.
         """
         tool_name: str = context.message.name  # always present per MCP spec
 
@@ -81,16 +84,20 @@ class UsageLogMiddleware(Middleware):
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
-        # Propagate api_key_id and tenant_id into thread-locals so synchronous
+        # Propagate api_key_id and tenant_id into ContextVars so synchronous
         # tool wrappers can call _get_api_key_id() / _get_tenant_id().
-        _set_server_api_key(api_key_id)
-        _set_server_tenant_id(tenant_id)
+        # ContextVar tokens allow atomic reset to the previous value in finally,
+        # preventing cross-request leakage even when concurrent coroutines run
+        # in the same event-loop thread (the old threading.local() approach
+        # suffered a race where one request's finally would wipe another's value).
+        key_token = _set_server_api_key(api_key_id)
+        tid_token = _set_server_tenant_id(tenant_id)
         start = time.monotonic()
         try:
             result = await call_next(context)
         finally:
-            _set_server_api_key(None)   # clear to avoid cross-request leakage
-            _set_server_tenant_id(None)  # clear tenant_id in tandem
+            _reset_server_api_key(key_token)   # reset to pre-call value
+            _reset_server_tenant_id(tid_token)  # reset tenant_id in tandem
         ms = int((time.monotonic() - start) * 1000)
 
         task = asyncio.create_task(
@@ -118,10 +125,11 @@ class UsageLogMiddleware(Middleware):
     ) -> Sequence[ReadResourceContents]:
         """Hook fired for every ``resources/read`` JSON-RPC request.
 
-        Propagates api_key_id into the thread-local so the session-context
+        Propagates api_key_id + tenant_id into ContextVars so the session-context
         resolver (_get_api_key_id) returns the real tenant key during resource
         reads, preventing the sticky-session bypass where resource reads always
-        resolved to the 'default' sentinel.
+        resolved to the 'default' sentinel.  Token-reset in finally prevents
+        cross-request leakage in the asyncio event loop.
 
         Usage-log insert is intentionally omitted here — resource reads are
         typically bookmark-stable content fetches and are already cached; the
@@ -136,57 +144,71 @@ class UsageLogMiddleware(Middleware):
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
-        _set_server_api_key(api_key_id)
-        _set_server_tenant_id(tenant_id)
+        key_token = _set_server_api_key(api_key_id)
+        tid_token = _set_server_tenant_id(tenant_id)
         try:
             return await call_next(context)
         finally:
-            _set_server_api_key(None)   # clear to avoid cross-request leakage
-            _set_server_tenant_id(None)  # clear tenant_id in tandem
+            _reset_server_api_key(key_token)   # reset to pre-call value
+            _reset_server_tenant_id(tid_token)  # reset tenant_id in tandem
 
 
-def _set_server_api_key(api_key_id: str | None) -> None:
-    """Write *api_key_id* into server._api_key_id_local (best-effort, never raises).
+def _set_server_api_key(api_key_id: str | None):
+    """Set *api_key_id* in server._api_key_id_var (ContextVar) and return the token.
 
-    Imported lazily to avoid circular import at module load time.  Called once
-    before the tool body and once in the finally block to clear the value.
+    Returns the ContextVar token so the caller can call _reset_server_api_key(token)
+    in a finally block to atomically restore the previous value.  Using the token
+    pattern ensures that nested / concurrent calls each restore only their own
+    change, preventing cross-request leakage in the asyncio event loop.
+
+    Imported lazily to avoid circular import at module load time.
     """
     try:
         from src.mcp import server as _server  # lazy — avoids circular import
-        if api_key_id is not None:
-            _server._api_key_id_local.value = api_key_id
-        else:
-            # Reset to sentinel so _get_api_key_id() falls back to 'default'.
-            try:
-                del _server._api_key_id_local.value
-            except AttributeError:
-                pass  # already unset — fine
+        value = api_key_id if api_key_id is not None else "default"
+        return _server._api_key_id_var.set(value)
     except Exception:
-        pass  # never raise from middleware — logging failure must not break tool response
+        return None  # never raise from middleware — logging failure must not break tool response
 
 
-def _set_server_tenant_id(tenant_id: int | None) -> None:
-    """Write *tenant_id* into server._tenant_id_local (best-effort, never raises).
+def _reset_server_api_key(token) -> None:
+    """Reset server._api_key_id_var to its value before _set_server_api_key was called.
 
-    Mirrors _set_server_api_key for the tenant_id thread-local introduced in
-    ADR-0034 D4.1 (WI-D plumbing).  Called before and after every tool/resource
-    invocation so _get_tenant_id() returns the correct value for synchronous tool
-    wrappers.
+    *token* is the value returned by _set_server_api_key.  A None token (e.g.
+    when _set_server_api_key caught an exception) is silently ignored.
+    """
+    if token is None:
+        return
+    try:
+        from src.mcp import server as _server  # lazy — avoids circular import
+        _server._api_key_id_var.reset(token)
+    except Exception:
+        pass  # never raise from middleware
 
-    None clears the local so _get_tenant_id() returns the default (None), which
-    represents "global/admin access or no tenant context".
+
+def _set_server_tenant_id(tenant_id: int | None):
+    """Set *tenant_id* in server._tenant_id_var (ContextVar) and return the token.
+
+    Mirrors _set_server_api_key for the tenant_id ContextVar introduced in
+    ADR-0034 D4.1 (WI-D plumbing).  Returns a token so _reset_server_tenant_id
+    can atomically restore the previous value in finally.
     """
     try:
         from src.mcp import server as _server  # lazy — avoids circular import
-        if tenant_id is not None:
-            _server._tenant_id_local.value = tenant_id
-        else:
-            try:
-                del _server._tenant_id_local.value
-            except AttributeError:
-                pass  # already unset — fine
+        return _server._tenant_id_var.set(tenant_id)
     except Exception:
-        pass  # never raise from middleware — logging failure must not break tool response
+        return None  # never raise from middleware
+
+
+def _reset_server_tenant_id(token) -> None:
+    """Reset server._tenant_id_var to its value before _set_server_tenant_id was called."""
+    if token is None:
+        return
+    try:
+        from src.mcp import server as _server  # lazy — avoids circular import
+        _server._tenant_id_var.reset(token)
+    except Exception:
+        pass  # never raise from middleware
 
 
 async def _log_tool_call_async(

@@ -137,7 +137,7 @@ class TestTenantCacheFunctions:
 
 
 class TestGetTenantIdAccessor:
-    """server._get_tenant_id() — thread-local accessor."""
+    """server._get_tenant_id() — ContextVar accessor."""
 
     def test_returns_none_when_not_set(self):
         from src.mcp.server import _get_tenant_id
@@ -148,18 +148,18 @@ class TestGetTenantIdAccessor:
         from src.mcp import server as _server
         from src.mcp.server import _get_tenant_id
 
-        _server._tenant_id_local.value = 42
+        token = _server._tenant_id_var.set(42)
         try:
             assert _get_tenant_id() == 42
         finally:
-            del _server._tenant_id_local.value
+            _server._tenant_id_var.reset(token)
 
     def test_returns_none_after_clear(self):
         from src.mcp import server as _server
         from src.mcp.server import _get_tenant_id
 
-        _server._tenant_id_local.value = 99
-        del _server._tenant_id_local.value
+        token = _server._tenant_id_var.set(99)
+        _server._tenant_id_var.reset(token)
         assert _get_tenant_id() is None
 
 

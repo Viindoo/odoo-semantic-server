@@ -172,11 +172,8 @@ def test_missing_api_key_id_uses_anonymous_fallback(
     """
     import src.mcp.server as _srv
 
-    # Ensure no thread-local api_key_id is set for this thread.
-    try:
-        del _srv._api_key_id_local.value
-    except AttributeError:
-        pass  # Already absent — that is fine.
+    # Ensure no api_key_id is set for this context (ContextVar defaults to "default").
+    _srv._api_key_id_var.set("default")
 
     uri = f"odoo://{FA_VERSION}/model/{FA_MODEL}"
     body = _read(mcp_with_resources, uri)
@@ -207,11 +204,8 @@ def test_anonymous_fallback_returns_content_not_exception(
     """
     import src.mcp.server as _srv
 
-    # Clear any residual thread-local.
-    try:
-        del _srv._api_key_id_local.value
-    except AttributeError:
-        pass
+    # Clear any residual ContextVar value (reset to "default" sentinel).
+    _srv._api_key_id_var.set("default")
 
     # Use a version that doesn't exist — resolution will fail with ValueError
     # or return "not found", but must never propagate an unhandled exception.
@@ -256,24 +250,18 @@ def test_two_api_keys_reading_same_uri_get_same_body(
     uri = f"odoo://{FA_VERSION}/model/{FA_MODEL}"
 
     # --- Read as API-key-A ---
-    _srv._api_key_id_local.value = "api-key-a-9901"
+    token_a = _srv._api_key_id_var.set("api-key-a-9901")
     try:
         body_a = _read(mcp_with_resources, uri)
     finally:
-        try:
-            del _srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        _srv._api_key_id_var.reset(token_a)
 
     # --- Read as API-key-B ---
-    _srv._api_key_id_local.value = "api-key-b-9902"
+    token_b = _srv._api_key_id_var.set("api-key-b-9902")
     try:
         body_b = _read(mcp_with_resources, uri)
     finally:
-        try:
-            del _srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        _srv._api_key_id_var.reset(token_b)
 
     # Both must be non-empty.
     assert body_a, "API-key-A read must return a non-empty body"
@@ -384,8 +372,8 @@ def test_two_keys_different_active_versions_get_their_own_bodies(
     }
 
     def _patched_resolve(version: str) -> str:
-        # Peek at which api_key_id is active in this thread.
-        key_id = getattr(_srv._api_key_id_local, "value", None)
+        # Peek at which api_key_id is active in this coroutine/context.
+        key_id = _srv._api_key_id_var.get(None)
         return _TENANT_VERSIONS.get(key_id, FA_VER_A)
 
     import src.mcp.resources
@@ -397,24 +385,18 @@ def test_two_keys_different_active_versions_get_their_own_bodies(
         uri_sentinel = "odoo://auto/model/fa.leak.model"
 
         # Tenant A reads first.
-        _srv._api_key_id_local.value = "api-key-tenant-a-7701"
+        token_a = _srv._api_key_id_var.set("api-key-tenant-a-7701")
         try:
             body_a = _read(mcp_with_resources, uri_sentinel)
         finally:
-            try:
-                del _srv._api_key_id_local.value
-            except AttributeError:
-                pass
+            _srv._api_key_id_var.reset(token_a)
 
         # Tenant B reads second — must NOT get tenant A's cached body.
-        _srv._api_key_id_local.value = "api-key-tenant-b-7702"
+        token_b = _srv._api_key_id_var.set("api-key-tenant-b-7702")
         try:
             body_b = _read(mcp_with_resources, uri_sentinel)
         finally:
-            try:
-                del _srv._api_key_id_local.value
-            except AttributeError:
-                pass
+            _srv._api_key_id_var.reset(token_b)
     finally:
         src.mcp.resources._resolved_version_for = original_fn
         # Cleanup seeded nodes.

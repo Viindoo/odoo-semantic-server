@@ -136,23 +136,17 @@ def _read_resource(mcp, uri: str) -> str:
 
 
 class TestSetServerApiKeyMechanics:
-    """_set_server_api_key correctly writes/clears server._api_key_id_local."""
+    """_set_server_api_key correctly writes/clears server._api_key_id_var."""
 
     def setup_method(self) -> None:
-        """Ensure thread-local is clean before each test."""
+        """Ensure ContextVar is at default before each test."""
         from src.mcp import server as srv
-        try:
-            del srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        srv._api_key_id_var.set("default")
 
     def teardown_method(self) -> None:
-        """Restore clean state after each test."""
+        """Restore default state after each test."""
         from src.mcp import server as srv
-        try:
-            del srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        srv._api_key_id_var.set("default")
 
     def test_set_api_key_makes_get_return_it(self) -> None:
         """_set_server_api_key(key) → _get_api_key_id() returns key."""
@@ -203,17 +197,11 @@ class TestOnReadResourceHook:
 
     def setup_method(self) -> None:
         from src.mcp import server as srv
-        try:
-            del srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        srv._api_key_id_var.set("default")
 
     def teardown_method(self) -> None:
         from src.mcp import server as srv
-        try:
-            del srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        srv._api_key_id_var.set("default")
 
     def test_on_read_resource_sets_thread_local_during_call_next(self) -> None:
         """on_read_resource propagates api_key_id into thread-local for call_next.
@@ -240,8 +228,8 @@ class TestOnReadResourceHook:
         captured_during: list[str | None] = []
 
         async def fake_call_next(_ctx):
-            # Inside call_next the thread-local must be set.
-            captured_during.append(getattr(srv._api_key_id_local, "value", None))
+            # Inside call_next the ContextVar must be set.
+            captured_during.append(srv._api_key_id_var.get(None))
             return []  # empty resource contents — ok for this test
 
         with patch(
@@ -345,7 +333,7 @@ class TestStickySessionThroughResourceRead:
 
         # Patch _resolved_version_for to return RS_VERSION for our test key.
         def _patched_resolve(version: str) -> str:
-            key_id = getattr(srv._api_key_id_local, "value", None)
+            key_id = srv._api_key_id_var.get(None)
             if key_id == "rs-sticky-key-101":
                 return RS_VERSION
             # Fall through — not our key, return version unchanged (concrete).
@@ -355,16 +343,13 @@ class TestStickySessionThroughResourceRead:
         original_fn = src.mcp.resources._resolved_version_for
         src.mcp.resources._resolved_version_for = _patched_resolve
 
-        srv._api_key_id_local.value = "rs-sticky-key-101"
+        token = srv._api_key_id_var.set("rs-sticky-key-101")
         try:
             uri = f"odoo://auto/model/{RS_MODEL}"
             body = _read_resource(mcp, uri)
         finally:
             src.mcp.resources._resolved_version_for = original_fn
-            try:
-                del srv._api_key_id_local.value
-            except AttributeError:
-                pass
+            srv._api_key_id_var.reset(token)
 
         assert body, "Body must be non-empty"
         assert RS_VERSION in body, (
@@ -396,11 +381,8 @@ class TestStickySessionThroughResourceRead:
         cache = fresh_resources_module.get_cache()
         cache.clear()
 
-        # Ensure thread-local is absent.
-        try:
-            del srv._api_key_id_local.value
-        except AttributeError:
-            pass
+        # Ensure ContextVar is at default sentinel.
+        srv._api_key_id_var.set("default")
 
         uri = f"odoo://{RS_VERSION}/model/{RS_MODEL}"
         try:
