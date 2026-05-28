@@ -42,24 +42,26 @@ pytestmark = pytest.mark.postgres
 def _cleanup_test_keys(conn, key_hashes: list[str]) -> None:
     """Remove test api_keys and their usage_counter rows by key_hash.
 
-    NOTE: the m13_006 migration declares `usage_counter.api_key_id REFERENCES
-    api_keys(id)` but the FK is NOT enforced on existing databases (the table
-    was created via `CREATE TABLE IF NOT EXISTS` before the FK was added in a
-    later edit, so pre-existing usage_counter tables lack the constraint).
-    Therefore `DELETE FROM api_keys` does NOT cascade to usage_counter, and
-    leftover rows can be associated with a future api_keys row that happens
-    to receive the same id (the api_keys sequence is not reset). That stale
-    `call_count = quota` row then causes a 429 on the very first authed call
-    of a subsequent test — see CI iter 3 failure in test_tenant_deploy_key.
-    Explicitly wiping usage_counter rows for our test keys closes the leak.
+    m13_007 attaches `ON DELETE CASCADE` to `usage_counter.api_key_id`, so
+    `DELETE FROM api_keys` alone is sufficient on a fresh schema. We keep the
+    explicit usage_counter wipe as a belt-and-braces defence for DEV databases
+    that may still carry an early m13_006 variant where the FK was created
+    inline (no CASCADE) BEFORE m13_007 was applied, and against any future
+    drift where the FK silently regresses.
+
+    Without this safety net, a stale `call_count = quota` row binds to the
+    next api_keys SERIAL id and trips a 429 on the very first authed call of
+    an unrelated downstream test (PR #200 CI iter 3, test_tenant_deploy_key).
+    Callers MUST wrap their seed/exercise code in `try: ... finally: _cleanup_test_keys(...)`
+    so cleanup runs even when an assertion mid-test fails (otherwise the leak
+    re-opens via the failure path).
     """
     if not key_hashes:
         return
     with conn.cursor() as cur:
-        # Drop usage_counter rows owned by these api_keys BEFORE deleting the
-        # api_keys row (cleanup order does not matter when FK is unenforced,
-        # but reads cleaner this way and is FK-safe if a future migration
-        # enables the constraint).
+        # Drop usage_counter rows BEFORE deleting api_keys. With m13_007's
+        # CASCADE this is logically redundant, but explicit cleanup remains
+        # FK-safe AND robust against the DEV-only drift described above.
         cur.execute(
             "DELETE FROM usage_counter WHERE api_key_id IN ("
             "  SELECT id FROM api_keys WHERE key_hash = ANY(%s)"
@@ -191,20 +193,23 @@ class TestFreeGrandfatheredUnderQuotaPasses:
             slug="free-grandfathered",
         )
         migrated_db.commit()
-        pool = _FakePool(migrated_db)
+        try:
+            pool = _FakePool(migrated_db)
 
-        plan_info = _get_plan_for_key(key_id, pool)
-        assert plan_info.slug == "free-grandfathered"
-        assert plan_info.quota_calls_per_month == 1000
-        assert plan_info.rate_limit_rpm == 60
+            plan_info = _get_plan_for_key(key_id, pool)
+            assert plan_info.slug == "free-grandfathered"
+            assert plan_info.quota_calls_per_month == 1000
+            assert plan_info.rate_limit_rpm == 60
 
-        # Simulate 5 calls under quota (usage_counter row absent = 0 used)
-        for _ in range(5):
-            allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
-            assert allowed is True, f"Expected allowed=True, used={used}, quota={quota}"
-
-        _cleanup_test_keys(migrated_db, [self._KEY_HASH])
-        migrated_db.commit()
+            # Simulate 5 calls under quota (usage_counter row absent = 0 used)
+            for _ in range(5):
+                allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
+                assert allowed is True, (
+                    f"Expected allowed=True, used={used}, quota={quota}"
+                )
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -228,28 +233,31 @@ class TestFreeKeyHitsMonthlyQuota:
             slug="free",
         )
         migrated_db.commit()
-        pool = _FakePool(migrated_db)
+        try:
+            pool = _FakePool(migrated_db)
 
-        plan_info = _get_plan_for_key(key_id, pool)
-        assert plan_info.slug == "free"
-        assert plan_info.quota_calls_per_month == 100
+            plan_info = _get_plan_for_key(key_id, pool)
+            assert plan_info.slug == "free"
+            assert plan_info.quota_calls_per_month == 100
 
-        period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
+            period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
 
-        # Set counter to exactly the quota limit
-        _set_usage_counter(migrated_db, api_key_id=key_id, period=period, count=100)
-        migrated_db.commit()
+            # Set counter to exactly the quota limit
+            _set_usage_counter(
+                migrated_db, api_key_id=key_id, period=period, count=100
+            )
+            migrated_db.commit()
 
-        # 101st check — must be blocked
-        allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
-        assert allowed is False, (
-            f"Expected blocked at quota={quota}, used={used}"
-        )
-        assert used == 100
-        assert quota == 100
-
-        _cleanup_test_keys(migrated_db, [self._KEY_HASH])
-        migrated_db.commit()
+            # 101st check — must be blocked
+            allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
+            assert allowed is False, (
+                f"Expected blocked at quota={quota}, used={used}"
+            )
+            assert used == 100
+            assert quota == 100
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -271,31 +279,36 @@ class TestRpmBlockBeforeMonthly:
             slug="free",
         )
         migrated_db.commit()
-        pool = _FakePool(migrated_db)
+        try:
+            pool = _FakePool(migrated_db)
 
-        plan_info = _get_plan_for_key(key_id, pool)
-        assert plan_info.rate_limit_rpm == 30
+            plan_info = _get_plan_for_key(key_id, pool)
+            assert plan_info.rate_limit_rpm == 30
 
-        # Fire 30 requests — all should be allowed
-        for i in range(30):
-            allowed, remaining = _check_rate_limit(key_id, plan_info)
-            assert allowed is True, f"Request {i+1} should be allowed, remaining={remaining}"
+            # Fire 30 requests — all should be allowed
+            for i in range(30):
+                allowed, remaining = _check_rate_limit(key_id, plan_info)
+                assert allowed is True, (
+                    f"Request {i+1} should be allowed, remaining={remaining}"
+                )
 
-        # 31st request — must be rate-limited
-        allowed_31, remaining_31 = _check_rate_limit(key_id, plan_info)
-        assert allowed_31 is False, (
-            f"31st request should be rpm-blocked; remaining={remaining_31}"
-        )
-        assert remaining_31 == 0
+            # 31st request — must be rate-limited
+            allowed_31, remaining_31 = _check_rate_limit(key_id, plan_info)
+            assert allowed_31 is False, (
+                f"31st request should be rpm-blocked; remaining={remaining_31}"
+            )
+            assert remaining_31 == 0
 
-        # Monthly quota should still be fine (counter is 0)
-        allowed_monthly, used, quota = _check_monthly_quota(key_id, plan_info, pool)
-        assert allowed_monthly is True, (
-            f"Monthly quota should not be exhausted; used={used}, quota={quota}"
-        )
-
-        _cleanup_test_keys(migrated_db, [self._KEY_HASH])
-        migrated_db.commit()
+            # Monthly quota should still be fine (counter is 0)
+            allowed_monthly, used, quota = _check_monthly_quota(
+                key_id, plan_info, pool
+            )
+            assert allowed_monthly is True, (
+                f"Monthly quota should not be exhausted; used={used}, quota={quota}"
+            )
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -348,48 +361,50 @@ class TestPlanCacheTtlRefresh:
             slug="free",
         )
         migrated_db.commit()
-        pool = _FakePool(migrated_db)
+        try:
+            pool = _FakePool(migrated_db)
 
-        # First lookup — should cache free plan
-        plan_info_1 = _get_plan_for_key(key_id, pool)
-        assert plan_info_1.slug == "free"
+            # First lookup — should cache free plan
+            plan_info_1 = _get_plan_for_key(key_id, pool)
+            assert plan_info_1.slug == "free"
 
-        # The cache entry exists
-        with _cache_lock:
-            assert key_id in _PLAN_CACHE
+            # The cache entry exists
+            with _cache_lock:
+                assert key_id in _PLAN_CACHE
 
-        # Reassign key to pro plan in DB
-        with migrated_db.cursor() as cur:
-            cur.execute("SELECT id FROM plans WHERE slug = 'pro'")
-            pro_id = cur.fetchone()[0]
-            cur.execute(
-                "UPDATE api_keys SET plan_id = %s WHERE key_hash = %s",
-                (pro_id, self._KEY_HASH_ORIG),
+            # Reassign key to pro plan in DB
+            with migrated_db.cursor() as cur:
+                cur.execute("SELECT id FROM plans WHERE slug = 'pro'")
+                pro_id = cur.fetchone()[0]
+                cur.execute(
+                    "UPDATE api_keys SET plan_id = %s WHERE key_hash = %s",
+                    (pro_id, self._KEY_HASH_ORIG),
+                )
+            migrated_db.commit()
+
+            # Second lookup before TTL — should still return cached free
+            plan_info_cached = _get_plan_for_key(key_id, pool)
+            assert plan_info_cached.slug == "free", (
+                "Should still return cached free plan before TTL expires"
             )
-        migrated_db.commit()
 
-        # Second lookup before TTL — should still return cached free
-        plan_info_cached = _get_plan_for_key(key_id, pool)
-        assert plan_info_cached.slug == "free", (
-            "Should still return cached free plan before TTL expires"
-        )
+            # Monkeypatch TTL to 0 to force cache miss on next call
+            monkeypatch.setattr(mw, "_CACHE_TTL", 0.0)
+            with _cache_lock:
+                # Also expire the entry by backdating its timestamp
+                if key_id in mw._PLAN_CACHE:
+                    plan, _ts = mw._PLAN_CACHE[key_id]
+                    # epoch timestamp = always expired
+                    mw._PLAN_CACHE[key_id] = (plan, 0.0)
 
-        # Monkeypatch TTL to 0 to force cache miss on next call
-        monkeypatch.setattr(mw, "_CACHE_TTL", 0.0)
-        with _cache_lock:
-            # Also expire the entry by backdating its timestamp
-            if key_id in mw._PLAN_CACHE:
-                plan, _ts = mw._PLAN_CACHE[key_id]
-                mw._PLAN_CACHE[key_id] = (plan, 0.0)  # epoch timestamp = always expired
-
-        # Third lookup after TTL expired — should fetch pro from DB
-        plan_info_3 = _get_plan_for_key(key_id, pool)
-        assert plan_info_3.slug == "pro", (
-            f"After TTL expiry should fetch pro from DB, got {plan_info_3.slug!r}"
-        )
-
-        _cleanup_test_keys(migrated_db, [self._KEY_HASH_ORIG])
-        migrated_db.commit()
+            # Third lookup after TTL expired — should fetch pro from DB
+            plan_info_3 = _get_plan_for_key(key_id, pool)
+            assert plan_info_3.slug == "pro", (
+                f"After TTL expiry should fetch pro from DB, got {plan_info_3.slug!r}"
+            )
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH_ORIG])
+            migrated_db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -414,37 +429,42 @@ class TestPeriodBoundaryResets:
             slug="free",
         )
         migrated_db.commit()
-        pool = _FakePool(migrated_db)
+        try:
+            pool = _FakePool(migrated_db)
 
-        plan_info = _get_plan_for_key(key_id, pool)
-        assert plan_info.quota_calls_per_month == 100
+            plan_info = _get_plan_for_key(key_id, pool)
+            assert plan_info.quota_calls_per_month == 100
 
-        # Simulate previous month exhausted (e.g. Jan 2025)
-        prev_period = "202501"
-        _set_usage_counter(migrated_db, api_key_id=key_id, period=prev_period, count=100)
-        migrated_db.commit()
+            # Simulate previous month exhausted (e.g. Jan 2025)
+            prev_period = "202501"
+            _set_usage_counter(
+                migrated_db, api_key_id=key_id, period=prev_period, count=100
+            )
+            migrated_db.commit()
 
-        # Current period check — no row for current month → used=0 → allowed
-        allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
-        assert allowed is True, (
-            f"Current month has no usage — must be allowed; used={used}, quota={quota}"
-        )
-        assert used == 0, f"No current-month row → used must be 0, got {used}"
+            # Current period check — no row for current month → used=0 → allowed
+            allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
+            assert allowed is True, (
+                f"Current month has no usage — must be allowed;"
+                f" used={used}, quota={quota}"
+            )
+            assert used == 0, f"No current-month row → used must be 0, got {used}"
 
-        # Now set current month to exactly quota
-        current_period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
-        _set_usage_counter(
-            migrated_db, api_key_id=key_id, period=current_period, count=100
-        )
-        migrated_db.commit()
+            # Now set current month to exactly quota
+            current_period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
+            _set_usage_counter(
+                migrated_db, api_key_id=key_id, period=current_period, count=100
+            )
+            migrated_db.commit()
 
-        # Should now be blocked
-        allowed_at_limit, used_at_limit, quota_at_limit = _check_monthly_quota(
-            key_id, plan_info, pool
-        )
-        assert allowed_at_limit is False, (
-            f"At quota limit must be blocked; used={used_at_limit}, quota={quota_at_limit}"
-        )
-
-        _cleanup_test_keys(migrated_db, [self._KEY_HASH])
-        migrated_db.commit()
+            # Should now be blocked
+            allowed_at_limit, used_at_limit, quota_at_limit = _check_monthly_quota(
+                key_id, plan_info, pool
+            )
+            assert allowed_at_limit is False, (
+                f"At quota limit must be blocked;"
+                f" used={used_at_limit}, quota={quota_at_limit}"
+            )
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()

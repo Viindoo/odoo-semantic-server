@@ -134,17 +134,34 @@ def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
 def _reset_mcp_middleware_state():
     """Clear in-process MCP middleware caches/buffers between tests.
 
-    Wave 2 introduced plan-aware quota + rate limit globals
-    (`_PLAN_CACHE`, `_rate_buckets`, `_usage_buffer`, `_KEY_CACHE`) in
+    Wave 2 introduced plan-aware quota + rate limit globals in
     `src/mcp/middleware.py`. Cross-test contamination causes monthly quota
     buffer to accumulate across the 1469-test session, eventually tripping
     429 on tests that share the session-scoped api_key fixture.
 
-    Reset before each test for hermetic state.
+    Globals reset (all module-level dicts in `src.mcp.middleware`):
+      - `_PLAN_CACHE`         plan-info per api_key_id (LRU + TTL)
+      - `_KEY_CACHE`          api_key_id lookup keyed by token hash
+      - `_CACHE_TS`           timestamp companion to `_KEY_CACHE` for TTL eviction
+      - `_TENANT_CACHE`       tenant_id lookup keyed by token hash
+      - `_usage_buffer`       in-memory call_count delta awaiting DB flush
+      - `_rate_buckets`       per-key rolling rpm window
+
+    Both `_CACHE_TS` + `_TENANT_CACHE` were previously skipped, leaving a
+    NEGATIVE cache entry alive across tests → reused api_key_id surfaces as
+    "not found" → 401 in unrelated tests. Reset before each test for
+    hermetic state.
     """
     try:
         from src.mcp import middleware as _mw
-        for name in ("_PLAN_CACHE", "_KEY_CACHE", "_usage_buffer", "_rate_buckets"):
+        for name in (
+            "_PLAN_CACHE",
+            "_KEY_CACHE",
+            "_CACHE_TS",
+            "_TENANT_CACHE",
+            "_usage_buffer",
+            "_rate_buckets",
+        ):
             cache = getattr(_mw, name, None)
             if cache is not None and hasattr(cache, "clear"):
                 cache.clear()
@@ -528,10 +545,19 @@ def clean_pg(pg_conn):
         "pattern_feedback",
         "indexer_jobs",
         "usage_log",
+        # M10B / m13_006 — usage_counter FK→api_keys, must drop BEFORE api_keys.
+        # Even though we use DROP TABLE ... CASCADE (so FK order is technically
+        # irrelevant), keeping topological order documents the dependency for
+        # future maintainers and is safe if a future migration replaces CASCADE
+        # with explicit cleanup.
+        "usage_counter",
         "repos",
+        # api_keys.plan_id FK→plans → api_keys must drop BEFORE plans (m13_006).
         "api_keys",
         "ssh_key_pairs",
         "embeddings",
+        # plans (m13_006) — referenced by api_keys.plan_id; drop AFTER api_keys.
+        "plans",
         "profiles",
         "webui_users",
         # M13 — must come after all tables that FK-reference it
