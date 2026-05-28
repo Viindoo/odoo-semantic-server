@@ -14,6 +14,8 @@ All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 Uses pg_conn session fixture (no per-test testcontainers spin-up).
 """
 
+from contextlib import contextmanager
+
 import pytest
 
 from src.db.migrate import run_migrations
@@ -122,22 +124,30 @@ def _clear_plan_cache():
 
 # ---------------------------------------------------------------------------
 # Helper: minimal fake pool wrapping a psycopg2 connection for tests.
-# Middleware calls pool.getconn() / pool.putconn(conn); this adapter
-# satisfies that interface using the shared test pg_conn.
+# Middleware calls `pool.checkout()` (context-manager) — the only public
+# connection API on src.db.pg.PgPool. This adapter mirrors that interface
+# using the shared test pg_conn so the tests stay portable across the prod
+# PgPool API. Intentionally does NOT expose getconn/putconn — if a future
+# patch accidentally calls those private psycopg2 names, these tests will
+# raise AttributeError and fail loudly (regression guard for the
+# pg_pool.getconn() drift that originally shipped to PR #200).
 # ---------------------------------------------------------------------------
 
 
 class _FakePool:
-    """Minimal connection pool adapter for test pg_conn."""
+    """Minimal connection pool adapter exposing PgPool's public checkout() API."""
 
     def __init__(self, conn):
         self._conn = conn
 
-    def getconn(self):
-        return self._conn
-
-    def putconn(self, conn):
-        pass  # shared conn — do not close
+    @contextmanager
+    def checkout(self):
+        # Tests pre-commit any seed/setup before calling middleware helpers,
+        # so the shared conn is in a clean state. We do NOT toggle autocommit
+        # here — _do_flush() in middleware sets it explicitly when needed,
+        # and the read-only SELECT paths in _get_plan_for_key /
+        # _check_monthly_quota work regardless of autocommit state.
+        yield self._conn
 
 
 # ---------------------------------------------------------------------------

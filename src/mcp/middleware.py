@@ -143,9 +143,9 @@ def _get_plan_for_key(api_key_id: int, pg_pool) -> "PlanInfo":
             plan_info, ts = cached
             if now - ts < _CACHE_TTL:
                 return plan_info
-    # Cache miss or expired — hit DB
-    conn = pg_pool.getconn()
-    try:
+    # Cache miss or expired — hit DB via PgPool.checkout() context-manager
+    # (the only public connection API on PgPool; getconn/putconn are private).
+    with pg_pool.checkout() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -157,8 +157,6 @@ def _get_plan_for_key(api_key_id: int, pg_pool) -> "PlanInfo":
                 (api_key_id,),
             )
             row = cur.fetchone()
-    finally:
-        pg_pool.putconn(conn)
     if row is None:
         raise KeyError(f"No plan found for api_key_id={api_key_id}")
     plan_info = PlanInfo(
@@ -192,8 +190,9 @@ def _check_monthly_quota(
     if quota == 0:
         return True, 0, 0  # unlimited (admin plan)
 
-    conn = pg_pool.getconn()
-    try:
+    # PgPool.checkout() is the only public connection API; getconn/putconn
+    # are private to PgPool internals.
+    with pg_pool.checkout() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -205,8 +204,6 @@ def _check_monthly_quota(
                 (api_key_id,),
             )
             row = cur.fetchone()
-    finally:
-        pg_pool.putconn(conn)
 
     used = row[0] if row else 0
     return used < quota, used, quota
@@ -228,33 +225,38 @@ async def _flush_usage_buffer_async(pg_pool) -> None:
         _usage_buffer.clear()
 
     def _do_flush():
-        conn = pg_pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                for key_id, delta in snapshot.items():
-                    if delta <= 0:
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO usage_counter
-                            (api_key_id, period_yyyymm, call_count, updated_at)
-                        VALUES
-                            (%s, to_char(now() AT TIME ZONE 'UTC', 'YYYYMM'), %s, now())
-                        ON CONFLICT (api_key_id, period_yyyymm) DO UPDATE
-                            SET call_count  = usage_counter.call_count + EXCLUDED.call_count,
-                                updated_at  = now()
-                        """,
-                        (key_id, delta),
-                    )
-            conn.commit()
-        except Exception as exc:
-            _logger.warning("usage_buffer flush error: %s", exc)
+        # PgPool.checkout() yields a clean conn with autocommit=True. We flip
+        # autocommit OFF for the duration of the flush so the per-key UPSERTs
+        # commit atomically (or roll back as a batch on error), preserving
+        # the original transaction semantics. checkout()'s finally clause
+        # returns the conn to the pool; the next caller's rollback() reset
+        # will clear any leftover txn state.
+        with pg_pool.checkout() as conn:
             try:
-                conn.rollback()
-            except Exception:
-                pass
-        finally:
-            pg_pool.putconn(conn)
+                conn.autocommit = False
+                with conn.cursor() as cur:
+                    for key_id, delta in snapshot.items():
+                        if delta <= 0:
+                            continue
+                        cur.execute(
+                            """
+                            INSERT INTO usage_counter
+                                (api_key_id, period_yyyymm, call_count, updated_at)
+                            VALUES
+                                (%s, to_char(now() AT TIME ZONE 'UTC', 'YYYYMM'), %s, now())
+                            ON CONFLICT (api_key_id, period_yyyymm) DO UPDATE
+                                SET call_count  = usage_counter.call_count + EXCLUDED.call_count,
+                                    updated_at  = now()
+                            """,
+                            (key_id, delta),
+                        )
+                conn.commit()
+            except Exception as exc:
+                _logger.warning("usage_buffer flush error: %s", exc)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
     try:
         await asyncio.to_thread(_do_flush)

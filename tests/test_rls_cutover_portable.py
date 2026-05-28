@@ -56,3 +56,33 @@ def test_cutover_sh_passes_db_name_variable():
         "that runs rls_create_osm_reader.sql, so the :\"{chr(34)}db_name{chr(34)}\" variable "
         "is defined and the GRANT CONNECT statement targets the correct database."
     )
+
+
+def test_grants_include_plans_table():
+    """:8002 SELECTs `plans` on every authed request (per-key plan lookup, ADR-0039).
+    Missing this grant = every authed request 500s post-cutover. Regression-guard
+    the M10B P0 commercialization control-plane wiring.
+    """
+    content = SQL_FILE.read_text()
+    assert "GRANT SELECT ON TABLE plans TO osm_reader" in content, (
+        f"{SQL_FILE.name} must grant SELECT on `plans` to osm_reader — the MCP :8002 "
+        "process reads plans on every authed request via _get_plan_for_key "
+        "(src/mcp/middleware.py). Without this grant, every authed request fails "
+        "post-RLS-cutover. See ADR-0039 (commercialization control plane)."
+    )
+
+
+def test_grants_include_usage_counter_table():
+    """:8002 SELECTs `usage_counter` per request (quota gate) and UPSERTs it
+    via the buffered flush task. Missing this grant breaks the M10B P0 quota
+    enforcement after the RLS cutover.
+    """
+    content = SQL_FILE.read_text()
+    assert "GRANT SELECT, INSERT, UPDATE ON TABLE usage_counter TO osm_reader" in content, (
+        f"{SQL_FILE.name} must grant SELECT, INSERT, UPDATE on `usage_counter` to "
+        "osm_reader — the MCP :8002 process reads it via _check_monthly_quota and "
+        "UPSERTs via _flush_usage_buffer_async (src/mcp/middleware.py). Without "
+        "this grant, the monthly quota gate silently fails open (broad-except "
+        "fallback) after the RLS cutover. See ADR-0039 (commercialization control "
+        "plane)."
+    )
