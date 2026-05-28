@@ -40,10 +40,32 @@ pytestmark = pytest.mark.postgres
 
 
 def _cleanup_test_keys(conn, key_hashes: list[str]) -> None:
-    """Remove test api_keys (and cascade usage_counter rows) by key_hash."""
+    """Remove test api_keys and their usage_counter rows by key_hash.
+
+    NOTE: the m13_006 migration declares `usage_counter.api_key_id REFERENCES
+    api_keys(id)` but the FK is NOT enforced on existing databases (the table
+    was created via `CREATE TABLE IF NOT EXISTS` before the FK was added in a
+    later edit, so pre-existing usage_counter tables lack the constraint).
+    Therefore `DELETE FROM api_keys` does NOT cascade to usage_counter, and
+    leftover rows can be associated with a future api_keys row that happens
+    to receive the same id (the api_keys sequence is not reset). That stale
+    `call_count = quota` row then causes a 429 on the very first authed call
+    of a subsequent test — see CI iter 3 failure in test_tenant_deploy_key.
+    Explicitly wiping usage_counter rows for our test keys closes the leak.
+    """
     if not key_hashes:
         return
     with conn.cursor() as cur:
+        # Drop usage_counter rows owned by these api_keys BEFORE deleting the
+        # api_keys row (cleanup order does not matter when FK is unenforced,
+        # but reads cleaner this way and is FK-safe if a future migration
+        # enables the constraint).
+        cur.execute(
+            "DELETE FROM usage_counter WHERE api_key_id IN ("
+            "  SELECT id FROM api_keys WHERE key_hash = ANY(%s)"
+            ")",
+            (key_hashes,),
+        )
         cur.execute(
             "DELETE FROM api_keys WHERE key_hash = ANY(%s)", (key_hashes,)
         )

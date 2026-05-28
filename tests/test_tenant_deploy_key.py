@@ -92,12 +92,26 @@ def _clear_auth_cache():
 
 @pytest.fixture
 def pg_deploy_conn(pg_conn):
-    """Ensure migrations run and relevant tables are clean before/after each test."""
+    """Ensure migrations run and relevant tables are clean before/after each test.
+
+    Cross-test contamination guard (CI iter 3): `usage_counter` is wiped to
+    prevent stale rows from earlier suites (e.g. test_middleware_quota,
+    test_account_usage_api) from tripping the monthly quota gate added in
+    PR #200 / ADR-0039. The m13_006 migration declares
+    `usage_counter.api_key_id REFERENCES api_keys(id)` without ON DELETE
+    CASCADE, and the table was created by an earlier deploy without the FK
+    enforced — so `DELETE FROM api_keys` does NOT cascade to usage_counter
+    even where the constraint exists. After contamination, the api_keys
+    sequence reuses a previously-allocated id whose stale usage_counter row
+    holds `call_count = quota`, causing the middleware to return 429 on the
+    very first call of an authed test.
+    """
     from src.db.migrate import run_migrations
 
     run_migrations(pg_conn)
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM usage_log")
+        cur.execute("DELETE FROM usage_counter")
         cur.execute("DELETE FROM api_keys")
         cur.execute("DELETE FROM ssh_key_pairs")
         cur.execute("DELETE FROM tenants")
@@ -106,6 +120,7 @@ def pg_deploy_conn(pg_conn):
     yield pg_conn
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM usage_log")
+        cur.execute("DELETE FROM usage_counter")
         cur.execute("DELETE FROM api_keys")
         cur.execute("DELETE FROM ssh_key_pairs")
         cur.execute("DELETE FROM tenants")
