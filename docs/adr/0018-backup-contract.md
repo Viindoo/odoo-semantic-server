@@ -146,6 +146,23 @@ To restore from a bundle:
    To replay manually, wipe first then load:
    `cypher-shell -u neo4j -p <pass> "MATCH (n) DETACH DELETE n"` then
    `cypher-shell -u neo4j -p <pass> < neo4j.cypher`.
+
+   **DR safety guards (PR #189) around the destructive wipe:**
+   - **Validate before wipe.** `_restore_neo4j_cypher` parses the file and
+     refuses to run `DETACH DELETE` unless it contains ≥1 executable statement
+     AND the export completeness trailer (`REMOVE n.__eid__`, always written last
+     by `_export_neo4j_online`). An empty/truncated/corrupt dump returns an error
+     and the live graph is left untouched — a wiped graph with nothing valid to
+     restore is unrecoverable.
+   - **Pre-restore safety snapshot.** Before the wipe, `restore` snapshots the
+     current live graph to `BACKUP_DIR/pre-restore-<ts>-neo4j.cypher` (via
+     `_export_neo4j_online`) — parity with the Postgres pre-restore safety dump.
+     If the graph is reachable but the snapshot fails, the restore aborts before
+     wiping. If Neo4j is unreachable/unconfigured, the snapshot is skipped (the
+     restore would itself fail to connect and never reaches `DETACH DELETE`).
+   - **Failure propagates.** A failed/partial Neo4j restore makes the `restore`
+     command exit non-zero (Postgres success is still reported on stdout), so DR
+     automation never mistakes a half-restored graph for success.
 3. **Neo4j (legacy bundles pre-2026-05-26):** `neo4j.dump` is present instead.
    Load via `neo4j-admin database load --from-path=/path neo4j` (requires DB offline).
    See `docs/deploy.md §Backup` for the offline load procedure.
@@ -162,9 +179,16 @@ To restore from a bundle:
 ## Consequences
 
 - Backups are larger (tar.gz vs plain SQL) but complete.
-- `neo4j.cypher` export is non-fatal: if `NEO4J_PASSWORD` is absent or Neo4j
-  is unreachable, the step is skipped with a `WARNING` log line; `postgres.sql`
-  is still captured. The omission is visible in `manifest.json` `components`.
+- `neo4j.cypher` **backup** export is non-fatal: if `NEO4J_PASSWORD` is absent or
+  Neo4j is unreachable, the backup step is skipped with a `WARNING` log line;
+  `postgres.sql` is still captured. The omission is visible in `manifest.json`
+  `components`. (This non-fatal posture applies to the *backup* path only — the
+  *restore* path treats a Neo4j failure as fatal to the exit code; see Restore
+  step 2 DR safety guards above.)
+- `_export_neo4j_online` streams statements directly to the output file handle
+  inside a single read transaction — it does not buffer the whole graph in
+  memory, so peak RSS stays flat regardless of graph size (the ~1–2 M-node graph
+  would otherwise cost hundreds of MB of in-memory Cypher).
 - **Zero downtime**: unlike the old `neo4j-admin dump` approach, the database
   never needs to be stopped during backup.
 - **Community edition compatible**: no APOC plugin or Enterprise licence required.

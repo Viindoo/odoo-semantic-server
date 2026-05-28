@@ -1009,6 +1009,28 @@ curl http://127.0.0.1:8002/health
 # → {"neo4j": "ok", "postgres": "ok"}
 ```
 
+**/metrics bypass auth — BẮT BUỘC hạn chế theo IP scraper ở nginx:**
+`GET /metrics` (Prometheus text format, MCP :8002) cũng nằm trong `_PUBLIC_PATHS`
+nên **không yêu cầu API key** — đây là pattern Prometheus chuẩn (exporter không tự
+auth; mitigation ở tầng reverse-proxy). Vì `/metrics` lộ thông tin vận hành
+(latency embed, throughput) nên **phải** giới hạn truy cập chỉ cho IP của
+Prometheus scraper ở nginx; không bao giờ public ra Internet:
+
+```nginx
+# Chỉ cho phép Prometheus scraper truy cập /metrics; mọi IP khác → 403.
+location = /metrics {
+    allow 127.0.0.1;          # local scraper
+    allow 10.0.0.0/8;         # ← thay bằng subnet/IP của Prometheus server
+    deny  all;
+    proxy_pass http://127.0.0.1:8002;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+> Lưu ý: phải đặt `location = /metrics` (exact match) TRƯỚC `location /mcp` /
+> catch-all để nó không bị nuốt bởi prefix-match khác. Nếu không scrape
+> Prometheus thì để nguyên `deny all` (chặn hoàn toàn) là an toàn nhất.
+
 ### 4.4 Verify proxy
 
 ```bash
