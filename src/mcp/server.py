@@ -962,13 +962,11 @@ def _resolve_method(
             f", odoo_version='{odoo_version}') for full override chain"
         ),
     )
-    for i, line in enumerate(capped_chain):
-        is_last = i == len(capped_chain) - 1 and chain_total <= LIST_PREVIEW_MAX_ITEMS
-        connector = "└─" if is_last else "├─"
-        if line.startswith("..."):
-            lines.append(f"│   {line}")
-        else:
-            lines.append(f"│   {connector} {line}")
+    # ADR-0023 §1.2: render via the shared helper so the LAST row — including a
+    # "... and N more" disclosure row — always gets the └─ connector. Parent
+    # header "Override chain (...)" was appended as a non-last child (├─), so
+    # the vertical line must continue: prefix "│   ".
+    lines.extend(render_list_block(capped_chain, prefix="│   "))
     lines.append(format_next_step([
         f"find_override_point(model='{model_name}', method='{method_name}'"
         f", odoo_version='{odoo_version}') for safe hook spot",
@@ -1614,12 +1612,10 @@ def _impact_analysis(
             cap=cap, total=total_count,
             more_hint=more_hint,
         )
-        for i, line in enumerate(capped):
-            connector = "└─" if i == len(capped) - 1 and total_count <= cap else "├─"
-            if line.startswith("..."):
-                out.append(f"│   {line}")
-            else:
-                out.append(f"│   {connector} {line}")
+        # ADR-0023 §1.2: the shared helper attaches └─ to the LAST row, which
+        # includes the "... and N more" disclosure row when total_count > cap.
+        # Header was appended as a non-last child (├─) → prefix "│   ".
+        out.extend(render_list_block(capped, prefix="│   "))
 
     lines = [f"impact_analysis({entity_type}, {entity_name}, {odoo_version})"]
     lines.append(f"├─ Risk: {risk} ({total} affected entities)")
@@ -6426,7 +6422,7 @@ async def health_check(request: Request):
 # Prometheus metrics endpoint — no auth (mirroring /health bypass in middleware.py).
 # Cross-process caveat: this endpoint only reflects metrics from the MCP server
 # process (:8002).  Batch-indexer embed calls run in a separate process and are
-# NOT visible here.  See src/mcp/metrics.py for full caveat.
+# NOT visible here.  See src/metrics.py for full caveat.
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics_endpoint(request: Request):
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest

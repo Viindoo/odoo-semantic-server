@@ -24,7 +24,7 @@ from src.constants import (
     TIMEOUT_EMBEDDER_READ,
     TIMEOUT_EMBEDDER_WRITE,
 )
-from src.mcp.metrics import embedder_batch_duration_seconds
+from src.metrics import embedder_batch_duration_seconds
 
 
 def _normalize(vec: list[float]) -> list[float]:
@@ -127,11 +127,23 @@ class Qwen3Embedder:
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        # ADR-0010 D7: histogram observation lives in the same critical section
-        # as `call_count += 1` so /metrics counter and histogram never reflect a
-        # torn intermediate state for a concurrent reader. (prometheus_client is
-        # itself thread-safe; co-locating under the lock keeps the two
-        # observability signals mutually consistent.)
+        # ADR-0010 D7: the two observability signals measure different things
+        # and therefore have different cardinality, deliberately:
+        #
+        #   * `_hist.observe(duration)` is recorded ONCE PER _embed_one round-trip
+        #     — i.e. once for the single-batch path, and once per sub-batch on the
+        #     large-batch path. This keeps the histogram a faithful per-network-
+        #     -call latency distribution (a 250-text embed() should contribute the
+        #     latency of each of its sub-batches, not one blended number).
+        #   * `call_count` is incremented ONCE PER embed() call, regardless of how
+        #     many sub-batches it fanned into (matches the EmbedderClient docstring).
+        #
+        # Both writes happen under `self._lock`. They are co-located in the same
+        # critical section ONLY on the single-batch path (below); on the large-
+        # batch path each observe() takes the lock per sub-batch and the single
+        # `call_count += 1` takes it once after the loop. prometheus_client is
+        # itself thread-safe, so no datum is torn; the lock here only serialises
+        # this class's own `call_count` mutation.
         _hist = embedder_batch_duration_seconds.labels(embedder_type="qwen3")
         if len(texts) > self._MAX_BATCH:
             out: list[list[float]] = []

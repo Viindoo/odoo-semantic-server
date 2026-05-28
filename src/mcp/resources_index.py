@@ -57,8 +57,10 @@ def list_resources_index() -> list[dict[str, str]]:
          (the canonical defining module — mirrors ADR-0013 T1 tier).
       2. Counts inbound DEPENDS_ON edges on the defining Module as popularity
          score (same as T3 tier in ``_resolve_model``).
-      3. Orders by dep_count DESC, model name ASC (deterministic tiebreak
-         per CLAUDE.md Neo4j 5.x gotcha).
+      3. Orders by dep_count DESC, model name ASC, module name ASC
+         (deterministic tiebreak per CLAUDE.md Neo4j 5.x gotcha — module
+         name resolves ties when one model name is defined by several
+         modules at the same dep_count).
       4. Limits to 100 entries per version.
       5. **R2 fix (ADR-0030 known gap):** applies the current tenant's
          own/shared scope filter so private-tenant models from OTHER tenants
@@ -151,7 +153,10 @@ def _fetch_top_models(
       - Counts inbound DEPENDS_ON on the Module as dep_count.
       - Applies the current tenant's own/shared scope filter (R2 fix) so
         private-tenant models from other tenants are excluded.
-      - Orders by dep_count DESC, m.name ASC.
+      - Orders by dep_count DESC, m.name ASC, mod.name ASC — the trailing
+        mod.name breaks the tie when the same model name is defined by more
+        than one module at the same dep_count (CLAUDE.md Neo4j 5.x gotcha:
+        ORDER BY must have a deterministic tiebreak).
       - Limits to _MAX_PER_VERSION.
 
     Falls back gracefully: if no model has is_definition=true for a version
@@ -183,7 +188,7 @@ def _fetch_top_models(
              COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dep_count
         RETURN m.name AS model_name,
                dep_count
-        ORDER BY dep_count DESC, m.name ASC
+        ORDER BY dep_count DESC, m.name ASC, mod.name ASC
         LIMIT {_MAX_PER_VERSION}
         """,
         **params,
@@ -200,7 +205,7 @@ def _fetch_top_models(
                  COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dep_count
             RETURN m.name AS model_name,
                    dep_count
-            ORDER BY dep_count DESC, m.name ASC
+            ORDER BY dep_count DESC, m.name ASC, mod.name ASC
             LIMIT {_MAX_PER_VERSION}
             """,
             **params,

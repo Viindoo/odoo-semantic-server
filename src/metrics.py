@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Prometheus metrics registry for the Odoo Semantic MCP server.
+"""Prometheus metrics registry for the Odoo Semantic MCP project.
 
 Single module that owns all metric definitions so they are registered once
 and importable from anywhere in the process.
+
+Layered at ``src/`` (shared) — NOT under ``src/mcp/`` — so that the indexer
+pipeline (``src/indexer/embedder.py``) can record batch-embed durations
+without the indexer layer importing the server (mcp) layer. Both the indexer
+and the MCP server depend *downward* onto this shared module; the pipeline
+direction stays one-way (CLAUDE.md "Pipeline — Không Cross-Import Ngang Hàng").
 
 Cross-process caveat
 --------------------

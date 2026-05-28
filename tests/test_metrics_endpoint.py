@@ -14,7 +14,7 @@ import math
 import httpx
 import pytest
 
-from src.mcp.metrics import embedder_batch_duration_seconds
+from src.metrics import embedder_batch_duration_seconds
 
 _LABEL = {"embedder_type": "qwen3"}
 
