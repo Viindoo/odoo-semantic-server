@@ -3,23 +3,28 @@
 """Unit tests for per-API-key rate limiter in src.mcp.middleware."""
 import time
 
-from src.mcp.middleware import _check_rate_limit, _rate_buckets
+from src.mcp.middleware import PlanInfo, _check_rate_limit, _rate_buckets
+
+
+def _plan(rpm: int) -> PlanInfo:
+    """Build a minimal PlanInfo for rate-limit unit tests."""
+    return PlanInfo(plan_id=0, slug="test", quota_calls_per_month=0, rate_limit_rpm=rpm)
 
 
 def test_rate_limit_allows_up_to_limit():
     _rate_buckets.clear()
     for i in range(5):
-        allowed, remaining = _check_rate_limit(api_key_id=999, limit_rpm=5)
+        allowed, remaining = _check_rate_limit(api_key_id=999, plan_info=_plan(5))
         assert allowed, f"Request {i + 1} should be allowed (remaining={remaining})"
     # 6th request should be blocked
-    allowed, remaining = _check_rate_limit(api_key_id=999, limit_rpm=5)
+    allowed, remaining = _check_rate_limit(api_key_id=999, plan_info=_plan(5))
     assert not allowed, "6th request should be blocked"
     assert remaining == 0
 
 
 def test_rate_limit_remaining_decrements():
     _rate_buckets.clear()
-    _, r0 = _check_rate_limit(api_key_id=100, limit_rpm=10)
+    _, r0 = _check_rate_limit(api_key_id=100, plan_info=_plan(10))
     assert r0 == 9  # 10 - 1 - 1 = 8... wait: bucket is now 1, remaining = 10-1-1 = 8
     # Actually: remaining = max(0, limit - len(bucket)) where bucket already has the new entry
     # After appending: len=1, remaining = 10-1=9, returned = 9-1=8... let's just check < limit
@@ -29,12 +34,12 @@ def test_rate_limit_different_keys_isolated():
     _rate_buckets.clear()
     # Fill up key 1
     for _ in range(5):
-        _check_rate_limit(api_key_id=1, limit_rpm=5)
+        _check_rate_limit(api_key_id=1, plan_info=_plan(5))
     # Key 1 should now be blocked
-    allowed1, _ = _check_rate_limit(api_key_id=1, limit_rpm=5)
+    allowed1, _ = _check_rate_limit(api_key_id=1, plan_info=_plan(5))
     assert not allowed1, "Key 1 should be rate-limited"
     # Key 2 should be independent and allowed
-    allowed2, _ = _check_rate_limit(api_key_id=2, limit_rpm=5)
+    allowed2, _ = _check_rate_limit(api_key_id=2, plan_info=_plan(5))
     assert allowed2, "Key 2 should not be rate-limited"
 
 
@@ -49,13 +54,13 @@ def test_rate_limit_window_expiry():
     _rate_buckets[77] = deque([old_ts] * 5)
 
     # Next request should be allowed (old entries pruned)
-    allowed, _ = _check_rate_limit(api_key_id=77, limit_rpm=5)
+    allowed, _ = _check_rate_limit(api_key_id=77, plan_info=_plan(5))
     assert allowed, "Old entries should be pruned, request should be allowed"
 
 
 def test_rate_limit_returns_correct_remaining():
     _rate_buckets.clear()
-    allowed, remaining = _check_rate_limit(api_key_id=200, limit_rpm=10)
+    allowed, remaining = _check_rate_limit(api_key_id=200, plan_info=_plan(10))
     assert allowed
     # After 1 request in bucket: remaining = (10 - 1) - 1 = 8
     # Implementation: remaining = max(0, limit - len(bucket)) BEFORE append,

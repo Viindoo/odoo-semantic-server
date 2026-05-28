@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import psycopg2
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -15,6 +16,16 @@ from starlette.responses import Response
 from src.auth import hash_key as _hash_key
 from src.constants import DEFAULT_RATE_LIMIT_RPM, PG_BG_RETRY_INTERVAL_SECONDS
 from src.db.exceptions import PoolNotInitializedError
+
+
+@dataclass(frozen=True)
+class PlanInfo:
+    """Immutable plan metadata snapshot cached per api_key_id."""
+
+    plan_id: int
+    slug: str
+    quota_calls_per_month: int  # 0 = unlimited (admin)
+    rate_limit_rpm: int
 
 
 def _degraded_response() -> Response:
@@ -62,6 +73,16 @@ _cache_lock = threading.Lock()  # Protects read/write to _KEY_CACHE and _CACHE_T
 # Value is tenant_id (int) for tenant-bound keys, or None for global/admin keys.
 _TENANT_CACHE: dict[str, int | None] = {}
 
+# Plan cache: api_key_id -> (PlanInfo, monotonic_timestamp)
+# Shares _CACHE_TTL and _cache_lock with _KEY_CACHE to avoid additional lock.
+_PLAN_CACHE: dict[int, tuple[PlanInfo, float]] = {}
+
+# Usage buffer: api_key_id -> pending increments not yet flushed to DB.
+# Flushed to usage_counter via background task when buffer hits _USAGE_FLUSH_THRESHOLD.
+_usage_buffer: dict[int, int] = {}
+_usage_buffer_lock = threading.Lock()
+_USAGE_FLUSH_THRESHOLD = 10  # flush after this many buffered increments across all keys
+
 # ---------------------------------------------------------------------------
 # Per-API-key sliding-window rate limiter (WI-8)
 # ---------------------------------------------------------------------------
@@ -70,19 +91,20 @@ _rate_buckets: dict[int, deque] = {}
 _rate_lock = threading.Lock()
 
 
-def _check_rate_limit(api_key_id: int, limit_rpm: int = DEFAULT_RATE_LIMIT_RPM) -> tuple[bool, int]:
+def _check_rate_limit(api_key_id: int, plan_info: "PlanInfo") -> tuple[bool, int]:
     """Sliding-window rate limiter. Returns (allowed, remaining).
 
     Thread-safe: guarded by _rate_lock.
 
     Args:
         api_key_id: The authenticated API key id.
-        limit_rpm:  Maximum requests per 60-second window (default: 120).
+        plan_info:  PlanInfo for the key — provides rate_limit_rpm.
 
     Returns:
         (True, remaining)  if the request is within the limit.
         (False, 0)         if the window is exhausted.
     """
+    limit_rpm = plan_info.rate_limit_rpm
     now = time.monotonic()
     window = 60.0
     with _rate_lock:
@@ -95,6 +117,166 @@ def _check_rate_limit(api_key_id: int, limit_rpm: int = DEFAULT_RATE_LIMIT_RPM) 
             return False, 0
         bucket.append(now)
         return True, remaining - 1
+
+
+def _get_plan_for_key(api_key_id: int, pg_pool) -> "PlanInfo":
+    """Return PlanInfo for api_key_id, consulting _PLAN_CACHE first.
+
+    Cache miss triggers a DB query joining api_keys + plans.
+    Uses _cache_lock (same lock as _KEY_CACHE) to avoid adding a new lock.
+    TTL: _CACHE_TTL (300 s).
+
+    Args:
+        api_key_id: The authenticated API key id.
+        pg_pool:    psycopg2 connection pool.
+
+    Returns:
+        PlanInfo for the key.
+
+    Raises:
+        KeyError / psycopg2.Error if the row is unexpectedly absent.
+    """
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _PLAN_CACHE.get(api_key_id)
+        if cached is not None:
+            plan_info, ts = cached
+            if now - ts < _CACHE_TTL:
+                return plan_info
+    # Cache miss or expired — hit DB
+    conn = pg_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.id, p.slug, p.quota_calls_per_month, p.rate_limit_rpm
+                  FROM plans p
+                  JOIN api_keys k ON k.plan_id = p.id
+                 WHERE k.id = %s
+                """,
+                (api_key_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        pg_pool.putconn(conn)
+    if row is None:
+        raise KeyError(f"No plan found for api_key_id={api_key_id}")
+    plan_info = PlanInfo(
+        plan_id=row[0],
+        slug=row[1],
+        quota_calls_per_month=row[2],
+        rate_limit_rpm=row[3],
+    )
+    with _cache_lock:
+        _PLAN_CACHE[api_key_id] = (plan_info, now)
+    return plan_info
+
+
+def _check_monthly_quota(
+    api_key_id: int, plan_info: "PlanInfo", pg_pool
+) -> tuple[bool, int, int]:
+    """Check monthly call quota for the key. Returns (allowed, used, quota).
+
+    If plan quota is 0 (unlimited / admin path), returns (True, 0, 0).
+    Reads usage_counter for the current UTC calendar month.
+
+    Args:
+        api_key_id: The authenticated API key id.
+        plan_info:  PlanInfo with quota_calls_per_month.
+        pg_pool:    psycopg2 connection pool.
+
+    Returns:
+        (allowed, used, quota) — quota=0 means unlimited.
+    """
+    quota = plan_info.quota_calls_per_month
+    if quota == 0:
+        return True, 0, 0  # unlimited (admin plan)
+
+    conn = pg_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT call_count
+                  FROM usage_counter
+                 WHERE api_key_id = %s
+                   AND period_yyyymm = to_char(now() AT TIME ZONE 'UTC', 'YYYYMM')
+                """,
+                (api_key_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        pg_pool.putconn(conn)
+
+    used = row[0] if row else 0
+    return used < quota, used, quota
+
+
+async def _flush_usage_buffer_async(pg_pool) -> None:
+    """Flush accumulated increments from _usage_buffer to usage_counter (DB).
+
+    Uses atomic UPSERT: INSERT ... ON CONFLICT DO UPDATE so concurrent flushes
+    from multiple processes are safe. Runs in a thread via asyncio.to_thread to
+    avoid blocking the event loop.
+
+    Best-effort: logs on error, never raises.
+    """
+    with _usage_buffer_lock:
+        if not _usage_buffer:
+            return
+        snapshot = dict(_usage_buffer)
+        _usage_buffer.clear()
+
+    def _do_flush():
+        conn = pg_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                for key_id, delta in snapshot.items():
+                    if delta <= 0:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO usage_counter
+                            (api_key_id, period_yyyymm, call_count, updated_at)
+                        VALUES
+                            (%s, to_char(now() AT TIME ZONE 'UTC', 'YYYYMM'), %s, now())
+                        ON CONFLICT (api_key_id, period_yyyymm) DO UPDATE
+                            SET call_count  = usage_counter.call_count + EXCLUDED.call_count,
+                                updated_at  = now()
+                        """,
+                        (key_id, delta),
+                    )
+            conn.commit()
+        except Exception as exc:
+            _logger.warning("usage_buffer flush error: %s", exc)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            pg_pool.putconn(conn)
+
+    try:
+        await asyncio.to_thread(_do_flush)
+    except Exception as exc:
+        _logger.warning("usage_buffer flush thread error: %s", exc)
+
+
+def _increment_usage_buffer(api_key_id: int, pg_pool) -> bool:
+    """Increment in-process buffer for api_key_id; return True when flush triggered.
+
+    Flush is scheduled (fire-and-forget) when total pending across all keys
+    hits _USAGE_FLUSH_THRESHOLD. The flush task is added to _BG_TASKS to
+    prevent GC-before-completion (B3 pattern).
+    """
+    with _usage_buffer_lock:
+        _usage_buffer[api_key_id] = _usage_buffer.get(api_key_id, 0) + 1
+        total_pending = sum(_usage_buffer.values())
+
+    if total_pending >= _USAGE_FLUSH_THRESHOLD:
+        return True  # caller schedules the flush
+    return False
+
 
 # Strong references to background tasks prevent GC-before-completion (B3).
 _BG_TASKS: set[asyncio.Task] = set()
@@ -271,15 +453,89 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if key_id is None:
             return Response("Invalid or inactive API key", status_code=401)
 
-        # Rate limiting — applied after successful auth (WI-8)
-        from src import config as _config
-        limit_rpm = int(_config.get("auth", "rate_limit_rpm", fallback=str(DEFAULT_RATE_LIMIT_RPM)))
-        allowed, remaining = _check_rate_limit(key_id, limit_rpm)
-        if not allowed:
+        # Plan-aware rate limiting + monthly quota (WI-B2).
+        # Fetch plan info from cache / DB. On error (plan row missing or DB down),
+        # fall back to DEFAULT_RATE_LIMIT_RPM so a transient lookup failure doesn't
+        # block all requests. Log the anomaly for ops.
+        import datetime as _dt
+
+        from src.db.pg import get_pool as _get_pool
+        pg_pool = None
+        plan_info: PlanInfo | None = None
+        try:
+            pg_pool = _get_pool()
+            plan_info = _get_plan_for_key(key_id, pg_pool)
+        except Exception as _plan_exc:
+            _logger.warning(
+                "plan_lookup failed for key_id=%s — falling back to defaults. Error: %s",
+                key_id, str(_plan_exc)[:200],
+            )
+            plan_info = PlanInfo(
+                plan_id=0,
+                slug="__fallback__",
+                quota_calls_per_month=0,  # unlimited fallback
+                rate_limit_rpm=DEFAULT_RATE_LIMIT_RPM,
+            )
+
+        allowed_rpm, remaining = _check_rate_limit(key_id, plan_info)
+        if not allowed_rpm:
+            now_utc = _dt.datetime.now(_dt.UTC)
+            reset_at = (now_utc + _dt.timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = _json.dumps({
+                "status": "quota_exhausted",
+                "reason": "rpm",
+                "plan": plan_info.slug,
+                "reset_at": reset_at,
+            })
             return Response(
-                "Rate limit exceeded — try again in 60 seconds",
+                body,
                 status_code=429,
+                media_type="application/json",
                 headers={"X-RateLimit-Remaining": "0"},
+            )
+
+        allowed_monthly = True
+        used_monthly = 0
+        quota_monthly = 0
+        if pg_pool is not None:
+            try:
+                allowed_monthly, used_monthly, quota_monthly = _check_monthly_quota(
+                    key_id, plan_info, pg_pool
+                )
+            except Exception as _quota_exc:
+                _logger.warning(
+                    "monthly_quota check failed for key_id=%s — allowing request. Error: %s",
+                    key_id, str(_quota_exc)[:200],
+                )
+
+        if not allowed_monthly:
+            now_utc = _dt.datetime.now(_dt.UTC)
+            # Reset at start of next UTC calendar month
+            if now_utc.month == 12:
+                next_month = now_utc.replace(year=now_utc.year + 1, month=1, day=1,
+                                             hour=0, minute=0, second=0, microsecond=0)
+            else:
+                next_month = now_utc.replace(month=now_utc.month + 1, day=1,
+                                             hour=0, minute=0, second=0, microsecond=0)
+            reset_at = next_month.strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = _json.dumps({
+                "status": "quota_exhausted",
+                "reason": "monthly",
+                "plan": plan_info.slug,
+                "used": used_monthly,
+                "quota": quota_monthly,
+                "reset_at": reset_at,
+            })
+            return Response(
+                body,
+                status_code=429,
+                media_type="application/json",
+                headers={
+                    "X-RateLimit-Remaining": str(remaining),
+                    "X-Quota-Used": str(used_monthly),
+                    "X-Quota-Limit": str(quota_monthly),
+                    "X-Quota-Period": _dt.datetime.now(_dt.UTC).strftime("%Y%m"),
+                },
             )
 
         request.state.api_key_id = key_id
@@ -290,7 +546,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
         start = time.monotonic()
         response = await call_next(request)
         ms = int((time.monotonic() - start) * 1000)
+
+        # Inject quota headers on allowed responses
+        now_period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
         response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-Quota-Used"] = str(used_monthly)
+        response.headers["X-Quota-Limit"] = str(quota_monthly)
+        response.headers["X-Quota-Period"] = now_period
+
+        # Increment usage buffer; schedule flush if threshold reached.
+        if pg_pool is not None:
+            should_flush = _increment_usage_buffer(key_id, pg_pool)
+            if should_flush:
+                task_flush = asyncio.create_task(_flush_usage_buffer_async(pg_pool))
+                _BG_TASKS.add(task_flush)
+                task_flush.add_done_callback(_BG_TASKS.discard)
 
         # Fire-and-forget usage log — hold strong ref to prevent GC (B3)
         task = asyncio.create_task(_log_usage_async(key_id, request, ms))
