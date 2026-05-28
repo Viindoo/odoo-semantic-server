@@ -13,3 +13,4 @@ odoo-semantic.conf
 site/node_modules/
 site/dist/
 site/.astro/
+uv.lock

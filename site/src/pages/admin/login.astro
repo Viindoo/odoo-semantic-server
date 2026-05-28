@@ -29,6 +29,41 @@ const returnTarget = /^\/account\//.test(_rawReturn) ? _rawReturn : '/admin';
 if (alreadyAuthed) {
   return Astro.redirect(returnTarget);
 }
+
+// XSS-safe error/info banner — ONLY whitelisted codes are rendered.
+// User-supplied ?error= / ?info= values are never rendered verbatim.
+const ERROR_MESSAGES: Record<string, string> = {
+  oauth_failed:
+    'Sign-in with that provider didn\'t work. Try again or use email + password.',
+  signup_disabled:
+    'Sign-up is currently invite-only. Contact admin to request access.',
+  email_unverified:
+    'Please verify your email before signing in. Check your inbox or request a new verification email.',
+  invalid_credentials: 'Username or password incorrect.',
+  session_expired: 'Your session expired. Please sign in again.',
+  email_conflict:
+    'That email is already linked to another account. Try a different sign-in method.',
+  no_email:
+    'Your GitHub account has no verified primary email. Add one in GitHub settings and try again.',
+};
+const ERROR_FALLBACK = 'Sign-in failed. Please try again.';
+
+const INFO_MESSAGES: Record<string, string> = {
+  password_reset_sent:
+    'If that email is registered, a reset link has been sent. Check your inbox.',
+  password_reset_success: 'Password updated. Please sign in with your new password.',
+  email_verified: 'Email verified. Please sign in.',
+};
+
+const _rawError = Astro.url.searchParams.get('error') ?? '';
+const _rawInfo = Astro.url.searchParams.get('info') ?? '';
+
+// Resolve through whitelist — unknown codes fall back to generic message (error)
+// or are silently ignored (info). Never render user-supplied strings.
+const errorMsg: string | null = _rawError
+  ? (ERROR_MESSAGES[_rawError] ?? ERROR_FALLBACK)
+  : null;
+const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : null;
 ---
 
 <BaseLayout title="Login — Odoo Semantic MCP">
@@ -37,6 +72,28 @@ if (alreadyAuthed) {
     <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium"></div>
 
     <div class="w-full max-w-sm">
+      <!-- Server-rendered error / info banner (from ?error= / ?info= URL params) -->
+      {errorMsg && (
+        <div
+          class="mb-4 px-4 py-3 rounded-lg border text-sm font-medium bg-red-50 border-red-200 text-red-700"
+          role="alert"
+          aria-live="polite"
+          data-testid="login-error-banner"
+        >
+          {errorMsg}
+        </div>
+      )}
+      {infoMsg && (
+        <div
+          class="mb-4 px-4 py-3 rounded-lg border text-sm font-medium bg-blue-50 border-blue-200 text-blue-700"
+          role="status"
+          aria-live="polite"
+          data-testid="login-info-banner"
+        >
+          {infoMsg}
+        </div>
+      )}
+
       <!-- Logo -->
       <div class="text-center mb-8">
         <div class="inline-flex items-center justify-center w-14 h-14 bg-viindoo-primary rounded-2xl mb-3">
@@ -77,6 +134,11 @@ if (alreadyAuthed) {
               placeholder="••••••••"
             />
           </div>
+
+          <!-- Forgot password link -->
+          <p class="text-right text-xs">
+            <a href="/forgot-password" class="text-viindoo-primary hover:underline">Forgot password?</a>
+          </p>
 
           <!-- Error message -->
           <p data-testid="login-error" hidden class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"></p>

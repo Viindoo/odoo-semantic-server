@@ -29,6 +29,28 @@ os.environ.setdefault("NEO4J_PASSWORD", NEO4J_PASSWORD)
 _NEO4J_IMAGE = os.getenv("NEO4J_IMAGE", "neo4j:5.26.25")
 
 
+def _priority2_guard_blocks_run() -> bool:
+    """Return True when the Priority 2 bolt fallback should be blocked.
+
+    Blocks when ALL three conditions hold simultaneously:
+      - Not running in CI (CI env var is not "true")
+      - NEO4J_TEST_URI is the default "bolt://localhost:7687"
+      - NEO4J_TEST_PASSWORD is the default "password"
+
+    Rationale: on a machine that already has a production (or non-test) Neo4j
+    on :7687 with non-default credentials, attempting a connect with "password"
+    triggers an auth-rate-limit burst. Incident: 2026-05-26 14:01 UTC.
+    Override: set NEO4J_TEST_URI or NEO4J_TEST_PASSWORD to non-default values.
+    """
+    # CI detection tolerates common values across providers:
+    # GitHub Actions sets "true"; Jenkins/GitLab/Travis often set "1";
+    # some environments use "True" / "TRUE" / "yes".
+    _is_ci = os.getenv("CI", "").lower() in {"true", "1", "yes"}
+    _default_uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687") == "bolt://localhost:7687"
+    _default_pw = os.getenv("NEO4J_TEST_PASSWORD", "password") == "password"
+    return _default_uri and _default_pw and not _is_ci
+
+
 @pytest.fixture(autouse=True)
 def _ensure_current_event_loop():
     """Py3.12 guard: restore a usable current event loop before each test.
@@ -253,6 +275,15 @@ def neo4j_driver():
 
     # --- Priority 2: Neo4j already running (docker compose up -d neo4j) ---
     if driver is None:
+        if _priority2_guard_blocks_run():
+            pytest.skip(
+                "Priority 2 fallback (localhost:7687 with default 'password') is "
+                "only allowed in CI to prevent accidental hits on a non-test Neo4j "
+                "running on the same host (e.g. production). "
+                "Set NEO4J_TEST_PASSWORD or NEO4J_TEST_URI to a non-default value "
+                "to enable. See docs/adr/0040-conftest-priority2-fallback-guard.md "
+                "(forthcoming) + 2026-05-26 prod RCA."
+            )
         bolt_driver = None
         try:
             bolt_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))

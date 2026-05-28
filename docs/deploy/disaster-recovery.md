@@ -16,33 +16,43 @@ Hướng dẫn phục hồi khi server mất data, DB corrupt, hoặc cần migr
 | **FERNET_KEY** (`/etc/credstore/FERNET_KEY`, root:root 0600 — systemd LoadCredential) | Ngay khi tạo lần đầu, và sau mỗi lần rotate | Mất key = không decrypt SSH private key / TOTP secret — lưu vào secrets manager riêng biệt |
 | **`odoo-semantic.conf`** | Khi thay đổi config | Chứa DB DSN + passwords — cùng secrets manager với webui.env |
 
-### Automated PG backup (cron ví dụ)
+### Automated backup (cron ví dụ)
+
+Từ W1A-1/W1A-2 (2026-05-28), canonical backup path là **`python -m src.cli backup`** — viết một
+bundle tar.gz duy nhất chứa `postgres.dump` (pg_dump custom format, level-6 compression),
+`neo4j.cypher` (Bolt export, không cần stop DB), và `manifest.json`. Cron pair cũ
+(`pg_dump` plain + `neo4j-admin database dump`) đã được supersede.
 
 ```bash
 # Chạy bằng user odoo-semantic, daily 2am:
-sudo tee /etc/cron.d/odoo-semantic-pg-backup > /dev/null << 'EOF'
-0 2 * * * odoo-semantic mkdir -p ~/backups && \
-    docker exec odoo-semantic-mcp-postgres-1 pg_dump -U odoo_semantic odoo_semantic \
-    > ~/backups/odoo_semantic_$(date +\%Y\%m\%d).sql 2>> /var/log/odoo-semantic-backup.log
-# Giữ 14 ngày:
-0 3 * * * odoo-semantic find ~/backups -name "odoo_semantic_*.sql" -mtime +14 -delete
+sudo tee /etc/cron.d/odoo-semantic-backup > /dev/null << 'EOF'
+0 2 * * * odoo-semantic /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+    -m src.cli backup \
+    --output /var/backups/odoo-semantic/osm-$(date +\%Y\%m\%d-\%H\%M\%S).tar.gz \
+    >> /var/log/odoo-semantic-backup.log 2>&1
 EOF
 ```
 
-### Automated Neo4j backup (weekly)
+> Retention (pruning) is handled automatically by `_prune_old_bundles` in `src/cli.py`
+> (default: 14 bundles kept). See **§Retention policy** below.
+>
+> See `docs/adr/0018-backup-contract.md` for bundle spec.
 
-```bash
-sudo tee -a /etc/cron.d/odoo-semantic-pg-backup > /dev/null << 'EOF'
-# Neo4j dump mỗi Chủ nhật 3am:
-0 3 * * 0 odoo-semantic mkdir -p ~/backups && \
-    docker compose -f /opt/odoo-semantic-mcp/docker-compose.yml \
-      exec neo4j sh -c 'mkdir -p /data/backups && neo4j-admin database dump neo4j --to-path=/data/backups' && \
-    docker cp odoo-semantic-mcp-neo4j-1:/data/backups/neo4j.dump \
-      ~/backups/neo4j-$(date +\%F).dump 2>> /var/log/odoo-semantic-backup.log
-# Giữ 4 tuần:
-0 4 * * 0 odoo-semantic find ~/backups -name "neo4j-*.dump" -mtime +28 -delete
-EOF
-```
+### Retention policy
+
+`_prune_old_bundles` (`src/cli.py`) deletes older bundles by mtime ascending after every
+successful backup run. The bundle being written is never deleted.
+
+| Parameter | Default | Override |
+|-----------|---------|---------|
+| Bundles kept (N most-recent) | 14 | `--keep-bundles N` (CLI) or `OSM_BACKUP_KEEP=N` (env) |
+| Disable pruning entirely (not recommended) | — | `OSM_BACKUP_KEEP=999999` |
+
+**Disk budget:** ~3 GB/bundle on current prod → retention 14 ≈ **~42 GB cap**.
+
+CLI flag wins over env var. Mechanism is idempotent — safe to run multiple times.
+
+> See `docs/adr/0018-backup-contract.md` for bundle spec.
 
 ---
 
@@ -65,15 +75,34 @@ EOF
 
 ### 1. Restore PostgreSQL
 
+Restore is **format-aware** (auto-detected on filename extension by `python -m src.cli restore`):
+
+- **New bundles (post-2026-05-28):** contain `postgres.dump` (pg_dump custom format) → `pg_restore` is used.
+- **Legacy bundles:** contain `postgres.sql` (plain text) → `psql` is used (backwards-compat path).
+
+**Single command handles both:**
+
+```bash
+python -m src.cli restore <bundle.tar.gz>
+# handles both formats transparently; runs pre-restore safety backup first
+```
+
+**Manual restore (if needed outside the CLI):**
+
 ```bash
 # Dừng services trước khi restore (tránh write concurrent):
 sudo systemctl stop odoo-semantic-mcp odoo-semantic-webui
 
-# Restore từ dump:
+# Drop + recreate:
 docker compose exec -T postgres \
     psql -U odoo_semantic -d postgres \
     -c "DROP DATABASE IF EXISTS odoo_semantic; CREATE DATABASE odoo_semantic;"
 
+# New bundles (postgres.dump → pg_restore):
+docker compose exec -T postgres \
+    pg_restore -U odoo_semantic -d odoo_semantic /path/to/postgres.dump
+
+# Legacy bundles (postgres.sql → psql):
 docker compose exec -T postgres \
     psql -U odoo_semantic odoo_semantic \
     < ~/backups/odoo_semantic_<YYYYMMDD>.sql
@@ -84,7 +113,14 @@ docker compose exec postgres \
 # → profiles > 0 nếu restore thành công
 ```
 
+> See `docs/adr/0018-backup-contract.md` for bundle spec.
+
 ### 2. Restore Neo4j (optional)
+
+**Preferred path (post-2026-05-28 bundles):** `python -m src.cli restore <bundle.tar.gz>`
+khôi phục Neo4j tự động từ `neo4j.cypher` qua Bolt driver (không cần stop DB). Xem blockquote bên dưới.
+
+**Legacy path (pre-2026-05-28 — old offline `neo4j-admin database dump` archives):**
 
 ```bash
 # Neo4j phải stopped để load:
@@ -117,7 +153,7 @@ docker compose exec neo4j \
 > non-empty sẽ nhân đôi mọi node/relationship (file dùng `CREATE`, không `MERGE`).
 > Giữ đúng ngữ nghĩa destructive của offline `neo4j-admin database load` ở trên.
 > Pre-restore safety backup trong lệnh `restore` chỉ chụp PostgreSQL; nếu cần
-> rollback Neo4j hãy dùng dump/bundle Neo4j gần nhất.
+> rollback Neo4j hãy dùng bundle Neo4j gần nhất.
 
 ### 3. Restore FERNET_KEY
 
@@ -192,8 +228,8 @@ SELECT 'embeddings',             COUNT(*) FROM embeddings;
 | **Total loss, re-clone repos + full reindex** | ~4–8 giờ | Clone repo Odoo + addons: 30-60 min; reindex có embed: 3-6h |
 
 **Recommend strategy:**
-- Nếu Neo4j dump available và không corrupt → restore từ dump (~15 min) → **preferred**
-- Nếu Neo4j dump missing/corrupt → restore PG → re-index `--no-embed` → service up fast, embed deferred
+- Nếu bundle (neo4j.cypher) available và không corrupt → `python -m src.cli restore <bundle>` (~15 min) → **preferred**
+- Nếu bundle missing/corrupt → restore PG → re-index `--no-embed` → service up fast, embed deferred
 - Full embed có thể chạy background sau khi service đã up (idempotent, `setsid nohup`)
 
 ---
@@ -203,17 +239,18 @@ SELECT 'embeddings',             COUNT(*) FROM embeddings;
 Khi cần chuyển server (vd: scale up VM, DC migration):
 
 ```bash
-# Trên host cũ — backup toàn bộ:
+# Trên host cũ — backup toàn bộ (canonical bundle: postgres.dump + neo4j.cypher + manifest):
 mkdir -p ~/backups
-python -m src.cli backup --output ~/backups/pg-migration.sql
-docker compose exec neo4j sh -c 'mkdir -p /data/backups && neo4j-admin database dump neo4j --to-path=/data/backups'
-docker cp odoo-semantic-mcp-neo4j-1:/data/backups/neo4j.dump ~/backups/neo4j-migration.dump
+/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+    -m src.cli backup \
+    --output ~/backups/osm-migration-$(date +%Y%m%d-%H%M%S).tar.gz
 
 # Copy sang host mới (rsync hoặc scp):
 rsync -avz ~/backups/ <new-host>:~/backups/
 # Cũng copy: /etc/odoo-semantic/ (config) và webui.env từ secrets manager
 
-# Trên host mới — setup từ đầu (§1–§3.3 trong deploy.md), rồi restore theo order ở trên
+# Trên host mới — setup từ đầu (§1–§3.3 trong deploy.md), rồi restore theo order ở trên:
+python -m src.cli restore ~/backups/osm-migration-<TIMESTAMP>.tar.gz
 ```
 
 ### Re-point `repos.local_path` (ADR-0037 — bắt buộc khi checkout path đổi)
@@ -240,7 +277,7 @@ Không cần reindex trừ khi git HEAD cũng đổi (xem Post-Restore Behaviour
 
 ### Re-create osm_reader RLS role (cluster-global — KHÔNG nằm trong backup)
 
-Postgres role là **cluster-global** → `pg_dump` (per-DB, file `postgres.sql` trong bundle)
+Postgres role là **cluster-global** → `pg_dump` (per-DB, file `postgres.dump` trong bundle)
 **KHÔNG** chứa role `osm_reader`. Dump CÓ mang theo policy `embeddings_tenant` + `FORCE` + các
 câu `GRANT ... TO osm_reader`, nhưng khi restore mà role chưa tồn tại thì các GRANT đó **báo
 lỗi và bị bỏ** (restore không `ON_ERROR_STOP` nên vẫn chạy tiếp). Hệ quả trên host mới:
@@ -261,7 +298,7 @@ embeddings có FORCE+policy nhưng thiếu role + grants.
 **Automatic graph consistency via head_sha mismatches (M7 W14).**
 
 Sau khi restore, `repos.head_sha` trong PostgreSQL có thể không khớp với Neo4j graph
-(ví dụ: Neo4j dump từ tuần trước, PG dump từ hôm qua — head_sha in PG refers to a
+(ví dụ: bundle Neo4j từ tuần trước, PG dump từ hôm qua — head_sha in PG refers to a
 commit that graph reflects, but Neo4j has older state).
 
 **Đây là intentional safety behaviour:** bất kỳ mismatch nào giữa PG `head_sha` và

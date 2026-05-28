@@ -4,6 +4,21 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Backup format: `pg_dump` now writes `postgres.dump` (`-F custom -Z 6`); restore auto-detects (psql for legacy `.sql`, `pg_restore` for `.dump`). ADR-0018 updated. (TD-1)
+- Backup retention: `--keep-bundles N` (default 14), `OSM_BACKUP_KEEP` env override. Prevents `/var/backups` unbounded growth. (new finding)
+- Neo4j: `docker-compose` env adds `NEO4J_dbms_security_auth__max__failed__attempts=10` (was default 3). Takes effect after next prod container recreate. (TD-4)
+- Test harness: `tests/conftest.py` Priority 2 fallback guard against accidental prod-Neo4j collision. New ADR-0040. (TD-2)
+- Version: `0.11.1` → `0.13.1` (sync with CHANGELOG state). (FU-4)
+
+### Added
+
+- Onboarding UX: forgot-password e2e (backend + UI + login-page link); landing nav adds `/pricing`; `/login` canonical alias; `admin/login` renders `?error=` banner. (Wave 1D)
+- Docs: 3 new runbooks (`nginx-ratelimit`, `offsite-backup`, `neo4j-container-recreate`); `ops/` promotion of `regrant` + `nginx-patch` + offsite systemd template; deploy-logs archive for 2026-05-28 deploy.
+
+## [0.13.1] — 2026-05-28 — Self-host waitlist + post-v0.13.0 cleanup (PR #204)
+
 ### Added
 
 - `migrations/m13_008_waitlist_emails.sql` — `waitlist_emails` table (email UNIQUE, plan TEXT with CHECK enum, source TEXT, created_at TIMESTAMPTZ); index `waitlist_emails_created_at_idx` for admin reporting queries. ADR-0039 P1 precursor.

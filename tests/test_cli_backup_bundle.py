@@ -13,11 +13,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.cli import (
+    _DEFAULT_KEEP_BUNDLES,
     _build_parser,
     _cmd_backup,
     _encrypt_with_passphrase,
     _get_latest_migration_version,
     _props_to_cypher,
+    _prune_old_bundles,
 )
 
 # ---------------------------------------------------------------------------
@@ -102,14 +104,15 @@ def _run_backup(
 # ---------------------------------------------------------------------------
 
 class TestBackupWritesTarGzWithComponents:
-    def test_tar_gz_contains_postgres_sql_and_manifest(self, tmp_path, monkeypatch):
+    def test_tar_gz_contains_postgres_dump_and_manifest(self, tmp_path, monkeypatch):
         rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch)
         assert rc == 0, f"Expected rc=0, got {rc}"
         assert out.exists(), "Output tar.gz not created"
 
         with tarfile.open(str(out), "r:gz") as tar:
             names = tar.getnames()
-        assert "postgres.sql" in names
+        assert "postgres.dump" in names
+        assert "postgres.sql" not in names, "New bundles must use postgres.dump, not postgres.sql"
         assert "manifest.json" in names
 
     def test_tar_gz_contains_neo4j_cypher_when_available(self, tmp_path, monkeypatch):
@@ -128,7 +131,75 @@ class TestBackupWritesTarGzWithComponents:
             names = tar.getnames()
         assert "neo4j.cypher" not in names
         assert "neo4j.dump" not in names
-        assert "postgres.sql" in names
+        assert "postgres.dump" in names
+        assert "postgres.sql" not in names, "New bundles must use postgres.dump, not postgres.sql"
+
+
+class TestPgDumpUsesCustomFormat:
+    """Assert that pg_dump is invoked with -F custom -Z 6 (not -F plain)."""
+
+    def test_pg_dump_invocation_uses_custom_format_and_compression(
+        self, tmp_path, monkeypatch
+    ):
+        """pg_dump must be called with -F custom -Z 6, NOT -F plain."""
+        backup_dir = _make_backup_dir(tmp_path)
+        monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+        monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
+        monkeypatch.setenv("FERNET_KEY", "fk")
+
+        out = backup_dir / "out.tar.gz"
+        args = _build_parser().parse_args(["backup", "--output", str(out)])
+
+        captured_cmds: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            if cmd and "pg_dump" in cmd[0]:
+                stdout = kwargs.get("stdout")
+                if stdout and hasattr(stdout, "write"):
+                    stdout.write(b"-- pg_dump stub\n")
+            return MagicMock(returncode=0, stderr=b"")
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: s
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.return_value = (True,)
+        mock_conn.cursor.return_value = mock_cursor
+
+        def _fake_neo4j_export(out_path):
+            return False, "NEO4J_PASSWORD not set — skipping Neo4j export"
+
+        with patch("psycopg2.connect", return_value=mock_conn):
+            with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+                with patch("subprocess.run", side_effect=_fake_run):
+                    with patch("src.cli._export_neo4j_online", side_effect=_fake_neo4j_export):
+                        rc = _cmd_backup(args)
+
+        assert rc == 0
+        pg_dump_cmds = [c for c in captured_cmds if "pg_dump" in c[0]]
+        assert pg_dump_cmds, "pg_dump must have been called"
+        pg_cmd = pg_dump_cmds[0]
+        assert "-F" in pg_cmd and "custom" in pg_cmd, (
+            f"pg_dump must use -F custom, got: {pg_cmd}"
+        )
+        assert "-Z" in pg_cmd and "6" in pg_cmd, (
+            f"pg_dump must use -Z 6 compression, got: {pg_cmd}"
+        )
+        assert "plain" not in pg_cmd, (
+            f"pg_dump must NOT use -F plain (new format is custom), got: {pg_cmd}"
+        )
+
+    def test_bundle_tar_contains_postgres_dump_not_sql(self, tmp_path, monkeypatch):
+        """Bundle tar must contain postgres.dump, NOT postgres.sql."""
+        rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch)
+        assert rc == 0
+        with tarfile.open(str(out), "r:gz") as tar:
+            names = tar.getnames()
+        assert "postgres.dump" in names, f"Expected postgres.dump in bundle, got: {names}"
+        assert "postgres.sql" not in names, (
+            f"postgres.sql must NOT appear in new-format bundles, got: {names}"
+        )
 
 
 class TestBackupRejectsOutputOutsideBackupDir:
@@ -197,7 +268,7 @@ class TestManifestContainsSchemaVersion:
         assert "schema_version" in manifest
         assert manifest["schema_version"] != ""
         assert "components" in manifest
-        assert any(c["file"] == "postgres.sql" for c in manifest["components"])
+        assert any(c["file"] == "postgres.dump" for c in manifest["components"])
 
     def test_manifest_components_have_sha256(self, tmp_path, monkeypatch):
         rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch)
@@ -306,7 +377,7 @@ class TestNeo4jOnlineExportSkipIsNonFatal:
         assert out.exists()
 
     def test_neo4j_connection_failure_is_non_fatal(self, tmp_path, monkeypatch):
-        """When Neo4j is unreachable, backup still completes with postgres.sql."""
+        """When Neo4j is unreachable, backup still completes with postgres.dump."""
         backup_dir = _make_backup_dir(tmp_path)
         monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
         monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
@@ -343,7 +414,7 @@ class TestNeo4jOnlineExportSkipIsNonFatal:
         assert rc == 0
         assert out.exists()
         with tarfile.open(str(out), "r:gz") as tar:
-            assert "postgres.sql" in tar.getnames()
+            assert "postgres.dump" in tar.getnames()
             assert "neo4j.cypher" not in tar.getnames()
 
 
@@ -391,3 +462,91 @@ class TestGetLatestMigrationVersion:
         v = _get_latest_migration_version()
         assert isinstance(v, str)
         assert v != ""
+
+
+class TestRetentionPruning:
+    """Tests for _prune_old_bundles and --keep-bundles / OSM_BACKUP_KEEP integration."""
+
+    def _make_bundles(self, directory: Path, count: int) -> list[Path]:
+        """Create *count* fake .tar.gz files with monotonically-increasing mtimes."""
+        import os
+
+        bundles = []
+        base_mtime = 1_700_000_000  # fixed epoch, avoids wall-clock sensitivity
+        for i in range(count):
+            p = directory / f"osm-backup-{i:04d}.tar.gz"
+            p.write_bytes(b"stub")
+            os.utime(p, (base_mtime + i, base_mtime + i))
+            bundles.append(p)
+        return bundles  # index 0 = oldest, index -1 = newest
+
+    def test_retention_prunes_to_keep_n(self, tmp_path):
+        """16 bundles, keep_n=5 → exactly 5 remain (the 5 newest)."""
+        bundles = self._make_bundles(tmp_path, 16)
+        newest = bundles[-1]  # highest mtime = newest
+
+        deleted, reclaimed = _prune_old_bundles(tmp_path, keep_n=5, current_bundle=newest)
+
+        remaining = sorted(tmp_path.glob("*.tar.gz"))
+        assert len(remaining) == 5, f"Expected 5 remaining, got {len(remaining)}: {remaining}"
+        # The 5 survivors must be the 5 newest (bundles[11..15])
+        expected_survivors = {b.resolve() for b in bundles[11:]}
+        assert {b.resolve() for b in remaining} == expected_survivors
+
+        # Return value must list the 11 pruned paths
+        assert len(deleted) == 11
+        assert set(deleted) == {b.resolve() for b in bundles[:11]}
+        assert reclaimed == 11 * len(b"stub")
+
+    def test_retention_default_is_14(self, monkeypatch):
+        """Without --keep-bundles AND without OSM_BACKUP_KEEP, effective keep_n is 14."""
+        monkeypatch.delenv("OSM_BACKUP_KEEP", raising=False)
+        args = _build_parser().parse_args(["backup", "--output", "/tmp/x.tar.gz"])
+        assert args.keep_bundles is None, "argparse default must be None (not 14)"
+        # Simulate the resolution logic in _cmd_backup
+        env_keep = None  # OSM_BACKUP_KEEP not set
+        if args.keep_bundles is not None:
+            resolved = args.keep_bundles
+        elif env_keep is not None:
+            resolved = int(env_keep)
+        else:
+            resolved = _DEFAULT_KEEP_BUNDLES
+        assert resolved == 14
+
+    def test_retention_never_deletes_current(self, tmp_path):
+        """current_bundle must survive even if its mtime would rank it outside keep window."""
+        import os
+
+        # Create 10 newer bundles and 1 current_bundle with the oldest mtime.
+        self._make_bundles(tmp_path, 10)
+        # current_bundle has the oldest mtime — would normally be pruned at keep_n=5
+        current = tmp_path / "osm-backup-current.tar.gz"
+        current.write_bytes(b"current")
+        os.utime(current, (1_699_000_000, 1_699_000_000))  # older than all others
+
+        deleted, _reclaimed = _prune_old_bundles(tmp_path, keep_n=5, current_bundle=current)
+
+        assert current.exists(), "current_bundle must never be deleted"
+        assert current.resolve() not in deleted
+
+    def test_retention_keep_zero_disables_pruning(self, tmp_path):
+        """--keep-bundles 0 (or OSM_BACKUP_KEEP=0) honours the documented contract:
+        pruning is disabled entirely — no bundles deleted, returns (empty, 0)."""
+        import os as _os
+
+        # Create 5 bundles plus a current bundle — all must survive.
+        for i in range(5):
+            f = tmp_path / f"bundle-{i:02d}.tar.gz"
+            f.write_bytes(b"x" * (1024 * (i + 1)))
+            _os.utime(f, (1_700_000_000 + i, 1_700_000_000 + i))
+        current = tmp_path / "current.tar.gz"
+        current.write_bytes(b"current")
+
+        deleted, reclaimed = _prune_old_bundles(tmp_path, keep_n=0, current_bundle=current)
+
+        assert deleted == []
+        assert reclaimed == 0
+        # All 5 pre-existing bundles still on disk.
+        for i in range(5):
+            assert (tmp_path / f"bundle-{i:02d}.tar.gz").exists()
+        assert current.exists()

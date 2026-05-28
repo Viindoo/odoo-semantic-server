@@ -726,6 +726,10 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [x] **Quota gating + usage metering** — MCP middleware plan-aware: per-plan RPM + monthly quota enforcement; `X-RateLimit-*` / `X-Quota-*` response headers; 429 differentiation (rpm vs monthly); `GET /api/account/usage` endpoint + `/account/usage` Astro dashboard page. *(PR #200)*
 - [x] **Pricing UI synced** — `/pricing` seed values updated (Free 100 calls/30 rpm, Pro 10000/120, Team 100000/300, Grandfathered 1000/60); free-tier stale "5 MCP tool calls / day" claim removed. *(PR #200)*
 - [x] **Fix `/pricing` placeholder links** — replaced dead Formspree + Google Forms placeholders with self-hosted `/api/waitlist` endpoint (m13_008 migration + `src/web_ui/rate_limit.py` + `src/web_ui/routes/waitlist.py`). *(followup-post-v0.13.0)*
+- [x] **Migrations m13_006 + m13_007 + m13_008 applied to prod** — `plans` table + `usage_counter` + `usage_counter CASCADE` + `waitlist_emails` all applied 2026-05-28. ✅ deployed 2026-05-28
+- [x] **osm_reader regrant on new tables** — 5 grants confirmed: `plans`, `usage_counter`, `waitlist_emails` (SELECT), `api_keys.plan_id` readable via existing `api_keys` grant, `waitlist_emails` INSERT via `GRANT INSERT` for anonymous signup path. ✅ confirmed 2026-05-28
+- [x] **5 operator runbooks shipped in PR #200** — `docs/deploy/runbooks/`: rls-cutover, fernet-provision, post-pr-ops, backup-confirm-and-dr-drill, prod-smoke-24-tools. ✅ shipped PR #200
+- [x] **§6 prod smoke — 4 unauthed + 6 authed paths verified** — basic smoke (not the deeper 14-tool smoke): `GET /` 200, `/api/health` 200, `/mcp` 307, `/install/` 200 (unauthed); `find_examples` / `model_inspect` / `module_inspect` / `set_active_version` / `validate_domain` / `describe_module` (6 authed MCP calls) all return structured output. ✅ verified 2026-05-28. NOTE: deeper tools 15-21 smoke (`#15`) stays `[ ]`.
 
 **P1 — Entitlement Activation API + Polar.sh MoR adapter (keystone; international first)**
 - [ ] **Entitlement Activation API** — one contract `grant/revoke/update` with product-aware payload `{email, product_id, plan, seats, status, limits}` (ADR-0039 D3). Tables: `subscriptions` (`product_id`, `plan`, `seats`, `status`, **`external_ref`** — vendor-agnostic, NOT `stripe_subscription_id`) + `plans` (avoid the "entitlement" access-control collision — ADR-0039 D3 note).
@@ -969,7 +973,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 - `[ ]` RLS FORCE cutover (`ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`)
 - `[ ]` Tạo non-owner read role `osm_reader` + GRANT SELECT
 - `[ ]` Tách read-DSN MCP tier sang `osm_reader` (**caveat:** code CHƯA đọc biến `PG_READ_DSN` riêng — override `PG_DSN` cho process MCP :8002, KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực)
-- `[x]` FERNET credstore cut (holistic WI-7) — DONE: credstore `/etc/credstore/FERNET_KEY` (root:root 0600) + active `LoadCredential=` in webui+backup units + `osm-fernet-run` wrapper for CLI + removed FERNET_KEY from `.env`. See PR feat/wi7-fernet-credstore-cut.
+- `[x]` FERNET credstore cut (holistic WI-7) — DONE: credstore `/etc/credstore/FERNET_KEY` (root:root 0600) + active `LoadCredential=` in webui+backup units + `osm-fernet-run` wrapper for CLI + removed FERNET_KEY from `.env`. See PR feat/wi7-fernet-credstore-cut. ✅ confirmed live 2026-05-28 (`/etc/credstore/FERNET_KEY` provisioned; odoo-semantic-webui + odoo-semantic-backup both consume via `LoadCredential=`).
 - `[x]` Reindex v8→v19 đầy đủ (OPS, §5.11 gate) — DONE 2026-05-25; 591,108 embeddings; 48 repos; graph clean
 - `[x]` Post-reindex absolute-path cleanup (`ops/cleanup_absolute_path_nodes.cypher`) — graph verified clean 2026-05-26: stale_stylesheets=0, stale_violations=0, pgvector `file_path LIKE '/%'`=0
 - `[ ]` MED-2 forge known_hosts cho self-hosted git forge
@@ -1056,13 +1060,13 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
   - Repos registered by git URL only; `local_path` computed server-side from URL + branch. `tenant_id` FK propagated on repo creation. Per-profile UNIQUE(url, branch, profile_id) allows cross-profile duplicates.
 
 ### P6 — Path portability (ADR-0037, feat/portable-paths)
-- [~] **ADR-0037 — Repo-relative path storage + portable `[repo]` output label** — HIGH (portability) *(feat/portable-paths — src/indexer/writer_neo4j.py, src/indexer/writer_pgvector.py, src/mcp/server.py, ops/cleanup_absolute_path_nodes.cypher)*
+- [x] **ADR-0037 — Repo-relative path storage + portable `[repo]` output label** — HIGH (portability) *(feat/portable-paths — src/indexer/writer_neo4j.py, src/indexer/writer_pgvector.py, src/mcp/server.py, ops/cleanup_absolute_path_nodes.cypher)* ✅ cleanup verified 2026-05-26
   - Stored paths converted to repo-relative (`addons/sale/models/x.py`); `repos.local_path` is the sole absolute anchor (ADR-0037 D1/D2). `:Stylesheet` nodes gain `repo_id` property scoping `:IMPORTS` MATCH to prevent cross-repo spurious edges (ADR-0037 D8). `[repo]` output label shows portable git URL (`github.com/odoo/odoo`) instead of server checkout dirname (ADR-0037 D7). Read-side `_portable_path()` safety-net idempotent on already-relative input (ADR-0037 D5).
-  - Acceptance: after full `--full` reindex v8→v19, run `[ ] ops/cleanup_absolute_path_nodes.cypher` and verify: Neo4j `Stylesheet`/`LintViolation` nodes with `file_path STARTS WITH '/'` = 0; `SELECT count(*) FROM embeddings WHERE file_path LIKE '/%'` = 0.
-  - Dependency: full reindex v8→v19 (OPS) must complete first.
+  - Acceptance: after full `--full` reindex v8→v19, run `ops/cleanup_absolute_path_nodes.cypher` and verify: Neo4j `Stylesheet`/`LintViolation` nodes with `file_path STARTS WITH '/'` = 0; `SELECT count(*) FROM embeddings WHERE file_path LIKE '/%'` = 0.
+  - **DONE (2026-05-26):** Post-reindex graph verified clean — Neo4j `Stylesheet`/`LintViolation` absolute-path nodes = 0; pgvector `file_path LIKE '/%'` = 0. `ops/cleanup_absolute_path_nodes.cypher` predicate satisfied (confirmed same session as reindex).
 
 ### P6b — Parser fidelity pre-reindex (GAP1/3/5)
-- [~] **Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19):** `Reference`/`Image`/`Many2oneReference` → `kind='field_type'` instead of `'class'` (all versions — GAP1); v19 Domain subclasses `DomainCondition`/`DomainNot`/`DomainBool`/`DomainNary`/`DomainCustom` added to curated coverage (GAP3); v19 `parse_field_expr`/`is_model_class`/`is_model_definition` from `odoo/orm/utils.py` + `model_classes.py` added (GAP5). **Code shipped: PR #170, CI green (unit/integration/browser/smoke/lint all pass).** `[~]` because full acceptance still requires: (a) full reindex v8→v19 (OPS item `[ ]` below) to materialize fixes into the graph, and (b) verify assertions in runbook §5.13 post-reindex. Not a code blocker — reindex is an admin OPS task on prod.
+- [x] **Pre-reindex parser fidelity (GAP1/3/5 from deep-dive v18/v19):** `Reference`/`Image`/`Many2oneReference` → `kind='field_type'` instead of `'class'` (all versions — GAP1); v19 Domain subclasses `DomainCondition`/`DomainNot`/`DomainBool`/`DomainNary`/`DomainCustom` added to curated coverage (GAP3); v19 `parse_field_expr`/`is_model_class`/`is_model_definition` from `odoo/orm/utils.py` + `model_classes.py` added (GAP5). **Code shipped: PR #170, CI green.** ✅ Full reindex v8→v19 DONE 2026-05-25 (591,108 embeddings; 48 repos; graph clean — ADR-0037 satisfied). Post-reindex runbook §5.13 verification complete.
 
 ### P5 — Hardening (debt, schedule after P1–P4)
 - [ ] **OPS: RLS enforcement cutover + FERNET credstore (hand-off to admin)** — MED (ops)
@@ -1108,6 +1112,31 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
   - Context: `_compute_risk(view_count, method_count, js_count)` in `src/mcp/server.py:1367` labels HIGH/MEDIUM/LOW using only views + methods-with-super + js patches. The "Methods using this field" section (USES_FIELD edges, added v0.10.0/M13 A2) renders with a real count in the `impact_analysis` output header but is NOT fed into the risk score. Likewise "Compute-dependent methods" (DEPENDS_ON_FIELD) and "Dependent modules" are display-only. Design is intentional: thresholds were calibrated to macro-F1=1.0 on 25 cases (`test_calibration_eval.py`); dependent-modules signal is too coarse. Field-level filter note at `src/mcp/server.py:1636` says "not yet implemented (M5)".
   - Task: add `uses_field_count` parameter to `_compute_risk`; fold USES_FIELD signal in; re-run `test_calibration_eval.py::test_risk_threshold_validation` against updated thresholds. No data change needed (USES_FIELD edges already in prod graph post full reindex 2026-05-25).
   - Not a defect - all counts display correctly; only the 1-word label is conservative. Ship as standalone PR, not a gate for M13 close.
+
+---
+
+## Tech Debt + Carry-Forward
+
+Small items surfaced post-PR-#200 deploy (2026-05-28). Not milestone-gated — do as bandwidth allows.
+
+- [ ] **Nightly cron switch from raw `pg_dump` to `python -m src.cli backup`** — prod cron currently calls raw `pg_dump`; should use the CLI which handles bundle assembly (postgres.sql + neo4j.cypher + fernet.enc + manifest.json), retention policy, and structured logging. Ref: ADR-0018 backup contract.
+- [ ] **Neo4j `dbms.connector.bolt.unsupported_thread_pool_queue_size` tuning evaluation** — RCA follow-up from 2026-05-26 burst load. Evaluate whether the default queue size is causing BOLT rejection under burst; tune in `docker-compose.yml` neo4j env vars or `neo4j.conf`. Low risk to tune; monitor `/metrics` histogram `p95` before/after.
+- [ ] **FU-3 offsite backup provider decision** — decide between B2 / Wasabi / R2 / AWS S3 / MinIO; set budget cap + crypt-password custody plan; configure `rclone` target. Blocker: operator picks provider. See Track 2 Wave 2.D for the bootstrap OPS step.
+- [ ] **Account-deletion + data-export self-service endpoints (GDPR baseline)** — `DELETE /api/account/me` (soft-delete: deactivate + anonymize PII) + `GET /api/account/export` (JSON dump of own API keys + usage counters + profile memberships). Needed before public growth.
+- [ ] **Tenant self-service creation** — currently tenants are admin-created only per ADR-0038 W1. Customer self-service tenant creation (W2 portal has `/account/repos` but not new-tenant form) requires ADR-0038 D11 work. Deferred until M10B P1 Polar payment flow lands (creation gated by paid checkout).
+- [ ] **Plan-selection UI at signup** — `/signup` currently provisions a `free` plan silently. Show a plan picker (Free / Pro / Team) at signup so users understand tier. Deferred until M10B P1 Polar adapter ships (pricing page CTA → checkout → key provisioning).
+- [ ] **`GET /api/plans` public endpoint** — data-driven pricing page; returns `[{id, name, rpm_limit, monthly_quota, price_display}]`. Currently pricing page is static Astro. Needed for `/pricing` → dynamic CTA when plan data changes without a redeploy.
+- [ ] **`/install/` Astro page** — currently `/install/` is served by MCP server `:8002` (static HTML). If we want consistent Astro UX (same nav/footer, CSP headers, SSR analytics), migrate to an Astro page at `site/src/pages/install.astro`. Separate ticket; not a regression.
+
+### Track 2 prod waves (post-PR cleanup-merge)
+
+Small operational waves pending on prod server — not code changes.
+
+- [ ] Wave 2.A — FU-1: SMTP + WAITLIST_NOTIFY_EMAIL env vars in prod `.env`
+- [ ] Wave 2.B — FU-2: nginx rate-limit zones apply (4 zones)
+- [ ] Wave 2.C — TD-3 + TD-4: Neo4j container recreate (canonical compose path + `auth_max_failed_attempts=10`)
+- [ ] Wave 2.D — FU-3: Offsite backup bootstrap (rclone + systemd timer)
+- [ ] Wave 2.E — Enable signup (`SIGNUP_ENABLED`) in prod + optional Google/GitHub OAuth client IDs + optional hCaptcha keys
 
 ---
 
