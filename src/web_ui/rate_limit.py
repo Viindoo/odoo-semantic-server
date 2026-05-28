@@ -11,7 +11,7 @@ Usage:
     client_ip = await get_client_ip(request)
     allowed = await check_ip_rate_limit(client_ip)
     if not allowed:
-        return JSONResponse({"error": "rate_limited"}, status_code=429)
+        return JSONResponse(_json_safe({"error": "rate_limited"}), status_code=429)
 
 Thread-safety: all mutations to _per_ip_buckets are serialised via _lock
 (asyncio.Lock). This is safe for single-process async servers (FastAPI/uvicorn

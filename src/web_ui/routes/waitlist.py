@@ -7,7 +7,6 @@ Route:
 
 Security:
     - Per-IP sliding-window rate limit (5 req/IP/60 s) to prevent email bombing.
-    - hCaptcha verification when HCAPTCHA_SECRET is set (skipped in dev mode).
     - Naive email format check (matches signup.py precedent); stricter validation
       deferred to P1 if email-validator dep is added.
     - Source fixed to 'pricing-page' for this MVP; extend when adding new forms.
@@ -15,13 +14,12 @@ Security:
 Response codes:
     201  — successfully subscribed.
     409  — email already on the waitlist (ON CONFLICT DO NOTHING rowcount=0).
-    400  — validation error (bad email, bad plan, captcha failure).
+    400  — validation error (bad email, bad plan).
     429  — rate limit exceeded (5/min per IP).
     500  — unexpected DB or internal error.
 """
 
 import logging
-import os
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -45,34 +43,6 @@ _SOURCE = "pricing-page"
 class WaitlistRequest(BaseModel):
     email: str
     plan: str | None = None
-    hcaptcha_token: str | None = None
-
-
-async def _verify_hcaptcha(token: str | None, remote_ip: str) -> bool:
-    """Return True if hCaptcha response is valid.
-
-    Mirrors src/web_ui/routes/signup.py._verify_hcaptcha.
-    Skips verification when HCAPTCHA_SECRET is unset (dev mode).
-    Skips verification when token is None/empty (also dev/non-captcha path).
-    """
-    secret = os.getenv("HCAPTCHA_SECRET")
-    if not secret:
-        logger.warning("HCAPTCHA_SECRET unset — skipping captcha verification (dev mode)")
-        return True
-    if not token:
-        logger.warning("hCaptcha token missing — rejecting (captcha enabled)")
-        return False
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.hcaptcha.com/siteverify",
-                data={"secret": secret, "response": token, "remoteip": remote_ip},
-            )
-        return resp.json().get("success", False)
-    except Exception as exc:
-        logger.error("hCaptcha verification error: %s", exc)
-        return False
 
 
 def _validate_email(email: str) -> bool:
@@ -106,6 +76,7 @@ async def join_waitlist(body: WaitlistRequest, request: Request):
         return JSONResponse(
             _json_safe({"error": "rate_limited", "retry_after": 60}),
             status_code=429,
+            headers={"Retry-After": "60"},
         )
 
     # 2. Email validation.
@@ -127,15 +98,7 @@ async def join_waitlist(body: WaitlistRequest, request: Request):
             status_code=400,
         )
 
-    # 4. hCaptcha verification (skipped in dev mode when HCAPTCHA_SECRET unset).
-    if not await _verify_hcaptcha(body.hcaptcha_token, client_ip):
-        logger.warning("Waitlist: captcha failed (IP=%s email=%s)", client_ip, email)
-        return JSONResponse(
-            _json_safe({"error": "captcha_failed", "detail": "Captcha verification failed."}),
-            status_code=400,
-        )
-
-    # 5. DB insert — ON CONFLICT DO NOTHING (email UNIQUE).
+    # 4. DB insert — ON CONFLICT DO NOTHING (email UNIQUE).
     try:
         from src.db.pg import get_pool
 
@@ -174,7 +137,7 @@ async def join_waitlist(body: WaitlistRequest, request: Request):
         email, plan, _SOURCE, client_ip,
     )
 
-    # 6. Admin notification — best-effort; never fail the endpoint on SMTP error.
+    # 5. Admin notification — best-effort; never fail the endpoint on SMTP error.
     try:
         ok = send_waitlist_notify_email(submitter_email=email, plan=plan, source=_SOURCE)
         if not ok:

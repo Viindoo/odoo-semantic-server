@@ -2,15 +2,13 @@
 # tests/test_waitlist_api.py
 """Integration tests for POST /api/waitlist.
 
-Business intent (8 cases):
+Business intent (6 cases):
   T1  201 on fresh email — row inserted into waitlist_emails.
   T2  409 on duplicate email — ON CONFLICT DO NOTHING path.
   T3  400 on invalid email format.
   T4  400 on invalid plan value.
-  T5  429 rate limit exceeded (mock rate limiter).
-  T6  hCaptcha skipped in dev mode (HCAPTCHA_SECRET unset).
-  T7  hCaptcha failure returns 400 (HCAPTCHA_SECRET set, mock httpx).
-  T8  Admin email notify called on success (mock send function).
+  T5  429 rate limit exceeded (mock rate limiter) + Retry-After header present.
+  T6  Admin email notify called on success (mock send function).
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 Uses httpx.AsyncClient + ASGITransport with base_url="http://127.0.0.1" to
@@ -208,7 +206,7 @@ class TestInvalidPlan:
 # ---------------------------------------------------------------------------
 
 class TestRateLimit:
-    """T5: When the rate limiter returns False, the endpoint returns 429."""
+    """T5: When the rate limiter returns False, the endpoint returns 429 with Retry-After."""
 
     @pytest.mark.asyncio
     async def test_rate_limited_returns_429(self, migrated_pg):
@@ -232,70 +230,28 @@ class TestRateLimit:
         data = resp.json()
         assert data.get("error") == "rate_limited"
 
-
-# ---------------------------------------------------------------------------
-# T6: hCaptcha skipped in dev mode
-# ---------------------------------------------------------------------------
-
-class TestHCaptchaDevMode:
-    """T6: When HCAPTCHA_SECRET is unset, captcha is skipped (dev mode)."""
-
     @pytest.mark.asyncio
-    async def test_no_token_accepted_in_dev(self, migrated_pg, monkeypatch):
-        """Without HCAPTCHA_SECRET, a request without a token must succeed."""
-        monkeypatch.delenv("HCAPTCHA_SECRET", raising=False)
-        async with _make_client(_make_app()) as client:
-            resp = await client.post("/api/waitlist", json={"email": "devmode@example.com"})
-        assert resp.status_code == 201, (
-            f"Dev mode (no HCAPTCHA_SECRET) must skip captcha, got {resp.status_code}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# T7: hCaptcha failure returns 400
-# ---------------------------------------------------------------------------
-
-class TestHCaptchaFailure:
-    """T7: When HCAPTCHA_SECRET is set and captcha fails, return 400."""
-
-    @pytest.mark.asyncio
-    async def test_captcha_fail_returns_400(self, migrated_pg, monkeypatch):
-        monkeypatch.setenv("HCAPTCHA_SECRET", "test-secret")
+    async def test_rate_limited_has_retry_after_header(self, migrated_pg):
+        """429 response must include Retry-After header per RFC 7231 §7.1.3."""
         with patch(
-            "src.web_ui.routes.waitlist._verify_hcaptcha",
+            "src.web_ui.routes.waitlist.check_ip_rate_limit",
             new=AsyncMock(return_value=False),
         ):
             async with _make_client(_make_app()) as client:
-                resp = await client.post(
-                    "/api/waitlist",
-                    json={"email": "captcha@example.com", "hcaptcha_token": "bad-token"},
-                )
-        assert resp.status_code == 400, (
-            f"Captcha failure must return 400, got {resp.status_code}"
+                resp = await client.post("/api/waitlist", json={"email": "rate3@example.com"})
+        assert resp.status_code == 429
+        assert "retry-after" in resp.headers, (
+            "RFC 7231 §7.1.3 requires Retry-After header on 429 responses"
         )
-
-    @pytest.mark.asyncio
-    async def test_captcha_fail_body(self, migrated_pg, monkeypatch):
-        monkeypatch.setenv("HCAPTCHA_SECRET", "test-secret")
-        with patch(
-            "src.web_ui.routes.waitlist._verify_hcaptcha",
-            new=AsyncMock(return_value=False),
-        ):
-            async with _make_client(_make_app()) as client:
-                resp = await client.post(
-                    "/api/waitlist",
-                    json={"email": "captcha2@example.com", "hcaptcha_token": "bad"},
-                )
-        data = resp.json()
-        assert data.get("error") == "captcha_failed"
+        assert resp.headers["retry-after"] == "60"
 
 
 # ---------------------------------------------------------------------------
-# T8: Admin email notify called on success
+# T6: Admin email notify called on success
 # ---------------------------------------------------------------------------
 
 class TestAdminEmailNotify:
-    """T8: On successful subscribe, send_waitlist_notify_email is called once."""
+    """T6: On successful subscribe, send_waitlist_notify_email is called once."""
 
     @pytest.mark.asyncio
     async def test_notify_called_on_success(self, migrated_pg):
