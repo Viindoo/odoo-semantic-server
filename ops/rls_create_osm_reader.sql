@@ -36,7 +36,7 @@ ALTER ROLE osm_reader
   PASSWORD :'osm_pw';
 
 -- 2. Connection + schema usage.
-GRANT CONNECT ON DATABASE odoo_semantic TO osm_reader;
+GRANT CONNECT ON DATABASE :"db_name" TO osm_reader;
 GRANT USAGE   ON SCHEMA public          TO osm_reader;
 
 -- 3. RLS target — SELECT only. NEVER grant write here.
@@ -47,6 +47,13 @@ GRANT SELECT ON TABLE api_keys TO osm_reader;   -- API-key auth (fail-closed 401
 GRANT UPDATE ON TABLE api_keys TO osm_reader;   -- last_used_at touch (best-effort)
 GRANT SELECT ON TABLE profiles TO osm_reader;   -- resolve_tenant_scope + set_active_profile
 GRANT SELECT ON TABLE repos    TO osm_reader;   -- repo URL display (best-effort)
+-- M10B P0: per-API-key plan lookup + monthly quota counter (ADR-0039 control plane).
+-- :8002 only SELECTs plans (seed-only via m13_006 — no runtime INSERT, so plans_id_seq
+-- needs no USAGE grant). usage_counter is read on every authed request (quota gate)
+-- and UPSERTed by the buffered flush task (_flush_usage_buffer_async); PK is
+-- (api_key_id, period_yyyymm) so no SERIAL sequence is involved.
+GRANT SELECT ON TABLE plans TO osm_reader;
+GRANT SELECT, INSERT, UPDATE ON TABLE usage_counter TO osm_reader;
 
 -- 5. Session context (ADR-0029) — set_active_version/profile UPSERT + read.
 --    api_key_session_state.api_key_id is an FK integer PK (no sequence).

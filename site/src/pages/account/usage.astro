@@ -1,0 +1,31 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Usage dashboard — authenticated self-service page (WI-B4, ADR-0014).
+// Auth-gated by middleware (/account/* guard, WI-B5) — unauthenticated
+// visitors are redirected to /admin/login?return=/account/usage before
+// this page component is ever rendered.
+export const prerender = false;
+
+import AccountLayout from '../../layouts/AccountLayout.astro';
+import UsageDashboard from './_usage-island';
+---
+
+<AccountLayout title="Usage">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Usage</h1>
+      <p class="text-sm text-gray-500 mt-1">
+        Your API key plan, current quota usage, and 6-month history.
+      </p>
+    </div>
+    <!-- Pricing link for plan upgrade flow -->
+    <a
+      href="/pricing"
+      class="text-sm text-viindoo-primary hover:text-viindoo-primary-deep font-medium transition-colors"
+    >
+      View plans →
+    </a>
+  </div>
+
+  <UsageDashboard client:load />
+</AccountLayout>

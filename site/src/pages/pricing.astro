@@ -13,8 +13,9 @@ const tiers = [
     features: [
       '1 Odoo repo indexed',
       'Up to Odoo 17.0',
-      '5 MCP tool calls / day',
-      'resolve_model + resolve_field',
+      '100 MCP tool calls / month',
+      '30 requests / minute',
+      'All 24 MCP tools',
       'Community support',
     ],
     cta: 'Join Waitlist',
@@ -28,6 +29,8 @@ const tiers = [
       'Unlimited repos',
       'v8 → v19+ cross-version',
       'All 24 MCP tools',
+      '10,000 MCP tool calls / month',
+      '120 requests / minute',
       'Claude Code plugin included',
       'Email support (48h SLA)',
       'API key management',
@@ -41,6 +44,9 @@ const tiers = [
     highlight: false,
     features: [
       'Everything in Pro',
+      '100,000 MCP tool calls / month',
+      '300 requests / minute',
+      '20 seats included',
       'Team API key management',
       'SSO / SAML (planned)',
       'Dedicated Neo4j instance',
@@ -124,6 +130,13 @@ const tiers = [
         </div>
       ))}
     </div>
+
+    <!-- Grandfathered tier note -->
+    <p class="text-center text-gray-400 text-sm max-w-2xl mx-auto mb-8">
+      Existing beta users automatically receive a <strong>grandfathered tier</strong> with
+      1,000 MCP tool calls per month and 60 requests/minute. Your current plan and usage
+      are visible at <a href="/account/usage" class="text-viindoo-primary hover:underline">/account/usage</a>.
+    </p>
 
     <!-- Waitlist form -->
     <div class="max-w-lg mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center mb-12">

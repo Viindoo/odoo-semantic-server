@@ -2,6 +2,29 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+## [Unreleased] — M10B P0: Quota gating + plan schema + usage dashboard (PR #200)
+
+### Added
+
+- `migrations/m13_006_plans_quota.sql` — `plans` table (4 tiers: free-grandfathered/free/pro/team; `limits` JSONB with `rpm` + `monthly_quota`); `api_keys.plan_id` FK (DB-level DEFAULT `'free'` to prevent NOT NULL constraint violation on new INSERT post-migration); `usage_counter` table (`api_key_id`, `period_yyyymm`, `call_count`). ADR-0039 control-plane DDL. (PR #200)
+- `migrations/m13_007_usage_counter_cascade.sql` — ON DELETE CASCADE on `usage_counter.api_key_id` FK; prevents cross-test contamination via SERIAL id reuse. (PR #200)
+- Plan-aware MCP middleware (`src/mcp/middleware.py`) — per-plan RPM + monthly quota enforcement; `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` + `X-Quota-Limit` / `X-Quota-Remaining` response headers; 429 differentiation (`rpm_exceeded` vs `monthly_quota_exceeded` reason codes). (PR #200)
+- `GET /api/account/usage` endpoint (`src/web_ui/routes/account.py`) — returns current plan info + monthly quota counters for the authenticated user. (PR #200)
+- `/account/usage` dashboard page (Astro + React island) — customer-facing live quota view reading `usage_counter` directly. (PR #200)
+- `/account/*` gate with `?return=` round-trip redirect through `/admin/login` (CWE-601 path-only allowlist). (PR #200)
+- Pricing UI synced to m13_006 seed values (Free 100 calls/30 rpm, Pro 10000/120, Team 100000/300, Grandfathered 1000/60); free-tier stale "5 MCP tool calls / day" claim removed from `site/src/pages/pricing.astro`. (PR #200)
+- 5 principle-level operator runbooks under `docs/deploy/runbooks/` (RLS cutover, FERNET provision, post-PR OPS, backup+DR drill, prod smoke 24 tools). (PR #200)
+
+### Fixed
+
+- `ops/rls_create_osm_reader.sql` — portable across DB names via `psql -v db_name=$DB_NAME`; GRANT SELECT ON `plans` + GRANT SELECT, INSERT, UPDATE ON `usage_counter` to `osm_reader` role (required after RLS cutover). (PR #200 Wave 1 + post-review fix)
+- `.github/workflows/nightly-smoke.yml` — drops `--local-path` flag (removed in PR #162); closes silent CI failures in #164/#167/#168/#178/#195/#198. (PR #200 Wave 1)
+- `docs/deploy/pre-launch-checklist.md` — tool signature drift (`model_inspect`/`module_inspect`/`entity_lookup`); item #15 reference to 6 flat tools already removed in v0.6. (PR #200 Wave 1)
+- `pg_pool.checkout()` context-manager migration — 6 sites in `src/mcp/middleware.py` corrected to use `PgPool` public API. (PR #200 post-review fix)
+- ON DELETE CASCADE structural hardening (`m13_007`) + `try/finally` cleanup in `test_middleware_quota.py` + extended `_reset_mcp_middleware_state` autouse cache list. (PR #200)
+
+---
+
 ## [Unreleased] — Data completeness + resource RBAC + observability + backup (feat/osm-data-completeness-rbac)
 
 7 tool output gaps (G1-G7) + timeout fix (T1) + resource RBAC hardening (R1/R2/R5) + Era1 comodel fix (C2) + Prometheus histogram (M10C) + Neo4j online backup (#13).
