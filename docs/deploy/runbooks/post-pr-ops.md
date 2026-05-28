@@ -264,11 +264,61 @@ Commit and push the updated TASKS.md.
 
 ---
 
+## Best-effort usage counter (M10B)
+
+The MCP `AuthMiddleware` increments a per-process `_usage_buffer` (RAM only)
+on every successful call. The buffer is flushed to the `usage_counter`
+Postgres table by a fire-and-forget background task once the
+**process-wide pending total** reaches `_USAGE_FLUSH_THRESHOLD` (default `10`,
+defined in `src/mcp/middleware.py`).
+
+This is a deliberate throughput vs. precision trade-off — the alternative
+(flush per request) would add a DB round-trip to the hot path. Two
+operational consequences:
+
+- **Crash-drop risk.** If a worker process is killed (OOM, deploy restart,
+  SIGKILL) with ≤9 buffered increments, those calls are lost. Across N
+  worker processes the worst-case drop ceiling per crash is
+  `N * (_USAGE_FLUSH_THRESHOLD - 1)`. Quota enforcement always reads from
+  `usage_counter`, so a drop means the user gets slightly more calls than
+  their plan grants — never less, never a billing over-charge.
+- **Monitoring recipe.** Expose a Prometheus counter of *attempted* calls
+  at the middleware layer and diff it against `SELECT sum(call_count) FROM
+  usage_counter WHERE period_yyyymm = to_char(now() AT TIME ZONE 'UTC', 'YYYYMM')`.
+  A persistent gap that doesn't close after the next flush indicates either
+  a stuck flush task (check warning logs `usage_buffer flush error:`) or
+  repeated worker crashes (check restart count).
+
+Operators can verify a tenant's *actual* usage live via the customer
+self-service portal at **`/account/usage`** — the page reads
+`usage_counter` directly, so it reflects the last successful flush. Use
+this to triage user-reported "quota looks wrong" tickets before reaching
+for psql.
+
+---
+
+## Operator handover
+
+When handing the system to a new operator, walk them through these
+read-only verification surfaces in addition to the Actions above:
+
+- **`/account/usage`** — per-user quota dashboard reading
+  `usage_counter` directly (also used to verify buffer flushes — see the
+  "Best-effort usage counter" section above).
+- **`/admin/audit-log`** — admin-side audit viewer for mutating routes.
+- **`<HEALTH_URL>/health`** — JSON health: Postgres pool status, Neo4j
+  reachability, embedding service.
+
+---
+
 ## References
 
 - **Entry Point:** `src/indexer/__main__.py` — CLI subcommands (`index-repo`, `reembed-stubs`)
 - **Index Definitions:** `src/indexer/writer_neo4j.py:790` — `setup_indexes()` method
 - **Parser Logic:** `src/indexer/parser_python.py` — era1 `comodel_name` extraction (WI-C C2 commit)
+- **Usage Buffer:** `src/mcp/middleware.py` — `_usage_buffer`, `_USAGE_FLUSH_THRESHOLD`, `_flush_usage_buffer_async`
+- **Customer Portal:** `site/src/pages/account/usage.astro` — live usage dashboard reading `usage_counter`
 - **TASKS.md:** Milestone 10 (M10A/M10.5/M10C) for more context on timing and interdependencies
 - **ADR-0023:** MCP tool output completeness policy
 - **ADR-0027:** System user deployment layout + portable paths
+- **ADR-0039:** M10B commercialization platform (control plane / data plane)

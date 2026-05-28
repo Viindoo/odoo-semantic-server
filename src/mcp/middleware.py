@@ -329,6 +329,10 @@ def _cache_invalidate_by_key_id(key_id: int) -> None:
     O(n) scan is fine — cache holds at most a few hundred entries.
     Works in-process; cross-process invalidation is bounded by _CACHE_TTL.
 
+    Also drops the matching _PLAN_CACHE entry so admin plan reassignment
+    (PATCH api_keys.plan_id) takes effect immediately instead of waiting
+    for the 300s TTL (B2 follow-up — Wave 2 integration review ISSUE-2).
+
     Thread-safe: guarded by _cache_lock.
     """
     with _cache_lock:
@@ -337,6 +341,7 @@ def _cache_invalidate_by_key_id(key_id: int) -> None:
             _KEY_CACHE.pop(h, None)
             _CACHE_TS.pop(h, None)
             _TENANT_CACHE.pop(h, None)
+        _PLAN_CACHE.pop(key_id, None)
 
 
 def _cache_set_tenant(raw_key: str, tenant_id: int | None) -> None:
@@ -487,11 +492,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 "plan": plan_info.slug,
                 "reset_at": reset_at,
             })
+            # Wave 2 integration review ISSUE-4 — emit X-Quota-Limit +
+            # X-Quota-Period on RPM 429 for ops-dashboard parity with the
+            # monthly 429 branch (grep `X-Quota-*` across all 429s now hits
+            # both reasons).  X-Quota-Used omitted intentionally — fetching
+            # the current monthly counter here would add a DB round-trip on
+            # the throttled-request hot path; the dashboard derives "used"
+            # from `usage_counter` directly when needed.
             return Response(
                 body,
                 status_code=429,
                 media_type="application/json",
-                headers={"X-RateLimit-Remaining": "0"},
+                headers={
+                    "X-RateLimit-Remaining": "0",
+                    "X-Quota-Limit": str(plan_info.quota_calls_per_month),
+                    "X-Quota-Period": now_utc.strftime("%Y%m"),
+                },
             )
 
         allowed_monthly = True

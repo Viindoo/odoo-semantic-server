@@ -134,6 +134,19 @@ export default function UsageDashboard() {
           {' · '}
           {plan.rate_limit_rpm} req/min
         </p>
+        {/*
+          M10B P0 multi-key disclosure (Wave 2 integration review ISSUE-3):
+          the /api/account/usage endpoint resolves a single primary key
+          (oldest by id) per user. Surfacing the limitation in the UI
+          prevents silent under-reporting for users who hold more than
+          one key. Per-key breakdown is deferred to M10B P1.
+        */}
+        <p
+          data-testid="primary-key-hint"
+          className="text-gray-400 text-xs mt-1.5"
+        >
+          Showing usage for your primary API key.
+        </p>
       </div>
 
       {/* Current period progress */}

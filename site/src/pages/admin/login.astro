@@ -16,8 +16,18 @@ try {
   // server down — allow login page
 }
 
+// Server-side ?return= consumer.
+// Middleware (site/src/middleware.ts ~L148-152) sets ?return=<path> when an
+// unauthenticated user hits /account/*. After login completes we redirect
+// them back. Strict same-origin path-only validation (CWE-601 open-redirect
+// guard): only paths starting with literal "/account/" are accepted — any
+// scheme://host, protocol-relative "//evil.com", or fragment/quoted-prefix
+// trick is rejected. Fallback target is /admin (admin landing).
+const _rawReturn = Astro.url.searchParams.get('return') ?? '';
+const returnTarget = /^\/account\//.test(_rawReturn) ? _rawReturn : '/admin';
+
 if (alreadyAuthed) {
-  return Astro.redirect('/admin');
+  return Astro.redirect(returnTarget);
 }
 ---
 
@@ -178,6 +188,14 @@ if (alreadyAuthed) {
 </BaseLayout>
 
 <script>
+  // Client-side ?return= consumer — mirror server-side guard above.
+  // Same path-only allowlist (CWE-601 open-redirect guard): reject any value
+  // that doesn't start with literal "/account/". Fallback /admin.
+  function getReturnTarget(): string {
+    const raw = new URLSearchParams(window.location.search).get('return') ?? '';
+    return /^\/account\//.test(raw) ? raw : '/admin';
+  }
+
   document.querySelector('[data-testid="login-form"]')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
@@ -212,7 +230,7 @@ if (alreadyAuthed) {
         mfaSection?.removeAttribute('hidden');
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
       } else {
-        window.location.href = '/admin';
+        window.location.href = getReturnTarget();
       }
     } else {
       if (errorEl) {
@@ -263,7 +281,7 @@ if (alreadyAuthed) {
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      window.location.href = '/admin';
+      window.location.href = getReturnTarget();
     } else {
       if (mfaErrorEl) {
         const msg =

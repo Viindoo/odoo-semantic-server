@@ -71,9 +71,14 @@ async def get_account_usage(request: Request):
     Auth check uses current_user_id (not is_admin — per ADR-0026 / ADR-0039):
     this endpoint is open to any logged-in user, not just admins.
 
-    API-key resolution: primary key belonging to this user
-    (SELECT ... WHERE user_id = %s LIMIT 1). If the user has no API key
-    yet (new account), returns 200 with nulls (graceful empty).
+    API-key resolution (M10B P0 limitation — Wave 2 integration review
+    ISSUE-3): the "primary" key for a multi-key user is defined as the
+    OLDEST active key (``ORDER BY k.id ASC LIMIT 1``). Users with more
+    than one API key see usage for that single primary key only — the
+    portal surfaces an explicit hint so this is not silent. Multi-key
+    aggregation is deferred to M10B P1 (per-key breakdown + selector).
+    If the user has no API key yet (new account), returns 200 with
+    nulls (graceful empty).
 
     Response shape:
       {
@@ -121,7 +126,7 @@ async def get_account_usage(request: Request):
             if row is None:
                 # User has no API key yet — graceful empty.
                 return JSONResponse(
-                    {"plan": None, "current_period": None, "history": []}
+                    _json_safe({"plan": None, "current_period": None, "history": []})
                 )
 
             key_id, slug, display_name, quota, rate_limit_rpm = row
