@@ -176,7 +176,7 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Latest release:** v0.13.0 (2026-05-28) — M13 close-out + M10B P0 commercialization platform (PR #200). Schema: `plans` + `usage_counter` (m13_006) + `usage_counter` CASCADE (m13_007). Middleware: plan-aware quota + RPM gate; X-Quota / X-RateLimit response headers; 429 differentiation (`rpm_exceeded` / `monthly_quota_exceeded`). UI: `/account/usage` dashboard + pricing-tier sync. Docs: 5 operator runbooks (RLS cutover, FERNET provision, post-PR ops, backup+DR drill, prod smoke 24 tools). Tool count stays **24**. See CHANGELOG.md.
+**Latest release:** v0.13.1 (2026-05-28) — Self-host waitlist + post-v0.13.0 cleanup (PR #204). Adds `POST /api/waitlist` endpoint (5/min per-IP rate-limit, admin email notification), `src/web_ui/email.py` sender abstraction, migration `m13_008_waitlist_emails`. Tool count stays **24**. See CHANGELOG.md.
 
 **v0.11.1 (2026-05-23)** — Pre-LIVE read-side hygiene + stylesheet/lint cleanup. See CHANGELOG.md.
 
@@ -184,9 +184,9 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **Web-UI multi-tenant RBAC + self-service portal (W0-W4, merged 2026-05-25):** Batch 5 wave hoàn thành giao diện web quản trị + tenant self-service. W0 (#174) — admin gate 19 route mutating + `SIGNUP_ENABLED` flag (default off). W1 (#177) — `tenant_members` (m13_005) + admin tenant CRUD + ADR-0038. W2 (#179) — customer self-service portal (`/account/repos`) + `tenant_write_allowed` write-side RBAC. W3 (#180) — diagnostics endpoint + admin user creation + audit-log viewer + audit coverage regression guard. W4 (#181) — `GET /api/versions` data-driven + 3 version dropdown + worker controls (`profile_workers`/`max_workers`/`--gc`). Tool count stays **24**; migration m13_005 required. See CHANGELOG.md `[Unreleased]`.
 
-**Production deploy:** 2026-05-25 — PRs #160 + wave3 deployed. Migration m13_001 + m13_002 + m13_005 applied. Full reindex v8→v19 COMPLETE (591,108 embeddings; 48 repos). Post-reindex graph verified clean (2026-05-26) — 0 stale absolute-path nodes (Neo4j `Stylesheet`/`LintViolation` = 0; pgvector `file_path LIKE '/%'` = 0; `ops/cleanup_absolute_path_nodes.cypher` per ADR-0037 satisfied). Current prod HEAD: #183 d59c26a.
+**Production deploy:** 2026-05-28 — PRs #200 + #204 deployed. Migrations m13_006 + m13_007 + m13_008 applied. All api_keys backfilled to free-grandfathered plan; osm_reader grants verified across new schema objects. All 3 services healthy (MCP :8002, FastAPI :8003, Astro :4321).
 
-**Active work:** PR #200 merged → M10B P0 ship live (quota + plan schema + usage dashboard). **Reindex DONE — đừng chạy lại.** **Deferred:** M10B P1 (Polar adapter + Entitlement Activation API + multi-IdP "Viindoo Account"), M10C nonce-CSP (chờ Astro v5.1+ nonce API), recall benchmark, §6 prod smoke 14 tools chưa verify, VN persona docs.
+**Active work:** Post-PR-#200/#204 cleanup PR in flight — TD-1 (backup format pg_dump -F custom), TD-2 (conftest Priority 2 guard), TD-4 (Neo4j auth_max_failed_attempts), backup retention pruning, customer-onboarding UI gap closures (forgot-password e2e, landing nav /pricing link, /login alias, OAuth error banner). **Deferred:** M10B P1 (Polar adapter + Entitlement Activation API + multi-IdP "Viindoo Account"), M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep), VN persona docs.
 
 **Next milestones (roadmap):**
 - **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) đã ship trong v0.13.0. P1 còn lại: Polar adapter (Merchant-of-Record billing), Entitlement Activation API, multi-IdP "Viindoo Account". Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md). GTM international self-serve (Polar) first.

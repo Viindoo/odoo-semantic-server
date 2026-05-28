@@ -1,0 +1,98 @@
+# ops/offsite-backup-systemd.template/odoo-semantic-offsite-sync.service.template
+# systemd service unit skeleton for OSM offsite backup sync via rclone.
+#
+# SUBSTITUTE before deploying (replace all @@NAME@@ placeholders):
+#   @@CRYPT_REMOTE@@  — rclone remote name matching the [crypt] stanza in rclone.conf
+#                       (typically "crypt"). ExecStart uses it as: @@CRYPT_REMOTE@@:osm/%H/
+#
+# After filling, install to /etc/systemd/system/:
+#   cp odoo-semantic-offsite-sync.service.filled \
+#       /etc/systemd/system/odoo-semantic-offsite-sync.service
+#   systemctl daemon-reload
+#
+# IMPORTANT: do NOT run the service directly after install. Enable the timer instead:
+#   systemctl enable --now odoo-semantic-offsite-sync.timer
+# The timer fires at 04:00 ICT (21:00 UTC) — after the 03:00 ICT nightly backup.
+# See docs/deploy/runbooks/offsite-backup-setup.md for the full deployment procedure.
+
+[Unit]
+Description=OSM offsite backup sync — rclone push to encrypted S3-compatible remote
+Documentation=file:///home/odoo-semantic/odoo-semantic-mcp/ops/offsite-backup-systemd.template/README.md
+# Must run after the nightly backup bundle is complete.
+# The timer ensures ordering by wall-clock (04:00 ICT, after 03:00 ICT backup).
+# Uncomment and set After= if the backup unit name is known in this environment:
+# After=odoo-semantic-backup.service
+After=network-online.target
+Wants=network-online.target
+
+# Fire an alert unit on any failure (same pattern as backup + reindex units).
+# Operator: replace with the actual alert unit name used in this environment.
+OnFailure=osm-alert@%n.service
+
+[Service]
+Type=oneshot
+User=odoo-semantic
+Group=odoo-semantic
+
+# ADR-0027: ProtectHome=true is required for system-user services.
+# rclone writes a temp cache under $TMPDIR — must be outside /home.
+# TMPDIR is set to a writable location outside ProtectHome scope (ADR-0027 TMPDIR gotcha).
+ProtectHome=true
+PrivateTmp=true
+Environment=TMPDIR=/var/tmp/odoo-semantic-offsite
+RuntimeDirectory=odoo-semantic-offsite
+RuntimeDirectoryMode=0700
+
+# Harden the service surface (no new privileges, strict filesystem protection).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/odoo-semantic /var/tmp/odoo-semantic-offsite
+
+# Credential delivery — mirrors ADR-0020 LoadCredential pattern.
+# Source files written at bootstrap (see README.md in this directory).
+# Never committed to git. rclone reads passwords via RCLONE_CONFIG_* env vars below.
+LoadCredential=rclone-crypt-pass:/etc/odoo-semantic/credentials/rclone-crypt-pass
+LoadCredential=rclone-crypt-pass2:/etc/odoo-semantic/credentials/rclone-crypt-pass2
+
+# Inject passwords as env vars. rclone reads RCLONE_CONFIG_<REMOTE>_<OPTION>
+# at startup and uses them in place of config-file values.
+# %d = systemd credential directory (ephemeral, mode 0400 per credential).
+Environment=RCLONE_CONFIG=/etc/odoo-semantic/rclone/rclone.conf
+Environment=RCLONE_CONFIG_CRYPT_PASSWORD=%d/rclone-crypt-pass
+Environment=RCLONE_CONFIG_CRYPT_PASSWORD2=%d/rclone-crypt-pass2
+
+# -----------------------------------------------------------------------
+# Main sync: push all .tar.gz bundles to the crypt remote.
+# @@CRYPT_REMOTE@@ — replace with the [crypt] stanza name from rclone.conf.
+# %H expands to hostname — bundles land at <bucket>/osm/<hostname>/ (avoids
+# key collisions in multi-server setups; cosmetic on single-server).
+#
+# --bwlimit 50M  — cap upload at 50 MB/s; adjust for your uplink.
+# --transfers 2  — parallel file uploads; keep low for large bundles.
+# --retries 3    — retry transient S3 errors before giving up.
+# --log-level INFO — enough detail for journald audit without debug noise.
+# -----------------------------------------------------------------------
+ExecStart=/usr/bin/rclone sync \
+    /var/backups/odoo-semantic/ \
+    @@CRYPT_REMOTE@@:osm/%H/ \
+    --include "*.tar.gz" \
+    --bwlimit 50M \
+    --transfers 2 \
+    --retries 3 \
+    --log-level INFO \
+    --stats 60s \
+    --stats-log-level INFO
+
+# NOTE: local retention is owned by `python -m src.cli backup` via
+# _prune_old_bundles (default keep=14 bundles, override via --keep-bundles or
+# OSM_BACKUP_KEEP env). DO NOT add a competing `find -mtime +N -delete` here —
+# the two would silently fight and operators would see a halved retention
+# window. See docs/deploy/runbooks/offsite-backup-bootstrap.md "Retention
+# coupling" and docs/adr/0018-backup-contract.md "Retention" section.
+
+# Restart on failure — systemd will retry once before OnFailure fires.
+Restart=on-failure
+RestartSec=5min
+
+[Install]
+WantedBy=multi-user.target

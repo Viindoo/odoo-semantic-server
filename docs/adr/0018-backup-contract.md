@@ -1,6 +1,6 @@
 # ADR-0018 — Backup Bundle Contract
 
-**Status:** Accepted (updated 2026-05-26 — neo4j.dump → neo4j.cypher)
+**Status:** Accepted (updated 2026-05-28 — postgres.sql → postgres.dump + retention; supersedes -F plain decision)
 **Date:** 2026-05-15  
 **Milestone:** M9 W-BK
 
@@ -47,15 +47,49 @@ shutdown are required.
 
 | File in archive | Description | Required |
 |---|---|---|
-| `postgres.sql` | `pg_dump -F plain` output | Always |
+| `postgres.dump` | `pg_dump -F custom -Z 6` output | Always |
 | `neo4j.cypher` | Online Cypher export via Bolt driver (`_export_neo4j_online`) | Optional — skipped if `NEO4J_PASSWORD` absent or Neo4j unreachable |
 | `fernet.enc` | FERNET_KEY encrypted with passphrase-derived key | Only if `--bundle-passphrase-env` provided |
 | `manifest.json` | `created_at`, `schema_version`, `components[]` with sha256 per file | Always |
+
+### Backward compatibility
+
+Bundles produced before 2026-05-28 contain `postgres.sql` (plain-text SQL) instead of
+`postgres.dump` (custom binary format). The `restore` command auto-detects which restore
+tool to use based on the file extension:
+
+- `postgres.dump` → `pg_restore` (pg_dump custom format)
+- `postgres.sql` → `psql` (legacy plain-text dump)
+
+Detection happens in `src/cli.py:_restore_bundle` via the renamed helper
+`_restore_sql_or_dump`, which inspects `pg_dump.suffix.lower()` before dispatching.
+
+Legacy `.sql` support is maintained for at least one minor version (through 0.14.x).
+After that, it may be dropped via a separate ADR amendment. Operators with pre-2026-05-28
+bundles should treat them as readable but should not rely on continued `.sql` support
+beyond the 0.14.x series.
 
 **Note on legacy `neo4j.dump`:** Bundles created before 2026-05-26 may contain
 `neo4j.dump` instead of `neo4j.cypher`. The `restore` command detects the file
 name and prints a manual-restore note for legacy `.dump` files; `.cypher` files
 are restored automatically via the Bolt driver.
+
+### Retention
+
+After writing the new bundle, the backup command prunes old bundles in the same
+`BACKUP_DIR` to bound storage growth.
+
+- **Default `keep_n = 14`** — approximately two weeks of nightly bundles. At ~3 GB/bundle
+  (production figure), this caps storage at ~42 GB. Production currently runs ~6 bundles,
+  so the default is conservative by design.
+- **Override precedence:** `--keep-bundles N` (CLI flag) > `OSM_BACKUP_KEEP` (env var)
+  > built-in default `14`. A value `< 1` is clamped to `1`.
+- **Safety:** `_prune_old_bundles` (`src/cli.py`) NEVER deletes the bundle being written
+  in the current run (`current_bundle` parameter). Bundles are sorted by `mtime` descending
+  (newest first); the oldest beyond `keep_n` are removed.
+- **Idempotent:** Re-running backup with the same `keep_n` against a directory that already
+  satisfies the retention limit does not double-prune — files already within `keep_n`
+  are untouched.
 
 ### Output path validation
 

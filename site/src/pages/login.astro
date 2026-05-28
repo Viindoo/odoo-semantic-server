@@ -1,0 +1,10 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// /login canonical alias → 302 to /admin/login, preserving ?return= / ?next=.
+// Today /login returns 404; customers who guess the canonical login URL hit a
+// dead-end. This alias sends them to the real login page without changing
+// bookmarks to /admin/login (302 = temporary, search engines don't lock in alias).
+const u = new URL(Astro.request.url);
+const ret = u.searchParams.get('return') ?? u.searchParams.get('next') ?? '/account/usage';
+return Astro.redirect(`/admin/login?return=${encodeURIComponent(ret)}`, 302);
+---

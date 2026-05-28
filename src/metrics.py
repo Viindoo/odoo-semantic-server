@@ -28,7 +28,7 @@ server embed path is the latency-sensitive one; batch can be logged via
 the existing `_logger.debug` lines.
 """
 import prometheus_client
-from prometheus_client import Histogram
+from prometheus_client import Counter, Histogram
 
 # Bucket boundaries chosen for Qwen3-Embedding batches up to EMBEDDER_MAX_BATCH=50.
 # Empirical: ~22s per 100 texts → ~11s per 50-text batch.
@@ -42,7 +42,29 @@ embedder_batch_duration_seconds = Histogram(
     buckets=_DURATION_BUCKETS,
 )
 
+# ---------------------------------------------------------------------------
+# Auth — forgot-password background-task counters (WFIX-1, ADR-0023 style)
+# ---------------------------------------------------------------------------
+
+forgot_password_db_failure_total = Counter(
+    "forgot_password_db_failure_total",
+    "Number of DB errors (lookup or INSERT) in the forgot-password background task.",
+)
+
+forgot_password_email_send_failure_total = Counter(
+    "forgot_password_email_send_failure_total",
+    "Number of SMTP send failures in the forgot-password background task.",
+)
+
+forgot_password_success_total = Counter(
+    "forgot_password_success_total",
+    "Number of password-reset tokens successfully inserted and emailed.",
+)
+
 __all__ = [
     "embedder_batch_duration_seconds",
+    "forgot_password_db_failure_total",
+    "forgot_password_email_send_failure_total",
+    "forgot_password_success_total",
     "prometheus_client",
 ]

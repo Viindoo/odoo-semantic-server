@@ -4,7 +4,7 @@ import { FASTAPI_BASE } from './lib/fastapi';
 
 // Paths that are always public — no admin auth guard applied.
 // /signup, /verify-email, /reset-password are public signup/auth flows (W-SG/W-UM).
-const _PUBLIC_PATHS = new Set(['/signup', '/verify-email', '/reset-password']);
+const _PUBLIC_PATHS = new Set(['/login', '/signup', '/verify-email', '/reset-password', '/forgot-password']);
 
 // Paths that load hCaptcha widget (third-party script + iframe + XHR origins).
 // Currently only /signup conditionally loads `https://js.hcaptcha.com/1/api.js`

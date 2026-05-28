@@ -11,6 +11,7 @@ services:
       # Khi Neo4j chạy trên server riêng, phải set advertised address
       # để bolt client redirect đúng host (không bị redirect về container hostname):
       NEO4J_server_bolt_advertised__address: ${NEO4J_ADVERTISED_HOST:-localhost}:7687
+      NEO4J_dbms_security_auth__max__failed__attempts: "10"
     ports:
       # Same-server default — DB localhost only. Reverse proxy / SSH tunnel
       # for split-tier deploy: change to "7687:7687" + firewall app-server IP.

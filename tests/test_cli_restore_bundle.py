@@ -32,10 +32,16 @@ def _make_minimal_bundle(
     *,
     include_manifest: bool = True,
     include_pg: bool = True,
+    pg_filename: str = "postgres.sql",
     neo4j_cypher: bytes | None = None,
     neo4j_dump: bytes | None = None,
 ) -> Path:
-    """Create a .tar.gz bundle with optional contents."""
+    """Create a .tar.gz bundle with optional contents.
+
+    pg_filename controls the postgres dump filename inside the bundle:
+    - "postgres.dump" → new-format bundle (pg_restore path)
+    - "postgres.sql"  → legacy-format bundle (psql path, backwards compat)
+    """
     bundle = tmp_path / "bundle.tar.gz"
     with tarfile.open(bundle, "w:gz") as tar:
         if include_manifest:
@@ -44,8 +50,8 @@ def _make_minimal_bundle(
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
         if include_pg:
-            pg_data = b"-- SQL dump\n"
-            info2 = tarfile.TarInfo("postgres.sql")
+            pg_data = b"-- dump payload\n"
+            info2 = tarfile.TarInfo(pg_filename)
             info2.size = len(pg_data)
             tar.addfile(info2, io.BytesIO(pg_data))
         if neo4j_cypher is not None:
@@ -353,7 +359,12 @@ def test_bundle_neo4j_safety_snapshot_failure_on_reachable_db_aborts_before_wipe
 
 
 def test_bundle_with_legacy_neo4j_dump_prints_manual_note(tmp_path, monkeypatch, capsys):
-    """Legacy bundles with neo4j.dump must print a manual-restore note, not call cypher restore."""
+    """Legacy bundles with neo4j.dump exit 1 (half-restored: PG yes, Neo4j no).
+
+    Postgres has been restored from the bundle, but Neo4j has NOT — manual
+    `neo4j-admin load` is required. We exit non-zero so DR automation does not
+    mistakenly treat this as a successful restore.
+    """
     monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
     monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
 
@@ -379,10 +390,16 @@ def test_bundle_with_legacy_neo4j_dump_prints_manual_note(tmp_path, monkeypatch,
             with patch("src.cli._restore_neo4j_cypher", side_effect=_should_not_be_called):
                 result = _cmd_restore(args)
 
-    assert result == 0
+    # Exit 1 = half-restored / not a clean success.
+    assert result == 1
     assert not restore_called, "_restore_neo4j_cypher must NOT be called for legacy .dump"
     captured = capsys.readouterr()
-    assert "neo4j-admin" in captured.out or "manual" in captured.out.lower()
+    # The error message goes to stderr (not stdout).
+    assert (
+        "neo4j-admin" in captured.err
+        or "manual" in captured.err.lower()
+        or "ERROR" in captured.err
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -642,3 +659,87 @@ def test_export_streams_to_file_handle_not_in_memory_join(tmp_path, monkeypatch)
     assert content.count("-[:DEPENDS_ON") == 1, content
     assert "REMOVE n.__eid__" in content, content
     assert msg == "Exported 2 nodes, 1 relationships", msg
+
+
+# ---------------------------------------------------------------------------
+# Format auto-detect: .dump → pg_restore; legacy .sql → psql
+# ---------------------------------------------------------------------------
+
+def test_restore_new_format_dump_via_pg_restore(tmp_path, monkeypatch):
+    """Bundle with postgres.dump (new format) → restore must call pg_restore, NOT psql."""
+    monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+
+    bundle = _make_minimal_bundle(tmp_path, pg_filename="postgres.dump")
+    args = _args_for(bundle)
+
+    captured_cmds: list[list[str]] = []
+
+    def mock_run(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        # Safety backup (pg_dump) writes to stdout
+        if "pg_dump" in cmd[0]:
+            stdout = kwargs.get("stdout")
+            if stdout and hasattr(stdout, "write"):
+                stdout.write(b"-- mock safety dump\n")
+            return MagicMock(returncode=0, stderr=b"")
+        # pg_restore or psql restore
+        return MagicMock(returncode=0, stderr=b"", stdout=b"")
+
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            result = _cmd_restore(args)
+
+    assert result == 0, f"Expected rc=0, got {result}"
+    tool_names = [c[0] for c in captured_cmds]
+    assert "pg_restore" in tool_names, (
+        f"Bundle with postgres.dump must invoke pg_restore; tools called: {tool_names}"
+    )
+    assert "psql" not in tool_names, (
+        f"pg_restore path must NOT call psql; tools called: {tool_names}"
+    )
+    # pg_restore must receive the dump path as a positional arg (not stdin)
+    pg_restore_cmds = [c for c in captured_cmds if c[0] == "pg_restore"]
+    assert any("postgres.dump" in arg for arg in pg_restore_cmds[0]), (
+        f"pg_restore invocation must pass the .dump path as argument: {pg_restore_cmds[0]}"
+    )
+
+
+def test_restore_legacy_format_sql_via_psql(tmp_path, monkeypatch):
+    """Bundle with postgres.sql (legacy format) → restore must call psql, NOT pg_restore.
+
+    Backwards-compat: the 6 production bundles in /var/backups/odoo-semantic/ all have
+    postgres.sql and must still restore cleanly after this change.
+    """
+    monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+
+    # Explicit legacy format: postgres.sql (the default for _make_minimal_bundle)
+    bundle = _make_minimal_bundle(tmp_path, pg_filename="postgres.sql")
+    args = _args_for(bundle)
+
+    captured_cmds: list[list[str]] = []
+
+    def mock_run(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        # Safety backup (pg_dump) writes to stdout
+        if "pg_dump" in cmd[0]:
+            stdout = kwargs.get("stdout")
+            if stdout and hasattr(stdout, "write"):
+                stdout.write(b"-- mock safety dump\n")
+            return MagicMock(returncode=0, stderr=b"")
+        # psql or pg_restore restore
+        return MagicMock(returncode=0, stderr=b"", stdout=b"")
+
+    with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
+        with patch("subprocess.run", side_effect=mock_run):
+            result = _cmd_restore(args)
+
+    assert result == 0, f"Expected rc=0 for legacy .sql bundle, got {result}"
+    tool_names = [c[0] for c in captured_cmds]
+    assert "psql" in tool_names, (
+        f"Legacy postgres.sql bundle must invoke psql; tools called: {tool_names}"
+    )
+    assert "pg_restore" not in tool_names, (
+        f"psql (legacy) path must NOT call pg_restore; tools called: {tool_names}"
+    )

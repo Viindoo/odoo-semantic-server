@@ -71,6 +71,8 @@ make test-integration
 
 Khi chạy lần đầu, testcontainers sẽ pull image được cấu hình trong `NEO4J_IMAGE` (`.env.example`) — mặc định `neo4j:5.26.25` (~500MB). Từ lần sau Docker cache lại, chạy nhanh hơn. Neo4j container tự start trước khi test và tự destroy sau khi xong — không cần `docker compose up` thủ công.
 
+**Chạy integration tests trên máy đã có Neo4j (production server hoặc dev Neo4j cá nhân):** Priority 2 fallback trong conftest kết nối tới `bolt://localhost:7687` với password mặc định `"password"` khi testcontainers không spin up được. Để tránh vô tình auth vào Neo4j production (gây rate-limit), fallback này tự động skip nếu URI và password đều là default và không chạy trong CI. Override bằng cách set `NEO4J_TEST_PASSWORD=<your-password>` hoặc `NEO4J_TEST_URI=<your-uri>` sang giá trị không phải default — một trong hai là đủ để disarm guard. Xem [ADR-0040](docs/adr/0040-conftest-priority2-fallback-guard.md).
+
 ### Toàn bộ test suite
 
 ```bash

@@ -1,0 +1,43 @@
+# ops/offsite-backup-systemd.template/odoo-semantic-offsite-sync.timer.template
+# systemd timer unit skeleton for OSM offsite backup sync.
+# Fires daily at 04:00 ICT = 21:00 UTC (UTC+7 offset).
+#
+# No @@NAME@@ placeholders in this file — it is ready to copy as-is.
+# (The corresponding .service template requires substituting @@CRYPT_REMOTE@@.)
+#
+# After copying, enable the timer (not the service directly):
+#   cp odoo-semantic-offsite-sync.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now odoo-semantic-offsite-sync.timer
+#   systemctl list-timers odoo-semantic-offsite-sync.timer
+#
+# Timezone note: systemd timer OnCalendar does not support per-unit TZ overrides
+# in all systemd versions. The safe approach is to express the time in UTC:
+#   04:00 ICT (Asia/Ho_Chi_Minh, UTC+7) = 21:00 UTC previous calendar day.
+# If the host clock is set to a non-UTC timezone (non-standard for Linux servers),
+# adjust OnCalendar accordingly or set the system timezone: timedatectl set-timezone UTC.
+#
+# Cross-ref: docs/deploy/runbooks/offsite-backup-setup.md for the full procedure.
+
+[Unit]
+Description=OSM offsite backup sync — daily at 04:00 ICT (21:00 UTC)
+Documentation=file:///home/odoo-semantic/odoo-semantic-mcp/ops/offsite-backup-systemd.template/README.md
+
+[Timer]
+# 04:00 ICT = 21:00 UTC (UTC+7). This assumes the server clock is set to UTC,
+# which is standard for Linux production servers.
+# If the server runs ICT local time (non-standard), change to: 04:00:00
+# and remove the UTC suffix. Verify with: timedatectl status
+OnCalendar=*-*-* 21:00:00 UTC
+
+# Spread the start up to 5 minutes to avoid exact-second hammering if
+# multiple services have the same OnCalendar time.
+RandomizedDelaySec=5min
+
+# If the system was offline at 21:00 UTC, catch up immediately on next boot.
+Persistent=true
+
+Unit=odoo-semantic-offsite-sync.service
+
+[Install]
+WantedBy=timers.target

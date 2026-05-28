@@ -173,11 +173,12 @@ def create_app() -> FastAPI:
     app.add_middleware(_SecurityHeadersMiddleware)
 
     # Auth endpoints (exempt from AuthRequiredMiddleware via /api/auth/ prefix)
-    from src.web_ui.routes import login, oauth, signup
+    from src.web_ui.routes import forgot_password, login, oauth, signup
 
     app.include_router(login.router)
     app.include_router(oauth.router)
     app.include_router(signup.router)
+    app.include_router(forgot_password.router)
 
     from src.web_ui.routes import dashboard
 
