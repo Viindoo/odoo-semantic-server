@@ -1,8 +1,8 @@
 # ADR-0017 — OAuth Google + GitHub via arctic + oslo (Node-native)
 
-**Status:** Accepted  
-**Date:** 2026-05-15  
-**Milestone:** M9 W-OA
+**Status:** Accepted + Amended (2026-05-28) — extensible IdP registry for multi-IdP / "Viindoo Account"; see Amendment below and [ADR-0039](0039-commercialization-platform.md).
+**Date:** 2026-05-15
+**Milestone:** M9 W-OA (amended in M10B)
 
 ---
 
@@ -135,3 +135,46 @@ Every oauth-login attempt (success, failure, 409 conflict) writes to
 - One new FastAPI route: `src/web_ui/routes/oauth.py` registered in `app.py`.
 - `.env.example` extended with `GOOGLE_*`, `GITHUB_*`, `PUBLIC_BASE_URL`,
   `API_BASE_URL`.
+
+---
+
+## Amendment (2026-05-28) — Extensible IdP registry for "Viindoo Account"
+
+Commercialization ([ADR-0039](0039-commercialization-platform.md)) requires a single account
+boundary — branded **"Viindoo Account"** — that acts as a Service Provider accepting **more than two**
+Identity Providers: Google / GitHub for international developers, plus a **company OIDC provider** for
+the ecosystem segment (one login across products). The original design hard-codes exactly two
+providers.
+
+### Current limitation
+
+- The backend whitelist is a hard-coded set: `_ALLOWED_PROVIDERS = frozenset({"google", "github"})`
+  in `src/web_ui/routes/oauth.py`. Each provider is two bespoke Astro endpoints
+  (`admin/auth/<provider>.ts` + `admin/auth/callback/<provider>.ts`) calling a provider-specific
+  arctic class. There is no provider abstraction.
+- **One OAuth provider per user.** `_merge_oauth_into_user()` (`src/web_ui/routes/oauth.py`)
+  *overwrites* `(oauth_provider, oauth_id)`, so linking a new provider drops the previous one. A user
+  cannot hold both Google and the company IdP on the same account.
+
+### Decision
+
+1. **Reuse, do not rebuild, the link logic.** The Account-Linking Matrix above
+   (`src/web_ui/routes/oauth.py:252-352`) is provider-agnostic — `OAuthLoginBody{provider, oauth_id,
+   email, email_verified}` carries no provider-specific assumption. It is the reuse asset for any new
+   IdP.
+2. **Add a generic OIDC slot.** arctic 3.x already ships a generic `OAuth2Client` (plus `KeyCloak` /
+   `Auth0` / `Okta`). A company OIDC provider is added by: one `admin/auth/<provider>.ts` +
+   one callback (copied from `google.ts` with the OIDC discovery URL), adding the provider name to
+   `_ALLOWED_PROVIDERS`, and config env vars. Backend logic is unchanged. Effort: **medium**
+   (boilerplate), gated on the company OIDC `.well-known/openid-configuration` endpoint existing.
+3. **Multi-provider-per-user is deferred.** For the first commercialization wave keep the
+   one-provider-per-user model (login with the company IdP **or** Google, switching overwrites). When
+   simultaneous linking is needed (Google **and** company IdP on one account), introduce a
+   `user_oauth_identities(user_id, provider, provider_id)` table and stop overwriting in
+   `_merge_oauth_into_user()`. This is a schema migration, scheduled only when the requirement is
+   real.
+
+"Viindoo Account" is a **branding wrapper** over the existing `webui_users` identity store, not a new
+identity database. Cross-product SSO = "add one more IdP + rely on the email-linking that already
+exists" — it does not merge product user databases (each product data plane stays isolated, ADR-0039
+D1).

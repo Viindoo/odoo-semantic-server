@@ -184,11 +184,11 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **Production deploy:** 2026-05-25 — PRs #160 + wave3 deployed. Migration m13_001 + m13_002 + m13_005 applied. Full reindex v8→v19 COMPLETE (591,108 embeddings; 48 repos). Post-reindex graph verified clean (2026-05-26) — 0 stale absolute-path nodes (Neo4j `Stylesheet`/`LintViolation` = 0; pgvector `file_path LIKE '/%'` = 0; `ops/cleanup_absolute_path_nodes.cypher` per ADR-0037 satisfied). Current prod HEAD: #183 d59c26a.
 
-**Active work:** UI W0-W4 merged. Còn lại cho M13 close: WI-7 FERNET secrets / RLS hardening (OPS-SKIP — xem TASKS.md "UI Completion"). **Reindex DONE — đừng chạy lại.** **Deferred:** M10B Stripe, M10C Prometheus histogram, nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
+**Active work:** UI W0-W4 merged. Còn lại cho M13 close: WI-7 FERNET secrets / RLS hardening (OPS-SKIP — xem TASKS.md "UI Completion"). **Reindex DONE — đừng chạy lại.** **Deferred:** M10B Commercialization (MoR/Polar + Entitlement Activation API + quota gating — re-scoped from Stripe 2026-05-28, ADR-0039), M10C nonce-CSP, recall benchmark, §6 tools 15-21 prod smoke, VN persona docs.
 
 **Next milestones (roadmap):**
 - **M13 close** — WI-7 FERNET secrets / Postgres RLS hardening (RLS needs `FORCE` + non-owner read role). Reindex v8→v19 already DONE (2026-05-25). The P2 read-side enforcement gate (WI-3 `resolve_tenant_scope` + WI-4 mandatory fail-closed filter at 61 Neo4j + 4 ORM + 3 pgvector sites + cross-tenant leak test) already shipped in v0.10.0 (#163) and was refined in #165.
-- **M10B "Billing Wow"** — Stripe subscription + plan tiers.
+- **M10B "Commercialization Wow"** — control plane / data plane: Merchant-of-Record billing (Polar.sh; Stripe ruled out — does not onboard the operating jurisdiction), an Entitlement Activation API, plan-aware quota gating + usage metering, and multi-IdP "Viindoo Account". Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md). Re-scoped from the Stripe-based plan 2026-05-28; GTM international self-serve (Polar) first.
 - **M10C remaining** — Prometheus `embedder_batch_duration_seconds` histogram, nonce-based CSP (blocked — awaits Astro v5.1+ nonce API).
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.

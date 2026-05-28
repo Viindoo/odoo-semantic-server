@@ -8,6 +8,15 @@
 > [ADR-0029](0029-implicit-session-context.md). Builds on the deploy-key
 > machinery of [ADR-0008](0008-ssh-auto-clone.md) and [ADR-0020](0020-fernet-key-delivery.md).
 
+> **Scope (clarified 2026-05-28):** this ADR owns **data-plane tenant isolation** — one customer's
+> indexed repos hidden from another. The **control-plane** commercialization architecture
+> (identity / billing / entitlement / subscription plans) lives in
+> [ADR-0039](0039-commercialization-platform.md). "Tenant" here means a **repo-isolation boundary**
+> (a customer with private repos), which is distinct from a subscription entity. The word
+> "entitlement" used in this ADR (e.g. ~L403, "the caller is *entitled to* read node X") is
+> **access control**, NOT a subscription grant — ADR-0039 D3 owns the subscription sense and names
+> its tables `subscription` / `plan` to avoid this collision.
+
 ## Context
 
 OSM is moving from a single-organisation deployment (Viindoo indexes public

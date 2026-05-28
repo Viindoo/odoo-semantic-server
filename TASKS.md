@@ -424,7 +424,7 @@ Plans archived internally.
 
 **SaaS roadmap:**
 - M9 "Auth Wow" — OAuth Google/GitHub, public signup, tenant API keys (zero migration debt).
-- M10 "Billing Wow" — Stripe, plan tiers.
+- M10 "Billing Wow" — Stripe, plan tiers. *(re-scoped 2026-05-28 — now M10B "Commercialization Wow": Merchant-of-Record (Polar.sh) not Stripe, Entitlement Activation API, quota gating; design locked in [ADR-0039](docs/adr/0039-commercialization-platform.md).)*
 - M11 "Dashboard Wow" — `/dashboard` reuse React Flow từ M8 hero.
 - M12 "Multi-tenant Wow" — Neo4j namespacing. *(superseded — M12 became "v0.6 Shim Removal"; the real multi-tenant work is now [Milestone 13](#milestone-13--multi-tenant-wow) below, design locked in ADR-0034.)*
 
@@ -679,9 +679,9 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 **Status:** `[~]` M10A + M10.5 P1+P2 shipped; M10C substantially complete (Prometheus histogram shipped 2026-05-26 WI-D1; NAMEGET/reembed/audit shipped PR #159; nonce-CSP BLOCKED awaits Astro v5.1+); M10B pending. Prod reindex v8→v19 (comodel_name + mth.depends + migration m9_010) remains an OPS follow-up — admin run pending.
 
-**Intent:** Three independent substreams launched after M9 ship. M10A delivers low-risk MCP tool surface expansion. M10B delivers Stripe billing core (largest scope). M10C absorbs polish + observability + carry-over fixes from M7.5/M8/M9.
+**Intent:** Three independent substreams launched after M9 ship. M10A delivers low-risk MCP tool surface expansion. M10B delivers the commercialization platform — control plane / data plane, Merchant-of-Record billing, and quota gating (largest scope; re-scoped from Stripe 2026-05-28, see ADR-0039). M10C absorbs polish + observability + carry-over fixes from M7.5/M8/M9.
 
-**Outcome:** Public users can self-subscribe to a paid plan; admin can see MRR dashboard. CSS/SCSS index addressable via dedicated MCP tools. Indexer pipeline emits Prometheus-scrape histogram for embed latency. NAMEGET deprecation status correct on shipped tools. Stub-only modules covered by `reembed-stubs` CLI path.
+**Outcome:** Public users can self-subscribe to a paid plan via a Merchant-of-Record (Polar.sh); every API key is metered + gated by its plan. CSS/SCSS index addressable via dedicated MCP tools. Indexer pipeline emits Prometheus-scrape histogram for embed latency. NAMEGET deprecation status correct on shipped tools. Stub-only modules covered by `reembed-stubs` CLI path.
 
 > **Restructure history:** M10 substream split landed 2026-05-18 (see PR commit history).
 
@@ -711,15 +711,33 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 - [ ] **§6 tools 15-21 prod smoke** — verify 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) end-to-end against prod MCP endpoint via Claude Code or another MCP client. All 7 are code-complete + unit-tested. Cross-ref: pre-launch-checklist.md Known follow-ups #15.
 
-### M10B — Billing Wow Core
+### M10B — Commercialization Wow (Control Plane / Data Plane)
 
-- [ ] **Stripe SDK integration** — add `stripe>=10` to `pyproject.toml`; service module `src/billing/stripe_client.py` with retries + idempotency keys.
-- [ ] **Postgres migrations (3 new):** `subscriptions` (user_id, plan_id, status, current_period_start/end, cancel_at_period_end, stripe_subscription_id); `billing_accounts` (user_id, stripe_customer_id, payment_method_id); `plan_usage_log` (user_id, tool_name, called_at, success).
-- [ ] **FastAPI `/api/billing/*` routes** — POST `/subscribe/{plan_id}`, GET `/subscription`, PATCH `/cancel`, POST `/stripe/webhook` (signature-validated).
-- [ ] **Astro `/account/billing` page** + Stripe.js React island for payment method management.
-- [ ] **Pricing page wire-up** — replace `/pricing/` waitlist teaser with live tier cards calling `/api/billing/subscribe/{plan_id}`.
-- [ ] **ADR-0027 — Billing domain model** — record plan tiers ↔ feature gates, multi-currency stance, tax handling.
-- [ ] **MCP usage gate** — `src/mcp/middleware.py` checks `user.subscription.plan.tool_allowlist` before servicing requests; emits `plan_usage_log` row.
+> **Re-scoped 2026-05-28** — the original "Billing Wow" plan was Stripe-coupled. Stripe does not
+> onboard entities incorporated in the operating jurisdiction, so the rail is a Merchant-of-Record
+> (Polar.sh). Architecture + decisions: **[ADR-0039](docs/adr/0039-commercialization-platform.md)**
+> (this supersedes the stale "ADR-0027 — Billing domain model" reference, which collided with the
+> accepted system-user-deployment ADR-0027). Posture: extract-gradually (platform-aware schema in
+> OSM now, separate control-plane service only when a 2nd product needs it). GTM: international
+> self-serve (Polar) first.
+
+**P0 — Quota gating + plan schema (architecture-neutral; sell-blocker; ship first)**
+- [ ] **Plan/tier schema** — `plans` table (`limits` JSONB, generic — not seat-only, not a hard-coded tool allow-list); `api_keys.plan_id` FK (key already tenant-scoped via `m13_002`).
+- [ ] **Quota gating + usage metering** — make the per-key sliding-window limiter (`src/mcp/middleware.py:73-97`, currently flat `DEFAULT_RATE_LIMIT_RPM`) plan-aware; enforce daily/period quota off the existing `usage_log` table (`migrations/0001_initial.sql:63-72`, already populated, not yet used to gate). No new metering table needed.
+- [ ] **Fix `/pricing` placeholder links** — `site/src/pages/pricing.astro` has 2 dead placeholders (`formspree.io/f/placeholder-odoo-semantic`, `forms.gle/odoo-semantic-waitlist`). Replace with a real waitlist/checkout target.
+
+**P1 — Entitlement Activation API + Polar.sh MoR adapter (keystone; international first)**
+- [ ] **Entitlement Activation API** — one contract `grant/revoke/update` with product-aware payload `{email, product_id, plan, seats, status, limits}` (ADR-0039 D3). Tables: `subscriptions` (`product_id`, `plan`, `seats`, `status`, **`external_ref`** — vendor-agnostic, NOT `stripe_subscription_id`). Name tables `subscription`/`plan` (avoid the "entitlement" access-control collision — ADR-0039 D3 note).
+- [ ] **Polar.sh MoR adapter** — verified webhook → Activation API → mint API key + provision tenant + set plan. Map Polar native license key ↔ OSM API key (ADR-0039 D4/D5).
+- [ ] **Self-serve issuance gated by payment** — wire `SIGNUP_ENABLED` (`src/web_ui/config.py:40`) self-serve flow to the Activation API so a paid checkout (not just an invite) provisions a key.
+
+**P2 — Multi-IdP + regional segment**
+- [ ] **Viindoo OIDC provider** — add a 3rd IdP slot per the [ADR-0017](docs/adr/0017-oauth-arctic-oslo.md) amendment (extensible IdP registry; arctic `OAuth2Client` generic already available; reuse account-linking-by-verified-email at `src/web_ui/routes/oauth.py:252-352`).
+- [ ] **ERP sale.order webhook + VAS e-invoice** — regional/domestic activation adapter (thin webhook, not two-way sync); the ERP stays accounting system-of-record (ADR-0039 D4).
+- [ ] **Buyer ≠ user split** — `tenants` gains `owner_id` / `billing_email` / `seat_limit` (today `tenants` has none; `tenant_members` is membership-only). Needed for B2B billing contact vs seat holder.
+
+**P3 — Later**
+- [ ] **Support / SLA by tier**, dunning / refund handling, cross-product bundle groundwork (`product_id` generic in the entitlement record is the precondition).
 
 ### M10C — Polish + Observability
 
@@ -969,7 +987,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 > **v0.11.0 fix-wave (WG-1..WG-6):** Parser correctness v8-v19 (v9 Py2, field types, JS OWLComp/JSPatch, query.py path, NewId); writer schema (arch_snippet, F-5/F-8/F-12/F-13/V16-G2); 13-site tenant leak closed + leak test extended; query/render (F-4, list↔tree, file:line); enrichment (edition, summary, OWL widget pattern); bootstrap_versions.json corrected; ADR-0034/0005/runbook docs. See CHANGELOG.md `[0.11.0]`.
 > **v0.10.0 wave (PR #163):** P2 enforcement — WI-3 `resolve_tenant_scope` + WI-4 fail-closed own/shared filter at 61+4 Cypher + 3 pgvector sites + cross-tenant leak test (RELEASE GATE, PASSED). Plus Group A reindex-forcing enrichment (v19 core, docstring/manifest-deps/repo-provenance/USES_FIELD edges, Field.string/help, embeddings provenance m13_003) + Group B agent-convenient output + `module_inspect(method='dependencies')`. See CHANGELOG.md `[0.10.0]`.
 > **v0.9.1 wave (WI-F):** WI-1/WI-2/WI-5 schema + WI-6 (deploy-key REST) + WI-8/WI-9 git hardening + WI-10 license policy + M11 RelaxNG. See CHANGELOG.md `[0.9.1]`.
-> **STILL DEFERRED:** WI-7 FERNET secrets manager + Postgres RLS (needs FORCE + non-owner read role), M10B Stripe, nonce-CSP (BLOCKED — Astro v5.1+), recall benchmark (BLOCKED — Ollama SSL), §6 prod smoke, VN persona docs, OBS-2/OBS-3. M10C Prometheus histogram SHIPPED 2026-05-26.
+> **STILL DEFERRED:** WI-7 FERNET secrets manager + Postgres RLS (needs FORCE + non-owner read role), M10B Commercialization (MoR/Polar + Entitlement Activation API + quota gating — re-scoped from Stripe 2026-05-28, ADR-0039), nonce-CSP (BLOCKED — Astro v5.1+), recall benchmark (BLOCKED — Ollama SSL), §6 prod smoke, VN persona docs, OBS-2/OBS-3. M10C Prometheus histogram SHIPPED 2026-05-26.
 > **ADR-0034 site-count correction:** the ADR text says "~27 user-data Cypher sites". Verified count post-wave3: **61 sites** (57 in `src/mcp/server.py` + 4 in `src/mcp/orm.py`) PLUS 3 embeddings queries with NO Neo4j filter (`find_examples` / `find_style_override` / `suggest_pattern`) — those rely on pgvector RLS (WI-5 partial: column added, RLS deferred to WI-4 enforcement wave).
 
 > Realizes **M12 Stream B WI-B3 path (b) "True profile authz"** (above), which was deferred pending a customer-demand signal: "*customer-A's index hidden from customer-B*". That signal has arrived — OSM will serve many customers, each with **private repositories**. Numbered M13 because M12 was repurposed for v0.6 shim removal; this supersedes the stale post-M8 roadmap line "M12 Multi-tenant Wow — Neo4j namespacing".
