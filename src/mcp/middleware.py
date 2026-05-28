@@ -100,7 +100,7 @@ def _check_rate_limit(api_key_id: int, limit_rpm: int = DEFAULT_RATE_LIMIT_RPM) 
 _BG_TASKS: set[asyncio.Task] = set()
 
 # Paths that bypass auth entirely
-_PUBLIC_PATHS = frozenset({"/health"})
+_PUBLIC_PATHS = frozenset({"/health", "/metrics"})
 _PUBLIC_PATH_PREFIXES = frozenset({"/install"})
 
 

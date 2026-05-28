@@ -25,6 +25,11 @@ short-circuits repeat reads.  Each handler resolves the ``{version}`` sentinel
 via :func:`_resolved_version_for` **before** forming the cache key, so two
 callers with different session versions (e.g., A→17.0, B→16.0) reading
 ``odoo://auto/model/sale.order`` receive correctly distinct cached bodies.
+The cache key also carries a tenant dimension (``::t{tenant_id}``, admin as
+``::t_admin``) for every tenant-scoped kind — model, field, method, module,
+view, and stylesheet — so a cache HIT can never serve one tenant a body that
+was computed for another (ADR-0034); only the global ``pattern`` kind is
+keyed by version alone. See :func:`_tenant_cache_key`.
 
 See ``docs/adr/0030-mcp-resources-uri-scheme.md`` for the design rationale and
 internal design notes (cross-server pattern: stable URI resources) for prior art.
@@ -38,6 +43,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from src.constants import STYLESHEET_RESOURCE_MAX_BYTES
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -182,8 +189,38 @@ def get_cache() -> ResourceCache:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers — version resolution + Neo4j session
+# Internal helpers — tenant-scoped cache key + version resolution
 # ---------------------------------------------------------------------------
+
+
+def _tenant_cache_key(resolved_version: str, kind: str, entity: str) -> str:
+    """Build a cache key that includes the current tenant dimension (R1 fix).
+
+    The global per-URI key ``odoo://{version}/{kind}/{entity}`` is INSUFFICIENT
+    when private-tenant data exists: an admin who reads first would cache an
+    unrestricted body, and a subsequent tenant cache-HIT would receive it without
+    re-filtering (cross-tenant leak).
+
+    Fix: append ``::t{tenant_id}`` so each tenant (including admin as ``t_admin``)
+    gets its own cache slot.  The LRU capacity (1000 entries) is shared across all
+    slots; with N tenants each reading the same K models the cache holds N×K
+    entries.  For realistic deployments (≤10 tenants, ≤100 popular models) this is
+    well within budget.
+
+    Only ``pattern`` resources are EXEMPT:
+      - ``pattern`` — global spec data (no profile property); no tenant dimension needed.
+
+    Stylesheet resources DO use this key (FIX 5): although ``_render_stylesheet``
+    applies ``_scope_pred`` on a cache MISS, a plain per-URI key would let a
+    cache HIT return a previously-cached foreign-tenant body without re-running
+    that filter. Keying stylesheets per-tenant closes that latent leak — the
+    same dimension as model/field/method/module/view.
+    """
+    from src.mcp import server as _srv
+
+    tenant_id = _srv._get_tenant_id()
+    t_suffix = "::t_admin" if tenant_id is None else f"::t{tenant_id}"
+    return f"odoo://{resolved_version}/{kind}/{entity}{t_suffix}"
 
 
 def _resolved_version_for(version: str) -> str:
@@ -432,6 +469,16 @@ def _render_stylesheet(
         )
         return text, MIME_MARKDOWN
 
+    # G5: size cap — large compiled bundles must not flood MCP response budget.
+    raw_bytes = raw.encode("utf-8")
+    if len(raw_bytes) > STYLESHEET_RESOURCE_MAX_BYTES:
+        truncated = raw_bytes[:STYLESHEET_RESOURCE_MAX_BYTES].decode("utf-8", errors="replace")
+        header = (
+            f"# [truncated at {STYLESHEET_RESOURCE_MAX_BYTES // 1024} KB"
+            f" — full file: {len(raw_bytes)} bytes]\n"
+        )
+        return header + truncated, mime
+
     return raw, mime
 
 
@@ -473,10 +520,12 @@ def register_resources(mcp_instance) -> None:
     def _model_resource(version: str, name: str) -> str:
         # Resolve sentinel (e.g. "auto") BEFORE forming the cache key so
         # two callers with different session versions never share a body.
+        # R1 fix: include tenant dimension so private-tenant data is never
+        # served from an admin's (or another tenant's) cached body.
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/model/{name}"
+        key = _tenant_cache_key(resolved, "model", name)
         return cache.get_or_compute(
-            uri, lambda: _render_model(resolved, name),
+            key, lambda: _render_model(resolved, name),
         )[0]
 
     # ---- field ----------------------------------------------------------
@@ -490,9 +539,10 @@ def register_resources(mcp_instance) -> None:
     )
     def _field_resource(version: str, model: str, field: str) -> str:
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/field/{model}/{field}"
+        # R1: tenant-scoped key prevents cross-tenant cache contamination.
+        key = _tenant_cache_key(resolved, "field", f"{model}/{field}")
         return cache.get_or_compute(
-            uri, lambda: _render_field(resolved, model, field),
+            key, lambda: _render_field(resolved, model, field),
         )[0]
 
     # ---- method ---------------------------------------------------------
@@ -506,9 +556,10 @@ def register_resources(mcp_instance) -> None:
     )
     def _method_resource(version: str, model: str, method: str) -> str:
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/method/{model}/{method}"
+        # R1: tenant-scoped key.
+        key = _tenant_cache_key(resolved, "method", f"{model}/{method}")
         return cache.get_or_compute(
-            uri, lambda: _render_method(resolved, model, method),
+            key, lambda: _render_method(resolved, model, method),
         )[0]
 
     # ---- module ---------------------------------------------------------
@@ -522,9 +573,10 @@ def register_resources(mcp_instance) -> None:
     )
     def _module_resource(version: str, name: str) -> str:
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/module/{name}"
+        # R1: tenant-scoped key.
+        key = _tenant_cache_key(resolved, "module", name)
         return cache.get_or_compute(
-            uri, lambda: _render_module(resolved, name),
+            key, lambda: _render_module(resolved, name),
         )[0]
 
     # ---- view -----------------------------------------------------------
@@ -538,9 +590,10 @@ def register_resources(mcp_instance) -> None:
     )
     def _view_resource(version: str, xmlid: str) -> str:
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/view/{xmlid}"
+        # R1: tenant-scoped key.
+        key = _tenant_cache_key(resolved, "view", xmlid)
         return cache.get_or_compute(
-            uri, lambda: _render_view(resolved, xmlid),
+            key, lambda: _render_view(resolved, xmlid),
         )[0]
 
     # ---- pattern --------------------------------------------------------
@@ -575,7 +628,11 @@ def register_resources(mcp_instance) -> None:
         version: str, module: str, file_path: str,
     ) -> str:
         resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/stylesheet/{module}/{file_path}"
+        # Tenant-scoped cache key: stylesheets carry a profile[] array, so a
+        # private-tenant stylesheet can exist. A plain per-URI key would let a
+        # cache HIT bypass _render_stylesheet (and its _scope_pred filter),
+        # leaking a foreign tenant's body. Same dimension as the other 5 kinds.
+        key = _tenant_cache_key(resolved, "stylesheet", f"{module}/{file_path}")
         return cache.get_or_compute(
-            uri, lambda: _render_stylesheet(resolved, module, file_path),
+            key, lambda: _render_stylesheet(resolved, module, file_path),
         )[0]

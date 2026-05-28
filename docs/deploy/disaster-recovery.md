@@ -110,6 +110,15 @@ docker compose exec neo4j \
 # Expected: modules > 0 (vd 100+ cho Odoo 17 base)
 ```
 
+> **Bundle restore (online `neo4j.cypher`):** Lệnh `python -m src.cli restore <bundle.tar.gz>`
+> khôi phục Neo4j tự động từ `neo4j.cypher` qua Bolt driver (không cần stop DB).
+> Restore này là **REPLACE, không phải merge** — nó chạy `MATCH (n) DETACH DELETE n`
+> để xoá sạch graph hiện tại TRƯỚC khi replay các câu `CREATE`, vì replay lên graph
+> non-empty sẽ nhân đôi mọi node/relationship (file dùng `CREATE`, không `MERGE`).
+> Giữ đúng ngữ nghĩa destructive của offline `neo4j-admin database load` ở trên.
+> Pre-restore safety backup trong lệnh `restore` chỉ chụp PostgreSQL; nếu cần
+> rollback Neo4j hãy dùng dump/bundle Neo4j gần nhất.
+
 ### 3. Restore FERNET_KEY
 
 Production delivers the key via the **systemd credential store** (`LoadCredential=` trong

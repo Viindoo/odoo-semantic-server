@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_cli_backup_bundle.py
-"""Unit tests for the extended _cmd_backup — tar.gz bundle (M9 W-BK)."""
+"""Unit tests for the extended _cmd_backup — tar.gz bundle (M9 W-BK).
+
+Neo4j backup now uses _export_neo4j_online() (Bolt driver, online, no APOC)
+instead of the old stop-dump-start docker-compose flow.  The old
+`_backup_neo4j_via_compose` / `_wait_neo4j_healthy` helpers are removed.
+"""
 import hashlib
 import json
 import tarfile
@@ -12,6 +17,7 @@ from src.cli import (
     _cmd_backup,
     _encrypt_with_passphrase,
     _get_latest_migration_version,
+    _props_to_cypher,
 )
 
 # ---------------------------------------------------------------------------
@@ -34,12 +40,15 @@ def _run_backup(
     passphrase: str = "",
     fernet_key: str = "test-fernet-key",
     neo4j_success: bool = False,
+    neo4j_password: str = "",
 ):
     """Run _cmd_backup with mocked subprocess and advisory lock, return (rc, tar_path)."""
     backup_dir = _make_backup_dir(tmp_path)
     monkeypatch.setenv("PG_DSN", pg_dsn)
     monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
     monkeypatch.setenv("FERNET_KEY", fernet_key)
+    if neo4j_password:
+        monkeypatch.setenv("NEO4J_PASSWORD", neo4j_password)
 
     if bundle_passphrase_env and passphrase:
         monkeypatch.setenv(bundle_passphrase_env, passphrase)
@@ -58,20 +67,6 @@ def _run_backup(
             stdout.write(b"-- pg_dump stub\n")
         return MagicMock(returncode=0, stderr=b"")
 
-    def _fake_neo4j_dump(cmd, **kwargs):
-        # New flow: cmd is `docker compose run --rm -T -v <host_tmpdir>:/backups
-        # neo4j neo4j-admin database dump --to-path=/backups neo4j`. We resolve
-        # the host_tmpdir from the bind-mount arg and write the dump file there.
-        if not neo4j_success:
-            return MagicMock(returncode=1, stderr=b"neo4j-admin: database in use")
-        # Find the -v "<host>:/backups" arg (compose run preserves -v).
-        for i, arg in enumerate(cmd):
-            if arg == "-v" and i + 1 < len(cmd) and cmd[i + 1].endswith(":/backups"):
-                host_dir = cmd[i + 1].split(":", 1)[0]
-                (Path(host_dir) / "neo4j.dump").write_bytes(b"neo4j-dump-stub")
-                break
-        return MagicMock(returncode=0, stderr=b"")
-
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = lambda s: s
@@ -82,23 +77,22 @@ def _run_backup(
     def _fake_run(cmd, **kwargs):
         if cmd and "pg_dump" in cmd[0]:
             return _fake_pg_dump(cmd, **kwargs)
-        # New Neo4j flow: docker compose stop/run/start + docker inspect.
-        if cmd[:3] == ["docker", "compose", "stop"]:
-            return MagicMock(returncode=0, stderr=b"")
-        if cmd[:3] == ["docker", "compose", "start"]:
-            return MagicMock(returncode=0, stderr=b"")
-        if cmd[:3] == ["docker", "compose", "run"] and "neo4j-admin" in cmd:
-            return _fake_neo4j_dump(cmd, **kwargs)
-        if cmd[:2] == ["docker", "inspect"]:
-            # _wait_neo4j_healthy polls this — return healthy immediately so
-            # the test does not sleep.
-            return MagicMock(returncode=0, stdout="healthy\n", stderr="")
         return MagicMock(returncode=0, stderr=b"")
+
+    # _export_neo4j_online returns (True, msg) on success, (False, reason) on skip
+    if neo4j_success:
+        def _fake_neo4j_export(out_path):
+            out_path.write_text("// neo4j.cypher stub\nCREATE (n:Test {x: 1});", encoding="utf-8")
+            return True, "Exported 1 nodes, 0 relationships"
+    else:
+        def _fake_neo4j_export(out_path):
+            return False, "NEO4J_PASSWORD not set — skipping Neo4j export"
 
     with patch("psycopg2.connect", return_value=mock_conn):
         with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
             with patch("subprocess.run", side_effect=_fake_run):
-                rc = _cmd_backup(args)
+                with patch("src.cli._export_neo4j_online", side_effect=_fake_neo4j_export):
+                    rc = _cmd_backup(args)
 
     return rc, output_path
 
@@ -118,18 +112,21 @@ class TestBackupWritesTarGzWithComponents:
         assert "postgres.sql" in names
         assert "manifest.json" in names
 
-    def test_tar_gz_contains_neo4j_dump_when_available(self, tmp_path, monkeypatch):
+    def test_tar_gz_contains_neo4j_cypher_when_available(self, tmp_path, monkeypatch):
         rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch, neo4j_success=True)
         assert rc == 0
         with tarfile.open(str(out), "r:gz") as tar:
             names = tar.getnames()
-        assert "neo4j.dump" in names
+        assert "neo4j.cypher" in names
+        # Old dump format must not appear
+        assert "neo4j.dump" not in names
 
     def test_tar_gz_no_neo4j_when_unavailable(self, tmp_path, monkeypatch):
         rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch, neo4j_success=False)
         assert rc == 0
         with tarfile.open(str(out), "r:gz") as tar:
             names = tar.getnames()
+        assert "neo4j.cypher" not in names
         assert "neo4j.dump" not in names
         assert "postgres.sql" in names
 
@@ -215,6 +212,18 @@ class TestManifestContainsSchemaVersion:
             assert "sha256" in comp
             assert len(comp["sha256"]) == 64  # SHA-256 hex digest
 
+    def test_manifest_lists_neo4j_cypher_when_exported(self, tmp_path, monkeypatch):
+        rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch, neo4j_success=True)
+        assert rc == 0
+
+        with tarfile.open(str(out), "r:gz") as tar:
+            f = tar.extractfile(tar.getmember("manifest.json"))
+            manifest = json.loads(f.read())
+
+        files = [c["file"] for c in manifest["components"]]
+        assert "neo4j.cypher" in files
+        assert "neo4j.dump" not in files
+
 
 class TestFernetEncryptionWithPassphrase:
     def test_fernet_enc_present_when_passphrase_provided(self, tmp_path, monkeypatch):
@@ -289,16 +298,20 @@ class TestFernetEncryptionWithPassphrase:
         assert recovered == plaintext
 
 
-class TestNeo4jMissingLogsWarningNotFatal:
-    def test_docker_not_found_is_non_fatal(self, tmp_path, monkeypatch, caplog):
-        """When docker is missing (compose backup unreachable) backup still
-        succeeds — postgres.sql + manifest land in the bundle, neo4j.dump is
-        skipped with a logged warning."""
-        import logging
+class TestNeo4jOnlineExportSkipIsNonFatal:
+    def test_missing_neo4j_password_is_non_fatal(self, tmp_path, monkeypatch, caplog):
+        """When NEO4J_PASSWORD is absent, backup still succeeds with a warning."""
+        rc, out = _run_backup(tmp_path, monkeypatch=monkeypatch, neo4j_success=False)
+        assert rc == 0, "Backup should succeed even when Neo4j export is skipped"
+        assert out.exists()
+
+    def test_neo4j_connection_failure_is_non_fatal(self, tmp_path, monkeypatch):
+        """When Neo4j is unreachable, backup still completes with postgres.sql."""
         backup_dir = _make_backup_dir(tmp_path)
         monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
         monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
         monkeypatch.setenv("FERNET_KEY", "fk")
+        monkeypatch.setenv("NEO4J_PASSWORD", "pw")
 
         out = backup_dir / "out.tar.gz"
         args = _build_parser().parse_args(["backup", "--output", str(out)])
@@ -316,114 +329,61 @@ class TestNeo4jMissingLogsWarningNotFatal:
                 if stdout and hasattr(stdout, "write"):
                     stdout.write(b"-- pg_dump stub\n")
                 return MagicMock(returncode=0, stderr=b"")
-            if cmd and cmd[0] == "docker":
-                raise FileNotFoundError("docker not found")
-            return MagicMock(returncode=0)
-
-        with caplog.at_level(logging.WARNING, logger="src.cli"):
-            with patch("psycopg2.connect", return_value=mock_conn):
-                with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
-                    with patch("subprocess.run", side_effect=_fake_run):
-                        rc = _cmd_backup(args)
-
-        assert rc == 0, "Backup should succeed even when docker is missing"
-        assert out.exists()
-        assert any("docker" in r.message.lower() for r in caplog.records)
-
-
-class TestNeo4jStopDumpStartFlow:
-    def test_dump_failure_still_restarts_neo4j(self, tmp_path, monkeypatch):
-        """If neo4j-admin dump exits non-zero, the finally clause must still
-        invoke `docker compose start neo4j` — preventing a stuck-stopped DB."""
-        backup_dir = _make_backup_dir(tmp_path)
-        monkeypatch.setenv("PG_DSN", "postgresql://user:pw@localhost/db")
-        monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
-        monkeypatch.setenv("FERNET_KEY", "fk")
-
-        calls: list[list[str]] = []
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_cursor.fetchone.return_value = (True,)
-        mock_conn.cursor.return_value = mock_cursor
-
-        def _fake_run(cmd, **kwargs):
-            calls.append(list(cmd))
-            if cmd and "pg_dump" in cmd[0]:
-                stdout = kwargs.get("stdout")
-                if stdout and hasattr(stdout, "write"):
-                    stdout.write(b"-- pg_dump stub\n")
-                return MagicMock(returncode=0, stderr=b"")
-            if cmd[:3] == ["docker", "compose", "run"]:
-                return MagicMock(returncode=1, stderr=b"database in use")
-            if cmd[:2] == ["docker", "inspect"]:
-                return MagicMock(returncode=0, stdout="healthy\n", stderr="")
             return MagicMock(returncode=0, stderr=b"")
 
-        out = backup_dir / "out.tar.gz"
-        args = _build_parser().parse_args(["backup", "--output", str(out)])
+        def _failing_export(out_path):
+            return False, "Neo4j connection failed: Connection refused"
+
         with patch("psycopg2.connect", return_value=mock_conn):
             with patch("src.cli.shutil.which", return_value="/usr/bin/pg_dump"):
                 with patch("subprocess.run", side_effect=_fake_run):
-                    rc = _cmd_backup(args)
+                    with patch("src.cli._export_neo4j_online", side_effect=_failing_export):
+                        rc = _cmd_backup(args)
 
-        assert rc == 0, (
-            "Backup must succeed even if dump step failed "
-            "(postgres+manifest still archived)"
-        )
-        stop_seen = any(c[:3] == ["docker", "compose", "stop"] for c in calls)
-        start_seen = any(c[:3] == ["docker", "compose", "start"] for c in calls)
-        assert stop_seen, "expected `docker compose stop neo4j` to be invoked"
-        assert start_seen, "expected `docker compose start neo4j` after dump failure (finally)"
+        assert rc == 0
+        assert out.exists()
+        with tarfile.open(str(out), "r:gz") as tar:
+            assert "postgres.sql" in tar.getnames()
+            assert "neo4j.cypher" not in tar.getnames()
 
-    def test_dump_command_uses_bind_mount_for_to_path(self):
-        """The dump container must bind-mount the host tmpdir to /backups so
-        the resulting neo4j.dump lands on the host filesystem (the original
-        bug: --to-path used a HOST path that didn't exist in the container)."""
-        from src.cli import _backup_neo4j_via_compose
 
-        captured: list[list[str]] = []
+class TestPropsToCypher:
+    """Unit tests for _props_to_cypher serializer."""
 
-        def _capturing_fake(cmd, **kwargs):
-            captured.append(list(cmd))
-            if cmd[:2] == ["docker", "inspect"]:
-                return MagicMock(returncode=0, stdout="healthy\n", stderr="")
-            return MagicMock(returncode=1, stderr=b"short-circuit")
+    def test_string_value_quoted(self):
+        result = _props_to_cypher({"name": "sale.order"})
+        assert result == 'name: "sale.order"'
 
-        with patch("subprocess.run", side_effect=_capturing_fake):
-            _backup_neo4j_via_compose(Path("/host/tmp/abc"))
+    def test_int_value_literal(self):
+        result = _props_to_cypher({"count": 42})
+        assert result == "count: 42"
 
-        run_cmds = [c for c in captured if c[:3] == ["docker", "compose", "run"]]
-        assert run_cmds, f"no docker compose run command issued; captured={captured}"
-        run_cmd = run_cmds[0]
-        assert "-v" in run_cmd, run_cmd
-        bind_idx = run_cmd.index("-v") + 1
-        assert run_cmd[bind_idx] == "/host/tmp/abc:/backups", run_cmd[bind_idx]
-        assert "--to-path=/backups" in run_cmd, run_cmd
-        assert "neo4j-admin" in run_cmd, run_cmd
-        # --verbose pinned so future failures surface the real error instead
-        # of the generic "Dump failed for databases" one-liner.
-        assert "--verbose" in run_cmd, run_cmd
+    def test_bool_value_lowercase(self):
+        result = _props_to_cypher({"active": True, "archived": False})
+        assert "active: true" in result
+        assert "archived: false" in result
 
-    def test_tmpdir_is_chmod_world_writable_before_dump(self, tmp_path):
-        """The bind-mounted tmpdir must be chmod 0o777 before the container
-        starts so neo4j-admin (running as container's default user, UID 7474
-        for the official image) can write neo4j.dump back through the bind
-        mount. Without this the dump exits 1 with a generic 'Dump failed'
-        message and the bundle silently ships incomplete."""
-        from src.cli import _backup_neo4j_via_compose
+    def test_none_value_skipped(self):
+        result = _props_to_cypher({"x": None, "y": 1})
+        assert "x" not in result
+        assert "y: 1" in result
 
-        host_tmpdir = tmp_path / "bm"
-        host_tmpdir.mkdir(mode=0o700)
-        assert (host_tmpdir.stat().st_mode & 0o777) == 0o700
+    def test_list_value_bracket(self):
+        result = _props_to_cypher({"tags": ["a", "b"]})
+        assert result == 'tags: ["a", "b"]'
 
-        with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr=b"")):
-            _backup_neo4j_via_compose(host_tmpdir)
+    def test_special_key_backtick_escaped(self):
+        result = _props_to_cypher({"my-key": "val"})
+        assert "`my-key`" in result
 
-        assert (host_tmpdir.stat().st_mode & 0o777) == 0o777, (
-            "host_tmpdir must be chmod 0o777 before bind-mount to /backups"
-        )
+    def test_empty_props(self):
+        assert _props_to_cypher({}) == ""
+
+    def test_multiple_props(self):
+        result = _props_to_cypher({"a": "x", "b": 2})
+        # Order is dict-insertion order (Python 3.7+)
+        assert 'a: "x"' in result
+        assert "b: 2" in result
 
 
 class TestGetLatestMigrationVersion:

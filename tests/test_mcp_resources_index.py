@@ -222,6 +222,39 @@ def test_name_asc_tiebreak_within_same_dep_count(patched_get_driver, ri_driver):
     assert "alpha.model" in names and "zebra.model" in names
 
 
+def test_same_model_name_across_modules_orders_deterministically(
+    patched_get_driver, ri_driver
+):
+    """Deterministic-tiebreak rule (CLAUDE.md Neo4j 5.x gotcha): when the SAME
+    model name is defined by several modules at the SAME dep_count, the result
+    order must be stable across calls — the `mod.name ASC` tiebreak resolves
+    what would otherwise be Neo4j's arbitrary (run-to-run) ordering.
+
+    Both definitions surface as the same model URI, so the observable contract
+    is determinism: repeated invocations return byte-identical sequences.
+    """
+    with ri_driver.session() as s:
+        # Same model name 'res.partner' defined by two modules, equal dep_count.
+        _seed_module(s, "base", _RI_VERSION)
+        _seed_module(s, "contacts", _RI_VERSION)
+        _seed_model(s, "res.partner", "base", _RI_VERSION, is_definition=True)
+        _seed_model(s, "res.partner", "contacts", _RI_VERSION, is_definition=True)
+        # An unambiguous neighbour so the list has >1 row to order.
+        _seed_module(s, "sale", _RI_VERSION)
+        _seed_model(s, "sale.order", "sale", _RI_VERSION, is_definition=True)
+
+    runs = [
+        [e["uri"] for e in _list_resources_index() if f"/{_RI_VERSION}/" in e["uri"]]
+        for _ in range(4)
+    ]
+    first = runs[0]
+    for i, r in enumerate(runs[1:], start=2):
+        assert r == first, (
+            f"resources_index ordering is non-deterministic across calls "
+            f"(run 1 vs run {i}): {first} != {r}"
+        )
+
+
 # ===========================================================================
 # Test 4: URI format validation
 # ===========================================================================

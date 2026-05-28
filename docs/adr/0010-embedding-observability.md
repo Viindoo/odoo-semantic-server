@@ -140,7 +140,7 @@ Rationale for `dict` return in JSON (not list of tuples):
 
 ## Follow-up (M10 ops) — WI-A7 absorption
 
-### D7 (planned) — `embedder_batch_duration_seconds` Prometheus histogram
+### D7 (implemented — M10C) — `embedder_batch_duration_seconds` Prometheus histogram
 
 **Context:** D1's thread-safe `call_count` provides a per-run counter, and D3
 deferred Prometheus/OpenTelemetry to "a dedicated observability milestone". M10
@@ -148,16 +148,40 @@ ops is that milestone — Stripe billing requires per-tenant usage metering and
 the natural unit is "embed call latency", which feeds both billing (per-call
 cost projection) and SRE alerting (Ollama timeout regression).
 
-**Decision (when implemented):**
-- Histogram metric `embedder_batch_duration_seconds` recorded once per `embed()`
-  batch call, labelled by `embedder_type` ∈ `{fake, qwen3}`.
-- Bucket boundaries `[0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0]` — chosen
-  from production indexer logs showing median batch ≈1.5s and P99 ≈8s.
+**Decision (as implemented):**
+- Histogram metric `embedder_batch_duration_seconds` recorded once per
+  `_embed_one()` network round-trip, labelled by `embedder_type` ∈ `{qwen3}`.
+  A small `embed()` call (≤ `_MAX_BATCH` texts) does exactly one round-trip and
+  therefore one observation; a large `embed()` call fans into
+  `ceil(n / _MAX_BATCH)` sub-batches and records one observation **per
+  sub-batch** — deliberately, so the histogram stays a faithful per-network-call
+  latency distribution rather than blending several round-trips into one sample.
+  This is distinct from `call_count` (D1), which counts **whole `embed()` calls**
+  (one increment per call regardless of sub-batch fan-out).
+  - Only the real `Qwen3Embedder` is instrumented. `FakeEmbedder` (the CI / test
+    double — no GPU, no network) is **intentionally not** instrumented: it must
+    not emit synthetic latency samples that would pollute the `/metrics` series a
+    production scraper reads. The `{fake}` label is therefore NOT part of the
+    contract.
+- Bucket boundaries `[0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 5.0, 10.0, 30.0, 60.0]` —
+  the `0.1`…`30.0` band is chosen from production indexer logs showing median
+  batch ≈1.5s and P99 ≈8s; the trailing `60.0` bucket captures slow/near-timeout
+  batches (Ollama read timeout regime) so a latency-regression alert can fire on
+  the `30.0`–`60.0` band instead of dumping everything into `+Inf`.
 - Exposed via FastAPI `/metrics` endpoint (new route, mounted on the existing
   app — no separate Prometheus exporter sidecar).
 - Reuses D1's `threading.Lock` pattern for thread-safety under
-  `--max-workers > 1`; observation is taken inside the same critical section
-  as `call_count += 1`.
+  `--max-workers > 1`. Both the histogram `observe()` and `call_count += 1`
+  writes are taken under `self._lock`. They sit in the **same** critical section
+  only on the single-batch path; on the large-batch path each `observe()` takes
+  the lock once per sub-batch and the single `call_count += 1` takes it once
+  after the loop (because the two signals have different cardinality — per
+  round-trip vs per call — co-location is neither possible nor desirable there).
+  `prometheus_client` is itself thread-safe, so no histogram datum is ever torn;
+  the lock here serialises only this class's own `call_count` mutation. The two
+  signals are independently consistent, not jointly atomic — a `/metrics` scrape
+  that lands between a sub-batch `observe()` and the trailing `call_count += 1`
+  sees a valid histogram and a valid (slightly lagging) counter, never garbage.
 
 **Tracked in:** `TASKS.md` Milestone 10 § M10C item
 "Pgvector observability — Prometheus `embedder_batch_duration_seconds` histogram".

@@ -24,6 +24,7 @@ from src.constants import (
     TIMEOUT_EMBEDDER_READ,
     TIMEOUT_EMBEDDER_WRITE,
 )
+from src.metrics import embedder_batch_duration_seconds
 
 
 def _normalize(vec: list[float]) -> list[float]:
@@ -126,25 +127,44 @@ class Qwen3Embedder:
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        # ADR-0010 D7: the two observability signals measure different things
+        # and therefore have different cardinality, deliberately:
+        #
+        #   * `_hist.observe(duration)` is recorded ONCE PER _embed_one round-trip
+        #     — i.e. once for the single-batch path, and once per sub-batch on the
+        #     large-batch path. This keeps the histogram a faithful per-network-
+        #     -call latency distribution (a 250-text embed() should contribute the
+        #     latency of each of its sub-batches, not one blended number).
+        #   * `call_count` is incremented ONCE PER embed() call, regardless of how
+        #     many sub-batches it fanned into (matches the EmbedderClient docstring).
+        #
+        # Both writes happen under `self._lock`. They are co-located in the same
+        # critical section ONLY on the single-batch path (below); on the large-
+        # batch path each observe() takes the lock per sub-batch and the single
+        # `call_count += 1` takes it once after the loop. prometheus_client is
+        # itself thread-safe, so no datum is torn; the lock here only serialises
+        # this class's own `call_count` mutation.
+        _hist = embedder_batch_duration_seconds.labels(embedder_type="qwen3")
         if len(texts) > self._MAX_BATCH:
             out: list[list[float]] = []
             for i in range(0, len(texts), self._MAX_BATCH):
                 batch = texts[i : i + self._MAX_BATCH]
                 start = time.monotonic()
                 out.extend(self._embed_one(batch))
-                _logger.debug(
-                    "embed batch n=%d duration=%.2fs", len(batch), time.monotonic() - start
-                )
+                duration = time.monotonic() - start
+                with self._lock:
+                    _hist.observe(duration)
+                _logger.debug("embed batch n=%d duration=%.2fs", len(batch), duration)
             with self._lock:
                 self.call_count += 1
             return out
         start = time.monotonic()
         result = self._embed_one(texts)
-        _logger.debug(
-            "embed batch n=%d duration=%.2fs", len(texts), time.monotonic() - start
-        )
+        duration = time.monotonic() - start
         with self._lock:
+            _hist.observe(duration)
             self.call_count += 1
+        _logger.debug("embed batch n=%d duration=%.2fs", len(texts), duration)
         return result
 
     def _embed_one(self, texts: list[str]) -> list[list[float]]:

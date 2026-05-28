@@ -80,6 +80,7 @@ CODE_PREVIEW_MAX_CHARS: int = 60
 LIST_PREVIEW_MAX_ITEMS: int = 20    # Default cap for list_* and sublists (ADR-0023 §3)
 LIST_PREVIEW_FIELDS_MAX: int = 50   # account.move has ~150 fields; 20 too restrictive
 LIST_PREVIEW_PATCHES_MAX: int = 10  # JS patches are verbose; 10 sufficient for overview
+IMPACT_MODULES_MAX: int = 30        # impact_analysis dependent-modules preview cap (G1)
 
 # ---------------------------------------------------------------------------
 # Impact analysis risk thresholds
@@ -280,3 +281,15 @@ def license_policy_action(license_value: str) -> str:
     responsibility per ADR-0036 D5 (Terms of Service representation).
     """
     return LICENSE_POLICY.get(license_value, "serve")
+
+
+# ---------------------------------------------------------------------------
+# Resource body limits
+# ---------------------------------------------------------------------------
+
+# Maximum bytes served for odoo://stylesheet/{...} resources.
+# Large compiled CSS/Bootstrap bundles can exceed MCP response budget; per-file
+# SCSS sources are typically 2–20 KB so 128 KB is generous for real stylesheet
+# files while blocking accidental huge-file reads (ADR-0030 stylesheet resource;
+# output-gap G5).
+STYLESHEET_RESOURCE_MAX_BYTES: int = 131_072  # 128 KB

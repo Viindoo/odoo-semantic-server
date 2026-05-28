@@ -796,6 +796,11 @@ class Neo4jWriter:
                 " ON (n.name, n.model, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:Method)"
                 " ON (n.name, n.model, n.module, n.odoo_version)",
+                # T1: enable index-backed lookup by (model, odoo_version) without name
+                # Covers impact_analysis Q3 (field/model entity_type) — avoids full scan
+                # on deep-inheritance models (sale.order has 50+ extending modules).
+                "CREATE INDEX IF NOT EXISTS FOR (n:Method)"
+                " ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:JSPatch)"

@@ -51,15 +51,292 @@ def _resolve_neo4j_tool(tool: str) -> list[str]:
     the Neo4j container (typical Docker-Compose deployments), docker exec is used
     so the dump is written to a path mounted or accessible inside the container.
     Set NEO4J_CONTAINER to override the default container name.
-
-    NOTE: For `neo4j-admin database dump` specifically, the database must be
-    OFFLINE. The backup CLI uses _backup_neo4j_via_compose() instead of this
-    resolver. This helper remains available for online tools (e.g., cypher-shell).
     """
     if shutil.which(tool):
         return [tool]
     container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
     return ["docker", "exec", "-i", container, tool]
+
+
+def _get_neo4j_creds() -> tuple[str, str, str] | None:
+    """Return (uri, user, password) from env / config, or None if password missing.
+
+    Reads NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD from environment (production
+    layout) or config file via ``config.from_env_or_ini``.  Returns None when
+    the password is absent so callers can skip the Neo4j step gracefully.
+    """
+    from src import config as _cfg
+    uri = _cfg.from_env_or_ini(
+        "NEO4J_URI", "database", "neo4j_uri", fallback="bolt://localhost:7687",
+    )
+    user = _cfg.from_env_or_ini(
+        "NEO4J_USER", "database", "neo4j_user", fallback="neo4j",
+    )
+    password = _cfg.from_env_or_ini(
+        "NEO4J_PASSWORD", "database", "neo4j_password", fallback=None,
+    )
+    if not password:
+        return None
+    return uri, user, password
+
+
+# Substrings that mark a Neo4j operation failure as "Neo4j is not reachable or
+# not configured here" — as opposed to a genuine error against a live database.
+# _export_neo4j_online and _restore_neo4j_cypher both phrase their early-exit
+# (pre-wipe) errors with these markers, so a failed pre-restore SNAPSHOT carrying
+# one of them means the subsequent restore will also bail out before its
+# DETACH DELETE, leaving nothing to protect.
+_NEO4J_UNREACHABLE_MARKERS = (
+    "driver not installed",
+    "not set",            # "NEO4J_PASSWORD not set ..."
+    "connection failed",  # verify_connectivity() raised
+)
+
+
+def _neo4j_unreachable_reason(msg: str) -> bool:
+    """Return True if *msg* indicates Neo4j is unreachable / unconfigured.
+
+    Used to decide whether a failed pre-restore Neo4j safety snapshot is benign
+    (Neo4j absent → the restore cannot wipe anything either) or fatal (live
+    graph present but un-snapshottable → must abort before wiping).
+    """
+    low = (msg or "").lower()
+    return any(marker in low for marker in _NEO4J_UNREACHABLE_MARKERS)
+
+
+def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
+    """Export Neo4j graph as Cypher CREATE statements using the Bolt driver (online).
+
+    This is the online replacement for ``neo4j-admin database dump`` which
+    requires the database to be OFFLINE (Neo4j 5.x Community).  No APOC plugin
+    is required — the export is performed entirely over the Bolt protocol using
+    standard Cypher queries.
+
+    Required Neo4j config (already satisfied by default Community install):
+      - No extra plugins needed (no APOC, no Enterprise licence).
+      - Standard read access via NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD.
+
+    Output format (``neo4j.cypher``):
+      - Header comment with timestamp.
+      - ``CREATE`` statements for every node (labels + properties).
+      - ``MATCH`` + ``CREATE`` statements for every relationship (type + properties).
+      - Suitable for replay via ``cypher-shell < neo4j.cypher`` or driver exec.
+
+    Returns:
+        (success, message) — (True, "") on success, (False, reason) on failure.
+    """
+    try:
+        from neo4j import GraphDatabase
+    except ImportError:
+        return False, "neo4j Python driver not installed — cannot export graph"
+
+    creds = _get_neo4j_creds()
+    if creds is None:
+        return False, "NEO4J_PASSWORD not set — skipping Neo4j export"
+
+    uri, user, password = creds
+    # Single try/finally covers driver creation, verify_connectivity and use so
+    # the driver is always closed — even when verify_connectivity() raises.
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    try:
+        try:
+            driver.verify_connectivity()
+        except Exception as exc:
+            return False, f"Neo4j connection failed: {exc}"
+
+        node_count = 0
+        rel_count = 0
+        # E (memory): stream every statement straight to the file handle instead
+        # of accumulating the whole graph in a `lines: list[str]` and join()-ing
+        # at the end. ADR-0018 sizes the graph at ~1-2M nodes — holding all of
+        # that Cypher in RAM is hundreds of MB; line-at-a-time keeps it flat.
+        # F (consistency): read nodes AND relationships inside ONE explicit READ
+        # transaction so a concurrent indexer write cannot land between the node
+        # scan and the relationship scan and leave a dangling rel in the dump.
+        with out_path.open("w", encoding="utf-8") as f, \
+                driver.session() as session, \
+                session.begin_transaction() as tx:
+            f.write(f"// neo4j.cypher — exported {datetime.now(UTC).isoformat()}\n")
+            f.write("// Replay: cypher-shell -u <user> -p <pass> < neo4j.cypher\n")
+            f.write("// Or:     run each statement via neo4j Python driver\n")
+            f.write("\n")
+
+            # --- Export nodes ---
+            # Retrieve all nodes with their elementId (stable surrogate key used
+            # only within this export to wire up relationships).
+            node_result = tx.run(
+                "MATCH (n) RETURN elementId(n) AS eid, labels(n) AS lbls, properties(n) AS props"
+            )
+            for record in node_result:
+                eid = record["eid"]
+                lbls = record["lbls"]
+                props = record["props"]
+                label_str = ":" + ":".join(lbls) if lbls else ""
+                props_cypher = _props_to_cypher(props)
+                # Tag node with __eid__ so relationship MATCH can locate it.
+                # Guard against a leading comma when the node has no serialisable
+                # properties (props_cypher == "") — symmetric with the rel branch.
+                inner = f"{props_cypher}, __eid__: {json.dumps(eid)}" if props_cypher \
+                    else f"__eid__: {json.dumps(eid)}"
+                f.write(f"CREATE (n{label_str} {{{inner}}});\n")
+                node_count += 1
+
+            # --- Export relationships ---
+            rel_result = tx.run(
+                "MATCH (a)-[r]->(b) "
+                "RETURN elementId(a) AS aeid, elementId(b) AS beid, "
+                "type(r) AS rtype, properties(r) AS props"
+            )
+            for record in rel_result:
+                aeid = record["aeid"]
+                beid = record["beid"]
+                rtype = record["rtype"]
+                props = record["props"]
+                props_cypher = _props_to_cypher(props)
+                rel_props = f" {{{props_cypher}}}" if props_cypher else ""
+                f.write(
+                    f"MATCH (a {{__eid__: {json.dumps(aeid)}}}), "
+                    f"(b {{__eid__: {json.dumps(beid)}}}) "
+                    f"CREATE (a)-[:{rtype}{rel_props}]->(b);\n"
+                )
+                rel_count += 1
+
+            # --- Remove __eid__ helper property ---
+            f.write("\n")
+            f.write("// Cleanup: remove the temporary __eid__ routing property\n")
+            f.write("MATCH (n) WHERE n.__eid__ IS NOT NULL REMOVE n.__eid__;\n")
+            # Read-only export: never commit. Exiting the `begin_transaction()`
+            # context manager without a commit rolls the (write-free) transaction
+            # back. The snapshot stayed consistent across both scans above.
+
+        msg = f"Exported {node_count} nodes, {rel_count} relationships"
+        log.info("Neo4j online export complete: %s", msg)
+        return True, msg
+    except Exception as exc:
+        return False, f"Neo4j export failed: {exc}"
+    finally:
+        driver.close()
+
+
+def _props_to_cypher(props: dict) -> str:
+    """Serialise a Neo4j property map to an inline Cypher key: value string.
+
+    Values are encoded as JSON scalars (string → quoted, number → literal,
+    bool → ``true``/``false``, None → skipped, list → Cypher list literal).
+    The output is used directly inside ``{...}`` in CREATE/MATCH clauses.
+    """
+    parts: list[str] = []
+    for key, value in props.items():
+        safe_key = f"`{key}`" if not key.isidentifier() else key
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            parts.append(f"{safe_key}: {str(value).lower()}")
+        elif isinstance(value, (int, float)):
+            parts.append(f"{safe_key}: {value}")
+        elif isinstance(value, str):
+            parts.append(f"{safe_key}: {json.dumps(value)}")
+        elif isinstance(value, list):
+            items = ", ".join(
+                json.dumps(v) if isinstance(v, str) else str(v)
+                for v in value
+                if v is not None
+            )
+            parts.append(f"{safe_key}: [{items}]")
+        else:
+            # Fallback: JSON-encode unknown types (e.g. datetime, bytes)
+            parts.append(f"{safe_key}: {json.dumps(str(value))}")
+    return ", ".join(parts)
+
+
+def _restore_neo4j_cypher(cypher_path: Path) -> tuple[bool, str]:
+    """Restore Neo4j graph from a Cypher file produced by _export_neo4j_online.
+
+    Executes each non-comment, non-empty statement in the file against Neo4j
+    via the Bolt driver.  Statements are separated by semicolons at line end.
+
+    Returns:
+        (success, message) — (True, "") on success, (False, reason) on failure.
+    """
+    try:
+        from neo4j import GraphDatabase
+    except ImportError:
+        return False, "neo4j Python driver not installed"
+
+    creds = _get_neo4j_creds()
+    if creds is None:
+        return False, "NEO4J_PASSWORD not set — cannot restore Neo4j"
+
+    uri, user, password = creds
+    # Single try/finally covers driver creation, verify_connectivity and use so
+    # the driver is always closed — even when verify_connectivity() raises.
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    try:
+        try:
+            driver.verify_connectivity()
+        except Exception as exc:
+            return False, f"Neo4j connection failed: {exc}"
+
+        content = cypher_path.read_text(encoding="utf-8")
+        # Split on semicolon-terminated lines; skip comments and blanks.
+        statements: list[str] = []
+        current: list[str] = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//") or not stripped:
+                continue
+            current.append(stripped.rstrip(";"))
+            if stripped.endswith(";"):
+                stmt = " ".join(current).strip()
+                if stmt:
+                    statements.append(stmt)
+                current = []
+
+        # --- DR safety gate: validate BEFORE the destructive DETACH DELETE ---
+        # A truncated / empty / corrupt dump must NOT wipe the live graph (a
+        # wiped graph with nothing to restore is unrecoverable). Two checks:
+        #   1. At least one parsed statement.
+        #   2. The export completeness trailer is present. _export_neo4j_online
+        #      ALWAYS writes "... REMOVE n.__eid__" as its final statement, even
+        #      for an empty graph, so its absence proves the file was truncated
+        #      mid-write or is not a genuine export.
+        if not statements:
+            return False, (
+                "refusing to wipe Neo4j: cypher file has no executable statements "
+                f"({cypher_path}) — empty or corrupt dump"
+            )
+        if not any("REMOVE n.__eid__" in stmt for stmt in statements):
+            return False, (
+                "refusing to wipe Neo4j: cypher file is missing the export "
+                f"completeness trailer 'REMOVE n.__eid__' ({cypher_path}) — "
+                "the dump was truncated or is not a valid _export_neo4j_online file"
+            )
+
+        executed = 0
+        errors: list[str] = []
+        with driver.session() as session:
+            # Restore replays CREATE statements (not MERGE), so it is a
+            # replace operation: wipe the existing graph first to avoid
+            # duplicating every node/relationship onto a non-empty graph.
+            # The legacy offline path (neo4j-admin database load) was
+            # destructive by design; this preserves that contract.
+            print("Wiping existing Neo4j graph before restore...")
+            log.warning("Wiping existing Neo4j graph before Cypher restore")
+            session.run("MATCH (n) DETACH DELETE n").consume()
+            for stmt in statements:
+                try:
+                    session.run(stmt).consume()
+                    executed += 1
+                except Exception as exc:
+                    errors.append(f"{stmt[:80]!r}: {exc}")
+
+        if errors:
+            return False, f"Restore finished with {len(errors)} errors: {errors[0]}"
+        return True, f"Restored {executed} statements"
+    except Exception as exc:
+        return False, f"Neo4j restore failed: {exc}"
+    finally:
+        driver.close()
 
 
 def _is_pg_container_running() -> bool | None:
@@ -103,81 +380,6 @@ def _is_pg_container_running() -> bool | None:
     return None
 
 
-def _wait_neo4j_healthy(timeout_seconds: int = 60) -> bool:
-    """Poll the Neo4j container's docker Health.Status until 'healthy' or timeout."""
-    container = os.getenv("NEO4J_CONTAINER", "odoo-semantic-mcp-neo4j-1")
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        try:
-            r = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Health.Status}}", container],
-                capture_output=True, text=True, shell=False,
-            )
-        except FileNotFoundError:
-            return False
-        if r.returncode == 0 and r.stdout.strip() == "healthy":
-            return True
-        time.sleep(2)
-    log.warning("Neo4j did not return healthy within %ds after dump", timeout_seconds)
-    return False
-
-
-def _backup_neo4j_via_compose(host_tmpdir: Path) -> subprocess.CompletedProcess:
-    """Dump Neo4j using stop-dump-start against a docker-compose deployment.
-
-    Required because `neo4j-admin database dump` cannot run against a serving
-    Neo4j 5.x database — the previous `docker exec` approach always failed with
-    exit 1 ("database in use"). We stop the running container, run a one-off
-    `docker compose run` container that mounts the same neo4j_data volume plus
-    a bind-mounted /backups directory, then ALWAYS restart the service.
-
-    ~30 s downtime per invocation. The neo4j service is expected to be running
-    when this is called; the ``finally`` clause restores it even on dump failure.
-    Returns the CompletedProcess from the dump step (returncode + stderr).
-
-    Two operational details that matter on first deploy:
-
-    - ``chmod 0o777`` on the host tmpdir. ``tempfile.TemporaryDirectory``
-      defaults to mode 0700 owned by the calling user (UID 1000 in our prod
-      setup). The neo4j image's default ``USER neo4j`` (UID 7474) cannot
-      write to a 0700 tmpdir owned by 1000, so the bind-mounted /backups
-      target needs world-write before the dump container starts. The
-      directory is in /tmp and gets unlinked on context exit, so the
-      window is bounded.
-    - ``--verbose`` on neo4j-admin so the next failure shows the real cause
-      instead of the generic "Dump failed for databases" one-liner.
-    """
-    try:
-        os.chmod(host_tmpdir, 0o777)
-    except OSError as e:
-        log.warning(
-            "chmod 0o777 on %s failed: %s — dump may fail if container UID differs",
-            host_tmpdir, e,
-        )
-
-    subprocess.run(
-        ["docker", "compose", "stop", "neo4j"],
-        capture_output=True, shell=False,
-    )
-    try:
-        return subprocess.run(
-            [
-                "docker", "compose", "run", "--rm", "-T",
-                "-v", f"{host_tmpdir}:/backups",
-                "neo4j",
-                "neo4j-admin", "database", "dump",
-                "--verbose",
-                "--to-path=/backups",
-                "neo4j",
-            ],
-            capture_output=True, shell=False,
-        )
-    finally:
-        subprocess.run(
-            ["docker", "compose", "start", "neo4j"],
-            capture_output=True, shell=False,
-        )
-        _wait_neo4j_healthy(timeout_seconds=60)
 
 
 def _dsn_to_pg_args_and_env(dsn: str) -> tuple[list[str], dict[str, str]]:
@@ -308,13 +510,17 @@ def _get_latest_migration_version() -> str:
 
 
 def _cmd_backup(args) -> int:
-    """Create complete backup bundle: PG dump + Neo4j dump + FERNET key + manifest.
+    """Create complete backup bundle: PG dump + Neo4j Cypher export + FERNET key + manifest.
 
     Output: <output>.tar.gz containing:
       - postgres.sql       (pg_dump plain SQL output)
-      - neo4j.dump         (neo4j-admin database dump, if neo4j-admin is in PATH)
+      - neo4j.cypher       (online Cypher export via Bolt driver — no DB shutdown needed)
       - fernet.enc         (FERNET_KEY encrypted with --bundle-passphrase-env passphrase)
       - manifest.json      (timestamps, schema_version, component checksums)
+
+    Neo4j export uses _export_neo4j_online() which streams all nodes and
+    relationships over the Bolt protocol — no APOC plugin and no database
+    shutdown are required (Community edition compatible).
 
     FERNET_KEY is read via ``src.crypto.get_fernet_key()`` which checks
     ``$CREDENTIALS_DIRECTORY/FERNET_KEY`` (systemd LoadCredential) first, then
@@ -424,37 +630,24 @@ def _cmd_backup(args) -> int:
                 components.append({"file": "postgres.sql", "sha256": pg_sha})
                 print(f"  postgres.sql: {pg_out.stat().st_size} bytes")
 
-                # 2. neo4j.dump (docker-compose stop-dump-start)
-                # neo4j-admin database dump requires the database OFFLINE
-                # (Neo4j 5.x). _backup_neo4j_via_compose stops the service,
-                # runs a one-off dump container with a bind-mounted /backups
-                # dir so the dump lands on the host, and ALWAYS restarts.
-                neo4j_out = tmpdir / "neo4j.dump"
-                try:
-                    neo4j_result = _backup_neo4j_via_compose(tmpdir)
-                    if neo4j_result.returncode == 0 and neo4j_out.exists():
-                        neo4j_sha = hashlib.sha256(neo4j_out.read_bytes()).hexdigest()
-                        components.append({"file": "neo4j.dump", "sha256": neo4j_sha})
-                        print(f"  neo4j.dump: {neo4j_out.stat().st_size} bytes")
-                    else:
-                        stderr = neo4j_result.stderr
-                        if isinstance(stderr, bytes):
-                            stderr = stderr.decode(errors="replace")
-                        stdout = neo4j_result.stdout
-                        if isinstance(stdout, bytes):
-                            stdout = stdout.decode(errors="replace")
-                        # neo4j-admin writes the --verbose detail to either
-                        # stderr or stdout depending on the failure stage,
-                        # so surface both up to 2 KB each.
-                        log.warning(
-                            "neo4j dump failed (exit %d) stderr=%s stdout=%s"
-                            " — bundle missing neo4j.dump",
-                            neo4j_result.returncode,
-                            (stderr or "")[:2000],
-                            (stdout or "")[:2000],
-                        )
-                except FileNotFoundError:
-                    log.warning("docker not found in PATH — skipping Neo4j backup")
+                # 2. neo4j.cypher — online export via Bolt driver (no shutdown needed)
+                # _export_neo4j_online() streams all nodes + relationships over
+                # the Bolt protocol and writes CREATE statements to neo4j.cypher.
+                # This replaces the old stop-dump-start flow which required
+                # ~30 s downtime. No APOC plugin required (Community compatible).
+                # NEO4J_PASSWORD must be set; if absent the step is skipped with
+                # a warning (non-fatal — postgres.sql is still captured).
+                neo4j_out = tmpdir / "neo4j.cypher"
+                neo4j_ok, neo4j_msg = _export_neo4j_online(neo4j_out)
+                if neo4j_ok and neo4j_out.exists():
+                    neo4j_sha = hashlib.sha256(neo4j_out.read_bytes()).hexdigest()
+                    components.append({"file": "neo4j.cypher", "sha256": neo4j_sha})
+                    print(f"  neo4j.cypher: {neo4j_out.stat().st_size} bytes ({neo4j_msg})")
+                else:
+                    log.warning(
+                        "Neo4j online export skipped — bundle missing neo4j.cypher: %s",
+                        neo4j_msg,
+                    )
 
                 # 3. Encrypt FERNET key with passphrase (REQUIRED if flag provided)
                 if args.bundle_passphrase_env:
@@ -656,17 +849,84 @@ def _restore_bundle(path: Path, args) -> int:
             print(f"  Safety backup preserved at: {safety_path}", file=sys.stderr)
             return 1
 
-        # --- Restore Neo4j dump if present ---
+        # --- Restore Neo4j from Cypher file if present ---
+        # New bundles contain neo4j.cypher (online export); legacy bundles may
+        # contain neo4j.dump (old offline format).  The .cypher file is loaded
+        # automatically; the legacy .dump requires manual neo4j-admin load.
+        #
+        # A Neo4j restore failure is NOT silently swallowed: it sets
+        # `neo4j_restore_failed` so the command exits non-zero. Postgres is
+        # already restored at this point, so we report that success explicitly
+        # while still signalling overall failure to any DR automation that keys
+        # off the exit code (a partial/failed graph must not look like exit 0).
+        neo4j_restore_failed = False
+        neo4j_cypher = tmpdir / "neo4j.cypher"
         neo4j_dump = tmpdir / "neo4j.dump"
-        if neo4j_dump.exists():
+        if neo4j_cypher.exists():
+            # Pre-restore safety SNAPSHOT of the live graph (parity with the
+            # Postgres safety backup above). _restore_neo4j_cypher wipes the
+            # graph; without this snapshot a failed restore would be
+            # unrecoverable. Written next to the Postgres safety backup.
+            neo4j_safety_path = backup_dir / f"pre-restore-{int(time.time())}-neo4j.cypher"
+            log.info("Writing pre-restore Neo4j safety snapshot to: %s", neo4j_safety_path)
+            snap_ok, snap_msg = _export_neo4j_online(neo4j_safety_path)
+            if snap_ok:
+                print(f"Pre-restore Neo4j safety snapshot: {neo4j_safety_path}")
+            elif _neo4j_unreachable_reason(snap_msg):
+                # Neo4j is not configured / not reachable here. The restore call
+                # below will hit the same wall and return early WITHOUT wiping
+                # (it never reaches DETACH DELETE), so there is no graph to
+                # protect — proceed and let the restore report its own error.
+                neo4j_safety_path.unlink(missing_ok=True)
+                log.warning(
+                    "Skipping Neo4j safety snapshot — Neo4j unreachable/unconfigured: %s",
+                    snap_msg,
+                )
+            else:
+                # Neo4j IS reachable but the snapshot failed for another reason.
+                # Refuse to wipe a live graph we cannot first back up.
+                neo4j_safety_path.unlink(missing_ok=True)
+                print(
+                    f"ERROR: Neo4j pre-restore safety snapshot failed: {snap_msg}",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Postgres restore is complete, but the Neo4j graph was NOT "
+                    "touched (no safety snapshot = no wipe). Fix Neo4j and re-run.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            print("Restoring Neo4j graph from neo4j.cypher ...")
+            neo4j_ok, neo4j_msg = _restore_neo4j_cypher(neo4j_cypher)
+            if neo4j_ok:
+                log.info("Neo4j restore complete: %s", neo4j_msg)
+                print(f"  Neo4j: {neo4j_msg}")
+            else:
+                neo4j_restore_failed = True
+                log.warning("Neo4j restore failed: %s", neo4j_msg)
+                print(f"ERROR: Neo4j restore failed: {neo4j_msg}", file=sys.stderr)
+                print(
+                    "  The postgres.sql restore is complete. Fix Neo4j manually and re-run "
+                    "the Neo4j portion, or restore from a fresh reindex.",
+                    file=sys.stderr,
+                )
+                if snap_ok:
+                    print(
+                        f"  Pre-restore Neo4j safety snapshot preserved at: "
+                        f"{neo4j_safety_path}",
+                        file=sys.stderr,
+                    )
+        elif neo4j_dump.exists():
+            # Legacy bundle: .dump format produced by old offline neo4j-admin dump
             log.info(
-                "Neo4j dump found at %s — manual neo4j-admin restore required. "
+                "Legacy neo4j.dump found at %s — manual neo4j-admin restore required. "
                 "See docs/deploy.md §Backup.",
                 neo4j_dump,
             )
             print(
-                f"Note: Neo4j dump present at {neo4j_dump} — "
-                "manual neo4j-admin restore required (see docs/deploy.md §Backup)."
+                f"Note: Legacy neo4j.dump present at {neo4j_dump} — "
+                "manual neo4j-admin load required (see docs/deploy.md §Backup)."
             )
 
         # --- Restore fernet.enc if present and passphrase provided ---
@@ -696,6 +956,13 @@ def _restore_bundle(path: Path, args) -> int:
                     "not specified — skipping."
                 )
 
+        if neo4j_restore_failed:
+            print(
+                f"Restore from bundle {path} FINISHED WITH ERRORS: Postgres "
+                "restored, Neo4j restore failed (see above).",
+                file=sys.stderr,
+            )
+            return 1
         print(f"Restore complete from bundle: {path}")
         return 0
 

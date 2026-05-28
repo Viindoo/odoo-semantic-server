@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/conftest.py
+import asyncio
 import os
 import subprocess
 import threading
@@ -26,6 +27,33 @@ os.environ.setdefault("NEO4J_PASSWORD", NEO4J_PASSWORD)
 # Canonical version defined in .env.example (NEO4J_IMAGE=...).
 # CI loads .env.example before running tests; local dev copies .env.example → .env.
 _NEO4J_IMAGE = os.getenv("NEO4J_IMAGE", "neo4j:5.26.25")
+
+
+@pytest.fixture(autouse=True)
+def _ensure_current_event_loop():
+    """Py3.12 guard: restore a usable current event loop before each test.
+
+    Python 3.12 asyncio.Runner.close() calls set_event_loop(None), leaving the
+    policy state as {_set_called: True, _loop: None}.  A subsequent bare call to
+    asyncio.get_event_loop() then raises RuntimeError instead of auto-creating a
+    loop (the auto-create guard checks _set_called before creating).
+
+    With asyncio_mode='auto' (pytest-asyncio), every async test is wrapped in a
+    Runner; when the Runner is torn down the thread-level loop is cleared.
+    Any synchronous code that then calls asyncio.get_event_loop() directly
+    (rather than asyncio.run() or asyncio.new_event_loop()) will crash.
+
+    This fixture detects the poisoned state and installs a fresh loop so each
+    test starts from a known-good baseline, without touching a loop that is
+    already valid (no leak, no interference with pytest-asyncio's own fixtures).
+    """
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        # _set_called=True and _loop=None: install a fresh loop so the test
+        # (and any helper that calls get_event_loop()) does not crash.
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    yield
 
 
 def _playwright_chromium_available() -> bool:
