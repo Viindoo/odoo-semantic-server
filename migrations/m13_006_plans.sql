@@ -72,11 +72,26 @@ VALUES
   ('team',               'Team',                 100000, 300, 20, TRUE)
 ON CONFLICT (slug) DO NOTHING;
 
--- 6. Backfill existing api_keys with NULL plan_id → free-grandfathered
+-- 6. Set DB-level DEFAULT plan_id for new api_keys to 'free' tier (100 calls/month).
+-- Existing keys are backfilled to 'free-grandfathered' (1000 calls/month) below.
+-- Use DO block to resolve plan id at migration time (PG disallows subquery in DEFAULT).
+-- Must be BEFORE backfill UPDATE + SET NOT NULL so existing app-code INSERT paths
+-- that omit plan_id rely on this literal default rather than violating NOT NULL.
+DO $$
+DECLARE _free_plan_id INTEGER;
+BEGIN
+    SELECT id INTO _free_plan_id FROM plans WHERE slug = 'free';
+    IF _free_plan_id IS NULL THEN
+        RAISE EXCEPTION 'plan slug=free not found - seed step failed?';
+    END IF;
+    EXECUTE format('ALTER TABLE api_keys ALTER COLUMN plan_id SET DEFAULT %s', _free_plan_id);
+END $$;
+
+-- 7. Backfill existing api_keys with NULL plan_id → free-grandfathered
 UPDATE api_keys
    SET plan_id = (SELECT id FROM plans WHERE slug = 'free-grandfathered')
  WHERE plan_id IS NULL;
 
--- 7. Make plan_id NOT NULL after backfill (guard rail for new keys)
+-- 8. Make plan_id NOT NULL after backfill (guard rail for new keys)
 ALTER TABLE api_keys
     ALTER COLUMN plan_id SET NOT NULL;

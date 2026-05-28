@@ -625,3 +625,67 @@ class TestMigrationIdempotent:
             pytest.fail(
                 f"run_migrations raised on second run (not idempotent): {exc}"
             )
+
+
+# ---------------------------------------------------------------------------
+# T8: api_keys.plan_id has DB-level DEFAULT → 'free' tier
+# ---------------------------------------------------------------------------
+
+
+class TestApiKeysPlanIdDefault:
+    """T8: api_keys.plan_id has DB-level DEFAULT = id of 'free' plan.
+
+    Business intent: app-code INSERT paths (src/db/auth_registry.py) that do
+    not pass plan_id must succeed AFTER migration, with the new key landing
+    on the 'free' tier (100 calls/month).  Without this default, all such
+    INSERTs fail with a NOT NULL constraint violation — which is exactly the
+    CI-red root cause this regression-guard prevents.
+    """
+
+    def test_api_keys_plan_id_has_default_after_migration(self, migrated_pg):
+        """Column DEFAULT for api_keys.plan_id must be a non-NULL literal."""
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT column_default FROM information_schema.columns"
+                " WHERE table_name = 'api_keys' AND column_name = 'plan_id'"
+            )
+            row = cur.fetchone()
+        assert row is not None, "api_keys.plan_id row in information_schema missing"
+        column_default = row[0]
+        assert column_default is not None and column_default != "", (
+            "api_keys.plan_id must have a DB-level DEFAULT so app-code INSERTs"
+            " omitting plan_id do not violate NOT NULL"
+            f" (got column_default={column_default!r})"
+        )
+        # Default should resolve to an integer literal (plans.id).
+        # information_schema returns the default as text — strip casts like '::integer'.
+        cleaned = column_default.split("::")[0].strip()
+        assert cleaned.isdigit(), (
+            f"api_keys.plan_id DEFAULT must be an integer literal,"
+            f" got column_default={column_default!r}"
+        )
+
+    def test_insert_api_key_without_plan_id_uses_default_free_tier(self, migrated_pg):
+        """INSERT without plan_id → row gets plan_id of the 'free' plan."""
+        # Resolve free plan id.
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT id FROM plans WHERE slug = 'free'")
+            row = cur.fetchone()
+            assert row is not None, "'free' plan must be seeded"
+            free_plan_id = row[0]
+
+        # INSERT a key WITHOUT plan_id in the column list — this mirrors the
+        # exact code path in src/db/auth_registry.py::AuthRegistry.create_api_key.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO api_keys (name, key_hash, key_prefix)"
+                " VALUES ('default_test_key', 'hash_def1', 'dt_')"
+                " RETURNING id, plan_id"
+            )
+            new_id, new_plan_id = cur.fetchone()
+        migrated_pg.commit()
+
+        assert new_plan_id == free_plan_id, (
+            f"INSERT without plan_id must default to 'free' plan id={free_plan_id},"
+            f" got plan_id={new_plan_id} for key id={new_id}"
+        )
