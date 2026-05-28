@@ -2,6 +2,8 @@
 
 > Confirm backup bundle bao gồm Neo4j component (PR #189 online Bolt export); chạy DR drill non-prod để đo RTO thực. ADR-0018, ADR-0019.
 
+> **Migration prerequisite:** Before running a DR restore drill, ensure Postgres migrations are current on the target instance (including `m13_006` plans schema + `m13_007` CASCADE). See `docs/deploy/runbooks/post-pr-ops.md §Action 0` for migration apply steps.
+
 ---
 
 ## Placeholder Reference (ADR-0027 Canonical Defaults)

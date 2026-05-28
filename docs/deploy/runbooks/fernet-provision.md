@@ -292,6 +292,12 @@ sudo ls -l '<CREDSTORE_PATH>'
 
 ---
 
+## Migration Note
+
+FERNET provisioning does not require DB schema changes, but ensure Postgres migrations are current before restarting services that depend on `plans` or `usage_counter` tables. See **`docs/deploy/runbooks/post-pr-ops.md §Action 0`** for migration apply steps.
+
+---
+
 ## References
 
 - **`src/crypto.py`** — Canonical key resolution logic (systemd credential store, env fallback)

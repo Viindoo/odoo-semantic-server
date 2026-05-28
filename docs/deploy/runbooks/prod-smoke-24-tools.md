@@ -576,6 +576,52 @@ If tool #8 (`suggest_pattern`) was marked PARTIAL, verify now:
 
 ---
 
+## Post-Deploy: Verify /account/usage Page (M10B P0)
+
+After deploying PR #200, verify the quota dashboard and plan gating are functional end-to-end.
+
+### Operator Test — /account/usage Page
+
+1. **Log in** to the web UI at `<PROD_BASE_URL>/admin/login` with an admin account.
+2. **Navigate** to `<PROD_BASE_URL>/account/usage`.
+3. **Expected:**
+   - Page loads without error (HTTP 200, no traceback visible).
+   - Plan name displayed (e.g., "Free" or "Pro").
+   - Monthly quota counter shown (e.g., "42 / 100 calls this month").
+   - RPM limit shown (e.g., "30 requests/min").
+   - Values sourced from `usage_counter` table (live, reflects last buffer flush).
+
+4. **Verify quota headers** — make an MCP call and inspect response headers:
+   ```bash
+   curl -s -I -X POST <PROD_BASE_URL>/mcp \
+     -H "X-API-Key: <OPERATOR_API_KEY>" \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","method":"tools/list","params":{}}' | grep -i "x-quota\|x-ratelimit"
+   ```
+   Expected headers present:
+   - `X-RateLimit-Limit: <rpm_from_plan>`
+   - `X-RateLimit-Remaining: <remaining_rpm>`
+   - `X-Quota-Limit: <monthly_quota_from_plan>`
+   - `X-Quota-Remaining: <remaining_monthly>`
+
+5. **Verify 429 differentiation** (optional, low-traffic window only):
+   - Burst calls exceeding RPM → HTTP 429 with `reason: rpm_exceeded` in JSON.
+   - A key with 0 remaining monthly quota → HTTP 429 with `reason: monthly_quota_exceeded`.
+
+### Acceptance Criteria
+
+- [ ] `/account/usage` page loads and shows plan + quota counters
+- [ ] MCP responses include `X-RateLimit-*` and `X-Quota-*` headers
+- [ ] No traceback or 500 errors on the usage page
+- [ ] `usage_counter` table has rows after any MCP calls (verify via psql if needed):
+  ```sql
+  SELECT * FROM usage_counter ORDER BY period_yyyymm DESC LIMIT 5;
+  ```
+
+**Silent-fail indicator:** If plan shows `None` or quota shows `0/0`, m13_006 seed data may not have been applied; run `python -m src.db.migrate` and reload.
+
+---
+
 ## Sign-Off Table
 
 Operator fills in this table during the smoke session and attaches to session report.

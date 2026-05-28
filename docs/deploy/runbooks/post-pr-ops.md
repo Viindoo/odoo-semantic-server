@@ -36,6 +36,49 @@ These three commands bring the data layer into parity with shipped code logic.
 
 ---
 
+## Action 0 — Apply Latest Postgres Migrations
+
+### When to Run
+
+After every PR that ships new migrations. Run BEFORE any other actions — schema changes are prerequisite for data-layer actions.
+
+**Current migrations (PR #200):**
+- `m13_006_plans_quota.sql` — `plans` table + `api_keys.plan_id` FK + `usage_counter` table (ADR-0039 control-plane DDL)
+- `m13_007_usage_counter_cascade.sql` — ON DELETE CASCADE on `usage_counter.api_key_id` FK
+
+### Command
+
+```bash
+sudo -u <APP_USER> <VENV_PATH> -m src.db.migrate
+```
+
+(The migrate runner is idempotent — safe to re-run; already-applied migrations are skipped.)
+
+### Verify Success
+
+```bash
+# Confirm tables exist
+psql -d $DB_NAME -c "\dt usage_counter"
+# Expected: table "usage_counter" in schema "public"
+
+psql -d $DB_NAME -c "\dt plans"
+# Expected: table "plans" in schema "public"
+
+# Confirm FK column added to api_keys
+psql -d $DB_NAME -c "\d api_keys" | grep plan_id
+# Expected: plan_id | character varying | not null default 'free'
+
+# Confirm CASCADE on usage_counter
+psql -d $DB_NAME -c "\d usage_counter" | grep api_key_id
+# Expected: api_key_id | integer | not null (with REFERENCES api_keys(id) ON DELETE CASCADE)
+```
+
+### Expected Duration
+
+<30 seconds. Migrations are DDL-only with no data transform.
+
+---
+
 ## Action 1 — Materialize Method(model, odoo_version) Neo4j Index
 
 ### When to Run
