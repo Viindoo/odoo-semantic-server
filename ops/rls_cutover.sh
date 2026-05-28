@@ -51,7 +51,7 @@ PW="${OSM_READER_PASSWORD:-$(openssl rand -hex 24)}"
 GENERATED=0; [ -z "${OSM_READER_PASSWORD:-}" ] && GENERATED=1
 
 echo "== [1] create/refresh osm_reader role + grants (idempotent) =="
-psql_owner -v osm_pw="$PW" -f - < "$SQL_FILE" >/dev/null || die "role/grant SQL failed"
+psql_owner -v osm_pw="$PW" -v db_name="$DB_NAME" -f - < "$SQL_FILE" >/dev/null || die "role/grant SQL failed"
 echo "ok"
 
 echo "== [2] FORCE ROW LEVEL SECURITY on embeddings (idempotent) =="

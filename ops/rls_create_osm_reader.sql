@@ -36,7 +36,7 @@ ALTER ROLE osm_reader
   PASSWORD :'osm_pw';
 
 -- 2. Connection + schema usage.
-GRANT CONNECT ON DATABASE odoo_semantic TO osm_reader;
+GRANT CONNECT ON DATABASE :"db_name" TO osm_reader;
 GRANT USAGE   ON SCHEMA public          TO osm_reader;
 
 -- 3. RLS target — SELECT only. NEVER grant write here.
