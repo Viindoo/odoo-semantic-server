@@ -137,16 +137,21 @@ export const onRequest = defineMiddleware(async (context, next) => {
     return response;
   }
 
-  // /account/* is an authenticated self-service surface (My API Keys, etc.).
-  // Anonymous users must be sent to /admin/login (single global login flow —
-  // there is no separate /account/login). Authenticated users (admin OR
-  // non-admin) pass through. Without this gate, anon hits /account/api-keys,
-  // sees an empty self-service page, and clicks Generate Key only to get a
-  // confusing 401 — a UX regression introduced when WI5 shipped /account/*.
+  // /account/* is an authenticated self-service surface (My API Keys, Repos,
+  // Usage, etc.). Anonymous users must be sent to /admin/login (single global
+  // login flow — there is no separate /account/login). Authenticated users
+  // (admin OR non-admin) pass through. Without this gate, anon hits
+  // /account/api-keys or /account/usage and sees an empty page, then gets a
+  // confusing 401 on the first API call — a UX regression introduced when WI5
+  // shipped /account/*. The `return` query param lets the login page redirect
+  // back to the originally-requested account page after successful auth.
   if (path === '/account' || path.startsWith('/account/')) {
     const cookieHeader = context.request.headers.get('cookie') ?? '';
     const sessionPayload = await verifySession(cookieHeader);
-    if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+    if (!sessionPayload || !sessionPayload.ok) {
+      const returnUrl = encodeURIComponent(context.url.pathname + context.url.search);
+      return _redirectWithHeaders(`/admin/login?return=${returnUrl}`);
+    }
     context.locals.user = {
       username: sessionPayload.username ?? 'unknown',
       is_admin: sessionPayload.is_admin ?? false,
