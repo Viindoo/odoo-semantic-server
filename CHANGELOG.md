@@ -11,8 +11,8 @@ All notable changes to Odoo Semantic MCP are documented here.
 - `src/web_ui/routes/waitlist.py` — `POST /api/waitlist` endpoint: rate-limited (5 req/min per IP), duplicate-email ON CONFLICT DO NOTHING, admin email notify via SMTP, `Retry-After` header on 429. Replaces 3 Formspree/Google-Forms placeholders on the pricing page.
 - `src/web_ui/email.py` — `send_waitlist_notify_email(submitter_email, plan)` helper (logs in dev mode; SMTP in prod).
 - Pricing page (`site/src/pages/pricing.astro`) — self-hosted `/api/waitlist` form replaces 3 Formspree/Google-Forms iframes; handles 200/409/429 client-side with user-visible feedback.
-- `tests/test_rate_limit.py` — 10 unit tests for per-IP sliding-window limiter + `TRUSTED_PROXY_CIDRS` XFF guard (T1–T6 + T7–T9 proxy trust).
-- `tests/test_m13_008_migration.py` — 5 migration tests (table schema, UNIQUE, idempotency, CHECK constraint rejects invalid plan).
+- `tests/test_rate_limit.py` — 13 unit tests for per-IP sliding-window limiter + `TRUSTED_PROXY_CIDRS` XFF guard (T1–T6 base + T7–T9 proxy trust + T10–T13 CIDR edge-cases).
+- `tests/test_m13_008_migration.py` — 9 migration tests (table schema, UNIQUE, idempotency, CHECK constraint rejects invalid plan, CHECK constraint accepts valid plans).
 - `tests/test_waitlist_api.py` — 21 integration tests for `POST /api/waitlist` (happy path, duplicate, rate limit, Retry-After, admin notify, invalid payload).
 
 ### Fixed

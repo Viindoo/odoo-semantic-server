@@ -245,16 +245,17 @@ const tiers = [
           form.classList.add('hidden');
           msgEl.textContent = 'You\'re on the list! We\'ll notify you when pricing launches.';
           msgEl.classList.remove('hidden');
-          msgEl.classList.add('text-green-400');
+          msgEl.classList.add('text-viindoo-success');
         } else if (res.status === 409) {
           msgEl.textContent = 'You\'re already on the waitlist - we\'ll be in touch!';
           msgEl.classList.remove('hidden');
-          msgEl.classList.add('text-yellow-400');
+          msgEl.classList.add('text-viindoo-warning');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
         } else if (res.status === 429) {
           msgEl.textContent = 'Too many attempts. Please try again in a minute.';
           msgEl.classList.remove('hidden');
+          // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
           msgEl.classList.add('text-red-400');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
@@ -262,6 +263,7 @@ const tiers = [
           const detail = data.detail || data.error || 'Something went wrong. Please try again.';
           msgEl.textContent = detail;
           msgEl.classList.remove('hidden');
+          // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
           msgEl.classList.add('text-red-400');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
@@ -269,6 +271,7 @@ const tiers = [
       } catch (_err) {
         msgEl.textContent = 'Network error. Please check your connection and try again.';
         msgEl.classList.remove('hidden');
+        // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
         msgEl.classList.add('text-red-400');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Notify Me';
