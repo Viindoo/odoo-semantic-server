@@ -130,6 +130,30 @@ def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
     monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
 
 
+@pytest.fixture(autouse=True)
+def _reset_mcp_middleware_state():
+    """Clear in-process MCP middleware caches/buffers between tests.
+
+    Wave 2 introduced plan-aware quota + rate limit globals
+    (`_PLAN_CACHE`, `_rate_buckets`, `_usage_buffer`, `_KEY_CACHE`) in
+    `src/mcp/middleware.py`. Cross-test contamination causes monthly quota
+    buffer to accumulate across the 1469-test session, eventually tripping
+    429 on tests that share the session-scoped api_key fixture.
+
+    Reset before each test for hermetic state.
+    """
+    try:
+        from src.mcp import middleware as _mw
+        for name in ("_PLAN_CACHE", "_KEY_CACHE", "_usage_buffer", "_rate_buckets"):
+            cache = getattr(_mw, name, None)
+            if cache is not None and hasattr(cache, "clear"):
+                cache.clear()
+    except Exception:
+        # If module not importable yet (early collection phase), skip.
+        pass
+    yield
+
+
 @pytest.fixture(scope="session")
 def neo4j_driver():
     """
