@@ -15,7 +15,7 @@
 > (a customer with private repos), which is distinct from a subscription entity. The word
 > "entitlement" used in this ADR (e.g. ~L403, "the caller is *entitled to* read node X") is
 > **access control**, NOT a subscription grant — ADR-0039 D3 owns the subscription sense and names
-> its tables `subscription` / `plan` to avoid this collision.
+> its tables `subscriptions` / `plans` (plural — see [ADR-0039 D3](0039-commercialization-platform.md#decision)) to avoid this collision.
 
 ## Context
 

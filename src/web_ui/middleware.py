@@ -15,6 +15,7 @@ Exempt paths (no auth required):
     /api/auth/logout       POST
     /api/auth/verify       GET
     /api/auth/totp/login   POST (second-factor MFA step — no full session yet)
+    /api/waitlist          POST (public signup — rate-limited; no auth needed)
     /api/health            Uptime monitoring (pre-launch checklist §10.5)
     /health                Health probe (if present on this port)
     /openapi.json          FastAPI schema (intentionally public — used by
@@ -51,7 +52,7 @@ MFA_GRACE_DAYS = 7
 # wait would otherwise see 401 and time out before the subprocess is healthy.
 # /api/health is exempt for uptime monitoring (pre-launch checklist §10.5).
 _EXEMPT_PREFIXES = ("/api/auth/",)
-_EXEMPT_EXACT = {"/health", "/api/health", "/openapi.json", "/docs", "/redoc"}
+_EXEMPT_EXACT = {"/health", "/api/health", "/openapi.json", "/docs", "/redoc", "/api/waitlist"}
 
 # API paths that deliver MFA setup — exempt from MFA enforcement check
 # to avoid a redirect loop when the admin is trying to enroll.

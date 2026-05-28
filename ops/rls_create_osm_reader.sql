@@ -54,6 +54,10 @@ GRANT SELECT ON TABLE repos    TO osm_reader;   -- repo URL display (best-effort
 -- (api_key_id, period_yyyymm) so no SERIAL sequence is involved.
 GRANT SELECT ON TABLE plans TO osm_reader;
 GRANT SELECT, INSERT, UPDATE ON TABLE usage_counter TO osm_reader;
+-- m13_008: waitlist_emails — admin viewer page can MCP-read without RLS silent-empty bug.
+-- FastAPI writes as DB owner (no INSERT here). Defensive: added proactively so future
+-- admin viewer tools work without requiring another cutover run.
+GRANT SELECT ON TABLE waitlist_emails TO osm_reader;
 
 -- 5. Session context (ADR-0029) — set_active_version/profile UPSERT + read.
 --    api_key_session_state.api_key_id is an FK integer PK (no sequence).

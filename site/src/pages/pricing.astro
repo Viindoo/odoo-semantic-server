@@ -115,9 +115,7 @@ const tiers = [
           </ul>
 
           <a
-            href="https://forms.gle/odoo-semantic-waitlist"
-            target="_blank"
-            rel="noopener noreferrer"
+            href="#waitlist"
             class={`
               w-full text-center py-3 rounded-xl font-semibold text-sm transition-colors
               ${tier.highlight
@@ -139,18 +137,18 @@ const tiers = [
     </p>
 
     <!-- Waitlist form -->
-    <div class="max-w-lg mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center mb-12">
+    <div id="waitlist" class="max-w-lg mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center mb-12">
       <h2 class="text-2xl font-bold text-white mb-3">Join the Waitlist</h2>
       <p class="text-gray-400 text-sm mb-6">
         Be first to know when pricing launches. We'll notify you by email — no spam.
       </p>
       <form
-        action="https://formspree.io/f/placeholder-odoo-semantic"
-        method="POST"
+        id="waitlist-form"
         class="flex flex-col sm:flex-row gap-3"
       >
         <input
           type="email"
+          id="waitlist-email"
           name="email"
           placeholder="you@company.com"
           required
@@ -158,14 +156,13 @@ const tiers = [
         />
         <button
           type="submit"
+          id="waitlist-submit"
           class="bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 font-semibold text-sm px-6 py-2.5 rounded-xl transition-colors whitespace-nowrap"
         >
           Notify Me
         </button>
       </form>
-      <p class="text-xs text-gray-600 mt-3">
-        Or use the <a href="https://forms.gle/odoo-semantic-waitlist" target="_blank" rel="noopener noreferrer" class="text-viindoo-primary hover:underline">Google Form</a> if you prefer.
-      </p>
+      <p id="waitlist-msg" class="text-sm mt-3 hidden"></p>
     </div>
 
     <!-- FAQ teaser -->
@@ -220,3 +217,65 @@ const tiers = [
     </p>
   </section>
 </BaseLayout>
+
+<script>
+  const form = document.getElementById('waitlist-form') as HTMLFormElement | null;
+  const emailInput = document.getElementById('waitlist-email') as HTMLInputElement | null;
+  const submitBtn = document.getElementById('waitlist-submit') as HTMLButtonElement | null;
+  const msgEl = document.getElementById('waitlist-msg') as HTMLElement | null;
+
+  if (form && emailInput && submitBtn && msgEl) {
+    form.addEventListener('submit', async (e: Event) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting…';
+      msgEl.classList.add('hidden');
+      msgEl.className = 'text-sm mt-3 hidden';
+
+      try {
+        const res = await fetch('/api/waitlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailInput.value.trim() }),
+        });
+
+        const data = await res.json() as { status?: string; error?: string; detail?: string };
+
+        if (res.status === 201) {
+          form.classList.add('hidden');
+          msgEl.textContent = 'You\'re on the list! We\'ll notify you when pricing launches.';
+          msgEl.classList.remove('hidden');
+          msgEl.classList.add('text-viindoo-success');
+        } else if (res.status === 409) {
+          msgEl.textContent = 'You\'re already on the waitlist - we\'ll be in touch!';
+          msgEl.classList.remove('hidden');
+          msgEl.classList.add('text-viindoo-warning');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Notify Me';
+        } else if (res.status === 429) {
+          msgEl.textContent = 'Too many attempts. Please try again in a minute.';
+          msgEl.classList.remove('hidden');
+          // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
+          msgEl.classList.add('text-red-400');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Notify Me';
+        } else {
+          const detail = data.detail || data.error || 'Something went wrong. Please try again.';
+          msgEl.textContent = detail;
+          msgEl.classList.remove('hidden');
+          // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
+          msgEl.classList.add('text-red-400');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Notify Me';
+        }
+      } catch (_err) {
+        msgEl.textContent = 'Network error. Please check your connection and try again.';
+        msgEl.classList.remove('hidden');
+        // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
+        msgEl.classList.add('text-red-400');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Notify Me';
+      }
+    });
+  }
+</script>

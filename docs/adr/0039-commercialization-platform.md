@@ -69,8 +69,9 @@ the entitlement record.
 > **Term disambiguation (required).** "Entitlement" in this ADR means a **subscription grant** —
 > which plan/product/seats a buyer holds. It is distinct from the existing access-control sense in
 > the codebase (`src/mcp/server.py` ~L2996, `ADR-0034` ~L403: "the caller is *entitled to* read
-> node X"). The Activation API and its tables MUST NOT reuse the access-control wording; name them
-> `subscription` / `plan` to avoid the collision.
+> node X"). The Activation API and its tables MUST NOT reuse the access-control wording; name the
+> tables `subscriptions` / `plans` (plural, see schema below) and reserve `subscription` / `plan`
+> (singular) for conceptual/API param usage to avoid the collision.
 
 ### D4 — Payment rail: Merchant-of-Record (not a PSP)
 

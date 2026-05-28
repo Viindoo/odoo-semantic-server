@@ -238,6 +238,11 @@ def create_app() -> FastAPI:
 
     app.include_router(versions.router)
 
+    # Public waitlist — POST /api/waitlist (no auth, rate-limited; Issue #203)
+    from src.web_ui.routes import waitlist
+
+    app.include_router(waitlist.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:

@@ -969,7 +969,32 @@ location /api/ {
 > chạy `FORCE ROW LEVEL SECURITY`), cần override `PG_DSN` trong env của service `:8002`,
 > KHÔNG đặt `PG_READ_DSN` rồi kỳ vọng có hiệu lực. Xem runbook §5.14.
 
-#### 4.3c Phân định OPS vs UI cho M13 hardening
+#### 4.3c TRUSTED_PROXY_CIDRS — bắt buộc khi chạy sau reverse proxy
+
+`/api/waitlist` (và `src/web_ui/login_attempts.py`) thực hiện rate-limit theo IP thật của
+client. Khi FastAPI chạy sau nginx, **TCP peer luôn là `127.0.0.1`** — nếu không khai báo
+`TRUSTED_PROXY_CIDRS`, mọi request sẽ bị tính chung cho IP `127.0.0.1`, dẫn đến toàn bộ
+site bị cap ở `5 request/phút` (rate limit của `/api/waitlist`).
+
+**Bắt buộc** set env var `TRUSTED_PROXY_CIDRS` bằng CIDR của nginx host (hoặc LAN upstream)
+để `get_client_ip()` đọc đúng header `X-Forwarded-For`:
+
+```ini
+# odoo-semantic-mcp.conf (hoặc systemd EnvironmentFile)
+# nginx cùng host:
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+
+# nginx trên LAN khác (vd. HAProxy upstream):
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,10.0.1.5/32
+```
+
+Sau khi sửa env, restart service FastAPI (`:8003`) và MCP (`:8002`) để pick up thay đổi.
+
+> **Tại sao không để trống?** `TRUSTED_PROXY_CIDRS=` (empty) là safe default cho bare-metal
+> (không có proxy) — XFF header bị bỏ qua hoàn toàn. Behind nginx thì PHẢI có giá trị.
+> Cross-reference: `src/web_ui/rate_limit.py` + `src/web_ui/login_attempts.py`.
+
+#### 4.3d Phân định OPS vs UI cho M13 hardening
 
 Các bước sau là **OPS production thủ công** (chạy trên server) — KHÔNG phải tính năng
 UI và KHÔNG phải gate để mở Web UI W0-W4:
