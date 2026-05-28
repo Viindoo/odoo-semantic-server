@@ -12,7 +12,7 @@
 
 Code-complete + unit-tested ≠ end-to-end verified on production. This smoke session catches:
 - **ORM-validation tools** returning "BROKEN" when underlying data (Field.comodel_name, Method.depends) not yet materialized in the graph
-- **Silent empty results** if post-reindex steps (e.g., `seed_patterns`) were skipped
+- **Silent empty results** if post-reindex steps (e.g., `seed-patterns`) were skipped
 - **Stylesheet tools** returning 0 files if CSS/SCSS indexing was skipped or `--no-embed` was used
 - **Era1 (v8/v9) quirks** for ORM tools when testing against legacy Odoo versions
 
@@ -572,7 +572,7 @@ If tool #8 (`suggest_pattern`) was marked PARTIAL, verify now:
 - [ ] Code snippet present
 - [ ] No traceback
 
-**Silent-fail risk:** If response is "no patterns indexed", seed_patterns step was skipped; operator should run `python -m src.indexer seed_patterns` and re-test.
+**Silent-fail risk:** If response is "no patterns indexed", seed-patterns step was skipped; operator should run `python -m src.indexer seed-patterns` and re-test.
 
 ---
 
@@ -623,10 +623,11 @@ Operator fills in this table during the smoke session and attaches to session re
 11. **Tool #21** — `resolve_orm_chain("sale.order", "partner_id.country_id.code")` — comodel hop validation
 12. **Tool #22** — `validate_domain("sale.order", "[('state','=','sale')]")` — simple domain first
 13. **Tool #23** — `validate_depends("sale.order", "_compute_amount_total")` — v17+ method only
+    > **Note**: Odoo 17 renamed `amount_total` compute method to `_amount_all` (from v15+); `_compute_amount_total` may not exist. If tool returns "method not found", replace method name in prompt. Operator verify with `model_inspect(model='sale.order', method='methods', odoo_version='17.0')` before smoke.
 14. **Tool #24** — `validate_relation("sale.order", "partner_id", "res.partner")` — comodel assertion
 15. **Resources R1–R7** — after tools confirm data exists
 16. **Re-smoke #3** — `lookup_core_api("name_get", "17.0")` — post-reindex verification
-17. **Re-smoke #8** — `suggest_pattern("computed field")` — post-seed_patterns verification
+17. **Re-smoke #8** — `suggest_pattern("computed field")` — post-seed-patterns verification
 
 ---
 
@@ -636,7 +637,7 @@ Operator fills in this table during the smoke session and attaches to session re
 |---------|-------|--------|
 | All smokes return `HTTP 401` | Invalid/missing API key | Verify `<OPERATOR_API_KEY>` in `X-API-Key` header; key may be deactivated or expired |
 | All smokes return `HTTP 429 quota_exhausted` | API rate limit hit | Pause 60 sec; use a fresh smoke-test API key; or contact admin for higher quota |
-| Tool returns empty list (e.g., `Stylesheets: 0`) | Data indexing skipped | Check WI-A7 OPS completion: did `index-repo --all --embed` finish? Did `seed_patterns` run? |
+| Tool returns empty list (e.g., `Stylesheets: 0`) | Data indexing skipped | Check WI-A7 OPS completion: did `index-repo --all` finish? (default behavior embeds; pass `--no-embed` to skip) Did `seed-patterns` run? |
 | Tool returns `BROKEN` (ORM validators) | Data gap in graph nodes | Field.comodel_name or Method.depends properties not populated; run full reindex with `--full` flag |
 | Tool returns unstructured error text | Tool signature mismatch | Verify actual signature matches survey § D (e.g., `model_inspect` uses `model=`, `method=`, not `target=`, `kind=`) |
 | Resource read returns `HTTP 404` | URI syntax error | Check URI template matches survey § E; verify `{version}` is concrete (e.g., `17.0`, not `auto`) |
@@ -683,7 +684,7 @@ After completing the smoke session, document findings:
 ### Post-Reindex Gaps
 
 - [ ] `lookup_core_api` now correctly reflects post-reindex deprecation detection
-- [ ] `suggest_pattern` now returns patterns (seed_patterns completed)
+- [ ] `suggest_pattern` now returns patterns (seed-patterns completed)
 - [ ] Stylesheet tools return data (CSS/SCSS indexing confirmed)
 
 ## Approval

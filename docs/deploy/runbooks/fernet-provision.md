@@ -75,13 +75,8 @@ Operators on non-canonical layouts (e.g., `/opt/` or personal-user deployments) 
 
 **Critical:** Save the generated key in an **offline password manager + vault** before writing to credstore. If the key is lost, all encrypted secrets (SSH keys, TOTP) become unrecoverable.
 
-**Option A:** If CLI command is available:
-```bash
-# Verify CLI command exists (read-only check, no auth needed)
-python3 -m src.cli --help 2>&1 | grep -i fernet || echo "CLI command not found; fall back to Option B"
-```
+**Note:** There is no CLI subcommand `fernet generate` — use the inline Python below. (`rotate-fernet` is only for atomic rotation once you already have old key + new key.)
 
-**Option B:** Manual Python generation (always available):
 ```bash
 python3 <<'PYGEN'
 from cryptography.fernet import Fernet

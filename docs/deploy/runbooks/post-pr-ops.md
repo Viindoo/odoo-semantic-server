@@ -31,6 +31,7 @@ These three commands bring the data layer into parity with shipped code logic.
 | `<VENV_PATH>` | Path to Python executable in app venv | `/home/<APP_USER>/.venv/odoo-semantic-mcp/bin/python` |
 | `<PROFILE_8>` | Profile name for Odoo v8.0 repos | `odoo_8` (verify in `profiles` table) |
 | `<PROFILE_9>` | Profile name for Odoo v9.0 repos | `odoo_9` |
+| `<PROFILE_17>` | Profile name for Odoo v17.0 repos | `odoo_17` |
 | `<HEALTH_URL>` | Base URL for /health endpoint | `http://localhost:8002` (or prod domain) |
 
 ---

@@ -4,6 +4,23 @@
 
 ---
 
+## Placeholder Reference (ADR-0027 Canonical Defaults)
+
+| Placeholder | Canonical default | Note |
+|---|---|---|
+| `<MCP_SERVICE>` | `odoo-semantic-mcp` | systemd unit name for MCP server |
+| `<WEBUI_SERVICE>` | `odoo-semantic-webui` | systemd unit name for FastAPI admin |
+| `<BACKUP_SERVICE>` | `odoo-semantic-backup` | systemd unit name for nightly backup (oneshot) |
+| `<DB_OWNER>` | `odoo_semantic` | Postgres role that owns the application database |
+| `<DB_NAME>` | `odoo_semantic` | Postgres database name |
+| `<BACKUP_DIR>` | `/var/backups/odoo-semantic` | Local directory where bundles are written |
+| `<APP_USER>` | `odoo-semantic` | Unix user running Odoo Semantic MCP services |
+| `<VENV_PATH>` | `/home/<APP_USER>/.venv/odoo-semantic-mcp/bin/python` | Path to Python executable in app venv |
+
+Operators on non-canonical layouts substitute actual values throughout this runbook.
+
+---
+
 ## Phần 1 — Backup Confirm (PR #189 Landing Verification)
 
 ### Nguyên lý
@@ -21,11 +38,11 @@ Trước PR #189, backup chỉ chứa `postgres.sql` (Neo4j phải offline để
 
 ```bash
 # 1. Trigger one-shot backup (via systemd — dùng exact env như nightly)
-sudo systemctl start odoo-semantic-backup.service
+sudo systemctl start <BACKUP_SERVICE>
 
 # 2. Wait + observe log
 sleep 10
-sudo journalctl -u odoo-semantic-backup.service -n 20 --no-pager
+sudo journalctl -u <BACKUP_SERVICE> -n 20 --no-pager
 
 # 3. Inspect bundle contents — kiểm tra 4 components
 BACKUP_FILE=$(ls -t /var/backups/odoo-semantic/*.tar.gz 2>/dev/null | head -1)
@@ -105,7 +122,7 @@ echo "$T0" > /tmp/osm-drill-t0.txt
 # === PRE-RESTORE: Stop services ===
 # (Non-prod, so stopping is safe)
 echo "=== Stopping services ==="
-sudo systemctl stop odoo-semantic-mcp odoo-semantic-webui 2>/dev/null || docker compose down -v
+sudo systemctl stop <MCP_SERVICE> <WEBUI_SERVICE> 2>/dev/null || docker compose down -v
 
 # === RESTORE BUNDLE ===
 echo "=== Restoring bundle ==="
@@ -118,7 +135,7 @@ fi
 # Optional: set FERNET_KEY if bundle has fernet.enc
 # export FERNET_KEY=$(cat /etc/credstore/FERNET_KEY 2>/dev/null || echo "")
 
-sudo -u <APP_USER> <VENV_PATH>/bin/python -m src.cli restore "$BUNDLE" --force
+sudo -u <APP_USER> <VENV_PATH> -m src.cli restore "$BUNDLE" --force
 
 # === T1: CAPTURE RESTORE-ONLY TIME ===
 T1=$(date +%s)
@@ -129,7 +146,7 @@ echo "Restore-only time: $RESTORE_ONLY seconds = $(($RESTORE_ONLY / 60)) minutes
 
 # === POST-RESTORE: Restart services + wait healthy ===
 echo "=== Restarting services ==="
-sudo systemctl start odoo-semantic-mcp odoo-semantic-webui 2>/dev/null || docker compose up -d
+sudo systemctl start <MCP_SERVICE> <WEBUI_SERVICE> 2>/dev/null || docker compose up -d
 
 # === Wait for services ready (60s timeout) ===
 echo "=== Waiting for services to be healthy ==="
@@ -211,7 +228,7 @@ After smoke tests pass:
 ```bash
 # Check Postgres row counts match manifest expectations
 echo "=== Postgres table counts ==="
-docker compose exec postgres psql -U odoo_semantic -c "
+docker compose exec postgres psql -U <DB_OWNER> -c "
 SELECT tablename, n_live_tup FROM pg_stat_user_tables WHERE n_live_tup > 0 ORDER BY tablename;
 "
 
