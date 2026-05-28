@@ -2,7 +2,9 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-## [Unreleased] — M10B P0: Quota gating + plan schema + usage dashboard (PR #200)
+## [Unreleased]
+
+## [0.13.0] — 2026-05-28 — M10B P0: Quota gating + plan schema + usage dashboard (PR #200)
 
 ### Added
 
