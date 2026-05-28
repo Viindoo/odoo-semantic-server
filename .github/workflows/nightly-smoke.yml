@@ -174,17 +174,20 @@ jobs:
         env:
           PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
 
-      - name: Clone Odoo 8 (shallow, depth=1)
-        run: git clone --depth=1 -b 8.0 https://github.com/odoo/odoo /tmp/odoo_8.0
+      - name: Clone Odoo 8 (shallow, depth=1) into server-managed path
+        run: |
+          CLONE_DIR="$HOME/.local/share/odoo-semantic-mcp/clones/odoo8/odoo"
+          mkdir -p "$(dirname "$CLONE_DIR")"
+          git clone --depth=1 -b 8.0 https://github.com/odoo/odoo "$CLONE_DIR"
+          du -sh "$CLONE_DIR"
 
       - name: Register profile + repo for Odoo 8
         run: |
           python -m src.manager add-profile odoo8 --version 8.0
           python -m src.manager add-repo \
             --profile odoo8 \
-            --url file:///tmp/odoo_8.0 \
-            --branch 8.0 \
-            --local-path /tmp/odoo_8.0
+            --url https://github.com/odoo/odoo \
+            --branch 8.0
         env:
           PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
 
