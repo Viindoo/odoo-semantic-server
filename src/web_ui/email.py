@@ -106,6 +106,77 @@ def send_verification_email(to: str, username: str, token: str, base_url: str) -
         raise
 
 
+def send_waitlist_notify_email(
+    submitter_email: str,
+    plan: str | None,
+    source: str = "pricing-page",
+) -> bool:
+    """Send admin notification when a new waitlist entry is created.
+
+    Best-effort: returns False on any failure (caller logs a warning and
+    continues — a failed notify must NOT roll back the DB insert).
+
+    Args:
+        submitter_email: The email address that joined the waitlist.
+        plan:   The pricing tier they expressed interest in ('free'/'pro'/'team')
+                or None for a generic signup.
+        source: Origin tag, e.g. 'pricing-page' (stored in waitlist_emails.source).
+
+    Returns:
+        True on successful delivery (or dev-mode suppression).
+        False on SMTP failure.
+    """
+    import datetime as _dt
+
+    notify_to = os.getenv("WAITLIST_NOTIFY_EMAIL", "admin@viindoo.com")
+    plan_display = plan or "(generic)"
+    now_utc = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+    msg = EmailMessage()
+    msg["Subject"] = f"[Waitlist] New signup: {submitter_email}"
+    msg["From"] = _from_address()
+    msg["To"] = notify_to
+
+    body_text = (
+        f"A new user joined the waitlist.\n\n"
+        f"Email:  {submitter_email}\n"
+        f"Plan:   {plan_display}\n"
+        f"Source: {source}\n"
+        f"Time:   {now_utc}\n\n"
+        f"-- Odoo Semantic MCP (automated)"
+    )
+    msg.set_content(body_text)
+
+    safe_email = escape(submitter_email)
+    msg.add_alternative(
+        f"<p>A new user joined the waitlist.</p>"
+        f"<table>"
+        f"<tr><td><strong>Email</strong></td><td>{safe_email}</td></tr>"
+        f"<tr><td><strong>Plan</strong></td><td>{escape(plan_display)}</td></tr>"
+        f"<tr><td><strong>Source</strong></td><td>{escape(source)}</td></tr>"
+        f"<tr><td><strong>Time</strong></td><td>{now_utc}</td></tr>"
+        f"</table>"
+        f"<p><em>Odoo Semantic MCP (automated)</em></p>",
+        subtype="html",
+    )
+
+    if not _smtp_host():
+        logger.info(
+            "DEV MODE — waitlist notify suppressed. submitter=%s plan=%s",
+            submitter_email, plan_display,
+        )
+        return True
+
+    try:
+        _send(msg)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Failed to send waitlist notify email to %s: %s", notify_to, exc
+        )
+        return False
+
+
 def send_password_reset_email(to: str, username: str, token: str, base_url: str) -> None:
     """Send password-reset email.
 
