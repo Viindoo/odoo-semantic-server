@@ -80,6 +80,30 @@ def _get_neo4j_creds() -> tuple[str, str, str] | None:
     return uri, user, password
 
 
+# Substrings that mark a Neo4j operation failure as "Neo4j is not reachable or
+# not configured here" — as opposed to a genuine error against a live database.
+# _export_neo4j_online and _restore_neo4j_cypher both phrase their early-exit
+# (pre-wipe) errors with these markers, so a failed pre-restore SNAPSHOT carrying
+# one of them means the subsequent restore will also bail out before its
+# DETACH DELETE, leaving nothing to protect.
+_NEO4J_UNREACHABLE_MARKERS = (
+    "driver not installed",
+    "not set",            # "NEO4J_PASSWORD not set ..."
+    "connection failed",  # verify_connectivity() raised
+)
+
+
+def _neo4j_unreachable_reason(msg: str) -> bool:
+    """Return True if *msg* indicates Neo4j is unreachable / unconfigured.
+
+    Used to decide whether a failed pre-restore Neo4j safety snapshot is benign
+    (Neo4j absent → the restore cannot wipe anything either) or fatal (live
+    graph present but un-snapshottable → must abort before wiping).
+    """
+    low = (msg or "").lower()
+    return any(marker in low for marker in _NEO4J_UNREACHABLE_MARKERS)
+
+
 def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
     """Export Neo4j graph as Cypher CREATE statements using the Bolt driver (online).
 
@@ -120,21 +144,29 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
         except Exception as exc:
             return False, f"Neo4j connection failed: {exc}"
 
-        lines: list[str] = [
-            f"// neo4j.cypher — exported {datetime.now(UTC).isoformat()}",
-            "// Replay: cypher-shell -u <user> -p <pass> < neo4j.cypher",
-            "// Or:     run each statement via neo4j Python driver",
-            "",
-        ]
+        node_count = 0
+        rel_count = 0
+        # E (memory): stream every statement straight to the file handle instead
+        # of accumulating the whole graph in a `lines: list[str]` and join()-ing
+        # at the end. ADR-0018 sizes the graph at ~1-2M nodes — holding all of
+        # that Cypher in RAM is hundreds of MB; line-at-a-time keeps it flat.
+        # F (consistency): read nodes AND relationships inside ONE explicit READ
+        # transaction so a concurrent indexer write cannot land between the node
+        # scan and the relationship scan and leave a dangling rel in the dump.
+        with out_path.open("w", encoding="utf-8") as f, \
+                driver.session() as session, \
+                session.begin_transaction() as tx:
+            f.write(f"// neo4j.cypher — exported {datetime.now(UTC).isoformat()}\n")
+            f.write("// Replay: cypher-shell -u <user> -p <pass> < neo4j.cypher\n")
+            f.write("// Or:     run each statement via neo4j Python driver\n")
+            f.write("\n")
 
-        with driver.session() as session:
             # --- Export nodes ---
             # Retrieve all nodes with their elementId (stable surrogate key used
             # only within this export to wire up relationships).
-            node_result = session.run(
+            node_result = tx.run(
                 "MATCH (n) RETURN elementId(n) AS eid, labels(n) AS lbls, properties(n) AS props"
             )
-            node_count = 0
             for record in node_result:
                 eid = record["eid"]
                 lbls = record["lbls"]
@@ -146,16 +178,15 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
                 # properties (props_cypher == "") — symmetric with the rel branch.
                 inner = f"{props_cypher}, __eid__: {json.dumps(eid)}" if props_cypher \
                     else f"__eid__: {json.dumps(eid)}"
-                lines.append(f"CREATE (n{label_str} {{{inner}}});")
+                f.write(f"CREATE (n{label_str} {{{inner}}});\n")
                 node_count += 1
 
             # --- Export relationships ---
-            rel_result = session.run(
+            rel_result = tx.run(
                 "MATCH (a)-[r]->(b) "
                 "RETURN elementId(a) AS aeid, elementId(b) AS beid, "
                 "type(r) AS rtype, properties(r) AS props"
             )
-            rel_count = 0
             for record in rel_result:
                 aeid = record["aeid"]
                 beid = record["beid"]
@@ -163,19 +194,21 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
                 props = record["props"]
                 props_cypher = _props_to_cypher(props)
                 rel_props = f" {{{props_cypher}}}" if props_cypher else ""
-                lines.append(
+                f.write(
                     f"MATCH (a {{__eid__: {json.dumps(aeid)}}}), "
                     f"(b {{__eid__: {json.dumps(beid)}}}) "
-                    f"CREATE (a)-[:{rtype}{rel_props}]->(b);"
+                    f"CREATE (a)-[:{rtype}{rel_props}]->(b);\n"
                 )
                 rel_count += 1
 
             # --- Remove __eid__ helper property ---
-            lines.append("")
-            lines.append("// Cleanup: remove the temporary __eid__ routing property")
-            lines.append("MATCH (n) WHERE n.__eid__ IS NOT NULL REMOVE n.__eid__;")
+            f.write("\n")
+            f.write("// Cleanup: remove the temporary __eid__ routing property\n")
+            f.write("MATCH (n) WHERE n.__eid__ IS NOT NULL REMOVE n.__eid__;\n")
+            # Read-only export: never commit. Exiting the `begin_transaction()`
+            # context manager without a commit rolls the (write-free) transaction
+            # back. The snapshot stayed consistent across both scans above.
 
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         msg = f"Exported {node_count} nodes, {rel_count} relationships"
         log.info("Neo4j online export complete: %s", msg)
         return True, msg
@@ -258,6 +291,26 @@ def _restore_neo4j_cypher(cypher_path: Path) -> tuple[bool, str]:
                 if stmt:
                     statements.append(stmt)
                 current = []
+
+        # --- DR safety gate: validate BEFORE the destructive DETACH DELETE ---
+        # A truncated / empty / corrupt dump must NOT wipe the live graph (a
+        # wiped graph with nothing to restore is unrecoverable). Two checks:
+        #   1. At least one parsed statement.
+        #   2. The export completeness trailer is present. _export_neo4j_online
+        #      ALWAYS writes "... REMOVE n.__eid__" as its final statement, even
+        #      for an empty graph, so its absence proves the file was truncated
+        #      mid-write or is not a genuine export.
+        if not statements:
+            return False, (
+                "refusing to wipe Neo4j: cypher file has no executable statements "
+                f"({cypher_path}) — empty or corrupt dump"
+            )
+        if not any("REMOVE n.__eid__" in stmt for stmt in statements):
+            return False, (
+                "refusing to wipe Neo4j: cypher file is missing the export "
+                f"completeness trailer 'REMOVE n.__eid__' ({cypher_path}) — "
+                "the dump was truncated or is not a valid _export_neo4j_online file"
+            )
 
         executed = 0
         errors: list[str] = []
@@ -800,22 +853,70 @@ def _restore_bundle(path: Path, args) -> int:
         # New bundles contain neo4j.cypher (online export); legacy bundles may
         # contain neo4j.dump (old offline format).  The .cypher file is loaded
         # automatically; the legacy .dump requires manual neo4j-admin load.
+        #
+        # A Neo4j restore failure is NOT silently swallowed: it sets
+        # `neo4j_restore_failed` so the command exits non-zero. Postgres is
+        # already restored at this point, so we report that success explicitly
+        # while still signalling overall failure to any DR automation that keys
+        # off the exit code (a partial/failed graph must not look like exit 0).
+        neo4j_restore_failed = False
         neo4j_cypher = tmpdir / "neo4j.cypher"
         neo4j_dump = tmpdir / "neo4j.dump"
         if neo4j_cypher.exists():
+            # Pre-restore safety SNAPSHOT of the live graph (parity with the
+            # Postgres safety backup above). _restore_neo4j_cypher wipes the
+            # graph; without this snapshot a failed restore would be
+            # unrecoverable. Written next to the Postgres safety backup.
+            neo4j_safety_path = backup_dir / f"pre-restore-{int(time.time())}-neo4j.cypher"
+            log.info("Writing pre-restore Neo4j safety snapshot to: %s", neo4j_safety_path)
+            snap_ok, snap_msg = _export_neo4j_online(neo4j_safety_path)
+            if snap_ok:
+                print(f"Pre-restore Neo4j safety snapshot: {neo4j_safety_path}")
+            elif _neo4j_unreachable_reason(snap_msg):
+                # Neo4j is not configured / not reachable here. The restore call
+                # below will hit the same wall and return early WITHOUT wiping
+                # (it never reaches DETACH DELETE), so there is no graph to
+                # protect — proceed and let the restore report its own error.
+                neo4j_safety_path.unlink(missing_ok=True)
+                log.warning(
+                    "Skipping Neo4j safety snapshot — Neo4j unreachable/unconfigured: %s",
+                    snap_msg,
+                )
+            else:
+                # Neo4j IS reachable but the snapshot failed for another reason.
+                # Refuse to wipe a live graph we cannot first back up.
+                neo4j_safety_path.unlink(missing_ok=True)
+                print(
+                    f"ERROR: Neo4j pre-restore safety snapshot failed: {snap_msg}",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Postgres restore is complete, but the Neo4j graph was NOT "
+                    "touched (no safety snapshot = no wipe). Fix Neo4j and re-run.",
+                    file=sys.stderr,
+                )
+                return 1
+
             print("Restoring Neo4j graph from neo4j.cypher ...")
             neo4j_ok, neo4j_msg = _restore_neo4j_cypher(neo4j_cypher)
             if neo4j_ok:
                 log.info("Neo4j restore complete: %s", neo4j_msg)
                 print(f"  Neo4j: {neo4j_msg}")
             else:
+                neo4j_restore_failed = True
                 log.warning("Neo4j restore failed: %s", neo4j_msg)
-                print(f"WARNING: Neo4j restore failed: {neo4j_msg}", file=sys.stderr)
+                print(f"ERROR: Neo4j restore failed: {neo4j_msg}", file=sys.stderr)
                 print(
                     "  The postgres.sql restore is complete. Fix Neo4j manually and re-run "
                     "the Neo4j portion, or restore from a fresh reindex.",
                     file=sys.stderr,
                 )
+                if snap_ok:
+                    print(
+                        f"  Pre-restore Neo4j safety snapshot preserved at: "
+                        f"{neo4j_safety_path}",
+                        file=sys.stderr,
+                    )
         elif neo4j_dump.exists():
             # Legacy bundle: .dump format produced by old offline neo4j-admin dump
             log.info(
@@ -855,6 +956,13 @@ def _restore_bundle(path: Path, args) -> int:
                     "not specified — skipping."
                 )
 
+        if neo4j_restore_failed:
+            print(
+                f"Restore from bundle {path} FINISHED WITH ERRORS: Postgres "
+                "restored, Neo4j restore failed (see above).",
+                file=sys.stderr,
+            )
+            return 1
         print(f"Restore complete from bundle: {path}")
         return 0
 
