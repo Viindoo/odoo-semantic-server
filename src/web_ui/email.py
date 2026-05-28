@@ -8,6 +8,7 @@ required for local development or unit tests.
 Usage:
     send_verification_email(to, username, token, base_url)
     send_password_reset_email(to, username, token, base_url)
+    send_waitlist_notify_email(submitter_email, plan)
 """
 
 import logging

@@ -11,7 +11,8 @@
 CREATE TABLE IF NOT EXISTS waitlist_emails (
     id         SERIAL      PRIMARY KEY,
     email      TEXT        NOT NULL UNIQUE,
-    plan       TEXT,                           -- 'free' / 'pro' / 'team' / NULL if generic
+    plan       TEXT        CHECK (plan IS NULL OR plan IN ('free', 'pro', 'team')),
+                                                -- 'free' / 'pro' / 'team' / NULL if generic
     source     TEXT        NOT NULL DEFAULT 'pricing-page',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

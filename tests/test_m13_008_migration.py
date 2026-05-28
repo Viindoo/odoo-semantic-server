@@ -186,3 +186,43 @@ class TestMigrationIdempotent:
             pytest.fail(
                 f"run_migrations raised on second run (not idempotent): {exc}"
             )
+
+
+# ---------------------------------------------------------------------------
+# T5: CHECK constraint on plan column rejects invalid values
+# ---------------------------------------------------------------------------
+
+class TestPlanCheckConstraint:
+    """T5: plan column CHECK rejects values outside ('free', 'pro', 'team', NULL)."""
+
+    def test_plan_check_constraint_rejects_invalid(self, migrated_pg):
+        """INSERT plan='invalid' must raise IntegrityError / CheckViolation."""
+        with pytest.raises(Exception) as exc_info:
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO waitlist_emails (email, plan)"
+                    " VALUES ('check-test@example.com', 'invalid')"
+                )
+            migrated_pg.commit()
+        migrated_pg.rollback()
+
+        err = str(exc_info.value).lower()
+        assert "check" in err or "violat" in err or "constraint" in err, (
+            f"Expected CHECK violation on waitlist_emails.plan='invalid', got: {exc_info.value}"
+        )
+
+    def test_plan_check_constraint_allows_valid_values(self, migrated_pg):
+        """Valid plan values ('free', 'pro', 'team', NULL) must INSERT without error."""
+        for plan, email_suffix in [
+            ("free", "free"),
+            ("pro", "pro"),
+            ("team", "team"),
+            (None, "null"),
+        ]:
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO waitlist_emails (email, plan)"
+                    " VALUES (%s, %s)",
+                    (f"check-valid-{email_suffix}@example.com", plan),
+                )
+            migrated_pg.commit()

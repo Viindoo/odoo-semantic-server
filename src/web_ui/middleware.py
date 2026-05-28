@@ -15,6 +15,7 @@ Exempt paths (no auth required):
     /api/auth/logout       POST
     /api/auth/verify       GET
     /api/auth/totp/login   POST (second-factor MFA step — no full session yet)
+    /api/waitlist          POST (public signup — rate-limited; no auth needed)
     /api/health            Uptime monitoring (pre-launch checklist §10.5)
     /health                Health probe (if present on this port)
     /openapi.json          FastAPI schema (intentionally public — used by

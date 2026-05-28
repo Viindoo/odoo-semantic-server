@@ -4,13 +4,16 @@
 
 No Postgres or Docker required.
 
-Business intent (6 cases):
+Business intent (9 cases):
   T1  Requests within limit are allowed.
   T2  Exceeding the limit returns False.
   T3  Window resets after elapsed time (old timestamps pruned).
   T4  Multiple IPs are isolated (one IP exhausted does not affect another).
-  T5  X-Forwarded-For header is preferred over raw client host.
+  T5  XFF is only trusted when peer IP is in TRUSTED_PROXY_CIDRS.
   T6  Falls back to client.host when no forwarding headers present.
+  T7  XFF ignored when peer is NOT in TRUSTED_PROXY_CIDRS.
+  T8  XFF used when peer IS in TRUSTED_PROXY_CIDRS.
+  T9  XFF ignored when TRUSTED_PROXY_CIDRS is unset (default-empty).
 """
 
 import asyncio
@@ -186,61 +189,71 @@ class TestIpIsolation:
 
 
 # ---------------------------------------------------------------------------
-# T5 + T6: get_client_ip header resolution
+# Helpers for get_client_ip tests — reset TRUSTED_PROXIES cache + make request
+# ---------------------------------------------------------------------------
+
+def _reset_trusted_proxies() -> None:
+    """Clear the module-level _TRUSTED_PROXIES cache so env changes take effect."""
+    from src.web_ui import rate_limit as rl
+    rl._TRUSTED_PROXIES = None
+
+
+def _make_fake_request(xff=None, client_host=None):
+    """Build a minimal mock request for get_client_ip tests."""
+    headers = {}
+    if xff:
+        headers["x-forwarded-for"] = xff
+
+    class FakeClient:
+        def __init__(self, host):
+            self.host = host
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = headers
+            self.client = FakeClient(client_host) if client_host else None
+
+    return FakeRequest()
+
+
+# ---------------------------------------------------------------------------
+# T5 + T6: get_client_ip — peer returned directly (no trusted proxy configured)
 # ---------------------------------------------------------------------------
 
 class TestGetClientIp:
-    """T5 + T6: get_client_ip resolves the right IP from request headers."""
+    """T5 + T6: get_client_ip returns peer IP when TRUSTED_PROXY_CIDRS is empty."""
 
-    def _make_request(self, xff=None, real_ip=None, client_host=None):
-        """Build a minimal mock request object."""
-        headers = {}
-        if xff:
-            headers["x-forwarded-for"] = xff
-        if real_ip:
-            headers["x-real-ip"] = real_ip
-
-        class FakeClient:
-            def __init__(self, host):
-                self.host = host
-
-        class FakeRequest:
-            def __init__(self):
-                self.headers = headers
-                self.client = FakeClient(client_host) if client_host else None
-
-        return FakeRequest()
-
-    def test_xff_preferred(self):
+    def test_peer_returned_when_no_trusted_proxies(self, monkeypatch):
+        """T5: With empty TRUSTED_PROXY_CIDRS, XFF is never trusted — peer returned."""
+        _reset_trusted_proxies()
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "")
+        _reset_trusted_proxies()
         from src.web_ui.rate_limit import get_client_ip
 
-        req = self._make_request(
-            xff="203.0.113.1, 10.0.0.1",
-            real_ip="10.0.0.1",
-            client_host="127.0.0.1",
-        )
+        req = _make_fake_request(xff="203.0.113.1", client_host="10.0.0.1")
         result = asyncio.get_event_loop().run_until_complete(get_client_ip(req))
-        assert result == "203.0.113.1", f"Must pick first XFF entry, got {result!r}"
-
-    def test_real_ip_fallback(self):
-        from src.web_ui.rate_limit import get_client_ip
-
-        req = self._make_request(real_ip="10.10.10.10", client_host="127.0.0.1")
-        result = asyncio.get_event_loop().run_until_complete(get_client_ip(req))
-        assert result == "10.10.10.10", (
-            f"Must use X-Real-IP when XFF absent, got {result!r}"
+        assert result == "10.0.0.1", (
+            f"With no trusted proxies, must return peer IP not XFF, got {result!r}"
         )
 
-    def test_client_host_fallback(self):
+    def test_client_host_fallback(self, monkeypatch):
+        """T6: When no XFF and no trusted proxy, returns client.host directly."""
+        _reset_trusted_proxies()
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "")
+        _reset_trusted_proxies()
         from src.web_ui.rate_limit import get_client_ip
 
-        req = self._make_request(client_host="172.16.0.5")
+        req = _make_fake_request(client_host="172.16.0.5")
         result = asyncio.get_event_loop().run_until_complete(get_client_ip(req))
         assert result == "172.16.0.5", (
-            f"Must use client.host as last resort, got {result!r}"
+            f"Must return client.host when no proxy header present, got {result!r}"
         )
 
-    def test_unknown_when_no_ip(self):
+    def test_unknown_when_no_client(self, monkeypatch):
+        """T6: Returns 'unknown' when request.client is None."""
+        _reset_trusted_proxies()
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "")
+        _reset_trusted_proxies()
         from src.web_ui.rate_limit import get_client_ip
 
         class FakeRequest:
@@ -249,3 +262,49 @@ class TestGetClientIp:
 
         result = asyncio.get_event_loop().run_until_complete(get_client_ip(FakeRequest()))
         assert result == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# T7 + T8 + T9: TRUSTED_PROXY_CIDRS XFF guard
+# ---------------------------------------------------------------------------
+
+class TestTrustedProxyCidrs:
+    """T7-T9: get_client_ip only reads XFF when TCP peer is in TRUSTED_PROXY_CIDRS."""
+
+    def test_xff_ignored_when_proxy_not_trusted(self, monkeypatch):
+        """T7: Peer IP NOT in TRUSTED_PROXY_CIDRS → return peer IP (ignore XFF)."""
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8")
+        _reset_trusted_proxies()
+        from src.web_ui.rate_limit import get_client_ip
+
+        # Peer is 203.0.113.5 (public, not in 10.0.0.0/8) — XFF must be ignored.
+        req = _make_fake_request(xff="1.2.3.4", client_host="203.0.113.5")
+        result = asyncio.get_event_loop().run_until_complete(get_client_ip(req))
+        assert result == "203.0.113.5", (
+            f"Peer not in trusted CIDR — must return peer, not XFF; got {result!r}"
+        )
+
+    def test_xff_used_when_proxy_trusted(self, monkeypatch):
+        """T8: Peer IP IS in TRUSTED_PROXY_CIDRS → return first XFF entry."""
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8,127.0.0.1/32")
+        _reset_trusted_proxies()
+        from src.web_ui.rate_limit import get_client_ip
+
+        # Peer is 10.0.0.1 (in 10.0.0.0/8) — XFF first hop is the real client.
+        req = _make_fake_request(xff="203.0.113.42, 10.0.0.1", client_host="10.0.0.1")
+        result = asyncio.get_event_loop().run_until_complete(get_client_ip(req))
+        assert result == "203.0.113.42", (
+            f"Peer in trusted CIDR — must return first XFF entry; got {result!r}"
+        )
+
+    def test_xff_ignored_when_no_trusted_cidrs_configured(self, monkeypatch):
+        """T9: TRUSTED_PROXY_CIDRS unset (default) → XFF always ignored."""
+        monkeypatch.delenv("TRUSTED_PROXY_CIDRS", raising=False)
+        _reset_trusted_proxies()
+        from src.web_ui.rate_limit import get_client_ip
+
+        req = _make_fake_request(xff="1.2.3.4", client_host="192.168.1.1")
+        result = asyncio.get_event_loop().run_until_complete(get_client_ip(req))
+        assert result == "192.168.1.1", (
+            f"No TRUSTED_PROXY_CIDRS — XFF must be ignored; got {result!r}"
+        )

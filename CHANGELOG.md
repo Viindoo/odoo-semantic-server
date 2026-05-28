@@ -4,6 +4,23 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `migrations/m13_008_waitlist_emails.sql` — `waitlist_emails` table (email UNIQUE, plan TEXT with CHECK enum, source TEXT, created_at TIMESTAMPTZ); index `waitlist_emails_created_at_idx` for admin reporting queries. ADR-0039 P1 precursor.
+- `src/web_ui/rate_limit.py` — generic per-IP sliding-window rate limiter (asyncio.Lock; per-IP deques; `_prune_stale` for memory bounds; `TRUSTED_PROXY_CIDRS`-aware `get_client_ip`). Extracted for reuse by public endpoints that have no API key.
+- `src/web_ui/routes/waitlist.py` — `POST /api/waitlist` endpoint: rate-limited (5 req/min per IP), duplicate-email ON CONFLICT DO NOTHING, admin email notify via SMTP, `Retry-After` header on 429. Replaces 3 Formspree/Google-Forms placeholders on the pricing page.
+- `src/web_ui/email.py` — `send_waitlist_notify_email(submitter_email, plan)` helper (logs in dev mode; SMTP in prod).
+- Pricing page (`site/src/pages/pricing.astro`) — self-hosted `/api/waitlist` form replaces 3 Formspree/Google-Forms iframes; handles 200/409/429 client-side with user-visible feedback.
+- `tests/test_rate_limit.py` — 10 unit tests for per-IP sliding-window limiter + `TRUSTED_PROXY_CIDRS` XFF guard (T1–T6 + T7–T9 proxy trust).
+- `tests/test_m13_008_migration.py` — 5 migration tests (table schema, UNIQUE, idempotency, CHECK constraint rejects invalid plan).
+- `tests/test_waitlist_api.py` — 21 integration tests for `POST /api/waitlist` (happy path, duplicate, rate limit, Retry-After, admin notify, invalid payload).
+
+### Fixed
+
+- `src/web_ui/rate_limit.py get_client_ip` — now honours `TRUSTED_PROXY_CIDRS` guard (port from `login_attempts.py` pattern). XFF header is only trusted when TCP peer is in the configured trusted-proxy CIDR list. Default (empty list) → XFF never trusted, preventing IP spoof in bare-metal deployments.
+- `migrations/m13_008_waitlist_emails.sql plan` column — added `CHECK (plan IS NULL OR plan IN ('free', 'pro', 'team'))` to enforce SQL-comment-documented enum at DB layer.
+- `ops/rls_create_osm_reader.sql` — added `GRANT SELECT ON TABLE waitlist_emails TO osm_reader` (defensive: future admin viewer page reads without RLS silent-empty bug).
+
 ## [0.13.0] — 2026-05-28 — M10B P0: Quota gating + plan schema + usage dashboard (PR #200)
 
 ### Added
