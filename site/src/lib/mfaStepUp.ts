@@ -15,9 +15,10 @@
  * `detail.resolve(false)` on Cancel.
  *
  * Only one step-up dialog is open at any time: if a second request arrives
- * while one is already pending, the new request waits for the same Promise
- * (i.e. the modal is not re-opened — the singleton `_pendingResolve` guard
- * prevents it).
+ * while one is already pending, the new request enqueues its resolver onto a
+ * shared waiters array (the modal is not re-opened). When the user verifies or
+ * cancels, ALL queued waiters resolve with the same `ok` — no caller is left
+ * hanging.
  *
  * ## Usage for W5 call sites
  *
@@ -45,8 +46,18 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Substring the backend includes in the 403 `detail` field when the MFA
- * freshness window has expired.  Match against `detail.includes(...)`.
+ * Stable machine-readable discriminator the backend sets in the 403 response
+ * detail (`detail.error`) when the MFA freshness window has expired. This is
+ * the PRIMARY signal — match `data.detail.error === STEP_UP_ERROR_CODE`.
+ *
+ * See `src/web_ui/auth.py::_check_mfa_freshness` (ADR-0043 D5).
+ */
+export const STEP_UP_ERROR_CODE = 'mfa_freshness_required';
+
+/**
+ * Human-readable substring the backend keeps in the 403 detail message for
+ * back-compat. Used only as a FALLBACK when the structured `error` field is
+ * absent (e.g. an older backend or a plain-string detail).
  */
 export const FRESH_MFA_SENTINEL = 'Fresh MFA required';
 
@@ -89,15 +100,38 @@ export async function stepUpVerify(
 // Module-level event bridge (SSR-safe)
 // ---------------------------------------------------------------------------
 
-/** Resolve callback kept by `requestStepUp` until the modal calls it. */
-let _pendingResolve: ((ok: boolean) => void) | null = null;
+/**
+ * Queue of resolvers for callers awaiting the SAME in-flight step-up modal.
+ *
+ * The first caller (array empty → non-empty) dispatches the CustomEvent with a
+ * STABLE drain callback; subsequent concurrent callers merely push their
+ * resolver. When the modal resolves, every queued waiter is settled with the
+ * same `ok` value and the array is cleared, so a later (separate) step-up works.
+ */
+let _waiters: Array<(ok: boolean) => void> = [];
 
 /**
- * Open the MFA step-up modal (or reuse the in-flight one) and await the
+ * Drain ALL queued waiters with `ok`, then clear the queue.
+ *
+ * This is the single, stable callback handed to the modal via the CustomEvent.
+ * It is safe to call exactly once per modal cycle; a defensive snapshot guards
+ * against re-entrancy (a waiter that itself enqueues a new request).
+ */
+function _drainWaiters(ok: boolean): void {
+  const pending = _waiters;
+  _waiters = [];
+  for (const resolve of pending) resolve(ok);
+}
+
+/**
+ * Open the MFA step-up modal (or join the in-flight one) and await the
  * user's decision.
  *
  * Returns `true` if TOTP was verified successfully, `false` if the user
  * cancelled or if the browser is not in a window context (SSR guard).
+ *
+ * Concurrency: multiple near-simultaneous callers coalesce onto a single modal;
+ * all of them resolve with the same result when the user verifies or cancels.
  *
  * Called internally by `withStepUp`.  Exposed for testing and for any
  * advanced W5 call site that needs direct control.
@@ -106,27 +140,18 @@ export function requestStepUp(): Promise<boolean> {
   // SSR guard — this module may be imported in Node context during Astro SSR
   if (typeof window === 'undefined') return Promise.resolve(false);
 
-  // Coalesce concurrent requests onto the same Promise
-  if (_pendingResolve !== null) {
-    return new Promise<boolean>((resolve) => {
-      const originalResolve = _pendingResolve!;
-      _pendingResolve = (ok: boolean) => {
-        originalResolve(ok);
-        resolve(ok);
-      };
-    });
-  }
-
   return new Promise<boolean>((resolve) => {
-    _pendingResolve = (ok: boolean) => {
-      _pendingResolve = null;
-      resolve(ok);
-    };
-    window.dispatchEvent(
-      new CustomEvent('osm:mfa-step-up', {
-        detail: { resolve: _pendingResolve },
-      }),
-    );
+    const wasIdle = _waiters.length === 0;
+    _waiters.push(resolve);
+
+    // Only the FIRST caller (empty → non-empty transition) opens the modal.
+    if (wasIdle) {
+      window.dispatchEvent(
+        new CustomEvent('osm:mfa-step-up', {
+          detail: { resolve: _drainWaiters },
+        }),
+      );
+    }
   });
 }
 
@@ -139,7 +164,8 @@ export function requestStepUp(): Promise<boolean> {
  *
  * Flow:
  *   1. Execute `doFetch()`.
- *   2. If response is 403 and contains `FRESH_MFA_SENTINEL` in `detail`:
+ *   2. If response is 403 and signals fresh-MFA (stable `detail.error ===
+ *      STEP_UP_ERROR_CODE`, with `FRESH_MFA_SENTINEL` substring fallback):
  *      a. Open the step-up modal (fires `osm:mfa-step-up` CustomEvent).
  *      b. If user verifies successfully → retry `doFetch()` once and return.
  *      c. If user cancels → return the ORIGINAL 403 response so the caller's
@@ -156,13 +182,25 @@ export async function withStepUp(
 
   if (res.status !== 403) return res;
 
-  // Inspect body without consuming the original stream
+  // Inspect body without consuming the original stream.
+  //
+  // Detection prefers the stable machine-readable code (`detail.error ===
+  // STEP_UP_ERROR_CODE`); the human-string substring is kept as a fallback for
+  // back-compat with a plain-string detail or an older backend (F5).
   let isFreshMfaRequired = false;
   try {
     const cloned = res.clone();
     const data = await cloned.json() as Record<string, unknown>;
-    const detail = String(data.detail ?? '');
-    isFreshMfaRequired = detail.includes(FRESH_MFA_SENTINEL);
+    const detail = data.detail;
+    if (detail && typeof detail === 'object') {
+      const obj = detail as Record<string, unknown>;
+      isFreshMfaRequired =
+        obj.error === STEP_UP_ERROR_CODE ||
+        String(obj.message ?? '').includes(FRESH_MFA_SENTINEL);
+    } else {
+      // Plain-string detail (back-compat fallback)
+      isFreshMfaRequired = String(detail ?? '').includes(FRESH_MFA_SENTINEL);
+    }
   } catch {
     // Non-JSON 403 — not a step-up gate; fall through
   }

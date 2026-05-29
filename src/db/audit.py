@@ -21,8 +21,11 @@ Canonical actor formats:
   - "anonymous"          No session / unresolvable context
 
 Action taxonomy — see ADR-0021 for full list:
-  user.*         Login, logout, register, reset_password, reset_password_link, delete,
-                 deactivate, reactivate, set_admin, create
+  user.*         Login, login.mfa, logout, register, reset_password, reset_password_link,
+                 delete, deactivate, reactivate, set_admin, create
+                 mfa.stepup — mid-session MFA re-verification (ADR-0043 D2);
+                 distinct from login.mfa so audit queries can separate step-up
+                 from initial MFA login.
   profile.*      Create, update, delete, clone, set_parent, clone_all, assign_tenant
   repo.*         Create, update, delete, clone, assign_tenant
   tenant.*       Create, update, delete, add_member, remove_member  (ADR-0038 — W1 tenant RBAC)

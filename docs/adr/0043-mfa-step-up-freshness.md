@@ -68,14 +68,28 @@ re-verification without a full logout-login cycle.
 | Property | Value |
 |---|---|
 | Method + path | `POST /api/auth/totp/step-up` |
-| Auth | Valid session required (standard `require_admin` dependency) |
-| Body | `{code: string}` — TOTP code **or** backup code |
-| Rate limit | Same counter as `totp_login`: per-user rolling window (ADR-0022 §5) |
-| Success response | `200 {ok: true}` |
-| Failure response | `403 {error: "invalid_mfa_code"}` (rate limit: `429`) |
-| On success | Sets `request.session["mfa_verified_at"] = time.time()` + `UPDATE active_sessions SET mfa_verified_at = NOW()` |
-| Audit | `@audit_action("user.login.mfa")` — reuses the same taxonomy as `totp_login` to keep the audit timeline coherent (re-verify is semantically a second MFA login event) |
-| TOTP enrolled check | If user has no `totp_secrets` row or `enabled=FALSE`, returns `403 {error: "mfa_not_enrolled"}` |
+| Auth | Valid session required (caller already authenticated) |
+| Body | `{code?: string, backup_code?: string}` — exactly one of TOTP code **or** backup code |
+| Rate limit | Same counter as `totp_login`: per-username + per-IP `login_attempts` window |
+| On success | Sets `request.session["mfa_verified_at"] = time.time()` + best-effort `UPDATE active_sessions SET mfa_verified_at = NOW()` |
+| Audit | `@audit_action("user.mfa.stepup")` — a **distinct** action from `totp_login`'s `user.login.mfa`, so audit queries can separate mid-session step-up from initial MFA login |
+
+**Response contract (actual implementation — authoritative):**
+
+The status codes mirror `totp_login` for consistency (bad factor → `401`, malformed
+request → `400`). This supersedes the earlier draft that listed `403 {error:
+"invalid_mfa_code"}` / `403 {error: "mfa_not_enrolled"}`.
+
+| Condition | Status | Body |
+|---|---|---|
+| Success | `200` | `{"ok": true}` |
+| Not authenticated (no session) | `401` | `{"error": "not_authenticated"}` |
+| User row missing | `404` | `{"error": "user_not_found"}` |
+| TOTP not enrolled or `enabled=FALSE` | `400` | `{"error": "totp_not_setup"}` |
+| Rate-limited | `429` | `{"error": "Too many failed login attempts; please wait before retrying"}` |
+| Invalid TOTP code | `401` | `{"error": "invalid_code"}` |
+| Invalid backup code | `401` | `{"error": "invalid_backup_code"}` |
+| Neither `code` nor `backup_code` supplied | `400` | `{"error": "code_or_backup_code_required"}` |
 
 The endpoint is exempt from the fresh-MFA gate itself (it IS the step-up mechanism, not a
 consumer of it).
@@ -86,19 +100,31 @@ Both `require_admin_with_fresh_mfa` (FastAPI dependency) and any inline freshnes
 `tenant_settings.py`) use a single helper:
 
 ```python
+STEP_UP_ERROR_CODE = "mfa_freshness_required"
+
 def _check_mfa_freshness(request: Request) -> None:
-    """Raises HTTPException(403) if MFA timestamp is absent or stale."""
-    if is_test_bypass_active():
-        return
-    ts = request.session.get("mfa_verified_at")
-    if ts is None:
-        raise HTTPException(status_code=403, detail="Fresh MFA required")
+    """Raises HTTPException(403) with a STRUCTURED detail if MFA is absent/stale.
+
+    detail = {"error": "mfa_freshness_required", "message": "Fresh MFA required — ..."}
+    """
     window = get_mfa_freshness()
-    if time.time() - ts > window:
-        raise HTTPException(status_code=403, detail="Fresh MFA required")
+    ts = request.session.get("mfa_verified_at")
+    if ts is None or (time.time() - float(ts)) > window:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": STEP_UP_ERROR_CODE, "message": "Fresh MFA required — ..."},
+        )
 ```
 
-The exact string `"Fresh MFA required"` is the **frontend sentinel** — see D5.
+Note: the test bypass is applied by the *callers* (`require_admin_with_fresh_mfa`,
+`_require_tenant_owner_or_admin_with_mfa`), not inside the helper, so the helper stays a
+pure check. The freshness window is clamped to the catalogue bounds `[60, 3600]` inside
+`get_mfa_freshness()` so a corrupt/zero DB value cannot permanently lock out admin ops.
+
+The 403 detail is a **structured dict**: the frontend keys on the stable
+`detail.error == "mfa_freshness_required"` discriminator (machine-readable, reword-proof),
+while `detail.message` retains the human `"Fresh MFA required"` sentinel for back-compat and
+non-JS clients — see D5.
 
 ### D4 — Freshness window is runtime-configurable via `app_settings` (ADR-0042)
 
@@ -123,10 +149,14 @@ This raises the Tier-1 settings count from 15 to **16** (see ADR-0042 §Phase 1 
 
 ### D5 — Frontend: sentinel-detect → StepUpMfaModal → retry-once
 
-When a fetch call receives `403` with body `{"detail": "Fresh MFA required"}`, the frontend
-intercepts before surfacing an error to the user:
+When a fetch call receives `403` with body `{"detail": {"error": "mfa_freshness_required",
+"message": "Fresh MFA required — ..."}}`, the frontend intercepts before surfacing an error
+to the user:
 
-1. `withStepUp(action)` wrapper detects the sentinel in the response body.
+1. `withStepUp(action)` wrapper detects the gate via the stable
+   `detail.error === "mfa_freshness_required"` code (primary), falling back to a
+   `"Fresh MFA required"` substring match on `detail.message`/a plain-string detail for
+   back-compat (`STEP_UP_ERROR_CODE` / `FRESH_MFA_SENTINEL` in `site/src/lib/mfaStepUp.ts`).
 2. A `StepUpMfaModal` React island renders: "Re-enter your TOTP code to continue."
 3. On successful step-up (200 from `POST /api/auth/totp/step-up`), the wrapper retries
    the original action **once**.
@@ -147,6 +177,14 @@ The complete write contract for `mfa_verified_at` is:
 No other code path writes this key. Future MFA methods (e.g., WebAuthn) MUST also write both
 before being admitted to a fresh-MFA gate.
 
+**Authoritative source for the gate (F6):** the fresh-MFA gate (`_check_mfa_freshness`) reads
+ONLY the cookie session `mfa_verified_at`. The `active_sessions.mfa_verified_at` DB column is
+written now (best-effort, non-fatal on failure) but is **reserved for future server-side
+freshness checks / cross-device session inspection** — it is not consulted by the current gate.
+The cookie session is the single authoritative source today. Keeping the DB write in place means
+no migration is needed when a server-side check is added; if the best-effort write fails it is
+logged at WARNING and does not affect the request.
+
 ---
 
 ## Consequences
@@ -155,7 +193,8 @@ before being admitted to a fresh-MFA gate.
 
 - All admin routes gated by `require_admin_with_fresh_mfa` are now reachable (bug fixed).
 - The freshness window is operator-tunable (60–3600s) without redeploy via admin settings.
-- Audit log correctly records MFA re-verification events under `user.login.mfa` taxonomy.
+- Audit log records MFA re-verification under a distinct `user.mfa.stepup` action, so audit
+  queries can separate mid-session step-up from initial MFA login (`user.login.mfa`).
 - Frontend step-up UX eliminates forced logout-login for mid-session freshness expiry.
 - Shared `_check_mfa_freshness()` helper removes the duplicated inline gate in `tenant_settings.py`.
 
@@ -184,6 +223,6 @@ before being admitted to a fresh-MFA gate.
 |---|---|
 | ADR-0011 | Session auth base — `session_at` TTL, cookie policy |
 | ADR-0019 | Introduced `require_admin_with_fresh_mfa`; implied but did not specify the write path |
-| ADR-0021 | Audit log decorator reused for step-up event |
+| ADR-0021 | Audit log decorator reused for step-up event (distinct `user.mfa.stepup` action) |
 | ADR-0022 | MFA TOTP enrollment + login; this ADR extends it with the `mfa_verified_at` write contract |
 | ADR-0042 | Admin settings; `auth.mfa_freshness_seconds` added as 16th Tier-1 setting |

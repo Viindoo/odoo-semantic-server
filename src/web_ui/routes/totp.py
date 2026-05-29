@@ -246,6 +246,62 @@ def _update_session_mfa_verified_at(session_id: str) -> None:
         logger.warning("_update_session_mfa_verified_at failed (non-fatal): %s", exc)
 
 
+def _decode_backup_codes(row: dict) -> list[dict]:
+    """Return the ``backup_codes_hash`` from a totp_secrets row as a list.
+
+    The JSONB column may surface as either a native list (psycopg auto-decode)
+    or a raw JSON string depending on the driver/column adapter; normalise both
+    to a list of ``{hash, used_at}`` dicts.
+    """
+    import json
+
+    stored = row["backup_codes_hash"]
+    if isinstance(stored, str):
+        return json.loads(stored)
+    return stored
+
+
+def _verify_totp_or_backup(
+    user_id: int,
+    row: dict,
+    code: str | None,
+    backup_code: str | None,
+) -> tuple[bool, str | None]:
+    """Verify a TOTP code OR a one-time backup code against a totp_secrets row.
+
+    Shared by ``totp_login`` and ``totp_step_up`` so the verify/branch logic
+    lives in exactly one place.
+
+    Behaviour:
+      * ``code`` set      → verify TOTP (±window). Returns (False, "invalid_code")
+        on mismatch.
+      * ``backup_code``   → match an unused backup code; on success the consumed
+        code's ``used_at`` is persisted via ``_update_backup_codes``. Returns
+        (False, "invalid_backup_code") on mismatch.
+      * neither set       → (False, "code_or_backup_code_required").
+
+    Returns ``(valid, error_key)`` — ``error_key`` is ``None`` on success.
+    The caller owns rate-limit accounting and the success side effects
+    (session/DB freshness writes); this helper only verifies + consumes.
+    """
+    if code is not None:
+        secret = _decrypt_secret(row["secret_encrypted"])
+        valid = pyotp.TOTP(secret).verify(code.strip(), valid_window=TOTP_VALID_WINDOW)
+        if not valid:
+            return False, "invalid_code"
+        return True, None
+
+    if backup_code is not None:
+        stored = _decode_backup_codes(row)
+        valid, updated = _check_backup_code(backup_code, stored)
+        if not valid:
+            return False, "invalid_backup_code"
+        _update_backup_codes(user_id, updated)
+        return True, None
+
+    return False, "code_or_backup_code_required"
+
+
 def _check_backup_code(code: str, stored: list[dict]) -> tuple[bool, list[dict]]:
     """Check if a backup code is valid (unused + HMAC matches).
 
@@ -455,7 +511,7 @@ async def totp_status(request: Request):
 
 
 @router.post("/step-up")
-@audit_action("user.login.mfa")
+@audit_action("user.mfa.stepup")
 async def totp_step_up(body: StepUpBody, request: Request):
     """Re-verify MFA for an already-authenticated session (step-up gate).
 
@@ -507,33 +563,20 @@ async def totp_step_up(body: StepUpBody, request: Request):
             status_code=429,
         )
 
-    # Verify code or backup_code
-    if body.code is not None:
-        secret = _decrypt_secret(row["secret_encrypted"])
-        valid = pyotp.TOTP(secret).verify(body.code.strip(), valid_window=TOTP_VALID_WINDOW)
-        if not valid:
-            record_login_attempt(
-                identifier=username, success=False,
-                ip_address=client_ip, user_agent=user_agent,
-            )
-            return JSONResponse(_json_safe({"error": "invalid_code"}), status_code=401)
-    elif body.backup_code is not None:
-        stored = row["backup_codes_hash"]
-        if isinstance(stored, str):
-            import json as _json
-            stored = _json.loads(stored)
-        valid, updated = _check_backup_code(body.backup_code, stored)
-        if not valid:
-            record_login_attempt(
-                identifier=username, success=False,
-                ip_address=client_ip, user_agent=user_agent,
-            )
-            return JSONResponse(_json_safe({"error": "invalid_backup_code"}), status_code=401)
-        _update_backup_codes(user_id, updated)
-    else:
-        return JSONResponse(
-            _json_safe({"error": "code_or_backup_code_required"}), status_code=400
+    # Verify code or backup_code (shared logic with totp_login)
+    valid, error_key = _verify_totp_or_backup(
+        user_id, row, body.code, body.backup_code
+    )
+    if not valid:
+        if error_key == "code_or_backup_code_required":
+            # Malformed request (neither factor supplied) — not a failed attempt.
+            return JSONResponse(_json_safe({"error": error_key}), status_code=400)
+        # Bad TOTP / backup code → record a failed attempt for rate-limiting.
+        record_login_attempt(
+            identifier=username, success=False,
+            ip_address=client_ip, user_agent=user_agent,
         )
+        return JSONResponse(_json_safe({"error": error_key}), status_code=401)
 
     # Success — record attempt, establish freshness
     record_login_attempt(
@@ -603,23 +646,13 @@ async def totp_login(body: MfaLoginBody, request: Request):
     if row is None or not row["enabled"]:
         return JSONResponse(_json_safe({"error": "totp_not_enabled"}), status_code=400)
 
-    secret = _decrypt_secret(row["secret_encrypted"])
-    totp = pyotp.TOTP(secret)
-
-    if body.code is not None:
-        if not totp.verify(body.code.strip(), valid_window=TOTP_VALID_WINDOW):
-            return JSONResponse(_json_safe({"error": "invalid_code"}), status_code=401)
-    elif body.backup_code is not None:
-        stored = row["backup_codes_hash"]
-        if isinstance(stored, str):
-            import json
-            stored = json.loads(stored)
-        valid, updated = _check_backup_code(body.backup_code, stored)
-        if not valid:
-            return JSONResponse(_json_safe({"error": "invalid_backup_code"}), status_code=401)
-        _update_backup_codes(user_id, updated)
-    else:
-        return JSONResponse(_json_safe({"error": "code_or_backup_code_required"}), status_code=400)
+    # Verify TOTP code or backup code (shared logic with totp_step_up)
+    valid, error_key = _verify_totp_or_backup(
+        user_id, row, body.code, body.backup_code
+    )
+    if not valid:
+        status = 400 if error_key == "code_or_backup_code_required" else 401
+        return JSONResponse(_json_safe({"error": error_key}), status_code=status)
 
     # Promote to full session — F7: create active_sessions row so server-side
     # revoke (revoke_all_sessions / deactivate) can kick this session immediately.

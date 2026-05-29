@@ -67,14 +67,22 @@ def get_mfa_freshness() -> int:
       3. This module-level :data:`MFA_FRESHNESS_SECONDS` (fallback guard for
          very early bootstrap or catalogue not yet loaded).
 
+    The resolved value is defensively clamped to the catalogue bounds
+    [60, 3600] (see ``settings_registry.py``). This prevents a bad/zero DB
+    value from bricking every fresh-MFA-gated admin op — a window of 0 would
+    make EVERY step-up instantly stale, an unrecoverable lockout.
+
     Import is intentionally lazy to avoid a circular import between
     ``src.web_ui.auth`` and ``src.settings`` at module-load time.
     """
     try:
         from src.settings import get_setting
-        return int(get_setting("auth.mfa_freshness_seconds"))
+        value = int(get_setting("auth.mfa_freshness_seconds"))
     except Exception:
-        return MFA_FRESHNESS_SECONDS
+        value = MFA_FRESHNESS_SECONDS
+    # Clamp to catalogue bounds (mirrors settings_registry min=60 / max=3600)
+    # so a corrupt or zero value cannot permanently lock out admin ops.
+    return max(60, min(3600, value))
 
 
 def get_session_ttl() -> int:
@@ -245,11 +253,32 @@ async def require_admin(request: Request) -> int:
     return user_id
 
 
+# Stable machine-readable discriminator the frontend keys on to trigger the
+# step-up modal (ADR-0043 D5). The human ``message`` retains the
+# "Fresh MFA required" sentinel for back-compat / non-JS clients.
+STEP_UP_ERROR_CODE = "mfa_freshness_required"
+
+
+def _fresh_mfa_error(message: str) -> HTTPException:
+    """Build the 403 step-up gate exception with a structured detail.
+
+    The detail is a dict ``{"error": STEP_UP_ERROR_CODE, "message": ...}`` so
+    the frontend can key on the stable ``error`` field while ``message`` keeps
+    the human-readable "Fresh MFA required" sentinel for back-compat (ADR-0043 D5).
+    """
+    return HTTPException(
+        status_code=403,
+        detail={"error": STEP_UP_ERROR_CODE, "message": message},
+    )
+
+
 def _check_mfa_freshness(request: Request) -> None:
     """Verify MFA was completed within the configured freshness window.
 
-    Raises HTTPException 403 with sentinel detail strings if the check fails
-    (frontend matches the "Fresh MFA required" prefix).
+    Raises HTTPException 403 with a structured detail dict if the check fails:
+    ``{"error": "mfa_freshness_required", "message": "Fresh MFA required — ..."}``.
+    The frontend keys on ``detail.error``; the message retains the
+    "Fresh MFA required" sentinel for back-compat (ADR-0043 D5).
 
     Does NOT bypass for test mode — callers (require_admin_with_fresh_mfa,
     _require_tenant_owner_or_admin_with_mfa) must gate this call with
@@ -258,24 +287,16 @@ def _check_mfa_freshness(request: Request) -> None:
     window = get_mfa_freshness()
     mfa_verified_at = request.session.get("mfa_verified_at")
     if mfa_verified_at is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Fresh MFA required — MFA not enrolled or not recently verified",
+        raise _fresh_mfa_error(
+            "Fresh MFA required — MFA not enrolled or not recently verified"
         )
     try:
         age = time.time() - float(mfa_verified_at)
     except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=403,
-            detail="Fresh MFA required — invalid MFA timestamp",
-        )
+        raise _fresh_mfa_error("Fresh MFA required — invalid MFA timestamp")
     if age < 0 or age > window:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Fresh MFA required — re-verify within last "
-                f"{window // 60} minutes"
-            ),
+        raise _fresh_mfa_error(
+            f"Fresh MFA required — re-verify within last {window // 60} minutes"
         )
 
 

@@ -303,43 +303,72 @@ describe('requestStepUp', () => {
     globalThis.window = origWindow;
   });
 
-  it('dispatches exactly one osm:mfa-step-up event even with two concurrent calls', async () => {
-    // This test verifies the singleton guard: a second requestStepUp() call
-    // while one is already pending must NOT dispatch a second event.
-    // It does NOT verify that both promises resolve (that requires calling
-    // the module-internal _pendingResolve chain, which is not exported).
-    // The full end-to-end resolve flow is covered by withStepUp tests above.
+  it('dispatches exactly one event and resolves BOTH concurrent callers (waiters array)', async () => {
+    // Regression for F1: two concurrent requestStepUp() calls coalesce onto a
+    // single modal. The waiters-array design must drain ALL queued callers when
+    // the modal resolves — neither promise may hang forever.
     const { requestStepUp } = await import('../mfaStepUp');
 
     let eventCount = 0;
-    let firstResolve: ((ok: boolean) => void) | null = null;
+    let drain: ((ok: boolean) => void) | null = null;
 
     window.addEventListener('osm:mfa-step-up', (e) => {
       eventCount++;
       const evt = e as CustomEvent<{ resolve: (ok: boolean) => void }>;
-      // Capture the resolve from the FIRST (and only expected) event.
-      // NOTE: after p2 runs, the module's _pendingResolve is overwritten to a
-      // chain function; calling firstResolve here only settles p1, not p2.
-      // We deliberately don't await p2 to avoid hanging the test.
-      firstResolve = evt.detail.resolve;
+      drain = evt.detail.resolve;
     });
 
     const p1 = requestStepUp();
-    const p2 = requestStepUp(); // should coalesce, not fire a new event
+    const p2 = requestStepUp(); // coalesces — must NOT fire a second event
 
-    // Invariant: only ONE event dispatched regardless of how many concurrent calls
+    // Invariant: exactly one modal opened regardless of concurrent call count.
     expect(eventCount).toBe(1);
-    expect(firstResolve).not.toBeNull();
+    expect(drain).not.toBeNull();
 
-    // Settle p1 so the test does not leak a pending promise.
-    // p2 stays pending (its resolve chain requires calling the module-internal
-    // _pendingResolve which was overwritten after p2 registered). This is an
-    // acceptable limitation of unit-testing a non-exported module singleton.
-    firstResolve!(true);
-    const r1 = await p1;
+    // User verifies once → both queued callers resolve with the same value.
+    drain!(true);
+    const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1).toBe(true);
+    expect(r2).toBe(true);
+  });
 
-    // Discard p2 reference (it will be GC'd; resetModules clears module state)
-    void p2;
+  it('all coalesced callers resolve false when the user cancels', async () => {
+    const { requestStepUp } = await import('../mfaStepUp');
+
+    let drain: ((ok: boolean) => void) | null = null;
+    window.addEventListener('osm:mfa-step-up', (e) => {
+      drain = (e as CustomEvent<{ resolve: (ok: boolean) => void }>).detail.resolve;
+    }, { once: true });
+
+    const p1 = requestStepUp();
+    const p2 = requestStepUp();
+
+    drain!(false);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toBe(false);
+    expect(r2).toBe(false);
+  });
+
+  it('a later, separate step-up works after the queue drains', async () => {
+    // After draining, the waiters array must be reset so a fresh step-up opens
+    // a new modal (dispatches a new event) rather than being silently swallowed.
+    const { requestStepUp } = await import('../mfaStepUp');
+
+    const resolves: Array<(ok: boolean) => void> = [];
+    let eventCount = 0;
+    window.addEventListener('osm:mfa-step-up', (e) => {
+      eventCount++;
+      resolves.push((e as CustomEvent<{ resolve: (ok: boolean) => void }>).detail.resolve);
+    });
+
+    const first = requestStepUp();
+    resolves[0](true);
+    expect(await first).toBe(true);
+    expect(eventCount).toBe(1);
+
+    const second = requestStepUp();
+    expect(eventCount).toBe(2); // a brand-new modal opened
+    resolves[1](false);
+    expect(await second).toBe(false);
   });
 });

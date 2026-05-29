@@ -42,8 +42,14 @@ function mapError(errorCode: string | undefined, fallback: string): string {
   switch (errorCode) {
     case 'invalid_code':
       return 'Invalid code. Check your authenticator app and try again.';
+    case 'invalid_backup_code':
+      return 'Invalid backup code. Please try again.';
+    case 'code_or_backup_code_required':
+      return 'Enter a 6-digit code or a backup code to continue.';
     case 'totp_not_setup':
       return 'Two-factor authentication is not set up on your account. Please enrol at Admin → Security → Two-Factor Authentication.';
+    case 'not_authenticated':
+      return 'Your session has expired. Please sign in again.';
     case 'code_expired':
       return 'Code has expired. Please wait for the next 30-second window and try again.';
     case 'already_used':

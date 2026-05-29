@@ -986,9 +986,14 @@ async def test_freshness_expiry_returns_403():
     assert gated_resp.status_code == 403, (
         f"Expected 403 for stale MFA, got {gated_resp.status_code}: {gated_resp.text}"
     )
+    # Detail is now a structured dict: {"error": ..., "message": ...} (ADR-0043 D5).
     detail = gated_resp.json().get("detail", "")
-    assert "mfa" in detail.lower() or "fresh" in detail.lower(), (
-        f"403 detail must mention MFA/fresh, got: {detail!r}"
+    assert isinstance(detail, dict), f"403 detail must be a structured dict, got: {detail!r}"
+    assert detail.get("error") == "mfa_freshness_required", (
+        f"403 detail.error must be the stable step-up code, got: {detail!r}"
+    )
+    assert "fresh mfa required" in detail.get("message", "").lower(), (
+        f"403 detail.message must retain the sentinel, got: {detail!r}"
     )
 
 
