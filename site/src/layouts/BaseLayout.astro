@@ -18,6 +18,9 @@ const {
   showFooter = true,
 } = Astro.props;
 const isDark = theme === 'dark';
+// Absolute URL for social-card image (OG/Twitter need absolute). Prefer the
+// configured Astro.site so self-hosted deploys emit their own origin.
+const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.viindoo.com').href;
 ---
 
 <!doctype html>
@@ -34,9 +37,9 @@ const isDark = theme === 'dark';
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content="https://odoo-semantic.viindoo.com/og-image.png" />
+    <meta property="og:image" content={ogImage} />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="https://odoo-semantic.viindoo.com/og-image.png" />
+    <meta name="twitter:image" content={ogImage} />
     <title>{title}</title>
     <slot name="head" />
   </head>

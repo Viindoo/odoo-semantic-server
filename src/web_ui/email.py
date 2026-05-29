@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Brand constants
 # ---------------------------------------------------------------------------
+# SSOT for brand colours is site/tailwind.config.mjs (viindoo.*) — kept in sync
+# here because email HTML cannot read the Tailwind theme. Update both on a
+# brand refresh.
 _BRAND_CYAN = "#00BBCE"
 _BRAND_DARK = "#07131A"
 _BRAND_TEXT = "#282F33"
@@ -83,6 +86,12 @@ def _logo_url_for(base_url: str | None) -> str:
     """
     if base_url:
         return f"{base_url.rstrip('/')}/logo-email.png"
+    # Emails without a request origin (e.g. admin waitlist notify) still honour
+    # a deployment-wide PUBLIC_BASE_URL so self-hosted instances don't hot-link
+    # the canonical production asset; fall back to it only as a last resort.
+    env_base = os.getenv("PUBLIC_BASE_URL")
+    if env_base:
+        return f"{env_base.rstrip('/')}/logo-email.png"
     return _LOGO_URL
 
 
@@ -100,7 +109,7 @@ def _email_header_html(logo_url: str, home_url: str) -> str:
         '<td align="center" style="padding:20px 24px;">'
         f'<a href="{home_url}" style="text-decoration:none;">'
         f'<img src="{logo_url}" alt="Viindoo" height="40"'
-        ' style="display:block;border:0;outline:none;">'
+        ' style="display:block;border:0;outline:none;" />'
         "</a>"
         "</td>"
         "</tr>"
@@ -187,8 +196,9 @@ def _cta_button_html(href: str, label: str) -> str:
 
     Args:
         href:  The pre-escaped URL string.
-        label: Button label text (plain string, will be inserted as-is).
+        label: Button label text (HTML-escaped here defensively).
     """
+    safe_label = escape(label)
     return (
         '<table cellpadding="0" cellspacing="0" border="0"'
         ' style="margin:24px 0;">'
@@ -199,7 +209,7 @@ def _cta_button_html(href: str, label: str) -> str:
         ' style="display:inline-block;padding:12px 28px;'
         f"color:#FFFFFF;font-family:{_FONT_STACK};font-size:15px;"
         'font-weight:600;text-decoration:none;border-radius:6px;">'
-        f"{label}"
+        f"{safe_label}"
         "</a>"
         "</td>"
         "</tr>"

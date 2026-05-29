@@ -4,6 +4,9 @@ import tailwind from '@astrojs/tailwind';
 import node from '@astrojs/node';
 
 export default defineConfig({
+  // Canonical public origin — powers Astro.site for absolute OG/Twitter image
+  // URLs. Override per-deploy when self-hosting under a different domain.
+  site: 'https://odoo-semantic.viindoo.com',
   // output: 'server' enables SSR with per-page opt-out via export const prerender = true
   // ('hybrid' was merged into 'server' in Astro 5.x)
   output: 'server',
