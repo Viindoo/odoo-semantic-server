@@ -107,7 +107,7 @@ const overriddenCount = settings.filter((s) => s.effective_source === 'tenant_ov
       <div>
         <div class="flex items-center gap-3">
           <h1 class="text-2xl font-bold text-gray-900 font-display">Tenant Settings</h1>
-          <span class="text-xs bg-viindoo-primary/10 text-viindoo-primary-deep border border-viindoo-primary/20 px-2 py-0.5 rounded-full font-medium">
+          <span class="text-xs bg-viindoo-primary/10 text-gray-700 border border-viindoo-primary/20 px-2 py-0.5 rounded-full font-medium">
             quota overrides
           </span>
         </div>
@@ -135,7 +135,7 @@ const overriddenCount = settings.filter((s) => s.effective_source === 'tenant_ov
         <label class="block text-sm font-medium text-gray-700 mb-1">Active tenant</label>
         <select
           id="tenant-selector"
-          class="block w-full max-w-sm border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary bg-white"
+          class="block w-full max-w-sm border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white"
         >
           {adminTenants.map((t) => (
             <option value={t.tenant_id} selected={t.tenant_id === activeTenantId}>

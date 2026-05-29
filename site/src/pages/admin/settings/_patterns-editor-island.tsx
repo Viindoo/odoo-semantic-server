@@ -177,7 +177,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   {pattern.snippet_text.length > 200 && (
                     <button
                       onClick={() => setShowFullSnippet(!showFullSnippet)}
-                      className="text-xs text-viindoo-primary hover:underline"
+                      className="text-xs text-viindoo-primary-text hover:underline"
                     >
                       {showFullSnippet ? 'Collapse' : 'Expand all'}
                     </button>
@@ -207,7 +207,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   <>
                     <button
                       onClick={() => setEditing(true)}
-                      className="px-4 py-2 text-sm rounded-lg bg-viindoo-primary text-white font-medium hover:opacity-90"
+                      className="px-4 py-2 text-sm rounded-lg bg-viindoo-primary text-viindoo-bg-0 font-medium hover:opacity-90"
                     >
                       Edit
                     </button>
@@ -230,7 +230,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   <select
                     value={language}
                     onChange={(e) => setLanguage(e.target.value as Language)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary bg-white"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white"
                   >
                     <option value="python">Python</option>
                     <option value="xml">XML</option>
@@ -243,7 +243,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                     type="text"
                     value={fileRef}
                     onChange={(e) => setFileRef(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                   />
                 </div>
               </div>
@@ -255,7 +255,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                     type="text"
                     value={versionMin}
                     onChange={(e) => setVersionMin(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                   />
                 </div>
                 <div>
@@ -265,7 +265,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                     value={versionMax}
                     onChange={(e) => setVersionMax(e.target.value)}
                     placeholder="e.g. 17.0"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                   />
                 </div>
               </div>
@@ -276,7 +276,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   type="text"
                   value={keywords}
                   onChange={(e) => setKeywords(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                 />
               </div>
 
@@ -286,7 +286,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   value={snippet}
                   onChange={(e) => setSnippet(e.target.value)}
                   rows={12}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                 />
               </div>
 
@@ -300,7 +300,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   onChange={(e) => setReason(e.target.value)}
                   placeholder="Why is this pattern being updated?"
                   required
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                 />
               </div>
 
@@ -314,7 +314,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                 <button type="button" onClick={() => setEditing(false)} className="flex-1 py-2 rounded-xl border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">
                   Cancel
                 </button>
-                <button type="submit" disabled={saving} className="flex-1 py-2 rounded-xl bg-viindoo-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                <button type="submit" disabled={saving} className="flex-1 py-2 rounded-xl bg-viindoo-primary text-viindoo-bg-0 text-sm font-medium hover:opacity-90 disabled:opacity-50">
                   {saving ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
@@ -395,12 +395,12 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
               <label className="block text-xs font-medium text-gray-600 mb-1">Pattern ID <span className="text-red-500">*</span></label>
               <input type="text" value={patternId} onChange={(e) => setPatternId(e.target.value)} required
                 placeholder="e.g. sale-order-confirm"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Language <span className="text-red-500">*</span></label>
               <select value={language} onChange={(e) => setLanguage(e.target.value as Language)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary bg-white">
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white">
                 <option value="python">Python</option>
                 <option value="xml">XML</option>
                 <option value="js">JS</option>
@@ -412,20 +412,20 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
             <label className="block text-xs font-medium text-gray-600 mb-1">File Ref <span className="text-red-500">*</span></label>
             <input type="text" value={fileRef} onChange={(e) => setFileRef(e.target.value)} required
               placeholder="e.g. addons/sale/models/sale_order.py"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Version Min <span className="text-red-500">*</span></label>
               <input type="text" value={versionMin} onChange={(e) => setVersionMin(e.target.value)} required
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Version Max</label>
               <input type="text" value={versionMax} onChange={(e) => setVersionMax(e.target.value)}
                 placeholder="blank = latest"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
             </div>
           </div>
 
@@ -433,26 +433,26 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
             <label className="block text-xs font-medium text-gray-600 mb-1">Keywords <span className="text-gray-400">(comma-separated)</span></label>
             <input type="text" value={keywords} onChange={(e) => setKeywords(e.target.value)}
               placeholder="e.g. sale, confirm, workflow"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
           </div>
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Snippet <span className="text-red-500">*</span></label>
             <textarea value={snippet} onChange={(e) => setSnippet(e.target.value)} required rows={8}
               placeholder="Paste the code snippet here..."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
           </div>
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Reason <span className="text-red-500">*</span></label>
             <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} required
               placeholder="Why is this pattern being added?"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep" />
           </div>
 
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="flex-1 py-2 rounded-xl border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">Cancel</button>
-            <button type="submit" disabled={saving} className="flex-1 py-2 rounded-xl bg-viindoo-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+            <button type="submit" disabled={saving} className="flex-1 py-2 rounded-xl bg-viindoo-primary text-viindoo-bg-0 text-sm font-medium hover:opacity-90 disabled:opacity-50">
               {saving ? 'Creating...' : 'Create Pattern'}
             </button>
           </div>
@@ -535,7 +535,7 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
             setOffset(0);
             load({ lang: val, offset: 0 });
           }}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary bg-white"
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white"
         >
           <option value="">All languages</option>
           <option value="python">Python</option>
@@ -565,7 +565,7 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
 
         <button
           onClick={() => setShowAdd(true)}
-          className="px-4 py-2 text-sm rounded-lg bg-viindoo-primary text-white font-medium hover:opacity-90"
+          className="px-4 py-2 text-sm rounded-lg bg-viindoo-primary text-viindoo-bg-0 font-medium hover:opacity-90"
         >
           + Add Pattern
         </button>
@@ -633,7 +633,7 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
                     <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => setSelectedPattern(p)}
-                        className="text-xs px-3 py-1 rounded-lg bg-viindoo-primary text-white font-medium hover:opacity-90"
+                        className="text-xs px-3 py-1 rounded-lg bg-viindoo-primary text-viindoo-bg-0 font-medium hover:opacity-90"
                       >
                         View
                       </button>

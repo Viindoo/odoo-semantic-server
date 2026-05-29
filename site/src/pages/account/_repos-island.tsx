@@ -160,7 +160,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
             <span
               key={t.tenant_id}
               data-testid="tenant-badge"
-              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-viindoo-primary/10 text-viindoo-primary border border-viindoo-primary/30"
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-viindoo-primary/10 text-gray-700 border border-viindoo-primary/30"
             >
               🏢 {t.name}
               <span className="opacity-60">({t.role})</span>
@@ -176,7 +176,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
           <button
             type="button"
             onClick={() => setShowAddForm(v => !v)}
-            className="text-sm text-viindoo-primary hover:underline"
+            className="text-sm text-viindoo-primary-text hover:underline"
           >
             {showAddForm ? 'Cancel' : '+ Add'}
           </button>
@@ -198,7 +198,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
                   value={addProfile}
                   onChange={e => setAddProfile(e.target.value)}
                   required
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                 >
                   <option value="">Select profile…</option>
                   {writableProfiles.map(p => (
@@ -219,7 +219,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
                   onChange={e => setAddUrl(e.target.value)}
                   placeholder="https://github.com/org/repo.git"
                   required
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                 />
                 {addUrl.trim().startsWith('git@') && (
                   <p data-testid="ssh-onboarding-hint" className="mt-1.5 text-xs text-gray-500 leading-relaxed">
@@ -242,7 +242,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
                     onChange={e => setAddBranch(e.target.value)}
                     placeholder="17.0"
                     required
-                    className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                    className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
                   />
                   <button
                     type="submit"

@@ -146,7 +146,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           type="text"
           placeholder="/srv/odoo/17.0"
           data-testid="ops-index-core-source-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           required
         />
       </div>
@@ -155,7 +155,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
         <select
           name="version"
           data-testid="ops-index-core-version-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           required
         >
           {odooVersions.length === 0 ? (
@@ -174,7 +174,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           type="text"
           placeholder="/path/to/static-data"
           data-testid="ops-index-core-static-dir-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
         />
       </div>
       <div class="sm:col-span-2 lg:col-span-3 flex justify-start">
@@ -204,7 +204,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
         <select
           name="version"
           data-testid="ops-seed-patterns-version-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
         >
           <option value="">— all versions —</option>
           {odooVersions.map((v) => (
@@ -219,7 +219,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           type="text"
           placeholder="/path/to/patterns.json"
           data-testid="ops-seed-patterns-file-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
         />
       </div>
       <div class="flex items-end gap-3">
@@ -236,7 +236,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
         <button
           type="submit"
           data-testid="seed-patterns-button"
-          class="bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+          class="bg-green-700 hover:bg-green-800 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
         >
           Seed Patterns
         </button>
@@ -259,7 +259,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
         <select
           name="name"
           data-testid="ops-preset-name-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           required
         >
           <option value="">— select preset —</option>
@@ -273,7 +273,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           type="text"
           placeholder="/srv/odoo"
           data-testid="ops-preset-repo-base-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
         />
       </div>
       <div class="sm:col-span-2 flex items-center gap-3">
@@ -284,7 +284,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
         <button
           type="submit"
           data-testid="apply-preset-button"
-          class="bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+          class="bg-amber-500 hover:bg-amber-600 text-gray-900 text-sm font-medium px-5 py-2 rounded-lg transition-colors"
         >
           Apply Preset
         </button>
@@ -348,7 +348,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           type="text"
           placeholder="Leave blank for auto-timestamped path"
           data-testid="ops-backup-output-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
         />
       </div>
       <div>
@@ -358,7 +358,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           type="text"
           placeholder="e.g. BUNDLE_PASSPHRASE"
           data-testid="ops-backup-passphrase-env-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
         />
       </div>
       <div class="sm:col-span-2 flex justify-start">
@@ -382,7 +382,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
         data-testid="backup-log"
         class="bg-gray-900 text-green-400 rounded-lg p-3 text-xs font-mono overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap"
       ></pre>
-      <p data-testid="backup-download-link" hidden class="mt-2 text-sm text-viindoo-primary font-medium"></p>
+      <p data-testid="backup-download-link" hidden class="mt-2 text-sm text-viindoo-primary-text font-medium"></p>
     </div>
   </div>
 
