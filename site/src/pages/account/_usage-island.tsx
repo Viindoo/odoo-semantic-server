@@ -261,7 +261,7 @@ export default function UsageDashboard() {
                   <span className="text-xs text-gray-500 w-20 text-right shrink-0">
                     {h.used.toLocaleString()}
                     {isCurrentPeriod && (
-                      <span className="ml-1 text-viindoo-primary font-semibold">·</span>
+                      <span className="ml-1 text-viindoo-primary-text font-semibold">·</span>
                     )}
                   </span>
                 </div>

@@ -120,7 +120,7 @@ function NumberWidget({
         step={isFloat ? 0.1 : 1}
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}
-        className="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep font-mono"
+        className="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep font-mono"
       />
       {min !== undefined && max !== undefined && (
         <span className="text-xs text-gray-400 whitespace-nowrap">
@@ -240,7 +240,7 @@ function TextWidget({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+        className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
       />
       {regexHint && (
         <span className="text-xs text-gray-400 font-mono">Pattern: {regexHint}</span>
@@ -548,7 +548,7 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
               }
             }}
             rows={3}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           />
         );
     }
