@@ -4,6 +4,31 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — UI contrast / accessibility: light-first theme inversion (fix/ui-contrast-light-first)
+
+- **Root cause (systemic):** `site/src/styles/global.css` set `html { color: #E6F2F4; background: #07131A }`
+  as the site-wide default — light text on dark. But ~27 app pages (admin/account/tenant/auth) are
+  LIGHT surfaces, and Tailwind Preflight forces `input/select/textarea { color: inherit }`, so every
+  form control inherited #E6F2F4 on a white background = **1.14:1 (invisible)**. Native `<select>`
+  closed values were invisible until OS hover-highlight. **0/97 inputs** set an explicit text colour.
+- **Theme inversion:** `html` now defaults to LIGHT (`color: var(--viindoo-dark)`, `background: #fff`);
+  dark is opt-in via `html.theme-dark`, applied by a new `theme` prop on `BaseLayout` (default `light`).
+  The 4 marketing pages (`index`, `pricing`, `benchmarks`, `bootstrap`) pass `theme="dark"`. Footer is
+  theme-aware.
+- **A11y tokens (verified WCAG):** added `--viindoo-primary-text` `#00747F` (5.52:1 on white) for cyan
+  used as link/body text on light surfaces; bumped `--viindoo-on-dark-dim` `#5A7782 → #7E9BA6`
+  (6.38:1 on `bg-0`). Mirrored in `tailwind.config.mjs`.
+- **Surface fixes:** `text-white` on `bg-viindoo-primary` (2.33:1) → `text-viindoo-bg-0` (8.06:1) across
+  ~16 buttons/islands; cyan links/badges → `text-viindoo-primary-text` / `text-gray-700`; focus rings
+  `ring-viindoo-primary` → `ring-viindoo-primary-deep` (≥3:1 per SC 1.4.11); native inputs given
+  explicit `text-gray-900 bg-white`; `RepoTable` "Index All" button white→`text-viindoo-bg-0`
+  (3.13/2.33 → 6.0/8.06). `reset-password` violet button normalised to brand.
+- **Verified PASS, intentionally unchanged:** `gray-400`-on-dark (6.99:1), `blue-600`/`violet-600`/
+  `viindoo-secondary` + white buttons (5.17–6.99:1), `InstallSnippets` tabs (marketing dark-only).
+- **Verification:** `pnpm build` green; chrome-devtools render-verify of `/admin/login`, `/signup`
+  (typed text dark/visible), `/pricing` (marketing still dark). Web-UI only — **tool count stays 24**,
+  no backend/schema change.
+
 ### Added — M10B P0-ext: RBAC + Quota + UI (4 use cases, feat/m10b-p0-rbac-quota-ui)
 
 - **Migration m13_009** — seed plan `'unlimited'` (quota=0, rpm=0, is_public=FALSE) + add
