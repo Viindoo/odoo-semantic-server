@@ -263,3 +263,21 @@ cache invalidation sanity + audit log verification.
 - Sub-team intra-tenant per-repo / per-profile ACL (deferred, no confirmed need at current scale).
 - M10B P1: Polar.sh webhook + Entitlement Activation API + `subscriptions` table.
 - Redis / PG-NOTIFY cross-worker plan cache invalidation (M14+ when worker count warrants it).
+
+---
+
+## Amendment — 2026-05-29
+
+**Free-plan consolidation and auto-onboarding (fix/auth-ux-oauth-cache-plans):** The
+`free-grandfathered` plan (predecessor to the `free` plan, both with identical limits) has been
+retired. Migration `m13_013_consolidate_free_plans.sql` repoints all `free-grandfathered` keys
+to `free` and archives the legacy plan row as `is_public=FALSE`. Rationale: operational clarity —
+two plan rows with identical semantics (both public, both 0 cost, both 120 rpm) was a schema
+artifact of the v0.13.0 transition path and is unnecessary in steady state. The unlimited plan
+(D4) and per-key overrides (D1) are unaffected.
+
+**Auto-onboarding via auto-minted free-plan API key:** Signups (password + OAuth) now auto-assign
+the `free` plan and auto-generate one API key (`auto_{user_id}_{timestamp}`), eliminating manual
+key generation. Post-login role-aware landing (`site/src/lib/auth-landing.ts`) directs users to
+`/account/api-keys` (customers/tenant owners) or `/admin/` (admins) to view/copy their key. This
+closes a customer-friction gap from the unified auth flow (PR #213).

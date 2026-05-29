@@ -222,13 +222,7 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
 </AuthLayout>
 
 <script>
-  // Client-side ?return= consumer — mirror server-side guard above.
-  // Same path-only allowlist (CWE-601 open-redirect guard): reject any value
-  // that doesn't start with literal "/account/" or "/admin/". Fallback /admin.
-  function getReturnTarget(): string {
-    const raw = new URLSearchParams(window.location.search).get('return') ?? '';
-    return /^\/(account|admin)\//.test(raw) ? raw : '/admin';
-  }
+  import { resolveAuthLanding } from '../lib/auth-landing';
 
   document.querySelector('[data-testid="login-form"]')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -264,7 +258,8 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
         mfaSection?.removeAttribute('hidden');
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
       } else {
-        window.location.href = getReturnTarget();
+        const rawReturn = new URLSearchParams(window.location.search).get('return');
+        window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
       }
     } else {
       if (errorEl) {
@@ -315,7 +310,8 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      window.location.href = getReturnTarget();
+      const rawReturn = new URLSearchParams(window.location.search).get('return');
+      window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
     } else {
       if (mfaErrorEl) {
         const msg =

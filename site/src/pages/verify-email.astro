@@ -6,12 +6,16 @@ export const prerender = false;
 
 import AuthLayout from '../layouts/AuthLayout.astro';
 import { FASTAPI_BASE } from '../lib/fastapi';
+import { resolveAuthLanding } from '../lib/auth-landing';
 
 const token = Astro.url.searchParams.get('token') ?? '';
 
 type VerifyStatus = 'success' | 'expired' | 'no_token';
 let status: VerifyStatus = 'no_token';
 let autoRedirect = false;
+// New accounts are always non-admin (is_admin=FALSE on INSERT).
+// resolveAuthLanding(false) → /account/api-keys for all newly verified users.
+const verifyLanding = resolveAuthLanding(false);
 
 if (token) {
   try {
@@ -55,7 +59,7 @@ const subtitle = subtitleMap[status];
         Your account is now active. Redirecting you to the dashboard…
       </p>
       <a
-        href="/admin"
+        href={verifyLanding}
         data-testid="verify-go-dashboard"
         class="inline-block bg-viindoo-primary hover:bg-viindoo-primary-bright
                text-viindoo-bg-0 font-medium py-2.5 px-6 rounded-lg transition-colors text-sm"
@@ -138,11 +142,11 @@ const subtitle = subtitleMap[status];
   )}
 </AuthLayout>
 
-<script define:vars={{ autoRedirect }}>
+<script define:vars={{ autoRedirect, verifyLanding }}>
   if (autoRedirect) {
     // Small delay so the user can read the success message before redirect
     setTimeout(() => {
-      window.location.href = '/admin';
+      window.location.href = verifyLanding;
     }, 1500);
   }
 

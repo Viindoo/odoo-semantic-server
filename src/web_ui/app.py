@@ -164,11 +164,19 @@ def create_app() -> FastAPI:
     # Set WEBUI_SECURE_COOKIE=0 to disable (local dev over plain HTTP only).
     # WARNING: setting to 0 in production allows session hijacking over plain HTTP.
     https_only = os.environ.get("WEBUI_SECURE_COOKIE", "1") != "0"
+    # SameSite=Lax (not Strict) is required for OAuth cross-site redirects.
+    # The OAuth callback chain (accounts.google.com → /admin/auth/callback → /admin/) is a
+    # top-level GET navigation that crosses origins; browsers withhold SameSite=Strict cookies
+    # on that final redirect hop, making the user appear logged out even after a successful
+    # OAuth handshake.  SameSite=Lax allows the cookie on top-level GET navigations while
+    # still blocking cross-site POST/subresource CSRF requests, which is the threat we care
+    # about.  This is safe for our deployment: FastAPI runs loopback-only behind nginx and
+    # all state-changing actions require POST/PUT/DELETE (covered by Lax's cross-site block).
     app.add_middleware(
         SessionMiddleware,
         secret_key=get_session_secret(),
         session_cookie="osm_session",
-        same_site="strict",
+        same_site="lax",
         https_only=https_only,
         max_age=None,  # Session cookie (browser-close expiry); TTL enforced by session_at
     )

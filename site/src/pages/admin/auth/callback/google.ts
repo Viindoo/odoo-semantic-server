@@ -6,6 +6,7 @@
 
 import type { APIRoute } from 'astro';
 import { Google, OAuth2RequestError } from 'arctic';
+import { resolveAuthLanding } from '../../../../lib/auth-landing';
 
 function _getGoogle(): Google {
     return new Google(
@@ -128,12 +129,17 @@ export const GET: APIRoute = async ({ request, cookies }) => {
         });
     }
 
-    // Forward session cookie from FastAPI → browser, then redirect to admin
+    // Parse is_admin from FastAPI success body to determine correct landing page.
+    // Guard against parse failure — default to non-admin landing (safest fallback).
+    const body = await apiRes.json().catch(() => ({ is_admin: false })) as { is_admin?: boolean };
+    const landing = resolveAuthLanding(body.is_admin === true);
+
+    // Forward session cookie from FastAPI → browser, then redirect to role-aware landing
     const setCookieHeader = apiRes.headers.get('set-cookie');
     return new Response(null, {
         status: 302,
         headers: {
-            Location: '/admin/',
+            Location: landing,
             ...(setCookieHeader ? { 'Set-Cookie': setCookieHeader } : {}),
         },
     });

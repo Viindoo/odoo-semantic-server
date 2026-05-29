@@ -4,6 +4,28 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Changed — Free-plan consolidation + auto-onboarding (fix/auth-ux-oauth-cache-plans)
+
+- **Single public `free` plan replaces `free-grandfathered`.** Migration `m13_013_consolidate_free_plans.sql`
+  repoints all `free-grandfathered` API keys to the unified `free` plan (same limits: unlimited calls,
+  120 rpm); the legacy plan row is marked as `is_public=FALSE` (archived, not displayed). ADR-0041 D4
+  applies: non-public plans never appear in pricing or self-serve flows.
+- **Auto-onboarding for new signups:** Both password + OAuth signups auto-assign the `free` plan and
+  auto-mint one API key (auto-generated name `auto_{user_id}_{timestamp}`). Landing post-login points
+  users to `/account/api-keys` to see their key. Closes onboarding friction gap.
+- **OAuth session cookie SameSite: Strict → Lax.** Fixes Google sign-in on Windows IE-compat cookie
+  handling — same-site Strict blocks third-party-initiated cross-site POST redirects (Google's callback
+  to `POST /admin/auth/google/callback`). Changed to Lax per OWASP: allows top-level navigations,
+  blocks auto-submitted forms. Backward-compatible with existing sessions.
+- **Authenticated SSR pages now send `Cache-Control: no-store`.** Astro SSR renders user state
+  (admin dashboard, tenant settings); bfcache could replay a stale page after the user logs out.
+  Response header disables bfcache on authenticated routes. Logout endpoint also sends
+  `Clear-Site-Data: *` to purge stored session from browser storage.
+- **Role-aware post-login landing via `site/src/lib/auth-landing.ts`.** Helper directs users to
+  `/admin/` (admin), `/account/api-keys` (customer), or `/account/repos` (tenant owner) based on
+  `is_admin` flag. `is_admin` now returned in login/oauth/verify API responses; middleware role-routing
+  edge cases fixed to prevent redirect loops. Tool count stays **24**; no backend/schema change.
+
 ### Changed — Auth flow unification (feat/m10b-auth-unify)
 
 - **`/login` is now the canonical login page.** `/admin/login` returns HTTP 301 → `/login`

@@ -11,7 +11,23 @@ import type { APIRoute } from 'astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 
 async function logoutAndRedirect(request: Request): Promise<Response> {
-  const headers = new Headers({ Location: '/login' });
+  const headers = new Headers({
+    Location: '/login',
+    // Clear-Site-Data: defence-in-depth against bfcache attacks on logout.
+    // Without this, a user who logs out and presses Back can have the prior
+    // session's admin dashboard instantly restored from the browser's bfcache
+    // memory snapshot — the server never receives a request so the session
+    // guard never runs.
+    //
+    // "cache" evicts all HTTP cache entries (including bfcache snapshots) for
+    // this origin.  "cookies" is belt-and-suspenders on top of the Set-Cookie
+    // clear sent from FastAPI.
+    //
+    // Requires HTTPS (satisfied in production). Supported: Chrome 61+,
+    // Firefox 63+, Safari 16.1+.  On non-HTTPS origins the header is silently
+    // ignored — acceptable for local dev where bfcache is less of a concern.
+    'Clear-Site-Data': '"cache", "cookies"',
+  });
   try {
     const upstream = await fetch(`${FASTAPI_BASE}/api/auth/logout`, {
       method: 'POST',
