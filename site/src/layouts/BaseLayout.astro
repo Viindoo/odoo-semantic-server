@@ -5,16 +5,19 @@ import '../styles/global.css';
 export interface Props {
   title?: string;
   description?: string;
+  theme?: 'light' | 'dark';
 }
 
 const {
   title = 'Odoo Semantic MCP',
   description = 'Knowledge engine for Odoo — inheritance chain, view structure, JS patch — exposed via MCP protocol.',
+  theme = 'light',
 } = Astro.props;
+const isDark = theme === 'dark';
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class={isDark ? 'theme-dark' : undefined}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -25,7 +28,13 @@ const {
   </head>
   <body>
     <slot />
-    <footer class="text-center text-sm text-viindoo-on-dark-dim py-6 border-t" style="border-color: rgba(230,242,244,0.08);">
+    <footer
+      class:list={[
+        'text-center text-sm py-6 border-t',
+        isDark ? 'text-viindoo-on-dark-dim' : 'text-viindoo-muted',
+      ]}
+      style={`border-color: ${isDark ? 'rgba(230,242,244,0.08)' : 'rgba(0,0,0,0.1)'};`}
+    >
       <a href="/bootstrap" class="hover:text-viindoo-primary-bright transition-colors duration-200">Bootstrap reference</a>
       <span class="mx-2">&middot;</span>
       <a href="https://github.com/Viindoo/odoo-semantic-server" class="hover:text-viindoo-primary-bright transition-colors duration-200">GitHub</a>

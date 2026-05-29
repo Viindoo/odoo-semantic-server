@@ -116,7 +116,7 @@ export default function AuditLogIsland({ initialEntries, initialTotal }: Props) 
             value={actionFilter}
             onChange={(e) => setActionFilter(e.target.value)}
             placeholder="e.g. user.login"
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary w-44"
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep w-44"
           />
         </div>
         <div>
@@ -129,13 +129,13 @@ export default function AuditLogIsland({ initialEntries, initialTotal }: Props) 
             value={actorFilter}
             onChange={(e) => setActorFilter(e.target.value)}
             placeholder="e.g. user:1"
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary w-44"
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep w-44"
           />
         </div>
         <button
           type="submit"
           disabled={loading}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-viindoo-primary text-white hover:opacity-90 disabled:opacity-50"
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-viindoo-primary text-viindoo-bg-0 hover:opacity-90 disabled:opacity-50"
         >
           {loading ? 'Loading...' : 'Filter'}
         </button>

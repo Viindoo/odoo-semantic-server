@@ -189,7 +189,7 @@ export default function ApiKeysOverridesIsland() {
                 placeholder="blank = plan default"
                 value={state.rateOverride}
                 onChange={(e) => setState((s) => ({ ...s, rateOverride: e.target.value }))}
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
               <button
                 type="button"
@@ -216,7 +216,7 @@ export default function ApiKeysOverridesIsland() {
                 placeholder="blank = plan default"
                 value={state.quotaOverride}
                 onChange={(e) => setState((s) => ({ ...s, quotaOverride: e.target.value }))}
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
               <button
                 type="button"
@@ -242,7 +242,7 @@ export default function ApiKeysOverridesIsland() {
             type="button"
             onClick={handleSave}
             disabled={loading}
-            className="flex-1 py-2 rounded-xl bg-viindoo-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+            className="flex-1 py-2 rounded-xl bg-viindoo-primary text-viindoo-bg-0 text-sm font-medium hover:opacity-90 disabled:opacity-50"
           >
             {loading ? 'Saving...' : 'Save Overrides'}
           </button>

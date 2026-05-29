@@ -116,7 +116,7 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
                 onChange={(e) => setName(e.target.value)}
                 required
                 placeholder="e.g. account_accountant"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
             </div>
           )}
@@ -129,7 +129,7 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
                 value={sinceVersion}
                 onChange={(e) => setSinceVersion(e.target.value)}
                 placeholder="e.g. 14.0"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
             </div>
             <div>
@@ -139,7 +139,7 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
                 value={vtEquivalent}
                 onChange={(e) => setVtEquivalent(e.target.value)}
                 placeholder="e.g. viin_account"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
             </div>
           </div>
@@ -151,7 +151,7 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
               placeholder="Optional human-readable description"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
             />
           </div>
 
@@ -165,7 +165,7 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
               onChange={(e) => setReason(e.target.value)}
               placeholder="Why is this change being made?"
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
             />
           </div>
 
@@ -173,7 +173,7 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
             <button type="button" onClick={onClose} className="flex-1 py-2 rounded-xl border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">
               Cancel
             </button>
-            <button type="submit" disabled={saving} className="flex-1 py-2 rounded-xl bg-viindoo-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+            <button type="submit" disabled={saving} className="flex-1 py-2 rounded-xl bg-viindoo-primary text-viindoo-bg-0 text-sm font-medium hover:opacity-90 disabled:opacity-50">
               {saving ? 'Saving...' : (isEdit ? 'Update' : 'Add Module')}
             </button>
           </div>
@@ -285,7 +285,7 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search modules..."
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary w-56"
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep w-56"
         />
         <label className="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
           <input
@@ -308,7 +308,7 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
         )}
         <button
           onClick={() => setShowAddModal(true)}
-          className="px-4 py-2 text-sm rounded-lg bg-viindoo-primary text-white font-medium hover:opacity-90"
+          className="px-4 py-2 text-sm rounded-lg bg-viindoo-primary text-viindoo-bg-0 font-medium hover:opacity-90"
         >
           + Add Module
         </button>

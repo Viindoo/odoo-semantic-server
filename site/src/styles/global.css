@@ -20,6 +20,8 @@
     --viindoo-primary: #00BBCE;
     --viindoo-primary-bright: #2DD4E8;
     --viindoo-primary-deep: #008A99;
+    /* cyan-as-text on white #FFFFFF — WCAG AA 5.52:1 (#00BBCE=2.33 FAIL, #008A99=4.12 FAIL) */
+    --viindoo-primary-text: #00747F;
     --viindoo-secondary: #7F4282;
     --viindoo-secondary-bright: #A263A5;
     --viindoo-success: #00B365;
@@ -34,15 +36,23 @@
     --viindoo-bg-3: #173846;
     --viindoo-on-dark: #E6F2F4;
     --viindoo-on-dark-muted: #95B1B8;
-    --viindoo-on-dark-dim: #5A7782;
+    /* on-dark-dim on #07131A — WCAG AA 6.38:1 (old #5A7782=3.94 FAIL) */
+    --viindoo-on-dark-dim: #7E9BA6;
   }
 
+  /* LIGHT-first default: ~27 app pages (admin/account/tenant/auth) are light surfaces. */
   html {
     font-family: theme('fontFamily.body');
-    color: var(--viindoo-on-dark);
-    background: var(--viindoo-bg-0);
+    color: var(--viindoo-dark);
+    background: #ffffff;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Dark opt-in: marketing pages add class via BaseLayout theme="dark". */
+  html.theme-dark {
+    color: var(--viindoo-on-dark);
+    background: var(--viindoo-bg-0);
   }
 
   ::selection {

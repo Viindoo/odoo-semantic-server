@@ -8,6 +8,7 @@ export default {
           primary: '#00BBCE',           // cyan main
           'primary-bright': '#2DD4E8',
           'primary-deep': '#008A99',
+          'primary-text': '#00747F',     // cyan-as-text on white — WCAG AA 5.52:1
           secondary: '#7F4282',          // purple
           'secondary-bright': '#A263A5',
           success: '#00B365',
@@ -25,7 +26,7 @@ export default {
           'bg-3': '#173846',             // elevated dark BG
           'on-dark': '#E6F2F4',
           'on-dark-muted': '#95B1B8',
-          'on-dark-dim': '#5A7782',
+          'on-dark-dim': '#7E9BA6',        // WCAG AA on #07131A (6.38:1)
         },
       },
       fontFamily: {

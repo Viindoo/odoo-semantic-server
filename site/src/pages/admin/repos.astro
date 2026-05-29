@@ -66,7 +66,7 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
           type="text"
           placeholder="viindoo17"
           data-testid="profile-name-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           required
         />
       </div>
@@ -77,7 +77,7 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
           type="text"
           placeholder="17.0"
           data-testid="profile-version-input"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           required
         />
       </div>
@@ -135,7 +135,7 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
                   <select
                     data-testid="profile-parent-select"
                     data-profile-id={String(p.id)}
-                    class="text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-viindoo-primary profile-parent-select"
+                    class="text-xs border border-gray-300 rounded-lg px-2 py-1.5 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep profile-parent-select"
                     title="Set parent profile"
                   >
                     <option value="">— no parent —</option>
@@ -219,7 +219,7 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
                     >Cancel</button>
                     <button
                       type="submit"
-                      class="text-xs bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded-lg transition-colors"
+                      class="text-xs bg-yellow-500 hover:bg-yellow-600 text-gray-900 px-3 py-1.5 rounded-lg transition-colors"
                     >Save</button>
                   </div>
                 </form>

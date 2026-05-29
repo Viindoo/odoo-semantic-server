@@ -168,7 +168,7 @@ function EditModal({
               value={form.display_name}
               onChange={(e) => field('display_name', e.target.value)}
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
             />
           </div>
 
@@ -183,7 +183,7 @@ function EditModal({
                 value={form.quota_calls_per_month}
                 onChange={(e) => field('quota_calls_per_month', e.target.value)}
                 required
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
             </div>
             <div>
@@ -196,7 +196,7 @@ function EditModal({
                 value={form.rate_limit_rpm}
                 onChange={(e) => field('rate_limit_rpm', e.target.value)}
                 required
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
               />
             </div>
           </div>
@@ -211,7 +211,7 @@ function EditModal({
               value={form.seat_limit}
               onChange={(e) => field('seat_limit', e.target.value)}
               placeholder="No limit"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
             />
           </div>
 
@@ -239,7 +239,7 @@ function EditModal({
               onChange={(e) => field('reason', e.target.value)}
               placeholder="Why are you updating this plan?"
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
             />
           </div>
 
@@ -254,7 +254,7 @@ function EditModal({
             <button
               type="submit"
               disabled={saving}
-              className="flex-1 py-2 rounded-xl bg-viindoo-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              className="flex-1 py-2 rounded-xl bg-viindoo-primary text-viindoo-bg-0 text-sm font-medium hover:opacity-90 disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save Plan'}
             </button>
@@ -332,7 +332,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                     <td className="px-4 py-3 text-center">
                       <button
                         onClick={() => setEditingPlan(plan)}
-                        className="text-xs px-3 py-1 rounded-lg bg-viindoo-primary text-white font-medium hover:opacity-90"
+                        className="text-xs px-3 py-1 rounded-lg bg-viindoo-primary text-viindoo-bg-0 font-medium hover:opacity-90"
                       >
                         Edit
                       </button>

@@ -67,7 +67,7 @@ export default function UsageDashboard() {
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-gray-500 text-sm py-8">
-        <span className="animate-spin text-viindoo-primary">⟳</span>
+        <span className="animate-spin text-viindoo-primary-text">⟳</span>
         Loading usage data…
       </div>
     );
@@ -217,7 +217,7 @@ export default function UsageDashboard() {
                   <p className="text-xs text-gray-500">
                     <a
                       href="/pricing"
-                      className="text-viindoo-primary hover:text-viindoo-primary-deep underline"
+                      className="text-viindoo-primary-text hover:text-viindoo-primary-deep underline"
                     >
                       Upgrade your plan
                     </a>{' '}
@@ -261,7 +261,7 @@ export default function UsageDashboard() {
                   <span className="text-xs text-gray-500 w-20 text-right shrink-0">
                     {h.used.toLocaleString()}
                     {isCurrentPeriod && (
-                      <span className="ml-1 text-viindoo-primary font-semibold">·</span>
+                      <span className="ml-1 text-viindoo-primary-text font-semibold">·</span>
                     )}
                   </span>
                 </div>
