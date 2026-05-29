@@ -488,7 +488,7 @@ thiếu, + `UPDATE` last_used_at), tenant scope/profile (`SELECT profiles`), ses
 ADR-0029 (`SELECT/INSERT/UPDATE api_key_session_state`), repo URL (`SELECT repos`), usage/audit
 log (`INSERT usage_log`/`admin_audit_log` — best-effort), và **feedback + tenant deploy-key
 router mount ngay trên `:8002`** (`src/mcp/server.py`) → `SELECT/INSERT pattern_feedback` +
-`SELECT/INSERT ssh_key_pairs`. Cộng `USAGE` trên 4 sequence SERIAL của các bảng INSERT đó.
+`SELECT/INSERT ssh_key_pairs`. Cộng `USAGE` trên 4 sequence SERIAL của các bảng INSERT đó. (ADR-0042 follow-up: cộng `USAGE` trên `app_settings_id_seq` — app_settings.id là BIGSERIAL và MCP INSERT catalogue rows; quy tắc chung: mọi bảng osm_reader có INSERT + serial/identity PK PHẢI có USAGE trên sequence, INSERT đơn lẻ là grant thiếu.)
 `GRANT SELECT ON embeddings` một mình (runbook §5.14 bản cũ) sẽ làm MCP gãy. Grant set
 canonical, idempotent: [`ops/rls_create_osm_reader.sql`](../../ops/rls_create_osm_reader.sql).
 

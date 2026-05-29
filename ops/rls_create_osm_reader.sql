@@ -88,9 +88,15 @@ GRANT SELECT, INSERT ON TABLE app_settings           TO osm_reader;
 GRANT SELECT          ON TABLE app_settings_history  TO osm_reader;
 GRANT SELECT          ON TABLE ee_modules            TO osm_reader;
 GRANT SELECT          ON TABLE patterns              TO osm_reader;
--- app_settings_history.id is SERIAL — MCP does not INSERT, so no USAGE on
--- the sequence is needed.  ee_modules + patterns also have SERIAL PKs but
--- are SELECT-only here, so likewise no sequence USAGE.
+-- app_settings.id is BIGSERIAL and MCP (bootstrap_settings_safe) INSERTs into
+-- it on startup, so osm_reader needs USAGE on its backing sequence too — see
+-- §8.  Without the sequence USAGE the INSERT fails at nextval() with
+-- "permission denied for sequence app_settings_id_seq" BEFORE the
+-- ON CONFLICT DO NOTHING is ever evaluated (Postgres computes the column
+-- default first).  This was the ADR-0042 deploy bug (hotfixed live):
+-- granting INSERT on a table without USAGE on its serial/identity sequence is
+-- an INCOMPLETE grant.  app_settings_history / ee_modules / patterns are
+-- SELECT-only here (no INSERT) so they need no sequence USAGE.
 --
 -- NOTE on degraded modes: when MCP is denied permission on any of these
 -- (e.g. running against an older RLS deployment where this grant block
@@ -111,11 +117,20 @@ GRANT INSERT ON TABLE admin_audit_log TO osm_reader;
 GRANT SELECT, INSERT ON TABLE pattern_feedback TO osm_reader;
 GRANT SELECT, INSERT ON TABLE ssh_key_pairs    TO osm_reader;
 
--- 8. Sequences backing the SERIAL PKs of the INSERT tables above.
+-- 8. Sequences backing the SERIAL/BIGSERIAL PKs of the INSERT tables above.
+--    RULE: every table osm_reader has INSERT on AND that has a serial/identity
+--    column MUST also have USAGE on its backing sequence — INSERT alone is an
+--    incomplete grant (nextval() is denied before ON CONFLICT runs).  Tables
+--    osm_reader INSERTs into whose PK is composite/non-serial (e.g.
+--    api_key_session_state: FK api_key_id PK) have no sequence and are
+--    intentionally absent below.
 GRANT USAGE ON SEQUENCE usage_log_id_seq        TO osm_reader;
 GRANT USAGE ON SEQUENCE admin_audit_log_id_seq  TO osm_reader;
 GRANT USAGE ON SEQUENCE pattern_feedback_id_seq TO osm_reader;
 GRANT USAGE ON SEQUENCE ssh_key_pairs_id_seq    TO osm_reader;
+-- ADR-0042 Admin Settings: app_settings.id BIGSERIAL — MCP INSERTs catalogue
+-- rows via bootstrap_settings_safe(), so the reader needs USAGE on its sequence.
+GRANT USAGE ON SEQUENCE app_settings_id_seq     TO osm_reader;
 
 -- NOTE: FORCE ROW LEVEL SECURITY (runbook §5.14 Bước 2) and the MCP DSN flip
 -- (Bước 3) are performed by the cutover script AFTER this file runs — kept

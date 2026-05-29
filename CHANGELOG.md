@@ -4,6 +4,35 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — Admin Settings deploy bugs: osm_reader sequence grant + CLI dotenv (fix/admin-settings-grants-dotenv)
+
+- **BUG CLASS A — incomplete osm_reader grant (missing SEQUENCE USAGE).** `osm_reader`
+  had `INSERT` on `app_settings` (PR #209) but lacked `USAGE` on its backing BIGSERIAL
+  sequence `app_settings_id_seq`. Postgres evaluates the `id` column default
+  (`nextval('app_settings_id_seq')`) BEFORE the `ON CONFLICT DO NOTHING` check, so the
+  MCP `bootstrap_settings_safe()` catalogue UPSERT failed at startup with
+  *"permission denied for sequence app_settings_id_seq"*. Fixed in BOTH
+  `migrations/m13_010_app_settings.sql` (inside the existing `pg_roles`-guarded grant
+  block) and `ops/rls_create_osm_reader.sql` (SSOT), with the stale comment claiming
+  "no sequence is needed" corrected. **Audit:** `app_settings_id_seq` is the ONLY
+  sequence `osm_reader` was missing — `app_settings_history` / `ee_modules` / `patterns`
+  are SELECT-only (no INSERT -> no sequence USAGE).
+- **BUG CLASS B — CLI entry points missing `config.init_dotenv()` (ADR-0031).** Three
+  DB/env-reading mains did not bootstrap `.env`, so on a fresh box `PG_DSN` resolved to
+  an unconfigured fallback and the process authenticated as the wrong user.
+  `ops/backfill_patterns.py::main()` was the PRIMARY offender (caused the live backfill
+  auth failure during the Admin Settings deploy); also fixed
+  `src/indexer/__main__.py::main()` and `src/indexer/seed_patterns.py::main()`. Each now
+  calls `config.init_dotenv()` as the first action of `main()`, mirroring
+  `src/db/migrate.py::main()` (ADR-0031: `main()`-only, never at module import).
+- **Tests.** `tests/test_migration_m13_010.py` gains `has_sequence_privilege` +
+  end-to-end `SET ROLE osm_reader` INSERT assertions; new
+  `tests/test_cli_init_dotenv.py` is a deterministic AST regression guard for class B.
+- **Migration strategy / prod.** No prod redeploy or re-migrate needed after merge:
+  prod was hotfixed live (sequence grant applied), and yoyo keys on the migration-id
+  hash so the edited `m13_010` file will not re-run. Web-UI/tool surface unchanged —
+  **tool count stays 24**.
+
 ### Fixed — UI contrast / accessibility: light-first theme inversion (fix/ui-contrast-light-first)
 
 - **Root cause (systemic):** `site/src/styles/global.css` set `html { color: #E6F2F4; background: #07131A }`

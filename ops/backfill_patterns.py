@@ -165,6 +165,12 @@ def _build_conn():
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ADR-0031: load `.env` at the CLI entry point so PG_DSN (with its password)
+    # resolves on a fresh prod box without the operator manually sourcing .env.
+    # Idempotent + main()-only (never at import) so pytest is unaffected; mirrors
+    # src/db/migrate.py::main().  This was the PRIMARY cause of the ADR-0042
+    # backfill prod auth failure (DSN was unresolved -> connect as wrong user).
+    config.init_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(
         description=__doc__,

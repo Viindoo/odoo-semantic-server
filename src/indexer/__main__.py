@@ -228,6 +228,11 @@ def _run_index_core(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ADR-0031: load `.env` at the CLI entry point so PG_DSN / NEO4J_* / EMBEDDER_*
+    # (with secrets) resolve on a fresh prod box without manually sourcing .env.
+    # Idempotent + main()-only (never at import) so pytest is unaffected; mirrors
+    # src/db/migrate.py::main().
+    config.init_dotenv()
     from src.logging_config import configure_logging
     parser = _build_parser()
     args = parser.parse_args(argv)
