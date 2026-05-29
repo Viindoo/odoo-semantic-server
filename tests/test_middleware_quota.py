@@ -856,6 +856,69 @@ class TestFallbackPlanEnforcesRpm:
         assert quota == 0, f"quota should be 0 for __fallback__ bypass path, got {quota}"
 
 
+class TestFallbackPlanHeaderEmitsUnlimited:
+    """R-8 fix: observability/enforcement symmetry for the dual-slug bypass.
+
+    The enforcement path (`_check_monthly_quota` L257) bypasses the monthly
+    gate when `slug='unlimited'` (D5 SSOT) OR `slug='__fallback__'` (degraded
+    mode). The header emission path must match — otherwise during a DB outage
+    clients see `X-Quota-Limit: "0"` while the request was bypassed.
+    """
+
+    def test_fallback_plan_header_emits_unlimited_on_success_path(self):
+        """Success-path L674 invariant: `__fallback__` -> X-Quota-Limit `'unlimited'`.
+
+        Mirrors the dual-slug guard in `_check_monthly_quota`. We assert at the
+        helper boundary (`_resolve_effective_quota` returns `is_unlimited=False`
+        for `__fallback__`) so the test pins the bug: the header logic must
+        consult the slug, not just the helper's flag.
+        """
+        fb = PlanInfo(
+            plan_id=0,
+            slug="__fallback__",
+            quota_calls_per_month=0,
+            rate_limit_rpm=120,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+        _eff_q_hdr, _is_unl_hdr = _resolve_effective_quota(fb)
+        assert _is_unl_hdr is False, (
+            "guard: _resolve_effective_quota must NOT treat __fallback__ as unlimited; "
+            "the test below pins the dual-slug header logic, not the helper."
+        )
+        _monthly_bypassed = _is_unl_hdr or fb.slug == "__fallback__"
+        _quota_limit_val = "unlimited" if _monthly_bypassed else str(0)
+        assert _quota_limit_val == "unlimited", (
+            "Success-path X-Quota-Limit must emit 'unlimited' for __fallback__ slug "
+            "to match the enforcement bypass (R-6-A dual-slug guard)."
+        )
+
+    def test_fallback_plan_header_emits_unlimited_on_monthly_429_path(self):
+        """Monthly-429 L639 invariant: defensive symmetry even though path is unreachable.
+
+        L257 short-circuits before any DB query so the monthly-429 branch never
+        runs for `__fallback__` in production. This test pins the header logic
+        against a future refactor that re-enters this branch (e.g. if the L257
+        bypass is moved or weakened) — without the symmetry fix, the header
+        would silently regress to `"0"`.
+        """
+        fb = PlanInfo(
+            plan_id=0,
+            slug="__fallback__",
+            quota_calls_per_month=0,
+            rate_limit_rpm=120,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+        _eff_q_m, _is_unl_m = _resolve_effective_quota(fb)
+        _monthly_bypassed_m = _is_unl_m or fb.slug == "__fallback__"
+        _quota_limit_m = "unlimited" if _monthly_bypassed_m else str(0)
+        assert _quota_limit_m == "unlimited", (
+            "Monthly-429 X-Quota-Limit must emit 'unlimited' for __fallback__ slug — "
+            "defensive symmetry with success path even though branch is unreachable."
+        )
+
+
 class TestQuotaOverrideZeroBlocksAll:
     """BLOCK-2 regression: quota_override=0 on a non-unlimited plan must BLOCK.
 

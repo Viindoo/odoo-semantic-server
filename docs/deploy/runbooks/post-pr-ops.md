@@ -415,6 +415,17 @@ After any `PATCH /api/admin/api-keys/{id}/plan` or `PATCH` that touches override
 - There is no shared cache bus (Redis / PG-NOTIFY) at this time; the 300s eventual-consistency
   window is the accepted trade-off (ADR-0041 §Trade-offs).
 
+### DB-outage header behavior
+
+During a Postgres connectivity outage the MCP middleware constructs a
+degraded-mode PlanInfo with `slug='__fallback__'` and fails open for the
+monthly quota gate (RPM remains enforced via `DEFAULT_RATE_LIMIT_RPM` —
+fail-safe DoS posture per ADR-0041 D5 SSOT). On allowed responses during
+this window clients observe `X-Quota-Limit: unlimited` (matching the
+bypass) and `X-Quota-Used: 0` (the in-process counter is not consulted
+when the DB is unreachable). Normal numeric header values resume on the
+next request after DB connectivity is restored.
+
 ### Audit log sanity
 
 Verify after any admin plan operation:

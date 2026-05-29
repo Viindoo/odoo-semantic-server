@@ -38,6 +38,17 @@ All notable changes to Odoo Semantic MCP are documented here.
 - W-5 known gap: `GET /api/api-keys` does not yet return `plan_id` + overrides; Plan dropdown
   pre-selection blank on page load. Follow-up tracked in TASKS.md.
 
+### Fixed — M10B P0-ext
+
+- Middleware `X-Quota-Limit` header now emits `"unlimited"` sentinel on both
+  the success and monthly-429 paths when `plan_info.slug == "__fallback__"`,
+  matching the dual-slug bypass in `_check_monthly_quota` (R-6-A). Previously
+  the header emitted `"0"` during a Postgres outage even though the request
+  was bypassed (observability/enforcement symmetry gap surfaced in R-8 review).
+- Migration `m13_009` header comment updated: removes the stale "W-2 ships
+  the bypass guard / do not assign until W-2 lands" warning (W-2 already
+  shipped in this PR) and anchors the sentinel semantics to ADR-0041 D5.
+
 ### Changed — Post-PR-#200/#204 cleanup
 
 - Backup format: `pg_dump` now writes `postgres.dump` (`-F custom -Z 6`); restore auto-detects (psql for legacy `.sql`, `pg_restore` for `.dump`). ADR-0018 updated. (TD-1)

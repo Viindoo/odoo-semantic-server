@@ -46,9 +46,11 @@ $$;
 
 -- 2. Seed the 'unlimited' plan (idempotent INSERT ... ON CONFLICT DO NOTHING)
 --
--- 0/0 sentinel = unlimited per ADR-0041 D5. RPM=0 currently triggers a
--- silent-block in middleware (m13_006 path); W-2 ships the bypass guard.
--- Do not assign this plan to any key until W-2 lands.
+-- Sentinel plan: slug='unlimited' is the SOLE override switch for admin-granted
+-- access (ADR-0041 D5 SSOT). Quota=0 and RPM=0 are sentinel values that ONLY
+-- bypass quota/rate-limit gating when slug='unlimited'; numeric comparison
+-- does not trigger the bypass (R-4 BLOCK-2 fix). See _resolve_effective_rpm()
+-- and _resolve_effective_quota() in src/mcp/middleware.py.
 INSERT INTO plans (slug, display_name, quota_calls_per_month, rate_limit_rpm, seat_limit, is_public)
 VALUES ('unlimited', 'Unlimited (admin-granted)', 0, 0, 99, FALSE)
 ON CONFLICT (slug) DO NOTHING;

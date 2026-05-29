@@ -635,8 +635,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             reset_at = next_month.strftime("%Y-%m-%dT%H:%M:%SZ")
             # NIT fix: emit "unlimited" sentinel on monthly 429 X-Quota-Limit when
             # is_unlimited, consistent with RPM 429 + success 200 paths (A:632/C:C8).
+            # R-8 fix: include '__fallback__' for symmetry with the success path,
+            # even though this branch is structurally unreachable today (L257 dual-
+            # slug bypass returns allowed=True before this code runs). Defensive
+            # against a future refactor that re-enters this branch with the
+            # fallback plan and would otherwise emit "0".
             _eff_q_m, _is_unl_m = _resolve_effective_quota(plan_info)
-            _quota_limit_m = "unlimited" if _is_unl_m else str(quota_monthly)
+            _monthly_bypassed_m = _is_unl_m or plan_info.slug == "__fallback__"
+            _quota_limit_m = "unlimited" if _monthly_bypassed_m else str(quota_monthly)
             body = _json.dumps({
                 "status": "quota_exhausted",
                 "reason": "monthly",
@@ -669,9 +675,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Inject quota headers on allowed responses.
         # M10B P0-ext: X-Quota-Limit emits "unlimited" string sentinel when
         # plan is unlimited (ADR-0041 D5 / A8 Option 1 — clearest semantics).
+        # R-8 fix: also emit "unlimited" when slug='__fallback__' (degraded-mode
+        # DB outage). The enforcement path (_check_monthly_quota L257) already
+        # uses a dual-slug bypass; the observability path must match or the
+        # header will show "0" while the request was actually bypassed.
         now_period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
         _eff_q_hdr, _is_unl_hdr = _resolve_effective_quota(plan_info)
-        _quota_limit_val = "unlimited" if _is_unl_hdr else str(quota_monthly)
+        _monthly_bypassed = _is_unl_hdr or plan_info.slug == "__fallback__"
+        _quota_limit_val = "unlimited" if _monthly_bypassed else str(quota_monthly)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-Quota-Used"] = str(used_monthly)
         response.headers["X-Quota-Limit"] = _quota_limit_val
