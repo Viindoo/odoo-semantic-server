@@ -66,3 +66,22 @@ CREATE INDEX IF NOT EXISTS idx_patterns_language
 -- Btree index on odoo_version_min for version-range filtering
 CREATE INDEX IF NOT EXISTS idx_patterns_version_min
     ON patterns(odoo_version_min);
+
+-- ===========================================================================
+-- Read-role grant for osm_reader (ADR-0034 RLS read split / ADR-0042)
+-- ===========================================================================
+-- The MCP service connects as the non-owner role `osm_reader` and reads
+-- patterns at runtime (suggest_pattern / find_examples catalogue). `python -m
+-- src.db.migrate` does NOT run ops/rls_create_osm_reader.sql, so without a
+-- self-contained grant the read hits permission-denied which the code swallows
+-- → silent fallback to the in-process pattern defaults. Idempotent (re-running
+-- GRANT is a no-op); matches ops/rls_create_osm_reader.sql (kept as SSOT for
+-- the role + full grant set). pg_roles guard keeps the migration safe on a DB
+-- without osm_reader.
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
+        GRANT SELECT ON TABLE patterns TO osm_reader;
+    END IF;
+END $$;

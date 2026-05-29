@@ -73,6 +73,29 @@ def _seed_tenant(conn, name="test_tenant_m13009") -> int:
         return cur.fetchone()[0]
 
 
+def _ensure_osm_reader(conn) -> None:
+    """Create the osm_reader role if absent so the migration's guarded GRANT
+    block actually runs and can be asserted.  Mirrors deploy order (ops creates
+    the role, then migrate runs).  Passwordless NOLOGIN — the test only needs
+    the grant target to exist; it never connects as it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='osm_reader') "
+            "THEN CREATE ROLE osm_reader NOLOGIN; END IF; END $$;"
+        )
+
+
+def _has_priv(conn, table: str, priv: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('osm_reader', %s, %s)",
+            (table, priv),
+        )
+        return cur.fetchone()[0]
+
+
 def _seed_user(conn, username="test_user_m13009") -> int:
     """Insert a webui_users row and return its id."""
     with conn.cursor() as cur:
@@ -118,6 +141,18 @@ def migrated_pg(clean_pg):
     FK constraints are re-created fresh by run_migrations each time.
     """
     _drop_m13_010_tables(clean_pg)
+    run_migrations(clean_pg)
+    yield clean_pg
+    _drop_m13_010_tables(clean_pg)
+
+
+@pytest.fixture
+def migrated_pg_with_reader(clean_pg):
+    """Like migrated_pg but creates osm_reader BEFORE migrating, so the
+    migration's pg_roles-guarded GRANT block actually fires and is assertable.
+    """
+    _drop_m13_010_tables(clean_pg)
+    _ensure_osm_reader(clean_pg)
     run_migrations(clean_pg)
     yield clean_pg
     _drop_m13_010_tables(clean_pg)
@@ -598,3 +633,50 @@ class TestTenantCascadeDelete:
         assert history_row is None, (
             "app_settings_history row was NOT deleted when tenant was removed (expected CASCADE)"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. osm_reader read grants (deploy-blocking R1 — ADR-0042 / ADR-0034)
+# ---------------------------------------------------------------------------
+
+
+class TestOsmReaderGrants:
+    """The migration must self-grant the osm_reader read role.
+
+    MCP (:8002) connects as osm_reader under RLS and reads app_settings on
+    every authed request via get_setting().  Without the grant the read hits
+    permission-denied, which the code swallows → silent fallback to the
+    in-process code default (the operator-tunable layer goes dead with no
+    500 and no log).  `python -m src.db.migrate` does NOT run
+    ops/rls_create_osm_reader.sql, so the grant must live in the migration.
+
+    app_settings needs INSERT too because bootstrap_settings_safe() UPSERTs
+    catalogue rows ON CONFLICT DO NOTHING on MCP startup.
+    """
+
+    def test_app_settings_select_insert(self, migrated_pg_with_reader):
+        assert _has_priv(migrated_pg_with_reader, "app_settings", "SELECT"), (
+            "osm_reader missing SELECT on app_settings — get_setting() will "
+            "silently fall back to code defaults"
+        )
+        assert _has_priv(migrated_pg_with_reader, "app_settings", "INSERT"), (
+            "osm_reader missing INSERT on app_settings — bootstrap_settings_safe "
+            "UPSERT will fail (catalogue rows never written)"
+        )
+
+    def test_app_settings_history_select_only(self, migrated_pg_with_reader):
+        assert _has_priv(
+            migrated_pg_with_reader, "app_settings_history", "SELECT"
+        ), "osm_reader missing SELECT on app_settings_history"
+        # History is written only by FastAPI (DB owner); MCP must not mutate it.
+        for priv in ("INSERT", "UPDATE", "DELETE"):
+            assert not _has_priv(
+                migrated_pg_with_reader, "app_settings_history", priv
+            ), f"osm_reader unexpectedly has {priv} on app_settings_history"
+
+    def test_migration_safe_without_osm_reader(self, migrated_pg):
+        """With no osm_reader role the migration must still apply cleanly
+        (GRANT guarded by pg_roles EXISTS). migrated_pg does not create the
+        role, so reaching this assertion proves no failure."""
+        cols = _column_info(migrated_pg, "app_settings")
+        assert cols, "app_settings table missing after migrate without osm_reader"
