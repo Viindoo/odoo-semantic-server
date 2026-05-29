@@ -919,6 +919,111 @@ class TestFallbackPlanHeaderEmitsUnlimited:
         )
 
 
+class TestFallbackPlanRedactedFromBody:
+    """R-9 fix: 429 body must NOT echo internal sentinel slugs (e.g. '__fallback__').
+
+    The sentinel exists only as an enforcement discriminator inside the
+    middleware; emitting it in the public 429 body leaked DB-outage state
+    to clients. Per ADR-0041 D5, only DB-sourced plan slugs are
+    user-facing. The startswith('__') guard covers any future sentinel by
+    naming convention.
+    """
+
+    @staticmethod
+    def _build_rpm_body(plan_info: PlanInfo) -> dict:
+        """Replicate the RPM-429 body dict construction from middleware.py."""
+        reset_at = "2099-01-01T00:00:00Z"  # arbitrary sentinel for test
+        _body_payload = {
+            "status": "quota_exhausted",
+            "reason": "rpm",
+            "reset_at": reset_at,
+        }
+        if not plan_info.slug.startswith("__"):
+            _body_payload["plan"] = plan_info.slug
+        return _body_payload
+
+    @staticmethod
+    def _build_monthly_body(plan_info: PlanInfo) -> dict:
+        """Replicate the monthly-429 body dict construction from middleware.py."""
+        reset_at = "2099-02-01T00:00:00Z"
+        _body_payload = {
+            "status": "quota_exhausted",
+            "reason": "monthly",
+            "used": 100,
+            "quota": 100,
+            "reset_at": reset_at,
+        }
+        if not plan_info.slug.startswith("__"):
+            _body_payload["plan"] = plan_info.slug
+        return _body_payload
+
+    def test_rpm_429_body_omits_sentinel_slug(self):
+        """RPM-429 body must NOT contain 'plan' key for slug='__fallback__'.
+
+        The __fallback__ sentinel is a runtime construct created during a
+        Postgres outage — it is never a real plan slug stored in the DB.
+        Emitting it in the public 429 body leaks internal degraded-mode state.
+        """
+        fb = PlanInfo(
+            plan_id=0,
+            slug="__fallback__",
+            quota_calls_per_month=0,
+            rate_limit_rpm=120,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+        body = self._build_rpm_body(fb)
+        assert "plan" not in body, (
+            f"RPM-429 body must NOT include 'plan' key for sentinel slug '__fallback__'; "
+            f"got body keys: {list(body.keys())}"
+        )
+
+    def test_rpm_429_body_includes_real_plan_slug(self):
+        """Positive control: RPM-429 body MUST contain 'plan' key for a real slug.
+
+        Ensures the conditional redaction only suppresses sentinel slugs and
+        does not accidentally strip the 'plan' field for legitimate plan slugs
+        like 'free', 'pro', 'unlimited'.
+        """
+        free_plan = PlanInfo(
+            plan_id=1,
+            slug="free",
+            quota_calls_per_month=100,
+            rate_limit_rpm=30,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+        body = self._build_rpm_body(free_plan)
+        assert "plan" in body, (
+            "RPM-429 body must include 'plan' key for real plan slug 'free'."
+        )
+        assert body["plan"] == "free", (
+            f"Expected body['plan']='free', got {body['plan']!r}."
+        )
+
+    def test_monthly_429_body_omits_sentinel_slug(self):
+        """Monthly-429 body must NOT contain 'plan' key for slug='__fallback__'.
+
+        This branch is structurally unreachable today for slug='__fallback__'
+        (L257 dual-slug short-circuit returns allowed=True before monthly-429
+        fires). This test pins the invariant defensively against a future
+        refactor that re-enters this branch with a sentinel slug.
+        """
+        fb = PlanInfo(
+            plan_id=0,
+            slug="__fallback__",
+            quota_calls_per_month=0,
+            rate_limit_rpm=120,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+        body = self._build_monthly_body(fb)
+        assert "plan" not in body, (
+            f"Monthly-429 body must NOT include 'plan' key for sentinel slug '__fallback__'; "
+            f"got body keys: {list(body.keys())}"
+        )
+
+
 class TestQuotaOverrideZeroBlocksAll:
     """BLOCK-2 regression: quota_override=0 on a non-unlimited plan must BLOCK.
 

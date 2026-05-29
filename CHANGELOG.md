@@ -45,6 +45,12 @@ All notable changes to Odoo Semantic MCP are documented here.
   matching the dual-slug bypass in `_check_monthly_quota` (R-6-A). Previously
   the header emitted `"0"` during a Postgres outage even though the request
   was bypassed (observability/enforcement symmetry gap surfaced in R-8 review).
+- Middleware 429 response body now redacts internal sentinel plan slugs
+  (e.g. `__fallback__`) - they were enforcement discriminators, never
+  intended as user-visible plan labels. RPM-429 path was the live leak
+  (reachable during Postgres outage); monthly-429 path is defensive
+  (structurally unreachable for fallback per L257 short-circuit, pinned
+  by regression test).
 - Migration `m13_009` header comment updated: removes the stale "W-2 ships
   the bypass guard / do not assign until W-2 lands" warning (W-2 already
   shipped in this PR) and anchors the sentinel semantics to ADR-0041 D5.

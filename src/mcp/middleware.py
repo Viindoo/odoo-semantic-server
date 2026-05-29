@@ -581,12 +581,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not allowed_rpm:
             now_utc = _dt.datetime.now(_dt.UTC)
             reset_at = (now_utc + _dt.timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            body = _json.dumps({
+            # R-9 fix: redact internal sentinel slugs (e.g. '__fallback__' for degraded
+            # mode) from the public 429 body — they were enforcement discriminators,
+            # never intended as user-visible plan labels. Per ADR-0041 D5, only DB-
+            # sourced plan slugs are user-facing. The `startswith("__")` guard covers
+            # any future internal sentinel by naming convention.
+            _body_payload = {
                 "status": "quota_exhausted",
                 "reason": "rpm",
-                "plan": plan_info.slug,
                 "reset_at": reset_at,
-            })
+            }
+            if not plan_info.slug.startswith("__"):
+                _body_payload["plan"] = plan_info.slug
+            body = _json.dumps(_body_payload)
             # Wave 2 integration review ISSUE-4 — emit X-Quota-Limit +
             # X-Quota-Period on RPM 429 for ops-dashboard parity with the
             # monthly 429 branch (grep `X-Quota-*` across all 429s now hits
@@ -643,14 +650,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             _eff_q_m, _is_unl_m = _resolve_effective_quota(plan_info)
             _monthly_bypassed_m = _is_unl_m or plan_info.slug == "__fallback__"
             _quota_limit_m = "unlimited" if _monthly_bypassed_m else str(quota_monthly)
-            body = _json.dumps({
+            # R-9 fix: same sentinel-redact pattern as RPM 429 (see FIX-1 comment).
+            # This branch is structurally unreachable today for slug='__fallback__'
+            # (L257 dual-slug short-circuit), but pin the invariant defensively
+            # against a future refactor that re-enters this branch with a sentinel slug.
+            _body_payload = {
                 "status": "quota_exhausted",
                 "reason": "monthly",
-                "plan": plan_info.slug,
                 "used": used_monthly,
                 "quota": quota_monthly,
                 "reset_at": reset_at,
-            })
+            }
+            if not plan_info.slug.startswith("__"):
+                _body_payload["plan"] = plan_info.slug
+            body = _json.dumps(_body_payload)
             return Response(
                 body,
                 status_code=429,
