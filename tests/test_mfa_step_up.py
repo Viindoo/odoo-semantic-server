@@ -839,8 +839,8 @@ async def test_totp_login_sets_mfa_verified_at():
         ):
             fake_conn = MagicMock()
             fake_cur = MagicMock()
-            # fetchone for SELECT username FROM webui_users WHERE id = %s
-            fake_cur.fetchone.return_value = ("admin",)
+            # fetchone for SELECT username, is_admin FROM webui_users WHERE id = %s
+            fake_cur.fetchone.return_value = ("admin", False)
             fake_cur.__enter__ = lambda s: s
             fake_cur.__exit__ = MagicMock(return_value=False)
             fake_conn.cursor.return_value = fake_cur

@@ -56,19 +56,26 @@ def test_canonical_login_has_oauth_buttons() -> None:
 
 
 def test_canonical_login_has_cwe601_guard() -> None:
-    """login.astro must contain the open-redirect guard (CWE-601).
+    """login.astro must apply the open-redirect guard (CWE-601) on ?return=.
 
-    The guard rejects any ?return= value that doesn't start with /account/ or
-    /admin/ — preventing phishing via crafted redirect URLs. It must appear in
-    BOTH the SSR frontmatter (server-side) and the <script> block (client-side).
+    The guard rejects any ?return= value that is not a safe same-origin path —
+    preventing phishing via crafted redirect URLs. The guard is centralised in
+    site/src/lib/auth-landing.ts (resolveAuthLanding → isSafeInternalPath) and
+    must be applied in BOTH the SSR frontmatter (already-authed bounce) and the
+    <script> block (post-login redirect). This test asserts login.astro routes
+    its ?return= value through resolveAuthLanding rather than building an
+    unchecked redirect target.
     """
     content = LOGIN_CANONICAL.read_text()
-    # The guard regex pattern must be present in both SSR and client-side code
-    assert "account" in content and "admin" in content, (
-        "CWE-601 guard must reference /account/ and /admin/ path prefixes"
+    # The centralised guard must be imported and used (covers both the SSR
+    # already-authed branch and the client-side post-login redirect).
+    assert "resolveAuthLanding" in content, (
+        "login.astro must route ?return= through resolveAuthLanding "
+        "(centralised CWE-601 guard in lib/auth-landing.ts)"
     )
-    assert "returnTarget" in content or "getReturnTarget" in content, (
-        "CWE-601 guard variable (returnTarget / getReturnTarget) must be present"
+    # resolveAuthLanding is fed the raw ?return= query value.
+    assert "searchParams.get('return')" in content or 'searchParams.get("return")' in content, (
+        "login.astro must read the ?return= query param to pass to resolveAuthLanding"
     )
 
 

@@ -420,7 +420,9 @@ async def login_post(request: Request, body: LoginBody):
     request.session["session_at"] = time.time()
 
     logger.info("Successful login for user %r (IP: %s)", username_clean, client_ip)
-    return JSONResponse(_json_safe({"ok": True, "username": username_clean}))
+    return JSONResponse(
+        _json_safe({"ok": True, "username": username_clean, "is_admin": bool(user["is_admin"])})
+    )
 
 
 @router.post("/logout")

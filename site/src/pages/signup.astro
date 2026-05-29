@@ -7,21 +7,29 @@ export const prerender = false;
 import AuthLayout from '../layouts/AuthLayout.astro';
 import { FASTAPI_BASE } from '../lib/fastapi';
 import OAuthButtons from '../components/OAuthButtons.astro';
+import { resolveAuthLanding } from '../lib/auth-landing';
 
-// Redirect already-authed users to dashboard
+// Redirect already-authed users to their role-appropriate landing.
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 let alreadyAuthed = false;
+let alreadyAuthedIsAdmin = false;
 try {
   const verify = await fetch(`${FASTAPI_BASE}/api/auth/verify`, {
     headers: { cookie: cookieHeader },
   });
   alreadyAuthed = verify.ok;
+  if (verify.ok) {
+    const vb = await verify.json().catch(() => ({ is_admin: false }));
+    alreadyAuthedIsAdmin = vb.is_admin === true;
+  }
 } catch {
   // server down — allow signup page
 }
 
 if (alreadyAuthed) {
-  return Astro.redirect('/admin');
+  // resolveAuthLanding avoids the prior /admin → /account/api-keys double-bounce
+  // for already-authed non-admin customers landing on the signup page.
+  return Astro.redirect(resolveAuthLanding(alreadyAuthedIsAdmin));
 }
 
 // XSS-safe error banner — ONLY whitelisted codes are rendered.

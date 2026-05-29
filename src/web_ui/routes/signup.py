@@ -367,7 +367,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
             # Resolve username for session (needed for auto-login)
             user_row = pool.fetch_one(
                 conn,
-                "SELECT username FROM webui_users WHERE id = %s",
+                "SELECT username, is_admin FROM webui_users WHERE id = %s",
                 (user_id,),
             )
             if user_row is None:
@@ -414,8 +414,29 @@ async def verify_email(body: VerifyEmailBody, request: Request):
     request.session["username"] = username
     request.session["user_id"] = user_id
     request.session["session_at"] = time.time()
+
+    # Auto-mint a free-plan API key for the newly-verified user (WI-7).
+    # Failure is non-fatal — auth must succeed even if onboarding-key minting
+    # blows up.  The helper has its own internal try/except, but we also wrap
+    # the call site defensively so that a failure at the boundary (helper
+    # unavailable, import error, or any exception that escapes the helper)
+    # can never turn a successful verification into a 500.
+    try:
+        from src.web_ui.routes.api_keys import _mint_default_api_key
+        _mint_default_api_key(user_id, username)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "verify-email: default API key mint failed for user %r (id=%d): %s"
+            " — continuing (non-fatal)",
+            username,
+            user_id,
+            exc,
+        )
+
     logger.info("verify-email: user %r (id=%d) verified and logged in", username, user_id)
-    return JSONResponse(_json_safe({"ok": True, "username": username}))
+    return JSONResponse(
+        _json_safe({"ok": True, "username": username, "is_admin": bool(user_row["is_admin"])})
+    )
 
 
 # ---------------------------------------------------------------------------

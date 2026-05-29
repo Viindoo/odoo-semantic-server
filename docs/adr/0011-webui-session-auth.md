@@ -101,3 +101,36 @@ Existing-deploy recovery: if an admin is locked out, run
 - The Astro middleware auth-gate bounce target for unauthenticated requests is `/login` (was
   `/admin/login`); `/account/*` and nginx return-redirects target `/login` likewise.
 - OAuth init + callback paths `/admin/auth/*` are **unchanged** (no provider-console reconfig).
+
+## Amendment — SameSite Strict → Lax (fix/auth-ux-oauth-cache-plans, 2026-05-29)
+
+**Decision change:** `osm_session` cookie changed from `SameSite=Strict` to `SameSite=Lax`.
+This supersedes the `SameSite=strict` decision in §2 above.
+
+### Root cause
+
+The OAuth redirect chain (e.g. `accounts.google.com → /admin/auth/callback → /admin/`) is a
+cross-site top-level navigation.  Browsers that implement the SameSite spec correctly withhold
+`SameSite=Strict` cookies on every hop that crosses origins — including the final redirect back
+to this application.  As a result the session cookie written at the end of the OAuth handshake
+was never sent on the first authenticated page load, and the user appeared logged out despite a
+successful OAuth exchange.
+
+### Security trade-off
+
+`SameSite=Lax` still blocks the primary CSRF threat: cross-site **POST**, PUT, DELETE, and
+subresource requests (images, XHR, fetch) never carry the cookie.  Only top-level GET
+navigations (link clicks, address-bar loads, OAuth redirects) are allowed — which is exactly
+the case needed here.
+
+This application has two additional mitigating controls that make Lax safe:
+
+1. **Loopback-only FastAPI** — `_LoopbackOnlyMiddleware` rejects any request that does not
+   arrive on `127.0.0.1`; the session cookie can only be used via nginx reverse-proxy or SSH
+   tunnel, not by a third-party origin directly.
+2. **Astro same-origin proxy** — all HTML is served by Astro (port 4321) behind the same
+   nginx origin; there is no cross-origin surface that could exploit a Lax cookie for
+   state-changing reads.
+
+No new vulnerabilities are introduced by this change; `Strict` was providing defence-in-depth
+against an attack vector that is already closed by the loopback middleware.

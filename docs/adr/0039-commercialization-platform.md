@@ -152,3 +152,19 @@ full context.
 - Accounting treatment of the NET MoR payout; foreign-exchange compliance.
 - Whether the company website already accepts international payment through an existing rail that
   could be reused instead of a new MoR onboarding.
+
+---
+
+## Amendment — 2026-05-29
+
+**Free-plan consolidation (fix/auth-ux-oauth-cache-plans):** The `free-grandfathered` plan (seeded
+during the free→pro→team transition in v0.13.0) is now deprecated. Migration
+`m13_013_consolidate_free_plans.sql` repoints all 6 existing `free-grandfathered` keys (internal/admin/CLI)
+to the `unlimited` plan (ADR-0041 D5 SSOT: no quota/rpm limit), then deletes the plan row. New
+signups continue to land on the public `free` plan (100 calls/month, 30 rpm). Rationale: operational
+simplicity — one `free` tier for customers, unlimited for admins; no schema artifact.
+
+**Auto-onboarding:** New signups (password + OAuth flows) now auto-assign the `free` plan and
+auto-mint one API key (name: `auto_{user_id}_{timestamp}`), eliminating the prior manual
+"generate key" step. Post-login landing directs users immediately to `/account/api-keys` to see
+their key and copy it. Closes the customer-onboarding friction gap from PR #213 auth unification.

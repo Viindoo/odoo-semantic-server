@@ -72,11 +72,19 @@ def web_app(pg_conn):
 
 @pytest.fixture
 def free_grandfathered_plan_id(pg_conn):
-    """Return the id of the free-grandfathered plan (seeded by m13_006)."""
+    """Return the id of the 'free' plan (100 calls/month, 30 rpm).
+
+    NOTE (m13_013): m13_013_consolidate_free_plans.sql deletes the
+    'free-grandfathered' plan row and repoints its api_keys to 'unlimited'.
+    By the time the test harness runs (all migrations applied), 'free-grandfathered'
+    no longer exists.  These tests exercise the usage-endpoint contract
+    (plan slug + quota surfaced correctly) — the 'free' plan serves that
+    purpose identically.  Asserted quota values updated accordingly (100/month).
+    """
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT id FROM plans WHERE slug = 'free-grandfathered'")
+        cur.execute("SELECT id FROM plans WHERE slug = 'free'")
         row = cur.fetchone()
-    assert row is not None, "free-grandfathered plan must be seeded by m13_006"
+    assert row is not None, "free plan must be seeded by m13_006"
     return row[0]
 
 
@@ -166,20 +174,20 @@ class TestAuthenticatedUserFullUsage:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         body = resp.json()
 
-        # plan block
+        # plan block — 'free' plan (100/month, 30 rpm) post-m13_013
         assert body["plan"] is not None
-        assert body["plan"]["slug"] == "free-grandfathered"
-        assert body["plan"]["name"] == "Free (Grandfathered)"
-        assert body["plan"]["quota_calls_per_month"] == 1000
-        assert body["plan"]["rate_limit_rpm"] == 60
+        assert body["plan"]["slug"] == "free"
+        assert body["plan"]["name"] == "Free"
+        assert body["plan"]["quota_calls_per_month"] == 100
+        assert body["plan"]["rate_limit_rpm"] == 30
 
         # current_period block
         cp = body["current_period"]
         assert cp is not None
         assert cp["yyyymm"] == current_yyyymm
         assert cp["used"] == 87
-        assert cp["remaining"] == 913
-        assert cp["percent"] == 8.7
+        assert cp["remaining"] == 13  # 100 - 87 = 13 (free plan quota)
+        assert cp["percent"] == 87.0  # 87/100 * 100
 
         # history — 3 periods, DESC
         history = body["history"]
@@ -223,7 +231,7 @@ class TestZeroUsage:
         cp = body["current_period"]
         assert cp is not None
         assert cp["used"] == 0
-        assert cp["remaining"] == 1000  # quota_calls_per_month for free-grandfathered
+        assert cp["remaining"] == 100  # quota_calls_per_month for 'free' plan (post-m13_013)
         assert cp["percent"] == 0.0
         assert body["history"] == []
 

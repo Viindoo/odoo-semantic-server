@@ -4,9 +4,14 @@
 
 Business intent (7 cases):
   T1  plans table created with correct columns, UNIQUE on slug, NOT NULL on required cols.
-  T2  4 plans seeded — free-grandfathered, free, pro, team.
+  T2  4 plans seeded — free-grandfathered, free, pro, team (m13_006 original intent).
+      NOTE: m13_013_consolidate_free_plans later removes 'free-grandfathered'.
+      Because tests use run_migrations() (applies ALL migrations), T2 now asserts the
+      post-m13_013 SSOT baseline: {free, pro, team, unlimited} (4 plans).
   T3  api_keys.plan_id column exists as FK to plans(id), is NOT NULL.
   T4  Existing api_keys are backfilled to free-grandfathered before NOT NULL enforcement.
+      test_backfill_via_direct_sql exercises this via controlled SQL; the higher-level
+      helper test now verifies against 'free' (post-m13_013 surviving plan).
   T5  tenants extensions — owner_user_id, billing_email, seat_limit_override columns exist.
   T6  usage_counter table created with composite PK and period_yyyymm index.
   T7  Migration is idempotent — running twice does not raise.
@@ -225,18 +230,26 @@ class TestPlansTableCreated:
 # adds the 5th plan 'unlimited' (admin-granted, is_public=FALSE) as the SSOT
 # for unlimited entitlement per ADR-0041 D5.
 #
-# These tests use the `migrated_pg` fixture which runs ALL migrations, so the
-# assertion targets the current post-all-migrations baseline (5 plans). If a
-# future migration adds/removes a plan, update the expected set here AND link
-# the migration's ADR.
+# Cross-migration note (m13_013): m13_013_consolidate_free_plans.sql removes
+# 'free-grandfathered' — it repoints all keys on that plan to 'unlimited' and
+# then DELETEs the plan row. The `migrated_pg` fixture calls run_migrations()
+# which applies ALL migrations in sequence (including m13_013), so by the time
+# any test here runs, 'free-grandfathered' no longer exists. EXPECTED_SLUGS has
+# been updated to reflect the 4-plan post-m13_013 baseline. The original intent
+# of T2 (asserting a known SSOT plan set after all migrations) is preserved.
+# See tests/test_migration_m13_013.py for m13_013-specific assertions.
+#
+# If a future migration adds/removes a plan, update the expected set here AND
+# link the migration's ADR in the cross-migration notes above.
 
 
 class TestPlansBaselineSeeded:
     """T2: the migration baseline seeds the SSOT set of plan slugs."""
 
-    # SSOT for seeded plan slugs. Update only when a migration adds/removes a
-    # plan AND link the migration's ADR in the cross-migration note above.
-    EXPECTED_SLUGS = {"free-grandfathered", "free", "pro", "team", "unlimited"}
+    # SSOT for seeded plan slugs after all migrations (including m13_013 which
+    # removes 'free-grandfathered').  Updated from 5→4 slugs in m13_013.
+    # Prior value was {"free-grandfathered", "free", "pro", "team", "unlimited"}.
+    EXPECTED_SLUGS = {"free", "pro", "team", "unlimited"}
 
     def test_seeded_plan_count_matches_ssot(self, migrated_pg):
         with migrated_pg.cursor() as cur:
@@ -255,13 +268,25 @@ class TestPlansBaselineSeeded:
             f"Plan slugs mismatch. Expected {self.EXPECTED_SLUGS}, got {actual}"
         )
 
-    def test_free_grandfathered_not_public(self, migrated_pg):
-        """free-grandfathered must have is_public=FALSE (not shown in signup UI)."""
+    def test_free_grandfathered_absent_post_m13_013(self, migrated_pg):
+        """free-grandfathered is absent after all migrations (removed by m13_013).
+
+        The original T2 intent tested that m13_006 seeds 'free-grandfathered'
+        with is_public=FALSE. m13_013 subsequently deletes that plan; because
+        migrated_pg runs ALL migrations, free-grandfathered no longer exists
+        at assertion time. This test guards the correct post-consolidation state:
+        the plan must be gone, not present with a wrong is_public value.
+        See test_migration_m13_013.py::TestFreeGrandfatheredRemoved for the
+        dedicated m13_013 assertion.
+        """
         with migrated_pg.cursor() as cur:
-            cur.execute("SELECT is_public FROM plans WHERE slug = 'free-grandfathered'")
+            cur.execute(
+                "SELECT 1 FROM plans WHERE slug = 'free-grandfathered'"
+            )
             row = cur.fetchone()
-        assert row is not None and row[0] is False, (
-            "free-grandfathered must have is_public=FALSE"
+        assert row is None, (
+            "free-grandfathered must be absent after all migrations "
+            "(removed by m13_013_consolidate_free_plans)"
         )
 
 
@@ -355,10 +380,15 @@ class TestExistingApiKeysBackfilled:
 
         run_migrations(clean_pg)
 
-        # Insert 2 new keys WITH plan_id (since NOT NULL is now enforced)
+        # m13_013 removes 'free-grandfathered' and repoints its keys to 'unlimited'.
+        # The original backfill intent (m13_006: new keys default to free-grandfathered)
+        # is now superseded: post-m13_013 the column DEFAULT points at 'free'.
+        # We verify the current post-all-migrations invariant: INSERT without plan_id
+        # lands on 'free' (T8 in TestApiKeysPlanIdDefault).  Here we use 'free' as the
+        # test plan since that's the only sensible default after m13_013.
         with clean_pg.cursor() as cur:
-            cur.execute("SELECT id FROM plans WHERE slug = 'free-grandfathered'")
-            fg_id = cur.fetchone()[0]
+            cur.execute("SELECT id FROM plans WHERE slug = 'free'")
+            free_id = cur.fetchone()[0]
 
         with clean_pg.cursor() as cur:
             cur.execute(
@@ -366,12 +396,12 @@ class TestExistingApiKeysBackfilled:
                 " VALUES ('key_a', 'hash_a_t4', 'ka_', %s),"
                 "        ('key_b', 'hash_b_t4', 'kb_', %s)"
                 " RETURNING id",
-                (fg_id, fg_id),
+                (free_id, free_id),
             )
             inserted_ids = [row[0] for row in cur.fetchall()]
         clean_pg.commit()
 
-        # Verify plan_id is free-grandfathered on both inserted keys.
+        # Verify plan_id is 'free' on both inserted keys (post-m13_013 baseline).
         with clean_pg.cursor() as cur:
             cur.execute(
                 "SELECT plan_id FROM api_keys WHERE id = ANY(%s)",
@@ -379,8 +409,8 @@ class TestExistingApiKeysBackfilled:
             )
             plan_ids = {row[0] for row in cur.fetchall()}
 
-        assert plan_ids == {fg_id}, (
-            f"All api_keys must have plan_id = free-grandfathered ({fg_id}), got {plan_ids}"
+        assert plan_ids == {free_id}, (
+            f"All api_keys must have plan_id = 'free' ({free_id}), got {plan_ids}"
         )
 
     def test_backfill_via_direct_sql(self, clean_pg):
@@ -586,9 +616,13 @@ class TestUsageCounterTable:
         )
 
     def test_usage_counter_upsert_works(self, migrated_pg):
-        """INSERT ... ON CONFLICT DO UPDATE increments call_count atomically."""
+        """INSERT ... ON CONFLICT DO UPDATE increments call_count atomically.
+
+        Originally used 'free-grandfathered' as the test plan; m13_013 removes
+        that plan, so we use 'free' (the post-m13_013 default plan) instead.
+        """
         with migrated_pg.cursor() as cur:
-            cur.execute("SELECT id FROM plans WHERE slug = 'free-grandfathered'")
+            cur.execute("SELECT id FROM plans WHERE slug = 'free'")
             fg_id = cur.fetchone()[0]
             cur.execute(
                 "INSERT INTO api_keys (name, key_hash, key_prefix, plan_id)"

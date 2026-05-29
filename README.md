@@ -188,6 +188,8 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **Auth flow unification (feat/m10b-auth-unify, 2026-05-29):** `/login` now canonical (`/admin/login` 301→`/login`); OAuth Google/GitHub buttons on `/signup` (cookie `oauth_from` phân biệt origin); reset-password enforce `auth.password_min_length` (default 12) + common-pw blocklist (FE+BE) + TOCTOU `SELECT...FOR UPDATE` guard; shared `AuthLayout` + 22-item UX/a11y. OAuth paths `/admin/auth/*` giữ nguyên. Tool count stays **24**; no migration. Closes the prior customer-onboarding UI gaps (forgot-password e2e, `/pricing` nav, `/login` alias, OAuth error banner).
 
+**Free-plan consolidation + auto-onboarding (fix/auth-ux-oauth-cache-plans, 2026-05-29):** Single unified `free` public plan replaces `free-grandfathered` (migration m13_013); all new signups (password + OAuth) auto-mint an API key on the free plan. SameSite cookie fix for Google sign-in (Strict→Lax), SSR cache-control + Clear-Site-Data on logout, role-aware post-login landing. Tool count stays **24**; migration m13_013 required.
+
 **Active work:** Post-PR-#200/#204 cleanup PR in flight — TD-1 (backup format pg_dump -F custom), TD-2 (conftest Priority 2 guard), TD-4 (Neo4j auth_max_failed_attempts), backup retention pruning. **Deferred:** M10B P1 (Polar adapter + Entitlement Activation API + multi-IdP "Viindoo Account"), M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep), VN persona docs.
 
 **Next milestones (roadmap):**

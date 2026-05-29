@@ -80,10 +80,33 @@ const _PERMISSIONS_POLICY =
 /**
  * Inject CSP + Permissions-Policy on every Astro SSR response.
  * https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy
+ *
+ * @param noStore - When true (default), also sets Cache-Control: no-store to
+ *   prevent the browser's bfcache from storing authenticated page snapshots.
+ *   Without no-store, switching Google/GitHub accounts and pressing Back can
+ *   instantly restore a prior session's admin dashboard from bfcache memory —
+ *   the server never receives a request so the session guard never runs.
+ *
+ *   Set noStore=false only for prerendered/public pages (/, /pricing, etc.)
+ *   where cacheability is intentional and the page contains no session-specific
+ *   content.  Static asset files (/_astro/*.js, /_astro/*.css) are served by
+ *   @astrojs/node's serve-static layer BEFORE middleware runs, so they are
+ *   unaffected by this function regardless of the noStore flag.
  */
-function _addSecurityHeaders(response: Response, pathname: string): void {
+function _addSecurityHeaders(response: Response, pathname: string, noStore: boolean = true): void {
   response.headers.set('Content-Security-Policy', _buildCspForPath(pathname));
   response.headers.set('Permissions-Policy', _PERMISSIONS_POLICY);
+  if (noStore) {
+    // no-store: the only directive that definitively prevents bfcache storage
+    // across all major browsers (no-cache alone is insufficient on some).
+    // must-revalidate: belt-and-suspenders for shared/intermediate caches.
+    // Pragma: no-cache: HTTP/1.0 compatibility shim (ignored by HTTP/2 clients).
+    // Vary: Cookie: prevents any future CDN / nginx proxy_cache from serving
+    // one authenticated user's response to a different user.
+    response.headers.set('Cache-Control', 'no-store, must-revalidate');
+    response.headers.set('Pragma', 'no-cache');
+    response.headers.set('Vary', 'Cookie');
+  }
 }
 
 /**
@@ -174,7 +197,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
     if (context.isPrerendered) {
       context.locals.user = null;
       const response = await next();
-      _addSecurityHeaders(response, path);
+      // noStore=false: prerendered pages are public/static — they contain no
+      // session-specific content and should remain cacheable by browsers/CDNs.
+      _addSecurityHeaders(response, path, false);
       return response;
     }
     // Non-admin SSR routes: populate locals.user if authenticated.
@@ -217,7 +242,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
     if (!adminPayload) {
       const sessionPayload = await verifySession(cookieHeader);
       if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/login');
-      return _redirectWithHeaders('/admin?error=admin_required');
+      // Fix M-1: send non-admins directly to /account/api-keys?error=admin_required
+      // (1 redirect, error param preserved) instead of /admin?error=admin_required
+      // which immediately double-bounces to /account/api-keys and loses the param.
+      return _redirectWithHeaders('/account/api-keys?error=admin_required');
     }
     context.locals.user = {
       username: adminPayload.username!,
@@ -232,11 +260,12 @@ export const onRequest = defineMiddleware(async (context, next) => {
   if (path === '/admin/users' || path.startsWith('/admin/users/')) {
     const adminPayload = await requireAdmin(cookieHeader);
     if (!adminPayload) {
-      // Not logged in → redirect to login; logged in but not admin → 403 redirect to dashboard.
+      // Not logged in → redirect to login; logged in but not admin → 403 redirect.
       const sessionPayload = await verifySession(cookieHeader);
       if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/login');
-      // Authenticated but not admin → dashboard with a flash (query param for UX)
-      return _redirectWithHeaders('/admin?error=admin_required');
+      // Fix M-1: same as /admin/tenants — go directly to /account/api-keys with the
+      // error param rather than double-bouncing via /admin and losing the param.
+      return _redirectWithHeaders('/account/api-keys?error=admin_required');
     }
     context.locals.user = {
       username: adminPayload.username!,
@@ -260,12 +289,17 @@ export const onRequest = defineMiddleware(async (context, next) => {
     is_admin: sessionPayload.is_admin ?? false,
   };
 
-  // Non-admin users hitting /admin/* (except auth pages and /admin/users/* handled above)
-  // are redirected to their own account page rather than seeing an admin-only UI.
+  // Non-admin users hitting /admin (bare) or /admin/* (except auth pages and
+  // /admin/users/* / /admin/tenants/* handled above) are redirected to their own
+  // account page rather than seeing an admin-only UI.
+  //
+  // Fix M-2: bare `/admin` (no trailing slash) must also be gated here.
+  // Previously only `path.startsWith('/admin/')` was tested, so a non-admin who
+  // navigated directly to `/admin` (no slash) would see the admin dashboard
+  // rendered with empty/errored data instead of being bounced.
   if (
     sessionPayload.is_admin === false &&
-    path.startsWith('/admin/') &&
-    !path.startsWith('/admin/auth/')  // forward-compat: reserved for future OAuth callback routes
+    (path === '/admin' || (path.startsWith('/admin/') && !path.startsWith('/admin/auth/')))
   ) {
     return _redirectWithHeaders('/account/api-keys');
   }

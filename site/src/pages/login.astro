@@ -6,15 +6,21 @@
 import AuthLayout from '../layouts/AuthLayout.astro';
 import { FASTAPI_BASE } from '../lib/fastapi';
 import OAuthButtons from '../components/OAuthButtons.astro';
+import { resolveAuthLanding } from '../lib/auth-landing';
 
-// Redirect already-authed users to dashboard
+// Redirect already-authed users to their role-appropriate landing.
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 let alreadyAuthed = false;
+let alreadyAuthedIsAdmin = false;
 try {
   const verify = await fetch(`${FASTAPI_BASE}/api/auth/verify`, {
     headers: { cookie: cookieHeader },
   });
   alreadyAuthed = verify.ok;
+  if (verify.ok) {
+    const vb = await verify.json().catch(() => ({ is_admin: false }));
+    alreadyAuthedIsAdmin = vb.is_admin === true;
+  }
 } catch {
   // server down — allow login page
 }
@@ -22,15 +28,14 @@ try {
 // Server-side ?return= consumer.
 // Middleware (site/src/middleware.ts) sets ?return=<path> when an
 // unauthenticated user hits /account/*. After login completes we redirect
-// them back. Strict same-origin path-only validation (CWE-601 open-redirect
-// guard): only paths starting with literal "/account/" or "/admin/" are
-// accepted — any scheme://host, protocol-relative "//evil.com", or
-// fragment/quoted-prefix trick is rejected. Fallback target is /admin.
-const _rawReturn = Astro.url.searchParams.get('return') ?? '';
-const returnTarget = /^\/(account|admin)\//.test(_rawReturn) ? _rawReturn : '/admin';
+// them back. resolveAuthLanding() applies the shared CWE-601 open-redirect
+// guard (isSafeInternalPath) and falls back to the role-appropriate landing
+// (admin → /admin/, non-admin → /account/api-keys), avoiding the prior
+// /admin → /account/api-keys double-bounce for non-admins.
+const _rawReturn = Astro.url.searchParams.get('return');
 
 if (alreadyAuthed) {
-  return Astro.redirect(returnTarget);
+  return Astro.redirect(resolveAuthLanding(alreadyAuthedIsAdmin, _rawReturn));
 }
 
 // XSS-safe error/info banner — ONLY whitelisted codes are rendered.
@@ -222,13 +227,7 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
 </AuthLayout>
 
 <script>
-  // Client-side ?return= consumer — mirror server-side guard above.
-  // Same path-only allowlist (CWE-601 open-redirect guard): reject any value
-  // that doesn't start with literal "/account/" or "/admin/". Fallback /admin.
-  function getReturnTarget(): string {
-    const raw = new URLSearchParams(window.location.search).get('return') ?? '';
-    return /^\/(account|admin)\//.test(raw) ? raw : '/admin';
-  }
+  import { resolveAuthLanding } from '../lib/auth-landing';
 
   document.querySelector('[data-testid="login-form"]')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -264,7 +263,8 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
         mfaSection?.removeAttribute('hidden');
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
       } else {
-        window.location.href = getReturnTarget();
+        const rawReturn = new URLSearchParams(window.location.search).get('return');
+        window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
       }
     } else {
       if (errorEl) {
@@ -315,7 +315,8 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      window.location.href = getReturnTarget();
+      const rawReturn = new URLSearchParams(window.location.search).get('return');
+      window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
     } else {
       if (mfaErrorEl) {
         const msg =

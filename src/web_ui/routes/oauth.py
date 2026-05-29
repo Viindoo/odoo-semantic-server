@@ -255,6 +255,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
     # -----------------------------------------------------------------------
     # 1. Check existing record by (provider, oauth_id) — same account, fast path
     # -----------------------------------------------------------------------
+    is_new_user = False  # WI-7: track whether this login created a brand-new account
     user = _lookup_user_by_oauth(body.provider, body.oauth_id)
 
     # -----------------------------------------------------------------------
@@ -350,6 +351,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
                     email_verified=body.email_verified,
                     name=body.name,
                 )
+                is_new_user = True  # WI-7: brand-new account — mint a key after session
             except Exception as exc:
                 logger.error("OAuth user creation failed: %s", exc)
                 return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
@@ -404,10 +406,34 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
     request.session["username"] = username
     request.session["session_at"] = time.time()
 
+    # Auto-mint a free-plan API key for brand-new OAuth users only (WI-7).
+    # Returning users (oauth match or email-merge) may already have keys — skip.
+    # Failure is non-fatal: auth must succeed even if onboarding-key minting
+    # blows up.  The helper has its own internal try/except, but we also wrap
+    # the call site defensively so a failure at the boundary (helper
+    # unavailable, import error, or any exception that escapes the helper)
+    # can never turn a successful OAuth login into a 500.
+    if is_new_user:
+        try:
+            from src.web_ui.routes.api_keys import _mint_default_api_key
+            _mint_default_api_key(user["id"], username)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "OAuth login: default API key mint failed for user %r (id=%s): %s"
+                " — continuing (non-fatal)",
+                username,
+                user["id"],
+                exc,
+            )
+
     logger.info(
         "OAuth login success: user %r (provider=%s, IP=%s)",
         username,
         body.provider,
         client_ip,
     )
-    return JSONResponse(_json_safe({"ok": True, "username": username}))
+    return JSONResponse(
+        _json_safe(
+            {"ok": True, "username": username, "is_admin": bool(user.get("is_admin") or False)}
+        )
+    )

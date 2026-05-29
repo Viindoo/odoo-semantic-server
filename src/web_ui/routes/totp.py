@@ -632,14 +632,14 @@ async def totp_login(body: MfaLoginBody, request: Request):
     with pool.checkout() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT username FROM webui_users WHERE id = %s", (user_id,)
+                "SELECT username, is_admin FROM webui_users WHERE id = %s", (user_id,)
             )
             user_row = cur.fetchone()
 
     if user_row is None:
         return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
 
-    username = user_row[0]
+    username, is_admin = user_row[0], user_row[1]
 
     # Verify TOTP code or backup code
     row = _get_totp_row(user_id)
@@ -684,7 +684,7 @@ async def totp_login(body: MfaLoginBody, request: Request):
     request.session["mfa_verified_at"] = now
     _update_session_mfa_verified_at(session_id)
     logger.info("MFA login success for user_id=%d (%r)", user_id, username)
-    return JSONResponse(_json_safe({"ok": True, "username": username}))
+    return JSONResponse(_json_safe({"ok": True, "username": username, "is_admin": bool(is_admin)}))
 
 
 # ---------------------------------------------------------------------------

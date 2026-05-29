@@ -183,7 +183,13 @@ class _FakePool:
 
 
 class TestFreeGrandfatheredUnderQuotaPasses:
-    """Case 1: free-grandfathered (1000/month, 60 rpm) allows calls within quota."""
+    """Case 1: finite-quota plan (100/month, 30 rpm) allows calls within quota.
+
+    NOTE (m13_013): m13_013_consolidate_free_plans.sql deletes 'free-grandfathered'
+    from the plans table (repoints its keys to 'unlimited').  This test was renamed
+    in spirit only — the class name is kept for history; the slug is now 'free'
+    (100/month, 30 rpm), which exercises the same quota-enforcement code path.
+    """
 
     _KEY_HASH = "hash_mq_c1_fg"
 
@@ -193,16 +199,16 @@ class TestFreeGrandfatheredUnderQuotaPasses:
             name="mq_c1_fg",
             key_hash=self._KEY_HASH,
             key_prefix="c1fg",
-            slug="free-grandfathered",
+            slug="free",  # free-grandfathered deleted by m13_013; use 'free' instead
         )
         migrated_db.commit()
         try:
             pool = _FakePool(migrated_db)
 
             plan_info = _get_plan_for_key(key_id, pool)
-            assert plan_info.slug == "free-grandfathered"
-            assert plan_info.quota_calls_per_month == 1000
-            assert plan_info.rate_limit_rpm == 60
+            assert plan_info.slug == "free"
+            assert plan_info.quota_calls_per_month == 100
+            assert plan_info.rate_limit_rpm == 30
 
             # Simulate 5 calls under quota (usage_counter row absent = 0 used)
             for _ in range(5):
