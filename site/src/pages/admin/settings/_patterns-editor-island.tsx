@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Patterns Editor React island — admin pattern catalogue CRUD (WI-10, ADR-0009)
 import { useState } from 'react';
+import { withStepUp } from '../../../lib/mfaStepUp';
 
 type Language = 'python' | 'xml' | 'js';
 
@@ -81,12 +82,12 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
     };
 
     try {
-      const res = await fetch(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
+      const res = await withStepUp(() => fetch(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify(payload),
-      });
+      }));
       const data = await res.json().catch(() => ({})) as { detail?: string; sentinel_sha?: string };
       if (res.ok) {
         flash(`Pattern "${pattern.pattern_id}" updated. Re-embed pending (≤5 min).`);
@@ -104,10 +105,10 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
 
   const handleSoftDelete = async () => {
     if (!confirm(`Soft-delete pattern "${pattern.pattern_id}"? It will be excluded from search results and the active catalogue.`)) return;
-    const res = await fetch(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
+    const res = await withStepUp(() => fetch(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
       method: 'DELETE',
       credentials: 'include',
-    });
+    }));
     if (res.ok) {
       flash(`Pattern "${pattern.pattern_id}" soft-deleted.`);
       onSaved();
@@ -347,7 +348,7 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
     if (!r || r.length < 3) { setFormError('Reason required (min 3 chars).'); return; }
     setSaving(true);
     try {
-      const res = await fetch('/api/admin/patterns', {
+      const res = await withStepUp(() => fetch('/api/admin/patterns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -361,7 +362,7 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
           odoo_version_max: versionMax.trim() || null,
           reason: r,
         }),
-      });
+      }));
       const data = await res.json().catch(() => ({})) as { detail?: string };
       if (res.ok) {
         flash(`Pattern "${patternId}" created. Re-embed pending.`);

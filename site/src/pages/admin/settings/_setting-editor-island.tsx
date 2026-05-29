@@ -2,6 +2,7 @@
 // Setting Editor React island — generic widget dispatcher for admin settings (WI-10)
 // Handles: NumberSlider, DurationPicker, ToggleSwitch, TextInput, TagListInput
 import { useState, useCallback } from 'react';
+import { withStepUp } from '../../../lib/mfaStepUp';
 
 type DataType = 'int' | 'float' | 'str' | 'bool' | 'duration_seconds' | 'list_str' | 'struct';
 
@@ -334,9 +335,10 @@ function HistoryDrawer({
     if (!confirm('Undo last change to this setting? This will revert to the previous value.')) return;
     setUndoing(true);
     try {
-      const res = await fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
+      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
         method: 'POST',
-      });
+        credentials: 'include',
+      }));
       if (res.ok) {
         flash(`Setting ${settingKey} reverted.`);
         onClose();
@@ -461,12 +463,12 @@ export default function SettingEditorIsland({ settings }: Props) {
     setSaving((prev) => ({ ...prev, [s.key]: true }));
     setErrors((prev) => ({ ...prev, [s.key]: '' }));
     try {
-      const res = await fetch(`/api/admin/settings/${encodeURIComponent(s.key)}`, {
+      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(s.key)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ value, reason }),
-      });
+      }));
       if (!res.ok) {
         const d = await res.json().catch(() => ({})) as { detail?: string };
         throw new Error(d.detail ?? `HTTP ${res.status}`);
@@ -486,10 +488,10 @@ export default function SettingEditorIsland({ settings }: Props) {
     if (!confirm(`Reset "${s.key}" to default value (${JSON.stringify(s.default_value)})?`)) return;
     setResettingKey(s.key);
     try {
-      const res = await fetch(`/api/admin/settings/${encodeURIComponent(s.key)}/reset`, {
+      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(s.key)}/reset`, {
         method: 'POST',
         credentials: 'include',
-      });
+      }));
       if (!res.ok) {
         const d = await res.json().catch(() => ({})) as { detail?: string };
         flash(d.detail ?? 'Reset failed.', true);

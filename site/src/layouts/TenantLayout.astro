@@ -3,6 +3,7 @@
 // Tenant-facing layout — minimal chrome, no admin nav exposure.
 // Used by /tenant/* pages accessible to tenant_admin members.
 import BaseLayout from './BaseLayout.astro';
+import StepUpMfaModal from '../components/StepUpMfaModal';
 
 export interface Props {
   title?: string;
@@ -95,4 +96,5 @@ const pageTitle = `${title}${tenantName ? ` · ${tenantName}` : ''}`;
       </main>
     </div>
   </div>
+  <StepUpMfaModal client:load />
 </BaseLayout>

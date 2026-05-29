@@ -308,7 +308,10 @@ async def test_restore_requires_fresh_mfa(app_no_bypass, tmp_path):
         auth_mod.require_admin = orig_require_admin
 
     assert resp_status == 403, f"Expected 403, got {resp_status}: {resp_detail}"
-    assert "mfa" in resp_detail.lower() or "fresh" in resp_detail.lower()
+    # Detail is a structured dict {"error": ..., "message": ...} (ADR-0043 D5).
+    assert isinstance(resp_detail, dict), f"403 detail must be a dict, got: {resp_detail!r}"
+    assert resp_detail.get("error") == "mfa_freshness_required"
+    assert "fresh mfa required" in resp_detail.get("message", "").lower()
 
 
 # ---------------------------------------------------------------------------

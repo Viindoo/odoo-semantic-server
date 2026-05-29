@@ -14,11 +14,18 @@ Session middleware:
     by get_session_secret(). TTL enforced by storing "session_at" epoch in the
     session dict and checking inside AuthRequiredMiddleware.
 
-MFA freshness:
-    For destructive operations (restore), require MFA to have been completed
-    within the last MFA_FRESHNESS_SECONDS (default 5 minutes). MFA timestamp
-    is stored in session["mfa_verified_at"]. If MFA is not enrolled, the
-    operation is blocked (403).
+MFA freshness (ADR-0043):
+    For destructive operations (restore, admin settings), require MFA to have
+    been completed within the last ``get_mfa_freshness()`` seconds (default 5
+    minutes, runtime-configurable via ``auth.mfa_freshness_seconds`` app
+    setting per ADR-0042). The timestamp is stored in both
+    session["mfa_verified_at"] and active_sessions.mfa_verified_at (DB).
+
+    Write contract: the timestamp is written by (a) ``totp_login`` on
+    successful MFA login and (b) ``POST /api/auth/totp/step-up`` on
+    successful mid-session re-verification. No other path writes this key.
+    If MFA is not enrolled or the window has expired, the operation is
+    blocked with 403 "Fresh MFA required".
 """
 
 import logging
@@ -42,11 +49,40 @@ SESSION_TTL_SECONDS = 8 * 3600
 
 # MFA freshness window for destructive operations (restore): 5 minutes.
 #
-# Not currently exposed via ``app_settings`` (no Tier-1 entry) — kept as a
-# hard-coded operational floor.
+# WI-9 (ADR-0042): kept as the code-default fallback for ``get_setting(
+# "auth.mfa_freshness_seconds")``.  Existing callers may continue to import
+# this constant; new callers should prefer :func:`get_mfa_freshness` so an
+# admin can override the value via ``app_settings`` without redeploying.
 MFA_FRESHNESS_SECONDS = 5 * 60
 
 _DEV_FALLBACK_SECRET: str | None = None
+
+
+def get_mfa_freshness() -> int:
+    """Resolve the MFA freshness window through the admin-settings overlay.
+
+    Resolution order (per ADR-0042, via :func:`src.settings.get_setting`):
+      1. ``app_settings`` row for ``auth.mfa_freshness_seconds`` (DB).
+      2. ``SETTINGS_CATALOGUE`` default.
+      3. This module-level :data:`MFA_FRESHNESS_SECONDS` (fallback guard for
+         very early bootstrap or catalogue not yet loaded).
+
+    The resolved value is defensively clamped to the catalogue bounds
+    [60, 3600] (see ``settings_registry.py``). This prevents a bad/zero DB
+    value from bricking every fresh-MFA-gated admin op — a window of 0 would
+    make EVERY step-up instantly stale, an unrecoverable lockout.
+
+    Import is intentionally lazy to avoid a circular import between
+    ``src.web_ui.auth`` and ``src.settings`` at module-load time.
+    """
+    try:
+        from src.settings import get_setting
+        value = int(get_setting("auth.mfa_freshness_seconds"))
+    except Exception:
+        value = MFA_FRESHNESS_SECONDS
+    # Clamp to catalogue bounds (mirrors settings_registry min=60 / max=3600)
+    # so a corrupt or zero value cannot permanently lock out admin ops.
+    return max(60, min(3600, value))
 
 
 def get_session_ttl() -> int:
@@ -217,38 +253,67 @@ async def require_admin(request: Request) -> int:
     return user_id
 
 
+# Stable machine-readable discriminator the frontend keys on to trigger the
+# step-up modal (ADR-0043 D5). The human ``message`` retains the
+# "Fresh MFA required" sentinel for back-compat / non-JS clients.
+STEP_UP_ERROR_CODE = "mfa_freshness_required"
+
+
+def _fresh_mfa_error(message: str) -> HTTPException:
+    """Build the 403 step-up gate exception with a structured detail.
+
+    The detail is a dict ``{"error": STEP_UP_ERROR_CODE, "message": ...}`` so
+    the frontend can key on the stable ``error`` field while ``message`` keeps
+    the human-readable "Fresh MFA required" sentinel for back-compat (ADR-0043 D5).
+    """
+    return HTTPException(
+        status_code=403,
+        detail={"error": STEP_UP_ERROR_CODE, "message": message},
+    )
+
+
+def _check_mfa_freshness(request: Request) -> None:
+    """Verify MFA was completed within the configured freshness window.
+
+    Raises HTTPException 403 with a structured detail dict if the check fails:
+    ``{"error": "mfa_freshness_required", "message": "Fresh MFA required — ..."}``.
+    The frontend keys on ``detail.error``; the message retains the
+    "Fresh MFA required" sentinel for back-compat (ADR-0043 D5).
+
+    Does NOT bypass for test mode — callers (require_admin_with_fresh_mfa,
+    _require_tenant_owner_or_admin_with_mfa) must gate this call with
+    is_test_bypass_active() themselves so the bypass is transparent to tests.
+    """
+    window = get_mfa_freshness()
+    mfa_verified_at = request.session.get("mfa_verified_at")
+    if mfa_verified_at is None:
+        raise _fresh_mfa_error(
+            "Fresh MFA required — MFA not enrolled or not recently verified"
+        )
+    try:
+        age = time.time() - float(mfa_verified_at)
+    except (TypeError, ValueError):
+        raise _fresh_mfa_error("Fresh MFA required — invalid MFA timestamp")
+    if age < 0 or age > window:
+        raise _fresh_mfa_error(
+            f"Fresh MFA required — re-verify within last {window // 60} minutes"
+        )
+
+
 async def require_admin_with_fresh_mfa(request: Request) -> int:
-    """FastAPI Depends: require admin + fresh MFA verification (within 5 min).
+    """FastAPI Depends: require admin + fresh MFA verification.
 
     Used for destructive operations like restore. Adds MFA freshness check
-    on top of require_admin.
+    on top of require_admin. The freshness window is runtime-configurable
+    via ``auth.mfa_freshness_seconds`` (ADR-0042); falls back to
+    :data:`MFA_FRESHNESS_SECONDS` (5 min).
     """
     user_id = await require_admin(request)
 
     if is_test_bypass_active():
         return user_id
 
-    mfa_verified_at = request.session.get("mfa_verified_at")
-    if mfa_verified_at is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Fresh MFA required — MFA not enrolled or not recently verified",
-        )
-    try:
-        age = time.time() - float(mfa_verified_at)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=403,
-            detail="Fresh MFA required — invalid MFA timestamp",
-        )
-    if age < 0 or age > MFA_FRESHNESS_SECONDS:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Fresh MFA required — re-verify within last "
-                f"{MFA_FRESHNESS_SECONDS // 60} minutes"
-            ),
-        )
+    _check_mfa_freshness(request)
     return user_id
 
 

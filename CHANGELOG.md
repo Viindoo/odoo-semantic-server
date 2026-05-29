@@ -33,6 +33,40 @@ All notable changes to Odoo Semantic MCP are documented here.
   hash so the edited `m13_010` file will not re-run. Web-UI/tool surface unchanged —
   **tool count stays 24**.
 
+### Fixed — MFA step-up freshness: permanent 403 on all fresh-MFA-gated routes (fix/mfa-step-up-freshness)
+
+- **Root cause:** `request.session["mfa_verified_at"]` was READ by both `require_admin_with_fresh_mfa`
+  (FastAPI dependency in `src/web_ui/auth.py`) and the inline gate in `tenant_settings.py`, but
+  was **never written** anywhere in the application. The DB column `active_sessions.mfa_verified_at`
+  (migration `m9_005`) also existed but was never populated. Result: every admin route gated by
+  fresh-MFA (admin settings incl. signup toggle, plans, EE-modules, patterns; restore endpoint)
+  returned `403 "Fresh MFA required"` permanently.
+- **Why unnoticed:** `is_test_bypass_active()` short-circuits the fresh-MFA gate under pytest
+  (`WEBUI_AUTH_DISABLED=1 + PYTEST_CURRENT_TEST`), masking the missing write in all test runs.
+- **Fix:** `totp_login` now writes `request.session["mfa_verified_at"] = time.time()` **and**
+  `UPDATE active_sessions SET mfa_verified_at = NOW()` on successful MFA login. Shared helper
+  `_check_mfa_freshness(request)` de-duplicates the gate logic between `require_admin_with_fresh_mfa`
+  and `tenant_settings.py`.
+
+### Added — MFA step-up freshness (fix/mfa-step-up-freshness)
+
+- **`POST /api/auth/totp/step-up`** — new endpoint for mid-session MFA re-verification. Requires a
+  valid session, re-verifies a TOTP or backup code, rate-limited (same per-user counter as
+  `totp_login`), sets `session["mfa_verified_at"]` + `active_sessions.mfa_verified_at` on success.
+  Audited via `@audit_action("user.login.mfa")`. Returns `403 {error: "mfa_not_enrolled"}` when no
+  TOTP is configured.
+- **`auth.mfa_freshness_seconds` setting** — new Tier-1 runtime setting (default 300, min 60,
+  max 3600, category auth) in `SETTINGS_CATALOGUE` (ADR-0042). Read via `get_mfa_freshness()`
+  helper (mirrors `get_session_ttl()`); fallback constant `MFA_FRESHNESS_SECONDS=300` preserved.
+  Tier-1 settings count bumps 15 → **16**.
+- **`StepUpMfaModal` + `withStepUp()` frontend** — React island detects `403 "Fresh MFA required"`
+  sentinel, prompts admin for TOTP code, POSTs to `step-up`, retries original action once on
+  success. All admin action islands that trigger fresh-MFA-gated routes are wrapped via
+  `withStepUp`. Web-UI only — **tool count stays 24**.
+- **ADR-0043** — concretely specifies the `mfa_verified_at` write contract, step-up endpoint
+  contract, runtime-configurable window, audit taxonomy, and frontend UX. Supersedes the
+  implied-but-unspecified step-up in ADR-0019 and ADR-0022.
+
 ### Fixed — UI contrast / accessibility: light-first theme inversion (fix/ui-contrast-light-first)
 
 - **Root cause (systemic):** `site/src/styles/global.css` set `html { color: #E6F2F4; background: #07131A }`

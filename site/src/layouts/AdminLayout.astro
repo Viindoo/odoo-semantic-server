@@ -1,6 +1,7 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import BaseLayout from './BaseLayout.astro';
+import StepUpMfaModal from '../components/StepUpMfaModal';
 
 export interface Props {
   title?: string;
@@ -103,4 +104,5 @@ const avatarLetter = displayName.charAt(0).toUpperCase();
       </main>
     </div>
   </div>
+  <StepUpMfaModal client:load />
 </BaseLayout>

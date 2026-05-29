@@ -2,6 +2,7 @@
 // History Drawer React island — standalone slide-out history panel (WI-10)
 // Used by [category].astro as a per-key history trigger.
 import { useState, useEffect } from 'react';
+import { withStepUp } from '../../../lib/mfaStepUp';
 
 interface HistoryEntry {
   id: number;
@@ -85,10 +86,10 @@ export default function HistoryDrawerIsland({ settingKey, triggerSelector }: Pro
     if (!confirm(`Undo last change to "${settingKey}"? This reverts to the previous value.`)) return;
     setUndoing(true);
     try {
-      const res = await fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
+      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
         method: 'POST',
         credentials: 'include',
-      });
+      }));
       if (res.ok) {
         flash(`Setting ${settingKey} reverted to previous value.`);
         setOpen(false);

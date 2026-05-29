@@ -22,6 +22,7 @@ import io
 import logging
 import os
 import secrets
+import time
 from datetime import UTC, datetime
 
 import pyotp
@@ -33,8 +34,9 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from src.crypto import get_fernet
+from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import is_test_bypass_active, verify_password
+from src.web_ui.auth import current_user_id, is_test_bypass_active, verify_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth/totp")
@@ -221,6 +223,85 @@ def _update_backup_codes(user_id: int, backup_codes_hashed: list[dict]) -> None:
         conn.commit()
 
 
+def _update_session_mfa_verified_at(session_id: str) -> None:
+    """UPDATE active_sessions.mfa_verified_at = NOW() for session_id.
+
+    Best-effort: failure is logged at WARNING and does not abort the caller.
+    When session_id is absent (e.g. test/legacy path) the function is a no-op.
+    """
+    if not session_id:
+        return
+    from src.db.pg import auth_store
+
+    try:
+        pool = auth_store()._pool
+        with pool.checkout() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE active_sessions SET mfa_verified_at = NOW() WHERE session_id = %s",
+                    (session_id,),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("_update_session_mfa_verified_at failed (non-fatal): %s", exc)
+
+
+def _decode_backup_codes(row: dict) -> list[dict]:
+    """Return the ``backup_codes_hash`` from a totp_secrets row as a list.
+
+    The JSONB column may surface as either a native list (psycopg auto-decode)
+    or a raw JSON string depending on the driver/column adapter; normalise both
+    to a list of ``{hash, used_at}`` dicts.
+    """
+    import json
+
+    stored = row["backup_codes_hash"]
+    if isinstance(stored, str):
+        return json.loads(stored)
+    return stored
+
+
+def _verify_totp_or_backup(
+    user_id: int,
+    row: dict,
+    code: str | None,
+    backup_code: str | None,
+) -> tuple[bool, str | None]:
+    """Verify a TOTP code OR a one-time backup code against a totp_secrets row.
+
+    Shared by ``totp_login`` and ``totp_step_up`` so the verify/branch logic
+    lives in exactly one place.
+
+    Behaviour:
+      * ``code`` set      → verify TOTP (±window). Returns (False, "invalid_code")
+        on mismatch.
+      * ``backup_code``   → match an unused backup code; on success the consumed
+        code's ``used_at`` is persisted via ``_update_backup_codes``. Returns
+        (False, "invalid_backup_code") on mismatch.
+      * neither set       → (False, "code_or_backup_code_required").
+
+    Returns ``(valid, error_key)`` — ``error_key`` is ``None`` on success.
+    The caller owns rate-limit accounting and the success side effects
+    (session/DB freshness writes); this helper only verifies + consumes.
+    """
+    if code is not None:
+        secret = _decrypt_secret(row["secret_encrypted"])
+        valid = pyotp.TOTP(secret).verify(code.strip(), valid_window=TOTP_VALID_WINDOW)
+        if not valid:
+            return False, "invalid_code"
+        return True, None
+
+    if backup_code is not None:
+        stored = _decode_backup_codes(row)
+        valid, updated = _check_backup_code(backup_code, stored)
+        if not valid:
+            return False, "invalid_backup_code"
+        _update_backup_codes(user_id, updated)
+        return True, None
+
+    return False, "code_or_backup_code_required"
+
+
 def _check_backup_code(code: str, stored: list[dict]) -> tuple[bool, list[dict]]:
     """Check if a backup code is valid (unused + HMAC matches).
 
@@ -257,6 +338,15 @@ class DisableBody(BaseModel):
 
 class MfaLoginBody(BaseModel):
     mfa_token: str
+    code: str | None = None
+    backup_code: str | None = None
+
+
+class StepUpBody(BaseModel):
+    """Request body for POST /api/auth/totp/step-up.
+
+    Mirrors MfaLoginBody (minus mfa_token — the caller is already authenticated).
+    """
     code: str | None = None
     backup_code: str | None = None
 
@@ -416,6 +506,92 @@ async def totp_status(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Step-up re-verify endpoint (for already-authenticated sessions)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/step-up")
+@audit_action("user.mfa.stepup")
+async def totp_step_up(body: StepUpBody, request: Request):
+    """Re-verify MFA for an already-authenticated session (step-up gate).
+
+    Called when an admin route protected by ``require_admin_with_fresh_mfa``
+    returns 403 "Fresh MFA required".  The caller must already hold a valid
+    session (set via /login → session cookie); this endpoint establishes
+    freshness without re-issuing credentials.
+
+    On success:
+      * Sets ``request.session["mfa_verified_at"]`` to the current epoch.
+      * Writes ``active_sessions.mfa_verified_at = NOW()`` for the session row
+        (so the DB reflects freshness independently of the cookie).
+      * Returns ``{"ok": true}``.
+
+    Rate-limiting: mirrors the /login path — per-username + per-IP via
+    login_attempts (check_rate_limit + record_login_attempt).
+    """
+    # Gate: must be authenticated
+    user_id = current_user_id(request)
+    if user_id is None:
+        return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
+
+    # Resolve username for rate-limit keying (mirrors login.py pattern)
+    from src.db.pg import auth_store as _auth_store
+
+    pool = _auth_store()._pool
+    with pool.checkout() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT username FROM webui_users WHERE id = %s", (user_id,))
+            user_row = cur.fetchone()
+    if user_row is None:
+        return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
+    username = user_row[0]
+
+    # Load TOTP row — must be enrolled + enabled
+    row = _get_totp_row(user_id)
+    if row is None or not row["enabled"]:
+        return JSONResponse(_json_safe({"error": "totp_not_setup"}), status_code=400)
+
+    # Rate-limit check (brute-force guard)
+    from src.web_ui.login_attempts import check_rate_limit, get_client_ip, record_login_attempt
+
+    client_ip = get_client_ip(request)
+    user_agent = request.headers.get("User-Agent", "")
+    if check_rate_limit(username, ip_address=client_ip):
+        logger.warning("Step-up rate-limited for user %r / IP %s", username, client_ip)
+        return JSONResponse(
+            _json_safe({"error": "Too many failed login attempts; please wait before retrying"}),
+            status_code=429,
+        )
+
+    # Verify code or backup_code (shared logic with totp_login)
+    valid, error_key = _verify_totp_or_backup(
+        user_id, row, body.code, body.backup_code
+    )
+    if not valid:
+        if error_key == "code_or_backup_code_required":
+            # Malformed request (neither factor supplied) — not a failed attempt.
+            return JSONResponse(_json_safe({"error": error_key}), status_code=400)
+        # Bad TOTP / backup code → record a failed attempt for rate-limiting.
+        record_login_attempt(
+            identifier=username, success=False,
+            ip_address=client_ip, user_agent=user_agent,
+        )
+        return JSONResponse(_json_safe({"error": error_key}), status_code=401)
+
+    # Success — record attempt, establish freshness
+    record_login_attempt(
+        identifier=username, success=True,
+        ip_address=client_ip, user_agent=user_agent,
+    )
+    request.session["mfa_verified_at"] = time.time()
+    session_id = request.session.get("session_id") or ""
+    _update_session_mfa_verified_at(session_id)
+
+    logger.info("MFA step-up success for user_id=%d (%r)", user_id, username)
+    return JSONResponse(_json_safe({"ok": True}))
+
+
+# ---------------------------------------------------------------------------
 # MFA login endpoint (second step after password)
 # ---------------------------------------------------------------------------
 
@@ -431,8 +607,6 @@ async def totp_login(body: MfaLoginBody, request: Request):
     mfa_token is a signed string: "<user_id>:<expires_epoch>" signed via HMAC-SHA256
     with WEBUI_SESSION_SECRET as key.
     """
-    import time
-
     # Validate mfa_token
     session_secret = os.environ.get("WEBUI_SESSION_SECRET", "dev-fallback-secret")
     try:
@@ -472,23 +646,13 @@ async def totp_login(body: MfaLoginBody, request: Request):
     if row is None or not row["enabled"]:
         return JSONResponse(_json_safe({"error": "totp_not_enabled"}), status_code=400)
 
-    secret = _decrypt_secret(row["secret_encrypted"])
-    totp = pyotp.TOTP(secret)
-
-    if body.code is not None:
-        if not totp.verify(body.code.strip(), valid_window=TOTP_VALID_WINDOW):
-            return JSONResponse(_json_safe({"error": "invalid_code"}), status_code=401)
-    elif body.backup_code is not None:
-        stored = row["backup_codes_hash"]
-        if isinstance(stored, str):
-            import json
-            stored = json.loads(stored)
-        valid, updated = _check_backup_code(body.backup_code, stored)
-        if not valid:
-            return JSONResponse(_json_safe({"error": "invalid_backup_code"}), status_code=401)
-        _update_backup_codes(user_id, updated)
-    else:
-        return JSONResponse(_json_safe({"error": "code_or_backup_code_required"}), status_code=400)
+    # Verify TOTP code or backup code (shared logic with totp_step_up)
+    valid, error_key = _verify_totp_or_backup(
+        user_id, row, body.code, body.backup_code
+    )
+    if not valid:
+        status = 400 if error_key == "code_or_backup_code_required" else 401
+        return JSONResponse(_json_safe({"error": error_key}), status_code=status)
 
     # Promote to full session — F7: create active_sessions row so server-side
     # revoke (revoke_all_sessions / deactivate) can kick this session immediately.
@@ -510,10 +674,15 @@ async def totp_login(body: MfaLoginBody, request: Request):
         logger.error("totp_login: could not create session: %s", exc)
         return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
 
+    now = time.time()
     request.session["session_id"] = session_id
     request.session["username"] = username
     request.session["user_id"] = user_id
-    request.session["session_at"] = time.time()
+    request.session["session_at"] = now
+    # Establish MFA freshness immediately — a full MFA login counts as fresh
+    # for the require_admin_with_fresh_mfa window (ADR-0042 / WI step-up fix).
+    request.session["mfa_verified_at"] = now
+    _update_session_mfa_verified_at(session_id)
     logger.info("MFA login success for user_id=%d (%r)", user_id, username)
     return JSONResponse(_json_safe({"ok": True, "username": username}))
 
@@ -529,8 +698,6 @@ def create_mfa_token(user_id: int, ttl_seconds: int = 300) -> str:
     Format: "<user_id>:<expires_epoch>.<hmac_hex>"
     TTL default: 5 minutes.
     """
-    import time
-
     session_secret = os.environ.get("WEBUI_SESSION_SECRET", "dev-fallback-secret")
     expires_at = time.time() + ttl_seconds
     payload = f"{user_id}:{expires_at}"

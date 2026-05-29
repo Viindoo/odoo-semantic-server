@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // EE Modules Editor React island — admin CRUD for ee_modules guard list (WI-10)
 import { useState } from 'react';
+import { withStepUp } from '../../../lib/mfaStepUp';
 
 interface EEModule {
   id: number;
@@ -67,12 +68,12 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
     try {
       const url = isEdit ? `/api/admin/ee-modules/${existing!.id}` : '/api/admin/ee-modules';
       const method = isEdit ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
+      const res = await withStepUp(() => fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify(body),
-      });
+      }));
       const data = await res.json().catch(() => ({})) as { detail?: string; error?: string };
       if (res.ok) {
         flash(isEdit ? `Module "${existing!.name}" updated.` : `Module "${name}" added to EE guard list.`);
@@ -216,10 +217,10 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
 
   const handleDelete = async (mod: EEModule) => {
     if (!confirm(`Soft-delete "${mod.name}"? It will be marked deprecated and hidden from the active guard list.`)) return;
-    const res = await fetch(`/api/admin/ee-modules/${mod.id}`, {
+    const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${mod.id}`, {
       method: 'DELETE',
       credentials: 'include',
-    });
+    }));
     if (res.ok) {
       flash(`Module "${mod.name}" soft-deleted.`);
       reload(includeDeprecated);
@@ -236,7 +237,7 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
     setBulkDeleting(true);
     let failCount = 0;
     for (const id of selectedIds) {
-      const res = await fetch(`/api/admin/ee-modules/${id}`, { method: 'DELETE', credentials: 'include' });
+      const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${id}`, { method: 'DELETE', credentials: 'include' }));
       if (!res.ok) failCount++;
     }
     setBulkDeleting(false);
