@@ -132,6 +132,8 @@ class TestRegister:
         must enable it explicitly.  Tests that verify the disabled-by-default
         behaviour live in TestSignupGate (below).
         """
+        # WI-RV F-A: patch config-module constant (source-of-truth) + legacy route symbol.
+        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
         monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", True)
 
     @pytest.mark.asyncio

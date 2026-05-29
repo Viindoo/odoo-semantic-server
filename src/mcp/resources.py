@@ -180,12 +180,63 @@ class ResourceCache:
 
 
 # Module-level singleton — one cache per process.
-_CACHE: ResourceCache = ResourceCache()
+#
+# WI-9 (ADR-0042): TTL is resolved from the settings overlay
+# (``mcp.resource_cache_ttl_seconds``) at lazy-init time via
+# :func:`_resolve_cache_ttl`.  The :data:`DEFAULT_CACHE_TTL_SEC` constant
+# remains the fallback when no overlay row is present (and is preserved as a
+# regression anchor for ``tests/test_mcp_resource_cache.py`` which pins
+# ``DEFAULT_CACHE_TTL_SEC == 300.0`` at import).
+_CACHE: ResourceCache | None = None
+_CACHE_INIT_LOCK = threading.Lock()
+
+
+def _resolve_cache_ttl() -> float:
+    """Return the live resource-cache TTL in seconds (WI-9 / ADR-0042).
+
+    DB-overlay path mirrors the embedder helpers — bypasses the catalogue
+    fall-back in :func:`src.settings.get_setting` so the
+    :data:`DEFAULT_CACHE_TTL_SEC` constant continues to win for unit tests
+    that have no pool initialised.
+
+    WI-R F-005: uses public :func:`src.settings.get_overlay_only`.
+    """
+    try:
+        from src.settings import get_overlay_only
+        value = get_overlay_only("mcp.resource_cache_ttl_seconds")
+        if value is None:
+            return DEFAULT_CACHE_TTL_SEC
+        return float(value)
+    except Exception:
+        return DEFAULT_CACHE_TTL_SEC
 
 
 def get_cache() -> ResourceCache:
-    """Return the process-wide :class:`ResourceCache` singleton."""
+    """Return the process-wide :class:`ResourceCache` singleton.
+
+    Created lazily on first call so the TTL can pick up the live overlay
+    value (set via the admin-settings API) without requiring a process
+    restart for the first cache reader.  Re-tunes after this point require
+    explicit :func:`reset_cache`.
+    """
+    global _CACHE
+    if _CACHE is None:
+        with _CACHE_INIT_LOCK:
+            if _CACHE is None:  # double-check under lock
+                _CACHE = ResourceCache(ttl=_resolve_cache_ttl())
     return _CACHE
+
+
+def reset_cache() -> None:
+    """Drop the singleton so the next :func:`get_cache` re-reads the TTL.
+
+    Intended for test teardown or after an admin tunes
+    ``mcp.resource_cache_ttl_seconds``.  Not currently auto-called on
+    setting change — operators may schedule a worker restart instead.
+    """
+    global _CACHE
+    with _CACHE_INIT_LOCK:
+        _CACHE = None
 
 
 # ---------------------------------------------------------------------------

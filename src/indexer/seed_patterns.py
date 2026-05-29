@@ -58,8 +58,103 @@ def _get_patterns_validator():
 
 
 def _compute_patterns_sha256(json_path: Path) -> str:
-    """SHA-256 hex of patterns.json content (for change detection)."""
+    """SHA-256 hex of patterns.json file bytes (legacy fallback only).
+
+    WI-RV F-D: NOT the canonical SHA for sentinel comparison.  Use
+    :func:`compute_patterns_canonical_sha` instead so the SHA tracks the
+    actual source-of-truth content (DB rows post-backfill, file bytes
+    only as fallback).  Kept here for the deprecation path where Neo4j
+    sentinels were stamped with file-bytes SHA before the unification.
+    """
     return hashlib.sha256(json_path.read_bytes()).hexdigest()
+
+
+def _canonical_patterns_json(patterns: list[PatternExample]) -> str:
+    """Serialise *patterns* to the canonical JSON form used for SHA.
+
+    The serialisation MUST be deterministic across processes / Python
+    versions so two callers with the same DB content compute the same
+    SHA:
+      * ``sort_keys=True``         — stable key order regardless of dict iteration
+      * ``default=str``            — handles any datetime/Decimal escape valves
+      * fields enumerated explicitly (NOT ``vars(p)``) so a future field
+        addition is an explicit migration, not a silent SHA churn.
+    """
+    return json.dumps(
+        [
+            {
+                "pattern_id": p.pattern_id,
+                "intent_keywords": p.intent_keywords,
+                "file_ref": p.file_ref,
+                "snippet_text": p.snippet_text,
+                "gotchas": p.gotchas,
+                "odoo_version_min": p.odoo_version_min,
+                "language": p.language,
+                "core_symbol_names": p.core_symbol_names,
+            }
+            for p in patterns
+        ],
+        sort_keys=True,
+        default=str,
+    )
+
+
+def compute_patterns_canonical_sha(
+    *,
+    version_filter: str | None = None,
+    patterns_file: Path | None = None,
+) -> str:
+    """Canonical SHA over the current pattern source-of-truth.
+
+    Resolution order (WI-RV F-D — unifies sentinel SHA across all writers):
+      1. DB rows via :func:`_load_patterns_from_db`  — primary, matches the
+         shape consumed by Neo4j + pgvector writers.
+      2. JSON file via :func:`_load_patterns`        — fallback when the DB
+         is unreachable or empty (cold bootstrap).
+
+    The SHA is computed over the canonical JSON form of the loaded
+    :class:`PatternExample` list, so the value matches whatever
+    :func:`run` writes to Neo4j/pgvector regardless of which source
+    produced it.
+
+    Args:
+      version_filter: pass-through to :func:`_load_patterns_from_db` and
+        :func:`_load_patterns` so the SHA scopes to the same subset that
+        will be written.
+      patterns_file: explicit JSON file for the fallback path; defaults
+        to :data:`_DEFAULT_PATTERNS_FILE`.  Callers that pass a custom
+        ``--patterns-file`` (e.g. CLI ``main()``) MUST forward it here so
+        the SHA covers the file actually written to the store.
+
+    Before WI-RV F-D, :func:`run` compared file-bytes SHA against the
+    DB-content SHA written by :func:`recompute_sentinel_sha` (called from
+    the admin patterns CRUD endpoint).  The mismatch caused a perpetual
+    reseed every time the indexer cycled — confirmed F-D, score 92.
+
+    Migration: a deployment whose sentinel was stamped with file-bytes
+    SHA before the upgrade will reseed exactly once on the first run
+    after upgrade, then stabilise on the canonical SHA going forward.
+    """
+    try:
+        db_rows = _load_patterns_from_db(version_filter)
+        if db_rows is not None:
+            canonical = _canonical_patterns_json(db_rows)
+            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    except Exception as exc:
+        _logger.warning(
+            "compute_patterns_canonical_sha: DB load failed (%s); "
+            "falling back to JSON file",
+            exc,
+        )
+
+    # Fallback: load from JSON file and compute canonical SHA over the
+    # parsed list (NOT raw file bytes — we want byte-for-byte parity with
+    # the DB-sourced path so a switch between the two stays SHA-stable).
+    fallback_path = patterns_file or _DEFAULT_PATTERNS_FILE
+    file_patterns = _load_patterns(fallback_path, version_filter)
+    return hashlib.sha256(
+        _canonical_patterns_json(file_patterns).encode("utf-8")
+    ).hexdigest()
 
 
 def _get_stored_patterns_sha(driver, key: str = "patterns_neo4j") -> str | None:
@@ -104,6 +199,149 @@ def _set_stored_patterns_sha(driver, sha: str, key: str = "patterns_neo4j") -> N
             key=key,
             sha=sha,
         )
+
+
+def _load_patterns_from_db(
+    version_filter: str | None = None,
+) -> list[PatternExample] | None:
+    """Load patterns from the `patterns` DB table (primary source, ADR-0007 + WI-8).
+
+    Returns a list of PatternExample objects for active (non-soft-deleted) rows,
+    ordered by pattern_id for stable hash computation.
+
+    Returns None when the DB is unreachable or the table is empty so callers can
+    fall back to the JSON file without further error propagation.
+
+    Args:
+        version_filter: When set, restrict to rows WHERE odoo_version_min = filter.
+
+    """
+    try:
+        from src.db.pg import get_pool
+
+        pool = get_pool()
+        sql = (
+            "SELECT pattern_id, intent_keywords, file_ref, snippet_text, gotchas, "
+            "odoo_version_min, odoo_version_max, language, core_symbol_names "
+            "FROM patterns WHERE soft_deleted = FALSE"
+        )
+        params: tuple = ()
+        if version_filter:
+            sql += " AND odoo_version_min = %s"
+            params = (version_filter,)
+        sql += " ORDER BY pattern_id"
+
+        with pool.checkout() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+
+        if not rows:
+            return None  # empty DB -> caller falls back to JSON
+
+        result: list[PatternExample] = []
+        for r in rows:
+            # gotchas stored as JSONB; may be a Python list already or a string
+            gotchas_raw = r[4]
+            if isinstance(gotchas_raw, str):
+                gotchas_raw = json.loads(gotchas_raw)
+            result.append(
+                PatternExample(
+                    pattern_id=r[0],
+                    intent_keywords=list(r[1]) if r[1] else [],
+                    file_ref=r[2],
+                    snippet_text=r[3],
+                    gotchas=gotchas_raw or [],
+                    odoo_version_min=r[5],
+                    language=r[7],
+                    core_symbol_names=list(r[8]) if r[8] else [],
+                )
+            )
+        return result
+
+    except Exception as exc:
+        _logger.warning(
+            "Pattern DB load failed (%s); falling back to JSON file", exc
+        )
+        return None
+
+
+def _load_patterns_source(
+    patterns_file: Path, version_filter: str | None,
+) -> list[PatternExample]:
+    """DB-primary load with JSON fallback (ADR-0007 + WI-8).
+
+    Try 1: DB rows WHERE soft_deleted = FALSE (source-of-truth post-backfill).
+    Try 2: JSON file (bootstrap fallback when DB empty or unreachable).
+    """
+    db_rows = _load_patterns_from_db(version_filter)
+    if db_rows is not None:
+        _logger.debug("Loaded %d patterns from DB", len(db_rows))
+        return db_rows
+
+    _logger.info(
+        "DB load returned None (empty or unreachable); "
+        "falling back to JSON file %s",
+        patterns_file,
+    )
+    return _load_patterns(patterns_file, version_filter)
+
+
+def recompute_sentinel_sha() -> str:
+    """Recompute _SeedMeta sentinel SHA from the current pattern source-of-truth.
+
+    Primary: DB rows (WHERE soft_deleted = FALSE, ORDER BY pattern_id).
+    Fallback: patterns.json (when DB is empty or unreachable).
+
+    The resulting SHA is stored on the Neo4j _SeedMeta nodes (both
+    ``patterns_neo4j`` and ``patterns_pgvector`` keys) via
+    ``_set_stored_patterns_sha()`` so that ADR-0007 auto-reseed picks up the
+    change on the next ``index_profile()`` run.
+
+    Returns the new hex SHA-256 string (64 chars).
+
+    This function is called automatically after every CRUD write via the admin
+    patterns endpoint (admin_patterns.py). It can also be called manually via
+    POST /api/admin/patterns/sentinel/recompute.
+
+    Side effects:
+        - Writes updated sentinel SHA to Neo4j _SeedMeta nodes when Neo4j is
+          reachable. Silently logs a warning and returns the computed SHA without
+          updating the nodes when Neo4j is unavailable (e.g. during unit tests
+          that do not have a Neo4j container running).
+    """
+    # 1. Compute the canonical content hash (WI-RV F-D: SSOT helper).
+    try:
+        new_sha = compute_patterns_canonical_sha()
+    except Exception as exc:
+        _logger.warning(
+            "recompute_sentinel_sha: canonical hash failed (%s); "
+            "using legacy file-bytes SHA as last resort",
+            exc,
+        )
+        new_sha = _compute_patterns_sha256(_DEFAULT_PATTERNS_FILE)
+
+    # 2. Persist the new SHA to Neo4j _SeedMeta nodes (best-effort).
+    writer = _get_neo4j_writer()
+    if writer:
+        try:
+            _set_stored_patterns_sha(writer.driver, new_sha, key="patterns_neo4j")
+            _set_stored_patterns_sha(writer.driver, new_sha, key="patterns_pgvector")
+        except Exception as exc:
+            _logger.warning(
+                "recompute_sentinel_sha: Neo4j sentinel write failed (%s) — "
+                "returning SHA without persisting",
+                exc,
+            )
+        finally:
+            writer.close()
+    else:
+        _logger.debug(
+            "recompute_sentinel_sha: Neo4j not configured — SHA computed "
+            "but sentinel NOT written (Neo4j password missing)"
+        )
+
+    return new_sha
 
 
 def _load_patterns(
@@ -173,7 +411,15 @@ def run(
         _logger.warning("patterns file not found at %s — skipping reseed", patterns_path)
         return {"patterns": 0, "embeddings": 0, "skipped": True}
 
-    current_sha = _compute_patterns_sha256(patterns_path)
+    # WI-RV F-D: canonical SHA over the source-of-truth (DB-primary, file
+    # fallback) — matches the SHA written by recompute_sentinel_sha() after
+    # an admin patterns CRUD, so the two never diverge.  Prior to F-D this
+    # was _compute_patterns_sha256(patterns_path) (file-bytes) which caused
+    # a perpetual reseed whenever the DB diverged from disk.
+    current_sha = compute_patterns_canonical_sha(
+        version_filter=odoo_version_min_filter,
+        patterns_file=patterns_path,
+    )
 
     # Determine which stores need an update.
     neo4j_needs_update = force
@@ -193,9 +439,11 @@ def run(
         )
         return {"patterns": 0, "embeddings": 0, "skipped": True}
 
+    # WI-RV F-D: load patterns from the same source the SHA covers (DB-primary,
+    # file fallback) so the written rows are byte-for-byte the SHA's payload.
     n_patterns = 0
     if neo4j_needs_update:
-        patterns = _load_patterns(patterns_path, odoo_version_min_filter)
+        patterns = _load_patterns_source(patterns_path, odoo_version_min_filter)
         writer.write_pattern_examples(patterns)
         n_patterns = len(patterns)
         # Neo4j sentinel updated after successful write.
@@ -206,7 +454,7 @@ def run(
             "Auto-reseed: patterns_neo4j unchanged (sha=%s) — skipping Neo4j write",
             current_sha[:12],
         )
-        patterns = _load_patterns(patterns_path, odoo_version_min_filter)
+        patterns = _load_patterns_source(patterns_path, odoo_version_min_filter)
 
     n_embeddings = 0
     if embedder is not None and pgvector_needs_update:
@@ -472,8 +720,12 @@ def main(argv: list[str] | None = None) -> int:
             _mark_error(f"patterns file not found: {patterns_file}")
             return 2
 
-        # Compute sha256 of patterns.json for change detection.
-        current_sha = _compute_patterns_sha256(patterns_file)
+        # WI-RV F-D: canonical SHA (DB-primary + JSON fallback) so the CLI
+        # entry-point agrees with run() + recompute_sentinel_sha() — see ADR-0042.
+        current_sha = compute_patterns_canonical_sha(
+            version_filter=args.version,
+            patterns_file=patterns_file,
+        )
 
         # Check sentinel gating (unless --force).
         # Per ADR-0007 D6-split: sentinel is split into patterns_neo4j and
@@ -515,7 +767,11 @@ def main(argv: list[str] | None = None) -> int:
                 finally:
                     writer.close()
 
-        patterns = _load_patterns(patterns_file, args.version)
+        # WI-RV F-D: load patterns through the same source-of-truth chain
+        # the SHA covers (DB-primary + JSON fallback).  Loading via
+        # _load_patterns(patterns_file, …) directly would skip the DB and
+        # write stale JSON data over fresh DB rows on every CLI run.
+        patterns = _load_patterns_source(patterns_file, args.version)
         if not patterns:
             _logger.warning(
                 "No patterns matched filter (version=%s). Nothing to seed.",
@@ -524,7 +780,7 @@ def main(argv: list[str] | None = None) -> int:
             _mark_done()
             return 0
 
-        _logger.info("Loaded %d patterns from %s", len(patterns), patterns_file)
+        _logger.info("Loaded %d patterns from source-of-truth chain", len(patterns))
 
         _write_neo4j(patterns)
         _logger.info("Neo4j: wrote %d PatternExample nodes", len(patterns))

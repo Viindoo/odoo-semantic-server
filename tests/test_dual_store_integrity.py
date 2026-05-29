@@ -120,7 +120,7 @@ def test_no_embed_only_updates_neo4j_sentinel(clean_neo4j, tmp_path, monkeypatch
     - patterns_pgvector sentinel is NOT set (pgvector write was skipped)
     - A subsequent run without --no-embed will still write the embeddings
     """
-    from src.indexer.seed_patterns import _compute_patterns_sha256, main
+    from src.indexer.seed_patterns import compute_patterns_canonical_sha, main
 
     neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
     neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
@@ -133,7 +133,8 @@ def test_no_embed_only_updates_neo4j_sentinel(clean_neo4j, tmp_path, monkeypatch
     rc = main(["--patterns-file", str(patterns_file), "--no-embed"])
     assert rc == 0, f"main() returned non-zero: {rc}"
 
-    expected_sha = _compute_patterns_sha256(patterns_file)
+    # WI-RV F-D: sentinel stores canonical (parsed-list) SHA, not file-bytes.
+    expected_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     # patterns_neo4j sentinel must be set
     neo4j_sha = _get_sentinel_sha(clean_neo4j, "patterns_neo4j")
@@ -166,9 +167,9 @@ def test_split_sentinel_detects_partial_state(clean_neo4j, tmp_path, monkeypatch
     and proceed to write it (NOT skip the full run).
     """
     from src.indexer.seed_patterns import (
-        _compute_patterns_sha256,
         _get_stored_patterns_sha,
         _set_stored_patterns_sha,
+        compute_patterns_canonical_sha,
     )
 
     neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
@@ -178,7 +179,9 @@ def test_split_sentinel_detects_partial_state(clean_neo4j, tmp_path, monkeypatch
     patterns_file = _make_patterns_file(tmp_path)
     _wipe_seed_meta(clean_neo4j)
 
-    current_sha = _compute_patterns_sha256(patterns_file)
+    # WI-RV F-D: use canonical SHA so the manually-stamped sentinel matches
+    # the value run() will compute on the next call.
+    current_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     # Simulate F2: manually set patterns_neo4j sentinel but NOT patterns_pgvector
     _set_stored_patterns_sha(clean_neo4j, current_sha, key="patterns_neo4j")
@@ -273,7 +276,7 @@ def test_pgvector_count_matches_neo4j_after_full_seed(
         )
 
     from src.indexer.seed_patterns import (
-        _compute_patterns_sha256,
+        compute_patterns_canonical_sha,
         run,
     )
 
@@ -310,7 +313,8 @@ def test_pgvector_count_matches_neo4j_after_full_seed(
     )
 
     # Verify both sentinels are set with matching sha
-    expected_sha = _compute_patterns_sha256(patterns_file)
+    # WI-RV F-D: canonical SHA matches what run() now stamps.
+    expected_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
     neo4j_sha = _get_sentinel_sha(clean_neo4j, "patterns_neo4j")
     pgvec_sha = _get_sentinel_sha(clean_neo4j, "patterns_pgvector")
 
@@ -345,14 +349,20 @@ def test_legacy_sentinel_read_as_neo4j_fallback(clean_neo4j, tmp_path):
     patterns_neo4j is absent.
     """
     from src.indexer.seed_patterns import (
-        _compute_patterns_sha256,
         _get_stored_patterns_sha,
+        compute_patterns_canonical_sha,
     )
 
     patterns_file = _make_patterns_file(tmp_path)
     _wipe_seed_meta(clean_neo4j)
 
-    current_sha = _compute_patterns_sha256(patterns_file)
+    # Legacy-fallback test: the legacy 'patterns' sentinel may have been
+    # stamped with EITHER file-bytes or canonical SHA depending on the
+    # original deployment vintage.  WI-RV F-D ships the canonical SHA path
+    # going forward; the fallback _get_stored_patterns_sha() just returns
+    # whatever value lives on the legacy node, so we use the canonical SHA
+    # here and verify byte-for-byte equality.
+    current_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     # Simulate legacy deployment: write old-style 'patterns' sentinel directly
     with clean_neo4j.session() as session:
@@ -390,7 +400,7 @@ def test_run_with_no_embedder_leaves_pgvector_sentinel_unset(
     Even if neo4j_needs_update is True (first run), the pgvector sentinel must
     remain absent so a later run with an embedder will write the embeddings.
     """
-    from src.indexer.seed_patterns import _compute_patterns_sha256, run
+    from src.indexer.seed_patterns import compute_patterns_canonical_sha, run
 
     neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
     neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
@@ -413,7 +423,7 @@ def test_run_with_no_embedder_leaves_pgvector_sentinel_unset(
     assert result["skipped"] is False
     assert result["patterns"] >= 1
 
-    expected_sha = _compute_patterns_sha256(patterns_file)
+    expected_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     # Neo4j sentinel must be set
     neo4j_sha = _get_sentinel_sha(clean_neo4j, "patterns_neo4j")

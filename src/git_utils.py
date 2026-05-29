@@ -22,6 +22,32 @@ from src.constants import TIMEOUT_GIT_CLONE, TIMEOUT_GIT_DIFF
 
 _logger = logging.getLogger(__name__)
 
+
+def _resolved_clone_timeout() -> int:
+    """Resolve the live git-clone subprocess timeout (WI-9 / ADR-0042).
+
+    Reads ``indexer.git_clone_timeout_seconds`` directly from ``app_settings``
+    (bypassing the catalogue fall-back in :func:`src.settings.get_setting`) so
+    that ``TIMEOUT_GIT_CLONE`` remains the authoritative fallback when no
+    overlay row is present — important for the timeout-defaults regression
+    tests in ``tests/test_timeout_defaults.py`` which snapshot the constant
+    without a DB pool.
+
+    Falls back to :data:`TIMEOUT_GIT_CLONE` on any DB error (no pool, query
+    failure, etc.).  Mirrors the pattern used by
+    :func:`src.indexer.embedder._resolved_max_batch`.
+
+    WI-R F-005: uses public :func:`src.settings.get_overlay_only`.
+    """
+    try:
+        from src.settings import get_overlay_only
+        value = get_overlay_only("indexer.git_clone_timeout_seconds")
+        if value is None:
+            return TIMEOUT_GIT_CLONE
+        return int(value)
+    except Exception:
+        return TIMEOUT_GIT_CLONE
+
 _SSH_URL_RE = re.compile(r"^(git@|ssh://)")
 
 # ---------------------------------------------------------------------------
@@ -145,7 +171,7 @@ def clone_repo(
     target_dir: Path,
     *,
     private_key_pem: bytes | None,
-    timeout: int = TIMEOUT_GIT_CLONE,
+    timeout: int | None = None,
 ) -> None:
     """Clone `url` at `branch` into `target_dir`.
 
@@ -158,7 +184,14 @@ def clone_repo(
     `private_key_pem` is None for HTTPS URLs (no SSH key needed).
     Raises subprocess.CalledProcessError on git failure or TimeoutExpired.
     Raises FileExistsError if target_dir already non-empty.
+
+    WI-9: when ``timeout`` is omitted (or explicitly ``None``) the value is
+    resolved through the settings overlay
+    (``indexer.git_clone_timeout_seconds``).  Callers may still pin a specific
+    timeout by passing an int.
     """
+    if timeout is None:
+        timeout = _resolved_clone_timeout()
     target_dir = Path(target_dir)
     if target_dir.exists() and any(target_dir.iterdir()):
         raise FileExistsError(f"target dir non-empty: {target_dir}")
@@ -222,7 +255,7 @@ def refresh_repo(
     branch: str,
     *,
     private_key_pem: bytes | None,
-    timeout: int = TIMEOUT_GIT_CLONE,
+    timeout: int | None = None,
 ) -> None:
     """Refresh a cloned read-only mirror via ``git fetch`` + ``git reset --hard``.
 
@@ -237,7 +270,13 @@ def refresh_repo(
     Raises ``subprocess.CalledProcessError`` on git failure or ``TimeoutExpired``.
     Raises ``FileNotFoundError`` if ``local_path`` does not exist or is not a
     git repository.
+
+    WI-9: when ``timeout`` is omitted the value is resolved through the
+    settings overlay (``indexer.git_clone_timeout_seconds``).  Callers may
+    still pin a specific timeout by passing an int.
     """
+    if timeout is None:
+        timeout = _resolved_clone_timeout()
     local_path = Path(local_path)
     if not (local_path / ".git").exists():
         raise FileNotFoundError(

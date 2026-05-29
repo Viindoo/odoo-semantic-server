@@ -27,6 +27,52 @@ from src.constants import (
 from src.metrics import embedder_batch_duration_seconds
 
 
+def _resolved_max_batch(class_default: int) -> int:
+    """Resolve the live embedder batch size (WI-9 / ADR-0042).
+
+    Reads ``embedding.max_batch_size`` from the ``app_settings`` DB overlay
+    **only** — ``class_default`` (typically :data:`EMBEDDER_MAX_BATCH` or a
+    test-injected subclass attribute) wins when no DB row exists.  This
+    preserves the long-standing test contract where
+    ``class _SmallBatchEmbedder(Qwen3Embedder): _MAX_BATCH = 2`` truly forces
+    sub-batching, regardless of whether the bootstrap inserted the catalogue
+    default (50) into ``app_settings``.
+
+    Implementation note (WI-R F-005): uses the public
+    :func:`src.settings.get_overlay_only` helper to avoid coupling to the
+    private resolver internals while keeping the DB-only behaviour
+    (returns ``None`` when no row exists so class_default still wins).
+    """
+    try:
+        from src.settings import get_overlay_only
+        value = get_overlay_only("embedding.max_batch_size")
+        if value is None:
+            return class_default
+        return int(value)
+    except Exception:
+        return class_default
+
+
+def _resolved_timeout_read(class_default: int) -> int:
+    """Resolve the live embedder read-timeout (WI-9 / ADR-0042).
+
+    Same DB-only resolution shape as :func:`_resolved_max_batch` — falls back
+    to ``class_default`` (typically :data:`TIMEOUT_EMBEDDER_READ`) when no row
+    exists.  This keeps unit tests that pin a specific timeout (no pool
+    available) deterministic.
+
+    WI-R F-005: uses public :func:`src.settings.get_overlay_only`.
+    """
+    try:
+        from src.settings import get_overlay_only
+        value = get_overlay_only("embedding.timeout_read_seconds")
+        if value is None:
+            return class_default
+        return int(value)
+    except Exception:
+        return class_default
+
+
 def _normalize(vec: list[float]) -> list[float]:
     norm = math.sqrt(sum(x * x for x in vec))
     if norm == 0.0:
@@ -115,10 +161,17 @@ class Qwen3Embedder:
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
 
+        # WI-9 (ADR-0042): read timeout resolved through the settings overlay
+        # so an operator can lengthen the window for slow embedder boxes
+        # without redeploying.  The constant is kept as the fallback when no
+        # DB row exists (e.g. unit tests with no pool).  Connect/write stay
+        # hard-coded — they protect the embedder process from a wedged TCP
+        # connection, not the slow per-request inference path.
+        read_timeout = _resolved_timeout_read(TIMEOUT_EMBEDDER_READ)
         self._http = httpx.Client(
             timeout=httpx.Timeout(
                 connect=TIMEOUT_EMBEDDER_CONNECT,
-                read=TIMEOUT_EMBEDDER_READ,
+                read=read_timeout,
                 write=TIMEOUT_EMBEDDER_WRITE,
                 pool=5.0,
             ),
@@ -145,10 +198,14 @@ class Qwen3Embedder:
         # itself thread-safe, so no datum is torn; the lock here only serialises
         # this class's own `call_count` mutation.
         _hist = embedder_batch_duration_seconds.labels(embedder_type="qwen3")
-        if len(texts) > self._MAX_BATCH:
+        # WI-9: resolve the live batch ceiling once per embed() call so the
+        # loop sub-slicing stays consistent if the setting is rotated mid-run.
+        # Class-attr self._MAX_BATCH is the fallback when the overlay errors.
+        max_batch = _resolved_max_batch(self._MAX_BATCH)
+        if len(texts) > max_batch:
             out: list[list[float]] = []
-            for i in range(0, len(texts), self._MAX_BATCH):
-                batch = texts[i : i + self._MAX_BATCH]
+            for i in range(0, len(texts), max_batch):
+                batch = texts[i : i + max_batch]
                 start = time.monotonic()
                 out.extend(self._embed_one(batch))
                 duration = time.monotonic() - start

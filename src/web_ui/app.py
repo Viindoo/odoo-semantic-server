@@ -21,7 +21,7 @@ _logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app):
-    """FastAPI lifespan: startup cleanup for stale indexer jobs."""
+    """FastAPI lifespan: startup cleanup for stale indexer jobs + settings bootstrap."""
     try:
         from src import config
         from src.constants import PG_POOL_MAX_CONN, PG_POOL_MIN_CONN
@@ -40,6 +40,16 @@ async def _lifespan(app):
                 _logger.warning("Startup job cleanup failed (non-fatal): %s", exc)
     except Exception as exc:
         _logger.warning("Startup job cleanup failed (non-fatal): %s", exc)
+
+    # Bootstrap admin settings catalogue into DB (idempotent, best-effort).
+    # Runs after pool init so get_pool() resolves. Swallows all errors — a missing
+    # app_settings table (e.g. m13_010 not yet applied) must not block startup.
+    try:
+        from src.settings_registry import bootstrap_settings_safe
+        bootstrap_settings_safe()
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("Admin settings bootstrap failed (non-fatal): %s", exc)
+
     yield
 
 
@@ -238,6 +248,22 @@ def create_app() -> FastAPI:
     from src.web_ui.routes import versions
 
     app.include_router(versions.router)
+
+    # Admin Settings module (ADR-0042)
+    from src.web_ui.routes import admin_settings, tenant_settings
+
+    app.include_router(admin_settings.router)
+    app.include_router(tenant_settings.router)
+
+    # EE Modules guard CRUD — WI-7 (ADR-0042)
+    from src.web_ui.routes import admin_ee_modules
+
+    app.include_router(admin_ee_modules.router)
+
+    # Admin Pattern Catalogue CRUD (WI-8 — ADR-0042 + ADR-0007 + ADR-0009)
+    from src.web_ui.routes import admin_patterns
+
+    app.include_router(admin_patterns.router)
 
     # Public waitlist — POST /api/waitlist (no auth, rate-limited; Issue #203)
     from src.web_ui.routes import waitlist

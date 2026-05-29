@@ -1,0 +1,243 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Admin Settings landing page — 6 category cards + last-5-changes panel (WI-10)
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { FASTAPI_BASE } from '../../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type SettingEntry = {
+  key: string;
+  category: string;
+  updated_at: string | null;
+  updated_by: number | null;
+  change_reason: string | null;
+  value: unknown;
+  description: string;
+};
+
+type CategoriesResponse = {
+  categories: Record<string, SettingEntry[]>;
+};
+
+let allSettings: SettingEntry[] = [];
+let fetchError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/settings`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data: CategoriesResponse = await res.json();
+    for (const entries of Object.values(data.categories)) {
+      allSettings.push(...entries);
+    }
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  } else {
+    fetchError = `API error ${res.status}`;
+  }
+} catch {
+  fetchError = 'Could not connect to API server.';
+}
+
+// Last 5 changed (by updated_at desc, exclude nulls)
+const recentChanges = allSettings
+  .filter((s) => s.updated_at !== null)
+  .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
+  .slice(0, 5);
+
+// Count per category
+const categoryCounts: Record<string, number> = {};
+for (const s of allSettings) {
+  categoryCounts[s.category] = (categoryCounts[s.category] ?? 0) + 1;
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return '';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH}h ago`;
+  const diffD = Math.floor(diffH / 24);
+  return `${diffD}d ago`;
+}
+
+const CATEGORY_CARDS = [
+  {
+    id: 'auth',
+    label: 'Auth',
+    icon: '🔐',
+    description: 'Session TTL, MFA policy, login attempt limits, OAuth settings.',
+    href: '/admin/settings/auth',
+    color: 'border-blue-200 bg-blue-50 hover:border-blue-400',
+    iconBg: 'bg-blue-100',
+  },
+  {
+    id: 'quota',
+    label: 'Quota & Plans',
+    icon: '📊',
+    // WI-RV F-C: quota.* keys in app_settings are advisory only — the live
+    // values come from the `plans` table.  We always route operators to
+    // /admin/settings/plans so PATCHes land on the canonical source.
+    description: 'Monthly call quotas, rate limits, seat limits per plan tier (canonical source: plans table).',
+    href: '/admin/settings/plans',
+    color: 'border-green-200 bg-green-50 hover:border-green-400',
+    iconBg: 'bg-green-100',
+  },
+  {
+    id: 'embedding',
+    label: 'Embedding',
+    icon: '🧠',
+    description: 'Embedding model, batch size, dimension settings for pgvector.',
+    href: '/admin/settings/embedding',
+    color: 'border-purple-200 bg-purple-50 hover:border-purple-400',
+    iconBg: 'bg-purple-100',
+  },
+  {
+    id: 'indexer',
+    label: 'Indexer',
+    icon: '⚙️',
+    description: 'Indexer batch size, worker concurrency, scheduler settings.',
+    href: '/admin/settings/indexer',
+    color: 'border-orange-200 bg-orange-50 hover:border-orange-400',
+    iconBg: 'bg-orange-100',
+  },
+  {
+    id: 'mcp',
+    label: 'MCP Server',
+    icon: '🔌',
+    description: 'MCP tool response limits, resource cache TTL.',
+    href: '/admin/settings/mcp',
+    color: 'border-cyan-200 bg-cyan-50 hover:border-cyan-400',
+    iconBg: 'bg-cyan-100',
+  },
+  {
+    id: 'ee-modules',
+    label: 'EE Modules',
+    icon: '🏢',
+    description: 'Enterprise Edition module guard list — controls EE confusion detection.',
+    href: '/admin/settings/ee-modules',
+    color: 'border-red-200 bg-red-50 hover:border-red-400',
+    iconBg: 'bg-red-100',
+  },
+  {
+    id: 'patterns',
+    label: 'Pattern Catalogue',
+    icon: '📚',
+    description: 'Curated code pattern examples — edit, add, or soft-delete patterns.',
+    href: '/admin/settings/patterns',
+    color: 'border-amber-200 bg-amber-50 hover:border-amber-400',
+    iconBg: 'bg-amber-100',
+  },
+];
+---
+
+<AdminLayout title="Settings — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <!-- Page header -->
+  <div class="flex items-start justify-between mb-6">
+    <div>
+      <div class="flex items-center gap-3">
+        <h1 class="text-2xl font-bold text-gray-900 font-display">Admin Settings</h1>
+        <span class="text-xs bg-viindoo-primary/10 text-viindoo-primary-deep border border-viindoo-primary/20 px-2 py-0.5 rounded-full font-medium">
+          v1.0 Phase 1
+        </span>
+      </div>
+      <p class="text-sm text-gray-500 mt-1">
+        Configure runtime values without restart. Changes effective within ≤60 seconds.
+      </p>
+    </div>
+  </div>
+
+  {fetchError && (
+    <div class="mb-5 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {fetchError}
+    </div>
+  )}
+
+  <!-- Main layout: cards + recent changes panel -->
+  <div class="flex flex-col lg:flex-row gap-6">
+    <!-- Category cards grid -->
+    <div class="flex-1 min-w-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {CATEGORY_CARDS.map((card) => {
+          const count = categoryCounts[card.id] ?? 0;
+          return (
+            <a
+              href={card.href}
+              class={`block rounded-xl border-2 p-5 transition-all group ${card.color}`}
+            >
+              <div class="flex items-start gap-3">
+                <div class={`w-10 h-10 rounded-xl ${card.iconBg} flex items-center justify-center text-xl shrink-0`}>
+                  {card.icon}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center justify-between">
+                    <h3 class="font-semibold text-gray-900 text-sm font-display group-hover:text-viindoo-primary transition-colors">
+                      {card.label}
+                    </h3>
+                    {count > 0 && (
+                      <span class="text-xs text-gray-500 bg-white/60 border border-gray-200 rounded-full px-2 py-0.5">
+                        {count}
+                      </span>
+                    )}
+                  </div>
+                  <p class="text-xs text-gray-600 mt-1 leading-relaxed">{card.description}</p>
+                </div>
+              </div>
+            </a>
+          );
+        })}
+      </div>
+    </div>
+
+    <!-- Recent changes panel -->
+    <div class="lg:w-72 shrink-0">
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-100">
+          <h2 class="text-sm font-semibold text-gray-800">Last 5 Changes</h2>
+          <p class="text-xs text-gray-400 mt-0.5">Most recently modified settings</p>
+        </div>
+        <div class="divide-y divide-gray-50">
+          {recentChanges.length === 0 ? (
+            <div class="px-4 py-8 text-center">
+              <p class="text-xs text-gray-400">No changes recorded yet.</p>
+              <p class="text-xs text-gray-300 mt-1">Settings at code defaults.</p>
+            </div>
+          ) : (
+            recentChanges.map((s) => (
+              <div class="px-4 py-3 hover:bg-gray-50 transition-colors">
+                <div class="flex items-start justify-between gap-2">
+                  <code class="text-xs font-mono font-semibold text-gray-700 leading-tight break-all">
+                    {s.key}
+                  </code>
+                  <span class="text-xs text-gray-400 whitespace-nowrap shrink-0">
+                    {relativeTime(s.updated_at)}
+                  </span>
+                </div>
+                {s.change_reason && (
+                  <p class="text-xs text-gray-500 mt-0.5 line-clamp-1 italic">{s.change_reason}</p>
+                )}
+                {s.updated_by && (
+                  <span class="text-xs text-gray-400">by user:{s.updated_by}</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+        {allSettings.length > 0 && (
+          <div class="px-4 py-3 border-t border-gray-100 bg-gray-50">
+            <p class="text-xs text-gray-400 text-center">
+              {allSettings.filter((s) => s.updated_at !== null).length} of {allSettings.length} settings customized
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+</AdminLayout>

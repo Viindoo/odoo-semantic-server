@@ -190,9 +190,24 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **Next milestones (roadmap):**
 - **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) đã ship trong v0.13.0. P1 còn lại: Polar adapter (Merchant-of-Record billing), Entitlement Activation API, multi-IdP "Viindoo Account". Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md). GTM international self-serve (Polar) first.
+- **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped (Unreleased). Ops
+  tune RPM/quota/batch without SSH/redeploy. See [ADR-0042](docs/adr/0042-admin-settings-module.md).
 - **M10C remaining** — Prometheus `embedder_batch_duration_seconds` histogram, nonce-based CSP (blocked — awaits Astro v5.1+ nonce API).
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
+
+### Admin Settings Module (ADR-0042 — Unreleased)
+
+OSM v0.14.0 (upcoming) ship **Admin Settings** — web UI cho phép admin +
+tenant_owner tinker 15 Tier-1 settings (auth + embedding + indexer + mcp) +
+4 plan tier + 16 EE module + 115 pattern KHÔNG cần SSH/redeploy. Hot-reload
+≤60s. Audit + rollback per ADR-0021. Tenant `quota.*` override Phase 1.
+
+Access: `/admin/settings` (admin) + `/tenant/settings` (tenant_admin role).
+
+**Tool count stays 24** — Admin Settings is web-UI-only, no new MCP tools.
+
+→ [`docs/adr/0042-admin-settings-module.md`](docs/adr/0042-admin-settings-module.md)
 
 ---
 

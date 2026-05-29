@@ -190,6 +190,26 @@ def _reset_mcp_middleware_state():
     except Exception:
         # If module not importable yet (early collection phase), skip.
         pass
+
+    # WI-RV F-K: also clear the Admin Settings overlay LRU
+    # (``src.settings._cache``) and the EE-modules cache
+    # (``src.data.ee_modules._cache``).  Both are module-level dicts that
+    # leak across tests when a setting is patched in one test and read in
+    # the next — the next test sees the prior test's value until the
+    # 60 s / 300 s TTL elapses (typically NEVER inside a single pytest
+    # session).  This caused intermittent flakes on
+    # tests/test_e2e_quota_hotreload.py and the wave0 admin-gate suite.
+    try:
+        from src.settings import invalidate_all as _invalidate_settings
+        _invalidate_settings()
+    except Exception:
+        pass
+    try:
+        from src.data.ee_modules import invalidate_ee_modules_cache
+        invalidate_ee_modules_cache()
+    except Exception:
+        pass
+
     yield
 
 

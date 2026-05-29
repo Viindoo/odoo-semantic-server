@@ -494,6 +494,8 @@ class TestAuditCoverageRegression:
         ("POST",  "/api/admin/users/{user_id}/deactivate",             "user.deactivate"),
         ("POST",  "/api/admin/users/{user_id}/reactivate",             "user.reactivate"),
         ("POST",  "/api/admin/users/{user_id}/reset-password-link",    "user.reset_password_link"),
+        # Admin plans (ADR-0039 — Phase 2 stub still audited per ADR-0021)
+        ("POST",  "/api/admin/plans",                                  "plan.create_attempt"),
     ]
 
     def _has_audit_action(self, endpoint_func) -> bool:
