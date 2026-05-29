@@ -48,9 +48,15 @@ export const GET: APIRoute = async ({ request, cookies }) => {
     // misroute a later, unrelated error.
     const oauthFrom = cookies.get('oauth_from')?.value ?? '';
 
-    // Consume state + from cookies immediately (single-use)
+    // WS1 — read oauth_return (set by init if ?return= was present and safe).
+    // Must also be consumed on EVERY exit path (success / 403 / error) to avoid
+    // a stale 600s value misrouting a later, unrelated OAuth flow.
+    const oauthReturn = cookies.get('oauth_return')?.value ?? '';
+
+    // Consume state + from + return cookies immediately (single-use)
     cookies.delete('oauth_state', { path: '/' });
     cookies.delete('oauth_from', { path: '/' });
+    cookies.delete('oauth_return', { path: '/' });
 
     let tokens;
     try {
@@ -135,5 +141,5 @@ export const GET: APIRoute = async ({ request, cookies }) => {
         return new Response('Internal error contacting API', { status: 502 });
     }
 
-    return buildOAuthCallbackResponse(apiRes, oauthFrom, '[OAuth/github callback]');
+    return buildOAuthCallbackResponse(apiRes, oauthFrom, '[OAuth/github callback]', oauthReturn);
 };

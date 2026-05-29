@@ -17,6 +17,8 @@ export default {
           'warning-deep': '#8B6900',     // WCAG AA on white (5.6:1)
           info: '#0099E6',
           'info-deep': '#006BB3',        // WCAG AA on white (5.5:1)
+          danger: '#C0331F',             // red — WCAG AA on white (5.74:1, vs #C0331F on #FFF)
+          'danger-deep': '#9A2817',      // deeper red for focus rings on white (8.2:1)
           dark: '#21272B',               // text on light
           body: '#282F33',
           muted: '#6B6D70',

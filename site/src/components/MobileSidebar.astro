@@ -1,0 +1,117 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+/**
+ * MobileSidebar — responsive off-canvas sidebar shell (M4)
+ *
+ * Wraps the sidebar `<aside>` markup (passed via the default slot) so that:
+ *  - on `md:` and up it renders as the existing static `w-64` sidebar;
+ *  - below `md` it collapses off-canvas and is toggled by a hamburger button
+ *    (rendered separately in the header via <MobileSidebar.Hamburger/>-style
+ *    markup — here we expose the trigger + drawer in one component).
+ *
+ * Usage (inside each layout):
+ *   <MobileSidebar>
+ *     <aside class="...">...sidebar nav...</aside>
+ *   </MobileSidebar>
+ *
+ * The hamburger button is rendered by this component and fixed to the top-left
+ * on small screens; on `md:` it is hidden. A backdrop overlay closes the drawer.
+ *
+ * Behaviour is driven by a small CSP-safe inline script (script-src 'self'
+ * 'unsafe-inline' is allowed) toggling a `data-open` attribute on the root.
+ */
+---
+
+<div data-mobile-sidebar class="contents">
+  <!-- Hamburger (only < md) -->
+  <button
+    type="button"
+    data-mobile-sidebar-toggle
+    aria-label="Open navigation menu"
+    aria-expanded="false"
+    aria-controls="app-sidebar"
+    class="md:hidden fixed top-3 left-3 z-50 inline-flex items-center justify-center w-10 h-10 rounded-lg bg-gray-900 text-white shadow-lg focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </button>
+
+  <!-- Backdrop (only when open, < md) -->
+  <div
+    data-mobile-sidebar-backdrop
+    class="hidden fixed inset-0 z-40 bg-black/50 md:hidden"
+  >
+  </div>
+
+  <!--
+    Sidebar wrapper. On md+ it is a normal flex child (static).
+    On < md it is fixed off-canvas (translated -100%) and slides in when open.
+  -->
+  <div
+    data-mobile-sidebar-panel
+    id="app-sidebar"
+    class="fixed inset-y-0 left-0 z-40 w-64 -translate-x-full transition-transform duration-200 ease-in-out md:static md:translate-x-0 md:transition-none md:z-auto md:flex-shrink-0"
+  >
+    <slot />
+  </div>
+</div>
+
+<script is:inline>
+  (function () {
+    const root = document.querySelector('[data-mobile-sidebar]');
+    if (!root) return;
+    const toggle = root.querySelector('[data-mobile-sidebar-toggle]');
+    const backdrop = root.querySelector('[data-mobile-sidebar-backdrop]');
+    const panel = root.querySelector('[data-mobile-sidebar-panel]');
+    if (!toggle || !backdrop || !panel) return;
+
+    function open() {
+      panel.classList.remove('-translate-x-full');
+      panel.classList.add('translate-x-0');
+      backdrop.classList.remove('hidden');
+      toggle.setAttribute('aria-expanded', 'true');
+    }
+    function close() {
+      panel.classList.add('-translate-x-full');
+      panel.classList.remove('translate-x-0');
+      backdrop.classList.add('hidden');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+    function isOpen() {
+      return toggle.getAttribute('aria-expanded') === 'true';
+    }
+
+    toggle.addEventListener('click', function () {
+      isOpen() ? close() : open();
+    });
+    backdrop.addEventListener('click', close);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && isOpen()) {
+        close();
+        toggle.focus();
+      }
+    });
+    // Reset to static layout when crossing into md+ so a drawer left "open"
+    // on small screens doesn't leak open-state classes onto the desktop layout.
+    const mq = window.matchMedia('(min-width: 768px)');
+    function onChange(e) {
+      if (e.matches) close();
+    }
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  })();
+</script>

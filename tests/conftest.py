@@ -147,6 +147,8 @@ def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
         # W3 MFA step-up fix: exercises the real auth gate (require_admin_with_fresh_mfa)
         # and the new /api/auth/totp/step-up endpoint end-to-end.
         "test_mfa_step_up.py",
+        # WS2a/WS2c: real login + verify + change-password flow with real DB.
+        "test_change_password.py",
     }
     if fname in real_auth_flow_files:
         # Defensive: scrub any leaked bypass env from prior tests in the session.

@@ -1,6 +1,8 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import BaseLayout from './BaseLayout.astro';
+import MobileSidebar from '../components/MobileSidebar.astro';
+import UserMenu from '../components/UserMenu';
 
 export interface Props {
   title?: string;
@@ -8,86 +10,110 @@ export interface Props {
 
 const { title = 'Account — Odoo Semantic MCP' } = Astro.props;
 
+// `icon` keys into the inline SVG map (L12 — emoji replaced by line icons).
 const navItems = [
-  { id: 'api-keys', label: 'My API Keys', href: '/account/api-keys', icon: '🔑' },
-  { id: 'repos', label: 'My Repositories', href: '/account/repos', icon: '📦' },
-  { id: 'usage', label: 'Usage', href: '/account/usage', icon: '📊' },
+  { id: 'api-keys', label: 'My API Keys', href: '/account/api-keys', icon: 'key' },
+  { id: 'repos', label: 'My Repositories', href: '/account/repos', icon: 'box' },
+  { id: 'usage', label: 'Usage', href: '/account/usage', icon: 'chart' },
+  { id: 'security', label: 'Security / 2FA', href: '/account/security', icon: 'shield' },
+  { id: 'password', label: 'Change password', href: '/account/password', icon: 'lock' },
 ];
 
 const currentPath = Astro.url.pathname;
 const currentUser = Astro.locals.user;
 const displayName = currentUser?.username ?? 'Guest';
-const avatarLetter = displayName.charAt(0).toUpperCase();
 
 const pageTitle = `Account · ${title}`;
+
+// L12 — inline SVG line-icon map (stroke="currentColor", 20px).
+const ICONS: Record<string, string> = {
+  key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>',
+  box: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line>',
+  chart: '<line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path>',
+};
 ---
 
 <BaseLayout title={pageTitle}>
+  <a
+    href="#main-content"
+    class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-viindoo-primary focus:text-viindoo-bg-0 focus:font-medium focus:shadow-lg"
+  >
+    Skip to main content
+  </a>
   <div class="flex h-screen bg-gray-100">
-    <!-- Sidebar -->
-    <aside class="w-64 flex-shrink-0 bg-gray-900 text-white flex flex-col">
-      <!-- Logo / Brand -->
-      <div class="flex items-center gap-3 px-6 py-5 border-b border-gray-700">
-        <img src="/logo-mark-ondark.svg" alt="Logo" class="w-8 h-8" />
-        <span class="font-semibold text-sm leading-tight">
-          Odoo Semantic<br />
-          <span class="text-gray-400 font-normal">MCP Account</span>
-        </span>
-      </div>
+    <!-- Sidebar (responsive off-canvas < md) -->
+    <MobileSidebar>
+      <aside class="w-64 h-full flex-shrink-0 bg-gray-900 text-white flex flex-col">
+        <!-- Logo / Brand -->
+        <div class="flex items-center gap-3 px-6 py-5 border-b border-gray-700">
+          <img src="/logo-mark-ondark.svg" alt="Logo" class="w-8 h-8" />
+          <span class="font-semibold text-sm leading-tight">
+            Odoo Semantic<br />
+            <span class="text-gray-400 font-normal">MCP Account</span>
+          </span>
+        </div>
 
-      <!-- Navigation -->
-      <nav class="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
-          return (
-            <a
-              href={item.href}
-              data-testid={`nav-${item.id}`}
-              class:list={[
-                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-viindoo-primary text-viindoo-bg-0'
-                  : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-              ]}
-            >
-              <span class="text-base leading-none" aria-hidden="true">{item.icon}</span>
-              {item.label}
-            </a>
-          );
-        })}
-      </nav>
-
-      <!-- Logout -->
-      <div class="px-4 py-4 border-t border-gray-700">
-        <a
-          href="/admin/logout"
-          data-testid="nav-logout"
-          class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 hover:bg-gray-800 hover:text-white transition-colors w-full"
-        >
-          <span class="text-base leading-none" aria-hidden="true">↩️</span>
-          Logout
-        </a>
-      </div>
-    </aside>
+        <!-- Navigation -->
+        <nav class="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
+          {navItems.map((item) => {
+            const isActive = currentPath.startsWith(item.href);
+            return (
+              <a
+                href={item.href}
+                data-testid={`nav-${item.id}`}
+                class:list={[
+                  'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-viindoo-primary text-viindoo-bg-0'
+                    : 'text-gray-300 hover:bg-gray-800 hover:text-white',
+                ]}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  class="flex-shrink-0"
+                  aria-hidden="true"
+                  set:html={ICONS[item.icon]}
+                />
+                {item.label}
+              </a>
+            );
+          })}
+        </nav>
+      </aside>
+    </MobileSidebar>
 
     <!-- Main content area -->
     <div class="flex-1 flex flex-col overflow-hidden">
       <!-- Topbar -->
       <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <h1 class="text-lg font-semibold text-gray-800">{title}</h1>
+        <h1 class="text-lg font-semibold text-gray-800 pl-12 md:pl-0">{title}</h1>
         <div class="flex items-center gap-4">
-          <span class="text-sm text-gray-500 font-medium">{displayName}</span>
-          <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-viindoo-primary text-viindoo-bg-0 uppercase tracking-wide">
+          <span class="hidden sm:inline text-sm text-gray-500 font-medium">{displayName}</span>
+          <span class="hidden sm:inline text-xs font-semibold px-2 py-0.5 rounded-full bg-viindoo-primary text-viindoo-bg-0 uppercase tracking-wide">
             USER
           </span>
-          <div class="w-8 h-8 rounded-full bg-viindoo-primary flex items-center justify-center text-viindoo-bg-0 text-sm font-bold">
-            {avatarLetter}
-          </div>
+          <UserMenu
+            client:idle
+            username={displayName}
+            email={currentUser?.email ?? ''}
+            isAdmin={currentUser?.is_admin ?? false}
+            isTenantAdmin={currentUser?.is_tenant_admin ?? false}
+          />
         </div>
       </header>
 
       <!-- Page content -->
-      <main class="flex-1 overflow-y-auto p-6">
+      <main id="main-content" class="flex-1 overflow-y-auto p-6">
         <slot />
       </main>
     </div>

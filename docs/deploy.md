@@ -323,6 +323,8 @@ docker compose exec neo4j neo4j-admin database load neo4j --from-path=/data/back
 
 ### 3.1 Cài đặt
 
+> **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
+
 ```bash
 sudo git clone https://github.com/Viindoo/odoo-semantic-server /opt/odoo-semantic-mcp
 sudo chown -R odoo-semantic:odoo-semantic /opt/odoo-semantic-mcp

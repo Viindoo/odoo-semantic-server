@@ -113,7 +113,13 @@ function _addSecurityHeaders(response: Response, pathname: string, noStore: bool
  * Check if the current session is authenticated (any user).
  * Returns the verify JSON payload on success, null on failure.
  */
-async function verifySession(cookieHeader: string): Promise<{ ok: boolean; username?: string; is_admin?: boolean } | null> {
+async function verifySession(cookieHeader: string): Promise<{
+  ok: boolean;
+  username?: string;
+  is_admin?: boolean;
+  email?: string;
+  is_tenant_admin?: boolean;
+} | null> {
   try {
     const res = await fetch(`${FASTAPI_BASE}/api/auth/verify`, {
       headers: { cookie: cookieHeader },
@@ -130,7 +136,13 @@ async function verifySession(cookieHeader: string): Promise<{ ok: boolean; usern
  * Returns the verify payload if admin, null otherwise.
  * Used by /admin/users/* routes in the Astro middleware.
  */
-async function requireAdmin(cookieHeader: string): Promise<{ ok: boolean; username?: string; is_admin?: boolean } | null> {
+async function requireAdmin(cookieHeader: string): Promise<{
+  ok: boolean;
+  username?: string;
+  is_admin?: boolean;
+  email?: string;
+  is_tenant_admin?: boolean;
+} | null> {
   const payload = await verifySession(cookieHeader);
   if (!payload || !payload.ok) return null;
   if (!payload.is_admin) return null;
@@ -178,6 +190,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
     context.locals.user = {
       username: sessionPayload.username ?? 'unknown',
       is_admin: sessionPayload.is_admin ?? false,
+      email: sessionPayload.email ?? '',
+      is_tenant_admin: sessionPayload.is_tenant_admin ?? false,
     };
     const response = await next();
     _addSecurityHeaders(response, path);
@@ -209,6 +223,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
       context.locals.user = {
         username: sessionPayload.username,
         is_admin: sessionPayload.is_admin ?? false,
+        email: sessionPayload.email ?? '',
+        is_tenant_admin: sessionPayload.is_tenant_admin ?? false,
       };
     } else {
       context.locals.user = null;
@@ -250,6 +266,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
     context.locals.user = {
       username: adminPayload.username!,
       is_admin: true,
+      email: adminPayload.email ?? '',
+      is_tenant_admin: adminPayload.is_tenant_admin ?? false,
     };
     const response = await next();
     _addSecurityHeaders(response, path);
@@ -270,6 +288,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
     context.locals.user = {
       username: adminPayload.username!,
       is_admin: true,
+      email: adminPayload.email ?? '',
+      is_tenant_admin: adminPayload.is_tenant_admin ?? false,
     };
     const response = await next();
     _addSecurityHeaders(response, path);
@@ -287,6 +307,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
   context.locals.user = {
     username: sessionPayload.username ?? 'unknown',
     is_admin: sessionPayload.is_admin ?? false,
+    email: sessionPayload.email ?? '',
+    is_tenant_admin: sessionPayload.is_tenant_admin ?? false,
   };
 
   // Non-admin users hitting /admin (bare) or /admin/* (except auth pages and

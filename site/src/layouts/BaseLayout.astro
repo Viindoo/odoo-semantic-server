@@ -44,7 +44,14 @@ const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.vi
     <slot name="head" />
   </head>
   <body>
-    <slot />
+    <a
+      href="#main-content"
+      class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-white focus:px-4 focus:py-2 focus:font-semibold focus:text-viindoo-primary-text focus:shadow-lg"
+      >Skip to main content</a
+    >
+    <main id="main-content">
+      <slot />
+    </main>
     {showFooter && (
     <footer
       class:list={[
@@ -55,7 +62,7 @@ const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.vi
     >
       <a href="/bootstrap" class="hover:text-viindoo-primary-bright transition-colors duration-200">Bootstrap reference</a>
       <span class="mx-2">&middot;</span>
-      <a href="https://github.com/Viindoo/odoo-semantic-server" class="hover:text-viindoo-primary-bright transition-colors duration-200">GitHub</a>
+      <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200">Contribute</a>
       <span class="mx-2">&middot;</span>
       <a href="https://viindoo.com" class="inline-flex items-center gap-1.5 hover:opacity-100 transition-opacity duration-200 opacity-70" aria-label="Powered by Viindoo">
         Powered by

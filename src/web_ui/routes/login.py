@@ -27,6 +27,7 @@ from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
 from src.web_ui.auth import (
+    current_user_id,
     get_session_ttl,
     hash_password,
     is_test_bypass_active,
@@ -514,6 +515,127 @@ async def reset_password_consume(body: ResetPasswordBody, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Change-password endpoint (in-session, WS2c)
+# ---------------------------------------------------------------------------
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=1, max_length=128)
+
+
+@router.post("/change-password")
+async def change_password(body: ChangePasswordBody, request: Request):
+    """Change the password of the currently-authenticated user.
+
+    Requires an active session. Verifies current_password, enforces the
+    same password policy as registration (``auth.password_min_length`` +
+    common-password blocklist via :func:`src.web_ui.auth.validate_password`),
+    and updates the stored bcrypt hash.  The current session stays valid —
+    the user is NOT logged out.
+
+    Returns:
+        200 ``{"ok": True}`` on success.
+        400 ``{"error": "<reason>"}`` on policy violation or same-password rejection.
+        401 ``{"error": "not_authenticated"}`` if no valid session.
+        401 ``{"error": "invalid_current_password"}`` if current password is wrong.
+        500 on unexpected errors.
+    """
+    from src.web_ui.middleware import _session_valid
+
+    if not _session_valid(request):
+        return JSONResponse(
+            _json_safe({"error": "not_authenticated"}),
+            status_code=401,
+        )
+
+    user_id = current_user_id(request)
+    if user_id is None:
+        return JSONResponse(
+            _json_safe({"error": "not_authenticated"}),
+            status_code=401,
+        )
+
+    try:
+        from src.db.pg import auth_store
+
+        store = auth_store()
+
+        # Load current password hash via username (same path as set_user_password)
+        username = request.session.get("username")
+        if not username:
+            # Fallback: resolve username from user_id
+            user_row = store.get_user_by_id(user_id)
+            username = user_row["username"] if user_row else None
+        if not username:
+            return JSONResponse(
+                _json_safe({"error": "not_authenticated"}),
+                status_code=401,
+            )
+
+        pool = store._pool
+        with pool.checkout() as conn:
+            row = pool.fetch_one(
+                conn,
+                "SELECT password_hash FROM webui_users WHERE username = %s",
+                (username,),
+            )
+
+        if row is None or row.get("password_hash") is None:
+            # OAuth-only account or user not found — cannot change password
+            return JSONResponse(
+                _json_safe({"error": "no_password_set"}),
+                status_code=400,
+            )
+
+        stored_hash: str = row["password_hash"]
+
+        # Verify current password
+        if not verify_password(body.current_password, stored_hash):
+            _insert_audit_log(
+                actor=f"user:{user_id}",
+                action="user.change_password",
+                target=str(user_id),
+                success=False,
+                detail={"reason": "invalid_current_password"},
+            )
+            return JSONResponse(
+                _json_safe({"error": "invalid_current_password"}),
+                status_code=401,
+            )
+
+        # Reject same password (nice-to-have guard)
+        if body.new_password == body.current_password:
+            return JSONResponse(
+                _json_safe({"error": "New password must differ from the current password."}),
+                status_code=400,
+            )
+
+        # Enforce password policy (min_length + common-password blocklist)
+        pw_error = validate_password(body.new_password)
+        if pw_error:
+            return JSONResponse(_json_safe({"error": pw_error}), status_code=400)
+
+        # Hash and persist
+        new_hash = hash_password(body.new_password)
+        store.set_user_password(username, new_hash)
+
+        _insert_audit_log(
+            actor=f"user:{user_id}",
+            action="user.change_password",
+            target=str(user_id),
+            success=True,
+            detail={},
+        )
+        logger.info("Password changed for user_id=%s (%s)", user_id, username)
+        return JSONResponse(_json_safe({"ok": True}))
+
+    except Exception as exc:
+        logger.error("change_password error: %s", exc)
+        return JSONResponse(_json_safe({"error": "internal_error"}), status_code=500)
+
+
+# ---------------------------------------------------------------------------
 # Verify endpoint (used by Astro middleware)
 # ---------------------------------------------------------------------------
 
@@ -532,7 +654,17 @@ async def verify_session(request: Request):
     from src.web_ui.middleware import _session_valid
 
     if is_test_bypass_active():
-        return JSONResponse(_json_safe({"ok": True, "username": "test-user", "is_admin": True}))
+        return JSONResponse(
+            _json_safe(
+                {
+                    "ok": True,
+                    "username": "test-user",
+                    "is_admin": True,
+                    "email": "test-user@example.com",
+                    "is_tenant_admin": False,
+                }
+            )
+        )
 
     if not _session_valid(request):
         return JSONResponse(
@@ -554,13 +686,29 @@ async def verify_session(request: Request):
     username = request.session.get("username")
 
     # W-UM: include is_admin so Astro requireAdmin middleware can gate /admin/users/*
+    # WS2a: also return email + is_tenant_admin for Astro locals population.
     is_admin = False
+    email: str | None = None
+    is_tenant_admin = False
     try:
         from src.db.pg import auth_store
         store = auth_store()
         user_id = store.get_user_id_by_username(username) if username else None
         if user_id is not None:
             is_admin = bool(store.get_user_field(user_id, "is_admin"))
+            email = store.get_user_field(user_id, "email")  # type: ignore[assignment]
+            memberships = store.list_tenant_memberships_for_user(user_id)
+            is_tenant_admin = any(m["role"] == "tenant_admin" for m in memberships)
     except Exception:
-        pass  # is_admin stays False on any DB error
-    return JSONResponse(_json_safe({"ok": True, "username": username, "is_admin": is_admin}))
+        pass  # is_admin/email/is_tenant_admin stay at defaults on any DB error
+    return JSONResponse(
+        _json_safe(
+            {
+                "ok": True,
+                "username": username,
+                "is_admin": is_admin,
+                "email": email or "",
+                "is_tenant_admin": is_tenant_admin,
+            }
+        )
+    )

@@ -130,11 +130,10 @@ const tiers = [
       ))}
     </div>
 
-    <!-- Grandfathered tier note -->
+    <!-- Plan note: all signups (including beta) are on the unified Free plan -->
     <p class="text-center text-gray-400 text-sm max-w-2xl mx-auto mb-8">
-      Existing beta users automatically receive a <strong>grandfathered tier</strong> with
-      1,000 MCP tool calls per month and 60 requests/minute. Your current plan and usage
-      are visible at <a href="/account/usage" class="text-viindoo-primary hover:underline">/account/usage</a>.
+      All accounts — including existing beta users — are on the unified <strong>Free plan</strong>.
+      Your current plan and usage are visible at <a href="/account/usage" class="text-viindoo-primary hover:underline">/account/usage</a>.
     </p>
 
     <!-- Waitlist form -->
@@ -179,7 +178,7 @@ const tiers = [
         </summary>
         <p class="text-gray-500 text-sm mt-3">
           Yes. The full stack (Neo4j + PostgreSQL + MCP server) can be self-hosted via Docker Compose.
-          See <a href="https://github.com/Viindoo/odoo-semantic-server" target="_blank" rel="noopener noreferrer" class="text-viindoo-primary hover:underline">GitHub</a> for deploy guide.
+          <a href="mailto:admin@viindoo.com" class="text-viindoo-primary hover:underline">Contact us</a> for self-host access and deployment guide.
           Self-hosted is always free.
         </p>
       </details>
@@ -256,24 +255,21 @@ const tiers = [
         } else if (res.status === 429) {
           msgEl.textContent = 'Too many attempts. Please try again in a minute.';
           msgEl.classList.remove('hidden');
-          // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
-          msgEl.classList.add('text-red-400');
+          msgEl.classList.add('text-viindoo-danger');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
         } else {
           const detail = data.detail || data.error || 'Something went wrong. Please try again.';
           msgEl.textContent = detail;
           msgEl.classList.remove('hidden');
-          // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
-          msgEl.classList.add('text-red-400');
+          msgEl.classList.add('text-viindoo-danger');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
         }
       } catch (_err) {
         msgEl.textContent = 'Network error. Please check your connection and try again.';
         msgEl.classList.remove('hidden');
-        // TODO(P1): add viindoo-danger token to tailwind.config.mjs for brand-consistent error color
-        msgEl.classList.add('text-red-400');
+        msgEl.classList.add('text-viindoo-danger');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Notify Me';
       }
