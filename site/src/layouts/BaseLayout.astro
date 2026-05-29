@@ -9,6 +9,11 @@ export interface Props {
   /** Render the shared site footer. Pages that ship their own footer
    *  (e.g. the landing page) set this false to avoid a duplicate footer. */
   showFooter?: boolean;
+  /** Wrap the slot in a `<main id="main-content">` landmark + skip-link.
+   *  App shells (AdminLayout/AccountLayout/TenantLayout) supply their own
+   *  `<main>` + skip-link, so they set this false to avoid a nested `<main>`
+   *  and a duplicate `id="main-content"` / skip-link. */
+  provideMain?: boolean;
 }
 
 const {
@@ -16,6 +21,7 @@ const {
   description = 'Knowledge engine for Odoo — inheritance chain, view structure, JS patch — exposed via MCP protocol.',
   theme = 'light',
   showFooter = true,
+  provideMain = true,
 } = Astro.props;
 const isDark = theme === 'dark';
 // Absolute URL for social-card image (OG/Twitter need absolute). Prefer the
@@ -44,14 +50,18 @@ const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.vi
     <slot name="head" />
   </head>
   <body>
-    <a
-      href="#main-content"
-      class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-white focus:px-4 focus:py-2 focus:font-semibold focus:text-viindoo-primary-text focus:shadow-lg"
-      >Skip to main content</a
-    >
-    <main id="main-content">
+    {provideMain ? (
+      <a
+        href="#main-content"
+        class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-white focus:px-4 focus:py-2 focus:font-semibold focus:text-viindoo-primary-text focus:shadow-lg"
+        >Skip to main content</a
+      >
+      <main id="main-content">
+        <slot />
+      </main>
+    ) : (
       <slot />
-    </main>
+    )}
     {showFooter && (
     <footer
       class:list={[

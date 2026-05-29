@@ -257,8 +257,8 @@ class TestChangePasswordSamePassword:
             )
         assert resp.status_code == 400, resp.text
         data = resp.json()
-        err = data.get("error", "").lower()
-        assert "differ" in err or "new password" in err
+        # Stable slug contract (frontend maps it to a friendly message).
+        assert data.get("error") == "same_password"
 
 
 class TestChangePasswordSuccess:

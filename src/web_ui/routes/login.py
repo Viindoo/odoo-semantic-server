@@ -604,14 +604,18 @@ async def change_password(body: ChangePasswordBody, request: Request):
                 status_code=401,
             )
 
-        # Reject same password (nice-to-have guard)
+        # Reject same password (nice-to-have guard). Return a stable slug so the
+        # frontend maps it to a friendly message (same contract as
+        # invalid_current_password / no_password_set).
         if body.new_password == body.current_password:
             return JSONResponse(
-                _json_safe({"error": "New password must differ from the current password."}),
+                _json_safe({"error": "same_password"}),
                 status_code=400,
             )
 
-        # Enforce password policy (min_length + common-password blocklist)
+        # Enforce password policy (min_length + common-password blocklist).
+        # validate_password() returns a human-readable sentence (with the
+        # runtime-configured min length), which the frontend displays verbatim.
         pw_error = validate_password(body.new_password)
         if pw_error:
             return JSONResponse(_json_safe({"error": pw_error}), status_code=400)

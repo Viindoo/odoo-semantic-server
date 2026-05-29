@@ -26,7 +26,7 @@ All notable changes to Odoo Semantic MCP are documented here.
   hamburger button; JS-free CSS approach, zero dependency.
 - **Skip-to-content links** added to all 3 app layouts and the public `BaseLayout` for
   keyboard/screen-reader navigation (WCAG 2.4.1).
-- **`viindoo-danger` colour token** (`#C0392B` / Tailwind `bg-viindoo-danger`) added to
+- **`viindoo-danger` colour token** (`#C0331F` / Tailwind `bg-viindoo-danger`) added to
   the design-token layer for destructive-action buttons and error states.
 - **`/bootstrap` discoverability links.** Persona dev card now links to the install page;
   install page links back to `/bootstrap`. Increases organic discovery for self-hosted

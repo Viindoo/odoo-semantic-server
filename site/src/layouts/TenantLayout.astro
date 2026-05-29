@@ -6,6 +6,7 @@ import BaseLayout from './BaseLayout.astro';
 import StepUpMfaModal from '../components/StepUpMfaModal';
 import MobileSidebar from '../components/MobileSidebar.astro';
 import UserMenu from '../components/UserMenu';
+import { NAV_ICONS as ICONS } from '../lib/navIcons';
 
 export interface Props {
   title?: string;
@@ -26,12 +27,10 @@ const displayName = currentUser?.username ?? 'User';
 const pageTitle = `${title}${tenantName ? ` · ${tenantName}` : ''}`;
 
 // L12 — inline SVG line-icon map (stroke="currentColor", 20px).
-const ICONS: Record<string, string> = {
-  cog: '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
-};
+// Nav icons sourced from the shared SSOT (site/src/lib/navIcons.ts).
 ---
 
-<BaseLayout title={pageTitle}>
+<BaseLayout title={pageTitle} provideMain={false}>
   <a
     href="#main-content"
     class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-viindoo-primary focus:text-viindoo-bg-0 focus:font-medium focus:shadow-lg"

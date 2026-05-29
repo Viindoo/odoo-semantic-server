@@ -22,7 +22,8 @@
  *   accessible label "Open user menu".
  * - Panel is role="menu"; each link is role="menuitem".
  * - Opens on click; closes on outside-click, Escape, or after navigation.
- *   Focus returns to the trigger when closed via Escape / outside-click.
+ *   Focus returns to the trigger only on keyboard close (Escape); an outside
+ *   pointer-click closes without moving focus (so it lands where the user clicked).
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
