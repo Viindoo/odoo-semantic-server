@@ -12,7 +12,6 @@ Only keys with tenant_scopable=True in SETTINGS_CATALOGUE are accessible here.
 """
 import json
 import logging
-import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -23,7 +22,7 @@ from src.db.audit import audit_action
 from src.settings import get_setting
 from src.settings_registry import SETTINGS_CATALOGUE
 from src.web_ui.auth import (
-    MFA_FRESHNESS_SECONDS,
+    _check_mfa_freshness,
     current_user_id,
     is_admin_session,
     is_test_bypass_active,
@@ -87,28 +86,20 @@ async def _require_tenant_owner_or_admin(tenant_id: int, request: Request) -> in
 
 
 async def _require_tenant_owner_or_admin_with_mfa(tenant_id: int, request: Request) -> int:
-    """Same as above but also verifies fresh MFA (for destructive ops)."""
+    """Same as above but also verifies fresh MFA (for destructive ops).
+
+    Freshness check delegates to :func:`src.web_ui.auth._check_mfa_freshness`
+    so the window is runtime-configurable via ``auth.mfa_freshness_seconds``
+    (ADR-0042) and the logic stays DRY with the system-admin path.
+    """
     # First check role
     actor_id = await _require_tenant_owner_or_admin(tenant_id, request)
 
-    # System admins go through require_admin_with_fresh_mfa semantics inline
-    # (WI-R F-004: shares MFA_FRESHNESS_SECONDS + is_test_bypass_active with
-    # the system admin path; imports moved to module top for I001 cleanliness).
     if is_test_bypass_active():
         return actor_id
 
-    mfa_verified_at = request.session.get("mfa_verified_at")
-    if mfa_verified_at is None:
-        raise HTTPException(403, "Fresh MFA required — MFA not enrolled or not recently verified")
-    try:
-        age = time.time() - float(mfa_verified_at)
-    except (TypeError, ValueError):
-        raise HTTPException(403, "Fresh MFA required — invalid MFA timestamp")
-    if age < 0 or age > MFA_FRESHNESS_SECONDS:
-        raise HTTPException(
-            403,
-            f"Fresh MFA required — re-verify within last {MFA_FRESHNESS_SECONDS // 60} minutes",
-        )
+    # Delegate to shared freshness helper (raises HTTPException 403 on failure)
+    _check_mfa_freshness(request)
     return actor_id
 
 

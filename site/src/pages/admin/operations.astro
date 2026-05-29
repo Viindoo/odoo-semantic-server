@@ -480,6 +480,8 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
 </AdminLayout>
 
 <script>
+  import { withStepUp } from '../../lib/mfaStepUp';
+
   function showFlash(msg: string, type: 'success' | 'error' = 'success') {
     const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
     if (!banner) return;
@@ -677,10 +679,10 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     const btn = form.querySelector('[data-testid="restore-button"]') as HTMLButtonElement;
     if (btn) btn.disabled = true;
     try {
-      const res = await fetch('/api/operations/restore', {
+      const res = await withStepUp(() => fetch('/api/operations/restore', {
         method: 'POST',
         body: uploadFd,
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       const resultEl = document.querySelector('[data-testid="restore-result"]') as HTMLElement | null;
       const resultContent = document.querySelector('[data-testid="restore-result-content"]') as HTMLElement | null;

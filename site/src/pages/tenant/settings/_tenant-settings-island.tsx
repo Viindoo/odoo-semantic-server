@@ -4,6 +4,7 @@
 // Uses the same widget vocabulary as _setting-editor-island.tsx (admin) but with
 // the tenant endpoint contract (effective_value / tenant_override / system_default).
 import { useState, useCallback } from 'react';
+import { withStepUp } from '../../../lib/mfaStepUp';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -408,7 +409,7 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
     setSaving((prev) => ({ ...prev, [s.key]: true }));
     setErrors((prev) => ({ ...prev, [s.key]: '' }));
     try {
-      const res = await fetch(
+      const res = await withStepUp(() => fetch(
         `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}`,
         {
           method: 'PATCH',
@@ -416,7 +417,7 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
           credentials: 'include',
           body: JSON.stringify({ value, reason }),
         },
-      );
+      ));
       if (!res.ok) {
         const d = (await res.json().catch(() => ({}))) as { detail?: string };
         throw new Error(d.detail ?? `HTTP ${res.status}`);
@@ -453,10 +454,10 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
       return;
     setResettingKey(s.key);
     try {
-      const res = await fetch(
+      const res = await withStepUp(() => fetch(
         `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}/reset`,
         { method: 'POST', credentials: 'include' },
-      );
+      ));
       if (!res.ok) {
         const d = (await res.json().catch(() => ({}))) as { detail?: string };
         flash(d.detail ?? 'Reset failed.', true);

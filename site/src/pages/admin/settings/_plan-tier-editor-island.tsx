@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Plan Tier Editor React island — admin plans CRUD (WI-10, ADR-0039)
 import { useState } from 'react';
+import { withStepUp } from '../../../lib/mfaStepUp';
 
 interface Plan {
   id: number;
@@ -118,12 +119,12 @@ function EditModal({
 
     setSaving(true);
     try {
-      const res = await fetch(`/api/admin/plans/${encodeURIComponent(plan.slug)}`, {
+      const res = await withStepUp(() => fetch(`/api/admin/plans/${encodeURIComponent(plan.slug)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify(payload),
-      });
+      }));
       const data = await res.json().catch(() => ({})) as Record<string, unknown>;
       if (res.ok) {
         flash(`Plan "${plan.display_name}" updated. Changes propagate in ≤60 s.`);

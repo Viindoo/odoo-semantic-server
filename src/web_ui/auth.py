@@ -14,11 +14,18 @@ Session middleware:
     by get_session_secret(). TTL enforced by storing "session_at" epoch in the
     session dict and checking inside AuthRequiredMiddleware.
 
-MFA freshness:
-    For destructive operations (restore), require MFA to have been completed
-    within the last MFA_FRESHNESS_SECONDS (default 5 minutes). MFA timestamp
-    is stored in session["mfa_verified_at"]. If MFA is not enrolled, the
-    operation is blocked (403).
+MFA freshness (ADR-0043):
+    For destructive operations (restore, admin settings), require MFA to have
+    been completed within the last ``get_mfa_freshness()`` seconds (default 5
+    minutes, runtime-configurable via ``auth.mfa_freshness_seconds`` app
+    setting per ADR-0042). The timestamp is stored in both
+    session["mfa_verified_at"] and active_sessions.mfa_verified_at (DB).
+
+    Write contract: the timestamp is written by (a) ``totp_login`` on
+    successful MFA login and (b) ``POST /api/auth/totp/step-up`` on
+    successful mid-session re-verification. No other path writes this key.
+    If MFA is not enrolled or the window has expired, the operation is
+    blocked with 403 "Fresh MFA required".
 """
 
 import logging
@@ -42,11 +49,32 @@ SESSION_TTL_SECONDS = 8 * 3600
 
 # MFA freshness window for destructive operations (restore): 5 minutes.
 #
-# Not currently exposed via ``app_settings`` (no Tier-1 entry) — kept as a
-# hard-coded operational floor.
+# WI-9 (ADR-0042): kept as the code-default fallback for ``get_setting(
+# "auth.mfa_freshness_seconds")``.  Existing callers may continue to import
+# this constant; new callers should prefer :func:`get_mfa_freshness` so an
+# admin can override the value via ``app_settings`` without redeploying.
 MFA_FRESHNESS_SECONDS = 5 * 60
 
 _DEV_FALLBACK_SECRET: str | None = None
+
+
+def get_mfa_freshness() -> int:
+    """Resolve the MFA freshness window through the admin-settings overlay.
+
+    Resolution order (per ADR-0042, via :func:`src.settings.get_setting`):
+      1. ``app_settings`` row for ``auth.mfa_freshness_seconds`` (DB).
+      2. ``SETTINGS_CATALOGUE`` default.
+      3. This module-level :data:`MFA_FRESHNESS_SECONDS` (fallback guard for
+         very early bootstrap or catalogue not yet loaded).
+
+    Import is intentionally lazy to avoid a circular import between
+    ``src.web_ui.auth`` and ``src.settings`` at module-load time.
+    """
+    try:
+        from src.settings import get_setting
+        return int(get_setting("auth.mfa_freshness_seconds"))
+    except Exception:
+        return MFA_FRESHNESS_SECONDS
 
 
 def get_session_ttl() -> int:
@@ -217,17 +245,17 @@ async def require_admin(request: Request) -> int:
     return user_id
 
 
-async def require_admin_with_fresh_mfa(request: Request) -> int:
-    """FastAPI Depends: require admin + fresh MFA verification (within 5 min).
+def _check_mfa_freshness(request: Request) -> None:
+    """Verify MFA was completed within the configured freshness window.
 
-    Used for destructive operations like restore. Adds MFA freshness check
-    on top of require_admin.
+    Raises HTTPException 403 with sentinel detail strings if the check fails
+    (frontend matches the "Fresh MFA required" prefix).
+
+    Does NOT bypass for test mode — callers (require_admin_with_fresh_mfa,
+    _require_tenant_owner_or_admin_with_mfa) must gate this call with
+    is_test_bypass_active() themselves so the bypass is transparent to tests.
     """
-    user_id = await require_admin(request)
-
-    if is_test_bypass_active():
-        return user_id
-
+    window = get_mfa_freshness()
     mfa_verified_at = request.session.get("mfa_verified_at")
     if mfa_verified_at is None:
         raise HTTPException(
@@ -241,14 +269,30 @@ async def require_admin_with_fresh_mfa(request: Request) -> int:
             status_code=403,
             detail="Fresh MFA required — invalid MFA timestamp",
         )
-    if age < 0 or age > MFA_FRESHNESS_SECONDS:
+    if age < 0 or age > window:
         raise HTTPException(
             status_code=403,
             detail=(
                 f"Fresh MFA required — re-verify within last "
-                f"{MFA_FRESHNESS_SECONDS // 60} minutes"
+                f"{window // 60} minutes"
             ),
         )
+
+
+async def require_admin_with_fresh_mfa(request: Request) -> int:
+    """FastAPI Depends: require admin + fresh MFA verification.
+
+    Used for destructive operations like restore. Adds MFA freshness check
+    on top of require_admin. The freshness window is runtime-configurable
+    via ``auth.mfa_freshness_seconds`` (ADR-0042); falls back to
+    :data:`MFA_FRESHNESS_SECONDS` (5 min).
+    """
+    user_id = await require_admin(request)
+
+    if is_test_bypass_active():
+        return user_id
+
+    _check_mfa_freshness(request)
     return user_id
 
 

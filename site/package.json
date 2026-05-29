@@ -11,7 +11,9 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check"
+    "check": "astro check",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@astrojs/node": "^10.0.5",
@@ -33,7 +35,9 @@
     "@astrojs/check": "^0.9.9",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
-    "typescript": "^5.6.0"
+    "happy-dom": "^20.9.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.7"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

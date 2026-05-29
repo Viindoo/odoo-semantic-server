@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SETTINGS_CATALOGUE — 15 Tier-1 admin-tunable settings (ADR-0042).
+"""SETTINGS_CATALOGUE — 16 Tier-1 admin-tunable settings (ADR-0042).
 
 Each entry registers default + validation + metadata. Bootstrap inserts rows
 into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).
@@ -55,6 +55,12 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
     SettingDef("auth.email_verification_ttl_hours", "auth", "int", 24,
                {"min": 1, "max": 168},
                description="Email verification token validity."),
+    SettingDef("auth.mfa_freshness_seconds", "auth", "duration_seconds", 300,
+               {"min": 60, "max": 3600},
+               description=(
+                   "Fresh-MFA re-verify window for destructive admin ops"
+                   " (restore, settings, plans, EE-modules, patterns)."
+               )),
 
     # quota category — tenant-scopable.  WI-RV F-C: marked ``advisory`` because
     # the live MCP middleware reads quota + rpm from the ``plans`` table
