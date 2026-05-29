@@ -225,6 +225,17 @@ describe('resolveAuthLanding', () => {
 
   // ---- /admin/* return for non-admin: silently stripped to customer landing -
 
+  it('strips /admin return path (bare, no trailing slash) for non-admin → /account/api-keys', () => {
+    // ?return=/admin passes isSafeInternalPath but must be stripped — middleware
+    // would redirect /admin → /admin/ causing a second bounce.
+    expect(resolveAuthLanding(false, '/admin')).toBe('/account/api-keys');
+  });
+
+  it('honours /admin (bare, no trailing slash) for admin → /admin', () => {
+    // Admin users may legitimately land on /admin; do not strip it.
+    expect(resolveAuthLanding(true, '/admin')).toBe('/admin');
+  });
+
   it('strips /admin/ return path for non-admin → /account/api-keys (not double-bounced)', () => {
     // A crafted ?return=/admin/ must not land non-admins on the admin page.
     // The helper strips it and returns the customer landing immediately (1 redirect).

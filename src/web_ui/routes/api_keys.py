@@ -25,14 +25,15 @@ router = APIRouter(prefix="/api/api-keys")
 def _mint_default_api_key(user_id: int, username: str) -> str | None:
     """Auto-mint one free-plan API key for a newly-created user.
 
+    Idempotent: if the user already has ≥1 API key (active or inactive),
+    returns None without minting a duplicate.  This makes call-sites safe to
+    invoke unconditionally (e.g. on resend-verification or any new-user path)
+    without risking duplicate keys from concurrent requests or double-tokens.
+
     Reuses AuthStore.create_api_key() — plan_id is NOT specified so the DB
     column DEFAULT (= free plan) applies automatically.  The raw key is
     returned so callers can surface it in the signup response if desired;
     callers that do not need it may discard the return value.
-
-    Idempotent-friendly: callers are responsible for only calling this when
-    the user has zero existing keys (or unconditionally on first-login if
-    idempotency at the caller is acceptable).
 
     Never raises into the auth flow: any exception is caught, logged as a
     warning, and None is returned.  A failed mint must NOT break login or
@@ -43,13 +44,23 @@ def _mint_default_api_key(user_id: int, username: str) -> str | None:
         username: Human-readable label component for the key name.
 
     Returns:
-        Raw key string (shown once) on success, or None on failure.
+        Raw key string (shown once) on success, or None if user already has
+        a key or on failure.
     """
     try:
         from src.db.pg import auth_store
 
+        store = auth_store()
+        # Idempotency guard: only mint when user has zero existing keys.
+        existing = store.list_api_keys(user_id=user_id, admin=False)
+        if existing:
+            _logger.debug(
+                "Auto-mint skipped: user_id=%d already has %d key(s)", user_id, len(existing)
+            )
+            return None
+
         label = f"Default key ({username})"
-        raw_key, _prefix, _key_id = auth_store().create_api_key(
+        raw_key, _prefix, _key_id = store.create_api_key(
             name=label,
             user_id=user_id,
             expires_at=None,

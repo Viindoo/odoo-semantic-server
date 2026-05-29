@@ -7,7 +7,7 @@
 
 import type { APIRoute } from 'astro';
 import { GitHub, OAuth2RequestError } from 'arctic';
-import { resolveAuthLanding } from '../../../../lib/auth-landing';
+import { buildOAuthCallbackResponse } from '../../../../lib/fastapi';
 
 function _getGitHub(): GitHub {
     return new GitHub(
@@ -135,47 +135,5 @@ export const GET: APIRoute = async ({ request, cookies }) => {
         return new Response('Internal error contacting API', { status: 502 });
     }
 
-    if (!apiRes.ok) {
-        // Read body once as text; parse JSON separately (stream can only be read once).
-        const bodyText = await apiRes.text().catch(() => '');
-        console.error('[OAuth/github callback] FastAPI rejected login:', apiRes.status, bodyText);
-        if (apiRes.status === 409) {
-            return new Response(null, {
-                status: 302,
-                headers: { Location: '/login?error=email_conflict' },
-            });
-        }
-        // 403 signup_disabled — redirect to origin page with specific error.
-        // O-A: use the oauth_from value read+cleared at the top (single-use) to
-        // pick the correct error destination.
-        if (apiRes.status === 403) {
-            const errBody = (() => { try { return JSON.parse(bodyText) as { error?: string }; } catch { return {}; } })();
-            if (errBody.error === 'signup_disabled') {
-                const dest = oauthFrom === 'signup' ? '/signup' : '/login';
-                return new Response(null, {
-                    status: 302,
-                    headers: { Location: `${dest}?error=signup_disabled` },
-                });
-            }
-        }
-        return new Response(null, {
-            status: 302,
-            headers: { Location: '/login?error=oauth_failed' },
-        });
-    }
-
-    // Parse is_admin from FastAPI success body to determine correct landing page.
-    // Guard against parse failure — default to non-admin landing (safest fallback).
-    const body = await apiRes.json().catch(() => ({ is_admin: false })) as { is_admin?: boolean };
-    const landing = resolveAuthLanding(body.is_admin === true);
-
-    // Forward session cookie from FastAPI → browser, then redirect to role-aware landing
-    const setCookieHeader = apiRes.headers.get('set-cookie');
-    return new Response(null, {
-        status: 302,
-        headers: {
-            Location: landing,
-            ...(setCookieHeader ? { 'Set-Cookie': setCookieHeader } : {}),
-        },
-    });
+    return buildOAuthCallbackResponse(apiRes, oauthFrom, '[OAuth/github callback]');
 };

@@ -84,9 +84,10 @@ class TestCascadeBehaviourEndToEnd:
     """T3: deleting an api_keys row really does remove its usage_counter rows."""
 
     def test_delete_api_key_cascades_to_usage_counter(self, migrated_pg):
-        # Seed a key on the free-grandfathered plan.
+        # NOTE (m13_013): m13_013_consolidate_free_plans.sql deletes 'free-grandfathered'.
+        # The CASCADE FK behaviour being tested here is plan-agnostic; use 'free' instead.
         with migrated_pg.cursor() as cur:
-            cur.execute("SELECT id FROM plans WHERE slug = 'free-grandfathered'")
+            cur.execute("SELECT id FROM plans WHERE slug = 'free'")
             fg_id = cur.fetchone()[0]
             cur.execute(
                 "INSERT INTO api_keys (name, key_hash, key_prefix, plan_id)"

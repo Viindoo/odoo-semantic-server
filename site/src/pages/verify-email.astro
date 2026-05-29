@@ -13,9 +13,11 @@ const token = Astro.url.searchParams.get('token') ?? '';
 type VerifyStatus = 'success' | 'expired' | 'no_token';
 let status: VerifyStatus = 'no_token';
 let autoRedirect = false;
-// New accounts are always non-admin (is_admin=FALSE on INSERT).
-// resolveAuthLanding(false) → /account/api-keys for all newly verified users.
-const verifyLanding = resolveAuthLanding(false);
+// SSR fallback landing shown before JS runs (pre-verify state) — conservative
+// default to customer landing since we haven't verified yet.
+// The client-side script will override this with the real is_admin from the
+// API response after a successful verify.
+let verifyLanding = resolveAuthLanding(false);
 
 if (token) {
   try {
@@ -31,6 +33,11 @@ if (token) {
       if (setCookie) {
         Astro.response.headers.set('set-cookie', setCookie);
       }
+      // Use real is_admin from the API response so an admin-invite-via-email
+      // flow lands on /admin/ instead of /account/api-keys.
+      // Guard against parse failure — default to non-admin (safest fallback).
+      const respBody = await resp.json().catch(() => ({ is_admin: false })) as { is_admin?: boolean };
+      verifyLanding = resolveAuthLanding(respBody.is_admin === true);
       status = 'success';
       autoRedirect = true;
     } else {

@@ -269,12 +269,12 @@ cache invalidation sanity + audit log verification.
 ## Amendment — 2026-05-29
 
 **Free-plan consolidation and auto-onboarding (fix/auth-ux-oauth-cache-plans):** The
-`free-grandfathered` plan (predecessor to the `free` plan, both with identical limits) has been
-retired. Migration `m13_013_consolidate_free_plans.sql` repoints all `free-grandfathered` keys
-to `free` and archives the legacy plan row as `is_public=FALSE`. Rationale: operational clarity —
-two plan rows with identical semantics (both public, both 0 cost, both 120 rpm) was a schema
-artifact of the v0.13.0 transition path and is unnecessary in steady state. The unlimited plan
-(D4) and per-key overrides (D1) are unaffected.
+`free-grandfathered` plan is now deprecated. Migration `m13_013_consolidate_free_plans.sql` repoints
+all 6 `free-grandfathered` keys (internal/admin/CLI) to the `unlimited` plan per D5 SSOT, then deletes
+the plan row. New signups continue to land on the public `free` plan (100 calls/month, 30 rpm).
+Rationale: operational clarity — admin keys should not be bound to a customer-facing free tier; the
+deleted row eliminates schema artifact. The unlimited plan (D4) and per-key overrides (D1) are
+unaffected.
 
 **Auto-onboarding via auto-minted free-plan API key:** Signups (password + OAuth) now auto-assign
 the `free` plan and auto-generate one API key (`auto_{user_id}_{timestamp}`), eliminating manual

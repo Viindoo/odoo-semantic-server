@@ -61,6 +61,8 @@ class TestListPlans:
 
         Seed = m13_006 (free-grandfathered / free / pro / team) +
         m13_009 'unlimited' sentinel (is_public=FALSE, admin-granted; ADR-0041 D5).
+        m13_013 then deletes 'free-grandfathered', so post-consolidation the DB
+        has exactly 4 plans: free / pro / team / unlimited.
         The list endpoint deliberately returns non-public tiers too so the admin
         UI can render every assignable plan.
         """
@@ -74,14 +76,17 @@ class TestListPlans:
         )
         plans = body["plans"]
         assert isinstance(plans, list)
-        assert len(plans) == 5, (
-            f"Expected 5 plans (m13_006 seed + m13_009 'unlimited'), "
-            f"got {len(plans)}: {[p['slug'] for p in plans]}"
+        # NOTE (m13_013): m13_013_consolidate_free_plans.sql deletes 'free-grandfathered'
+        # (repoints its api_keys to 'unlimited').  Post-consolidation the migrated set is
+        # 4 plans: free / pro / team / unlimited.
+        assert len(plans) == 4, (
+            f"Expected 4 plans (free/pro/team/unlimited after m13_013 removes"
+            f" free-grandfathered), got {len(plans)}: {[p['slug'] for p in plans]}"
         )
 
         # Verify all expected slugs present (incl. the admin-only 'unlimited' sentinel)
         slugs = {p["slug"] for p in plans}
-        expected = {"free-grandfathered", "free", "pro", "team", "unlimited"}
+        expected = {"free", "pro", "team", "unlimited"}
         assert slugs == expected, f"Expected slugs {expected}, got {slugs}"
 
         # Each plan must have the canonical fields

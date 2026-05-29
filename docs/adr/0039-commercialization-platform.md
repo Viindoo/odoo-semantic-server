@@ -158,12 +158,11 @@ full context.
 ## Amendment — 2026-05-29
 
 **Free-plan consolidation (fix/auth-ux-oauth-cache-plans):** The `free-grandfathered` plan (seeded
-during the free→pro→team transition in v0.13.0) is now deprecated and archived. Migration
-`m13_013_consolidate_free_plans.sql` repoints all existing `free-grandfathered` keys to the
-unified public `free` plan (idempotent via per-plan lock row). The same limits (unlimited calls,
-120 rpm) apply — no customer impact. The schema distinction (two separate rows) is collapsed into
-one; `free-grandfathered` is marked `is_public=FALSE` (never shown in pricing or signup flows).
-Rationale: operational simplicity and cleaner plan enumeration in admin UI.
+during the free→pro→team transition in v0.13.0) is now deprecated. Migration
+`m13_013_consolidate_free_plans.sql` repoints all 6 existing `free-grandfathered` keys (internal/admin/CLI)
+to the `unlimited` plan (ADR-0041 D5 SSOT: no quota/rpm limit), then deletes the plan row. New
+signups continue to land on the public `free` plan (100 calls/month, 30 rpm). Rationale: operational
+simplicity — one `free` tier for customers, unlimited for admins; no schema artifact.
 
 **Auto-onboarding:** New signups (password + OAuth flows) now auto-assign the `free` plan and
 auto-mint one API key (name: `auto_{user_id}_{timestamp}`), eliminating the prior manual

@@ -83,10 +83,10 @@ async def get_account_usage(request: Request):
     Response shape:
       {
         "plan": {
-          "slug": "free-grandfathered",
-          "name": "Free (Grandfathered)",
-          "quota_calls_per_month": 1000,
-          "rate_limit_rpm": 60
+          "slug": "free",
+          "name": "Free",
+          "quota_calls_per_month": 100,
+          "rate_limit_rpm": 30
         },
         "current_period": {
           "yyyymm": "202605",

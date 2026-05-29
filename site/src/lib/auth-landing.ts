@@ -122,9 +122,11 @@ const CUSTOMER_LANDING = '/account/api-keys';
  */
 export function resolveAuthLanding(isAdmin: boolean, safeReturn?: string | null): string {
   if (safeReturn != null && isSafeInternalPath(safeReturn)) {
-    // Strip /admin/* return paths for non-admin users — prevents a second
-    // middleware bounce and closes a probing vector for admin routes.
-    if (!isAdmin && safeReturn.startsWith('/admin/')) {
+    // Strip /admin and /admin/* return paths for non-admin users — prevents a
+    // second middleware bounce and closes a probing vector for admin routes.
+    // Bare `/admin` (no trailing slash) also passes isSafeInternalPath but must
+    // be stripped: middleware would bounce it to /admin/ → a second hop.
+    if (!isAdmin && (safeReturn === '/admin' || safeReturn.startsWith('/admin/'))) {
       return CUSTOMER_LANDING;
     }
     return safeReturn;

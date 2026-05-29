@@ -6,10 +6,10 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ### Changed — Free-plan consolidation + auto-onboarding (fix/auth-ux-oauth-cache-plans)
 
-- **Single public `free` plan replaces `free-grandfathered`.** Migration `m13_013_consolidate_free_plans.sql`
-  repoints all `free-grandfathered` API keys to the unified `free` plan (same limits: unlimited calls,
-  120 rpm); the legacy plan row is marked as `is_public=FALSE` (archived, not displayed). ADR-0041 D4
-  applies: non-public plans never appear in pricing or self-serve flows.
+- **Admin/CLI keys moved to `unlimited` plan; `free-grandfathered` plan deleted.** Migration `m13_013_consolidate_free_plans.sql`
+  repoints all `free-grandfathered` API keys (6 internal/admin/CLI keys) to the `unlimited` plan
+  (ADR-0041 D5 SSOT), then deletes the legacy `free-grandfathered` plan row. New signups continue to
+  land on the public `free` plan (100 calls/month, 30 rpm).
 - **Auto-onboarding for new signups:** Both password + OAuth signups auto-assign the `free` plan and
   auto-mint one API key (auto-generated name `auto_{user_id}_{timestamp}`). Landing post-login points
   users to `/account/api-keys` to see their key. Closes onboarding friction gap.

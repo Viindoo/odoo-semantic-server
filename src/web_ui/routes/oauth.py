@@ -421,6 +421,6 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
     )
     return JSONResponse(
         _json_safe(
-            {"ok": True, "username": username, "is_admin": bool(user.get("is_admin", False))}
+            {"ok": True, "username": username, "is_admin": bool(user.get("is_admin") or False)}
         )
     )

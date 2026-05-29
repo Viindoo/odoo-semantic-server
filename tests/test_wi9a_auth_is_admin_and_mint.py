@@ -25,6 +25,7 @@ DB-layer tests (M1, M2, M3, M5, M6, M7) use the real Postgres fixtures (mark=pos
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import secrets
 import unittest.mock as mock
@@ -967,3 +968,166 @@ class TestMintFailureIsNonFatal:
         data = resp.json()
         assert data.get("ok") is True, "verify-email body must have ok=True"
         assert data.get("username") == username
+
+
+# ============================================================================
+# T: is_admin in totp_login response (unit test — no real DB)
+# ============================================================================
+
+
+class TestIsAdminInTotpLogin:
+    """T1/T2: totp_login returns is_admin=True/False matching the user's DB row."""
+
+    @pytest.fixture(autouse=True)
+    def _session_secret(self, monkeypatch):
+        monkeypatch.setenv("WEBUI_SESSION_SECRET", "test-secret-wi9a-totp-login")
+
+    def _make_mfa_token(self, user_id: int, expires_offset: float = 300.0) -> str:
+        """Build a valid signed MFA token (mirrors create_mfa_token logic)."""
+        import time
+
+        session_secret = os.environ["WEBUI_SESSION_SECRET"]
+        expires_at = time.time() + expires_offset
+        payload = f"{user_id}:{expires_at}"
+        sig = hmac.new(
+            session_secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        return f"{payload}.{sig}"
+
+    @pytest.mark.asyncio
+    async def test_totp_login_admin_user_returns_is_admin_true(self):
+        """T1: MFA login for an admin user → is_admin=True in success response."""
+        import src.web_ui.routes.totp as totp_mod
+
+        user_id = 42
+        username = "admin_mfa"
+        mfa_token = self._make_mfa_token(user_id)
+
+        # Fake cursor that returns (username, is_admin) tuple
+        fake_row = (username, True)
+
+        class _FakeCur:
+            def execute(self, sql, params):
+                pass
+            def fetchone(self):
+                return fake_row
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        class _FakePool:
+            def checkout(self):
+                return _FakeConn()
+
+        class _FakeStore:
+            _pool = _FakePool()
+
+        app = _make_app_no_loopback()
+
+        with (
+            mock.patch("src.db.pg.auth_store", return_value=_FakeStore()),
+            mock.patch.object(
+                totp_mod, "_get_totp_row",
+                return_value={"enabled": True, "encrypted_secret": "x", "backup_codes": []},
+            ),
+            mock.patch.object(
+                totp_mod, "_verify_totp_or_backup", return_value=(True, None)
+            ),
+            # _create_session is imported inline from login — patch the source module.
+            mock.patch(
+                "src.web_ui.routes.login._create_session",
+                return_value="sess_totp_admin",
+            ),
+            mock.patch.object(totp_mod, "_update_session_mfa_verified_at"),
+        ):
+            async with _client(app) as client:
+                resp = await client.post(
+                    "/api/auth/totp/login",
+                    json={"mfa_token": mfa_token, "code": "123456"},
+                )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data.get("ok") is True
+        assert "is_admin" in data, "totp_login must return is_admin in success response"
+        assert data["is_admin"] is True, (
+            "Admin user's totp_login must return is_admin=True so the frontend "
+            "can redirect to /admin/ correctly"
+        )
+
+    @pytest.mark.asyncio
+    async def test_totp_login_regular_user_returns_is_admin_false(self):
+        """T2: MFA login for a non-admin user → is_admin=False in success response."""
+        import src.web_ui.routes.totp as totp_mod
+
+        user_id = 7
+        username = "regular_mfa"
+        mfa_token = self._make_mfa_token(user_id)
+
+        fake_row = (username, False)
+
+        class _FakeCur:
+            def execute(self, sql, params):
+                pass
+            def fetchone(self):
+                return fake_row
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        class _FakePool:
+            def checkout(self):
+                return _FakeConn()
+
+        class _FakeStore:
+            _pool = _FakePool()
+
+        app = _make_app_no_loopback()
+
+        with (
+            mock.patch("src.db.pg.auth_store", return_value=_FakeStore()),
+            mock.patch.object(
+                totp_mod, "_get_totp_row",
+                return_value={"enabled": True, "encrypted_secret": "x", "backup_codes": []},
+            ),
+            mock.patch.object(
+                totp_mod, "_verify_totp_or_backup", return_value=(True, None)
+            ),
+            # _create_session is imported inline from login — patch the source module.
+            mock.patch(
+                "src.web_ui.routes.login._create_session",
+                return_value="sess_totp_regular",
+            ),
+            mock.patch.object(totp_mod, "_update_session_mfa_verified_at"),
+        ):
+            async with _client(app) as client:
+                resp = await client.post(
+                    "/api/auth/totp/login",
+                    json={"mfa_token": mfa_token, "code": "123456"},
+                )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data.get("ok") is True
+        assert "is_admin" in data, "totp_login must return is_admin in success response"
+        assert data["is_admin"] is False, (
+            "Non-admin user's totp_login must return is_admin=False"
+        )
