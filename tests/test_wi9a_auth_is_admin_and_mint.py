@@ -311,6 +311,13 @@ class TestIsAdminInOauthLogin:
     def _enable_signup(self, monkeypatch):
         monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
         monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", True)
+        # Patch the gate function directly so any (real-or-leaked) app_settings
+        # overlay row cannot override the open gate.  No-DB unit tests already
+        # fall through to the constant, but patching the function keeps the
+        # contract identical to the postgres TestMintAfterNewOauthLogin class.
+        monkeypatch.setattr(
+            "src.web_ui.routes.oauth.signup_enabled", lambda: True
+        )
 
     @pytest.mark.asyncio
     async def test_oauth_login_existing_user_includes_is_admin(self):
@@ -564,8 +571,18 @@ class TestMintAfterNewOauthLogin:
 
     @pytest.fixture(autouse=True)
     def _enable_signup(self, monkeypatch):
+        # The oauth route gates new-user creation on signup_enabled(), which
+        # consults the app_settings DB overlay FIRST and only falls back to the
+        # SIGNUP_ENABLED constant when no overlay row exists.  A leaked
+        # signup.enabled=False overlay row (from an earlier postgres test in the
+        # same CI run) would otherwise win over a monkeypatched constant and 403
+        # this test.  Patch signup_enabled() directly so the gate is open
+        # deterministically regardless of any DB-overlay pollution.
         monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
         monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", True)
+        monkeypatch.setattr(
+            "src.web_ui.routes.oauth.signup_enabled", lambda: True
+        )
 
     @pytest.mark.asyncio
     async def test_new_oauth_user_gets_one_key_minted(self, signup_pg):

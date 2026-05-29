@@ -408,10 +408,23 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
 
     # Auto-mint a free-plan API key for brand-new OAuth users only (WI-7).
     # Returning users (oauth match or email-merge) may already have keys — skip.
-    # Failure is non-fatal: logged as a warning inside the helper.
+    # Failure is non-fatal: auth must succeed even if onboarding-key minting
+    # blows up.  The helper has its own internal try/except, but we also wrap
+    # the call site defensively so a failure at the boundary (helper
+    # unavailable, import error, or any exception that escapes the helper)
+    # can never turn a successful OAuth login into a 500.
     if is_new_user:
-        from src.web_ui.routes.api_keys import _mint_default_api_key
-        _mint_default_api_key(user["id"], username)
+        try:
+            from src.web_ui.routes.api_keys import _mint_default_api_key
+            _mint_default_api_key(user["id"], username)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "OAuth login: default API key mint failed for user %r (id=%s): %s"
+                " — continuing (non-fatal)",
+                username,
+                user["id"],
+                exc,
+            )
 
     logger.info(
         "OAuth login success: user %r (provider=%s, IP=%s)",
