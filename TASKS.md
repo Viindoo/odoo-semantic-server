@@ -721,7 +721,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 > OSM now, separate control-plane service only when a 2nd product needs it). GTM: international
 > self-serve (Polar) first.
 
-**P0 — Quota gating + plan schema (architecture-neutral; sell-blocker; SHIPPED PR #200)**
+**P0 + P0-ext — Quota gating + plan schema + admin tooling (SHIPPED PR #200 + feat/m10b-p0-rbac-quota-ui)**
 - [x] **Plan/tier schema** — `plans` table (4 tiers: free-grandfathered/free/pro/team; `limits` JSONB — rpm + monthly_quota); `api_keys.plan_id` FK; `usage_counter` table (period_yyyymm, call_count); `m13_006` + `m13_007` (ON DELETE CASCADE). *(PR #200)*
 - [x] **Quota gating + usage metering** — MCP middleware plan-aware: per-plan RPM + monthly quota enforcement; `X-RateLimit-*` / `X-Quota-*` response headers; 429 differentiation (rpm vs monthly); `GET /api/account/usage` endpoint + `/account/usage` Astro dashboard page. *(PR #200)*
 - [x] **Pricing UI synced** — `/pricing` seed values updated (Free 100 calls/30 rpm, Pro 10000/120, Team 100000/300, Grandfathered 1000/60); free-tier stale "5 MCP tool calls / day" claim removed. *(PR #200)*
@@ -730,6 +730,27 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [x] **osm_reader regrant on new tables** — 5 grants confirmed: `plans`, `usage_counter`, `waitlist_emails` (SELECT), `api_keys.plan_id` readable via existing `api_keys` grant, `waitlist_emails` INSERT via `GRANT INSERT` for anonymous signup path. ✅ confirmed 2026-05-28
 - [x] **5 operator runbooks shipped in PR #200** — `docs/deploy/runbooks/`: rls-cutover, fernet-provision, post-pr-ops, backup-confirm-and-dr-drill, prod-smoke-24-tools. ✅ shipped PR #200
 - [x] **§6 prod smoke — 4 unauthed + 6 authed paths verified** — basic smoke (not the deeper 14-tool smoke): `GET /` 200, `/api/health` 200, `/mcp` 307, `/install/` 200 (unauthed); `find_examples` / `model_inspect` / `module_inspect` / `set_active_version` / `validate_domain` / `describe_module` (6 authed MCP calls) all return structured output. ✅ verified 2026-05-28. NOTE: deeper tools 15-21 smoke (`#15`) stays `[ ]`.
+- [x] **P0-ext — Unlimited plan seed + per-key override columns (m13_009)** — `'unlimited'` plan
+  row (is_public=FALSE) + `api_keys.rate_limit_override` + `api_keys.quota_override` (nullable
+  INT, CHECK >=0). *(feat/m10b-p0-rbac-quota-ui W-1)*
+- [x] **P0-ext — Middleware override resolution** — `_resolve_effective_rpm` /
+  `_resolve_effective_quota` helpers; unlimited slug bypass is SSOT (ADR-0041 D5); override 0 =
+  zero allowed (NOT unlimited). *(feat/m10b-p0-rbac-quota-ui W-2)*
+- [x] **P0-ext — Admin plan API** — `PATCH /api/admin/api-keys/{id}/plan`, `PATCH
+  /api/admin/users/{id}/plan` (cascade), `POST /api/api-keys/{id}/reactivate`, `GET
+  /api/admin/plans`; @audit_action on all mutating endpoints. *(feat/m10b-p0-rbac-quota-ui W-3+W-4)*
+- [x] **P0-ext — UI admin/api-keys** — Plan column + Overrides modal (React island) + Reactivate
+  button. *(feat/m10b-p0-rbac-quota-ui W-5)*
+- [x] **P0-ext — UI admin/users** — "Set plan for all keys" cascade helper per row. *(W-6)*
+- [x] **P0-ext — UI account/api-keys + account/usage** — Reactivate button + upgrade hint copy.
+  *(feat/m10b-p0-rbac-quota-ui W-7)*
+- [x] **P0-ext — UI admin/tenants** — Inline repo + profile assignment widget in detail panel.
+  *(feat/m10b-p0-rbac-quota-ui W-8)*
+- [x] **P0-ext — Docs** — ADR-0041 + ADR-0039 P0-ext note + runbook §Plan changes + CHANGELOG +
+  TASKS.md. *(feat/m10b-p0-rbac-quota-ui W-9)*
+- [ ] **P0-ext follow-up** — Extend `GET /api/api-keys` to expose `plan_id` + override columns
+  so the admin UI Plan dropdown pre-selects the current plan on page load (identified in W-5 of
+  feat/m10b-p0-rbac-quota-ui; small backend extension + Astro `Key` type update).
 
 **P1 — Entitlement Activation API + Polar.sh MoR adapter (keystone; international first)**
 - [ ] **Entitlement Activation API** — one contract `grant/revoke/update` with product-aware payload `{email, product_id, plan, seats, status, limits}` (ADR-0039 D3). Tables: `subscriptions` (`product_id`, `plan`, `seats`, `status`, **`external_ref`** — vendor-agnostic, NOT `stripe_subscription_id`) + `plans` (avoid the "entitlement" access-control collision — ADR-0039 D3 note).

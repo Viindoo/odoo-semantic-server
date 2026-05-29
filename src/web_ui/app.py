@@ -244,6 +244,11 @@ def create_app() -> FastAPI:
 
     app.include_router(waitlist.router)
 
+    # M10B P0-ext W-3: Admin plan catalogue — GET /api/admin/plans (ADR-0041)
+    from src.web_ui.routes import admin_plans
+
+    app.include_router(admin_plans.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:

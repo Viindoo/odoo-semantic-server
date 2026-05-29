@@ -354,6 +354,105 @@ read-only verification surfaces in addition to the Actions above:
 
 ---
 
+---
+
+## Plan changes (M10B P0-ext)
+
+Admin tooling now exposes plan upgrade + per-key overrides + reactivate via web UI.
+
+> Reference: [ADR-0041](../../adr/0041-unlimited-plan-and-key-overrides.md) — unlimited plan +
+> per-key override decisions (D1-D5). Migration m13_009 required before running these workflows.
+
+### Set plan for one key
+
+Admin → `/admin/api-keys` → pick plan in dropdown for the target row → Save.
+
+Backend: `PATCH /api/admin/api-keys/{key_id}/plan` with body `{"plan_id": "<slug>"}`.
+
+Side effect: `_cache_invalidate_by_key_id` called automatically in the worker that handles
+the PATCH. New plan takes effect on the **next request in that worker**. Other workers converge
+after `_CACHE_TTL` (300s) — see §Cache invalidation sanity below.
+
+### Set per-key overrides
+
+Admin → `/admin/api-keys` → click "Overrides..." button for the target row → set
+`rate_limit_override` (RPM) and/or `quota_override` (monthly calls) → Save.
+
+Both fields are nullable integers with `CHECK >= 0`:
+- `NULL` = use the plan default.
+- `0` = **zero is the limit** (blocks all calls). NOT unlimited.
+- Unlimited = assign the plan with `slug='unlimited'` (ADR-0041 D5 SSOT).
+
+### Cascade upgrade — set plan for all keys of a user
+
+Admin → `/admin/users` → find the user row → pick new plan in the plan dropdown → click
+"Apply to all keys".
+
+Backend: `PATCH /api/admin/users/{user_id}/plan`. Cascades to ALL keys of that user (active +
+inactive). Produces one audit log entry: `user.set_plan_cascade`.
+
+### Reactivate API key
+
+Admin path: Admin → `/admin/api-keys` (inactive keys table) → click Reactivate.
+Owner path: user → `/account/api-keys` (inactive keys list) → click Reactivate.
+
+Backend: `POST /api/api-keys/{key_id}/reactivate`.
+- Admin: unconditional (any key).
+- Non-admin owner: can only reactivate their own keys.
+
+Audit action: `api_key.reactivate`.
+
+### Cache invalidation sanity
+
+After any `PATCH /api/admin/api-keys/{id}/plan` or `PATCH` that touches overrides:
+
+- **Immediate** on the worker that handled the request: `_cache_invalidate_by_key_id` clears the
+  in-memory LRU entry.
+- **Other workers** (gunicorn/uvicorn multi-process): converge after `_CACHE_TTL = 300s` (5 min).
+- **To force immediate cross-worker convergence**: gracefully restart workers
+  (`systemctl reload odoo-semantic-mcp` or `kill -HUP <pid>`) — this drains in-flight requests
+  and starts fresh workers with empty caches.
+- There is no shared cache bus (Redis / PG-NOTIFY) at this time; the 300s eventual-consistency
+  window is the accepted trade-off (ADR-0041 §Trade-offs).
+
+### DB-outage header behavior
+
+During a Postgres connectivity outage the MCP middleware constructs a
+degraded-mode PlanInfo with `slug='__fallback__'` and fails open for the
+monthly quota gate (RPM remains enforced via `DEFAULT_RATE_LIMIT_RPM` —
+fail-safe DoS posture per ADR-0041 D5 SSOT). On allowed responses during
+this window clients observe `X-Quota-Limit: unlimited` (matching the
+bypass) and `X-Quota-Used: 0` (the in-process counter is not consulted
+when the DB is unreachable). Normal numeric header values resume on the
+next request after DB connectivity is restored.
+
+### Audit log sanity
+
+Verify after any admin plan operation:
+
+```bash
+psql -d $PG_DSN -c "
+  SELECT action, target, detail, created_at
+  FROM admin_audit_log
+  ORDER BY id DESC LIMIT 5;"
+```
+
+Note: `target` (TEXT) holds the str-cast of the acted-upon resource id, as written by
+`@audit_action`. `target_id` (INTEGER) is a legacy column that was dropped in migration
+`m9_010_drop_audit_legacy_columns.sql` — it no longer exists. `detail` (JSONB, singular) carries
+structured forensic context; the old `details` name was never a real column.
+
+Expect rows with `action` in:
+- `api_key.set_plan` — single-key plan or override change
+- `user.set_plan_cascade` — cascade to all user keys
+- `api_key.reactivate` — key reactivation
+
+If a row is missing after the UI action, check that the `@audit_action` decorator is firing
+(confirm no exception swallowed the request) and that the admin audit log table is reachable
+(`psql -c "\dt admin_audit_log"`).
+
+---
+
 ## References
 
 - **Entry Point:** `src/indexer/__main__.py` — CLI subcommands (`index-repo`, `reembed-stubs`)
@@ -361,7 +460,9 @@ read-only verification surfaces in addition to the Actions above:
 - **Parser Logic:** `src/indexer/parser_python.py` — era1 `comodel_name` extraction (WI-C C2 commit)
 - **Usage Buffer:** `src/mcp/middleware.py` — `_usage_buffer`, `_USAGE_FLUSH_THRESHOLD`, `_flush_usage_buffer_async`
 - **Customer Portal:** `site/src/pages/account/usage.astro` — live usage dashboard reading `usage_counter`
-- **TASKS.md:** Milestone 10 (M10A/M10.5/M10C) for more context on timing and interdependencies
+- **Plan Cache:** `src/mcp/middleware.py` — `_PLAN_CACHE`, `_CACHE_TTL`, `_cache_invalidate_by_key_id`
+- **TASKS.md:** Milestone 10 (M10A/M10.5/M10C/M10B) for more context on timing and interdependencies
 - **ADR-0023:** MCP tool output completeness policy
 - **ADR-0027:** System user deployment layout + portable paths
 - **ADR-0039:** M10B commercialization platform (control plane / data plane)
+- **ADR-0041:** Unlimited plan + per-key quota/rpm overrides (M10B P0-ext)

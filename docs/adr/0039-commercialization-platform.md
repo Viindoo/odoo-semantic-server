@@ -121,6 +121,18 @@ existing account-linking-by-verified-email logic is the reuse asset.
 - `api_keys.plan_id` — links an existing key (already tenant-scoped, `m13_002`) to its plan.
 - Entitlement payload is the D3 contract; the Activation API is the only writer.
 
+## P0 — Shipped (PR #200, v0.13.0)
+
+`plans` table (4 tiers) + `api_keys.plan_id` FK + `usage_counter` table (migrations m13_006 +
+m13_007). Plan-aware MCP middleware (`X-RateLimit-*` / `X-Quota-*` headers; 429 differentiation).
+`GET /api/account/usage` + `/account/usage` Astro dashboard.
+
+**P0 extended in `feat/m10b-p0-rbac-quota-ui`** — admin tooling wave (plan/override/reactivate) +
+tenant assign UI + key reactivate endpoint. Decisions recorded in
+[ADR-0041](0041-unlimited-plan-and-key-overrides.md): unlimited plan slug (D4), per-key override
+columns (D1), cascade helper (D3), override semantics (D5). Migration m13_009. See ADR-0041 for
+full context.
+
 ## Consequences
 
 - **M10B is rewritten** (`TASKS.md`): Stripe tasks dropped; phased P0 (gating) → P1 (Activation API

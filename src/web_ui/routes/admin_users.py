@@ -10,6 +10,8 @@ POST  /api/admin/users/{user_id}/reactivate        reactivate user
 POST  /api/admin/users/{user_id}/reset-password-link  generate + send reset link
 PATCH /api/admin/users/{user_id}/admin             promote/demote admin flag
 PATCH /api/admin/api-keys/{key_id}/owner           reassign API key ownership
+PATCH /api/admin/api-keys/{key_id}/plan            set plan + per-key overrides (W-3)
+PATCH /api/admin/users/{user_id}/plan              cascade plan to all user keys (W-3)
 
 Auth
 ----
@@ -24,7 +26,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from src.db.audit import audit_action
@@ -62,6 +64,27 @@ class CreateUserBody(BaseModel):
     email: str | None = None
     is_admin: bool = False
     password: str | None = None  # if omitted, a temp password is generated
+
+
+class SetApiKeyPlanRequest(BaseModel):
+    """Body for PATCH /api/admin/api-keys/{key_id}/plan (W-3, ADR-0041)."""
+    plan_id: int
+    rate_limit_override: int | None = Field(
+        default=None, ge=0,
+        description=(
+            "Per-key RPM override. NULL = use plan default. "
+            "CHECK >=0 (DB defense-in-depth)."
+        ),
+    )
+    quota_override: int | None = Field(
+        default=None, ge=0,
+        description="Per-key monthly quota override. NULL = use plan default. CHECK >=0.",
+    )
+
+
+class CascadeSetPlanRequest(BaseModel):
+    """Body for PATCH /api/admin/users/{user_id}/plan (W-3, ADR-0041)."""
+    plan_id: int
 
 
 # ---------------------------------------------------------------------------
@@ -455,3 +478,170 @@ async def assign_key_owner_route(
         pass
 
     return JSONResponse(_json_safe({"ok": True}))
+
+
+# ---------------------------------------------------------------------------
+# W-3: Set plan + per-key overrides on a single API key
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/api/admin/api-keys/{key_id}/plan")
+@audit_action("api_key.set_plan", target_param="key_id")
+async def set_api_key_plan_route(
+    key_id: int,
+    body: SetApiKeyPlanRequest,
+    request: Request,
+    _admin: int = Depends(require_admin),
+):
+    """Set plan + per-key rate_limit / quota overrides on a single API key.
+
+    Admin-only. Validates plan_id exists (422 if not). Accepts NULL overrides
+    to reset to plan default. Negative values rejected by pydantic (ge=0) with
+    422 before the DB constraint fires.
+
+    Response 200: {key_id, plan: {id, slug, display_name}, rate_limit_override, quota_override}
+    Response 404: key_id not found.
+    Response 422: plan_id not found or override value negative.
+    """
+    from src.db.auth_registry import get_plan_by_id, set_api_key_plan_and_overrides
+    from src.db.pg import get_pool
+    from src.mcp.middleware import _cache_invalidate_by_key_id
+
+    pg_pool = get_pool()
+
+    # Validate plan exists
+    plan = get_plan_by_id(pg_pool, body.plan_id)
+    if plan is None:
+        raise HTTPException(status_code=422, detail=f"plan_id={body.plan_id} not found")
+
+    # BLOCK-1 fix: use Pydantic model_fields_set to detect which fields were
+    # explicitly present in the request body.  Fields absent from the JSON body
+    # get Pydantic defaults (None) but are NOT in model_fields_set, so we must
+    # NOT overwrite those columns in the DB.
+    #
+    # Behaviour matrix:
+    #   Body {plan_id}                    → fields_set={plan_id}
+    #                                       → SET plan_id only → overrides PRESERVED
+    #   Body {plan_id, rate_override: N}  → fields_set includes rate_override
+    #                                       → SET plan_id + rate_override only
+    #   Body {plan_id, ..., quota: null}  → fields_set includes quota_override
+    #                                       → SET plan_id + quota_override=NULL (clears override)
+    update_rate = "rate_limit_override" in body.model_fields_set
+    update_quota = "quota_override" in body.model_fields_set
+
+    # Apply update (also fetches old values for audit)
+    try:
+        snapshot = set_api_key_plan_and_overrides(
+            pg_pool,
+            key_id,
+            body.plan_id,
+            body.rate_limit_override,
+            body.quota_override,
+            update_rate_limit_override=update_rate,
+            update_quota_override=update_quota,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"API key id={key_id} not found")
+    except Exception as exc:
+        _logger.error("set_api_key_plan DB error key_id=%s: %s", key_id, exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    # Enrich audit log with old/new snapshot
+    try:
+        request.state.audit_detail.update({
+            "key_id": key_id,
+            "old_plan_id": snapshot["old_plan_id"],
+            "new_plan_id": snapshot["new_plan_id"],
+            "old_rate_override": snapshot["old_rate_limit_override"],
+            "new_rate_override": snapshot["new_rate_limit_override"],
+            "old_quota_override": snapshot["old_quota_override"],
+            "new_quota_override": snapshot["new_quota_override"],
+        })
+    except Exception:
+        pass
+
+    # Invalidate in-process MCP middleware cache for this key
+    _cache_invalidate_by_key_id(key_id)
+
+    # Return the effective values after the update (from DB snapshot), not the
+    # raw body values — when a field was absent from the request body the body
+    # value is the Pydantic default (None), while the DB column was preserved.
+    return JSONResponse(_json_safe({
+        "key_id": key_id,
+        "plan": {
+            "id": plan["id"],
+            "slug": plan["slug"],
+            "display_name": plan["display_name"],
+        },
+        "rate_limit_override": snapshot["new_rate_limit_override"],
+        "quota_override": snapshot["new_quota_override"],
+    }))
+
+
+# ---------------------------------------------------------------------------
+# W-3: Cascade plan to all keys of a user
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/api/admin/users/{user_id}/plan")
+@audit_action("user.set_plan_cascade", target_param="user_id")
+async def cascade_set_user_plan_route(
+    user_id: int,
+    body: CascadeSetPlanRequest,
+    request: Request,
+    _admin: int = Depends(require_admin),
+):
+    """Set plan_id on ALL api_keys (active + inactive) owned by user_id.
+
+    Per D3 decision: cascade covers ALL keys regardless of active status.
+    Per-key overrides are NOT touched (use PATCH .../api-keys/{key_id}/plan
+    to manage per-key overrides individually).
+
+    Response 200: {user_id, plan_id, keys_updated: N}  — N=0 is valid (user has no keys).
+    Response 404: user_id not found.
+    Response 422: plan_id not found.
+    """
+    from src.db.auth_registry import bulk_set_plan_for_user, get_plan_by_id
+    from src.db.pg import auth_store, get_pool
+    from src.mcp.middleware import _cache_invalidate_by_key_id
+
+    pg_pool = get_pool()
+
+    # Validate plan exists
+    plan = get_plan_by_id(pg_pool, body.plan_id)
+    if plan is None:
+        raise HTTPException(status_code=422, detail=f"plan_id={body.plan_id} not found")
+
+    # Validate user exists
+    store = auth_store()
+    user = store.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"User id={user_id} not found")
+
+    try:
+        affected_key_ids = bulk_set_plan_for_user(pg_pool, user_id, body.plan_id)
+    except Exception as exc:
+        _logger.error("cascade_set_user_plan DB error user_id=%s: %s", user_id, exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    keys_updated = len(affected_key_ids)
+
+    # Enrich audit log
+    try:
+        request.state.audit_detail.update({
+            "user_id": user_id,
+            "plan_id": body.plan_id,
+            "keys_updated": keys_updated,
+        })
+    except Exception:
+        pass
+
+    # Invalidate per-key MCP cache for every affected key
+    for kid in affected_key_ids:
+        _cache_invalidate_by_key_id(kid)
+
+    return JSONResponse(_json_safe({
+        "user_id": user_id,
+        "plan_id": body.plan_id,
+        "keys_updated": keys_updated,
+    }))

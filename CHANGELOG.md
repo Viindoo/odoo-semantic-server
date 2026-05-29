@@ -4,7 +4,58 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
-### Changed
+### Added — M10B P0-ext: RBAC + Quota + UI (4 use cases, feat/m10b-p0-rbac-quota-ui)
+
+- **Migration m13_009** — seed plan `'unlimited'` (quota=0, rpm=0, is_public=FALSE) + add
+  `api_keys.rate_limit_override` + `api_keys.quota_override` columns (nullable INT, CHECK >=0).
+  Idempotent (`ON CONFLICT DO NOTHING` + `IF NOT EXISTS` guards). ADR-0041 D1/D4/D5.
+- **Middleware** — `_resolve_effective_rpm` / `_resolve_effective_quota` helpers route via plan
+  slug (`'unlimited'` SSOT per ADR-0041 D5) + per-key overrides. RPM=0 bypass guard for
+  unlimited slug. Override `0` = explicit zero allowed (NOT unlimited). Headers
+  `X-Quota-Limit` emits `"unlimited"` sentinel when bypass active.
+- **API** — `PATCH /api/admin/api-keys/{key_id}/plan` (body: plan_id + nullable overrides;
+  `@audit_action` `api_key.set_plan`; cache invalidate). `PATCH /api/admin/users/{user_id}/plan`
+  (cascade to all keys; `user.set_plan_cascade`). `POST /api/api-keys/{key_id}/reactivate`
+  (admin unconditional, owner-guarded; `api_key.reactivate`). `GET /api/admin/plans` (full
+  catalogue incl. `is_public=FALSE`).
+- **UI admin** — `/admin/api-keys`: Plan column with inline dropdown + Overrides modal (React
+  island) + Reactivate button on inactive-keys table. `/admin/users`: "Set plan for all keys"
+  cascade helper per row. `/admin/tenants`: inline repo + profile assignment widget in detail
+  panel.
+- **UI account** — `/account/api-keys`: Reactivate button on inactive keys. `/account/usage`:
+  upgrade hint copy directing paying users to admin until P1 self-serve ships.
+- **Docs** — ADR-0041 (unlimited plan + key overrides); ADR-0039 P0-ext amendment; runbook
+  §"Plan changes" (admin upgrade flow + cache invalidation sanity + audit log verification);
+  CHANGELOG; TASKS.md.
+
+### Notes — M10B P0-ext
+
+- Tool count stays **24**.
+- Migration m13_009 required (`python -m src.db.migrate`).
+- M10B P1 (Polar.sh adapter + Entitlement Activation API + subscriptions table) still deferred.
+- `_PLAN_CACHE` cross-worker propagation 300s TTL applies after PATCH plan operations — see
+  runbook §Plan changes §Cache invalidation sanity for operator guidance.
+- W-5 known gap: `GET /api/api-keys` does not yet return `plan_id` + overrides; Plan dropdown
+  pre-selection blank on page load. Follow-up tracked in TASKS.md.
+
+### Fixed — M10B P0-ext
+
+- Middleware `X-Quota-Limit` header now emits `"unlimited"` sentinel on both
+  the success and monthly-429 paths when `plan_info.slug == "__fallback__"`,
+  matching the dual-slug bypass in `_check_monthly_quota` (R-6-A). Previously
+  the header emitted `"0"` during a Postgres outage even though the request
+  was bypassed (observability/enforcement symmetry gap surfaced in R-8 review).
+- Middleware 429 response body now redacts internal sentinel plan slugs
+  (e.g. `__fallback__`) - they were enforcement discriminators, never
+  intended as user-visible plan labels. RPM-429 path was the live leak
+  (reachable during Postgres outage); monthly-429 path is defensive
+  (structurally unreachable for fallback per L257 short-circuit, pinned
+  by regression test).
+- Migration `m13_009` header comment updated: removes the stale "W-2 ships
+  the bypass guard / do not assign until W-2 lands" warning (W-2 already
+  shipped in this PR) and anchors the sentinel semantics to ADR-0041 D5.
+
+### Changed — Post-PR-#200/#204 cleanup
 
 - Backup format: `pg_dump` now writes `postgres.dump` (`-F custom -Z 6`); restore auto-detects (psql for legacy `.sql`, `pg_restore` for `.dump`). ADR-0018 updated. (TD-1)
 - Backup retention: `--keep-bundles N` (default 14), `OSM_BACKUP_KEEP` env override. Prevents `/var/backups` unbounded growth. (new finding)
@@ -12,7 +63,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 - Test harness: `tests/conftest.py` Priority 2 fallback guard against accidental prod-Neo4j collision. New ADR-0040. (TD-2)
 - Version: `0.11.1` → `0.13.1` (sync with CHANGELOG state). (FU-4)
 
-### Added
+### Added — Onboarding UX + ops
 
 - Onboarding UX: forgot-password e2e (backend + UI + login-page link); landing nav adds `/pricing`; `/login` canonical alias; `admin/login` renders `?error=` banner. (Wave 1D)
 - Docs: 3 new runbooks (`nginx-ratelimit`, `offsite-backup`, `neo4j-container-recreate`); `ops/` promotion of `regrant` + `nginx-patch` + offsite systemd template; deploy-logs archive for 2026-05-28 deploy.

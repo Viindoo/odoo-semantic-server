@@ -28,7 +28,18 @@ _TEST_API_KEY_IDS = [9901, 9902, 9903]  # Fake integer IDs that won't conflict
 
 @pytest.fixture()
 def session_db(pg_conn):
-    """Run migrations, init pool, yield pg_conn, clean test rows after."""
+    """Run migrations, init pool, seed api_keys parents, yield pg_conn.
+
+    api_key_session_state.api_key_id is a FK to api_keys(id) ON DELETE CASCADE
+    (migration 0005, ADR-0029).  To exercise UPSERT against that table we need
+    the parent api_keys rows to exist with the test IDs, otherwise every INSERT
+    raises ForeignKeyViolation.
+
+    Why not insert into api_key_session_state directly with hand-rolled SQL?
+    Because the production code under test (`set_active_version_db`) does an
+    UPSERT into api_key_session_state — exercising the real path requires the
+    real FK parent.
+    """
     import os
 
     from src.db.migrate import run_migrations
@@ -45,21 +56,27 @@ def session_db(pg_conn):
     except RuntimeError:
         init_pool(test_dsn, min_conn=1, max_conn=3)
 
-    # Ensure schema exists
+    # Ensure schema exists (creates api_keys + api_key_session_state with FK).
     run_migrations(pg_conn)
 
-    # Ensure table exists (migration 0005 may not have been applied yet in test DB)
+    # Seed api_keys parent rows for the synthetic test IDs.  api_keys.id is
+    # SERIAL so we use OVERRIDING SYSTEM VALUE to plant our chosen PKs.  Use
+    # ON CONFLICT to make the seed re-entrant across the function-scoped
+    # fixture lifecycle.
     with pg_conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS api_key_session_state (
-                api_key_id    INTEGER PRIMARY KEY,
-                odoo_version  TEXT,
-                profile_name  TEXT,
-                updated_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-            )
-        """)
+        cur.execute(
+            "INSERT INTO api_keys (id, name, key_hash, key_prefix) "
+            "OVERRIDING SYSTEM VALUE VALUES "
+            "(%s, 'session-db-test-1', 'hash-9901', 'osm_t1'), "
+            "(%s, 'session-db-test-2', 'hash-9902', 'osm_t2'), "
+            "(%s, 'session-db-test-3', 'hash-9903', 'osm_t3') "
+            "ON CONFLICT (id) DO NOTHING",
+            tuple(_TEST_API_KEY_IDS),
+        )
 
-    # Clean up any leftover rows from previous runs
+    # Pre-clean: this fixture does NOT depend on `clean_pg`, so the
+    # api_key_session_state table is not wiped automatically between tests.
+    # Delete only OUR test rows to keep per-test state isolated.
     with pg_conn.cursor() as cur:
         cur.execute(
             "DELETE FROM api_key_session_state WHERE api_key_id = ANY(%s)",
@@ -68,7 +85,7 @@ def session_db(pg_conn):
 
     yield pg_conn
 
-    # Teardown
+    # Post-clean: symmetric with pre-clean.
     with pg_conn.cursor() as cur:
         cur.execute(
             "DELETE FROM api_key_session_state WHERE api_key_id = ANY(%s)",

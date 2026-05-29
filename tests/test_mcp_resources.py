@@ -308,12 +308,17 @@ def test_auto_version_uses_session_state(
     from src.mcp.session import set_active_version_db
 
     run_migrations(pg_conn)
+    # api_key_session_state.api_key_id FK→api_keys(id) ON DELETE CASCADE
+    # (migration 0005, ADR-0029).  Seed the parent api_keys row for the
+    # synthetic session key so set_active_version_db() can UPSERT without
+    # ForeignKeyViolation.
     with pg_conn.cursor() as cur:
         cur.execute(
-            "CREATE TABLE IF NOT EXISTS api_key_session_state ("
-            "api_key_id INTEGER PRIMARY KEY, odoo_version TEXT, "
-            "profile_name TEXT, "
-            "updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now())",
+            "INSERT INTO api_keys (id, name, key_hash, key_prefix) "
+            "OVERRIDING SYSTEM VALUE VALUES "
+            "(%s, 'mcp-resources-f1-test', 'hash-f1', 'osm_f1') "
+            "ON CONFLICT (id) DO NOTHING",
+            (int(F1_SESSION_KEY),),
         )
         cur.execute(
             "DELETE FROM api_key_session_state WHERE api_key_id = %s",

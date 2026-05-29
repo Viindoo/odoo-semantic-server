@@ -28,6 +28,21 @@ type Member = {
   created_at: string | null;
 };
 
+type RepoItem = {
+  id: number;
+  url: string;
+  branch: string;
+  profile_name: string | null;
+  tenant_id: number | null;
+};
+
+type ProfileItem = {
+  id: number;
+  name: string;
+  odoo_version: string;
+  tenant_id: number | null;
+};
+
 interface Props {
   initialTenants: Tenant[];
   allUsers: User[];
@@ -75,6 +90,18 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
   const [addMemberUserId, setAddMemberUserId] = useState('');
   const [addMemberRole, setAddMemberRole] = useState('member');
 
+  // Repo assignment state
+  const [assignedRepos, setAssignedRepos] = useState<RepoItem[]>([]);
+  const [unassignedRepos, setUnassignedRepos] = useState<RepoItem[]>([]);
+  const [assignRepoId, setAssignRepoId] = useState('');
+  const [loadingRepos, setLoadingRepos] = useState(false);
+
+  // Profile assignment state
+  const [assignedProfiles, setAssignedProfiles] = useState<ProfileItem[]>([]);
+  const [unassignedProfiles, setUnassignedProfiles] = useState<ProfileItem[]>([]);
+  const [assignProfileId, setAssignProfileId] = useState('');
+  const [loadingProfiles, setLoadingProfiles] = useState(false);
+
   async function refreshTenants() {
     const { ok, data } = await apiFetch('/api/tenants');
     if (ok) setTenants((data as { tenants: Tenant[] }).tenants ?? []);
@@ -87,8 +114,101 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
     setLoadingMembers(false);
   }
 
+  async function loadRepoAssignments(tenantId: number) {
+    setLoadingRepos(true);
+    const { ok, data } = await apiFetch('/api/repos/profiles');
+    if (ok) {
+      const profiles = (data as { profiles: { tenant_id: number | null; repos: RepoItem[] }[] }).profiles ?? [];
+      const allRepos: RepoItem[] = profiles.flatMap(p =>
+        (p.repos ?? []).map(r => ({ ...r, tenant_id: r.tenant_id ?? null }))
+      );
+      setAssignedRepos(allRepos.filter(r => r.tenant_id === tenantId));
+      setUnassignedRepos(allRepos.filter(r => r.tenant_id === null));
+    }
+    setLoadingRepos(false);
+  }
+
+  async function loadProfileAssignments(tenantId: number) {
+    setLoadingProfiles(true);
+    const { ok, data } = await apiFetch('/api/repos/profiles');
+    if (ok) {
+      const allProfiles: ProfileItem[] = (
+        (data as { profiles: ProfileItem[] }).profiles ?? []
+      ).map(p => ({ id: p.id, name: p.name, odoo_version: p.odoo_version, tenant_id: p.tenant_id ?? null }));
+      setAssignedProfiles(allProfiles.filter(p => p.tenant_id === tenantId));
+      setUnassignedProfiles(allProfiles.filter(p => p.tenant_id === null));
+    }
+    setLoadingProfiles(false);
+  }
+
+  async function handleAssignRepo() {
+    if (!selectedTenant || !assignRepoId) return;
+    const { ok, data } = await apiFetch(`/api/repos/${assignRepoId}/tenant`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tenant_id: selectedTenant.id }),
+    });
+    if (ok) {
+      flash('Repo assigned');
+      setAssignRepoId('');
+      await loadRepoAssignments(selectedTenant.id);
+      await refreshTenants();
+    } else {
+      flash((data as { error?: string }).error ?? 'Failed to assign repo', true);
+    }
+  }
+
+  async function handleUnassignRepo(repoId: number) {
+    if (!selectedTenant) return;
+    const { ok, data } = await apiFetch(`/api/repos/${repoId}/tenant`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tenant_id: null }),
+    });
+    if (ok) {
+      flash('Repo unassigned');
+      await loadRepoAssignments(selectedTenant.id);
+      await refreshTenants();
+    } else {
+      flash((data as { error?: string }).error ?? 'Failed to unassign repo', true);
+    }
+  }
+
+  async function handleAssignProfile() {
+    if (!selectedTenant || !assignProfileId) return;
+    const { ok, data } = await apiFetch(`/api/profiles/${assignProfileId}/tenant`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tenant_id: selectedTenant.id }),
+    });
+    if (ok) {
+      flash('Profile assigned');
+      setAssignProfileId('');
+      await loadProfileAssignments(selectedTenant.id);
+      await refreshTenants();
+    } else {
+      flash((data as { error?: string }).error ?? 'Failed to assign profile', true);
+    }
+  }
+
+  async function handleUnassignProfile(profileId: number) {
+    if (!selectedTenant) return;
+    const { ok, data } = await apiFetch(`/api/profiles/${profileId}/tenant`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tenant_id: null }),
+    });
+    if (ok) {
+      flash('Profile unassigned');
+      await loadProfileAssignments(selectedTenant.id);
+      await refreshTenants();
+    } else {
+      flash((data as { error?: string }).error ?? 'Failed to unassign profile', true);
+    }
+  }
+
   useEffect(() => {
-    if (selectedTenant) loadMembers(selectedTenant.id);
+    if (selectedTenant) {
+      loadMembers(selectedTenant.id);
+      loadRepoAssignments(selectedTenant.id);
+      loadProfileAssignments(selectedTenant.id);
+    }
   }, [selectedTenant?.id]);
 
   async function handleCreateTenant(e: React.FormEvent) {
@@ -373,14 +493,132 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
             )}
           </div>
 
-          {/* Info about assigned resources */}
-          <div className="text-xs text-gray-500 border-t border-gray-100 pt-3">
-            <p>
-              This tenant has <strong>{selectedTenant.repo_count}</strong> repo(s) and{' '}
-              <strong>{selectedTenant.profile_count}</strong> profile(s) assigned.
-              Use <code>PATCH /api/repos/&#123;id&#125;/tenant</code> or{' '}
-              <code>PATCH /api/profiles/&#123;id&#125;/tenant</code> to assign/unassign resources.
-            </p>
+          {/* Repo assignment widget */}
+          <div className="border-t border-gray-100 pt-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">
+              Repos assigned to this tenant ({assignedRepos.length})
+            </h3>
+            {loadingRepos ? (
+              <p className="text-xs text-gray-400">Loading...</p>
+            ) : assignedRepos.length === 0 ? (
+              <p className="text-xs text-gray-400 mb-2">No repos assigned yet.</p>
+            ) : (
+              <table className="w-full text-sm mb-3">
+                <thead className="text-xs text-gray-500 bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-1 text-left">URL</th>
+                    <th className="px-3 py-1 text-left">Branch</th>
+                    <th className="px-3 py-1 text-left">Profile</th>
+                    <th className="px-3 py-1 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignedRepos.map((r) => (
+                    <tr key={r.id} className="border-t border-gray-100">
+                      <td className="px-3 py-1 font-mono text-xs text-gray-700 max-w-[220px] truncate" title={r.url}>{r.url}</td>
+                      <td className="px-3 py-1 text-gray-500 text-xs">{r.branch}</td>
+                      <td className="px-3 py-1 text-gray-500 text-xs">{r.profile_name ?? '-'}</td>
+                      <td className="px-3 py-1 text-right">
+                        <button
+                          onClick={() => handleUnassignRepo(r.id)}
+                          className="text-xs text-red-600 hover:underline"
+                        >Unassign</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {unassignedRepos.length > 0 && (
+              <div className="flex gap-2 items-end mt-1">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Assign repo</label>
+                  <select
+                    value={assignRepoId}
+                    onChange={(e) => setAssignRepoId((e.target as HTMLSelectElement).value)}
+                    className="border border-gray-300 rounded-lg px-2 py-1 text-sm"
+                  >
+                    <option value="">-- select unassigned repo --</option>
+                    {unassignedRepos.map(r => (
+                      <option key={r.id} value={String(r.id)}>
+                        {r.url} [{r.branch}]{r.profile_name ? ` (${r.profile_name})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={handleAssignRepo}
+                  disabled={!assignRepoId}
+                  className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50"
+                >Assign</button>
+              </div>
+            )}
+            {unassignedRepos.length === 0 && !loadingRepos && (
+              <p className="text-xs text-gray-400 mt-1">No unassigned repos available.</p>
+            )}
+          </div>
+
+          {/* Profile assignment widget */}
+          <div className="border-t border-gray-100 pt-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">
+              Profiles assigned to this tenant ({assignedProfiles.length})
+            </h3>
+            {loadingProfiles ? (
+              <p className="text-xs text-gray-400">Loading...</p>
+            ) : assignedProfiles.length === 0 ? (
+              <p className="text-xs text-gray-400 mb-2">No profiles assigned yet.</p>
+            ) : (
+              <table className="w-full text-sm mb-3">
+                <thead className="text-xs text-gray-500 bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-1 text-left">Name</th>
+                    <th className="px-3 py-1 text-left">Version</th>
+                    <th className="px-3 py-1 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignedProfiles.map((p) => (
+                    <tr key={p.id} className="border-t border-gray-100">
+                      <td className="px-3 py-1 font-medium text-gray-700">{p.name}</td>
+                      <td className="px-3 py-1 text-gray-500 text-xs">{p.odoo_version}</td>
+                      <td className="px-3 py-1 text-right">
+                        <button
+                          onClick={() => handleUnassignProfile(p.id)}
+                          className="text-xs text-red-600 hover:underline"
+                        >Unassign</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {unassignedProfiles.length > 0 && (
+              <div className="flex gap-2 items-end mt-1">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Assign profile</label>
+                  <select
+                    value={assignProfileId}
+                    onChange={(e) => setAssignProfileId((e.target as HTMLSelectElement).value)}
+                    className="border border-gray-300 rounded-lg px-2 py-1 text-sm"
+                  >
+                    <option value="">-- select unassigned profile --</option>
+                    {unassignedProfiles.map(p => (
+                      <option key={p.id} value={String(p.id)}>
+                        {p.name} ({p.odoo_version})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={handleAssignProfile}
+                  disabled={!assignProfileId}
+                  className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50"
+                >Assign</button>
+              </div>
+            )}
+            {unassignedProfiles.length === 0 && !loadingProfiles && (
+              <p className="text-xs text-gray-400 mt-1">No unassigned profiles available.</p>
+            )}
           </div>
         </div>
       )}

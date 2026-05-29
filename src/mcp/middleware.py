@@ -20,12 +20,58 @@ from src.db.exceptions import PoolNotInitializedError
 
 @dataclass(frozen=True)
 class PlanInfo:
-    """Immutable plan metadata snapshot cached per api_key_id."""
+    """Immutable plan metadata snapshot cached per api_key_id.
+
+    Per-key override fields (M10B P0-ext, ADR-0041):
+      rate_limit_override: when not None, overrides plan.rate_limit_rpm.
+                           Value 0 = zero-allowed (NOT unlimited — see D5).
+      quota_override:      when not None, overrides plan.quota_calls_per_month.
+                           Same 0 = zero-allowed semantics.
+    Unlimited ONLY via slug='unlimited' (ADR-0041 D5 SSOT).
+    """
 
     plan_id: int
     slug: str
-    quota_calls_per_month: int  # 0 = unlimited (admin)
+    quota_calls_per_month: int  # 0 = unlimited sentinel when slug='unlimited'
     rate_limit_rpm: int
+    rate_limit_override: int | None = None  # NULL in DB = use plan default
+    quota_override: int | None = None       # NULL in DB = use plan default
+
+
+def _resolve_effective_rpm(plan: "PlanInfo") -> tuple[int, bool]:
+    """Resolve effective RPM limit from plan slug + per-key override.
+
+    Returns (effective_rpm, is_unlimited).
+
+    Resolution order per ADR-0041 D5:
+      1. slug='unlimited' → (0, True)  # bypass — slug is the SSOT for unlimited
+      2. rate_limit_override is not None → (override, False)  # explicit value;
+         override=0 means zero-allowed, NOT unlimited.
+      3. plan.rate_limit_rpm → (rpm, False)  # plan default
+
+    This keeps the 'unlimited' slug as the single SSOT for bypass and ensures
+    admin-set override=0 (explicit zero-allowed) is never silently promoted to
+    unlimited behavior.
+    """
+    if plan.slug == "unlimited":
+        return 0, True
+    if plan.rate_limit_override is not None:
+        return plan.rate_limit_override, False
+    return plan.rate_limit_rpm, False
+
+
+def _resolve_effective_quota(plan: "PlanInfo") -> tuple[int, bool]:
+    """Resolve effective monthly quota from plan slug + per-key override.
+
+    Returns (effective_quota, is_unlimited).
+
+    Same resolution order as _resolve_effective_rpm — see that docstring.
+    """
+    if plan.slug == "unlimited":
+        return 0, True
+    if plan.quota_override is not None:
+        return plan.quota_override, False
+    return plan.quota_calls_per_month, False
 
 
 def _degraded_response() -> Response:
@@ -98,13 +144,21 @@ def _check_rate_limit(api_key_id: int, plan_info: "PlanInfo") -> tuple[bool, int
 
     Args:
         api_key_id: The authenticated API key id.
-        plan_info:  PlanInfo for the key — provides rate_limit_rpm.
+        plan_info:  PlanInfo for the key — provides rate_limit_rpm and
+                    optional rate_limit_override.
 
     Returns:
         (True, remaining)  if the request is within the limit.
         (False, 0)         if the window is exhausted.
+
+    Unlimited path: plan slug='unlimited' bypasses the bucket entirely
+    (ADR-0041 D5). Override=0 is NOT unlimited — it means zero-allowed.
     """
-    limit_rpm = plan_info.rate_limit_rpm
+    effective_rpm, is_unlimited = _resolve_effective_rpm(plan_info)
+    if is_unlimited:
+        # slug='unlimited' sentinel — bypass rate limit gate entirely.
+        return True, 0
+
     now = time.monotonic()
     window = 60.0
     with _rate_lock:
@@ -112,8 +166,8 @@ def _check_rate_limit(api_key_id: int, plan_info: "PlanInfo") -> tuple[bool, int
         # Prune timestamps older than the window
         while bucket and now - bucket[0] > window:
             bucket.popleft()
-        remaining = max(0, limit_rpm - len(bucket))
-        if len(bucket) >= limit_rpm:
+        remaining = max(0, effective_rpm - len(bucket))
+        if len(bucket) >= effective_rpm:
             return False, 0
         bucket.append(now)
         return True, remaining - 1
@@ -149,7 +203,8 @@ def _get_plan_for_key(api_key_id: int, pg_pool) -> "PlanInfo":
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT p.id, p.slug, p.quota_calls_per_month, p.rate_limit_rpm
+                SELECT p.id, p.slug, p.quota_calls_per_month, p.rate_limit_rpm,
+                       k.rate_limit_override, k.quota_override
                   FROM plans p
                   JOIN api_keys k ON k.plan_id = p.id
                  WHERE k.id = %s
@@ -164,6 +219,8 @@ def _get_plan_for_key(api_key_id: int, pg_pool) -> "PlanInfo":
         slug=row[1],
         quota_calls_per_month=row[2],
         rate_limit_rpm=row[3],
+        rate_limit_override=row[4],  # None if NULL in DB (M10B P0-ext)
+        quota_override=row[5],       # None if NULL in DB (M10B P0-ext)
     )
     with _cache_lock:
         _PLAN_CACHE[api_key_id] = (plan_info, now)
@@ -175,20 +232,43 @@ def _check_monthly_quota(
 ) -> tuple[bool, int, int]:
     """Check monthly call quota for the key. Returns (allowed, used, quota).
 
-    If plan quota is 0 (unlimited / admin path), returns (True, 0, 0).
-    Reads usage_counter for the current UTC calendar month.
+    Bypass paths (fail-open for monthly quota):
+      1. slug='unlimited' (ADR-0041 D5 SSOT) — bypass without DB query.
+      2. slug='__fallback__' (degraded-mode plan when DB is unreachable) — bypass
+         monthly gate so authenticated requests are not blocked during DB outage.
+         RPM is still enforced via plan.rate_limit_rpm because '__fallback__' does
+         NOT match the 'unlimited' SSOT in _resolve_effective_rpm — the RPM bucket
+         consults plan.rate_limit_rpm = DEFAULT_RATE_LIMIT_RPM (fail-safe).
+
+    The dual-slug bypass in path 2 is the R-6-A fix for BLOCK-1 (R-5 review):
+    R-4-A's BLOCK-2 fix changed the fallback plan slug to 'unlimited' to preserve
+    monthly fail-open, but that silently caused RPM bypass too. Restoring
+    '__fallback__' + adding the explicit slug check here decouples the two gates.
 
     Args:
         api_key_id: The authenticated API key id.
-        plan_info:  PlanInfo with quota_calls_per_month.
+        plan_info:  PlanInfo with quota_calls_per_month + override fields.
         pg_pool:    psycopg2 connection pool.
 
     Returns:
-        (allowed, used, quota) — quota=0 means unlimited.
+        (allowed, used, quota) — quota=0 means unlimited in bypass paths.
     """
-    quota = plan_info.quota_calls_per_month
-    if quota == 0:
-        return True, 0, 0  # unlimited (admin plan)
+    effective_quota, is_unlimited = _resolve_effective_quota(plan_info)
+    if is_unlimited or plan_info.slug == "__fallback__":
+        # SSOT 'unlimited' (ADR-0041 D5) + degraded-mode '__fallback__' both
+        # fail-open for monthly quota. RPM is enforced via plan.rate_limit_rpm
+        # in _check_rate_limit because '__fallback__' is NOT the 'unlimited' slug
+        # SSOT in _resolve_effective_rpm.
+        return True, 0, 0
+
+    # BLOCK-2 fix (preserved): the old `if effective_quota == 0` numeric guard
+    # was removed. Previously, effective_quota=0 after override resolution triggered
+    # an unlimited bypass regardless of is_unlimited.  That meant quota_override=0
+    # on a non-unlimited plan silently granted unlimited access — contradicting
+    # ADR-0041 D5 ("0 = zero-allowed, NOT unlimited").  The dual-slug bypass above
+    # is now the sole fail-open path.  For pre-M10B plan rows seeded with quota=0
+    # that are intended to be unlimited, migrate those rows to slug='unlimited'
+    # or set quota_calls_per_month > 0.
 
     # PgPool.checkout() is the only public connection API; getconn/putconn
     # are private to PgPool internals.
@@ -206,7 +286,7 @@ def _check_monthly_quota(
             row = cur.fetchone()
 
     used = row[0] if row else 0
-    return used < quota, used, quota
+    return used < effective_quota, used, effective_quota
 
 
 async def _flush_usage_buffer_async(pg_pool) -> None:
@@ -479,21 +559,41 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
             plan_info = PlanInfo(
                 plan_id=0,
-                slug="__fallback__",
-                quota_calls_per_month=0,  # unlimited fallback
+                slug="__fallback__",  # R-6-A fix (BLOCK-1): NOT 'unlimited' — RPM must
+                                      # be enforced during DB outage. Using 'unlimited'
+                                      # (R-4-A's BLOCK-2 fix) caused _resolve_effective_rpm
+                                      # to bypass the bucket entirely because slug='unlimited'
+                                      # is the SSOT for ALL bypass paths including RPM.
+                                      # With '__fallback__', _resolve_effective_rpm falls
+                                      # through to return plan.rate_limit_rpm →
+                                      # DEFAULT_RATE_LIMIT_RPM is enforced (fail-safe RPM
+                                      # during degraded mode). Monthly quota fail-open is
+                                      # preserved via an explicit dual-slug guard in
+                                      # _check_monthly_quota:
+                                      #   `is_unlimited or plan_info.slug == '__fallback__'`
+                quota_calls_per_month=0,
                 rate_limit_rpm=DEFAULT_RATE_LIMIT_RPM,
+                rate_limit_override=None,
+                quota_override=None,
             )
 
         allowed_rpm, remaining = _check_rate_limit(key_id, plan_info)
         if not allowed_rpm:
             now_utc = _dt.datetime.now(_dt.UTC)
             reset_at = (now_utc + _dt.timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            body = _json.dumps({
+            # R-9 fix: redact internal sentinel slugs (e.g. '__fallback__' for degraded
+            # mode) from the public 429 body — they were enforcement discriminators,
+            # never intended as user-visible plan labels. Per ADR-0041 D5, only DB-
+            # sourced plan slugs are user-facing. The `startswith("__")` guard covers
+            # any future internal sentinel by naming convention.
+            _body_payload = {
                 "status": "quota_exhausted",
                 "reason": "rpm",
-                "plan": plan_info.slug,
                 "reset_at": reset_at,
-            })
+            }
+            if not plan_info.slug.startswith("__"):
+                _body_payload["plan"] = plan_info.slug
+            body = _json.dumps(_body_payload)
             # Wave 2 integration review ISSUE-4 — emit X-Quota-Limit +
             # X-Quota-Period on RPM 429 for ops-dashboard parity with the
             # monthly 429 branch (grep `X-Quota-*` across all 429s now hits
@@ -501,13 +601,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # the current monthly counter here would add a DB round-trip on
             # the throttled-request hot path; the dashboard derives "used"
             # from `usage_counter` directly when needed.
+            # M10B P0-ext: X-Quota-Limit emits "unlimited" string sentinel
+            # when plan is unlimited (clearest semantics per A8 Option 1).
+            _eff_q, _is_unl_q = _resolve_effective_quota(plan_info)
+            _quota_limit_hdr = "unlimited" if _is_unl_q else str(_eff_q)
             return Response(
                 body,
                 status_code=429,
                 media_type="application/json",
                 headers={
                     "X-RateLimit-Remaining": "0",
-                    "X-Quota-Limit": str(plan_info.quota_calls_per_month),
+                    "X-Quota-Limit": _quota_limit_hdr,
                     "X-Quota-Period": now_utc.strftime("%Y%m"),
                 },
             )
@@ -536,14 +640,30 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 next_month = now_utc.replace(month=now_utc.month + 1, day=1,
                                              hour=0, minute=0, second=0, microsecond=0)
             reset_at = next_month.strftime("%Y-%m-%dT%H:%M:%SZ")
-            body = _json.dumps({
+            # NIT fix: emit "unlimited" sentinel on monthly 429 X-Quota-Limit when
+            # is_unlimited, consistent with RPM 429 + success 200 paths (A:632/C:C8).
+            # R-8 fix: include '__fallback__' for symmetry with the success path,
+            # even though this branch is structurally unreachable today (L257 dual-
+            # slug bypass returns allowed=True before this code runs). Defensive
+            # against a future refactor that re-enters this branch with the
+            # fallback plan and would otherwise emit "0".
+            _eff_q_m, _is_unl_m = _resolve_effective_quota(plan_info)
+            _monthly_bypassed_m = _is_unl_m or plan_info.slug == "__fallback__"
+            _quota_limit_m = "unlimited" if _monthly_bypassed_m else str(quota_monthly)
+            # R-9 fix: same sentinel-redact pattern as RPM 429 (see FIX-1 comment).
+            # This branch is structurally unreachable today for slug='__fallback__'
+            # (L257 dual-slug short-circuit), but pin the invariant defensively
+            # against a future refactor that re-enters this branch with a sentinel slug.
+            _body_payload = {
                 "status": "quota_exhausted",
                 "reason": "monthly",
-                "plan": plan_info.slug,
                 "used": used_monthly,
                 "quota": quota_monthly,
                 "reset_at": reset_at,
-            })
+            }
+            if not plan_info.slug.startswith("__"):
+                _body_payload["plan"] = plan_info.slug
+            body = _json.dumps(_body_payload)
             return Response(
                 body,
                 status_code=429,
@@ -551,7 +671,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 headers={
                     "X-RateLimit-Remaining": str(remaining),
                     "X-Quota-Used": str(used_monthly),
-                    "X-Quota-Limit": str(quota_monthly),
+                    "X-Quota-Limit": _quota_limit_m,
                     "X-Quota-Period": _dt.datetime.now(_dt.UTC).strftime("%Y%m"),
                 },
             )
@@ -565,11 +685,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         ms = int((time.monotonic() - start) * 1000)
 
-        # Inject quota headers on allowed responses
+        # Inject quota headers on allowed responses.
+        # M10B P0-ext: X-Quota-Limit emits "unlimited" string sentinel when
+        # plan is unlimited (ADR-0041 D5 / A8 Option 1 — clearest semantics).
+        # R-8 fix: also emit "unlimited" when slug='__fallback__' (degraded-mode
+        # DB outage). The enforcement path (_check_monthly_quota L257) already
+        # uses a dual-slug bypass; the observability path must match or the
+        # header will show "0" while the request was actually bypassed.
         now_period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
+        _eff_q_hdr, _is_unl_hdr = _resolve_effective_quota(plan_info)
+        _monthly_bypassed = _is_unl_hdr or plan_info.slug == "__fallback__"
+        _quota_limit_val = "unlimited" if _monthly_bypassed else str(quota_monthly)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-Quota-Used"] = str(used_monthly)
-        response.headers["X-Quota-Limit"] = str(quota_monthly)
+        response.headers["X-Quota-Limit"] = _quota_limit_val
         response.headers["X-Quota-Period"] = now_period
 
         # Increment usage buffer; schedule flush if threshold reached.
