@@ -1,0 +1,214 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""SETTINGS_CATALOGUE — 15 Tier-1 admin-tunable settings (ADR-0042).
+
+Each entry registers default + validation + metadata. Bootstrap inserts rows
+into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SettingDef:
+    key: str
+    category: str
+    data_type: str  # int / float / str / bool / duration_seconds / list_str / struct
+    default_value: Any
+    validation: dict[str, Any] = field(default_factory=dict)
+    requires_restart: bool = False
+    requires_reseed: bool = False
+    is_secret: bool = False
+    description: str = ""
+    tenant_scopable: bool = False  # if True, scope='tenant' rows allowed
+    # WI-RV F-C: ``advisory`` flags a key whose canonical source-of-truth lives
+    # in a DIFFERENT table than ``app_settings`` (e.g. ``quota.*`` is owned by
+    # the ``plans`` table — see ADR-0039 / M10B P0).  Admin PATCH still
+    # succeeds (the overlay row is updated and the cache is flushed), but
+    # the value MUST NOT be read for runtime gating decisions; the live
+    # value comes from the canonical table.  The admin UI surfaces this so
+    # operators understand the field is a template/default, not a live
+    # control.  The two semantics share the catalogue rather than splitting
+    # to keep tenant overrides (``tenant_scopable=True``) discoverable.
+    advisory: bool = False
+    advisory_canonical_source: str = ""  # human-readable pointer (e.g. "table `plans`")
+
+
+SETTINGS_CATALOGUE: list[SettingDef] = [
+    # auth category
+    SettingDef("signup.enabled", "auth", "bool", False, {},
+               description="Public signup gate. False = invite-only."),
+    SettingDef("auth.session_ttl_seconds", "auth", "duration_seconds", 28800,
+               {"min": 900, "max": 604800},
+               description="Web UI session cookie TTL. 8h default."),
+    SettingDef("auth.mfa_grace_period_days", "auth", "int", 7,
+               {"min": 0, "max": 30},
+               description="Days admin can defer MFA setup."),
+    SettingDef("auth.password_min_length", "auth", "int", 12,
+               {"min": 8, "max": 64},
+               description="Min password length on register/reset."),
+    SettingDef("auth.email_verification_ttl_hours", "auth", "int", 24,
+               {"min": 1, "max": 168},
+               description="Email verification token validity."),
+
+    # quota category — tenant-scopable.  WI-RV F-C: marked ``advisory`` because
+    # the live MCP middleware reads quota + rpm from the ``plans`` table
+    # (ADR-0039 / M10B P0), NOT from app_settings.  An admin PATCH here
+    # updates the catalogue overlay (useful as a plan-tier template default
+    # and as a documented tenant override surface) but DOES NOT alter
+    # runtime gating until the value is propagated into ``plans``.  The UI
+    # surfaces this distinction so operators do not believe they are
+    # tuning live quotas through the wrong endpoint.
+    SettingDef("quota.free_calls_per_month", "quota", "int", 100,
+               {"min": 1, "max": 1_000_000}, tenant_scopable=True,
+               advisory=True, advisory_canonical_source="table `plans` (slug='free')",
+               description="Free tier monthly call quota."),
+    SettingDef("quota.free_rpm", "quota", "int", 30,
+               {"min": 1, "max": 10000}, tenant_scopable=True,
+               advisory=True, advisory_canonical_source="table `plans` (slug='free')",
+               description="Free tier rate limit (requests/minute)."),
+    SettingDef("quota.pro_calls_per_month", "quota", "int", 10000,
+               {"min": 1, "max": 10_000_000}, tenant_scopable=True,
+               advisory=True, advisory_canonical_source="table `plans` (slug='pro')",
+               description="Pro tier monthly call quota."),
+    SettingDef("quota.pro_rpm", "quota", "int", 120,
+               {"min": 1, "max": 10000}, tenant_scopable=True,
+               advisory=True, advisory_canonical_source="table `plans` (slug='pro')",
+               description="Pro tier rate limit."),
+    SettingDef("quota.team_calls_per_month", "quota", "int", 100000,
+               {"min": 1, "max": 100_000_000}, tenant_scopable=True,
+               advisory=True, advisory_canonical_source="table `plans` (slug='team')",
+               description="Team tier monthly call quota."),
+    SettingDef("quota.team_rpm", "quota", "int", 300,
+               {"min": 1, "max": 10000}, tenant_scopable=True,
+               advisory=True, advisory_canonical_source="table `plans` (slug='team')",
+               description="Team tier rate limit."),
+
+    # embedding category
+    SettingDef("embedding.max_batch_size", "embedding", "int", 50,
+               {"min": 10, "max": 200},
+               description="Embedder API batch size."),
+    SettingDef("embedding.timeout_read_seconds", "embedding", "duration_seconds", 1200,
+               {"min": 300, "max": 7200},
+               description="Embedder API read timeout."),
+
+    # indexer category
+    SettingDef("indexer.git_clone_timeout_seconds", "indexer", "duration_seconds", 3600,
+               {"min": 600, "max": 14400},
+               description="Git clone subprocess timeout."),
+
+    # mcp category
+    SettingDef("mcp.resource_cache_ttl_seconds", "mcp", "duration_seconds", 300,
+               {"min": 30, "max": 3600},
+               description="MCP odoo:// resource cache TTL."),
+]
+
+
+class SettingValidationError(ValueError):
+    """Raised by :func:`validate_setting_value` when a payload fails the catalogue contract.
+
+    The HTTP layer converts this into a 422 response.  Kept as a plain
+    ``ValueError`` subclass so non-HTTP callers (CLI / migration scripts)
+    can catch it without importing fastapi.
+    """
+
+
+def validate_setting_value(sdef: SettingDef, value: object) -> None:
+    """Validate *value* against the catalogue contract of *sdef*.
+
+    Raises:
+        SettingValidationError: on type mismatch, min/max breach, or
+            enum violation.  The error message is safe to surface to the
+            admin caller and includes the violating key + reason.
+
+    Single source of truth for type + range + enum validation; both
+    ``src/web_ui/routes/admin_settings.py`` and
+    ``src/web_ui/routes/tenant_settings.py`` consume this so a future
+    schema extension (e.g., ``regex`` validator) is patched once
+    (WI-R F-003).
+    """
+    t = sdef.data_type
+    if t in ("int", "duration_seconds") and not isinstance(value, bool) and isinstance(value, int):
+        pass  # accept genuine ints (and explicitly reject bool — see next line)
+    elif t in ("int", "duration_seconds"):
+        # ``bool`` is a subclass of ``int`` in Python; reject it explicitly so
+        # ``True`` does not slip through as ``1`` for an int-typed setting.
+        raise SettingValidationError(
+            f"Expected int for {sdef.key}, got {type(value).__name__}"
+        )
+    if t == "float" and not isinstance(value, (int, float)):
+        raise SettingValidationError(f"Expected float for {sdef.key}")
+    if t == "bool" and not isinstance(value, bool):
+        raise SettingValidationError(f"Expected bool for {sdef.key}")
+    if t == "str" and not isinstance(value, str):
+        raise SettingValidationError(f"Expected str for {sdef.key}")
+    if t == "list_str" and not (
+        isinstance(value, list) and all(isinstance(x, str) for x in value)
+    ):
+        raise SettingValidationError(f"Expected list[str] for {sdef.key}")
+    v = sdef.validation or {}
+    if "min" in v and value < v["min"]:
+        raise SettingValidationError(f"{sdef.key} below min {v['min']}")
+    if "max" in v and value > v["max"]:
+        raise SettingValidationError(f"{sdef.key} above max {v['max']}")
+    if "enum" in v and value not in v["enum"]:
+        raise SettingValidationError(
+            f"{sdef.key} not in allowed enum {v['enum']}"
+        )
+
+
+def register_settings_idempotent(conn) -> int:
+    """Insert SETTINGS_CATALOGUE rows into app_settings table.
+
+    ON CONFLICT (key) DO NOTHING — safe to call on every process start.
+    Returns number of rows actually inserted (new settings on this run).
+    """
+    inserted = 0
+    with conn.cursor() as cur:
+        for sdef in SETTINGS_CATALOGUE:
+            value_json = json.dumps({"v": sdef.default_value})
+            default_json = value_json
+            validation_json = json.dumps(sdef.validation)
+            cur.execute(
+                """
+                INSERT INTO app_settings (
+                    key, value_json, category, scope, data_type,
+                    validation_json, default_value, requires_restart,
+                    requires_reseed, is_secret, description
+                ) VALUES (%s, %s::jsonb, %s, 'system', %s,
+                          %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT (key) WHERE scope = 'system' AND tenant_id IS NULL DO NOTHING
+                """,
+                (sdef.key, value_json, sdef.category, sdef.data_type,
+                 validation_json, default_json, sdef.requires_restart,
+                 sdef.requires_reseed, sdef.is_secret, sdef.description),
+            )
+            if cur.rowcount > 0:
+                inserted += 1
+    conn.commit()
+    return inserted
+
+
+def bootstrap_settings_safe() -> None:
+    """Process-start hook. Logs + swallows error to not block startup."""
+    try:
+        from src.db.pg import get_pool
+        pool = get_pool()
+        with pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                inserted = register_settings_idempotent(conn)
+                log.info(
+                    "Settings bootstrap: %d new row(s) inserted (catalogue=%d)",
+                    inserted, len(SETTINGS_CATALOGUE),
+                )
+            except Exception:
+                conn.rollback()
+                raise
+    except Exception as exc:
+        log.warning("Settings bootstrap FAILED; using code defaults: %s", exc)

@@ -2831,6 +2831,17 @@ def _format_suggest_pattern(
     return "\n".join(lines)
 
 
+def _ee_confusion_live() -> dict[str, str | None]:
+    """Build EE confusion map from live DB (cached 60 s by get_ee_modules).
+
+    Falls back to static list when DB is unreachable — same as get_ee_modules().
+    Called on every _check_module_exists invocation so admin CRUD changes
+    propagate within one 60 s cache window (WI-R F-007 fix).
+    """
+    from src.data.ee_modules import get_ee_modules
+    return {m["name"]: m["vt_equivalent"] for m in get_ee_modules()}
+
+
 def _check_module_exists(
     name: str, odoo_version: str = "auto", *,
     profile_name: str | None = None,
@@ -2839,10 +2850,10 @@ def _check_module_exists(
     """Report whether `name` is indexed + flag EE-confusion (per ADR-0003 §2).
 
     Edition-first strategy: query Neo4j for indexed edition (OEEL-1 detected),
-    fallback to hardcoded dict if not indexed. Both paths produce same EE warning.
+    fallback to DB-backed guard list if not indexed.  Both paths produce the same
+    EE warning.  Guard list is read via get_ee_modules() (60 s cache) so that
+    admin CRUD changes take effect within one cache window (WI-R F-007).
     """
-    from src.data.ee_modules import EE_CONFUSION
-
     driver = _driver or _get_driver()
     with driver.session() as session:
         v = _resolve_version(odoo_version, session)
@@ -2862,6 +2873,10 @@ def _check_module_exists(
     repo = rec.get("repo") if rec else None
     vvq_db = rec.get("vvq") if rec else None
 
+    # Build live EE confusion map from DB (cached 60 s).  Falls back to static
+    # list when DB is unreachable — transparent to callers (WI-R F-007 fix).
+    confusion = _ee_confusion_live()
+
     # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
     # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition (it falls to 'custom');
     # it is handled separately via the raw license value at render time (_is_ee_by_license).
@@ -2876,12 +2891,12 @@ def _check_module_exists(
         # Indexed data: edition="enterprise" (OEEL-1 path) or raw license is OPL-1/OEEL-1
         is_ee_confusion = True
         ee_source = "indexed"
-        viindoo_equivalent = vvq_db or EE_CONFUSION.get(name)
-    elif name in EE_CONFUSION:
-        # Not indexed (or not marked 'enterprise') but in hardcoded dict
+        viindoo_equivalent = vvq_db or confusion.get(name)
+    elif name in confusion:
+        # Not indexed (or not marked 'enterprise') but in guard list
         is_ee_confusion = True
         ee_source = "dict"
-        viindoo_equivalent = EE_CONFUSION.get(name)
+        viindoo_equivalent = confusion.get(name)
 
     return _format_check_module_exists(
         name=name, version=v, indexed=indexed, edition=edition,
@@ -6538,6 +6553,15 @@ if __name__ == "__main__":
                     )
         except Exception:
             pass  # startup warning is best-effort — never block startup
+
+        # Bootstrap admin settings catalogue (idempotent, best-effort).
+        # Runs after PG pool init attempt. Swallows errors so a missing
+        # app_settings table (m13_010 not yet applied) never blocks startup.
+        try:
+            from src.settings_registry import bootstrap_settings_safe as _bootstrap
+            await _asyncio.to_thread(_bootstrap)
+        except Exception:  # noqa: BLE001
+            pass  # non-fatal — logged inside bootstrap_settings_safe
 
         try:
             async with _existing_lifespan(app):

@@ -255,12 +255,15 @@ def test_seed_failure_does_not_fail_indexer(
     clean_neo4j, clean_pg, neo4j_driver, tmp_path, monkeypatch, caplog
 ):
     """If auto-reseed raises, index_profile still completes successfully."""
-    # Monkeypatch _compute_patterns_sha256 to raise so the entire seed block fails.
+    # Monkeypatch the canonical SHA function (WI-RV F-D) to raise so the
+    # entire seed block fails.  The legacy file-bytes helper is still
+    # patched for backward compatibility with any older callsite.
     import src.indexer.seed_patterns as _sp_mod
 
-    def _boom(path):
+    def _boom(*args, **kwargs):
         raise RuntimeError("injected seed failure")
 
+    monkeypatch.setattr(_sp_mod, "compute_patterns_canonical_sha", _boom)
     monkeypatch.setattr(_sp_mod, "_compute_patterns_sha256", _boom)
 
     _wipe_seed_meta(neo4j_driver)

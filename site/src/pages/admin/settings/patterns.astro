@@ -1,0 +1,101 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Admin Settings — Pattern Catalogue page (WI-10, ADR-0009)
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import PatternsEditorIsland from './_patterns-editor-island';
+import { FASTAPI_BASE } from '../../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type Pattern = {
+  pattern_id: string;
+  intent_keywords: string[];
+  file_ref: string;
+  snippet_text: string;
+  gotchas: Array<{ title: string; body: string }>;
+  odoo_version_min: string;
+  odoo_version_max: string | null;
+  language: 'python' | 'xml' | 'js';
+  core_symbol_names: string[];
+  metadata: Record<string, unknown>;
+  soft_deleted: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+let patterns: Pattern[] = [];
+let total = 0;
+let fetchError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/patterns?limit=50&offset=0`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data: { patterns: Pattern[]; total: number } = await res.json();
+    patterns = data.patterns;
+    total = data.total;
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  } else {
+    fetchError = `API error ${res.status}`;
+  }
+} catch {
+  fetchError = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="Pattern Catalogue — Admin Settings">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <!-- Breadcrumb -->
+  <nav class="mb-4 text-xs text-gray-500 flex items-center gap-1">
+    <a href="/admin/settings" class="hover:text-viindoo-primary transition-colors">Settings</a>
+    <span class="text-gray-300">/</span>
+    <span class="text-gray-700 font-medium">Pattern Catalogue</span>
+  </nav>
+
+  <!-- Page header -->
+  <div class="flex items-start justify-between mb-6">
+    <div class="flex items-start gap-3">
+      <span class="text-2xl">📚</span>
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900 font-display">Pattern Catalogue</h1>
+        <p class="text-sm text-gray-500 mt-1">
+          Curated code patterns used by the MCP <code>suggest_pattern</code> tool.
+          CRUD writes automatically bump the ADR-0007 sentinel SHA — pgvector re-embeds on the next
+          <code>index_profile()</code> run (typically &lt;5 min).
+        </p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 shrink-0">
+      <span class="text-xs bg-violet-100 text-violet-700 px-3 py-1 rounded-full font-medium">
+        {total} total
+      </span>
+    </div>
+  </div>
+
+  {fetchError && (
+    <div class="mb-5 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {fetchError}
+    </div>
+  )}
+
+  <!-- ADR-0009 minimum guard reminder -->
+  <div class="mb-5 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-xl text-sm">
+    <strong>ADR-0009 Minimum Guard:</strong> The pattern catalogue requires a minimum of 80 active patterns.
+    Soft-deleting patterns below this threshold will fail in the regression test suite.
+    Current active count: <strong>{patterns.filter((p) => !p.soft_deleted).length}</strong>
+    of {total} total patterns shown on this page.
+  </div>
+
+  <PatternsEditorIsland client:load initialPatterns={patterns} initialTotal={total} />
+
+  <!-- Back link -->
+  <div class="mt-6">
+    <a href="/admin/settings" class="text-sm text-viindoo-primary hover:underline">
+      ← Back to Settings
+    </a>
+  </div>
+</AdminLayout>

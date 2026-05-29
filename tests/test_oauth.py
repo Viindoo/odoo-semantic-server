@@ -156,6 +156,8 @@ class TestNewUserCreation:
         tests that verify the blocked-by-default behaviour live in
         test_wave0_admin_gate.TestOAuthSignupGate.
         """
+        # WI-RV F-A: patch config-module constant (source-of-truth) + legacy route symbol.
+        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
         monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", True)
 
     @pytest.mark.asyncio

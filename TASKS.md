@@ -757,6 +757,14 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [ ] **Polar.sh MoR adapter** — verified webhook → Activation API → mint API key + provision tenant + set plan. Map Polar native license key ↔ OSM API key (ADR-0039 D4/D5).
 - [ ] **Self-serve issuance gated by payment** — wire `SIGNUP_ENABLED` (`src/web_ui/config.py:40`) self-serve flow to the Activation API so a paid checkout (not just an invite) provisions a key.
 
+**P1.5 — Admin Settings module (ADR-0042) — SHIPPED (Unreleased, integration branch)**
+- [x] **M10B P1.5: Admin Settings module** (ADR-0042) — runtime config UI for
+      15 Tier-1 + 4 plans + 16 EE + 115 patterns. Tenant `quota.*` override
+      Phase 1. 14 WIs shipped via wave orchestration. Hot-reload ≤60s. Audit +
+      rollback (ADR-0021). MFA fresh gate on destructive ops (ADR-0022).
+      Schema: m13_010 (app_settings + history) + m13_011 (ee_modules) + m13_012
+      (patterns). Tool count stays 24.
+
 **P2 — Multi-IdP + regional segment**
 - [ ] **Viindoo OIDC provider** — add a 3rd IdP slot per the [ADR-0017](docs/adr/0017-oauth-arctic-oslo.md) amendment (extensible IdP registry; arctic `OAuth2Client` generic already available; reuse account-linking-by-verified-email at `src/web_ui/routes/oauth.py:252-352`).
 - [ ] **ERP sale.order webhook + VAS e-invoice** — regional/domestic activation adapter (thin webhook, not two-way sync); the ERP stays accounting system-of-record (ADR-0039 D4).

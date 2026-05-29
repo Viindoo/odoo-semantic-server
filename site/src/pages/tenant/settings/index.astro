@@ -1,0 +1,197 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Tenant Settings self-service page — quota.* override for tenant_admin members (WI-11)
+// SSR: resolves user's tenant memberships via GET /api/account/tenants, then fetches
+// tenant-scopable settings via GET /api/tenants/{tid}/settings.
+// Auth guard: 401 → redirect to login; 403 → error banner (not tenant_admin of selected tenant).
+import TenantLayout from '../../../layouts/TenantLayout.astro';
+import TenantSettingsIsland from './_tenant-settings-island';
+import { FASTAPI_BASE } from '../../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type TenantEntry = {
+  tenant_id: number;
+  name: string;
+  role: string;
+};
+
+type TenantSettingDef = {
+  key: string;
+  effective_value: unknown;
+  effective_source: 'tenant_override' | 'system_or_default';
+  tenant_override: unknown;
+  system_default: unknown;
+  category: string;
+  data_type: string;
+  validation: Record<string, unknown> | null;
+  description: string;
+  updated_at: string | null;
+  updated_by: number | null;
+  change_reason: string | null;
+};
+
+let allTenants: TenantEntry[] = [];
+let adminTenants: TenantEntry[] = [];
+let activeTenantId: number | null = null;
+let activeTenantName: string | null = null;
+let settings: TenantSettingDef[] = [];
+let fetchError: string | null = null;
+
+try {
+  // Step 1: get user's tenant memberships (works for both admin and non-admin)
+  const tenantsRes = await fetch(`${FASTAPI_BASE}/api/account/tenants`, {
+    headers: { cookie: cookieHeader },
+  });
+
+  if (!tenantsRes.ok) {
+    if (tenantsRes.status === 401) {
+      return Astro.redirect('/admin/login?next=/tenant/settings');
+    }
+    fetchError = `Could not load tenants (HTTP ${tenantsRes.status})`;
+  } else {
+    const tenantsData = await tenantsRes.json();
+    allTenants = (tenantsData.tenants ?? []) as TenantEntry[];
+    // Only tenants where the user is tenant_admin are actionable here
+    adminTenants = allTenants.filter((t) => t.role === 'tenant_admin');
+  }
+} catch (e) {
+  fetchError = `Could not connect to API server: ${String(e)}`;
+}
+
+// Resolve active tenant_id from query param or first admin-role tenant
+if (!fetchError && adminTenants.length > 0) {
+  const qParam = Astro.url.searchParams.get('tenant_id');
+  const parsedId = qParam ? parseInt(qParam, 10) : NaN;
+
+  if (!isNaN(parsedId) && adminTenants.some((t) => t.tenant_id === parsedId)) {
+    activeTenantId = parsedId;
+  } else {
+    activeTenantId = adminTenants[0].tenant_id;
+  }
+  activeTenantName = adminTenants.find((t) => t.tenant_id === activeTenantId)?.name ?? null;
+}
+
+// Step 2: fetch settings for active tenant
+if (activeTenantId !== null) {
+  try {
+    const settingsRes = await fetch(
+      `${FASTAPI_BASE}/api/tenants/${activeTenantId}/settings`,
+      { headers: { cookie: cookieHeader } },
+    );
+    if (settingsRes.ok) {
+      const settingsData = await settingsRes.json();
+      settings = (settingsData.settings ?? []) as TenantSettingDef[];
+    } else if (settingsRes.status === 401) {
+      return Astro.redirect('/admin/login?next=/tenant/settings');
+    } else if (settingsRes.status === 403) {
+      fetchError = 'You are not a tenant admin of this tenant.';
+    } else {
+      fetchError = `Could not load settings (HTTP ${settingsRes.status})`;
+    }
+  } catch (e) {
+    fetchError = `Could not connect to API server: ${String(e)}`;
+  }
+}
+
+const overriddenCount = settings.filter((s) => s.effective_source === 'tenant_override').length;
+---
+
+<TenantLayout title="Tenant Settings" tenantName={activeTenantName ?? undefined}>
+  <!-- Flash banner (shared with island) -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="max-w-5xl mx-auto">
+    <!-- Page header -->
+    <div class="flex items-start justify-between mb-6">
+      <div>
+        <div class="flex items-center gap-3">
+          <h1 class="text-2xl font-bold text-gray-900 font-display">Tenant Settings</h1>
+          <span class="text-xs bg-viindoo-primary/10 text-viindoo-primary-deep border border-viindoo-primary/20 px-2 py-0.5 rounded-full font-medium">
+            quota overrides
+          </span>
+        </div>
+        <p class="text-sm text-gray-500 mt-1">
+          Per-tenant override for quota limits. Changes apply only to this tenant's API keys
+          and propagate within ≤60 seconds. Contact your administrator for non-quota settings.
+        </p>
+      </div>
+    </div>
+
+    <!-- No admin memberships state -->
+    {adminTenants.length === 0 && !fetchError && (
+      <div class="mt-6 p-5 bg-yellow-50 border border-yellow-200 rounded-xl">
+        <p class="text-sm font-semibold text-yellow-800 mb-1">No tenant admin access</p>
+        <p class="text-sm text-yellow-700">
+          You are not a <code>tenant_admin</code> of any tenant. Contact your system
+          administrator to be granted tenant admin access.
+        </p>
+      </div>
+    )}
+
+    <!-- Tenant selector (only shown when user is admin of multiple tenants) -->
+    {adminTenants.length > 1 && (
+      <div class="mb-5">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Active tenant</label>
+        <select
+          id="tenant-selector"
+          class="block w-full max-w-sm border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-viindoo-primary bg-white"
+        >
+          {adminTenants.map((t) => (
+            <option value={t.tenant_id} selected={t.tenant_id === activeTenantId}>
+              {t.name} ({t.role})
+            </option>
+          ))}
+        </select>
+        <script>
+          document.getElementById('tenant-selector').addEventListener('change', function (e) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('tenant_id', e.target.value);
+            window.location.href = url.toString();
+          });
+        </script>
+      </div>
+    )}
+
+    <!-- Error banner -->
+    {fetchError && (
+      <div class="mb-5 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+        {fetchError}
+      </div>
+    )}
+
+    <!-- Active tenant header + stats -->
+    {activeTenantId !== null && !fetchError && (
+      <div class="mb-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          {activeTenantName && (
+            <span class="text-sm font-semibold text-gray-800">{activeTenantName}</span>
+          )}
+          <span class="text-xs text-gray-400">tenant ID: {activeTenantId}</span>
+        </div>
+        {settings.length > 0 && (
+          <span class="text-xs text-gray-500">
+            {overriddenCount} of {settings.length} settings overridden
+          </span>
+        )}
+      </div>
+    )}
+
+    <!-- Settings island -->
+    {activeTenantId !== null && settings.length > 0 && !fetchError && (
+      <TenantSettingsIsland
+        client:load
+        tenantId={activeTenantId}
+        initialSettings={settings}
+      />
+    )}
+
+    {activeTenantId !== null && settings.length === 0 && !fetchError && (
+      <div class="py-12 text-center text-gray-400 text-sm bg-white rounded-xl border border-gray-200">
+        No tenant-scopable settings available yet.
+        <br />
+        <span class="text-xs">Your system administrator can enable quota override settings.</span>
+      </div>
+    )}
+  </div>
+</TenantLayout>

@@ -1,0 +1,141 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Admin Settings category page — dynamic route for auth/embedding/indexer/mcp (WI-10)
+// Renders all settings in the given category with the SettingEditorIsland.
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import SettingEditorIsland from './_setting-editor-island';
+import { FASTAPI_BASE } from '../../../lib/fastapi';
+
+// Valid categories served by this dynamic route
+// (quota/plans has its own page; ee-modules and patterns have their own pages)
+const VALID_CATEGORIES = ['auth', 'embedding', 'indexer', 'mcp'] as const;
+type Category = (typeof VALID_CATEGORIES)[number];
+
+const CATEGORY_META: Record<Category, { label: string; icon: string; description: string }> = {
+  auth: {
+    label: 'Auth Settings',
+    icon: '🔐',
+    description: 'Session TTL, MFA policy, login attempt thresholds, and OAuth configuration.',
+  },
+  embedding: {
+    label: 'Embedding Settings',
+    icon: '🧠',
+    description: 'Embedding model, batch size, and pgvector chunk dimensions.',
+  },
+  indexer: {
+    label: 'Indexer Settings',
+    icon: '⚙️',
+    description: 'Indexer batch size, worker concurrency, and scheduler configuration.',
+  },
+  mcp: {
+    label: 'MCP Server Settings',
+    icon: '🔌',
+    description: 'MCP tool response limits, resource cache TTL, and output caps.',
+  },
+};
+
+const { category } = Astro.params as { category: string };
+
+if (!VALID_CATEGORIES.includes(category as Category)) {
+  return Astro.redirect('/admin/settings');
+}
+
+const categoryKey = category as Category;
+const meta = CATEGORY_META[categoryKey];
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type SettingEntry = {
+  key: string;
+  value: unknown;
+  default_value: unknown;
+  data_type: string;
+  validation: Record<string, unknown> | null;
+  description: string;
+  requires_restart: boolean;
+  requires_reseed: boolean;
+  is_secret: boolean;
+  tenant_scopable: boolean;
+  effective_source: string;
+  updated_at: string | null;
+  updated_by: number | null;
+  change_reason: string | null;
+};
+
+let settings: SettingEntry[] = [];
+let fetchError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/settings`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data: { categories: Record<string, SettingEntry[]> } = await res.json();
+    settings = data.categories[categoryKey] ?? [];
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  } else {
+    fetchError = `API error ${res.status}`;
+  }
+} catch {
+  fetchError = 'Could not connect to API server.';
+}
+
+const customizedCount = settings.filter((s) => s.updated_at !== null).length;
+---
+
+<AdminLayout title={`${meta.label} — Admin`}>
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <!-- Breadcrumb -->
+  <nav class="mb-4 text-xs text-gray-500 flex items-center gap-1">
+    <a href="/admin/settings" class="hover:text-viindoo-primary transition-colors">Settings</a>
+    <span class="text-gray-300">/</span>
+    <span class="text-gray-700 font-medium">{meta.label}</span>
+  </nav>
+
+  <!-- Page header -->
+  <div class="flex items-start justify-between mb-6">
+    <div class="flex items-start gap-3">
+      <span class="text-2xl">{meta.icon}</span>
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900 font-display">{meta.label}</h1>
+        <p class="text-sm text-gray-500 mt-1">{meta.description}</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 shrink-0">
+      {customizedCount > 0 && (
+        <span class="text-xs bg-amber-100 text-amber-700 border border-amber-200 px-3 py-1 rounded-full font-medium">
+          {customizedCount} customized
+        </span>
+      )}
+      <span class="text-xs bg-violet-100 text-violet-700 px-3 py-1 rounded-full font-medium">
+        {settings.length} setting{settings.length !== 1 ? 's' : ''}
+      </span>
+    </div>
+  </div>
+
+  {fetchError && (
+    <div class="mb-5 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {fetchError}
+    </div>
+  )}
+
+  <!-- Legend -->
+  <div class="mb-4 flex items-center gap-4 text-xs text-gray-500">
+    <span class="flex items-center gap-1"><span>🟢</span> Hot-reload (≤60s)</span>
+    <span class="flex items-center gap-1"><span>🟡</span> Worker reload needed</span>
+    <span class="flex items-center gap-1"><span>🔴</span> Service restart required</span>
+  </div>
+
+  <!-- Setting editor island -->
+  <SettingEditorIsland client:load settings={settings} />
+
+  <!-- Back link -->
+  <div class="mt-6">
+    <a href="/admin/settings" class="text-sm text-viindoo-primary hover:underline">
+      ← Back to Settings
+    </a>
+  </div>
+</AdminLayout>

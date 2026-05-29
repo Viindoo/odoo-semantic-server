@@ -36,7 +36,10 @@ from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
 from src.web_ui.auth import hash_password
-from src.web_ui.config import SIGNUP_ENABLED
+from src.web_ui.config import (
+    SIGNUP_ENABLED,  # noqa: F401 — kept as legacy monkeypatch target
+    signup_enabled,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
@@ -44,7 +47,18 @@ router = APIRouter(prefix="/api/auth")
 # ---------------------------------------------------------------------------
 # Password complexity constants
 # ---------------------------------------------------------------------------
+#
+# WI-9 (ADR-0042): :data:`_MIN_PASSWORD_LENGTH` is the **code-default** floor.
+# Runtime callers resolve the live value via ``get_setting(
+# "auth.password_min_length")`` — see :func:`_validate_password` below.  The
+# constant is preserved as a regression anchor for
+# ``tests/test_constants_fallback.py`` and as the fail-safe when the settings
+# overlay is unavailable.
 _MIN_PASSWORD_LENGTH = 12
+
+# Email-verification token validity (hours).  Likewise admin-tunable via
+# ``auth.email_verification_ttl_hours`` (see WI-9 / ADR-0042).
+_EMAIL_VERIFY_TTL_HOURS = 24
 
 # Top-100 most commonly used passwords — block to reduce brute-force surface.
 _COMMON_PASSWORDS = frozenset(
@@ -111,9 +125,20 @@ async def _verify_hcaptcha(token: str, remote_ip: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _validate_password(password: str) -> str | None:
-    """Return error message string if password fails policy, else None."""
-    if len(password) < _MIN_PASSWORD_LENGTH:
-        return f"Password must be at least {_MIN_PASSWORD_LENGTH} characters."
+    """Return error message string if password fails policy, else None.
+
+    WI-9: minimum length is read from ``app_settings`` via the settings overlay
+    (``auth.password_min_length``).  The error message uses the **live** value
+    so the user sees an accurate floor.  Falls back to :data:`_MIN_PASSWORD_LENGTH`
+    on any overlay failure.
+    """
+    try:
+        from src.settings import get_setting
+        min_len = int(get_setting("auth.password_min_length"))
+    except Exception:
+        min_len = _MIN_PASSWORD_LENGTH
+    if len(password) < min_len:
+        return f"Password must be at least {min_len} characters."
     if password.lower() in _COMMON_PASSWORDS:
         return "Password is too common. Please choose a stronger password."
     return None
@@ -126,6 +151,20 @@ def _validate_password(password: str) -> str | None:
 def _get_pool():
     from src.db.pg import get_pool
     return get_pool()
+
+
+def _get_email_verify_ttl_hours() -> int:
+    """Return the live email-verification token TTL in hours (WI-9).
+
+    Reads ``auth.email_verification_ttl_hours`` through the settings overlay
+    (DB > catalogue > module default).  Falls back to :data:`_EMAIL_VERIFY_TTL_HOURS`
+    on any overlay failure so a DB outage never produces a zero-length window.
+    """
+    try:
+        from src.settings import get_setting
+        return int(get_setting("auth.email_verification_ttl_hours"))
+    except Exception:
+        return _EMAIL_VERIFY_TTL_HOURS
 
 
 def _get_client_ip(request: Request) -> str:
@@ -179,11 +218,20 @@ async def register(body: RegisterBody, request: Request):
     Returns 201 on success. Returns 409 if username/email already taken (generic
     message to prevent enumeration). Returns 400 for validation failures.
     Skips hCaptcha when HCAPTCHA_SECRET is unset (dev mode).
-    Returns 403 when SIGNUP_ENABLED=False (invite-only mode, default).
+    Returns 403 when signup is disabled (invite-only mode, default).
+
+    WI-RV F-A: gate is read via :func:`signup_enabled` which honours a live
+    ``app_settings`` overlay row (set via PATCH
+    /api/admin/settings/signup.enabled) BEFORE falling back to the
+    ``SIGNUP_ENABLED`` import-time constant.  The constant is still imported
+    so existing tests that monkeypatch
+    ``src.web_ui.routes.signup.SIGNUP_ENABLED`` continue to work via the
+    legacy path; new tests should patch ``src.web_ui.config.SIGNUP_ENABLED``
+    (the source of truth) or write a DB overlay row.
     """
-    if not SIGNUP_ENABLED:
+    if not signup_enabled():
         logger.warning(
-            "Signup blocked: SIGNUP_ENABLED=False (invite-only) — email=%s username=%s",
+            "Signup blocked: signup_enabled()=False (invite-only) — email=%s username=%s",
             body.email,
             body.username,
         )
@@ -276,7 +324,8 @@ async def register(body: RegisterBody, request: Request):
     # is stored in DB so a DB leak cannot be used directly for account takeover.
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(hours=24)
+    # WI-9: TTL admin-tunable via auth.email_verification_ttl_hours.
+    expires_at = datetime.now(UTC) + timedelta(hours=_get_email_verify_ttl_hours())
 
     with pool.checkout() as conn:
         conn.autocommit = False
@@ -469,7 +518,8 @@ async def resend_verification(body: ResendBody, request: Request):
     # Store sha256(token) in DB; send raw token to user (same pattern as register).
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(hours=24)
+    # WI-9: TTL admin-tunable via auth.email_verification_ttl_hours.
+    expires_at = datetime.now(UTC) + timedelta(hours=_get_email_verify_ttl_hours())
 
     with pool.checkout() as conn:
         conn.autocommit = False

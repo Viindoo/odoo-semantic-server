@@ -1686,3 +1686,51 @@ pytest tests/test_find_examples_recall.py -m ollama -v
 
 The test auto-skips if Ollama is not reachable — no manual `--skip` flag
 needed.
+
+---
+
+## Bootstrap Admin Settings Catalogue (v0.14.0+)
+
+After `python -m src.db.migrate` (which applies m13_010 / m13_011 / m13_012),
+run the pattern backfill script:
+
+```bash
+~/.venv/odoo-semantic-mcp/bin/python ops/backfill_patterns.py
+```
+
+This migrates 115 curated patterns from `src/data/patterns.json` → the new
+`patterns` table. The script is idempotent (ON CONFLICT DO NOTHING); safe to
+re-run.
+
+`app_settings` system rows (15 Tier-1 keys) are auto-populated on process
+start via the bootstrap hook in `src/web_ui/app.py` lifespan. No manual seed
+needed — the hook is try/except non-blocking and falls back to code defaults
+if Postgres is unavailable at startup.
+
+`ee_modules` rows (16 entries) are inserted directly in migration m13_011 —
+no separate script required.
+
+**Verify after bootstrap:**
+
+```bash
+psql "$PG_DSN" -c "SELECT COUNT(*) FROM app_settings WHERE scope='system';"
+# expected: 15
+
+psql "$PG_DSN" -c "SELECT COUNT(*) FROM ee_modules;"
+# expected: 16
+
+psql "$PG_DSN" -c "SELECT COUNT(*) FROM patterns WHERE NOT soft_deleted;"
+# expected: 115
+```
+
+**Admin UI access after bootstrap:**
+
+- Super-admin: `/admin/settings` — all 4 categories + plans + EE modules + patterns
+- Tenant admin: `/tenant/settings` — `quota.*` keys only (Phase 1)
+
+Cache TTL note: changes take effect within ≤60s per worker (TTL polling).
+The UI surfaces this constraint. Cross-worker invalidation via NOTIFY/LISTEN
+is deferred to Phase 2 (multi-host deployments).
+
+See [`docs/adr/0042-admin-settings-module.md`](adr/0042-admin-settings-module.md)
+for full architecture + Phase 2 roadmap.

@@ -38,12 +38,31 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import SESSION_TTL_SECONDS, is_test_bypass_active
+from src.web_ui.auth import get_session_ttl, is_test_bypass_active
 
 logger = logging.getLogger(__name__)
 
-# MFA grace period for admin users (days before enforcement kicks in)
+# MFA grace period for admin users (days before enforcement kicks in).
+#
+# WI-9 (ADR-0042): kept as the code-default fallback for ``get_setting(
+# "auth.mfa_grace_period_days")``.  Prefer :func:`get_mfa_grace_days` for new
+# call sites so the value can be tuned at runtime without a deploy.
 MFA_GRACE_DAYS = 7
+
+
+def get_mfa_grace_days() -> int:
+    """Resolve the admin-MFA grace-period (days) through the settings overlay.
+
+    Returns the integer day-count after which an admin user with no enabled
+    TOTP must enrol MFA.  Falls back to :data:`MFA_GRACE_DAYS` if the settings
+    resolver raises (very early bootstrap edge — :func:`get_setting` itself
+    never raises on a missing row).
+    """
+    try:
+        from src.settings import get_setting
+        return int(get_setting("auth.mfa_grace_period_days"))
+    except Exception:
+        return MFA_GRACE_DAYS
 
 # Paths exempt from authentication. /openapi.json is unauthenticated by design
 # (FastAPI's schema is meant to be introspected); /docs and /redoc are the
@@ -86,7 +105,10 @@ def _session_valid(request: Request) -> bool:
     # Require non-negative age: a future session_at (age < 0) is invalid.
     # This closes the edge case where a tampered or clock-skewed session_at
     # in the far future would satisfy `age < SESSION_TTL_SECONDS` indefinitely.
-    return 0 <= age < SESSION_TTL_SECONDS
+    #
+    # WI-9: ceiling resolved via overlay (DB > catalogue > module default) so
+    # an operator can bump session lifetime without a redeploy.
+    return 0 <= age < get_session_ttl()
 
 
 def _server_session_valid(session_id: str) -> bool:
@@ -150,7 +172,9 @@ def _check_mfa_enforcement(username: str) -> bool:
         if created_at is None:
             return False
         age_days = (time.time() - created_at.timestamp()) / 86400
-        return age_days >= MFA_GRACE_DAYS
+        # WI-9: grace window resolved via overlay so operators can shorten or
+        # extend the deferral without a deploy.
+        return age_days >= get_mfa_grace_days()
     except Exception as exc:
         logger.debug("MFA enforcement check failed (fail-open): %s", exc)
         return False

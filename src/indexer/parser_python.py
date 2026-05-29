@@ -352,8 +352,8 @@ def _classify_method_convention(method_name: str) -> tuple[str, str, bool]:
 # Detect ∈ {viindoo, oca, community, custom, enterprise} (enterprise = upstream
 # Odoo EE labeled as OEEL-1; Viindoo stack does not ship it, so we never label
 # as 'enterprise' from path alone — only via OEEL-1 license or viindoo_equivalent
-# lookup surfaces EE confusion via EE_CONFUSION dict in src/data/ee_modules.py
-# per ADR-0003).
+# lookup surfaces EE confusion via get_ee_modules() in src/data/ee_modules.py
+# per ADR-0003; WI-R F-007: wired to live DB so admin CRUD takes effect).
 
 
 def _detect_module_edition(
@@ -383,9 +383,17 @@ def _detect_module_edition(
 
 
 def _detect_viindoo_equivalent(module_name: str) -> str | None:
-    """Lookup EE_CONFUSION dict for the Viindoo equivalent of an EE-only module."""
-    from src.data.ee_modules import EE_CONFUSION
-    return EE_CONFUSION.get(module_name)
+    """Return Viindoo equivalent for an EE-only module from the live DB guard list.
+
+    Uses get_ee_modules() (60 s in-process cache) so admin CRUD changes propagate
+    within one cache window (WI-R F-007 fix).  Falls back to static list when
+    the DB is unreachable — identical behaviour to the previous EE_CONFUSION lookup.
+    """
+    from src.data.ee_modules import get_ee_modules
+    for entry in get_ee_modules():
+        if entry["name"] == module_name:
+            return entry["vt_equivalent"]
+    return None
 
 
 def _resolve_effective_license(manifest: dict, major: int) -> str:

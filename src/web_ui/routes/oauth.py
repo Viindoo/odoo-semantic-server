@@ -33,7 +33,10 @@ from pydantic import BaseModel, field_validator
 from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
-from src.web_ui.config import SIGNUP_ENABLED
+from src.web_ui.config import (
+    SIGNUP_ENABLED,  # noqa: F401 — kept as legacy monkeypatch target
+    signup_enabled,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth")
@@ -310,7 +313,7 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
             #    Existing linked accounts always log in (steps 1+2 above run
             #    before this check, so returning users are never blocked).
             # ---------------------------------------------------------------
-            if not SIGNUP_ENABLED:
+            if not signup_enabled():
                 logger.warning(
                     "OAuth new-user creation blocked: signup disabled "
                     "(provider=%s, email=%s)",

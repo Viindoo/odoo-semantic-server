@@ -9,6 +9,7 @@ import pytest
 from src.indexer.seed_patterns import (
     _compute_patterns_sha256,
     _load_patterns,
+    compute_patterns_canonical_sha,
 )
 from src.indexer.writer_neo4j import Neo4jWriter
 from tests.conftest import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
@@ -208,7 +209,11 @@ def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
     result = main(argv)
     assert result == 0
 
-    expected_sha = _compute_patterns_sha256(patterns_file)
+    # WI-RV F-D: sentinel now stores the canonical SHA (parsed-list serialised
+    # in canonical JSON form), NOT the raw file-bytes SHA, so the sentinel
+    # value matches whatever recompute_sentinel_sha() writes from the admin
+    # patterns CRUD endpoint — ending the perpetual reseed loop.
+    expected_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     writer = _get_neo4j_writer_for_test()
     try:
@@ -324,12 +329,13 @@ def test_second_seed_after_modification_reseeds(clean_neo4j, tmp_path, monkeypat
     argv = ["--patterns-file", str(patterns_file), "--no-embed"]
     result = main(argv)
     assert result == 0
-    sha_before = _compute_patterns_sha256(patterns_file)
+    # WI-RV F-D: assert via canonical SHA (matches the sentinel written by run()).
+    sha_before = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     # Modify patterns.json
     sample[0]["snippet_text"] = "modified snippet"
     patterns_file.write_text(json.dumps(sample))
-    sha_after = _compute_patterns_sha256(patterns_file)
+    sha_after = compute_patterns_canonical_sha(patterns_file=patterns_file)
     assert sha_before != sha_after
 
     # Second seed — should proceed

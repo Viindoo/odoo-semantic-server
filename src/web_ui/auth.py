@@ -32,13 +32,42 @@ from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
-# Session TTL: 8 hours in seconds
+# Session TTL: 8 hours in seconds.
+#
+# WI-9 (ADR-0042): kept as the code-default fallback for ``get_setting(
+# "auth.session_ttl_seconds")``.  Existing callers may continue to import this
+# constant; new callers should prefer :func:`get_session_ttl` so an admin can
+# override the value via ``app_settings`` without redeploying.
 SESSION_TTL_SECONDS = 8 * 3600
 
-# MFA freshness window for destructive operations (restore): 5 minutes
+# MFA freshness window for destructive operations (restore): 5 minutes.
+#
+# Not currently exposed via ``app_settings`` (no Tier-1 entry) — kept as a
+# hard-coded operational floor.
 MFA_FRESHNESS_SECONDS = 5 * 60
 
 _DEV_FALLBACK_SECRET: str | None = None
+
+
+def get_session_ttl() -> int:
+    """Resolve the Web UI session cookie TTL through the admin-settings overlay.
+
+    Resolution order (per ADR-0042, via :func:`src.settings.get_setting`):
+      1. ``app_settings`` row for ``auth.session_ttl_seconds`` (DB).
+      2. ``SETTINGS_CATALOGUE`` default (28800).
+      3. This module-level :data:`SESSION_TTL_SECONDS` (only reached if both
+         lookups fail catastrophically — :func:`get_setting` itself never
+         raises on a missing row, so the fallback chiefly guards against an
+         unloaded catalogue during very early bootstrap).
+
+    Import is intentionally lazy to avoid a circular import between
+    ``src.web_ui.auth`` and ``src.settings`` at module-load time.
+    """
+    try:
+        from src.settings import get_setting
+        return int(get_setting("auth.session_ttl_seconds"))
+    except Exception:
+        return SESSION_TTL_SECONDS
 
 
 def get_session_secret() -> str:

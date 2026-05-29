@@ -26,7 +26,12 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import hash_password, is_test_bypass_active, verify_password
+from src.web_ui.auth import (
+    get_session_ttl,
+    hash_password,
+    is_test_bypass_active,
+    verify_password,
+)
 from src.web_ui.login_attempts import (
     check_rate_limit,
     get_client_ip,
@@ -102,7 +107,12 @@ def _create_session(
     from src.db.pg import auth_store
 
     session_id = secrets.token_urlsafe(32)
-    expires_at = datetime.now(tz=UTC) + timedelta(seconds=8 * 3600)
+    # WI-9 (ADR-0042): TTL resolved through the settings overlay so the
+    # active_sessions row expires in lockstep with the cookie/session window
+    # served by AuthRequiredMiddleware (both use get_session_ttl()).  The
+    # historical literal ``8 * 3600`` is now expressed as SESSION_TTL_SECONDS
+    # in src/web_ui/auth.py.
+    expires_at = datetime.now(tz=UTC) + timedelta(seconds=get_session_ttl())
     try:
         pool = auth_store()._pool
         with pool.checkout() as conn:
@@ -267,13 +277,16 @@ async def login_post(request: Request, body: LoginBody):
     F3: X-Forwarded-For only trusted from TRUSTED_PROXY_CIDRS peers.
     F7: opaque session_id in signed cookie; session stored in active_sessions.
     """
-    # Password complexity check: min_length=12.
+    # Password complexity check: min_length default 12 (overridable via
+    # ``auth.password_min_length`` admin setting — WI-9 / ADR-0042).
     # Done here (not in Pydantic) so we can return generic 401 without leaking
     # validation details (Pydantic would return 422 with field-level error).
-    if len(body.password) < 12:
+    from src.settings import get_setting
+    min_len = int(get_setting("auth.password_min_length"))
+    if len(body.password) < min_len:
         # Run dummy-hash to keep timing constant regardless of password length.
-        # Pad password to 12 chars so bcrypt still processes a non-trivial input.
-        verify_password(body.password.ljust(12, "x"), _DUMMY_HASH)
+        # Pad password to min_len chars so bcrypt still processes a non-trivial input.
+        verify_password(body.password.ljust(min_len, "x"), _DUMMY_HASH)
         return JSONResponse(_json_safe({"error": "invalid_credentials"}), status_code=401)
 
     # F3 — resolve client IP using trusted proxy CIDR list

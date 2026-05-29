@@ -1,0 +1,89 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Admin Settings — EE Modules page (WI-10)
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import EEModulesEditorIsland from './_ee-modules-editor-island';
+import { FASTAPI_BASE } from '../../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type EEModule = {
+  id: number;
+  name: string;
+  since_version: string | null;
+  vt_equivalent: string | null;
+  description: string | null;
+  deprecated: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+let modules: EEModule[] = [];
+let fetchError: string | null = null;
+
+try {
+  // Default: active only; user can toggle in the island
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/ee-modules?include_deprecated=false`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    modules = await res.json();
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  } else {
+    fetchError = `API error ${res.status}`;
+  }
+} catch {
+  fetchError = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="EE Modules — Admin Settings">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <!-- Breadcrumb -->
+  <nav class="mb-4 text-xs text-gray-500 flex items-center gap-1">
+    <a href="/admin/settings" class="hover:text-viindoo-primary transition-colors">Settings</a>
+    <span class="text-gray-300">/</span>
+    <span class="text-gray-700 font-medium">EE Modules</span>
+  </nav>
+
+  <!-- Page header -->
+  <div class="flex items-start justify-between mb-6">
+    <div class="flex items-start gap-3">
+      <span class="text-2xl">🏢</span>
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900 font-display">EE Modules Guard List</h1>
+        <p class="text-sm text-gray-500 mt-1">
+          Controls which Odoo Enterprise Edition modules trigger the EE confusion detection system.
+          Soft-delete to remove, or add new entries to extend coverage.
+        </p>
+      </div>
+    </div>
+    <span class="text-xs bg-violet-100 text-violet-700 px-3 py-1 rounded-full font-medium shrink-0">
+      {modules.length} active
+    </span>
+  </div>
+
+  {fetchError && (
+    <div class="mb-5 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {fetchError}
+    </div>
+  )}
+
+  <!-- Info callout -->
+  <div class="mb-5 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm">
+    <strong>Soft-delete vs Hard-delete:</strong> Deleting an entry marks it as deprecated and hides it from the active guard list.
+    The module name record is preserved in history. Changes invalidate the in-process cache within ≤60 seconds.
+  </div>
+
+  <EEModulesEditorIsland client:load initialModules={modules} includeDeprecated={false} />
+
+  <!-- Back link -->
+  <div class="mt-6">
+    <a href="/admin/settings" class="text-sm text-viindoo-primary hover:underline">
+      ← Back to Settings
+    </a>
+  </div>
+</AdminLayout>

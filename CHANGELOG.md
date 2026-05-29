@@ -81,6 +81,47 @@ All notable changes to Odoo Semantic MCP are documented here.
 - `tests/test_m13_008_migration.py` — 9 migration tests (table schema, UNIQUE, idempotency, CHECK constraint rejects invalid plan, CHECK constraint accepts valid plans).
 - `tests/test_waitlist_api.py` — 21 integration tests for `POST /api/waitlist` (happy path, duplicate, rate limit, Retry-After, admin notify, invalid payload).
 
+### Added — Admin Settings Module (ADR-0042)
+
+- Runtime configuration UI for 15 Tier-1 settings (auth + embedding + indexer + mcp)
+  + 4 plan tiers + 16 EE modules + 115 patterns, no redeploy needed.
+- `migrations/m13_010_app_settings.sql` — `app_settings` + `app_settings_history` tables
+  with 3 partial unique indexes for scope x tenant; ADR-0042 storage layer.
+- `migrations/m13_011_ee_modules.sql` — `ee_modules` table backfilled from
+  `src/data/ee_modules.py` (16 rows); replaces hardcoded dict with DB-driven guard.
+- `migrations/m13_012_patterns.sql` — `patterns` table for 115 curated patterns;
+  backfill via `ops/backfill_patterns.py` (replaces `src/data/patterns.json`).
+- `src/settings.py` — 3-tier resolver: L1 in-memory LRU (60s TTL, bounded 5000) →
+  L2 Postgres → L3 code default from `SETTINGS_CATALOGUE`. Tenant override > system > default.
+- `src/settings_registry.py` — `SETTINGS_CATALOGUE` with 15 Tier-1 keys, type/validation/
+  restart-class/category metadata.
+- `src/web_ui/routes/admin_settings.py`, `admin_plans.py`, `admin_ee_modules.py`,
+  `admin_patterns.py` — 26 new HTTP routes under `/api/admin/*`.
+- `src/web_ui/routes/tenant_settings.py` — per-tenant `quota.*` override endpoints (Phase 1).
+- `site/src/pages/admin/settings/*.astro` + 5 React islands — admin settings UI with
+  audit trail, undo last-10, reset-to-default, ≥50% drop warning for quota keys.
+- `site/src/pages/tenant/settings/*.astro` + 1 React island — tenant quota self-service UI.
+- `ops/backfill_patterns.py` — one-shot script to migrate 115 patterns from JSON → DB.
+- Tenant admin self-service for per-tenant `quota.*` override (Phase 1).
+- Audit trail + undo last-10 + reset-to-default for every mutation (ADR-0021 cross-link).
+- MFA fresh gate (5 min) on destructive ops (ADR-0022).
+- Bootstrap hook on process start auto-populates `app_settings` system rows (15 keys);
+  `bootstrap_settings_safe()` is try/except non-blocking — falls back to code defaults.
+
+### Fixed — Admin Settings
+
+- `src/web_ui/routes/tenant_settings.py`: ON CONFLICT predicate now matches partial unique
+  index (`AND tenant_id IS NOT NULL`); prior predicate silently fell back to full-table
+  conflict resolution.
+- `src/web_ui/routes/tenant_settings.py` reset: history row now records catalogue default
+  value instead of NULL (NOT NULL constraint satisfied).
+
+### Tool count
+- Unchanged at 24 MCP tools. Admin Settings is web-UI-only — no new MCP tools added.
+
+### Migration
+Run `python -m src.db.migrate && python ops/backfill_patterns.py` after deploy.
+
 ### Fixed
 
 - `src/web_ui/rate_limit.py get_client_ip` — now honours `TRUSTED_PROXY_CIDRS` guard (port from `login_attempts.py` pattern). XFF header is only trusted when TCP peer is in the configured trusted-proxy CIDR list. Default (empty list) → XFF never trusted, preventing IP spoof in bare-metal deployments.

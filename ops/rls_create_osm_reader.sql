@@ -59,6 +59,46 @@ GRANT SELECT, INSERT, UPDATE ON TABLE usage_counter TO osm_reader;
 -- admin viewer tools work without requiring another cutover run.
 GRANT SELECT ON TABLE waitlist_emails TO osm_reader;
 
+-- WI-RV F-E: Admin Settings module tables (m13_010 + m13_011 + m13_012).
+-- ----------------------------------------------------------------------
+-- ``app_settings`` is read on every authed MCP request via the settings
+-- overlay (``src/settings.py::get_setting``) — without SELECT, every read
+-- falls through to the code default and the operator-tunable layer silently
+-- becomes dead.  ``bootstrap_settings_safe`` (server.py startup) also
+-- INSERTs catalogue rows ON CONFLICT DO NOTHING, so MCP needs INSERT here
+-- too — without it the bootstrap log warning is the only signal that the
+-- catalogue is missing, which has caused operator confusion in the past.
+--
+-- ``app_settings_history`` is WRITTEN only by FastAPI (DB owner) on admin
+-- CRUD — MCP does NOT mutate it.  SELECT only so future MCP-side audit
+-- read paths (e.g. read-only tenant override viewer) work without another
+-- cutover script run.
+--
+-- ``ee_modules`` is read by ``src.data.ee_modules.get_ee_modules`` which
+-- the MCP feature-check + capability-proof tools call to disambiguate
+-- Community vs Enterprise modules.  Source-of-truth lives in the seed
+-- migration; runtime MCP never writes.
+--
+-- ``patterns`` is read by ``recompute_sentinel_sha`` indirectly (via
+-- ``_load_patterns_from_db``) on every reseed-gating check.  Today the
+-- read path runs inside the indexer worker, but MCP-side curated pattern
+-- lookups under M11 will need SELECT too.  Defensive grant included now
+-- so the next M11 wave does not require a second cutover.
+GRANT SELECT, INSERT ON TABLE app_settings           TO osm_reader;
+GRANT SELECT          ON TABLE app_settings_history  TO osm_reader;
+GRANT SELECT          ON TABLE ee_modules            TO osm_reader;
+GRANT SELECT          ON TABLE patterns              TO osm_reader;
+-- app_settings_history.id is SERIAL — MCP does not INSERT, so no USAGE on
+-- the sequence is needed.  ee_modules + patterns also have SERIAL PKs but
+-- are SELECT-only here, so likewise no sequence USAGE.
+--
+-- NOTE on degraded modes: when MCP is denied permission on any of these
+-- (e.g. running against an older RLS deployment where this grant block
+-- hasn't been applied), every callsite falls through to a static
+-- in-process default — see ``settings.py::_resolve_default`` and
+-- ``ee_modules.py::_DEFAULT_EE_MODULES``.  Operators see WARN-level log
+-- lines but the service does not 500.  Re-running this file is the fix.
+
 -- 5. Session context (ADR-0029) — set_active_version/profile UPSERT + read.
 --    api_key_session_state.api_key_id is an FK integer PK (no sequence).
 GRANT SELECT, INSERT, UPDATE ON TABLE api_key_session_state TO osm_reader;

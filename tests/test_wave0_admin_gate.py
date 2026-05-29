@@ -728,8 +728,20 @@ class TestSignupGate:
     @pytest.fixture(autouse=True)
     def _disable_bypass(self, monkeypatch):
         monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
-        # Ensure the module-level constant is False (default)
+        # WI-RV F-A: patch source-of-truth in config module so signup_enabled()
+        # reads the patched value via getattr(sys.modules[__name__], ...).
+        # Legacy route-module symbol also patched for tests that import it.
+        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", False)
         monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", False)
+        # WI-CI Cat C: ASGI lifespan auto-runs bootstrap_settings_safe() which
+        # seeds a signup.enabled=False row into app_settings.  That makes
+        # signup_enabled() read the DB overlay (returns a non-None False) and
+        # never falls back to the module constant — the monkeypatch above is
+        # bypassed entirely.  Force get_overlay_only to return None so the
+        # module-constant path is exercised, preserving the wave0 unit-test
+        # contract.  The dedicated DB-overlay path is covered separately by
+        # tests/test_signup_enabled_db_overlay.py (WI-RV F-A intent intact).
+        monkeypatch.setattr("src.settings.get_overlay_only", lambda key, **kw: None)
 
     @pytest.mark.asyncio
     async def test_register_disabled_returns_403(self, migrated_pg):
@@ -775,6 +787,8 @@ class TestSignupGate:
     @pytest.mark.asyncio
     async def test_register_enabled_returns_201(self, migrated_pg, monkeypatch):
         """POST /api/auth/register → 201 when SIGNUP_ENABLED=True."""
+        # WI-RV F-A: patch config-module constant (source-of-truth) + legacy route symbol.
+        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
         monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", True)
         app = create_app()
         async with _async_client(app) as client:
@@ -797,7 +811,13 @@ class TestOAuthSignupGate:
     @pytest.fixture(autouse=True)
     def _disable_bypass(self, monkeypatch):
         monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+        # WI-RV F-A: patch config-module constant (source-of-truth) + legacy route symbol.
+        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", False)
         monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", False)
+        # WI-CI Cat C: same lifespan bootstrap issue as TestSignupGate above —
+        # force the DB-overlay path to None so the module-constant patch wins.
+        # DB-overlay behaviour is covered by test_signup_enabled_db_overlay.py.
+        monkeypatch.setattr("src.settings.get_overlay_only", lambda key, **kw: None)
 
     @pytest.mark.asyncio
     async def test_oauth_new_user_blocked_when_signup_disabled(self, migrated_pg):
