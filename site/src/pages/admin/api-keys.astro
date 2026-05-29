@@ -1,8 +1,10 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // API Keys management page — SSR fetch from FastAPI W1
+// W-5 (M10B P0-ext): plan column + overrides modal + reactivate button.
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
+import ApiKeysOverridesIsland from './_api-keys-overrides-island';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
@@ -16,6 +18,16 @@ type Key = {
   user_id: number | null;
 };
 
+type Plan = {
+  id: number;
+  slug: string;
+  display_name: string;
+  quota_calls_per_month: number;
+  rate_limit_rpm: number;
+  seat_limit: number | null;
+  is_public: boolean;
+};
+
 let keysData: {
   keys: Key[];
   error?: string | null;
@@ -27,6 +39,7 @@ let keysData: {
 // by any active user, including non-admins.
 type AssignableUser = { id: number; username: string; is_admin: boolean; is_active: boolean };
 let assignableUsers: AssignableUser[] = [];
+let plans: Plan[] = [];
 
 try {
   const res = await fetch(`${FASTAPI_BASE}/api/api-keys`, {
@@ -47,6 +60,20 @@ try {
   }
 } catch {
   // silently ignore — dropdown will be empty
+}
+
+// Fetch plan catalogue for plan assignment dropdown (W-5, ADR-0039).
+// Admin-only; silently skip if the endpoint is unavailable.
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/plans`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    plans = data.plans ?? [];
+  }
+} catch {
+  // silently ignore — plan column will be hidden
 }
 
 const activeKeys = keysData.keys.filter((k) => k.active);
@@ -152,6 +179,8 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
             <tr>
               <th class="px-4 py-3 text-left">Name</th>
               <th class="px-4 py-3 text-left">Owner</th>
+              {plans.length > 0 && <th class="px-4 py-3 text-left">Plan</th>}
+              {plans.length > 0 && <th class="px-4 py-3 text-left">Overrides</th>}
               <th class="px-4 py-3 text-left">Created</th>
               <th class="px-4 py-3 text-left">Last Used</th>
               <th class="px-4 py-3 text-right">Action</th>
@@ -167,6 +196,46 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
                     : <em class="text-slate-400">(system)</em>
                   }
                 </td>
+                {plans.length > 0 && (
+                  <td class="px-4 py-3 text-xs">
+                    {/* Plan inline select: admin picks plan → Save → PATCH plan_id (no override change). */}
+                    <div class="flex items-center gap-1 plan-assign-row" data-key-id={String(key.id)}>
+                      <select
+                        class="text-xs border border-gray-300 rounded px-2 py-1 plan-select"
+                        aria-label={`Plan for key ${key.name}`}
+                        data-key-id={String(key.id)}
+                      >
+                        <option value="">— select plan —</option>
+                        {plans.map((p) => (
+                          <option value={String(p.id)}>{p.display_name} ({p.slug})</option>
+                        ))}
+                      </select>
+                      <button
+                        class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-2 py-1.5 rounded-lg transition-colors save-plan-btn"
+                        data-key-id={String(key.id)}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </td>
+                )}
+                {plans.length > 0 && (
+                  <td class="px-4 py-3 text-xs">
+                    {/* Overrides button: opens singleton modal; passes selected plan from dropdown. */}
+                    <button
+                      class="text-xs bg-violet-50 hover:bg-violet-100 text-violet-700 px-2 py-1.5 rounded-lg transition-colors overrides-btn"
+                      data-overrides-trigger
+                      data-key-id={String(key.id)}
+                      data-key-name={key.name}
+                      data-current-plan-id=""
+                      data-rate=""
+                      data-quota=""
+                      title="Set per-key rate/quota overrides"
+                    >
+                      Overrides…
+                    </button>
+                  </td>
+                )}
                 <td class="px-4 py-3 text-gray-500 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
                 <td class="px-4 py-3 text-gray-500 text-xs">{key.last_used_at?.slice(0, 16).replace('T', ' ') ?? 'Never'}</td>
                 <td class="px-4 py-3 text-right">
@@ -207,6 +276,11 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
     )}
   </div>
 
+  <!-- Singleton React island for per-key overrides modal (W-5).
+       Mounted once; opens when any [data-overrides-trigger] button is clicked.
+       The island reads data-current-plan-id / data-rate / data-quota from the trigger. -->
+  {plans.length > 0 && <ApiKeysOverridesIsland client:load />}
+
   <!-- Inactive keys. Why: `open` by default so admins see deactivated keys
        without an extra click, and so Playwright's `to_be_visible()` resolves
        on `api-key-row-inactive` (a closed <details> CSS-hides its children
@@ -223,6 +297,7 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
               <th class="px-4 py-3 text-left">Name</th>
               <th class="px-4 py-3 text-left">Owner</th>
               <th class="px-4 py-3 text-left">Created</th>
+              <th class="px-4 py-3 text-right">Action</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-100">
@@ -236,6 +311,15 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
                   }
                 </td>
                 <td class="px-4 py-3 text-gray-400 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
+                <td class="px-4 py-3 text-right">
+                  <button
+                    data-testid={`reactivate-key-button-${key.id}`}
+                    data-key-id={String(key.id)}
+                    class="text-xs bg-green-50 hover:bg-green-100 text-green-700 px-3 py-1.5 rounded-lg transition-colors reactivate-key-btn"
+                  >
+                    Reactivate
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -361,6 +445,68 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
       } else {
         const data = await res.json().catch(() => ({}));
         showFlash(data.error ?? 'Deactivation failed.', 'error');
+      }
+    });
+  });
+
+  // Save Plan buttons — PATCH /api/admin/api-keys/{key_id}/plan
+  // Mirrors the assign-owner pattern. Sends plan_id only (no overrides in this path).
+  document.querySelectorAll('.save-plan-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const keyId = (btn as HTMLElement).dataset.keyId;
+      const row = (btn as HTMLElement).closest('.plan-assign-row') as HTMLElement | null;
+      const select = row?.querySelector('.plan-select') as HTMLSelectElement | null;
+      const planId = select?.value;
+      if (!planId) {
+        showFlash('Please select a plan first.', 'error');
+        return;
+      }
+      const res = await fetch(`/api/admin/api-keys/${keyId}/plan`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_id: parseInt(planId, 10) }),
+      });
+      if (res.ok) {
+        showFlash('Plan updated.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showFlash(data.detail ?? data.error ?? 'Failed to update plan.', 'error');
+      }
+    });
+  });
+
+  // Overrides buttons — sync the currently selected plan_id into the trigger's
+  // data-current-plan-id attribute so the React island can PATCH with the right plan.
+  document.querySelectorAll('.overrides-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const el = btn as HTMLElement;
+      // Find the plan-select in the same row.
+      const row = el.closest('tr');
+      const planSelect = row?.querySelector('.plan-select') as HTMLSelectElement | null;
+      const selectedPlanId = planSelect?.value ?? '';
+      // Update data-current-plan-id so the island can read it.
+      el.dataset.currentPlanId = selectedPlanId;
+      // Note: data-rate and data-quota are always '' on SSR render (list_api_keys
+      // does not expose override values). The island treats '' as null (use plan default).
+    });
+  });
+
+  // Reactivate key buttons — mirrors deactivate pattern.
+  document.querySelectorAll('.reactivate-key-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const keyId = (btn as HTMLElement).dataset.keyId;
+      if (!confirm('Reactivate this API key? It will immediately be able to authenticate again.')) return;
+      const res = await fetch(`/api/api-keys/${keyId}/reactivate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        showFlash('API key reactivated.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showFlash(data.error ?? 'Reactivation failed.', 'error');
       }
     });
   });

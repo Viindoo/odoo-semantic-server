@@ -214,26 +214,45 @@ class TestPlansTableCreated:
 
 
 # ---------------------------------------------------------------------------
-# T2: 4 plans seeded
+# T2: plans seeded by the migration baseline
 # ---------------------------------------------------------------------------
+#
+# Intent these tests protect: the migration baseline produces a known,
+# enumerated SSOT set of plan slugs — no silent additions, no silent removals.
+#
+# Cross-migration note (ADR-0041): m13_006 originally seeded 4 plans
+# ({free, free-grandfathered, pro, team}). m13_009 (M10B P0-ext, PR #206)
+# adds the 5th plan 'unlimited' (admin-granted, is_public=FALSE) as the SSOT
+# for unlimited entitlement per ADR-0041 D5.
+#
+# These tests use the `migrated_pg` fixture which runs ALL migrations, so the
+# assertion targets the current post-all-migrations baseline (5 plans). If a
+# future migration adds/removes a plan, update the expected set here AND link
+# the migration's ADR.
 
 
-class TestFourPlansSeeded:
-    """T2: Exactly 4 plans with correct slugs are seeded."""
+class TestPlansBaselineSeeded:
+    """T2: the migration baseline seeds the SSOT set of plan slugs."""
 
-    def test_four_plans_exist(self, migrated_pg):
+    # SSOT for seeded plan slugs. Update only when a migration adds/removes a
+    # plan AND link the migration's ADR in the cross-migration note above.
+    EXPECTED_SLUGS = {"free-grandfathered", "free", "pro", "team", "unlimited"}
+
+    def test_seeded_plan_count_matches_ssot(self, migrated_pg):
         with migrated_pg.cursor() as cur:
             cur.execute("SELECT count(*) FROM plans")
             count = cur.fetchone()[0]
-        assert count == 4, f"Expected 4 seeded plans, got {count}"
+        expected_count = len(self.EXPECTED_SLUGS)
+        assert count == expected_count, (
+            f"Expected {expected_count} seeded plans, got {count}"
+        )
 
     def test_plan_slugs_match(self, migrated_pg):
-        expected = {"free-grandfathered", "free", "pro", "team"}
         with migrated_pg.cursor() as cur:
             cur.execute("SELECT slug FROM plans")
             actual = {row[0] for row in cur.fetchall()}
-        assert actual == expected, (
-            f"Plan slugs mismatch. Expected {expected}, got {actual}"
+        assert actual == self.EXPECTED_SLUGS, (
+            f"Plan slugs mismatch. Expected {self.EXPECTED_SLUGS}, got {actual}"
         )
 
     def test_free_grandfathered_not_public(self, migrated_pg):

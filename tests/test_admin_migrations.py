@@ -19,22 +19,28 @@ pytestmark = pytest.mark.postgres
 # ---------------------------------------------------------------------------
 
 
-def _yoyo_migrations_table_exists(conn) -> bool:
-    """Return True if _yoyo_migrations table exists in the DB."""
+def _yoyo_migration_table_exists(conn) -> bool:
+    """Return True if _yoyo_migration table exists in the DB.
+
+    yoyo 9.x stores applied migrations in `_yoyo_migration` (singular) — the
+    default `migration_table` arg of `yoyo.connections.get_backend`.  The
+    class-level attribute `DatabaseBackend.migration_table = '_yoyo_migrations'`
+    is overridden by the constructor and does NOT end up on disk.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = '_yoyo_migrations' LIMIT 1"
+            "WHERE table_name = '_yoyo_migration' LIMIT 1"
         )
         return cur.fetchone() is not None
 
 
 def _count_yoyo_rows(conn) -> int:
-    """Return row count from _yoyo_migrations, or 0 if table absent."""
-    if not _yoyo_migrations_table_exists(conn):
+    """Return row count from _yoyo_migration, or 0 if table absent."""
+    if not _yoyo_migration_table_exists(conn):
         return 0
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM _yoyo_migrations")
+        cur.execute("SELECT COUNT(*) FROM _yoyo_migration")
         return cur.fetchone()[0]
 
 
@@ -140,10 +146,20 @@ class TestListMigrationsReturnsApplied:
         """After run_migrations(), endpoint returns at least one row."""
         run_migrations(clean_pg)
 
-        if not _yoyo_migrations_table_exists(clean_pg):
-            pytest.skip("_yoyo_migrations table not created by run_migrations — skipping")
+        # With the typo fixed, _yoyo_migration (singular) IS created by
+        # yoyo on its first run, so this is no longer a flaky skip — it is a
+        # hard assertion that the corrected table name exists.
+        assert _yoyo_migration_table_exists(clean_pg), (
+            "_yoyo_migration table missing after run_migrations — yoyo bootstrap failed"
+        )
 
         row_count = _count_yoyo_rows(clean_pg)
+        # Regression guard: with the corrected table name, the endpoint must
+        # see ≥1 applied migration (was silently 0 under the typo bug).
+        assert row_count > 0, (
+            "_yoyo_migration row_count=0 after run_migrations — regression "
+            "would mean we are reading the wrong table again"
+        )
 
         import httpx
 
@@ -173,8 +189,9 @@ class TestListMigrationsReturnsApplied:
         """Each migration item has 'id' and 'applied_at' keys."""
         run_migrations(clean_pg)
 
-        if not _yoyo_migrations_table_exists(clean_pg):
-            pytest.skip("_yoyo_migrations table absent — skipping")
+        assert _yoyo_migration_table_exists(clean_pg), (
+            "_yoyo_migration table missing after run_migrations — yoyo bootstrap failed"
+        )
 
         import httpx
 
@@ -192,11 +209,11 @@ class TestListMigrationsReturnsApplied:
 class TestListMigrationsEmptyDb:
     @pytest.mark.asyncio
     async def test_no_table_returns_empty(self, clean_pg):
-        """If _yoyo_migrations table does not exist, returns empty list + count=0."""
+        """If _yoyo_migration table does not exist, returns empty list + count=0."""
         # Ensure the yoyo table does NOT exist (clean_pg has run_migrations skipped)
         # Drop it if present from a prior migration
         with clean_pg.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS _yoyo_migrations")
+            cur.execute("DROP TABLE IF EXISTS _yoyo_migration")
 
         import httpx
 
@@ -213,11 +230,11 @@ class TestListMigrationsEmptyDb:
 
     @pytest.mark.asyncio
     async def test_empty_table_returns_count_zero(self, clean_pg):
-        """If _yoyo_migrations table exists but is empty, count=0."""
+        """If _yoyo_migration table exists but is empty, count=0."""
         # Create the table manually with no rows
         with clean_pg.cursor() as cur:
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS _yoyo_migrations ("
+                "CREATE TABLE IF NOT EXISTS _yoyo_migration ("
                 "  migration_hash VARCHAR(64) NOT NULL PRIMARY KEY, "
                 "  migration_id VARCHAR(255), "
                 "  applied_at_utc TIMESTAMP"

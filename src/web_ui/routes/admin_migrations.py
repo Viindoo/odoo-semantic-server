@@ -17,11 +17,14 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 @router.get("/migrations")
 async def list_migrations(request: Request, _: int = Depends(require_admin)):
-    """List applied yoyo migrations from _yoyo_migrations table.
+    """List applied yoyo migrations from _yoyo_migration table.
 
     Returns list of dicts with: id (migration_id), applied_at (applied_at_utc).
-    The yoyo backend uses _yoyo_migrations (plural) with columns
-    migration_id (VARCHAR) and applied_at_utc (TIMESTAMP).
+    The yoyo backend uses _yoyo_migration (singular) — the default
+    `migration_table` parameter of `yoyo.connections.get_backend` (yoyo 9.x).
+    The class-level attribute `DatabaseBackend.migration_table = '_yoyo_migrations'`
+    is overridden by the constructor and is NOT what ends up on disk.
+    Columns: migration_id (VARCHAR), applied_at_utc (TIMESTAMP).
     Returns empty list when table exists but has no rows.
     Returns count=0 when table does not yet exist (pre-first-run).
     """
@@ -35,7 +38,7 @@ async def list_migrations(request: Request, _: int = Depends(require_admin)):
                 # that have not yet run migrations.
                 cur.execute(
                     "SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name = '_yoyo_migrations' LIMIT 1"
+                    "WHERE table_name = '_yoyo_migration' LIMIT 1"
                 )
                 table_exists = cur.fetchone() is not None
 
@@ -48,7 +51,7 @@ async def list_migrations(request: Request, _: int = Depends(require_admin)):
 
                 cur.execute(
                     "SELECT migration_id, applied_at_utc "
-                    "FROM _yoyo_migrations ORDER BY applied_at_utc DESC"
+                    "FROM _yoyo_migration ORDER BY applied_at_utc DESC"
                 )
                 rows = cur.fetchall()
     except Exception as exc:

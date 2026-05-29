@@ -146,13 +146,29 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       <summary class="px-5 py-4 cursor-pointer text-sm font-medium text-gray-500 hover:text-gray-800 list-none flex items-center gap-2">
         <span>▶ Deactivated Keys ({inactiveKeys.length})</span>
       </summary>
-      <div class="border-t border-gray-100">
+      <div class="border-t border-gray-100 overflow-x-auto">
         <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+            <tr>
+              <th class="px-4 py-3 text-left">Name</th>
+              <th class="px-4 py-3 text-left">Deactivated</th>
+              <th class="px-4 py-3 text-right">Action</th>
+            </tr>
+          </thead>
           <tbody class="divide-y divide-gray-100">
             {inactiveKeys.map((key) => (
-              <tr data-testid="api-key-row-inactive" class="hover:bg-gray-50 opacity-60">
+              <tr data-testid="api-key-row-inactive" class="hover:bg-gray-50 opacity-70">
                 <td class="px-4 py-3 text-gray-500 line-through">{key.name}</td>
                 <td class="px-4 py-3 text-gray-400 text-xs">{key.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
+                <td class="px-4 py-3 text-right">
+                  <button
+                    data-testid={`reactivate-key-button-${key.id}`}
+                    data-key-id={String(key.id)}
+                    class="text-xs bg-green-50 hover:bg-green-100 text-green-700 px-3 py-1.5 rounded-lg transition-colors reactivate-key-btn"
+                  >
+                    Reactivate
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -278,6 +294,26 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       } else {
         const data = await res.json().catch(() => ({}));
         showFlash(data.error ?? 'Deactivation failed.', 'error');
+      }
+    });
+  });
+
+  // Reactivate key buttons (mirror of deactivate, calls /reactivate endpoint)
+  document.querySelectorAll('.reactivate-key-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const keyId = (btn as HTMLElement).dataset.keyId;
+      if (!confirm('Reactivate this API key? It will immediately regain API access.')) return;
+      // Content-Type: application/json bypasses Astro CSRF guard (see deactivate note above).
+      const res = await fetch(`/api/api-keys/${keyId}/reactivate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        showFlash('API key reactivated.', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showFlash(data.error ?? 'Reactivation failed.', 'error');
       }
     });
   });

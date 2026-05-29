@@ -572,6 +572,8 @@ def clean_pg(pg_conn):
         "active_sessions",
         "login_attempts",
         "admin_audit_log",
+        # m9_008 — operational audit, no FK referencing it
+        "key_rotation_log",
         # schema tables in FK-safe order
         "pattern_feedback",
         "indexer_jobs",
@@ -582,14 +584,29 @@ def clean_pg(pg_conn):
         # future maintainers and is safe if a future migration replaces CASCADE
         # with explicit cleanup.
         "usage_counter",
+        # 0005 — api_key_session_state FK→api_keys (ON DELETE CASCADE at row level);
+        # DROP TABLE api_keys CASCADE only drops the CONSTRAINT, NOT the data,
+        # so we must explicitly DROP this table to avoid stale-row leakage.
+        "api_key_session_state",
         "repos",
         # api_keys.plan_id FK→plans → api_keys must drop BEFORE plans (m13_006).
         "api_keys",
         "ssh_key_pairs",
         "embeddings",
+        # m13_008 — waitlist_emails has no FK; standalone leakable table.
+        "waitlist_emails",
         # plans (m13_006) — referenced by api_keys.plan_id; drop AFTER api_keys.
         "plans",
         "profiles",
+        # M13 — tenant_members FK→webui_users AND FK→tenants (both ON DELETE
+        # CASCADE at row level). DROP TABLE … CASCADE on the referenced tables
+        # only drops the CONSTRAINT, NOT the rows, so stale tenant_members
+        # rows survive across test sessions. When run_migrations recreates
+        # webui_users/tenants, the SERIAL sequences restart at 1 and new IDs
+        # collide with stale (user_id, tenant_id) pairs — e.g. the W1 RBAC
+        # tests would observe scope={1,2,5} where {1} was expected.
+        # Must drop BEFORE webui_users + tenants to respect topological order.
+        "tenant_members",
         "webui_users",
         # M13 — must come after all tables that FK-reference it
         "tenants",

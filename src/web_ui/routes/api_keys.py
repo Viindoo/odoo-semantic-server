@@ -142,3 +142,62 @@ async def deactivate_api_key(request: Request, key_id: int):
         _logger.warning("Deactivate key %s failed: %s", key_id, e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
     return JSONResponse(_json_safe({"ok": True}))
+
+
+@router.post("/{key_id}/reactivate")
+@audit_action("api_key.reactivate", target_param="key_id")
+async def reactivate_api_key_route(request: Request, key_id: int):
+    """Reactivate an API key (symmetric counterpart of /deactivate).
+
+    Admin: unconditional reactivate (any key).
+    Non-admin: ownership-guarded — only keys owned by the caller (403 otherwise).
+    Unauthenticated (uid=None in non-admin context): 401.
+    404 if key_id does not exist.
+    Idempotent — reactivating an already-active key returns 200.
+    """
+    from src.db.auth_registry import reactivate_api_key
+    from src.db.pg import get_pool
+    from src.mcp.middleware import _cache_invalidate_by_key_id
+    from src.web_ui.auth import current_user_id, is_admin_session
+
+    uid = current_user_id(request)
+    pool = get_pool()
+
+    try:
+        is_admin = is_admin_session(request)
+
+        if not is_admin:
+            if uid is None:
+                return JSONResponse(_json_safe({"error": "not_authenticated"}), status_code=401)
+            # Fetch key row to check existence and ownership in one query.
+            with pool.checkout() as conn:
+                key_row = pool.fetch_one(
+                    conn,
+                    "SELECT id, user_id FROM api_keys WHERE id = %s",
+                    (key_id,),
+                )
+            if key_row is None:
+                return JSONResponse(_json_safe({"error": "not_found"}), status_code=404)
+            if key_row["user_id"] != uid:
+                return JSONResponse(_json_safe({"error": "not_owner"}), status_code=403)
+
+        # Perform the reactivation (idempotent UPDATE RETURNING).
+        # Returns None when key_id does not exist (admin path, or race condition).
+        row = reactivate_api_key(pool, key_id)
+        if row is None:
+            return JSONResponse(_json_safe({"error": "not_found"}), status_code=404)
+
+        _cache_invalidate_by_key_id(key_id)
+        _logger.info("API key %s reactivated", key_id)
+    except Exception as e:
+        _logger.warning("Reactivate key %s failed: %s", key_id, e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+
+    return JSONResponse(_json_safe({
+        "ok": True,
+        "key_id": row["id"],
+        "active": row["active"],
+        "name": row["name"],
+        "key_prefix": row["key_prefix"],
+        "user_id": row["user_id"],
+    }))

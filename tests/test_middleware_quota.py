@@ -22,11 +22,14 @@ from src.db.migrate import run_migrations
 from src.mcp.middleware import (
     _PLAN_CACHE,
     PlanInfo,
+    _cache_invalidate_by_key_id,
     _cache_lock,
     _check_monthly_quota,
     _check_rate_limit,
     _get_plan_for_key,
     _rate_buckets,
+    _resolve_effective_quota,
+    _resolve_effective_rpm,
     _usage_buffer,
     _usage_buffer_lock,
 )
@@ -317,14 +320,22 @@ class TestRpmBlockBeforeMonthly:
 
 
 class TestAdminQuotaZeroSkipsCheck:
-    """Case 4: admin plan (quota_calls_per_month=0) — monthly check always passes."""
+    """Case 4: unlimited plan — monthly check always passes.
+
+    ADR-0041 D5 SSOT: unlimited access is conveyed by slug='unlimited', NOT by
+    quota_calls_per_month=0.  The 'unlimited' slug triggers the SSOT bypass in
+    _check_monthly_quota before any numeric check.  This test was updated from
+    slug='admin' + quota=0 to slug='unlimited' to match the D5 contract — the
+    old slug='admin'/quota=0 combination relied on the legacy numeric guard
+    that was removed in the BLOCK-2 fix (quota=0 now means zero-allowed).
+    """
 
     def test_admin_quota_zero_skips_check(self, migrated_db):
-        """quota=0 means unlimited — _check_monthly_quota returns (True, 0, 0)."""
-        # Simulate an admin-tier PlanInfo with quota=0 (unlimited).
+        """slug='unlimited' plan bypasses monthly gate — returns (True, 0, 0)."""
+        # Correct representation per ADR-0041 D5: unlimited via slug, not numeric 0.
         admin_plan = PlanInfo(
             plan_id=999,
-            slug="admin",
+            slug="unlimited",
             quota_calls_per_month=0,
             rate_limit_rpm=10000,
         )
@@ -464,6 +475,447 @@ class TestPeriodBoundaryResets:
             assert allowed_at_limit is False, (
                 f"At quota limit must be blocked;"
                 f" used={used_at_limit}, quota={quota_at_limit}"
+            )
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
+
+
+# ---------------------------------------------------------------------------
+# M10B P0-ext: unlimited plan + per-key override tests (ADR-0041 D5)
+# ---------------------------------------------------------------------------
+
+
+class TestUnlimitedPlanBypassesRateLimit:
+    """B1: slug='unlimited' rpm=0 → all requests pass regardless of volume."""
+
+    def test_unlimited_plan_bypasses_rate_limit(self):
+        # M10B P0-ext: rpm=0 now means unlimited per ADR-0041 when slug='unlimited'.
+        # Previous behavior: rpm=0 caused 0 >= 0 → block ALL requests (silent-DoS bug).
+        unlimited_plan = PlanInfo(
+            plan_id=1,
+            slug="unlimited",
+            quota_calls_per_month=0,
+            rate_limit_rpm=0,
+        )
+        # Fire 1000 requests quick-fire — none should be blocked
+        for i in range(1000):
+            allowed, remaining = _check_rate_limit(9001, unlimited_plan)
+            assert allowed is True, (
+                f"Call {i+1}: slug='unlimited' must bypass RPM gate; "
+                f"allowed={allowed}, remaining={remaining}"
+            )
+            assert remaining == 0, "Remaining should be 0 (sentinel for unlimited)"
+
+
+class TestUnlimitedPlanBypassesMonthlyQuota:
+    """B2: slug='unlimited' quota=0 → monthly check always passes, even at huge counter."""
+
+    def test_unlimited_plan_bypasses_monthly_quota(self, migrated_db):
+        unlimited_plan = PlanInfo(
+            plan_id=1,
+            slug="unlimited",
+            quota_calls_per_month=0,
+            rate_limit_rpm=0,
+        )
+        pool = _FakePool(migrated_db)
+
+        # Simulate a counter way above any reasonable monthly limit
+        # _check_monthly_quota should bypass without even querying DB for slug='unlimited'
+        for i in range(100):
+            allowed, used, quota = _check_monthly_quota(9002, unlimited_plan, pool)
+            assert allowed is True, (
+                f"Call {i+1}: slug='unlimited' must bypass monthly gate; "
+                f"used={used}, quota={quota}"
+            )
+            assert used == 0
+            assert quota == 0
+
+
+class TestOverrideOverridesPlanRpm:
+    """B3: rate_limit_override > plan.rate_limit_rpm → uses override value."""
+
+    def test_override_overrides_plan_rpm(self):
+        # Plan has 10 rpm limit, but per-key override is 100.
+        # 50 calls should all pass (>10 plan limit, under 100 override limit).
+        plan_with_override = PlanInfo(
+            plan_id=2,
+            slug="free",
+            quota_calls_per_month=10000,
+            rate_limit_rpm=10,
+            rate_limit_override=100,  # per-key override
+        )
+        for i in range(50):
+            allowed, remaining = _check_rate_limit(9003, plan_with_override)
+            assert allowed is True, (
+                f"Call {i+1}: override=100 should allow 50 calls (plan limit 10); "
+                f"allowed={allowed}, remaining={remaining}"
+            )
+
+
+class TestOverrideOverridesPlanQuota:
+    """B4: quota_override > plan.quota_calls_per_month → uses override value."""
+
+    _KEY_HASH = "hash_mq_b4_quota_override"
+
+    def test_override_overrides_plan_quota(self, migrated_db):
+        import datetime as _dt
+
+        key_id = _seed_key(
+            migrated_db,
+            name="mq_b4_quota_override",
+            key_hash=self._KEY_HASH,
+            key_prefix="b4qo",
+            slug="free",
+        )
+        migrated_db.commit()
+        try:
+            pool = _FakePool(migrated_db)
+
+            # Plan quota=100, but quota_override=10000
+            plan_with_override = PlanInfo(
+                plan_id=3,
+                slug="free",
+                quota_calls_per_month=100,
+                rate_limit_rpm=60,
+                quota_override=10000,
+            )
+
+            period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
+            # Simulate 500 calls already used (above plan's 100 limit, under override 10000)
+            _set_usage_counter(migrated_db, api_key_id=key_id, period=period, count=500)
+            migrated_db.commit()
+
+            # Should still be allowed (500 < 10000 override)
+            allowed, used, quota = _check_monthly_quota(key_id, plan_with_override, pool)
+            assert allowed is True, (
+                f"500 used < 10000 override must be allowed; used={used}, quota={quota}"
+            )
+            assert quota == 10000, f"quota should reflect override value, got {quota}"
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
+
+
+class TestOverrideZeroBlocksAll:
+    """B5: rate_limit_override=0 → 1st request blocked (0 = zero-allowed, NOT unlimited).
+
+    This is the critical D5 distinction: override=0 means admin explicitly set
+    zero-allowed. Only slug='unlimited' means bypass. Override=0 must NOT trigger
+    the unlimited bypass path.
+    """
+
+    def test_override_zero_blocks_all(self):
+        # Plan rpm=60 (normal), but per-key override is explicitly 0 = zero-allowed.
+        plan_zero_override = PlanInfo(
+            plan_id=4,
+            slug="free",
+            quota_calls_per_month=10000,
+            rate_limit_rpm=60,
+            rate_limit_override=0,  # explicit zero = zero-allowed, NOT unlimited
+        )
+        # First request must be blocked because effective_rpm=0 and bucket(0) >= 0
+        allowed, remaining = _check_rate_limit(9005, plan_zero_override)
+        assert allowed is False, (
+            f"rate_limit_override=0 must block all requests (0 = zero-allowed); "
+            f"allowed={allowed}, remaining={remaining}"
+        )
+        assert remaining == 0
+
+
+class TestOverrideNullFallsBackToPlan:
+    """B6: rate_limit_override=None → uses plan.rate_limit_rpm as default."""
+
+    def test_override_null_falls_back_to_plan(self):
+        # Plan rpm=10, override=None → fallback to plan limit.
+        plan_null_override = PlanInfo(
+            plan_id=5,
+            slug="free",
+            quota_calls_per_month=10000,
+            rate_limit_rpm=10,
+            rate_limit_override=None,
+        )
+        # First 10 calls pass
+        for i in range(10):
+            allowed, remaining = _check_rate_limit(9006, plan_null_override)
+            assert allowed is True, (
+                f"Call {i+1}: override=None falls back to plan rpm=10; "
+                f"allowed={allowed}, remaining={remaining}"
+            )
+
+        # 11th call must be blocked (plan rpm=10)
+        allowed_11, remaining_11 = _check_rate_limit(9006, plan_null_override)
+        assert allowed_11 is False, (
+            f"11th call must be blocked at plan rpm=10; "
+            f"allowed={allowed_11}, remaining={remaining_11}"
+        )
+        assert remaining_11 == 0
+
+
+class TestSlugUnlimitedTakesPrecedenceOverOverride:
+    """B7: slug='unlimited' bypasses even when rate_limit_override is set (ADR-0041 D5 SSOT).
+
+    The 'unlimited' slug is the single source of truth for unlimited access.
+    Per-key override values are ignored when slug='unlimited' — the slug wins.
+    """
+
+    def test_plan_slug_unlimited_takes_precedence_over_override(self):
+        # slug='unlimited' with a non-None rate_limit_override — slug must win.
+        plan_unlimited_with_override = PlanInfo(
+            plan_id=6,
+            slug="unlimited",
+            quota_calls_per_month=0,
+            rate_limit_rpm=0,
+            rate_limit_override=5,  # override present, but slug='unlimited' wins per D5
+        )
+        # Verify resolver agrees: slug SSOT takes precedence
+        effective_rpm, is_unlimited = _resolve_effective_rpm(plan_unlimited_with_override)
+        assert is_unlimited is True, (
+            "slug='unlimited' must return is_unlimited=True regardless of override"
+        )
+        assert effective_rpm == 0
+
+        # Functional check: 100 calls should all pass
+        for i in range(100):
+            allowed, remaining = _check_rate_limit(9007, plan_unlimited_with_override)
+            assert allowed is True, (
+                f"Call {i+1}: slug='unlimited' must bypass even when override=5; "
+                f"allowed={allowed}, remaining={remaining}"
+            )
+
+
+class TestGetPlanForKeyIncludesOverrides:
+    """B8: _get_plan_for_key populates PlanInfo.rate_limit_override + quota_override from DB."""
+
+    _KEY_HASH = "hash_mq_b8_overrides"
+
+    def test_get_plan_for_key_includes_overrides(self, migrated_db):
+        key_id = _seed_key(
+            migrated_db,
+            name="mq_b8_override_key",
+            key_hash=self._KEY_HASH,
+            key_prefix="b8ov",
+            slug="free",
+        )
+        # Set per-key overrides directly in DB
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                "UPDATE api_keys SET rate_limit_override = %s, quota_override = %s"
+                " WHERE key_hash = %s",
+                (200, 5000, self._KEY_HASH),
+            )
+        migrated_db.commit()
+        try:
+            pool = _FakePool(migrated_db)
+            plan_info = _get_plan_for_key(key_id, pool)
+
+            assert plan_info.rate_limit_override == 200, (
+                f"rate_limit_override should be 200, got {plan_info.rate_limit_override}"
+            )
+            assert plan_info.quota_override == 5000, (
+                f"quota_override should be 5000, got {plan_info.quota_override}"
+            )
+
+            # Also verify resolver uses override values
+            effective_rpm, is_unl = _resolve_effective_rpm(plan_info)
+            assert effective_rpm == 200
+            assert is_unl is False
+
+            effective_quota, is_unl_q = _resolve_effective_quota(plan_info)
+            assert effective_quota == 5000
+            assert is_unl_q is False
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
+
+
+class TestPlanCacheInvalidateDropsOverrideUpdate:
+    """B9: cache invalidate after override update causes next lookup to see new override."""
+
+    _KEY_HASH = "hash_mq_b9_cache_inv"
+
+    def test_plan_cache_invalidate_drops_override_update(self, migrated_db):
+        key_id = _seed_key(
+            migrated_db,
+            name="mq_b9_cache_inv",
+            key_hash=self._KEY_HASH,
+            key_prefix="b9ci",
+            slug="free",
+        )
+        migrated_db.commit()
+        try:
+            pool = _FakePool(migrated_db)
+
+            # Initial lookup — no override (NULL in DB)
+            plan_info_1 = _get_plan_for_key(key_id, pool)
+            assert plan_info_1.rate_limit_override is None, (
+                f"Initially override should be None, got {plan_info_1.rate_limit_override}"
+            )
+
+            # Set override via SQL
+            with migrated_db.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET rate_limit_override = 100 WHERE key_hash = %s",
+                    (self._KEY_HASH,),
+                )
+            migrated_db.commit()
+
+            # Before invalidate: should still see cached value (None override)
+            plan_info_cached = _get_plan_for_key(key_id, pool)
+            assert plan_info_cached.rate_limit_override is None, (
+                "Cache should still hold old value before invalidation"
+            )
+
+            # Invalidate cache for this key
+            _cache_invalidate_by_key_id(key_id)
+
+            # After invalidate: next lookup should fetch fresh from DB (override=100)
+            plan_info_fresh = _get_plan_for_key(key_id, pool)
+            assert plan_info_fresh.rate_limit_override == 100, (
+                f"After cache invalidate, override should be 100 from DB, "
+                f"got {plan_info_fresh.rate_limit_override}"
+            )
+        finally:
+            _cleanup_test_keys(migrated_db, [self._KEY_HASH])
+            migrated_db.commit()
+
+
+class TestFallbackPlanEnforcesRpm:
+    """Regression: BLOCK-1 of R-5 review — fallback plan must enforce RPM gate
+    even though it fail-opens for monthly quota.
+
+    Pre-R-4-A: fallback had slug='__fallback__' → RPM enforced via DEFAULT_RATE_LIMIT_RPM.
+    R-4-A regression: slug changed to 'unlimited' → _resolve_effective_rpm bypassed
+    the bucket entirely → RPM fail-open (DoS risk during DB outage).
+    R-6-A fix: slug restored to '__fallback__'; monthly bypass via dual-slug guard
+    `is_unlimited or plan_info.slug == '__fallback__'` in _check_monthly_quota.
+    """
+
+    def test_fallback_plan_enforces_default_rpm(self):
+        """__fallback__ plan must block at DEFAULT_RATE_LIMIT_RPM, not bypass RPM gate."""
+        from src.constants import DEFAULT_RATE_LIMIT_RPM
+
+        fb = PlanInfo(
+            plan_id=0,
+            slug="__fallback__",
+            quota_calls_per_month=0,
+            rate_limit_rpm=DEFAULT_RATE_LIMIT_RPM,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+
+        # Verify _resolve_effective_rpm does NOT treat __fallback__ as unlimited.
+        effective_rpm, is_unlimited = _resolve_effective_rpm(fb)
+        assert is_unlimited is False, (
+            "__fallback__ slug must NOT return is_unlimited=True from _resolve_effective_rpm"
+        )
+        assert effective_rpm == DEFAULT_RATE_LIMIT_RPM, (
+            f"effective_rpm must equal DEFAULT_RATE_LIMIT_RPM={DEFAULT_RATE_LIMIT_RPM}, "
+            f"got {effective_rpm}"
+        )
+
+        # Burn through the RPM budget — N requests pass.
+        for i in range(DEFAULT_RATE_LIMIT_RPM):
+            allowed, remaining = _check_rate_limit(7777, fb)
+            assert allowed is True, (
+                f"Request {i+1}/{DEFAULT_RATE_LIMIT_RPM} should be allowed; "
+                f"remaining={remaining}"
+            )
+
+        # (N+1)th request must be blocked — fallback enforces RPM.
+        allowed_over, remaining_over = _check_rate_limit(7777, fb)
+        assert allowed_over is False, (
+            f"__fallback__ plan must enforce RPM gate at DEFAULT_RATE_LIMIT_RPM="
+            f"{DEFAULT_RATE_LIMIT_RPM}; request {DEFAULT_RATE_LIMIT_RPM+1} must be blocked"
+        )
+        assert remaining_over == 0
+
+    def test_fallback_plan_fail_opens_monthly_quota(self, migrated_db):
+        """__fallback__ plan must return (True, 0, 0) from _check_monthly_quota.
+
+        Monthly fail-open is the correct degraded-mode behavior: blocking monthly quota
+        during a DB outage would be overly strict (the DB is already unreachable so the
+        usage counter cannot be updated anyway). RPM serves as the actual throttle.
+        """
+        fb = PlanInfo(
+            plan_id=0,
+            slug="__fallback__",
+            quota_calls_per_month=0,
+            rate_limit_rpm=120,
+            rate_limit_override=None,
+            quota_override=None,
+        )
+        pool = _FakePool(migrated_db)
+
+        allowed, used, quota = _check_monthly_quota(7777, fb, pool)
+        assert allowed is True, (
+            f"__fallback__ plan must fail-open for monthly quota; "
+            f"got allowed={allowed}, used={used}, quota={quota}"
+        )
+        assert used == 0, f"used should be 0 for __fallback__ bypass path, got {used}"
+        assert quota == 0, f"quota should be 0 for __fallback__ bypass path, got {quota}"
+
+
+class TestQuotaOverrideZeroBlocksAll:
+    """BLOCK-2 regression: quota_override=0 on a non-unlimited plan must BLOCK.
+
+    ADR-0041 D5: 0 = zero-allowed, NOT unlimited.  Only slug='unlimited' grants
+    unlimited monthly access.  This class pins the fix for the legacy
+    ``if effective_quota == 0: return True`` short-circuit that was removed —
+    that guard promoted quota_override=0 to unlimited access, contradicting D5.
+    """
+
+    _KEY_HASH = "hash_mq_b10_quota_zero"
+
+    def test_quota_override_zero_blocks_all(self, migrated_db):
+        """quota_override=0 on plan slug='free' -> first monthly check returns False.
+
+        Scenario: plan has quota=100/month, admin sets quota_override=0 (explicitly
+        disabling all calls for this key).  The middleware must block the key, not
+        treat quota=0 as unlimited.
+        """
+        key_id = _seed_key(
+            migrated_db,
+            name="mq_b10_quota_zero",
+            key_hash=self._KEY_HASH,
+            key_prefix="b10qz",
+            slug="free",
+        )
+        # Set quota_override=0 via SQL (zero-allowed, NOT unlimited)
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                "UPDATE api_keys SET quota_override = 0 WHERE key_hash = %s",
+                (self._KEY_HASH,),
+            )
+        migrated_db.commit()
+        try:
+            pool = _FakePool(migrated_db)
+
+            # Fetch fresh plan_info including override from DB
+            _cache_invalidate_by_key_id(key_id)
+            plan_info = _get_plan_for_key(key_id, pool)
+
+            assert plan_info.quota_override == 0, (
+                f"Expected quota_override=0, got {plan_info.quota_override}"
+            )
+
+            # Verify resolver: quota_override=0 -> (0, False) — not unlimited
+            effective_quota, is_unlimited = _resolve_effective_quota(plan_info)
+            assert effective_quota == 0, (
+                f"Expected effective_quota=0, got {effective_quota}"
+            )
+            assert is_unlimited is False, (
+                "quota_override=0 must NOT be unlimited (ADR-0041 D5 SSOT)"
+            )
+
+            # Monthly check with 0 usage: allowed_monthly must be False
+            # (used=0 < quota=0 is False — zero calls allowed)
+            allowed_monthly, used, quota = _check_monthly_quota(
+                key_id, plan_info, pool
+            )
+            assert allowed_monthly is False, (
+                f"quota_override=0 must BLOCK all requests; "
+                f"allowed={allowed_monthly}, used={used}, quota={quota}"
             )
         finally:
             _cleanup_test_keys(migrated_db, [self._KEY_HASH])

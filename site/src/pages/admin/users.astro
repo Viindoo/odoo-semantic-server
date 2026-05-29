@@ -20,16 +20,41 @@ type User = {
   created_at: string | null;
 };
 
+type Plan = {
+  id: number;
+  slug: string;
+  display_name: string;
+  quota_calls_per_month: number | null;
+  rate_limit_rpm: number | null;
+  seat_limit: number | null;
+  is_public: boolean;
+};
+
 let usersData: { users: User[]; error?: string | null } = { users: [] };
+let plansData: Plan[] = [];
 
 try {
-  const res = await fetch(`${FASTAPI_BASE}/api/admin/users`, {
-    headers: { cookie: cookieHeader },
-  });
-  if (res.ok) {
-    usersData = await res.json();
-  } else if (res.status === 403) {
+  const [usersRes, plansRes] = await Promise.all([
+    fetch(`${FASTAPI_BASE}/api/admin/users`, {
+      headers: { cookie: cookieHeader },
+    }),
+    fetch(`${FASTAPI_BASE}/api/admin/plans`, {
+      headers: { cookie: cookieHeader },
+    }),
+  ]);
+
+  if (usersRes.status === 403) {
     return Astro.redirect('/admin?error=admin_required');
+  }
+  if (usersRes.ok) {
+    usersData = await usersRes.json();
+  } else {
+    usersData.error = 'Could not load users.';
+  }
+
+  if (plansRes.ok) {
+    const pd = await plansRes.json();
+    plansData = pd.plans ?? [];
   }
 } catch {
   usersData.error = 'Could not connect to API server.';
@@ -68,7 +93,7 @@ try {
     </div>
   )}
 
-  <UserTable users={usersData.users} />
+  <UserTable users={usersData.users} plans={plansData} />
 </AdminLayout>
 
 <script>
@@ -165,6 +190,42 @@ try {
         showFlash(msg);
       } else {
         showFlash(data.detail ?? data.error ?? 'Reset failed.', 'error');
+      }
+    });
+  });
+
+  // Cascade plan to all keys for a user
+  document.querySelectorAll('.cascade-plan-save').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const el = btn as HTMLElement;
+      const userId = el.dataset.userId as string;
+      const username = el.dataset.username ?? userId;
+      const row = el.closest('tr');
+      const select = row?.querySelector('.cascade-plan-select') as HTMLSelectElement | null;
+      if (!select) return;
+
+      const planId = select.value;
+      const planLabel = select.options[select.selectedIndex]?.text ?? planId;
+
+      if (!planId) {
+        alert('Please select a plan first.');
+        return;
+      }
+
+      if (!confirm(`Apply plan "${planLabel}" to ALL API keys (active + inactive) of user "${username}"?\n\nThis will overwrite the current plan on every key.`)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/plan`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_id: parseInt(planId, 10) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const n = data.keys_updated ?? 0;
+        showFlash(`Plan "${planLabel}" applied to ${n} key${n !== 1 ? 's' : ''} of user "${username}".`);
+        setTimeout(() => location.reload(), 800);
+      } else {
+        showFlash(data.detail ?? data.error ?? 'Plan cascade failed.', 'error');
       }
     });
   });
