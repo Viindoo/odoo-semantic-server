@@ -96,6 +96,15 @@ def _has_priv(conn, table: str, priv: str) -> bool:
         return cur.fetchone()[0]
 
 
+def _has_seq_priv(conn, sequence: str, priv: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_sequence_privilege('osm_reader', %s, %s)",
+            (sequence, priv),
+        )
+        return cur.fetchone()[0]
+
+
 def _seed_user(conn, username="test_user_m13009") -> int:
     """Insert a webui_users row and return its id."""
     with conn.cursor() as cur:
@@ -680,3 +689,60 @@ class TestOsmReaderGrants:
         role, so reaching this assertion proves no failure."""
         cols = _column_info(migrated_pg, "app_settings")
         assert cols, "app_settings table missing after migrate without osm_reader"
+
+    def test_app_settings_sequence_usage(self, migrated_pg_with_reader):
+        """osm_reader must have USAGE on app_settings_id_seq.
+
+        BUG CLASS A (ADR-0042 follow-up): INSERT on a BIGSERIAL table is an
+        INCOMPLETE grant without USAGE on its backing sequence — Postgres
+        evaluates nextval('app_settings_id_seq') for the `id` column default
+        BEFORE the ON CONFLICT DO NOTHING check, so bootstrap_settings_safe()
+        UPSERT fails with "permission denied for sequence" if this is missing.
+        This is exactly the prod deploy bug that was hotfixed live.
+        """
+        assert _has_seq_priv(
+            migrated_pg_with_reader, "app_settings_id_seq", "USAGE"
+        ), (
+            "osm_reader missing USAGE on app_settings_id_seq — "
+            "bootstrap_settings_safe UPSERT fails at nextval() with "
+            "'permission denied for sequence' before ON CONFLICT runs"
+        )
+
+    def test_osm_reader_can_insert_app_settings_end_to_end(
+        self, migrated_pg_with_reader
+    ):
+        """End-to-end proof: SET ROLE osm_reader can INSERT into app_settings.
+
+        Exercises the table grant AND the sequence grant together inside a
+        rolled-back transaction (no committed side effects).  This is the
+        regression that would have caught the prod deploy bug: with INSERT
+        granted but sequence USAGE missing, this INSERT raises
+        InsufficientPrivilege on the implicit nextval().
+        """
+        conn = migrated_pg_with_reader
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE osm_reader")
+                # Mirrors bootstrap_settings_safe()'s catalogue UPSERT shape.
+                cur.execute(
+                    """
+                    INSERT INTO app_settings
+                        (key, value_json, category, scope, tenant_id,
+                         data_type, default_value)
+                    VALUES
+                        ('test.osm_reader_insert', '{"v": 1}', 'test',
+                         'system', NULL, 'int', '{"v": 1}')
+                    ON CONFLICT (key) WHERE scope = 'system' AND tenant_id IS NULL
+                    DO NOTHING
+                    RETURNING id
+                    """
+                )
+                inserted = cur.fetchone()
+            assert inserted is not None and inserted[0] is not None, (
+                "osm_reader INSERT into app_settings returned no id — the "
+                "BIGSERIAL default (nextval) did not execute"
+            )
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("RESET ROLE")
+            conn.rollback()

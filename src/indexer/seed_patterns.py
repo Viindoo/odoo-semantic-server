@@ -630,6 +630,11 @@ def _get_job_store() -> object | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ADR-0031: load `.env` at the CLI entry point so PG_DSN / NEO4J_* / EMBEDDER_*
+    # (with secrets) resolve on a fresh prod box without manually sourcing .env.
+    # Idempotent + main()-only (never at import) so pytest is unaffected; mirrors
+    # src/db/migrate.py::main().
+    config.init_dotenv()
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s",
     )

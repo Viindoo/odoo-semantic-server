@@ -128,7 +128,14 @@ END $$;
 -- avoid a silent-degrade on every fresh deploy / CI / test DB.
 --
 -- app_settings needs INSERT (not just SELECT) because bootstrap_settings_safe()
--- UPSERTs catalogue rows (ON CONFLICT DO NOTHING) on MCP startup.
+-- UPSERTs catalogue rows (ON CONFLICT DO NOTHING) on MCP startup.  INSERT on a
+-- BIGSERIAL table is INCOMPLETE without USAGE on its backing sequence: Postgres
+-- evaluates the `id` column default (nextval('app_settings_id_seq')) BEFORE the
+-- ON CONFLICT check, so the bootstrap INSERT fails with "permission denied for
+-- sequence app_settings_id_seq" if the sequence grant is missing.  This was the
+-- ADR-0042 deploy bug (hotfixed live): PR #209 added the table grants but
+-- omitted the sequence.  app_settings_history is SELECT-only here (no INSERT),
+-- so it needs no sequence USAGE.
 -- These GRANTs are idempotent (re-running a GRANT is a no-op) and match exactly
 -- what ops/rls_create_osm_reader.sql grants (kept as the SSOT for the role's
 -- password + full grant set; this block is the deploy-safety duplicate).
@@ -138,7 +145,8 @@ END $$;
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
-        GRANT SELECT, INSERT ON TABLE app_settings          TO osm_reader;
-        GRANT SELECT          ON TABLE app_settings_history TO osm_reader;
+        GRANT SELECT, INSERT ON TABLE    app_settings         TO osm_reader;
+        GRANT USAGE, SELECT  ON SEQUENCE app_settings_id_seq  TO osm_reader;
+        GRANT SELECT         ON TABLE    app_settings_history TO osm_reader;
     END IF;
 END $$;

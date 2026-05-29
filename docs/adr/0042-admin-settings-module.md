@@ -119,3 +119,21 @@ Code-only.
 | UI pages | `site/src/pages/admin/settings/*.astro`, `site/src/pages/tenant/settings/*.astro` |
 | UI islands | `site/src/pages/admin/settings/_*-island.tsx` (5), `tenant/settings/_*-island.tsx` (1) |
 | Tests | `tests/test_settings_resolver.py`, `test_bootstrap_hook.py`, `test_constants_fallback.py`, `test_admin_*.py`, `test_tenant_*.py`, `test_e2e_quota_hotreload.py`, `test_migration_m13_010/010/011.py`, `test_migration_rollback_admin_settings.py` |
+
+---
+
+### Follow-up: osm_reader sequence grant (BUG CLASS A)
+
+`osm_reader` must hold **`USAGE` on `app_settings_id_seq`** in addition to
+`INSERT` on `app_settings`. `bootstrap_settings_safe()` UPSERTs catalogue rows
+on MCP startup; because `app_settings.id` is `BIGSERIAL`, Postgres evaluates the
+`id` default (`nextval('app_settings_id_seq')`) BEFORE `ON CONFLICT DO NOTHING`,
+so `INSERT` alone fails with *"permission denied for sequence
+app_settings_id_seq"*. General rule for this project's grant set (see also
+ADR-0034): **any table `osm_reader` has `INSERT` on AND that has a
+serial/identity PK must also get `USAGE` on its backing sequence.** Granting
+`INSERT` without the sequence `USAGE` is an incomplete grant. SELECT-only tables
+(`app_settings_history`, `ee_modules`, `patterns`) need no sequence `USAGE`. The
+grant lives in BOTH `migrations/m13_010_app_settings.sql` and
+`ops/rls_create_osm_reader.sql` (SSOT). Discovered during the live ADR-0042
+deploy and hotfixed in prod; codified in `fix/admin-settings-grants-dotenv`.
