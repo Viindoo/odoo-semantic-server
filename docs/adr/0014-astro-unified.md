@@ -90,3 +90,9 @@ Astro :4321
 - ADR-0011: Web UI Session Auth (bcrypt cost=12, 8h TTL, SameSite=strict cookie)
 - ADR-0015: FastAPI Pure JSON API (W1 routes — the backend this Astro frontend consumes)
 - M8 master plan: archived internally
+
+## Amendment (feat/m10b-auth-unify, 2026-05-29)
+
+- The middleware redirect target for unauthenticated requests is now `/login` (was `/admin/login`
+  in the Auth row above). `/admin/login` is retained as a GET-only 301 redirect to `/login`. See
+  ADR-0011 amendment for the canonical-login rationale.

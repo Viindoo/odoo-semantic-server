@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // /admin/logout: server-side endpoint that POSTs to FastAPI to clear the session
-// then redirects to /admin/login.
+// then redirects to /login.
 //
 // The AdminLayout sidebar uses <a href="/admin/logout"> (GET). Browsers do not
 // auto-issue POST from <a>, so the previous design — only @router.post("/logout")
@@ -11,7 +11,7 @@ import type { APIRoute } from 'astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 
 async function logoutAndRedirect(request: Request): Promise<Response> {
-  const headers = new Headers({ Location: '/admin/login' });
+  const headers = new Headers({ Location: '/login' });
   try {
     const upstream = await fetch(`${FASTAPI_BASE}/api/auth/logout`, {
       method: 'POST',
@@ -20,7 +20,7 @@ async function logoutAndRedirect(request: Request): Promise<Response> {
     const setCookie = upstream.headers.get('set-cookie');
     if (setCookie) headers.set('Set-Cookie', setCookie);
   } catch {
-    // FastAPI unreachable — still redirect to /admin/login. Without the cookie
+    // FastAPI unreachable — still redirect to /login. Without the cookie
     // clear the user's session may linger until the FastAPI TTL elapses, but
     // returning a 5xx here would trap the user on /admin/logout indefinitely.
   }

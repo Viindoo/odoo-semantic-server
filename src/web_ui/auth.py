@@ -139,6 +139,78 @@ def get_session_secret() -> str:
     return _DEV_FALLBACK_SECRET
 
 
+# ---------------------------------------------------------------------------
+# Password-policy constants (shared by register + reset-password paths)
+# ---------------------------------------------------------------------------
+
+# Code-default minimum password length.  The *live* value is resolved via
+# ``get_setting("auth.password_min_length")`` inside :func:`validate_password`
+# (ADR-0042 / WI-9).  This constant is a regression anchor for
+# ``tests/test_constants_fallback.py`` and a fail-safe when the settings
+# overlay is unavailable.
+PASSWORD_MIN_LENGTH = 12
+
+# Top-100 most-commonly-used passwords — blocked on *all* password-setting
+# paths (register + reset-password) to reduce brute-force surface.
+_COMMON_PASSWORDS: frozenset[str] = frozenset(
+    [
+        "password", "password1", "password12", "password123",
+        "123456", "12345678", "123456789", "1234567890",
+        "qwerty", "qwerty123", "qwertyuiop",
+        "abc123", "abcdefgh", "letmein", "welcome",
+        "monkey", "dragon", "master", "sunshine",
+        "princess", "iloveyou", "admin123", "admin1234",
+        "superman", "batman", "football", "baseball",
+        "soccer", "hockey", "trustno1", "shadow",
+        "michael", "jessica", "jennifer", "daniel",
+        "pass", "passw0rd", "p@ssword", "p@ssw0rd",
+        "login", "starwars", "hello", "charlie",
+        "donald", "pepper", "696969", "1q2w3e",
+        "1q2w3e4r", "zxcvbnm", "asdfgh", "asdfghjkl",
+        "111111", "111111111", "000000", "123123",
+        "7777777", "1234567", "12345", "1234",
+        "55555", "666666", "777777", "888888",
+        "999999", "test", "test1234", "testing",
+        "changeme", "newpassword", "newpass",
+        "root", "rootroot", "toor", "admin",
+        "administrator", "user", "guest", "demo",
+        "sample", "default", "blank", "nothing",
+        "hunter2", "correct", "horse", "battery",
+        "staple", "wifi", "internet", "google",
+        "facebook", "twitter", "instagram", "linkedin",
+        "apple", "windows", "linux", "ubuntu",
+        "raspberry", "letmein1", "welcome1", "pass123",
+        "pass1234", "pass12345",
+    ]
+)
+
+
+def validate_password(password: str) -> str | None:
+    """Return an error message string if *password* fails policy, else ``None``.
+
+    Policy (both register *and* reset-password paths must satisfy this):
+    - Minimum length read from ``app_settings`` via the settings overlay
+      (``auth.password_min_length``).  Falls back to :data:`PASSWORD_MIN_LENGTH`
+      when the overlay is unavailable.
+    - Not in the top-100 common-password blocklist (:data:`_COMMON_PASSWORDS`).
+
+    The error message includes the **live** minimum-length value so the user
+    sees an accurate floor even when an admin has raised it above the default.
+
+    Returns ``None`` when the password passes all checks.
+    """
+    try:
+        from src.settings import get_setting
+        min_len = int(get_setting("auth.password_min_length"))
+    except Exception:
+        min_len = PASSWORD_MIN_LENGTH
+    if len(password) < min_len:
+        return f"Password must be at least {min_len} characters."
+    if password.lower() in _COMMON_PASSWORDS:
+        return "Password is too common. Please choose a stronger password."
+    return None
+
+
 def hash_password(pw: str) -> str:
     """Hash a plaintext password with bcrypt cost=12.
 

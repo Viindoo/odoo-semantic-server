@@ -93,3 +93,11 @@ Existing-deploy recovery: if an admin is locked out, run
   per-process random secret is generated with a loud warning (sessions invalidated on
   restart).
 - All routes except `/login`, `/logout`, `/static/*`, `/health` now require auth.
+
+## Amendment (feat/m10b-auth-unify, 2026-05-29)
+
+- `/login` is the **canonical** login URL. `/admin/login` is retained only as a GET-only 301 redirect
+  to `/login` (backward-compat shim).
+- The Astro middleware auth-gate bounce target for unauthenticated requests is `/login` (was
+  `/admin/login`); `/account/*` and nginx return-redirects target `/login` likewise.
+- OAuth init + callback paths `/admin/auth/*` are **unchanged** (no provider-console reconfig).

@@ -94,17 +94,18 @@ class TestNonHcaptchaPathsDoNotLeakAllowlist:
     W3C CSP3 §4.1. The tests below only assert the SSR-side guarantee.
     """
 
-    def test_admin_login_csp_does_not_include_hcaptcha(self, astro_server):
-        csp = _get_headers(f"{astro_server}/admin/login")["content-security-policy"]
+    def test_login_csp_does_not_include_hcaptcha(self, astro_server):
+        """GET /login (canonical login page) must not include hCaptcha origins in CSP."""
+        csp = _get_headers(f"{astro_server}/login")["content-security-policy"]
         assert "js.hcaptcha.com" not in csp, (
-            f"hCaptcha origin must NOT appear on /admin/login: {csp!r}"
+            f"hCaptcha origin must NOT appear on /login: {csp!r}"
         )
         assert "api.hcaptcha.com" not in csp
         assert "newassets.hcaptcha.com" not in csp
 
-    def test_admin_login_csp_still_has_default_directives(self, astro_server):
-        """Sanity: even without hCaptcha, admin CSP must have the base directives."""
-        csp = _get_headers(f"{astro_server}/admin/login")["content-security-policy"]
+    def test_login_csp_still_has_default_directives(self, astro_server):
+        """Sanity: even without hCaptcha, login CSP must have the base directives."""
+        csp = _get_headers(f"{astro_server}/login")["content-security-policy"]
         assert "default-src 'self'" in csp
         assert "frame-ancestors 'none'" in csp
         assert "form-action 'self'" in csp
@@ -138,7 +139,7 @@ class TestRedirectsCarrySecurityHeaders:
             return e.code, {k.lower(): v for k, v in e.headers.items()}
 
     def test_admin_users_unauthenticated_redirect_has_csp(self, astro_server):
-        """GET /admin/users/ without cookie → 302 to /admin/login WITH CSP header."""
+        """GET /admin/users/ without cookie → 302 to /login WITH CSP header."""
         status, headers = self._get_redirect_response(f"{astro_server}/admin/users/")
         assert status in (301, 302, 303, 307, 308), (
             f"Expected redirect, got status {status} (admin/users/ unauthenticated must redirect)"
@@ -151,9 +152,9 @@ class TestRedirectsCarrySecurityHeaders:
         )
 
     def test_admin_dashboard_unauthenticated_redirect_has_csp(self, astro_server):
-        """GET /admin without cookie → 302 to /admin/login WITH CSP header.
+        """GET /admin without cookie → 302 to /login WITH CSP header.
 
-        Exercises the second `_redirectWithHeaders('/admin/login')` site
+        Exercises the `_redirectWithHeaders('/login')` call
         in middleware.ts (the catch-all admin path).
         """
         status, headers = self._get_redirect_response(f"{astro_server}/admin")

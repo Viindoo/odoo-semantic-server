@@ -15,7 +15,7 @@ function _getGoogle(): Google {
     );
 }
 
-export const GET: APIRoute = async ({ cookies, redirect }) => {
+export const GET: APIRoute = async ({ request, cookies, redirect }) => {
     const state = generateState();
     const verifier = generateCodeVerifier();
 
@@ -36,6 +36,13 @@ export const GET: APIRoute = async ({ cookies, redirect }) => {
     };
     cookies.set('oauth_state', state, cookieOpts);
     cookies.set('oauth_verifier', verifier, cookieOpts);
+
+    // O-A origin tracking (ADR auth-unify WI-2): if ?from=signup, record
+    // origin so the callback can redirect errors back to the correct page.
+    const from = new URL(request.url).searchParams.get('from') ?? '';
+    if (from === 'signup') {
+        cookies.set('oauth_from', 'signup', cookieOpts);
+    }
 
     return redirect(url.toString());
 };

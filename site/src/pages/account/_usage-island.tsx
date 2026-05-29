@@ -46,7 +46,7 @@ export default function UsageDashboard() {
     fetch('/api/account/usage', { credentials: 'include' })
       .then(async (res) => {
         if (res.status === 401) {
-          window.location.href = '/admin/login?return=/account/usage';
+          window.location.href = '/login?return=/account/usage';
           return null;
         }
         if (!res.ok) {

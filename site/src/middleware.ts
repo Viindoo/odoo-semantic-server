@@ -138,19 +138,19 @@ export const onRequest = defineMiddleware(async (context, next) => {
   }
 
   // /account/* is an authenticated self-service surface (My API Keys, Repos,
-  // Usage, etc.). Anonymous users must be sent to /admin/login (single global
-  // login flow — there is no separate /account/login). Authenticated users
-  // (admin OR non-admin) pass through. Without this gate, anon hits
-  // /account/api-keys or /account/usage and sees an empty page, then gets a
-  // confusing 401 on the first API call — a UX regression introduced when WI5
-  // shipped /account/*. The `return` query param lets the login page redirect
-  // back to the originally-requested account page after successful auth.
+  // Usage, etc.). Anonymous users must be sent to /login (single global
+  // login flow). Authenticated users (admin OR non-admin) pass through.
+  // Without this gate, anon hits /account/api-keys or /account/usage and
+  // sees an empty page, then gets a confusing 401 on the first API call —
+  // a UX regression introduced when WI5 shipped /account/*. The `return`
+  // query param lets the login page redirect back to the originally-requested
+  // account page after successful auth.
   if (path === '/account' || path.startsWith('/account/')) {
     const cookieHeader = context.request.headers.get('cookie') ?? '';
     const sessionPayload = await verifySession(cookieHeader);
     if (!sessionPayload || !sessionPayload.ok) {
       const returnUrl = encodeURIComponent(context.url.pathname + context.url.search);
-      return _redirectWithHeaders(`/admin/login?return=${returnUrl}`);
+      return _redirectWithHeaders(`/login?return=${returnUrl}`);
     }
     context.locals.user = {
       username: sessionPayload.username ?? 'unknown',
@@ -216,7 +216,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     const adminPayload = await requireAdmin(cookieHeader);
     if (!adminPayload) {
       const sessionPayload = await verifySession(cookieHeader);
-      if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+      if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/login');
       return _redirectWithHeaders('/admin?error=admin_required');
     }
     context.locals.user = {
@@ -234,7 +234,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     if (!adminPayload) {
       // Not logged in → redirect to login; logged in but not admin → 403 redirect to dashboard.
       const sessionPayload = await verifySession(cookieHeader);
-      if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+      if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/login');
       // Authenticated but not admin → dashboard with a flash (query param for UX)
       return _redirectWithHeaders('/admin?error=admin_required');
     }
@@ -252,7 +252,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // bubble up as an unhandled 500 from Astro SSR. `fetch` throws on connection
   // refused, so we wrap in try/catch and treat failure as "unauthenticated".
   const sessionPayload = await verifySession(cookieHeader);
-  if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/admin/login');
+  if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/login');
 
   // Populate locals.user from the verify payload.
   context.locals.user = {

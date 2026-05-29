@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Structural tests for /admin/login.astro error/info banner rendering (W1D-4).
+"""Structural tests for /login.astro (canonical login page) error/info banner rendering.
+
+/login.astro is the canonical login page (WI-3 URL rename). /admin/login.astro
+is now a 301 redirect; error banner logic lives exclusively in login.astro.
 
 These tests verify that:
-1. The login page exists and contains all required whitelist keys.
+1. The canonical login page exists and contains all required whitelist keys.
 2. The XSS guard is in place — user-supplied error/info values are NEVER
    rendered verbatim; only whitelisted strings pass through.
 3. The aria-live attributes are present for screen-reader accessibility.
@@ -11,7 +14,7 @@ These tests verify that:
 from pathlib import Path
 
 # Absolute path — avoids cwd dependency in pytest invocations.
-_LOGIN_ASTRO = Path(__file__).parents[1] / "site" / "src" / "pages" / "admin" / "login.astro"
+_LOGIN_ASTRO = Path(__file__).parents[1] / "site" / "src" / "pages" / "login.astro"
 
 
 def _content() -> str:
@@ -19,7 +22,7 @@ def _content() -> str:
 
 
 def test_login_astro_exists() -> None:
-    assert _LOGIN_ASTRO.exists(), f"Expected login page at {_LOGIN_ASTRO}"
+    assert _LOGIN_ASTRO.exists(), f"Expected canonical login page at {_LOGIN_ASTRO}"
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,43 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// AuthLayout — shared layout for all auth pages (login, signup, forgot-password,
+// reset-password, verify-email). Provides brand lockup + centered card shell.
+// No developer footer (suppresses "Bootstrap reference" on auth routes — item #21).
+import '../styles/global.css';
+
+export interface Props {
+  title: string;       // browser <title>
+  heading?: string;    // app name — "Odoo Semantic MCP" default
+  subtitle: string;    // page subtitle shown under app name
+}
+
+const { title, heading = 'Odoo Semantic MCP', subtitle } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Odoo Semantic MCP — Knowledge engine for Odoo." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+    <slot name="head" />
+  </head>
+  <body class="bg-gray-50 font-body">
+    <div class="min-h-screen flex items-center justify-center px-4 py-8">
+      <div class="w-full max-w-sm">
+        <!-- Brand lockup — shared across all auth pages (items #1 #2 #20) -->
+        <div class="text-center mb-8">
+          <div class="inline-flex items-center justify-center w-14 h-14 bg-viindoo-primary rounded-2xl mb-3">
+            <img src="/favicon.svg" alt="Odoo Semantic MCP Logo" class="w-8 h-8" />
+          </div>
+          <h1 class="text-xl font-bold text-gray-900 font-display">{heading}</h1>
+          <p class="text-sm text-gray-600 mt-1">{subtitle}</p>
+        </div>
+        <!-- Page content -->
+        <slot />
+      </div>
+    </div>
+  </body>
+</html>

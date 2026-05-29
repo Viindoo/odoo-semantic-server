@@ -229,13 +229,19 @@ Verify cross-vendor adapter files are accessible and persona skills are document
   `python -m src.manager list-webui-users` → thấy ít nhất 1 user **(admin SSH verify)**
 <!-- verified: python -m src.manager list-webui-users → có admin user với is_admin=True, is_active=True -->
   - *Tạo user: `python -m src.manager create-webui-user admin` (prompt mật khẩu)*
-- [x] Unauthenticated GET `/admin/repos` → 302 redirect đến `/admin/login`:
-  `curl -I https://odoo-semantic.viindoo.com/admin/repos` → `Location: /admin/login` **(re-verify post-M8 deploy — was M7.5-P1-E, now covered by Astro middleware + nginx-m8.conf)**
-<!-- verified 2026-05-16: curl -sI https://odoo-semantic.viindoo.com/admin/repos → HTTP/2 302, location: /admin/login -->
-- [x] POST `/admin/login` với sai mật khẩu → flash error (không grant session) **(re-verify post-M8 deploy)**
-<!-- verified 2026-05-16: POST /admin/login wrong password → HTTP/2 403 (rejected, no session cookie issued) -->
-- [x] GET `/admin/logout` clears session → tiếp theo request tới `/admin/` → 302 `/admin/login` **(re-verify post-M8 deploy)**
-<!-- verified 2026-05-16: curl -sv https://odoo-semantic.viindoo.com/admin/logout → HTTP/2 302, location: /admin/login -->
+- [x] Unauthenticated GET `/admin/repos` → 302 redirect đến `/login`:
+  `curl -I https://odoo-semantic.viindoo.com/admin/repos` → `Location: /login` **(re-verify post-M8 deploy — was M7.5-P1-E, now covered by Astro middleware + nginx-m8.conf; auth-unify bounce target = `/login`)**
+<!-- verified 2026-05-16: curl -sI https://odoo-semantic.viindoo.com/admin/repos → HTTP/2 302, location: /admin/login (auth-unify: now /login) -->
+- [x] POST `/api/auth/login` với sai mật khẩu → 401 (không grant session) **(re-verify post-M8 deploy — `/admin/login` giờ là 301 GET-only shim, login form POST tới JSON API `/api/auth/login`)**
+<!-- verified 2026-05-16: POST /api/auth/login wrong password → HTTP/2 401 (rejected, no session cookie issued) -->
+- [x] GET `/admin/logout` clears session → tiếp theo request tới `/admin/` → 302 `/login` **(re-verify post-M8 deploy)**
+<!-- verified 2026-05-16: curl -sv https://odoo-semantic.viindoo.com/admin/logout → HTTP/2 302, location: /login -->
+- [ ] OAuth "Sign in" buttons (Google + GitHub) hiện trên `/signup` (không chỉ `/login`) **(re-verify post-deploy — auth-unify thêm OAuth vào signup)**
+<!-- not verified: requires browser render-check of /signup; OAuth init/callback paths /admin/auth/* unchanged -->
+- [ ] Reset-password với mật khẩu yếu (<12 ký tự) → `POST /api/auth/reset-password` → HTTP 400 (password-policy reject) **(re-verify post-deploy — auth-unify enforce min-length 12 + common-pw blocklist FE+BE)**
+<!-- not verified: requires valid reset token; policy enforced both FE (/reset-password page) and BE -->
+- [ ] Reset-password token KHÔNG bị burn khi mật khẩu yếu → retry cùng token với mật khẩu mạnh (≥12 ký tự, không trong blocklist) → HTTP 200 thành công **(re-verify post-deploy — TOCTOU `SELECT...FOR UPDATE` guard giữ token sống tới khi reset hợp lệ)**
+<!-- not verified: requires valid reset token end-to-end; verify_password_reset_token peek does not consume token -->
 - [ ] `WEBUI_SESSION_SECRET` đã set trong `webui.env` (không dùng auto-generated ephemeral secret):
   `sudo grep WEBUI_SESSION_SECRET /etc/odoo-semantic/webui.env` → non-empty value **(admin SSH verify — secret vẫn applicable cho Astro auth, không phải M8 dependency)**
 <!-- not verified: canonical /etc/odoo-semantic/webui.env does not exist; WEBUI_SESSION_SECRET confirmed set in `<APP_DIR>/.env` but canonical /etc path missing — follow-up to install production env file -->
@@ -250,15 +256,16 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 <!-- verified: curl -sI http://127.0.0.1:4321/ → HTTP 200, Content-Type: text/html; charset=utf-8 -->
 - [x] `curl -sI https://<domain>/` → HTTP 200 HTML (qua nginx) — landing hero reachable
 <!-- verified 2026-05-16: curl -sI https://odoo-semantic.viindoo.com/ → HTTP/2 200, content-type: text/html; charset=utf-8 -->
-- [x] `curl -sI https://<domain>/admin` → 302 redirect đến `/admin/login` (Astro middleware auth-gate) **(admin SSH verify)**
-<!-- verified 2026-05-16: curl -sI https://odoo-semantic.viindoo.com/admin → HTTP/2 302, location: /admin/login -->
+- [x] `curl -sI https://<domain>/admin` → 302 redirect đến `/login` (Astro middleware auth-gate; auth-unify bounce target = `/login`) **(admin SSH verify)**
+<!-- verified 2026-05-16: curl -sI https://odoo-semantic.viindoo.com/admin → HTTP/2 302, location: /admin/login (auth-unify: now /login) -->
 - [x] `curl -sI https://<domain>/api/health` → HTTP 200 `Content-Type: application/json` — FastAPI JSON-only confirm **(NOT `text/html`)**
 <!-- verified 2026-05-17 (PR #119 WI-4): GET /api/health → HTTP 200 application/json, body {"status":"ok","version":"0.4.0"}. Route added via src/web_ui/app.py, exempted in src/web_ui/middleware.py _EXEMPT_EXACT set. -->
   - *Nếu trả HTML: FastAPI vẫn mount Jinja2 — kiểm tra `pyproject.toml` đã xóa `jinja2` dependency*
 - [x] Nginx routing sanity:
-<!-- verified 2026-05-16: /api/repos/profiles → HTTP 401 JSON (FastAPI :8003, auth required — routing correct); /admin/login → HTTP 200 text/html (Astro :4321); /mcp → HTTP 401 (MCP :8002) -->
+<!-- verified 2026-05-16: /api/repos/profiles → HTTP 401 JSON (FastAPI :8003, auth required — routing correct); /login → HTTP 200 text/html (Astro :4321); /admin/login → HTTP 301 location: /login; /mcp → HTTP 401 (MCP :8002) -->
   - `curl -sI https://<domain>/api/repos/profiles` → HTTP 200 JSON (FastAPI :8003)
-  - `curl -sI https://<domain>/admin/login` → HTTP 200 HTML (Astro :4321)
+  - `curl -sI https://<domain>/login` → HTTP 200 HTML (Astro :4321)
+  - `curl -sI https://<domain>/admin/login` → HTTP 301, `Location: /login` (auth-unify canonical redirect)
   - `curl -sI https://<domain>/mcp` → HTTP 401 (MCP :8002, auth required)
 - [ ] Browser tests pass post-deploy: `pytest tests/browser/admin/ -m browser` (từ deploy server hoặc CI) — 68 tests GREEN **(admin hoặc CI verify)**
 <!-- not verified 2026-05-16: browser tests require playwright + interactive CI run; 92 test functions exist (suite grown beyond 68); defer to CI pipeline -->

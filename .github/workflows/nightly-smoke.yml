@@ -121,11 +121,17 @@ jobs:
           echo "Landing page status: $status"
           [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
 
-      - name: "Astro smoke — admin login page GET /admin/login"
+      - name: "Astro smoke — canonical login page GET /login"
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/login 2>/dev/null || true)
+          echo "Login page status: $status"
+          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
+
+      - name: "Astro smoke — /admin/login 301 redirect"
         run: |
           status=$(curl -s -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/admin/login 2>/dev/null || true)
-          echo "Admin login page status: $status"
-          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
+          echo "Admin login redirect status: $status"
+          [ "$status" = "301" ] || (echo "Expected 301 permanent redirect, got $status" && exit 1)
 
       - name: "FastAPI JSON smoke — GET /api/auth/verify (expect 401 no cookie)"
         run: |

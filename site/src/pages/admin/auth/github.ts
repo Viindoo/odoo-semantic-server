@@ -15,20 +15,28 @@ function _getGitHub(): GitHub {
     );
 }
 
-export const GET: APIRoute = async ({ cookies, redirect }) => {
+export const GET: APIRoute = async ({ request, cookies, redirect }) => {
     const state = generateState();
 
     const github = _getGitHub();
     const url = github.createAuthorizationURL(state, ['read:user', 'user:email']);
 
     // F5 — store state in HttpOnly cookie (10-min TTL; no verifier for GitHub)
-    cookies.set('oauth_state', state, {
+    const cookieOpts = {
         httpOnly: true,
         secure: true,
         sameSite: 'lax' as const,
         maxAge: 600,
         path: '/',
-    });
+    };
+    cookies.set('oauth_state', state, cookieOpts);
+
+    // O-A origin tracking (ADR auth-unify WI-2): if ?from=signup, record
+    // origin so the callback can redirect errors back to the correct page.
+    const from = new URL(request.url).searchParams.get('from') ?? '';
+    if (from === 'signup') {
+        cookies.set('oauth_from', 'signup', cookieOpts);
+    }
 
     return redirect(url.toString());
 };
