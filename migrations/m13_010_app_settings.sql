@@ -114,3 +114,31 @@ BEGIN
         END;
     END IF;
 END $$;
+
+-- ===========================================================================
+-- 4. Read-role grants for osm_reader (ADR-0034 RLS read split / ADR-0042)
+-- ===========================================================================
+-- These tables are GLOBAL config (not tenant-scoped) → no RLS policy on them,
+-- but the MCP service connects as the non-owner role `osm_reader` and reads
+-- app_settings / app_settings_history at runtime via get_setting(). Without
+-- these grants the reads hit permission-denied, which get_setting() SWALLOWS
+-- → silent fallback to in-process code defaults (the operator-tunable layer
+-- goes dead with no 500 and no log). `python -m src.db.migrate` does NOT run
+-- ops/rls_create_osm_reader.sql, so the grants MUST be self-contained here to
+-- avoid a silent-degrade on every fresh deploy / CI / test DB.
+--
+-- app_settings needs INSERT (not just SELECT) because bootstrap_settings_safe()
+-- UPSERTs catalogue rows (ON CONFLICT DO NOTHING) on MCP startup.
+-- These GRANTs are idempotent (re-running a GRANT is a no-op) and match exactly
+-- what ops/rls_create_osm_reader.sql grants (kept as the SSOT for the role's
+-- password + full grant set; this block is the deploy-safety duplicate).
+-- The pg_roles guard makes the migration safe on a DB without osm_reader
+-- (e.g. minimal test databases that never create the read role).
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
+        GRANT SELECT, INSERT ON TABLE app_settings          TO osm_reader;
+        GRANT SELECT          ON TABLE app_settings_history TO osm_reader;
+    END IF;
+END $$;

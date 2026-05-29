@@ -56,6 +56,33 @@ def _count_ee_modules(conn) -> int:
         return cur.fetchone()[0]
 
 
+def _ensure_osm_reader(conn) -> None:
+    """Create the osm_reader role if absent so the migration's guarded GRANT
+    block actually runs and can be asserted.
+
+    Mirrors the production deploy order: ops creates the osm_reader role, then
+    `python -m src.db.migrate` runs.  The migration GRANT is wrapped in a
+    pg_roles guard, so without the role the GRANT is a no-op and there is
+    nothing to assert.  We create a passwordless NOLOGIN role here (the test
+    only needs the grant target to exist; it never connects as it).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='osm_reader') "
+            "THEN CREATE ROLE osm_reader NOLOGIN; END IF; END $$;"
+        )
+
+
+def _has_priv(conn, table: str, priv: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('osm_reader', %s, %s)",
+            (table, priv),
+        )
+        return cur.fetchone()[0]
+
+
 # ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
@@ -73,6 +100,18 @@ def _drop_m13_011_tables(conn):
 def migrated_pg(clean_pg):
     """Run all migrations on a clean Postgres DB and return the connection."""
     _drop_m13_011_tables(clean_pg)
+    run_migrations(clean_pg)
+    yield clean_pg
+    _drop_m13_011_tables(clean_pg)
+
+
+@pytest.fixture
+def migrated_pg_with_reader(clean_pg):
+    """Like migrated_pg but creates osm_reader BEFORE migrating, so the
+    migration's pg_roles-guarded GRANT block actually fires and is assertable.
+    """
+    _drop_m13_011_tables(clean_pg)
+    _ensure_osm_reader(clean_pg)
     run_migrations(clean_pg)
     yield clean_pg
     _drop_m13_011_tables(clean_pg)
@@ -241,3 +280,39 @@ class TestSoftDeleteViaDeprecatedFlag:
             cur.execute(
                 "UPDATE ee_modules SET deprecated = FALSE WHERE name = 'knowledge'"
             )
+
+
+# ---------------------------------------------------------------------------
+# 8. osm_reader read grant (deploy-blocking R1 — ADR-0042 / ADR-0034)
+# ---------------------------------------------------------------------------
+
+
+class TestOsmReaderGrant:
+    """The migration must self-grant SELECT on ee_modules to osm_reader.
+
+    Without this, MCP (which connects as osm_reader under RLS) hits
+    permission-denied on the EE-confusion guard read, which the code swallows
+    → silent fallback to the in-process default EE list.  `python -m
+    src.db.migrate` does NOT run ops/rls_create_osm_reader.sql, so the grant
+    must be self-contained in the migration.
+    """
+
+    def test_osm_reader_has_select(self, migrated_pg_with_reader):
+        assert _has_priv(migrated_pg_with_reader, "ee_modules", "SELECT"), (
+            "osm_reader missing SELECT on ee_modules — MCP EE-guard read will "
+            "silently fall back to the in-process default list"
+        )
+
+    def test_osm_reader_has_no_write(self, migrated_pg_with_reader):
+        """osm_reader is a read role — it must NOT get INSERT/UPDATE/DELETE."""
+        for priv in ("INSERT", "UPDATE", "DELETE"):
+            assert not _has_priv(migrated_pg_with_reader, "ee_modules", priv), (
+                f"osm_reader unexpectedly has {priv} on ee_modules (read-only role)"
+            )
+
+    def test_migration_safe_without_osm_reader(self, migrated_pg):
+        """With no osm_reader role the migration must still apply cleanly
+        (the GRANT is guarded by a pg_roles EXISTS check). migrated_pg does
+        not create the role, so reaching this assertion proves no failure."""
+        cols = _column_info(migrated_pg, "ee_modules")
+        assert cols, "ee_modules table missing after migrate without osm_reader"

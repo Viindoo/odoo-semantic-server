@@ -40,3 +40,21 @@ INSERT INTO ee_modules (name, vt_equivalent) VALUES
     ('web_studio',            NULL),
     ('web_enterprise',        NULL)
 ON CONFLICT (name) DO NOTHING;
+
+-- ===========================================================================
+-- Read-role grant for osm_reader (ADR-0034 RLS read split / ADR-0042)
+-- ===========================================================================
+-- The MCP service connects as the non-owner role `osm_reader` and reads
+-- ee_modules at runtime (EE-confusion guard). `python -m src.db.migrate` does
+-- NOT run ops/rls_create_osm_reader.sql, so without a self-contained grant the
+-- read hits permission-denied which the code swallows → silent fallback to the
+-- in-process default EE module list. Idempotent (re-running GRANT is a no-op);
+-- matches ops/rls_create_osm_reader.sql (kept as SSOT for the role + full grant
+-- set). pg_roles guard keeps the migration safe on a DB without osm_reader.
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
+        GRANT SELECT ON TABLE ee_modules TO osm_reader;
+    END IF;
+END $$;

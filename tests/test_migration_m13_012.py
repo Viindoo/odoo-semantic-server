@@ -75,6 +75,29 @@ def _table_exists(conn, table: str) -> bool:
         return cur.fetchone() is not None
 
 
+def _ensure_osm_reader(conn) -> None:
+    """Create the osm_reader role if absent so the migration's guarded GRANT
+    block actually runs and can be asserted.  Mirrors deploy order (ops creates
+    the role, then migrate runs).  Passwordless NOLOGIN — the test only needs
+    the grant target to exist; it never connects as it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='osm_reader') "
+            "THEN CREATE ROLE osm_reader NOLOGIN; END IF; END $$;"
+        )
+
+
+def _has_priv(conn, table: str, priv: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('osm_reader', %s, %s)",
+            (table, priv),
+        )
+        return cur.fetchone()[0]
+
+
 # ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
@@ -89,6 +112,20 @@ def migrated_pg(clean_pg):
     """
     with clean_pg.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS patterns CASCADE")
+    run_migrations(clean_pg)
+    yield clean_pg
+    with clean_pg.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS patterns CASCADE")
+
+
+@pytest.fixture
+def migrated_pg_with_reader(clean_pg):
+    """Like migrated_pg but creates osm_reader BEFORE migrating, so the
+    migration's pg_roles-guarded GRANT block actually fires and is assertable.
+    """
+    with clean_pg.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS patterns CASCADE")
+    _ensure_osm_reader(clean_pg)
     run_migrations(clean_pg)
     yield clean_pg
     with clean_pg.cursor() as cur:
@@ -292,4 +329,41 @@ class TestTagsColumnIsTextArrayNotJsonb:
         dtype = cols["core_symbol_names"][0]
         assert dtype == "ARRAY", (
             f"core_symbol_names data_type should be 'ARRAY' (TEXT[]), got {dtype!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: osm_reader read grant (deploy-blocking R1 — ADR-0042 / ADR-0034)
+# ---------------------------------------------------------------------------
+
+
+class TestOsmReaderGrant:
+    """The migration must self-grant SELECT on patterns to osm_reader.
+
+    MCP (which connects as osm_reader under RLS) reads the curated pattern
+    catalogue at runtime.  Without the grant the read hits permission-denied,
+    which the code swallows → silent fallback to in-process pattern defaults.
+    `python -m src.db.migrate` does NOT run ops/rls_create_osm_reader.sql, so
+    the grant must be self-contained in the migration.
+    """
+
+    def test_osm_reader_has_select(self, migrated_pg_with_reader):
+        assert _has_priv(migrated_pg_with_reader, "patterns", "SELECT"), (
+            "osm_reader missing SELECT on patterns — MCP pattern catalogue "
+            "read will silently fall back to the in-process defaults"
+        )
+
+    def test_osm_reader_has_no_write(self, migrated_pg_with_reader):
+        """osm_reader is a read role — it must NOT get INSERT/UPDATE/DELETE."""
+        for priv in ("INSERT", "UPDATE", "DELETE"):
+            assert not _has_priv(migrated_pg_with_reader, "patterns", priv), (
+                f"osm_reader unexpectedly has {priv} on patterns (read-only role)"
+            )
+
+    def test_migration_safe_without_osm_reader(self, migrated_pg):
+        """With no osm_reader role the migration must still apply cleanly
+        (GRANT guarded by pg_roles EXISTS). migrated_pg does not create the
+        role, so reaching this assertion proves no failure."""
+        assert _table_exists(migrated_pg, "patterns"), (
+            "patterns table missing after migrate without osm_reader"
         )
