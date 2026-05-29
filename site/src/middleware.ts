@@ -199,6 +199,15 @@ export const onRequest = defineMiddleware(async (context, next) => {
     return response;
   }
 
+  // /admin/auth/* are OAuth initiation + callback endpoints — anonymous-accessible.
+  // The endpoint files themselves validate state + PKCE before issuing the session.
+  if (path.startsWith('/admin/auth/')) {
+    context.locals.user = null;
+    const response = await next();
+    _addSecurityHeaders(response, path);
+    return response;
+  }
+
   const cookieHeader = context.request.headers.get('cookie') ?? '';
 
   // /admin/tenants requires admin privilege — redirect non-admins to dashboard.
