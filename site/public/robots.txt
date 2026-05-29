@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://odoo-semantic.viindoo.com/sitemap.xml

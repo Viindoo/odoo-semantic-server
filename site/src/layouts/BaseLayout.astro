@@ -6,12 +6,16 @@ export interface Props {
   title?: string;
   description?: string;
   theme?: 'light' | 'dark';
+  /** Render the shared site footer. Pages that ship their own footer
+   *  (e.g. the landing page) set this false to avoid a duplicate footer. */
+  showFooter?: boolean;
 }
 
 const {
   title = 'Odoo Semantic MCP',
   description = 'Knowledge engine for Odoo — inheritance chain, view structure, JS patch — exposed via MCP protocol.',
   theme = 'light',
+  showFooter = true,
 } = Astro.props;
 const isDark = theme === 'dark';
 ---
@@ -23,11 +27,22 @@ const isDark = theme === 'dark';
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#00BBCE" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content="https://odoo-semantic.viindoo.com/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://odoo-semantic.viindoo.com/og-image.png" />
     <title>{title}</title>
     <slot name="head" />
   </head>
   <body>
     <slot />
+    {showFooter && (
     <footer
       class:list={[
         'text-center text-sm py-6 border-t',
@@ -38,6 +53,14 @@ const isDark = theme === 'dark';
       <a href="/bootstrap" class="hover:text-viindoo-primary-bright transition-colors duration-200">Bootstrap reference</a>
       <span class="mx-2">&middot;</span>
       <a href="https://github.com/Viindoo/odoo-semantic-server" class="hover:text-viindoo-primary-bright transition-colors duration-200">GitHub</a>
+      <span class="mx-2">&middot;</span>
+      <a href="https://viindoo.com" class="inline-flex items-center gap-1.5 hover:opacity-100 transition-opacity duration-200 opacity-70" aria-label="Powered by Viindoo">
+        Powered by
+        {isDark
+          ? <img src="/viindoo-logo.svg" alt="Viindoo" class="h-4 inline" />
+          : <span class="font-semibold text-viindoo-secondary">Viindoo</span>}
+      </a>
     </footer>
+    )}
   </body>
 </html>

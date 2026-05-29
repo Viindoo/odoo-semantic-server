@@ -42,14 +42,16 @@ const TOOLS = [
   title="Odoo Semantic MCP — Ship Odoo with verified knowledge, not hallucinations"
   description="A semantic knowledge engine for the entire Odoo ecosystem. Resolve models, trace overrides, prove what's standard — across v8 to v19+. Queryable by any AI tool via MCP."
   theme="dark"
+  showFooter={false}
 >
   <!-- Sticky nav -->
   <nav aria-label="Main navigation" class="fixed top-0 left-0 right-0 z-50 backdrop-blur bg-viindoo-bg-0/70 border-b border-white/5">
     <div class="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
       <a href="/" class="inline-flex items-center gap-3 font-display font-bold text-viindoo-on-dark text-[15px] tracking-tight hover:text-viindoo-primary transition-colors duration-200">
-        <span
-          class="w-7 h-7 rounded-lg flex-shrink-0"
-          style="background: linear-gradient(135deg, #00BBCE, #7F4282);"
+        <img
+          src="/logo-mark-ondark.svg"
+          alt="OSM"
+          class="w-7 h-7 flex-shrink-0"
           aria-hidden="true"
         />
         Odoo Semantic
@@ -318,6 +320,12 @@ const TOOLS = [
         <a href="/login" class="hover:text-viindoo-primary-bright transition-colors duration-200">Admin</a>
         <a href="https://github.com/Viindoo/odoo-semantic-server" class="hover:text-viindoo-primary-bright transition-colors duration-200">GitHub</a>
         <a href="/install/" class="hover:text-viindoo-primary-bright transition-colors duration-200">Install</a>
+      </div>
+      <div class="mt-4 flex items-center justify-center gap-2 text-[11px] text-viindoo-on-dark-dim opacity-70">
+        <span>Powered by</span>
+        <a href="https://viindoo.com" class="inline-flex items-center hover:opacity-100 transition-opacity duration-200" aria-label="Viindoo">
+          <img src="/viindoo-logo.svg" alt="Viindoo" class="h-5 inline opacity-80" />
+        </a>
       </div>
     </div>
   </footer>
