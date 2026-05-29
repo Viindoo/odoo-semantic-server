@@ -30,6 +30,7 @@ from src.web_ui.auth import (
     get_session_ttl,
     hash_password,
     is_test_bypass_active,
+    validate_password,
     verify_password,
 )
 from src.web_ui.login_attempts import (
@@ -444,14 +445,42 @@ class ResetPasswordBody(BaseModel):
 async def reset_password_consume(body: ResetPasswordBody, request: Request):
     """Consume a password reset token and set a new password.
 
-    Verifies the token (valid, unused, not expired), sets the new bcrypt hash,
-    revokes all sessions for that user (forcing re-login), and writes an audit
-    log entry.
+    Verifies the token (valid, unused, not expired), enforces the same password
+    policy as the registration path (``auth.password_min_length`` + common-
+    password blocklist via :func:`src.web_ui.auth.validate_password`), sets
+    the new bcrypt hash, revokes all sessions for that user (forcing re-login),
+    and writes an audit log entry.
+
+    Returns HTTP 400 with ``{"error": "<reason>"}`` if the new password fails
+    the policy — same error shape as the register endpoint.
     """
     try:
         from src.db.pg import auth_store
 
         store = auth_store()
+
+        # Token validity is the primary gate: surface not_found / expired / used
+        # BEFORE the password policy so an invalid link reports the real problem
+        # (the link is dead) rather than a misleading "password too weak". Peek
+        # without consuming so a subsequent weak-password rejection does not burn
+        # the single-use token — the user keeps the link to retry.
+        try:
+            user_id = store.verify_password_reset_token(body.token)
+        except ValueError as ve:
+            return JSONResponse(_json_safe({"error": str(ve)}), status_code=410)
+
+        if user_id is None:
+            return JSONResponse(_json_safe({"error": "not_found"}), status_code=404)
+
+        # Enforce the same password policy as registration. Runs after the token
+        # validity peek but before the consume below, so a weak password does not
+        # burn the token (the user can retry with a stronger one).
+        pw_error = validate_password(body.new_password)
+        if pw_error:
+            return JSONResponse(_json_safe({"error": pw_error}), status_code=400)
+
+        # Atomically consume (burn) the now-validated token. Guards a TOCTOU race
+        # where the token was used between the peek above and here.
         try:
             user_id = store.consume_password_reset_token(body.token)
         except ValueError as ve:

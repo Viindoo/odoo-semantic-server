@@ -843,12 +843,17 @@ class AuthStore:
                 )
         return raw_token
 
-    def consume_password_reset_token(self, raw_token: str) -> int | None:
-        """Verify + consume a password reset token.
+    def verify_password_reset_token(self, raw_token: str) -> int | None:
+        """Verify a password reset token WITHOUT consuming it (peek).
+
+        Lets a caller surface token-validity errors (not_found / expired / used)
+        before running other gates (e.g. password policy) so a rejected attempt
+        does not burn the single-use token. Use :meth:`consume_password_reset_token`
+        to atomically burn the token once all other gates pass.
 
         Returns:
             user_id if token is valid + unused + not expired.
-            None if token not found or already used.
+            None if token not found.
 
         Raises:
             ValueError: with code 'expired' if token found but expired.
@@ -862,24 +867,75 @@ class AuthStore:
                 "WHERE token_hash = %s AND purpose = %s",
                 (token_hash, "password_reset"),
             )
-            if row is None:
-                return None
-            if row["used_at"] is not None:
-                raise ValueError("used")
-            # expires_at may be offset-aware or naive; compare consistently
-            now = _datetime_mod.datetime.now(_datetime_mod.UTC)
-            exp = row["expires_at"]
-            if exp.tzinfo is None:
-                exp = exp.replace(tzinfo=_datetime_mod.UTC)
-            if now > exp:
-                raise ValueError("expired")
-            # Mark as used — identify row by token_hash (unique column; no id needed)
-            self._pool.execute(
-                conn,
-                "UPDATE email_verifications SET used_at = NOW() WHERE token_hash = %s",
-                (token_hash,),
-            )
+        if row is None:
+            return None
+        if row["used_at"] is not None:
+            raise ValueError("used")
+        # expires_at may be offset-aware or naive; compare consistently
+        now = _datetime_mod.datetime.now(_datetime_mod.UTC)
+        exp = row["expires_at"]
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=_datetime_mod.UTC)
+        if now > exp:
+            raise ValueError("expired")
         return row["user_id"]
+
+    def consume_password_reset_token(self, raw_token: str) -> int | None:
+        """Verify + consume a password reset token.
+
+        Returns:
+            user_id if token is valid + unused + not expired.
+            None if token not found or already used.
+
+        Raises:
+            ValueError: with code 'expired' if token found but expired.
+            ValueError: with code 'used' if token already consumed.
+
+        TOCTOU safety: the token row is locked with SELECT ... FOR UPDATE and the
+        check + UPDATE run in a single transaction (autocommit disabled — the pool
+        yields autocommit=True, so without this the lock would release immediately
+        after the SELECT). Two concurrent requests for the same token serialise: the
+        second blocks on FOR UPDATE until the first commits used_at, then sees
+        used_at != NULL and raises 'used' — no double-spend. Mirrors delete_tenant().
+        """
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT user_id, expires_at, used_at FROM email_verifications "
+                        "WHERE token_hash = %s AND purpose = %s FOR UPDATE",
+                        (token_hash, "password_reset"),
+                    )
+                    row = cur.fetchone()
+                if row is None:
+                    conn.commit()
+                    return None
+                user_id, expires_at, used_at = row[0], row[1], row[2]
+                if used_at is not None:
+                    raise ValueError("used")
+                # expires_at may be offset-aware or naive; compare consistently
+                now = _datetime_mod.datetime.now(_datetime_mod.UTC)
+                exp = expires_at
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=_datetime_mod.UTC)
+                if now > exp:
+                    raise ValueError("expired")
+                # Mark as used — identify row by token_hash (unique column; no id needed)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE email_verifications SET used_at = NOW() "
+                        "WHERE token_hash = %s",
+                        (token_hash,),
+                    )
+                conn.commit()
+                return user_id
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
 
     # ------------------------------------------------------------------
     # M9: Admin audit log

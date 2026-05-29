@@ -4,6 +4,28 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Changed — Auth flow unification (feat/m10b-auth-unify)
+
+- **`/login` is now the canonical login page.** `/admin/login` returns HTTP 301 → `/login`
+  (GET-only shim, preserved for backward compat). Astro middleware, nginx, and `/account/*`
+  return-redirects all bounce unauthenticated requests to `/login`. OAuth init + callback paths
+  `/admin/auth/*` are **unchanged** (no provider-console reconfig).
+- **OAuth Google/GitHub buttons added to `/signup`.** Previously only on the login page; a shared
+  verb-aware `OAuthButtons` component now surfaces them on both pages. A cookie `oauth_from`
+  distinguishes login- vs signup-origin so the callback returns the user to the right place.
+- **Shared `AuthLayout`** for login + signup eliminates duplicated structure; "Admin Login" wording
+  dropped, standardized to "Sign in". Includes a 22-item UX/a11y pass.
+
+### Security — Reset-password policy + TOCTOU guard (feat/m10b-auth-unify)
+
+- **Password policy enforced on `POST /api/auth/reset-password` (FE + BE).** Min-length
+  `auth.password_min_length` (default 12) + common-password blocklist; the `/reset-password` page
+  mirrors validation client-side for immediate feedback. Weak passwords return HTTP 400.
+- **Reset token no longer burned on a rejected weak password.** `verify_password_reset_token` peeks
+  the token without consuming it, and the consume path is wrapped in `SELECT ... FOR UPDATE` to close
+  a TOCTOU window — a user can retry the same token with a strong password and succeed.
+- Tool count stays **24**. No database migration.
+
 ### Fixed — Admin Settings deploy bugs: osm_reader sequence grant + CLI dotenv (fix/admin-settings-grants-dotenv)
 
 - **BUG CLASS A — incomplete osm_reader grant (missing SEQUENCE USAGE).** `osm_reader`
@@ -153,7 +175,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ### Added — Onboarding UX + ops
 
-- Onboarding UX: forgot-password e2e (backend + UI + login-page link); landing nav adds `/pricing`; `/login` canonical alias; `admin/login` renders `?error=` banner. (Wave 1D)
+- Onboarding UX: forgot-password e2e (backend + UI + login-page link); landing nav adds `/pricing`; `/login` canonical alias; `/login` renders `?error=` banner (formerly `admin/login` — now 301-redirects to `/login`, see auth-unify entry above). (Wave 1D)
 - Docs: 3 new runbooks (`nginx-ratelimit`, `offsite-backup`, `neo4j-container-recreate`); `ops/` promotion of `regrant` + `nginx-patch` + offsite systemd template; deploy-logs archive for 2026-05-28 deploy.
 
 ## [0.13.1] — 2026-05-28 — Self-host waitlist + post-v0.13.0 cleanup (PR #204)

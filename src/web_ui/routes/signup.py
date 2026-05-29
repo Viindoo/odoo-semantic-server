@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import hash_password
+from src.web_ui.auth import PASSWORD_MIN_LENGTH, hash_password, validate_password
 from src.web_ui.config import (
     SIGNUP_ENABLED,  # noqa: F401 — kept as legacy monkeypatch target
     signup_enabled,
@@ -48,50 +48,16 @@ router = APIRouter(prefix="/api/auth")
 # Password complexity constants
 # ---------------------------------------------------------------------------
 #
-# WI-9 (ADR-0042): :data:`_MIN_PASSWORD_LENGTH` is the **code-default** floor.
-# Runtime callers resolve the live value via ``get_setting(
-# "auth.password_min_length")`` — see :func:`_validate_password` below.  The
-# constant is preserved as a regression anchor for
-# ``tests/test_constants_fallback.py`` and as the fail-safe when the settings
-# overlay is unavailable.
-_MIN_PASSWORD_LENGTH = 12
+# WI-9 (ADR-0042): :data:`_MIN_PASSWORD_LENGTH` is a backwards-compat alias
+# for :data:`src.web_ui.auth.PASSWORD_MIN_LENGTH` (the canonical SSOT).
+# The constant is preserved for ``tests/test_constants_fallback.py`` which
+# imports it by this name.  New code should import PASSWORD_MIN_LENGTH from
+# ``src.web_ui.auth`` directly.
+_MIN_PASSWORD_LENGTH = PASSWORD_MIN_LENGTH
 
 # Email-verification token validity (hours).  Likewise admin-tunable via
 # ``auth.email_verification_ttl_hours`` (see WI-9 / ADR-0042).
 _EMAIL_VERIFY_TTL_HOURS = 24
-
-# Top-100 most commonly used passwords — block to reduce brute-force surface.
-_COMMON_PASSWORDS = frozenset(
-    [
-        "password", "password1", "password12", "password123",
-        "123456", "12345678", "123456789", "1234567890",
-        "qwerty", "qwerty123", "qwertyuiop",
-        "abc123", "abcdefgh", "letmein", "welcome",
-        "monkey", "dragon", "master", "sunshine",
-        "princess", "iloveyou", "admin123", "admin1234",
-        "superman", "batman", "football", "baseball",
-        "soccer", "hockey", "trustno1", "shadow",
-        "michael", "jessica", "jennifer", "daniel",
-        "pass", "passw0rd", "p@ssword", "p@ssw0rd",
-        "login", "starwars", "hello", "charlie",
-        "donald", "pepper", "696969", "1q2w3e",
-        "1q2w3e4r", "zxcvbnm", "asdfgh", "asdfghjkl",
-        "111111", "111111111", "000000", "123123",
-        "7777777", "1234567", "12345", "1234",
-        "55555", "666666", "777777", "888888",
-        "999999", "test", "test1234", "testing",
-        "changeme", "newpassword", "newpass",
-        "root", "rootroot", "toor", "admin",
-        "administrator", "user", "guest", "demo",
-        "sample", "default", "blank", "nothing",
-        "hunter2", "correct", "horse", "battery",
-        "staple", "wifi", "internet", "google",
-        "facebook", "twitter", "instagram", "linkedin",
-        "apple", "windows", "linux", "ubuntu",
-        "raspberry", "letmein1", "welcome1", "pass123",
-        "pass1234", "pass12345",
-    ]
-)
 
 
 # ---------------------------------------------------------------------------
@@ -123,25 +89,10 @@ async def _verify_hcaptcha(token: str, remote_ip: str) -> bool:
 # ---------------------------------------------------------------------------
 # Password validation
 # ---------------------------------------------------------------------------
-
-def _validate_password(password: str) -> str | None:
-    """Return error message string if password fails policy, else None.
-
-    WI-9: minimum length is read from ``app_settings`` via the settings overlay
-    (``auth.password_min_length``).  The error message uses the **live** value
-    so the user sees an accurate floor.  Falls back to :data:`_MIN_PASSWORD_LENGTH`
-    on any overlay failure.
-    """
-    try:
-        from src.settings import get_setting
-        min_len = int(get_setting("auth.password_min_length"))
-    except Exception:
-        min_len = _MIN_PASSWORD_LENGTH
-    if len(password) < min_len:
-        return f"Password must be at least {min_len} characters."
-    if password.lower() in _COMMON_PASSWORDS:
-        return "Password is too common. Please choose a stronger password."
-    return None
+# Delegated to the shared helper in src.web_ui.auth so both register and
+# reset-password use exactly the same policy (ADR-0042 / WI-1 fix).
+# ``validate_password`` is already imported at the top of this module.
+_validate_password = validate_password  # backwards-compat alias for tests
 
 
 # ---------------------------------------------------------------------------

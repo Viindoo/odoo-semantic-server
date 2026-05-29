@@ -1,10 +1,346 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// /login canonical alias → 302 to /admin/login, preserving ?return= / ?next=.
-// Today /login returns 404; customers who guess the canonical login URL hit a
-// dead-end. This alias sends them to the real login page without changing
-// bookmarks to /admin/login (302 = temporary, search engines don't lock in alias).
-const u = new URL(Astro.request.url);
-const ret = u.searchParams.get('return') ?? u.searchParams.get('next') ?? '/account/usage';
-return Astro.redirect(`/admin/login?return=${encodeURIComponent(ret)}`, 302);
+// /login — canonical login page.
+// /admin/login issues a 301 permanent redirect here (see admin/login.astro).
+// No auth required (middleware whitelists /login in _PUBLIC_PATHS).
+import AuthLayout from '../layouts/AuthLayout.astro';
+import { FASTAPI_BASE } from '../lib/fastapi';
+import OAuthButtons from '../components/OAuthButtons.astro';
+
+// Redirect already-authed users to dashboard
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+let alreadyAuthed = false;
+try {
+  const verify = await fetch(`${FASTAPI_BASE}/api/auth/verify`, {
+    headers: { cookie: cookieHeader },
+  });
+  alreadyAuthed = verify.ok;
+} catch {
+  // server down — allow login page
+}
+
+// Server-side ?return= consumer.
+// Middleware (site/src/middleware.ts) sets ?return=<path> when an
+// unauthenticated user hits /account/*. After login completes we redirect
+// them back. Strict same-origin path-only validation (CWE-601 open-redirect
+// guard): only paths starting with literal "/account/" or "/admin/" are
+// accepted — any scheme://host, protocol-relative "//evil.com", or
+// fragment/quoted-prefix trick is rejected. Fallback target is /admin.
+const _rawReturn = Astro.url.searchParams.get('return') ?? '';
+const returnTarget = /^\/(account|admin)\//.test(_rawReturn) ? _rawReturn : '/admin';
+
+if (alreadyAuthed) {
+  return Astro.redirect(returnTarget);
+}
+
+// XSS-safe error/info banner — ONLY whitelisted codes are rendered.
+// User-supplied ?error= / ?info= values are never rendered verbatim.
+const ERROR_MESSAGES: Record<string, string> = {
+  oauth_failed:
+    'Sign-in with that provider didn\'t work. Try again or use email + password.',
+  signup_disabled:
+    'Sign-up is currently invite-only. Contact admin to request access.',
+  email_unverified:
+    'Please verify your email before signing in. Check your inbox or request a new verification email.',
+  invalid_credentials: 'Username or password incorrect.',
+  session_expired: 'Your session expired. Please sign in again.',
+  email_conflict:
+    'That email is already linked to another account. Try a different sign-in method.',
+  no_email:
+    'Your GitHub account has no verified primary email. Add one in GitHub settings and try again.',
+};
+const ERROR_FALLBACK = 'Sign-in failed. Please try again.';
+
+const INFO_MESSAGES: Record<string, string> = {
+  password_reset_sent:
+    'If that email is registered, a reset link has been sent. Check your inbox.',
+  password_reset_success: 'Password updated. Please sign in with your new password.',
+  email_verified: 'Email verified. Please sign in.',
+};
+
+const _rawError = Astro.url.searchParams.get('error') ?? '';
+const _rawInfo = Astro.url.searchParams.get('info') ?? '';
+
+// Resolve through whitelist — unknown codes fall back to generic message (error)
+// or are silently ignored (info). Never render user-supplied strings.
+const errorMsg: string | null = _rawError
+  ? (ERROR_MESSAGES[_rawError] ?? ERROR_FALLBACK)
+  : null;
+const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : null;
 ---
+
+<AuthLayout title="Sign In — Odoo Semantic MCP" subtitle="Sign in to your account">
+  <!-- Flash banner (shown via JS) -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium"></div>
+
+  <!-- Server-rendered error / info banner (from ?error= / ?info= URL params) -->
+  {errorMsg && (
+    <div
+      class="mb-4 px-4 py-3 rounded-lg border text-sm font-medium bg-red-50 border-red-200 text-red-700"
+      role="alert"
+      aria-live="assertive"
+      data-testid="login-error-banner"
+    >
+      {errorMsg}
+    </div>
+  )}
+  {infoMsg && (
+    <div
+      class="mb-4 px-4 py-3 rounded-lg border text-sm font-medium bg-blue-50 border-blue-200 text-blue-700"
+      role="status"
+      aria-live="polite"
+      data-testid="login-info-banner"
+    >
+      {infoMsg}
+    </div>
+  )}
+
+  <!-- Login form -->
+  <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+    <!-- Step 1: password login -->
+    <div data-testid="login-section">
+    <form data-testid="login-form" class="space-y-4">
+      <div>
+        <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          required
+          autofocus
+          data-testid="login-username-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep focus:border-viindoo-primary-deep"
+          placeholder="admin"
+        />
+      </div>
+      <div>
+        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+          data-testid="login-password-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep focus:border-viindoo-primary-deep"
+          placeholder="••••••••"
+        />
+      </div>
+
+      <!-- Forgot password link -->
+      <p class="text-right text-xs">
+        <a href="/forgot-password" class="text-viindoo-primary-text hover:underline">Forgot password?</a>
+      </p>
+
+      <!-- Error message (item #13 a11y: role+aria-live) -->
+      <p
+        data-testid="login-error"
+        hidden
+        role="alert"
+        aria-live="assertive"
+        class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"
+      ></p>
+
+      <button
+        type="submit"
+        data-testid="login-submit-button"
+        class="w-full bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 font-medium py-2.5 rounded-lg transition-colors text-sm"
+      >
+        Sign in
+      </button>
+    </form>
+
+    <OAuthButtons verb="Sign in" />
+    </div><!-- /login-section -->
+
+    <!-- Step 2: MFA verification (hidden until mfa_required) -->
+    <div data-testid="mfa-section" hidden>
+      <p class="text-sm text-gray-600 mb-4">
+        Enter the 6-digit code from your authenticator app.
+      </p>
+      <form data-testid="mfa-form" class="space-y-4">
+        <!-- item #12: MFA labels now have for= + inputs have id= -->
+        <div data-testid="mfa-totp-row">
+          <label for="totp_code" class="block text-sm font-medium text-gray-700 mb-1">Authenticator Code</label>
+          <input
+            id="totp_code"
+            name="totp_code"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]{6}"
+            maxlength="6"
+            data-testid="mfa-code-input"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep focus:border-viindoo-primary-deep font-mono text-center text-lg tracking-widest"
+            placeholder="000000"
+            autocomplete="one-time-code"
+          />
+        </div>
+
+        <div data-testid="mfa-backup-row" hidden>
+          <label for="backup_code" class="block text-sm font-medium text-gray-700 mb-1">Backup Code</label>
+          <input
+            id="backup_code"
+            name="backup_code"
+            type="text"
+            data-testid="mfa-backup-input"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep focus:border-viindoo-primary-deep font-mono"
+            placeholder="xxxxxxxxxxxxxxxx"
+          />
+        </div>
+
+        <p
+          data-testid="mfa-error"
+          hidden
+          role="alert"
+          aria-live="assertive"
+          class="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-200"
+        ></p>
+
+        <button
+          type="submit"
+          data-testid="mfa-submit-button"
+          class="w-full bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 font-medium py-2.5 rounded-lg transition-colors text-sm"
+        >
+          Verify
+        </button>
+
+        <p class="text-center">
+          <a data-testid="use-backup-link" href="#" class="text-xs text-gray-500 hover:text-gray-700 underline">
+            Use backup code instead
+          </a>
+        </p>
+      </form>
+    </div><!-- /mfa-section -->
+  </div>
+
+  <!-- Signup link -->
+  <p class="text-center text-sm text-gray-500 mt-4">
+    Don't have an account?
+    <a href="/signup" class="text-viindoo-primary-text hover:underline font-medium">Sign up</a>
+  </p>
+</AuthLayout>
+
+<script>
+  // Client-side ?return= consumer — mirror server-side guard above.
+  // Same path-only allowlist (CWE-601 open-redirect guard): reject any value
+  // that doesn't start with literal "/account/" or "/admin/". Fallback /admin.
+  function getReturnTarget(): string {
+    const raw = new URLSearchParams(window.location.search).get('return') ?? '';
+    return /^\/(account|admin)\//.test(raw) ? raw : '/admin';
+  }
+
+  document.querySelector('[data-testid="login-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const errorEl = document.querySelector('[data-testid="login-error"]') as HTMLElement | null;
+    const submitBtn = document.querySelector('[data-testid="login-submit-button"]') as HTMLButtonElement | null;
+    const loginSection = document.querySelector('[data-testid="login-section"]') as HTMLElement | null;
+    const mfaSection = document.querySelector('[data-testid="mfa-section"]') as HTMLElement | null;
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Signing in…';
+    }
+    if (errorEl) errorEl.setAttribute('hidden', '');
+
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: fd.get('username'),
+        password: fd.get('password'),
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      if (data.mfa_required) {
+        // Show MFA step
+        _currentMfaToken = data.mfa_token ?? '';
+        loginSection?.setAttribute('hidden', '');
+        mfaSection?.removeAttribute('hidden');
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
+      } else {
+        window.location.href = getReturnTarget();
+      }
+    } else {
+      if (errorEl) {
+        const msg =
+          data.error === 'invalid_credentials'
+            ? 'Invalid username or password.'
+            : data.error === 'Too many failed login attempts; please wait before retrying'
+              ? 'Too many failed attempts. Please wait a moment and try again.'
+              : data.error ?? 'Login failed.';
+        errorEl.textContent = msg;
+        errorEl.removeAttribute('hidden');
+      }
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In';
+      }
+    }
+  });
+
+  // MFA form submission
+  let _currentMfaToken = '';
+
+  document.querySelector('[data-testid="mfa-form"]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const mfaErrorEl = document.querySelector('[data-testid="mfa-error"]') as HTMLElement | null;
+    const mfaBtn = document.querySelector('[data-testid="mfa-submit-button"]') as HTMLButtonElement | null;
+
+    if (mfaBtn) { mfaBtn.disabled = true; mfaBtn.textContent = 'Verifying…'; }
+    if (mfaErrorEl) mfaErrorEl.setAttribute('hidden', '');
+
+    const body: Record<string, string> = { mfa_token: _currentMfaToken };
+    const backupCode = (fd.get('backup_code') as string)?.trim();
+    const totpCode = (fd.get('totp_code') as string)?.trim();
+
+    if (backupCode) {
+      body['backup_code'] = backupCode;
+    } else {
+      body['code'] = totpCode;
+    }
+
+    const res = await fetch('/api/auth/totp/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      window.location.href = getReturnTarget();
+    } else {
+      if (mfaErrorEl) {
+        const msg =
+          data.error === 'invalid_code' ? 'Invalid code. Try again.' :
+          data.error === 'invalid_backup_code' ? 'Invalid backup code. Try again.' :
+          data.error === 'mfa_token_expired' ? 'Session expired. Please log in again.' :
+          data.error ?? 'Verification failed.';
+        mfaErrorEl.textContent = msg;
+        mfaErrorEl.removeAttribute('hidden');
+      }
+      if (mfaBtn) { mfaBtn.disabled = false; mfaBtn.textContent = 'Verify'; }
+    }
+  });
+
+  // Toggle between TOTP code and backup code input
+  document.querySelector('[data-testid="use-backup-link"]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const totpRow = document.querySelector('[data-testid="mfa-totp-row"]') as HTMLElement | null;
+    const backupRow = document.querySelector('[data-testid="mfa-backup-row"]') as HTMLElement | null;
+    if (totpRow?.hasAttribute('hidden')) {
+      totpRow?.removeAttribute('hidden');
+      backupRow?.setAttribute('hidden', '');
+    } else {
+      totpRow?.setAttribute('hidden', '');
+      backupRow?.removeAttribute('hidden');
+    }
+  });
+</script>

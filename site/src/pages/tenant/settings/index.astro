@@ -46,7 +46,7 @@ try {
 
   if (!tenantsRes.ok) {
     if (tenantsRes.status === 401) {
-      return Astro.redirect('/admin/login?next=/tenant/settings');
+      return Astro.redirect('/login?next=/tenant/settings');
     }
     fetchError = `Could not load tenants (HTTP ${tenantsRes.status})`;
   } else {
@@ -83,7 +83,7 @@ if (activeTenantId !== null) {
       const settingsData = await settingsRes.json();
       settings = (settingsData.settings ?? []) as TenantSettingDef[];
     } else if (settingsRes.status === 401) {
-      return Astro.redirect('/admin/login?next=/tenant/settings');
+      return Astro.redirect('/login?next=/tenant/settings');
     } else if (settingsRes.status === 403) {
       fetchError = 'You are not a tenant admin of this tenant.';
     } else {

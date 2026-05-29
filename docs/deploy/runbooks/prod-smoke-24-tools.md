@@ -582,7 +582,7 @@ After deploying PR #200, verify the quota dashboard and plan gating are function
 
 ### Operator Test — /account/usage Page
 
-1. **Log in** to the web UI at `<PROD_BASE_URL>/admin/login` with an admin account.
+1. **Log in** to the web UI at `<PROD_BASE_URL>/login` (canonical; `/admin/login` 301-redirects here) with an admin account.
 2. **Navigate** to `<PROD_BASE_URL>/account/usage`.
 3. **Expected:**
    - Page loads without error (HTTP 200, no traceback visible).

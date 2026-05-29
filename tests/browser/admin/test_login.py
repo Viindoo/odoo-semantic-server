@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/browser/admin/test_login.py
-"""Browser tests for /admin/login page (M8 W7).
+"""Browser tests for /login page (WI-3: canonical URL rename).
+
+/login is now the canonical login page. /admin/login issues a 301 redirect
+to /login — so goto("/admin/login") will follow to /login in browser tests.
 
 Tests:
   1. Login page renders with form (data-testid selectors)
   2. Invalid credentials shows inline error (no redirect)
-  3. Unauthenticated access to /admin redirects to /admin/login
+  3. Unauthenticated access to /admin redirects to /login
 """
 import pytest
 from playwright.sync_api import expect
@@ -21,8 +24,8 @@ pytestmark = [
 
 class TestLoginPage:
     def test_login_form_renders(self, astro_server, page):
-        """GET /admin/login → login form is visible with username + password inputs."""
-        page.goto(f"{astro_server}/admin/login")
+        """GET /login → login form is visible with username + password inputs."""
+        page.goto(f"{astro_server}/login")
         page.wait_for_load_state("load")
 
         expect(page.get_by_test_id("login-form")).to_be_visible(timeout=5000)
@@ -32,7 +35,7 @@ class TestLoginPage:
 
     def test_invalid_credentials_shows_error(self, astro_server, page):
         """Submit wrong credentials → inline error visible, no redirect to /admin."""
-        page.goto(f"{astro_server}/admin/login")
+        page.goto(f"{astro_server}/login")
         page.wait_for_load_state("load")
 
         page.get_by_test_id("login-username-input").fill("wrong-user")
@@ -46,13 +49,13 @@ class TestLoginPage:
         error_el = page.get_by_test_id("login-error")
         expect(error_el).to_be_visible(timeout=5000)
         # Should NOT have navigated away from login
-        assert "/admin/login" in page.url or "/login" in page.url
+        assert "/login" in page.url
 
     def test_unauthenticated_admin_root_redirects_to_login(self, astro_server, page):
-        """GET /admin (without auth cookie) → 302 redirect to /admin/login."""
+        """GET /admin (without auth cookie) → 302 redirect to /login."""
         response = page.goto(f"{astro_server}/admin", wait_until="load")
         # After following redirects, we should be on the login page
-        on_login = "/admin/login" in page.url
+        on_login = "/login" in page.url
         if not on_login and response is not None and response.url:
             on_login = "/login" in response.url
         assert on_login

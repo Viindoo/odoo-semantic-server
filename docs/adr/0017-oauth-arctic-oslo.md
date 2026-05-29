@@ -178,3 +178,13 @@ providers.
 identity database. Cross-product SSO = "add one more IdP + rely on the email-linking that already
 exists" — it does not merge product user databases (each product data plane stays isolated, ADR-0039
 D1).
+
+## Amendment (feat/m10b-auth-unify, 2026-05-29)
+
+- OAuth "Sign in with Google/GitHub" buttons now appear on **both** `/login` and `/signup`
+  (previously login-only), via a shared verb-aware `OAuthButtons` component.
+- A cookie `oauth_from` records login- vs signup-origin so the callback returns the user to the
+  correct page.
+- The Astro endpoint paths `admin/auth/{provider}.ts` (init) and `admin/auth/callback/{provider}.ts`
+  (callback) are **unchanged** — no provider-console / redirect-URI reconfig needed; only the
+  front-end surface where the buttons render changed.

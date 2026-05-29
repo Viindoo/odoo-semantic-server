@@ -41,8 +41,15 @@ export const GET: APIRoute = async ({ request, cookies }) => {
         });
     }
 
-    // Consume state cookie immediately (single-use)
+    // Read oauth_from (set by init if ?from=signup) BEFORE any early return so
+    // we can consume it unconditionally — it must be single-use on every exit
+    // path (success / 403 / error), otherwise a stale value (600s TTL) could
+    // misroute a later, unrelated error.
+    const oauthFrom = cookies.get('oauth_from')?.value ?? '';
+
+    // Consume state + from cookies immediately (single-use)
     cookies.delete('oauth_state', { path: '/' });
+    cookies.delete('oauth_from', { path: '/' });
 
     let tokens;
     try {
@@ -103,7 +110,7 @@ export const GET: APIRoute = async ({ request, cookies }) => {
     if (!primaryEmail) {
         return new Response(null, {
             status: 302,
-            headers: { Location: '/admin/login?error=no_email' },
+            headers: { Location: '/login?error=no_email' },
         });
     }
 
@@ -128,17 +135,31 @@ export const GET: APIRoute = async ({ request, cookies }) => {
     }
 
     if (!apiRes.ok) {
-        const body = await apiRes.text().catch(() => '');
-        console.error('[OAuth/github callback] FastAPI rejected login:', apiRes.status, body);
+        // Read body once as text; parse JSON separately (stream can only be read once).
+        const bodyText = await apiRes.text().catch(() => '');
+        console.error('[OAuth/github callback] FastAPI rejected login:', apiRes.status, bodyText);
         if (apiRes.status === 409) {
             return new Response(null, {
                 status: 302,
-                headers: { Location: '/admin/login?error=email_conflict' },
+                headers: { Location: '/login?error=email_conflict' },
             });
+        }
+        // 403 signup_disabled — redirect to origin page with specific error.
+        // O-A: use the oauth_from value read+cleared at the top (single-use) to
+        // pick the correct error destination.
+        if (apiRes.status === 403) {
+            const errBody = (() => { try { return JSON.parse(bodyText) as { error?: string }; } catch { return {}; } })();
+            if (errBody.error === 'signup_disabled') {
+                const dest = oauthFrom === 'signup' ? '/signup' : '/login';
+                return new Response(null, {
+                    status: 302,
+                    headers: { Location: `${dest}?error=signup_disabled` },
+                });
+            }
         }
         return new Response(null, {
             status: 302,
-            headers: { Location: '/admin/login?error=oauth_failed' },
+            headers: { Location: '/login?error=oauth_failed' },
         });
     }
 
