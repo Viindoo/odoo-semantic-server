@@ -36,7 +36,9 @@ const { title, heading = 'Odoo Semantic MCP', subtitle } = Astro.props;
           <p class="text-sm text-gray-600 mt-1">{subtitle}</p>
         </div>
         <!-- Page content -->
-        <slot />
+        <main>
+          <slot />
+        </main>
       </div>
     </div>
   </body>

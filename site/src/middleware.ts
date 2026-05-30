@@ -38,7 +38,7 @@ function _defaultCspDirectives(): Record<string, string[]> {
     'script-src': ["'self'", "'unsafe-inline'"],
     'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'https:'],
-    'font-src': ["'self'"],
+    'font-src': ["'self'", 'data:'],
     'connect-src': ["'self'"],
     'frame-src': ["'self'"],
     'frame-ancestors': ["'none'"],
