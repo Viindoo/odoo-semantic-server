@@ -63,7 +63,34 @@ _SIG_VERSION = "v1"
 # FLAG (d): confirm against a real captured sample from Polar.
 _FIELD_EVENT_TYPE = "type"                  # payload["type"]
 _FIELD_EXTERNAL_REF = ("data", "id")        # payload["data"]["id"]
-_FIELD_PRODUCT_ID = ("data", "product_id")  # payload["data"]["product_id"]
+# Product id lives at data.product_id (flat) for subscription events, but at
+# data.product.id (nested) for order.paid events (the Order schema serializes the
+# product as a nested object).  _extract_product_id tries BOTH so resolution is
+# correct regardless of which shape Polar emits.  See
+# 01-polar-contract-verification.md (data.product_id PARTIAL MATCH for order.paid).
+_FIELD_PRODUCT_ID = ("data", "product_id")  # flat shape (subscription events)
+
+
+def _extract_product_id(data: dict[str, Any]) -> Any:
+    """Resolve the Polar product id from a payload ``data`` dict, both shapes.
+
+    Single source of truth for product-id extraction:
+
+      1. ``data.product_id`` (flat UUID — subscription events);
+      2. ``data.product.id`` (nested product object — ``order.paid`` events).
+
+    Returns the first non-empty value found, else ``None`` (caller raises a clear
+    ValueError so an unmappable product surfaces as a config error, not a crash).
+    """
+    flat = data.get("product_id")
+    if flat:
+        return flat
+    product = data.get("product")
+    if isinstance(product, dict):
+        nested = product.get("id")
+        if nested:
+            return nested
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +110,14 @@ EVENT_STATUS_MAP: dict[str, str] = {
     "order.paid":           "grant",
     # Update (plan change, renewal, seat change)
     "subscription.updated": "update",
+    # past_due / uncanceled route through "update" so the snapshot re-reads
+    # data.status (no new policy invented; same as a subscription.updated that
+    # carries that status).  past_due → terminal downgrade (over-serving on
+    # payment failure was the GAP); uncanceled → status=active re-read AND
+    # cancel_at_period_end reconciled back to False (reactivation clears the
+    # locally-scheduled cancel).  See 01-polar-contract-verification.md GAP flags.
+    "subscription.past_due":    "update",
+    "subscription.uncanceled":  "update",
     # Revoke (cancel, revoke, refund)
     "subscription.canceled": "revoke",   # FLAG (c): US spelling — confirm
     "subscription.revoked":  "revoke",
@@ -347,7 +382,8 @@ def resolve_plan_id(payload: dict[str, Any], *, conn: Any = None) -> int:
     """Map a Polar product id from the webhook payload to the internal ``plans.id``.
 
     Resolution path:
-      1. Read ``payload["data"]["product_id"]`` (FLAG d: confirm field path).
+      1. Read the product id via ``_extract_product_id`` — tolerant of both
+         ``data.product_id`` (flat) and ``data.product.id`` (nested).
       2. Fetch ``get_setting("billing.polar_product_map", conn=conn)`` — a dict
          mapping ``{polar_product_id: plan_slug}``.  Default is ``{}`` (catalogue
          default in ``settings_registry.py``).
@@ -370,16 +406,17 @@ def resolve_plan_id(payload: dict[str, Any], *, conn: Any = None) -> int:
         ValueError: If the product_id is missing from the payload, not in the
             product map, or no matching plan row exists.
     """
-    # Step 1: extract product_id from payload.
-    # FLAG (d): confirm field path — may be data.product_id or data.product.id
+    # Step 1: extract product_id from payload — tolerant of BOTH shapes
+    # (data.product_id flat for subscription events, data.product.id nested for
+    # order.paid).  Single source of truth: _extract_product_id.
     data = payload.get("data")
     if not isinstance(data, dict):
         raise ValueError("resolve_plan_id: payload['data'] is missing or not a dict")
-    product_id = data.get("product_id")
+    product_id = _extract_product_id(data)
     if not product_id:
         raise ValueError(
-            "resolve_plan_id: payload['data']['product_id'] is missing — "
-            "FLAG (d): confirm the Polar payload field for product id"
+            "resolve_plan_id: product id missing from payload['data'] — tried "
+            "data.product_id (flat) and data.product.id (nested)"
         )
 
     # When no caller connection is supplied, own one for the full resolution so

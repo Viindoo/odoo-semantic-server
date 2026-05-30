@@ -105,6 +105,13 @@ class WebhookAdapter:
             grant/update only — never for revoke.
         extract_email_fn: ``(data: dict) -> str | None`` buyer-email extractor.
         map_status_fn: ``(payload: dict) -> str`` → ``subscriptions.status`` enum.
+        extract_cancel_at_period_end_fn: ``(data: dict) -> bool | None`` — reads
+            the vendor's cancel-at-period-end flag from the payload (Polar:
+            ``data.cancel_at_period_end``).  Returns ``None`` when the vendor did
+            not carry the field, so the local flag is left untouched; returns the
+            bool when present so an ``update`` (e.g. ``subscription.uncanceled``)
+            reconciles a previously-scheduled local cancel.  Default returns
+            ``None`` (a vendor that does not carry the field is no special case).
         extract_interval_fn: ``(data: dict) -> Any`` — pulls the RAW vendor
             billing-interval token out of the ``data`` dict (e.g. Polar's
             ``recurring_interval``).  Keeping the vendor field NAME in the adapter
@@ -138,6 +145,12 @@ class WebhookAdapter:
     extract_email_fn: Callable[[dict], str | None]
     map_status_fn: Callable[[dict], str]
     normalize_interval_fn: Callable[[Any], str | None]
+    # cancel-at-period-end reconciliation (default None = field absent → no-op):
+    # an update event (e.g. subscription.uncanceled) carries the vendor's current
+    # cancel_at_period_end so the local schedule flag tracks the vendor's truth.
+    extract_cancel_at_period_end_fn: Callable[[dict], bool | None] = (
+        lambda data: None
+    )
     # CL1 — vendor-agnostic commercial extractors (safe defaults supplied below).
     # extract_interval_fn pulls the RAW vendor interval token out of ``data`` so
     # the pipeline never hard-codes a vendor field name (Polar = recurring_interval).
@@ -377,6 +390,11 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
             # non-paying subscriber on full paid access.
             mapped_status = adapter.map_status_fn(raw_payload or {})
             period_start, period_end, trial_ends_at = adapter.extract_period_fn(data_dict)
+            # Reconcile the cancel-at-period-end schedule from the vendor payload
+            # so a subscription.uncanceled (reactivation) clears a previously
+            # locally-scheduled cancel.  None = vendor omitted the field → leave
+            # the local flag untouched.  See 01-polar-contract-verification.md.
+            cancel_at_period_end = adapter.extract_cancel_at_period_end_fn(data_dict)
             sub_id = activation.update_entitlement(
                 external_ref,
                 plan_id=plan_id,
@@ -385,6 +403,7 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
                 current_period_start=period_start,
                 current_period_end=period_end,
                 trial_ends_at=trial_ends_at,
+                cancel_at_period_end=cancel_at_period_end,
                 last_event_at=last_event_at,
             )
 

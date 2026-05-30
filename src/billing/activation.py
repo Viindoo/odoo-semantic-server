@@ -134,11 +134,20 @@ def update_entitlement(
     current_period_start=None,
     current_period_end=None,
     trial_ends_at=None,
+    cancel_at_period_end: bool | None = None,
     last_event_at=None,
 ) -> int:
     """Update commercial fields of an existing entitlement. Returns subscription_id.
 
     Only the fields passed (non-None) are written.
+
+    ``cancel_at_period_end`` reconciles the local cancel-at-period-end schedule
+    flag with the vendor's payload (Polar carries ``data.cancel_at_period_end``).
+    A ``subscription.uncanceled`` reactivation arrives as an ``update`` with the
+    flag ``False`` → the locally-scheduled cancel is CLEARED; a scheduling
+    ``update`` carrying ``True`` re-records it.  ``None`` (the vendor omitted the
+    field) leaves the stored flag untouched — same partial-write contract as the
+    other snapshot fields.  See 01-polar-contract-verification.md.
 
     Monotonic guard (#5) — TWO PATHS NOW PROTECTED.  Webhooks can be delivered
     out of order, so a stale ``subscription.updated`` (older event) must never
@@ -229,6 +238,11 @@ def update_entitlement(
         updates["current_period_end"] = current_period_end
     if trial_ends_at is not None:
         updates["trial_ends_at"] = trial_ends_at
+    if cancel_at_period_end is not None:
+        # Reconcile the local schedule flag with the vendor (reactivation clears
+        # it; a scheduling update re-records it).  Audit-snapshot only — it does
+        # NOT itself drive a key change; the terminal-status path (CR3) does that.
+        updates["cancel_at_period_end"] = cancel_at_period_end
     # Advance the #5 high-water-mark on every non-stale event carrying a
     # timestamp, so a LATER out-of-order replay is caught by the guard above.
     # GREATEST in Python (stored may be NULL on the first timestamped event).

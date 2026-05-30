@@ -389,6 +389,72 @@ class TestUpdateTerminalStatusDowngrades:
 
 
 # ---------------------------------------------------------------------------
+# Contract hardening: cancel_at_period_end reconciliation on the update path.
+# A subscription.uncanceled (reactivation) arrives as an "update" carrying
+# cancel_at_period_end=False → the locally-scheduled cancel must be CLEARED.
+# A scheduling update carrying True re-records it; None leaves it untouched.
+# See 01-polar-contract-verification.md.
+# ---------------------------------------------------------------------------
+
+class TestUpdateReconcilesCancelAtPeriodEnd:
+    def test_uncanceled_update_clears_scheduled_cancel(self, migrated_pg):
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "uncancel", "uncancel@example.com", verified=True)
+        auth_store().create_api_key(name="Default key (uncancel)", user_id=user_id)
+        sub_id = grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_uncancel", source="polar",
+            buyer_email="uncancel@example.com",
+        ))
+        subs = subscription_store()
+
+        # User voluntarily scheduled a cancel-at-period-end.
+        subs.schedule_cancellation(sub_id)
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+        # Polar fires subscription.uncanceled → update with status=active +
+        # cancel_at_period_end=False → reconcile the local flag back to False.
+        update_entitlement(
+            "grant_uncancel", status="active", cancel_at_period_end=False
+        )
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is False, (
+            "subscription.uncanceled must clear the locally-scheduled cancel"
+        )
+
+    def test_update_records_scheduled_cancel_true(self, migrated_pg):
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "schedcap", "schedcap@example.com", verified=True)
+        auth_store().create_api_key(name="Default key (schedcap)", user_id=user_id)
+        sub_id = grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_schedcap", source="polar",
+            buyer_email="schedcap@example.com",
+        ))
+        subs = subscription_store()
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is False
+
+        update_entitlement(
+            "grant_schedcap", status="active", cancel_at_period_end=True
+        )
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+    def test_update_without_flag_leaves_cancel_at_period_end_untouched(self, migrated_pg):
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "capnone", "capnone@example.com", verified=True)
+        auth_store().create_api_key(name="Default key (capnone)", user_id=user_id)
+        sub_id = grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_capnone", source="polar",
+            buyer_email="capnone@example.com",
+        ))
+        subs = subscription_store()
+        subs.schedule_cancellation(sub_id)
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+        # An update that omits the flag (cancel_at_period_end=None) must NOT
+        # erase the stored schedule (partial-write contract).
+        update_entitlement("grant_capnone", status="active")
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+
+# ---------------------------------------------------------------------------
 # #5 out-of-order events: last_event_at monotonic guard at the activation layer
 # ---------------------------------------------------------------------------
 
