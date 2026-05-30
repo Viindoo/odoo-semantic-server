@@ -164,11 +164,14 @@ def _create_oauth_user(
         pool = auth_store()._pool
         with pool.checkout() as conn:
             with conn.cursor() as cur:
+                # terms_accepted_at = NOW(): OAuth signups consent by completing
+                # the provider flow. Record the timestamp for auditable proof-of-consent
+                # (D4 / m13_016 / PDPL 91/2025 + card-network requirement).
                 cur.execute(
                     "INSERT INTO webui_users"
                     " (username, password_hash, oauth_provider, oauth_id,"
-                    "  email, email_verified, is_admin, is_active)"
-                    " VALUES (%s, NULL, %s, %s, %s, %s, FALSE, TRUE)"
+                    "  email, email_verified, is_admin, is_active, terms_accepted_at)"
+                    " VALUES (%s, NULL, %s, %s, %s, %s, FALSE, TRUE, NOW())"
                     " RETURNING id, username, email, email_verified, is_admin, is_active",
                     (username, provider, oauth_id, email, email_verified),
                 )
@@ -420,6 +423,31 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "OAuth login: default API key mint failed for user %r (id=%s): %s"
+                " — continuing (non-fatal)",
+                username,
+                user["id"],
+                exc,
+            )
+
+    # Claim any unclaimed paid subscriptions for this email (WI-6).
+    # SECURITY: gate on body.email_verified — the provider must have verified
+    # this email address. A brand-new OAuth user (step 3) is created with
+    # whatever the provider reports, which can be email_verified=False; without
+    # this gate an attacker could register an unverified-email OAuth account on
+    # a victim's address and claim the victim's unclaimed subscription
+    # (account takeover). The existing-user merge path (step 2) already 409s on
+    # unverified email, but the new-user path reaches here, so the guard is
+    # required. Mirrors the password-login guard in login.py. The claim still
+    # runs for BOTH new and returning users whose email IS verified (a purchase
+    # made between logins gets claimed here).
+    # Best-effort: never breaks the login flow.
+    if body.email_verified:
+        try:
+            from src.billing.provisioning import claim_subscription_for_user
+            claim_subscription_for_user(user["id"], body.email)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "OAuth login: claim_subscription_for_user failed for user %r (id=%s): %s"
                 " — continuing (non-fatal)",
                 username,
                 user["id"],

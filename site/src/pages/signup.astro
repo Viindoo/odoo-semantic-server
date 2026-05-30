@@ -163,6 +163,24 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
         />
       </div>
 
+      <!-- Consent checkbox (required — W6 legal gate D4) -->
+      <div class="flex items-start gap-3">
+        <input
+          id="su-consent"
+          name="consent"
+          type="checkbox"
+          required
+          data-testid="signup-consent-checkbox"
+          class="mt-0.5 h-4 w-4 rounded border-gray-300 text-viindoo-primary focus:ring-viindoo-primary-deep cursor-pointer"
+        />
+        <label for="su-consent" class="text-sm text-gray-600 cursor-pointer select-none">
+          I agree to the
+          <a href="/terms" target="_blank" rel="noopener noreferrer" class="text-viindoo-primary-text hover:underline font-medium">Terms of Service</a>
+          and
+          <a href="/privacy" target="_blank" rel="noopener noreferrer" class="text-viindoo-primary-text hover:underline font-medium">Privacy Policy</a>.
+        </label>
+      </div>
+
       <!-- hCaptcha widget (only shown when site key is configured) -->
       {hcaptchaSiteKey ? (
         <div
@@ -209,6 +227,16 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
   const successDiv = document.querySelector('[data-testid="signup-success"]');
   const errorEl = document.querySelector('[data-testid="signup-error"]');
   const submitBtn = document.querySelector('[data-testid="signup-submit-button"]');
+  const consentCb = document.querySelector('[data-testid="signup-consent-checkbox"]');
+
+  // Disable submit until consent is checked (D4 client-side guard).
+  function _syncSubmitDisabled() {
+    if (submitBtn) {
+      submitBtn.disabled = !consentCb?.checked;
+    }
+  }
+  _syncSubmitDisabled(); // initial state
+  consentCb?.addEventListener('change', _syncSubmitDisabled);
 
   function showError(msg) {
     if (errorEl) {
@@ -256,6 +284,7 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
       password: password,
       confirm_password: confirm,
       hcaptcha_token: getHcaptchaToken(),
+      consent: consentCb?.checked === true,
     };
 
     try {

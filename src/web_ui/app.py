@@ -283,6 +283,21 @@ def create_app() -> FastAPI:
 
     app.include_router(admin_plans.router)
 
+    # M10B P1: Public pricing plan list — GET /api/plans (no auth; ADR-0039)
+    from src.web_ui.routes import plans
+
+    app.include_router(plans.router)
+
+    # M10B P1: Polar webhook sink — POST /api/webhooks/polar (public, HMAC-verified; ADR-0039)
+    from src.web_ui.routes import webhooks
+
+    app.include_router(webhooks.router)
+
+    # M10B P1: Admin Activation API — /api/admin/entitlements (require_admin; ADR-0039 D3)
+    from src.web_ui.routes import entitlements
+
+    app.include_router(entitlements.router)
+
     # Health endpoint — auth-exempt (pre-launch checklist §10.5)
     @app.get("/api/health")
     async def health() -> dict[str, str]:

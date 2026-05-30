@@ -132,6 +132,20 @@ GRANT USAGE ON SEQUENCE ssh_key_pairs_id_seq    TO osm_reader;
 -- rows via bootstrap_settings_safe(), so the reader needs USAGE on its sequence.
 GRANT USAGE ON SEQUENCE app_settings_id_seq     TO osm_reader;
 
+-- M10B P1 billing tables (m13_014_billing_p1.sql)
+-- subscriptions: SELECT for /account + /tenant portal pages.
+-- billing_webhook_events: SELECT for admin viewer read.
+-- NO INSERT/sequence grants: Activation API + webhook handler write as DB owner.
+-- Same grants duplicated in the migration itself for deploy-safety per house convention
+-- (migrations run via python -m src.db.migrate; this file runs only on cutover/ops).
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
+        GRANT SELECT ON TABLE subscriptions          TO osm_reader;
+        GRANT SELECT ON TABLE billing_webhook_events TO osm_reader;
+    END IF;
+END $$;
+
 -- NOTE: FORCE ROW LEVEL SECURITY (runbook §5.14 Bước 2) and the MCP DSN flip
 -- (Bước 3) are performed by the cutover script AFTER this file runs — kept
 -- separate so the role + grants can be (re)applied idempotently on their own.

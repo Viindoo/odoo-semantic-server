@@ -15,8 +15,15 @@ type Plan = {
   rate_limit_rpm: number;
   seat_limit: number | null;
   is_public: boolean;
+  is_archived: boolean;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
+  // Pricing fields (C1 — ADR-0039)
+  price_cents: number | null;
+  currency: string | null;
+  billing_interval: 'free' | 'monthly' | 'annual' | 'one_time' | null;
+  trial_days: number | null;
+  prices: Record<string, number> | null;
 };
 
 let plans: Plan[] = [];

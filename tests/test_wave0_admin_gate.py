@@ -800,6 +800,11 @@ class TestSignupGate:
                     "password": "SecurePass123!",
                     "confirm_password": "SecurePass123!",
                     "hcaptcha_token": "",
+                    # D4 consent gate (signup.py): the request must carry
+                    # consent=True to create an account (PDPL 91/2025 +
+                    # card-network requirement). A happy-path 201 test must
+                    # supply it; absence → 422 consent_required.
+                    "consent": True,
                 },
             )
         assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"

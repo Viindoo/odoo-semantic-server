@@ -117,7 +117,8 @@ class TestGetSinglePlan:
         assert resp.status_code == 200
         body = resp.json()
         assert body["slug"] == "free"
-        assert body["quota_calls_per_month"] == 100
+        # Free tier seeded at 200 calls/month by m13_014 pricing seed (M10B P1).
+        assert body["quota_calls_per_month"] == 200
         assert body["rate_limit_rpm"] == 30
 
     @pytest.mark.asyncio
@@ -167,7 +168,7 @@ class TestPatchPlan:
         # Restore original values so other tests in this module see clean state
         with migrated_pg.cursor() as cur:
             cur.execute(
-                "UPDATE plans SET quota_calls_per_month = 100, rate_limit_rpm = 30 "
+                "UPDATE plans SET quota_calls_per_month = 200, rate_limit_rpm = 30 "
                 "WHERE slug = 'free'"
             )
 
@@ -240,4 +241,160 @@ class TestCreatePlanNotImplemented:
             )
         assert resp.status_code == 501, (
             f"Expected 501 for deferred create-plan, got {resp.status_code}: {resp.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. Patch plan updates pricing fields (C1 — ADR-0039)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchPlanPricingFields:
+    """C1: PATCH /{slug} can update price_cents, currency, billing_interval, trial_days, prices."""
+
+    @pytest.mark.asyncio
+    async def test_patch_updates_price_cents_and_currency(self, migrated_pg):
+        """PATCH updates price_cents + currency and persists to DB."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "price_cents": 2900,
+                    "currency": "USD",
+                    "reason": "test pricing update",
+                },
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        # Verify DB was updated
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT price_cents, currency FROM plans WHERE slug = 'pro'")
+            row = cur.fetchone()
+        assert row[0] == 2900
+        assert row[1] == "USD"
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET price_cents = 1900, currency = 'USD' WHERE slug = 'pro'")
+
+    @pytest.mark.asyncio
+    async def test_patch_updates_billing_interval(self, migrated_pg):
+        """PATCH updates billing_interval and persists to DB."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "billing_interval": "annual",
+                    "reason": "switching to annual billing",
+                },
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT billing_interval FROM plans WHERE slug = 'pro'")
+            row = cur.fetchone()
+        assert row[0] == "annual"
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET billing_interval = 'monthly' WHERE slug = 'pro'")
+
+    @pytest.mark.asyncio
+    async def test_patch_updates_trial_days(self, migrated_pg):
+        """PATCH updates trial_days and persists to DB."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "trial_days": 14,
+                    "reason": "adding 14-day trial",
+                },
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT trial_days FROM plans WHERE slug = 'pro'")
+            row = cur.fetchone()
+        assert row[0] == 14
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET trial_days = 0 WHERE slug = 'pro'")
+
+    @pytest.mark.asyncio
+    async def test_patch_updates_prices_jsonb(self, migrated_pg):
+        """PATCH updates the prices JSONB column with a per-currency map."""
+        prices = {"USD": 2900, "VND": 750000}
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "prices": prices,
+                    "reason": "adding VND pricing",
+                },
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT prices FROM plans WHERE slug = 'pro'")
+            row = cur.fetchone()
+        # psycopg2 returns JSONB as a Python dict already
+        stored = row[0]
+        assert stored.get("USD") == 2900
+        assert stored.get("VND") == 750000
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "UPDATE plans SET prices = '{\"USD\": 1900, \"VND\": 490000}'::jsonb "
+                "WHERE slug = 'pro'"
+            )
+
+    @pytest.mark.asyncio
+    async def test_patch_updates_is_archived(self, migrated_pg):
+        """PATCH can archive a plan (is_archived=True)."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "is_archived": True,
+                    "reason": "archiving pro for test",
+                },
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT is_archived FROM plans WHERE slug = 'pro'")
+            row = cur.fetchone()
+        assert row[0] is True
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET is_archived = FALSE WHERE slug = 'pro'")
+
+    @pytest.mark.asyncio
+    async def test_list_plans_includes_prices_field(self, migrated_pg):
+        """GET /api/admin/plans returns prices field in each plan."""
+        async with _client() as client:
+            resp = await client.get("/api/admin/plans")
+        assert resp.status_code == 200
+        body = resp.json()
+        for plan in body["plans"]:
+            assert "prices" in plan, (
+                f"Plan {plan['slug']} missing 'prices' field"
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalid_billing_interval_rejected(self, migrated_pg):
+        """PATCH with invalid billing_interval returns 422."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "billing_interval": "quarterly",  # not a valid value
+                    "reason": "testing invalid interval",
+                },
+            )
+        assert resp.status_code == 422, (
+            f"Expected 422 for invalid billing_interval, got {resp.status_code}: {resp.text}"
         )

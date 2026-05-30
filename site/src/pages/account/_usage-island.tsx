@@ -43,25 +43,31 @@ export default function UsageDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/account/usage', { credentials: 'include' })
-      .then(async (res) => {
-        if (res.status === 401) {
-          window.location.href = '/login?return=/account/usage';
-          return null;
-        }
-        if (!res.ok) {
-          throw new Error(`Request failed (${res.status})`);
-        }
-        return res.json() as Promise<UsageResponse>;
-      })
-      .then((d) => {
-        if (d) {
-          if (d.error) setError(d.error);
-          else setData(d);
-        }
-      })
-      .catch((e: unknown) => setError(String(e)))
-      .finally(() => setLoading(false));
+    const loadUsage = () => {
+      fetch('/api/account/usage', { credentials: 'include' })
+        .then(async (res) => {
+          if (res.status === 401) {
+            window.location.href = '/login?return=/account/usage';
+            return null;
+          }
+          if (!res.ok) {
+            throw new Error(`Request failed (${res.status})`);
+          }
+          return res.json() as Promise<UsageResponse>;
+        })
+        .then((d) => {
+          if (d) {
+            if (d.error) setError(d.error);
+            else setData(d);
+          }
+        })
+        .catch((e: unknown) => setError(String(e)))
+        .finally(() => setLoading(false));
+    };
+
+    loadUsage();
+    const t = setInterval(loadUsage, 60000);
+    return () => clearInterval(t);
   }, []);
 
   if (loading) {

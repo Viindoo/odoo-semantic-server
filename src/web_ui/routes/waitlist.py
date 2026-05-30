@@ -33,11 +33,22 @@ from src.web_ui.rate_limit import check_ip_rate_limit, get_client_ip
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["waitlist"])
 
-# Allowed plan values for the optional plan field.
-_ALLOWED_PLANS: frozenset[str] = frozenset({"free", "pro", "team"})
-
 # Source tag — fixed for this MVP; extend for additional intake forms later.
 _SOURCE = "pricing-page"
+
+
+def _public_plan_slugs(conn) -> set[str]:
+    """Return the set of slugs for public, non-archived plans (C4 — ADR-0039).
+
+    Derived from the DB so adding a new public plan never requires a code change
+    to this allow-list.  Called with the same connection that join_waitlist already
+    opens for the INSERT — no extra pool checkout.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT slug FROM plans WHERE is_public = TRUE AND is_archived = FALSE"
+        )
+        return {r[0] for r in cur.fetchall()}
 
 
 class WaitlistRequest(BaseModel):
@@ -87,16 +98,8 @@ async def join_waitlist(body: WaitlistRequest, request: Request):
             status_code=400,
         )
 
-    # 3. Plan validation (if provided).
+    # 3. Plan validation (if provided) + DB insert in same connection.
     plan = (body.plan or "").strip().lower() or None
-    if plan is not None and plan not in _ALLOWED_PLANS:
-        return JSONResponse(
-            _json_safe({
-                "error": "invalid_plan",
-                "detail": f"plan must be one of: {sorted(_ALLOWED_PLANS)} or omitted.",
-            }),
-            status_code=400,
-        )
 
     # 4. DB insert — ON CONFLICT DO NOTHING (email UNIQUE).
     try:
@@ -104,6 +107,18 @@ async def join_waitlist(body: WaitlistRequest, request: Request):
 
         pool = get_pool()
         with pool.checkout() as conn:
+            # Derive allowed plans from DB (C4 — ADR-0039): no code change needed
+            # when a new public plan is added.
+            if plan is not None and plan not in _public_plan_slugs(conn):
+                allowed = sorted(_public_plan_slugs(conn))
+                return JSONResponse(
+                    _json_safe({
+                        "error": "invalid_plan",
+                        "detail": f"plan must be one of: {allowed} or omitted.",
+                    }),
+                    status_code=400,
+                )
+
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO waitlist_emails (email, plan, source)"

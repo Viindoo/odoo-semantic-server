@@ -136,6 +136,9 @@ sudo install -o odoo-semantic -g odoo-semantic -m 600 /dev/null /home/odoo-seman
 sudo tee /home/odoo-semantic/etc/webui.env > /dev/null <<EOF
 FERNET_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
 WEBUI_SESSION_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+# M10B P1 — Polar.sh Standard-Webhooks signing secret (fail-closed if unset).
+# Obtain from Polar Dashboard → Webhooks → your endpoint → "Signing secret".
+# POLAR_WEBHOOK_SECRET=whsec_...
 EOF
 sudo chown odoo-semantic:odoo-semantic /home/odoo-semantic/etc/webui.env
 ```

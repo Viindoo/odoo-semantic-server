@@ -112,6 +112,97 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
     SettingDef("mcp.resource_cache_ttl_seconds", "mcp", "duration_seconds", 300,
                {"min": 30, "max": 3600},
                description="MCP odoo:// resource cache TTL."),
+
+    # billing category (M10B P1 — ADR-0039)
+    SettingDef(
+        "billing.polar_product_map", "billing", "struct", {},
+        description=(
+            "JSON object mapping Polar product_id → plan slug "
+            "(e.g. {\"prod_abc\": \"pro\", \"prod_xyz\": \"team\"}). "
+            "Admin-editable; hot-reload ≤60s via get_setting() L1 TTL."
+        ),
+    ),
+    SettingDef(
+        "billing.webhook_tolerance_seconds", "billing", "int", 300,
+        {"min": 60, "max": 3600},
+        description=(
+            "Standard-Webhooks timestamp tolerance window (seconds). "
+            "Webhooks with webhook-timestamp outside ±tolerance are rejected."
+        ),
+    ),
+    SettingDef(
+        "billing.webhook_rate_limit_rpm", "billing", "int", 120,
+        {"min": 1, "max": 10000},
+        description=(
+            "Per-IP rate limit for all vendor webhook endpoints "
+            "(POST /api/webhooks/*) (requests/minute)."
+        ),
+    ),
+    # M10B P1 W3 — slug/limit configurability + self-service cancel surface.
+    # These promote previously-hardcoded billing constants so ops can rename a
+    # plan slug, tune the team minimum, or change the portal/checkout URLs
+    # WITHOUT a code change + redeploy (ADR-0042 hot-reload ≤60s).
+    SettingDef(
+        "billing.free_plan_slug", "billing", "str", "free", {},
+        description=(
+            "Slug of the downgrade-target free plan used on an involuntary "
+            "revoke. If this resolves to no plan, revoke fail-safe DEACTIVATES "
+            "the key (never leaves paid access live)."
+        ),
+    ),
+    SettingDef(
+        "billing.unlimited_sentinel_slug", "billing", "str", "unlimited", {},
+        description=(
+            "Slug treated as the top-tier 'never downgrade' sentinel "
+            "(ADR-0041 D5). A key on this plan is never downgraded by a Polar "
+            "grant/update event."
+        ),
+    ),
+    SettingDef(
+        "billing.team_plan_slug", "billing", "str", "team", {},
+        description=(
+            "Slug of the multi-seat Team plan that the team-min-seats rule "
+            "applies to at grant/checkout."
+        ),
+    ),
+    SettingDef(
+        "billing.team_min_seats", "billing", "int", 3,
+        {"min": 1, "max": 1000},
+        description=(
+            "Minimum seats enforced on the Team tier at grant/checkout. A grant "
+            "for the team plan with fewer seats is rejected (admin route → 422)."
+        ),
+    ),
+    SettingDef(
+        "billing.polar_portal_url", "billing", "str", "https://polar.sh/", {},
+        description=(
+            "Polar customer-portal URL surfaced on the account billing page for "
+            "self-serve manage/cancel and shown as the fallback link when the "
+            "outbound cancel API is unavailable."
+        ),
+    ),
+    SettingDef(
+        "billing.polar_api_base", "billing", "str", "https://api.polar.sh", {},
+        description=(
+            "Polar REST API base URL used by the outbound cancel client "
+            "(POST /api/account/subscription/cancel → Polar cancel endpoint)."
+        ),
+    ),
+    SettingDef(
+        "billing.paid_checkout_enabled", "billing", "bool", False, {},
+        description=(
+            "Gates the public paid-checkout CTA on the pricing page until legal "
+            "sign-off. False = show waitlist only; frontend reads this."
+        ),
+    ),
+    SettingDef(
+        "billing.polar_checkout_url_map", "billing", "struct", {},
+        description=(
+            "JSON object mapping plan slug → Polar checkout URL "
+            "(e.g. {\"pro\": \"https://buy.polar.sh/...\"}) for the pricing-page "
+            "CTA. Frontend reads this; empty = no per-tier checkout link."
+        ),
+    ),
 ]
 
 
