@@ -149,18 +149,22 @@ class TestApiKeyReactivate:
         _deactivate_key(migrated_pg, key_id)
         assert not _get_key_active(migrated_pg, key_id)
 
-        orig_bypass = auth_mod.is_test_bypass_active
         orig_cuid = auth_mod.current_user_id
         try:
-            # Non-admin user session — bypass off so ownership guard runs.
-            auth_mod.is_test_bypass_active = lambda: False
+            # Non-admin owner session. Stub current_user_id ONLY — not
+            # is_test_bypass_active: the bypass keeps the auth middleware out of
+            # the way so the request reaches the route, while the fully-stubbed
+            # current_user_id makes the route's ownership guard run against
+            # owner_id. Patching is_test_bypass_active here is unnecessary
+            # (current_user_id is already replaced) and was harmful — it mutated
+            # only the middleware's copied binding, making this test
+            # order-dependent (issue #220 follow-up).
             auth_mod.current_user_id = lambda req: owner_id
 
             app = create_app()
             async with _async_client(app) as client:
                 resp = await client.post(f"/api/api-keys/{key_id}/reactivate")
         finally:
-            auth_mod.is_test_bypass_active = orig_bypass
             auth_mod.current_user_id = orig_cuid
 
         assert resp.status_code == 200, resp.text
@@ -179,17 +183,18 @@ class TestApiKeyReactivate:
         attacker_id = _seed_user(migrated_pg, username="attacker_r3", is_admin=False)
         key_id = _seed_api_key(migrated_pg, name="key-r3-owner", user_id=owner_id, active=False)
 
-        orig_bypass = auth_mod.is_test_bypass_active
         orig_cuid = auth_mod.current_user_id
         try:
-            auth_mod.is_test_bypass_active = lambda: False
+            # Stub current_user_id ONLY (see test_owner_reactivates_own_inactive_key):
+            # the non-owner attacker's id drives the route ownership guard while the
+            # auth-middleware bypass stays on. Not patching is_test_bypass_active
+            # keeps this test order-independent (issue #220 follow-up).
             auth_mod.current_user_id = lambda req: attacker_id
 
             app = create_app()
             async with _async_client(app) as client:
                 resp = await client.post(f"/api/api-keys/{key_id}/reactivate")
         finally:
-            auth_mod.is_test_bypass_active = orig_bypass
             auth_mod.current_user_id = orig_cuid
 
         assert resp.status_code == 403, resp.text

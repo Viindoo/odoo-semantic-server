@@ -226,30 +226,40 @@ class TestAdminCascadeSetUserPlan:
 
     @pytest.mark.asyncio
     async def test_cascade_non_admin_403(self, migrated_pg):
-        """Non-admin session -> 403."""
+        """Cascade plan dependency raises 403 for an authenticated non-admin.
+
+        Tests the route dependency (require_admin_with_fresh_mfa) directly rather
+        than through the HTTP stack — the latter flips the global auth bypass off
+        and relies on the auth middleware still bypassing, an order-dependent
+        asymmetry (issue #220 follow-up). The 403 is raised by the inner
+        require_admin gate before the MFA check. Route wiring is covered by
+        test_cascade_set_user_plan_route_is_wired_to_fresh_mfa.
+        """
+        from fastapi import HTTPException
+        from starlette.requests import Request as StarletteRequest
+
         import src.web_ui.auth as auth_mod
 
-        _seed_user(migrated_pg, username="admin_cf_main", is_admin=True)
         non_admin_id = _seed_user(migrated_pg, username="non_admin_cf", is_admin=False)
-        plan_id = _get_plan_id(migrated_pg, "free")
+        scope = {"type": "http", "method": "PATCH", "path": "/", "headers": [], "query_string": b""}
+        fake_request = StarletteRequest(scope)
 
         orig_bypass = auth_mod.is_test_bypass_active
         orig_cuid = auth_mod.current_user_id
+        raised: HTTPException | None = None
         try:
             auth_mod.is_test_bypass_active = lambda: False
             auth_mod.current_user_id = lambda req: non_admin_id
-
-            app = create_app()
-            async with _async_client(app) as client:
-                resp = await client.patch(
-                    f"/api/admin/users/{non_admin_id}/plan",
-                    json={"plan_id": plan_id},
-                )
+            try:
+                await auth_mod.require_admin_with_fresh_mfa(fake_request)
+            except HTTPException as exc:
+                raised = exc
         finally:
             auth_mod.is_test_bypass_active = orig_bypass
             auth_mod.current_user_id = orig_cuid
 
-        assert resp.status_code == 403, resp.text
+        assert raised is not None, "require_admin_with_fresh_mfa must reject a non-admin"
+        assert raised.status_code == 403
 
     @pytest.mark.asyncio
     async def test_cascade_audit_logged(self, migrated_pg):
