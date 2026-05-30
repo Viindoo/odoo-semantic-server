@@ -24,6 +24,7 @@ type Plan = {
   billing_interval: 'free' | 'monthly' | 'annual' | 'one_time' | null;
   trial_days: number | null;
   prices: Record<string, number> | null;
+  pricing_model: 'flat' | 'per_seat' | null;
 };
 
 let plans: Plan[] = [];
