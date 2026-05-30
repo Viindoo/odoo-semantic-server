@@ -393,7 +393,7 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
             # Reconcile the cancel-at-period-end schedule from the vendor payload
             # so a subscription.uncanceled (reactivation) clears a previously
             # locally-scheduled cancel.  None = vendor omitted the field → leave
-            # the local flag untouched.  See 01-polar-contract-verification.md.
+            # the local flag untouched.  See docs/reference/polar-contract-verification.md.
             cancel_at_period_end = adapter.extract_cancel_at_period_end_fn(data_dict)
             sub_id = activation.update_entitlement(
                 external_ref,

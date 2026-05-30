@@ -50,7 +50,7 @@ def _extract_buyer_email(data: dict) -> str | None:
 
     Tolerant of every shape Polar may emit (the nested ``customer.email`` is
     confirmed for subscription events but unconfirmed over the wire — see
-    01-polar-contract-verification.md), and never crashes when email is absent
+    docs/reference/polar-contract-verification.md), and never crashes when email is absent
     (it is optional/nullable on some events):
 
       1. ``data.customer.email`` (nested customer object — full schema);

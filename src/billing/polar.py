@@ -67,7 +67,7 @@ _FIELD_EXTERNAL_REF = ("data", "id")        # payload["data"]["id"]
 # data.product.id (nested) for order.paid events (the Order schema serializes the
 # product as a nested object).  _extract_product_id tries BOTH so resolution is
 # correct regardless of which shape Polar emits.  See
-# 01-polar-contract-verification.md (data.product_id PARTIAL MATCH for order.paid).
+# docs/reference/polar-contract-verification.md (data.product_id PARTIAL MATCH for order.paid).
 _FIELD_PRODUCT_ID = ("data", "product_id")  # flat shape (subscription events)
 
 
@@ -115,7 +115,7 @@ EVENT_STATUS_MAP: dict[str, str] = {
     # carries that status).  past_due → terminal downgrade (over-serving on
     # payment failure was the GAP); uncanceled → status=active re-read AND
     # cancel_at_period_end reconciled back to False (reactivation clears the
-    # locally-scheduled cancel).  See 01-polar-contract-verification.md GAP flags.
+    # locally-scheduled cancel).  See docs/reference/polar-contract-verification.md GAP flags.
     "subscription.past_due":    "update",
     "subscription.uncanceled":  "update",
     # Revoke (cancel, revoke, refund)

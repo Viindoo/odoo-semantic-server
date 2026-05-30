@@ -12,7 +12,7 @@ These cover the contract-hardening additions in ``src/web_ui/routes/webhooks.py`
 
 The extractors are pure functions; the route module imports without a DB, so
 these stay hermetic (NO pytest.mark.postgres / neo4j).  See
-01-polar-contract-verification.md.
+docs/reference/polar-contract-verification.md.
 """
 
 from __future__ import annotations

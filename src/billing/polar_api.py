@@ -29,7 +29,7 @@ cancel-at-period-end is Polar's Update Subscription API (PATCH with
 Subscription endpoint (``DELETE /v1/subscriptions/{id}`` with NO body — there is
 no ``PATCH {"revoke": true}`` endpoint).  ``httpx`` omits the request body when
 ``json=None`` so the DELETE goes out body-less.  See the verification report
-``01-polar-contract-verification.md`` (immediate-cancel MISMATCH).
+``docs/reference/polar-contract-verification.md`` (immediate-cancel MISMATCH).
 
 ``external_ref`` stored on the subscription IS the Polar subscription id, so it
 is interpolated directly as ``{id}``.  Auth is ``Authorization: Bearer <token>``.
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 _CANCEL_PATH_TEMPLATE = "/v1/subscriptions/{id}"
 # cancel-at-period-end is the Update Subscription API (PATCH + schedule flag);
 # immediate cancel is the dedicated Revoke endpoint (DELETE, NO body).  There is
-# no PATCH {"revoke": true} endpoint — see 01-polar-contract-verification.md.
+# no PATCH {"revoke": true} endpoint — see docs/reference/polar-contract-verification.md.
 _CANCEL_AT_PERIOD_END_METHOD = "PATCH"
 _CANCEL_AT_PERIOD_END_PAYLOAD = {"cancel_at_period_end": True}
 _CANCEL_IMMEDIATE_METHOD = "DELETE"
