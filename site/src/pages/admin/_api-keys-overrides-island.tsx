@@ -16,6 +16,7 @@
 //   4xx/5xx → inline error display
 
 import { useState, useEffect } from 'react';
+import { withStepUp } from '../../lib/mfaStepUp';
 
 function flash(msg: string, isError = false) {
   const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
@@ -119,11 +120,12 @@ export default function ApiKeysOverridesIsland() {
         rate_limit_override: parseOverride(state.rateOverride),
         quota_override: parseOverride(state.quotaOverride),
       };
-      const res = await fetch(`/api/admin/api-keys/${state.keyId}/plan`, {
+      const res = await withStepUp(() => fetch(`/api/admin/api-keys/${state.keyId}/plan`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(body),
-      });
+      }));
       if (res.ok) {
         flash('Overrides saved.');
         handleClose();

@@ -15,7 +15,11 @@ PATCH /api/admin/users/{user_id}/plan              cascade plan to all user keys
 
 Auth
 ----
-All routes require require_admin Depends (raises 401/403 if not admin).
+Most routes require require_admin Depends (raises 401/403 if not admin).
+The two plan-assignment routes (PATCH .../plan) require
+require_admin_with_fresh_mfa instead — assigning a paid plan is an
+entitlement-sensitive op, symmetric with the entitlement grant/revoke and
+plan price/quota edit routes (issue #220; freshness window per ADR-0043).
 Self-deactivation is blocked (403).
 """
 
@@ -32,7 +36,7 @@ from starlette.requests import Request
 from src.db.audit import audit_action
 from src.db.auth_registry import LastAdminProtectedError, UserNotFoundError
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import hash_password, require_admin
+from src.web_ui.auth import hash_password, require_admin, require_admin_with_fresh_mfa
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_@.\-]{1,64}$")
 
@@ -491,7 +495,7 @@ async def set_api_key_plan_route(
     key_id: int,
     body: SetApiKeyPlanRequest,
     request: Request,
-    _admin: int = Depends(require_admin),
+    _admin: int = Depends(require_admin_with_fresh_mfa),
 ):
     """Set plan + per-key rate_limit / quota overrides on a single API key.
 
@@ -589,7 +593,7 @@ async def cascade_set_user_plan_route(
     user_id: int,
     body: CascadeSetPlanRequest,
     request: Request,
-    _admin: int = Depends(require_admin),
+    _admin: int = Depends(require_admin_with_fresh_mfa),
 ):
     """Set plan_id on ALL api_keys (active + inactive) owned by user_id.
 

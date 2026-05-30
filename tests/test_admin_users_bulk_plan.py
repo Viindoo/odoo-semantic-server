@@ -89,6 +89,26 @@ def _get_plan_id(pg_conn, slug: str) -> int:
         return cur.fetchone()[0]
 
 
+def _find_route(app, path: str, method: str):
+    """Return the APIRoute matching an exact path + HTTP method."""
+    for r in app.routes:
+        if getattr(r, "path", None) == path and method in getattr(r, "methods", set()):
+            return r
+    raise AssertionError(f"route {method} {path} not found")
+
+
+def _collect_dependency_calls(dependant) -> list:
+    """Flatten every callable in a FastAPI Dependant tree (route + sub-deps)."""
+    calls = []
+    stack = [dependant]
+    while stack:
+        dep = stack.pop()
+        if dep.call is not None:
+            calls.append(dep.call)
+        stack.extend(dep.dependencies)
+    return calls
+
+
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
@@ -265,6 +285,140 @@ class TestAdminCascadeSetUserPlan:
         if detail is not None:
             assert "keys_updated" in detail
             assert detail["keys_updated"] == 2
+
+    # -----------------------------------------------------------------------
+    # Fresh-MFA gate (issue #220): cascade plan-assignment requires fresh MFA
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_cascade_set_user_plan_requires_fresh_mfa_403_when_mfa_not_set(
+        self, migrated_pg
+    ):
+        """Cascading a plan to all user keys requires fresh MFA — admin without
+        mfa_verified_at in session must receive 403 (business rule: cascade plan
+        assignment is entitlement-sensitive, symmetric with grant/revoke/update).
+        """
+        from unittest.mock import MagicMock, patch
+
+        from fastapi import HTTPException
+        from starlette.requests import Request as StarletteRequest
+
+        import src.web_ui.auth as auth_mod
+        from src.web_ui.auth import STEP_UP_ERROR_CODE
+
+        _seed_user(migrated_pg, username="admin_mfa_miss_c", is_admin=True)
+        user_id = _seed_user(migrated_pg, username="user_mfa_miss_c")
+
+        # Build a fake request with an admin session but NO mfa_verified_at
+        scope = {
+            "type": "http",
+            "method": "PATCH",
+            "path": f"/api/admin/users/{user_id}/plan",
+            "headers": [],
+            "query_string": b"",
+            "session": {},  # no mfa_verified_at → freshness check must fail
+        }
+        fake_request = StarletteRequest(scope)
+
+        orig_bypass = auth_mod.is_test_bypass_active
+        orig_cuid = auth_mod.current_user_id
+        raised: HTTPException | None = None
+        try:
+            auth_mod.is_test_bypass_active = lambda: False
+            auth_mod.current_user_id = lambda req: 1  # logged in as admin
+
+            mock_store = MagicMock()
+            mock_store.get_user_field.return_value = True  # is_admin=True
+
+            with patch("src.db.pg.auth_store", return_value=mock_store):
+                try:
+                    await auth_mod.require_admin_with_fresh_mfa(fake_request)
+                except HTTPException as exc:
+                    raised = exc
+        finally:
+            auth_mod.is_test_bypass_active = orig_bypass
+            auth_mod.current_user_id = orig_cuid
+
+        assert raised is not None, (
+            "require_admin_with_fresh_mfa must raise when mfa_verified_at absent"
+        )
+        assert raised.status_code == 403, (
+            f"Cascade plan without fresh MFA must return 403, got {raised.status_code}"
+        )
+        detail = raised.detail
+        assert isinstance(detail, dict) and detail.get("error") == STEP_UP_ERROR_CODE, (
+            f"Expected detail.error={STEP_UP_ERROR_CODE!r}, got {detail!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cascade_set_user_plan_succeeds_with_fresh_mfa(self, migrated_pg):
+        """Cascading a plan to all user keys with fresh MFA in session must succeed.
+
+        Business rule: require_admin_with_fresh_mfa returns user_id when
+        mfa_verified_at is present and within the freshness window.
+        """
+        import time
+        from unittest.mock import MagicMock, patch
+
+        from starlette.requests import Request as StarletteRequest
+
+        import src.web_ui.auth as auth_mod
+
+        _seed_user(migrated_pg, username="admin_mfa_ok_c", is_admin=True)
+
+        # Build a fake request with an admin session AND a fresh mfa_verified_at
+        scope = {
+            "type": "http",
+            "method": "PATCH",
+            "path": "/api/admin/users/1/plan",
+            "headers": [],
+            "query_string": b"",
+            "session": {"mfa_verified_at": str(time.time())},  # fresh timestamp
+        }
+        fake_request = StarletteRequest(scope)
+
+        orig_bypass = auth_mod.is_test_bypass_active
+        orig_cuid = auth_mod.current_user_id
+        user_id_result: int | None = None
+        try:
+            auth_mod.is_test_bypass_active = lambda: False
+            auth_mod.current_user_id = lambda req: 1
+
+            mock_store = MagicMock()
+            mock_store.get_user_field.return_value = True  # is_admin=True
+
+            with patch("src.db.pg.auth_store", return_value=mock_store):
+                user_id_result = await auth_mod.require_admin_with_fresh_mfa(fake_request)
+        finally:
+            auth_mod.is_test_bypass_active = orig_bypass
+            auth_mod.current_user_id = orig_cuid
+
+        assert user_id_result == 1, (
+            "require_admin_with_fresh_mfa must return user_id=1 with fresh MFA,"
+            f" got {user_id_result}"
+        )
+
+    def test_cascade_set_user_plan_route_is_wired_to_fresh_mfa(self):
+        """ROUTE-wiring guard: PATCH /api/admin/users/{id}/plan must declare
+        require_admin_with_fresh_mfa in its dependency tree.
+
+        The helper-level tests above prove the dependency rejects a stale-MFA
+        session; this proves the route actually *uses* it. Reverting to plain
+        require_admin would make this test fail. Static introspection, so it is
+        independent of the middleware test-bypass / session ordering that makes
+        full-stack auth-gating tests order-sensitive.
+        """
+        from src.web_ui.auth import require_admin, require_admin_with_fresh_mfa
+
+        app = create_app()
+        route = _find_route(app, "/api/admin/users/{user_id}/plan", "PATCH")
+        calls = _collect_dependency_calls(route.dependant)
+        assert require_admin_with_fresh_mfa in calls, (
+            "PATCH users/{id}/plan must depend on require_admin_with_fresh_mfa"
+        )
+        assert require_admin not in calls, (
+            "Route must NOT use plain require_admin (fresh-MFA is required, #220)"
+        )
 
     @pytest.mark.asyncio
     async def test_cascade_invalidates_cache_per_key(self, migrated_pg):

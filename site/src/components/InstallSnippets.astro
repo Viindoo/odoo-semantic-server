@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // InstallSnippets.astro — 5-client install tabs
 // Pure CSS tab switching, no React dependency
+import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
 ---
 
 <section class="install-snippets w-full max-w-3xl mx-auto my-8" data-testid="cta-step-0">
@@ -44,7 +45,7 @@
   <!-- Claude Code -->
   <div class="tab-panel active" id="tab-claude" role="tabpanel">
     <p class="text-sm text-gray-600 mb-3">
-      Plugin install (recommended) — bundles MCP config (24 tools + 7 resources) + 15 persona skills:
+      Plugin install (recommended) — bundles MCP config ({TOOL_COUNT} tools + {RESOURCE_COUNT} resources) + 15 persona skills:
     </p>
     <pre class="code-block"><code>claude plugin marketplace add Viindoo/claude-plugins --scope user
 claude plugin install odoo-semantic@viindoo-plugins --scope user</code></pre>
