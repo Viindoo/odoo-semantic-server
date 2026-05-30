@@ -25,6 +25,7 @@ type Plan = {
   trial_days: number | null;
   prices: Record<string, number> | null;
   pricing_model: 'flat' | 'per_seat' | null;
+  min_seats: number | null;  // m13_016 — per-plan display SSOT
 };
 
 let plans: Plan[] = [];

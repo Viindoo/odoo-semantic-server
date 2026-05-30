@@ -21,6 +21,7 @@ interface Plan {
   trial_days: number | null;
   prices: Record<string, number> | null;  // per-currency map e.g. {"USD": 1900} — USD only for now (multi-currency deferred)
   pricing_model: 'flat' | 'per_seat' | null;  // m13_015 — "flat" or "per_seat"
+  min_seats: number | null;  // m13_016 — per-plan display SSOT; null = no minimum
 }
 
 interface Props {
@@ -60,6 +61,7 @@ interface EditState {
   trial_days: string;
   prices_json: string;  // JSON textarea; parsed before submit
   pricing_model: string;  // "flat" or "per_seat"
+  min_seats: string;      // integer or blank (blank = null, no minimum)
 }
 
 function EditModal({
@@ -85,6 +87,7 @@ function EditModal({
     trial_days: plan.trial_days !== null ? String(plan.trial_days) : '',
     prices_json: plan.prices ? JSON.stringify(plan.prices, null, 2) : '{}',
     pricing_model: plan.pricing_model ?? 'flat',
+    min_seats: plan.min_seats !== null && plan.min_seats !== undefined ? String(plan.min_seats) : '',
   });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -188,6 +191,19 @@ function EditModal({
     // Pricing model (flat | per_seat) — always included when present
     if (form.pricing_model === 'flat' || form.pricing_model === 'per_seat') {
       payload.pricing_model = form.pricing_model;
+    }
+
+    // Min seats — per-plan display SSOT (m13_016); blank = null (no minimum)
+    const minSeatsRaw = form.min_seats.trim();
+    if (minSeatsRaw !== '') {
+      const ms = parseInt(minSeatsRaw, 10);
+      if (isNaN(ms) || ms < 1) {
+        setFormError('Min seats must be a positive integer or blank (no minimum).');
+        return;
+      }
+      payload.min_seats = ms;
+    } else {
+      payload.min_seats = null;
     }
 
     setSaving(true);
@@ -332,6 +348,23 @@ function EditModal({
                 <option value="flat">flat — fixed price</option>
                 <option value="per_seat">per_seat — price × seats</option>
               </select>
+            </div>
+
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Min Seats (display)
+                <span className="ml-1 text-gray-400 font-normal">
+                  (blank = no minimum; synced with billing.team_min_seats enforcement setting)
+                </span>
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={form.min_seats}
+                onChange={(e) => field('min_seats', e.target.value)}
+                placeholder="e.g. 3 (team) or blank"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3">

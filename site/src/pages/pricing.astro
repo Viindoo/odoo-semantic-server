@@ -24,11 +24,11 @@ type Plan = {
   billing_interval: string | null;
   prices: Record<string, number> | null;
   pricing_model: 'flat' | 'per_seat';
+  min_seats: number | null;  // m13_016 — per-plan display SSOT; null = no minimum
 };
 
 // Fetch public plan tiers (no auth required)
 let plans: Plan[] = [];
-let teamMinSeats = 3; // default from catalogue
 let plansError: string | null = null;
 
 try {
@@ -36,10 +36,9 @@ try {
   if (res.ok) {
     const data = await res.json();
     plans = (data.plans ?? []) as Plan[];
-    // team_min_seats is top-level in the response (not inside any plan)
-    if (typeof data.team_min_seats === 'number') {
-      teamMinSeats = data.team_min_seats;
-    }
+    // Note: data.team_min_seats (top-level) is kept in the API response for
+    // backward-compat but the pricing page now reads per-plan min_seats (m13_016)
+    // via seatSubLabel(plan) — no global teamMinSeats variable needed here.
   } else {
     plansError = `Could not load pricing (${res.status}).`;
   }
@@ -142,7 +141,8 @@ function priceSuffix(plan: Plan): string {
 
 // Sub-label shown beneath the price for per-seat plans to clarify minimum cost.
 // Returns null for flat plans (no sub-label needed).
-function seatSubLabel(plan: Plan, minSeats: number): string | null {
+// Uses per-plan min_seats column (m13_016) as the display SSOT — no heuristics.
+function seatSubLabel(plan: Plan): string | null {
   if (!plan.pricing_model || plan.pricing_model !== 'per_seat') return null;
   if (plan.billing_interval === 'free' || !plan.billing_interval) return null;
 
@@ -154,20 +154,17 @@ function seatSubLabel(plan: Plan, minSeats: number): string | null {
     priceCents = plan.price_cents;
   }
 
-  // Team-like plans: min seats > 1 → show minimum commitment
-  // Use seat_limit to infer if this is team-tier (team has min seats requirement)
-  // We check against the API-provided teamMinSeats to determine if this plan
-  // has a seat minimum. The Team plan slug is NOT hardcoded — we use the
-  // presence of a minimum (minSeats > 1) AND whether the plan warrants that minimum.
-  // Convention: only the most-expensive per_seat plan gets the team_min_seats minimum.
-  const isTeamTier = plan.seat_limit !== null && plan.seat_limit !== undefined && plan.seat_limit > 5;
-  if (isTeamTier && minSeats > 1 && priceCents !== null) {
+  // Per-plan min_seats (m13_016) is the display SSOT. No seat_limit heuristic.
+  // min_seats > 1 → show minimum commitment sub-label.
+  // min_seats === 1 or null → "billed per seat" (no enforced minimum).
+  const minSeats = plan.min_seats;
+  if (minSeats !== null && minSeats !== undefined && minSeats > 1 && priceCents !== null) {
     const fromUsd = (minSeats * priceCents) / 100;
     const fromFormatted = `$${fromUsd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
     return `min. ${minSeats} seats — from ${fromFormatted}/mo`;
   }
 
-  // Pro-like per_seat plans: "billed per seat" (no seat minimum)
+  // per_seat plans with min_seats <= 1 or null: "billed per seat" (no seat minimum)
   return 'billed per seat';
 }
 
@@ -244,7 +241,7 @@ function planDescription(slug: string): string {
             : (checkoutUrl ? `Subscribe to ${plan.display_name}` : 'Join Waitlist');
           const features = planFeatures(plan);
           const suffix = priceSuffix(plan);
-          const subLabel = seatSubLabel(plan, teamMinSeats);
+          const subLabel = seatSubLabel(plan);
           return (
             <div
               class:list={[
