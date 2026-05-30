@@ -74,6 +74,18 @@ def _column_exists(conn, table: str, column: str) -> bool:
         return cur.fetchone() is not None
 
 
+def _column_data_type(conn, table: str, column: str) -> str | None:
+    """Return the data_type string from information_schema for a column."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT data_type FROM information_schema.columns"
+            " WHERE table_name = %s AND column_name = %s",
+            (table, column),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def _constraint_exists(conn, conname: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -254,6 +266,49 @@ class TestPlansNewColumns:
                 )
         migrated_pg.rollback()
 
+    # --- #3 BIGINT assertions ---
+
+    def test_price_cents_is_bigint(self, migrated_pg):
+        """plans.price_cents must be BIGINT (not INTEGER) — #3 money-critical."""
+        dtype = _column_data_type(migrated_pg, "plans", "price_cents")
+        assert dtype == "bigint", (
+            f"plans.price_cents must be BIGINT, got {dtype!r}. "
+            "VND whole-units can exceed INT4 2.1B max."
+        )
+
+    # --- #9 currency CHECK assertions ---
+
+    def test_plans_currency_iso4217_constraint_exists(self, migrated_pg):
+        """plans_currency_iso4217 CHECK constraint must exist — #9."""
+        assert _constraint_exists(migrated_pg, "plans_currency_iso4217"), (
+            "plans_currency_iso4217 CHECK constraint must exist after m13_014"
+        )
+
+    def test_plans_currency_check_rejects_invalid_value(self, migrated_pg):
+        """plans.currency CHECK must reject a value not matching ^[A-Z]{3}$ — #9."""
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO plans"
+                    " (slug, display_name, quota_calls_per_month, rate_limit_rpm,"
+                    "  currency)"
+                    " VALUES ('bad_currency_test', 'Bad Currency', 100, 30, 'us')"
+                )
+        migrated_pg.rollback()
+
+    def test_plans_currency_check_accepts_valid_iso(self, migrated_pg):
+        """plans.currency CHECK must accept valid ISO 4217 codes (USD, VND)."""
+        for code in ("USD", "VND", "EUR"):
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO plans"
+                    " (slug, display_name, quota_calls_per_month, rate_limit_rpm,"
+                    "  currency)"
+                    " VALUES (%s, %s, 100, 30, %s)",
+                    (f"currency_ok_{code.lower()}", f"Test {code}", code),
+                )
+            migrated_pg.rollback()
+
 
 # ---------------------------------------------------------------------------
 # T2: subscriptions table exists with right columns and constraints
@@ -277,6 +332,8 @@ class TestSubscriptionsTable:
             "cancelled_at", "created_at", "updated_at",
             # cancel_at_period_end — gộp từ m13_015 section 6.1
             "cancel_at_period_end",
+            # last_event_at — #5 monotonic guard for out-of-order webhook events
+            "last_event_at",
         ]
         for col in required:
             assert _column_exists(migrated_pg, "subscriptions", col), (
@@ -359,6 +416,118 @@ class TestSubscriptionsTable:
                 )
         migrated_pg.rollback()
 
+    # --- #3 BIGINT assertions ---
+
+    def test_amount_cents_is_bigint(self, migrated_pg):
+        """subscriptions.amount_cents must be BIGINT — #3 money-critical."""
+        dtype = _column_data_type(migrated_pg, "subscriptions", "amount_cents")
+        assert dtype == "bigint", (
+            f"subscriptions.amount_cents must be BIGINT, got {dtype!r}. "
+            "VND whole-units can exceed INT4 2.1B max."
+        )
+
+    # --- #5 last_event_at ---
+
+    def test_last_event_at_column_exists(self, migrated_pg):
+        """subscriptions.last_event_at TIMESTAMPTZ must exist — #5 monotonic guard."""
+        assert _column_exists(migrated_pg, "subscriptions", "last_event_at"), (
+            "subscriptions.last_event_at must exist after m13_014 (#5 out-of-order guard)"
+        )
+
+    def test_last_event_at_is_nullable(self, migrated_pg):
+        """subscriptions.last_event_at must be nullable (NULL until first webhook)."""
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT is_nullable FROM information_schema.columns"
+                " WHERE table_name = 'subscriptions'"
+                " AND column_name = 'last_event_at'"
+            )
+            row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "YES", (
+            "subscriptions.last_event_at must be nullable"
+        )
+
+    # --- #8 UNIQUE(source, external_ref) ---
+
+    def test_source_external_ref_unique_constraint_exists(self, migrated_pg):
+        """subscriptions_source_external_ref_key UNIQUE constraint must exist — #8."""
+        assert _constraint_exists(
+            migrated_pg, "subscriptions_source_external_ref_key"
+        ), "subscriptions_source_external_ref_key UNIQUE constraint must exist"
+
+    def test_composite_unique_rejects_same_source_and_ref(self, migrated_pg):
+        """UNIQUE(source, external_ref) must reject duplicate (source, external_ref) — #8."""
+        free = _plan_row(migrated_pg, "free")
+        assert free is not None
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                " VALUES (%s, 'polar', 'comp_uniq_001')",
+                (free["id"],),
+            )
+        migrated_pg.commit()
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                    " VALUES (%s, 'polar', 'comp_uniq_001')",
+                    (free["id"],),
+                )
+        migrated_pg.rollback()
+
+    def test_composite_unique_allows_same_ref_different_source(self, migrated_pg):
+        """UNIQUE(source, external_ref) must allow same external_ref across different sources."""
+        free = _plan_row(migrated_pg, "free")
+        assert free is not None
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                " VALUES (%s, 'polar', 'cross_vendor_001')",
+                (free["id"],),
+            )
+            cur.execute(
+                "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                " VALUES (%s, 'erp', 'cross_vendor_001')",
+                (free["id"],),
+            )
+        migrated_pg.commit()
+
+    # --- #9 currency CHECK ---
+
+    def test_subscriptions_currency_iso4217_constraint_exists(self, migrated_pg):
+        """subscriptions_currency_iso4217 CHECK constraint must exist — #9."""
+        assert _constraint_exists(
+            migrated_pg, "subscriptions_currency_iso4217"
+        ), "subscriptions_currency_iso4217 CHECK constraint must exist"
+
+    def test_subscriptions_currency_check_rejects_invalid(self, migrated_pg):
+        """subscriptions.currency CHECK must reject a value not matching ^[A-Z]{3}$ — #9."""
+        free = _plan_row(migrated_pg, "free")
+        assert free is not None
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO subscriptions (plan_id, currency)"
+                    " VALUES (%s, 'usd')",
+                    (free["id"],),
+                )
+        migrated_pg.rollback()
+
+    def test_subscriptions_currency_check_accepts_null(self, migrated_pg):
+        """subscriptions.currency is nullable — NULL must be accepted by the CHECK — #9."""
+        free = _plan_row(migrated_pg, "free")
+        assert free is not None
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subscriptions (plan_id, currency)"
+                " VALUES (%s, NULL) RETURNING id",
+                (free["id"],),
+            )
+            row = cur.fetchone()
+        migrated_pg.rollback()
+        assert row is not None, "NULL currency must be accepted"
+
 
 # ---------------------------------------------------------------------------
 # T3: billing_webhook_events table exists with right columns + UNIQUE
@@ -427,17 +596,23 @@ class TestBillingWebhookEventsTable:
 
 
 class TestExternalRefUnique:
-    """T4: subscriptions.external_ref UNIQUE constraint rejects duplicate values."""
+    """T4: UNIQUE(source, external_ref) composite constraint — #8.
 
-    def test_duplicate_external_ref_raises(self, migrated_pg):
-        """Inserting two subscriptions with the same external_ref must raise UniqueViolation."""
+    The old global external_ref UNIQUE has been replaced with a composite
+    UNIQUE(source, external_ref) so the same vendor order ID cannot bleed
+    across different billing sources (polar vs erp), while NULL external_ref
+    rows (admin/promo grants) are always allowed.
+    """
+
+    def test_duplicate_source_and_external_ref_raises(self, migrated_pg):
+        """Same (source, external_ref) pair must raise UniqueViolation — #8."""
         free = _plan_row(migrated_pg, "free")
         assert free is not None
 
         with migrated_pg.cursor() as cur:
             cur.execute(
-                "INSERT INTO subscriptions (plan_id, external_ref)"
-                " VALUES (%s, 'test_ext_ref_dup_001')",
+                "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                " VALUES (%s, 'polar', 'test_ext_ref_dup_001')",
                 (free["id"],),
             )
         migrated_pg.commit()
@@ -445,11 +620,29 @@ class TestExternalRefUnique:
         with pytest.raises(psycopg2.errors.UniqueViolation):
             with migrated_pg.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO subscriptions (plan_id, external_ref)"
-                    " VALUES (%s, 'test_ext_ref_dup_001')",
+                    "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                    " VALUES (%s, 'polar', 'test_ext_ref_dup_001')",
                     (free["id"],),
                 )
         migrated_pg.rollback()
+
+    def test_same_external_ref_different_source_is_allowed(self, migrated_pg):
+        """Same external_ref but different source must NOT raise — cross-vendor OK — #8."""
+        free = _plan_row(migrated_pg, "free")
+        assert free is not None
+
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                " VALUES (%s, 'polar', 'test_ext_ref_cross_001')",
+                (free["id"],),
+            )
+            cur.execute(
+                "INSERT INTO subscriptions (plan_id, source, external_ref)"
+                " VALUES (%s, 'erp', 'test_ext_ref_cross_001')",
+                (free["id"],),
+            )
+        migrated_pg.commit()
 
     def test_null_external_ref_allows_multiple_rows(self, migrated_pg):
         """NULL external_ref must NOT trigger UNIQUE violation (admin/promo grants)."""
@@ -700,4 +893,35 @@ class TestMigrationIdempotent:
             row = cur.fetchone()
         assert row is None, (
             "waitlist_emails_plan_check must be dropped by m13_014 (merged m13_017)"
+        )
+
+    def test_schema_review_fixes_present_after_double_run(self, clean_pg):
+        """Schema review fixes (#3/#5/#8/#9) survive a second run_migrations — idempotent."""
+        run_migrations(clean_pg)
+        run_migrations(clean_pg)
+
+        # #3 BIGINT
+        assert _column_data_type(clean_pg, "plans", "price_cents") == "bigint", (
+            "plans.price_cents must be BIGINT after double run"
+        )
+        assert _column_data_type(clean_pg, "subscriptions", "amount_cents") == "bigint", (
+            "subscriptions.amount_cents must be BIGINT after double run"
+        )
+
+        # #5 last_event_at
+        assert _column_exists(clean_pg, "subscriptions", "last_event_at"), (
+            "subscriptions.last_event_at must exist after double run"
+        )
+
+        # #8 UNIQUE(source, external_ref)
+        assert _constraint_exists(clean_pg, "subscriptions_source_external_ref_key"), (
+            "subscriptions_source_external_ref_key must exist after double run"
+        )
+
+        # #9 currency CHECKs
+        assert _constraint_exists(clean_pg, "plans_currency_iso4217"), (
+            "plans_currency_iso4217 must exist after double run"
+        )
+        assert _constraint_exists(clean_pg, "subscriptions_currency_iso4217"), (
+            "subscriptions_currency_iso4217 must exist after double run"
         )

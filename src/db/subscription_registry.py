@@ -92,7 +92,7 @@ class SubscriptionStore:
                         %s, %s, %s,
                         %s, %s, %s
                     )
-                    ON CONFLICT (external_ref) DO UPDATE SET
+                    ON CONFLICT (source, external_ref) DO UPDATE SET
                         status = EXCLUDED.status,
                         plan_id = EXCLUDED.plan_id,
                         seats = EXCLUDED.seats,
