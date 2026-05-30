@@ -43,6 +43,12 @@ def _public_plan_slugs(conn) -> set[str]:
     Derived from the DB so adding a new public plan never requires a code change
     to this allow-list.  Called with the same connection that join_waitlist already
     opens for the INSERT — no extra pool checkout.
+
+    WARNING: plans with is_public=FALSE are excluded from this allow-list.  If an
+    admin hides a plan from the pricing page (e.g. sets is_public=FALSE on 'free'),
+    that slug will be rejected by POST /api/waitlist — intentional, as the plan is
+    no longer publicly offered.  Admin-only plans (e.g. 'unlimited') should always
+    have is_public=FALSE.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -108,9 +114,11 @@ async def join_waitlist(body: WaitlistRequest, request: Request):
         pool = get_pool()
         with pool.checkout() as conn:
             # Derive allowed plans from DB (C4 — ADR-0039): no code change needed
-            # when a new public plan is added.
-            if plan is not None and plan not in _public_plan_slugs(conn):
-                allowed = sorted(_public_plan_slugs(conn))
+            # when a new public plan is added.  Call _public_plan_slugs once and
+            # reuse for both the membership check and the error message.
+            public_slugs = _public_plan_slugs(conn)
+            if plan is not None and plan not in public_slugs:
+                allowed = sorted(public_slugs)
                 return JSONResponse(
                     _json_safe({
                         "error": "invalid_plan",

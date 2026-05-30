@@ -25,7 +25,7 @@ from src.billing import activation
 from src.billing.activation import EntitlementGrant
 from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import require_admin
+from src.web_ui.auth import require_admin, require_admin_with_fresh_mfa
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/entitlements", tags=["admin-entitlements"])
@@ -89,19 +89,10 @@ def _resolve_plan_id(plan_slug: str) -> int:
 
 
 def _list_subscriptions(limit: int = 50, offset: int = 0) -> list[dict]:
-    """Fetch subscription rows ordered by created_at DESC."""
-    from psycopg2.extras import RealDictCursor
-
-    from src.db.pg import get_pool
-    pool = get_pool()
-    with pool.checkout() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT * FROM subscriptions ORDER BY created_at DESC LIMIT %s OFFSET %s",
-                (limit, offset),
-            )
-            rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    """Fetch subscription rows via subscription_store().list_all() (explicit column
+    projection + LEFT JOIN plans for plan_slug/plan_name — no SELECT *)."""
+    from src.db.pg import subscription_store
+    return subscription_store().list_all(limit=limit, offset=offset)
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +105,7 @@ def _list_subscriptions(limit: int = 50, offset: int = 0) -> list[dict]:
 async def grant(
     body: GrantBody,
     request: Request,
-    admin: int = Depends(require_admin),
+    admin: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
     """Grant a subscription to a user by email.
 
@@ -124,6 +115,11 @@ async def grant(
 
     Sets ``request.state.audit_target`` to the resulting subscription id so the
     ``@audit_action`` decorator captures it in the audit log.
+
+    Raises 422 when a business-rule constraint is violated (e.g. team plan
+    requires >= N seats, per :func:`activation._enforce_team_min_seats`) or when
+    the DB CHECK / FK rejects the insert — matches the belt-and-suspenders pattern
+    used by the ``update`` route (ADR-0039 I10).
     """
     plan_id = _resolve_plan_id(body.plan_slug)
     external_ref = body.external_ref or f"admin-{uuid4()}"
@@ -135,7 +131,18 @@ async def grant(
         seats=body.seats,
         buyer_email=str(body.email),
     )
-    sub_id = activation.grant_entitlement(grant_obj)
+    try:
+        sub_id = activation.grant_entitlement(grant_obj)
+    except ValueError as exc:
+        # Business-rule violation (e.g. team min-seats) — surface as 422, not 500.
+        raise HTTPException(422, str(exc)) from exc
+    except (CheckViolation, IntegrityError) as exc:
+        logger.warning(
+            "entitlement.grant: DB constraint violation plan_slug=%r email=%s — %s",
+            body.plan_slug, body.email, exc,
+        )
+        raise HTTPException(422, f"Invalid grant: {exc}") from exc
+
     request.state.audit_target = str(sub_id)
 
     logger.info(
@@ -151,7 +158,7 @@ async def grant(
 async def revoke(
     external_ref: str,
     request: Request,
-    admin: int = Depends(require_admin),
+    admin: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
     """Revoke (cancel) a subscription by external_ref.
 
@@ -179,7 +186,7 @@ async def update(
     external_ref: str,
     body: UpdateBody,
     request: Request,
-    admin: int = Depends(require_admin),
+    admin: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
     """Update plan, status, or seats of an existing subscription.
 

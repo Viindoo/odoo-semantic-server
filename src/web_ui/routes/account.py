@@ -302,7 +302,7 @@ async def cancel_my_subscription(request: Request):
     if uid is None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    from src.billing import polar_api
+    from src.billing import activation, polar_api
     from src.db.pg import subscription_store
 
     subs = subscription_store()
@@ -322,6 +322,10 @@ async def cancel_my_subscription(request: Request):
 
     external_ref = active["external_ref"]
     portal = _polar_portal_url()
+
+    # CR8: set audit_target BEFORE any side-effect so partial failures are logged
+    # with the correct subscription id in the audit log.
+    request.state.audit_target = str(active["id"])
 
     try:
         await polar_api.cancel_subscription(external_ref, at_period_end=True)
@@ -364,9 +368,12 @@ async def cancel_my_subscription(request: Request):
             status_code=502,
         )
 
-    # Polar confirmed the cancel → flip the local flag for instant UI feedback.
-    subs.schedule_cancellation(active["id"])
-    request.state.audit_target = str(active["id"])
+    # Polar confirmed the cancel → use revoke_entitlement(voluntary=True) as the
+    # sole-writer path (CR5 / ADR-0039).  voluntary=True schedules cancel-at-period-end
+    # so the user keeps access until current_period_end (owner decision #1).
+    # This is equivalent to subs.schedule_cancellation() but goes through the
+    # canonical entitlement write-path (activation layer) for consistency.
+    activation.revoke_entitlement(external_ref, reason="user-cancel", voluntary=True)
     _logger.info(
         "cancel_my_subscription: sub_id=%s scheduled cancel-at-period-end for "
         "user_id=%d (Polar confirmed)",
