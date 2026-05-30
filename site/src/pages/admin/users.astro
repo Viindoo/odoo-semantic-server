@@ -97,6 +97,8 @@ try {
 </AdminLayout>
 
 <script>
+  import { withStepUp } from '../../lib/mfaStepUp';
+
   function showFlash(msg: string, type: 'success' | 'error' = 'success') {
     const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
     if (!banner) return;
@@ -214,11 +216,12 @@ try {
 
       if (!confirm(`Apply plan "${planLabel}" to ALL API keys (active + inactive) of user "${username}"?\n\nThis will overwrite the current plan on every key.`)) return;
 
-      const res = await fetch(`/api/admin/users/${userId}/plan`, {
+      const res = await withStepUp(() => fetch(`/api/admin/users/${userId}/plan`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ plan_id: parseInt(planId, 10) }),
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const n = data.keys_updated ?? 0;

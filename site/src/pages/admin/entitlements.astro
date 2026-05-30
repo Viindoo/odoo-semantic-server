@@ -1,0 +1,79 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Admin Entitlements page — SSR (M10B P1, ADR-0039)
+// Middleware enforces requireAdmin before rendering this page.
+export const prerender = false;
+
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import SubscriptionsTable from '../../components/SubscriptionsTable.astro';
+import EntitlementsIsland from './_entitlements-island';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+type SubscriptionRow = {
+  id: number;
+  plan_slug: string | null;
+  plan_name: string | null;
+  buyer_email: string | null;
+  seats: number;
+  external_ref: string;
+  status: string;
+  source: string | null;
+  created_at: string | null;
+};
+
+let subsData: { subscriptions: SubscriptionRow[]; error?: string | null } = { subscriptions: [] };
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/entitlements?limit=50&offset=0`, {
+    headers: { cookie: cookieHeader },
+  });
+
+  if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  }
+  if (res.ok) {
+    subsData = await res.json();
+  } else {
+    subsData.error = `Could not load entitlements (HTTP ${res.status}).`;
+  }
+} catch {
+  subsData.error = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="Entitlements — Admin">
+  <!-- Flash banner -->
+  <div data-testid="flash-banner" hidden class="fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border"></div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Entitlements</h1>
+      <p class="text-sm text-gray-500 mt-1">Manage subscriptions and plan grants</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="text-xs bg-violet-100 text-violet-800 px-3 py-1 rounded-full font-medium">
+        {subsData.subscriptions.length} subscription{subsData.subscriptions.length !== 1 ? 's' : ''}
+      </span>
+      <!-- Grant button — triggers EntitlementsIsland via data-ent-grant-trigger -->
+      <button
+        data-ent-grant-trigger="true"
+        class="text-xs px-3 py-1.5 rounded-lg bg-viindoo-primary text-viindoo-bg-0 font-medium hover:opacity-90"
+      >
+        + Grant
+      </button>
+    </div>
+  </div>
+
+  <!-- EntitlementsIsland: handles Grant modal, Update modal, and Revoke confirm -->
+  <EntitlementsIsland client:load />
+
+  {subsData.error && (
+    <div data-testid="entitlements-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {subsData.error}
+    </div>
+  )}
+
+  <SubscriptionsTable subscriptions={subsData.subscriptions} />
+</AdminLayout>

@@ -274,6 +274,25 @@ export const onRequest = defineMiddleware(async (context, next) => {
     return response;
   }
 
+  // /admin/entitlements/* requires admin privilege — redirect non-admins (M10B P1, ADR-0039).
+  if (path === '/admin/entitlements' || path.startsWith('/admin/entitlements/')) {
+    const adminPayload = await requireAdmin(cookieHeader);
+    if (!adminPayload) {
+      const sessionPayload = await verifySession(cookieHeader);
+      if (!sessionPayload || !sessionPayload.ok) return _redirectWithHeaders('/login');
+      return _redirectWithHeaders('/account/api-keys?error=admin_required');
+    }
+    context.locals.user = {
+      username: adminPayload.username!,
+      is_admin: true,
+      email: adminPayload.email ?? '',
+      is_tenant_admin: adminPayload.is_tenant_admin ?? false,
+    };
+    const response = await next();
+    _addSecurityHeaders(response, path);
+    return response;
+  }
+
   // /admin/users/* requires admin privilege — redirect non-admins to dashboard.
   if (path === '/admin/users' || path.startsWith('/admin/users/')) {
     const adminPayload = await requireAdmin(cookieHeader);

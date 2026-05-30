@@ -1,0 +1,156 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SubscriptionsTable.astro — renders the admin entitlements table (M10B P1)
+// Columns: plan, buyer_email, seats, external_ref, status badge, created_at, actions.
+
+export interface SubscriptionRow {
+  id: number;
+  plan_slug: string | null;
+  plan_name: string | null;
+  buyer_email: string | null;
+  seats: number;
+  external_ref: string;
+  status: string;
+  source: string | null;
+  created_at: string | null;
+}
+
+export interface Props {
+  subscriptions: SubscriptionRow[];
+}
+
+const { subscriptions } = Astro.props;
+
+function fmtDate(ts: string | null | undefined): string {
+  if (!ts) return '—';
+  return ts.slice(0, 16).replace('T', ' ');
+}
+
+// Status badge colour mapping — mirrors subscription status enum (ADR-0039).
+function statusClass(status: string): string {
+  switch (status) {
+    case 'active':    return 'bg-green-100 text-green-800';
+    case 'trialing':  return 'bg-blue-100 text-blue-800';
+    case 'pending':   return 'bg-yellow-100 text-yellow-800';
+    case 'past_due':  return 'bg-orange-100 text-orange-800';
+    case 'cancelled': return 'bg-gray-100 text-gray-500';
+    case 'expired':   return 'bg-red-100 text-red-700';
+    case 'refunded':  return 'bg-purple-100 text-purple-700';
+    default:          return 'bg-gray-100 text-gray-500';
+  }
+}
+---
+
+{subscriptions.length === 0 ? (
+  <div data-testid="subscriptions-empty-state" class="bg-white rounded-xl border border-gray-200 shadow-sm py-12 text-center text-gray-500">
+    <p class="text-3xl mb-2">🎟</p>
+    <p class="font-medium">No subscriptions found.</p>
+    <p class="text-xs mt-1">Use "Grant" to create the first entitlement.</p>
+  </div>
+) : (
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+          <tr>
+            <th class="px-4 py-3 text-left">Plan</th>
+            <th class="px-4 py-3 text-left">Buyer Email</th>
+            <th class="px-4 py-3 text-left">Seats</th>
+            <th class="px-4 py-3 text-left">External Ref</th>
+            <th class="px-4 py-3 text-left">Status</th>
+            <th class="px-4 py-3 text-left">Source</th>
+            <th class="px-4 py-3 text-left">Created</th>
+            <th class="px-4 py-3 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {subscriptions.map((sub) => (
+            <tr
+              data-testid="subscription-row"
+              data-testid-id={`subscription-row-${sub.id}`}
+              class="hover:bg-gray-50"
+            >
+              <!-- Plan -->
+              <td class="px-4 py-3 font-medium text-gray-800">
+                {sub.plan_name ?? sub.plan_slug ?? <span class="text-gray-300">—</span>}
+                {sub.plan_slug && sub.plan_name && sub.plan_name !== sub.plan_slug && (
+                  <span class="ml-1 text-xs text-gray-400">({sub.plan_slug})</span>
+                )}
+              </td>
+
+              <!-- Buyer Email -->
+              <td class="px-4 py-3 text-gray-500 text-xs">
+                {sub.buyer_email ?? <span class="text-gray-300">—</span>}
+              </td>
+
+              <!-- Seats -->
+              <td class="px-4 py-3 text-gray-600 text-xs">
+                {sub.seats}
+              </td>
+
+              <!-- External Ref -->
+              <td class="px-4 py-3 text-gray-400 text-xs font-mono max-w-[180px]">
+                <span class="truncate block" title={sub.external_ref}>
+                  {sub.external_ref}
+                </span>
+              </td>
+
+              <!-- Status badge -->
+              <td class="px-4 py-3">
+                <span
+                  data-testid={`badge-status-${sub.id}`}
+                  class={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusClass(sub.status)}`}
+                >
+                  {sub.status}
+                </span>
+              </td>
+
+              <!-- Source -->
+              <td class="px-4 py-3 text-gray-400 text-xs">
+                {sub.source ?? '—'}
+              </td>
+
+              <!-- Created at -->
+              <td class="px-4 py-3 text-gray-400 text-xs">
+                {fmtDate(sub.created_at)}
+              </td>
+
+              <!-- Actions -->
+              <td class="px-4 py-3 text-right">
+                <div class="flex items-center justify-end gap-2 flex-wrap">
+                  <!-- Update button — triggers EntitlementsIsland via data-ent-update-trigger -->
+                  <button
+                    data-testid={`update-sub-button-${sub.id}`}
+                    data-ent-update-trigger="true"
+                    data-external-ref={sub.external_ref}
+                    data-plan-slug={sub.plan_slug ?? ''}
+                    data-status={sub.status}
+                    data-seats={String(sub.seats)}
+                    class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Update
+                  </button>
+                  <!-- Revoke button — triggers EntitlementsIsland via data-ent-revoke-trigger -->
+                  <button
+                    data-testid={`revoke-sub-button-${sub.id}`}
+                    data-ent-revoke-trigger="true"
+                    data-external-ref={sub.external_ref}
+                    data-buyer-email={sub.buyer_email ?? ''}
+                    disabled={sub.status === 'cancelled' || sub.status === 'expired'}
+                    class={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
+                      sub.status === 'cancelled' || sub.status === 'expired'
+                        ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200'
+                        : 'bg-red-50 hover:bg-red-100 text-red-700'
+                    }`}
+                  >
+                    Revoke
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+)}

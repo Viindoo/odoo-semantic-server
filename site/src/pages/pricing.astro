@@ -7,6 +7,7 @@ export const prerender = false;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
 import { FASTAPI_BASE } from '../lib/fastapi';
+import { TOOL_COUNT } from '../lib/constants';
 
 type Plan = {
   id: number;
@@ -115,7 +116,7 @@ function planFeatures(plan: Plan): string[] {
   if (plan.seat_limit && plan.seat_limit > 1) {
     features.push(`Up to ${plan.seat_limit} seats`);
   }
-  features.push('All 24 MCP tools');
+  features.push(`All ${TOOL_COUNT} MCP tools`);
   return features;
 }
 

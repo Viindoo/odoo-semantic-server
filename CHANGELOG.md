@@ -4,6 +4,33 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added / Changed / Security — Billing & admin follow-ups from PR #219 (fix/issue-220-billing-followups)
+
+Resolves issue #220 (three follow-ups deferred from PR #219), shipped as one PR.
+Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
+
+- **Security (#2) — step-up MFA on plan-assignment routes.** `PATCH
+  /api/admin/api-keys/{key_id}/plan` and `PATCH /api/admin/users/{user_id}/plan`
+  now require `require_admin_with_fresh_mfa` (was plain `require_admin`),
+  matching entitlement grant/revoke/update and plan price/quota edits — assigning
+  a paid plan is entitlement-sensitive. Frontend `_api-keys-overrides-island.tsx`
+  and `users.astro` wrap the plan fetch in `withStepUp(...)` so a stale-MFA admin
+  gets the step-up modal instead of a dead 403. Guarded by FastAPI
+  dependency-tree introspection tests (fail if the dependency is downgraded).
+- **Admin UX (#1) — `/admin/entitlements` CRUD UI.** New Astro page +
+  `SubscriptionsTable.astro` + `_entitlements-island.tsx` for the existing
+  Entitlement Activation API (list / grant / revoke / update); all mutations go
+  through `withStepUp` (backend requires fresh MFA). Adds the `Entitlements` nav
+  entry (`AdminLayout`) and an admin-only middleware guard for
+  `/admin/entitlements*`. No backend route changes.
+- **Maintainability (#3) — single source of truth for tool/resource count.**
+  New `site/src/lib/constants.ts` (`TOOL_COUNT`, `RESOURCE_COUNT`); the six
+  hardcoded "24 tools / 7 resources" strings on the marketing pages (Hero,
+  InstallSnippets, index, pricing) now import it. `tests/test_tool_count_sync.py`
+  asserts the constants match the live MCP surface (`mcp._tool_manager._tools`,
+  `mcp._resource_manager._templates`) so drift fails CI. Landing page stays
+  static (`prerender = true`); no `/health` / SSR change.
+
 ### Added — M10B P1 billing: Entitlement Activation API + Polar webhook + claim-on-login (feat/m10b-p1-billing)
 
 - **Migration `m13_014_billing_p1.sql`** (required on deploy). Three schema additions, all
