@@ -18,6 +18,7 @@ Exempt paths (no auth required):
     /api/waitlist          POST (public signup — rate-limited; no auth needed)
     /api/health            Uptime monitoring (pre-launch checklist §10.5)
     /health                Health probe (if present on this port)
+    /api/site-config       GET (public site settings: helpdesk_url + version; WI-1)
     /openapi.json          FastAPI schema (intentionally public — used by
                            tests/browser/conftest.py api_server fixture for
                            readiness polling, and by external API consumers)
@@ -80,6 +81,7 @@ _EXEMPT_EXACT = {
     "/api/waitlist",
     "/api/webhooks/polar",   # public HMAC-verified endpoint (ADR-0039 §4.3)
     "/api/plans",            # public pricing page endpoint (ADR-0039 §4.3)
+    "/api/site-config",      # public site config (helpdesk_url + version; WI-1)
 }
 
 # API paths that deliver MFA setup — exempt from MFA enforcement check

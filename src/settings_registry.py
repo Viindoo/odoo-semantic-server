@@ -205,6 +205,19 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
             "CTA. Frontend reads this; empty = no per-tier checkout link."
         ),
     ),
+
+    # support category (WI-1 — pricing UX overhaul)
+    SettingDef(
+        "support.helpdesk_url", "support", "str",
+        "https://viindoo.com/ticket/team/88",
+        {},
+        description=(
+            "Public helpdesk/ticket URL surfaced on UI-facing contact touchpoints "
+            "(pricing FAQ/footer, account claim error panel). "
+            "Change this when the Viindoo support-team ID or platform changes — "
+            "a single admin PATCH takes effect site-wide within the 60s TTL."
+        ),
+    ),
 ]
 
 

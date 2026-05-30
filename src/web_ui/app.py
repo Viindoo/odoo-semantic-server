@@ -288,6 +288,11 @@ def create_app() -> FastAPI:
 
     app.include_router(plans.router)
 
+    # WI-1: Public site config — GET /api/site-config (no auth; helpdesk_url + version)
+    from src.web_ui.routes import site_config
+
+    app.include_router(site_config.router)
+
     # M10B P1: Polar webhook sink — POST /api/webhooks/polar (public, HMAC-verified; ADR-0039)
     from src.web_ui.routes import webhooks
 

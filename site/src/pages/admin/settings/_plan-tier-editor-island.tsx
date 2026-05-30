@@ -20,6 +20,7 @@ interface Plan {
   billing_interval: 'free' | 'monthly' | 'annual' | 'one_time' | null;
   trial_days: number | null;
   prices: Record<string, number> | null;  // per-currency map e.g. {"USD": 1900} — USD only for now (multi-currency deferred)
+  pricing_model: 'flat' | 'per_seat' | null;  // m13_015 — "flat" or "per_seat"
 }
 
 interface Props {
@@ -58,6 +59,7 @@ interface EditState {
   billing_interval: string;
   trial_days: string;
   prices_json: string;  // JSON textarea; parsed before submit
+  pricing_model: string;  // "flat" or "per_seat"
 }
 
 function EditModal({
@@ -82,6 +84,7 @@ function EditModal({
     billing_interval: plan.billing_interval ?? 'free',
     trial_days: plan.trial_days !== null ? String(plan.trial_days) : '',
     prices_json: plan.prices ? JSON.stringify(plan.prices, null, 2) : '{}',
+    pricing_model: plan.pricing_model ?? 'flat',
   });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -180,6 +183,11 @@ function EditModal({
     }
     if (parsedPrices !== undefined) {
       payload.prices = parsedPrices;
+    }
+
+    // Pricing model (flat | per_seat) — always included when present
+    if (form.pricing_model === 'flat' || form.pricing_model === 'per_seat') {
+      payload.pricing_model = form.pricing_model;
     }
 
     setSaving(true);
@@ -310,6 +318,22 @@ function EditModal({
           {/* Pricing section */}
           <div className="border-t border-gray-100 pt-3">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Pricing</p>
+
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Pricing Model
+                <span className="ml-1 text-gray-400 font-normal">(flat = fixed price; per_seat = price × seats)</span>
+              </label>
+              <select
+                value={form.pricing_model}
+                onChange={(e) => field('pricing_model', e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+              >
+                <option value="flat">flat — fixed price</option>
+                <option value="per_seat">per_seat — price × seats</option>
+              </select>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -452,6 +476,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">RPM</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Seats</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Price</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Model</th>
                 <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Public</th>
                 <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
               </tr>
@@ -459,7 +484,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
             <tbody className="divide-y divide-gray-100">
               {plans.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400 text-sm">
                     No plans found.
                   </td>
                 </tr>
@@ -485,6 +510,11 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                       {plan.price_cents !== null
                         ? `${plan.price_cents} ${plan.currency ?? ''}`
                         : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <code className="text-xs font-mono text-gray-600">
+                        {plan.pricing_model ?? 'flat'}
+                      </code>
                     </td>
                     <td className="px-4 py-3 text-center">
                       {plan.is_public ? (

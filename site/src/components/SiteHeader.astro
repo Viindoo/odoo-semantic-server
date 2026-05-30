@@ -1,0 +1,153 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+/** Shared site header — sticky dark nav with desktop links + mobile drawer.
+ *
+ *  Extracted from site/src/pages/index.astro (lines 49-133) and made
+ *  cross-page by using absolute anchors (/#showcase, /#benchmark, /#install).
+ *  The homepage can still pass currentPath="/" — links will point to the same
+ *  absolute anchors, which browsers resolve correctly on the home page.
+ *
+ *  Props:
+ *    currentPath  - Astro.url.pathname, used to highlight the active nav item.
+ *                   Default '/'. Optional — omit on pages where active-state
+ *                   is not needed. */
+import { NAV_ITEMS, NAV_CTA } from '../lib/nav';
+
+export interface Props {
+  currentPath?: string;
+}
+
+const { currentPath = '/' } = Astro.props;
+
+/** Returns true if the given href matches the current page path. */
+function isActive(href: string): boolean {
+  // Hash-only absolute anchors (/#showcase) are never "active" on sub-pages —
+  // they navigate to /, not to the current page. Only exact path matches count.
+  if (href.startsWith('/#')) return false;
+  // Strip trailing slash for comparison, but treat '/' as exact.
+  const normalized = href.replace(/\/$/, '') || '/';
+  const current    = currentPath.replace(/\/$/, '') || '/';
+  return normalized === current;
+}
+---
+
+<nav
+  aria-label="Main navigation"
+  class="fixed top-0 left-0 right-0 z-50 backdrop-blur bg-viindoo-bg-0/70 border-b border-white/5"
+>
+  <div class="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
+    <!-- Logo / brand -->
+    <a
+      href="/"
+      class="inline-flex items-center gap-3 font-display font-bold text-viindoo-on-dark text-[15px] tracking-tight hover:text-viindoo-primary transition-colors duration-200"
+    >
+      <img
+        src="/logo-mark-ondark.svg"
+        alt="OSM"
+        class="w-7 h-7 flex-shrink-0"
+        aria-hidden="true"
+      />
+      Odoo Semantic
+      <span class="font-mono text-[10px] text-viindoo-primary tracking-widest mt-0.5 hidden sm:block">MCP</span>
+    </a>
+
+    <!-- Desktop nav + CTA -->
+    <div class="flex items-center gap-6 lg:gap-8 text-sm font-medium text-viindoo-on-dark-muted">
+      {NAV_ITEMS.map((item) => (
+        <a
+          href={item.href}
+          class:list={[
+            'hidden md:block transition-colors duration-200',
+            isActive(item.href)
+              ? 'text-viindoo-on-dark'
+              : 'hover:text-viindoo-on-dark',
+          ]}
+          aria-current={isActive(item.href) ? 'page' : undefined}
+        >
+          {item.label}
+        </a>
+      ))}
+
+      <!-- Mobile hamburger toggle -->
+      <button
+        id="site-header-menu-btn"
+        aria-expanded="false"
+        aria-controls="site-header-mobile-menu"
+        aria-label="Open navigation menu"
+        class="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-lg text-viindoo-on-dark-muted hover:text-viindoo-on-dark hover:bg-white/5 transition-colors duration-200"
+      >
+        <svg id="site-header-icon-open" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="3" y1="6" x2="21" y2="6" />
+          <line x1="3" y1="12" x2="21" y2="12" />
+          <line x1="3" y1="18" x2="21" y2="18" />
+        </svg>
+        <svg id="site-header-icon-close" class="w-5 h-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+
+      <!-- CTA button -->
+      <a
+        href={NAV_CTA.href}
+        class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-4 py-2 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
+      >
+        {NAV_CTA.label}
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12h14M13 6l6 6-6 6" />
+        </svg>
+      </a>
+    </div>
+  </div>
+
+  <!-- Mobile nav drawer (hidden by default, toggled via JS below) -->
+  <div
+    id="site-header-mobile-menu"
+    class="hidden md:hidden border-t bg-viindoo-bg-0/95 backdrop-blur px-6 py-4"
+    style="border-color: rgba(230,242,244,0.08);"
+    aria-label="Mobile navigation"
+  >
+    <nav class="flex flex-col gap-4 text-sm font-medium text-viindoo-on-dark-muted">
+      {NAV_ITEMS.map((item) => (
+        <a
+          href={item.href}
+          class:list={[
+            'transition-colors duration-200',
+            isActive(item.href) ? 'text-viindoo-on-dark' : 'hover:text-viindoo-on-dark',
+          ]}
+          aria-current={isActive(item.href) ? 'page' : undefined}
+        >
+          {item.label}
+        </a>
+      ))}
+    </nav>
+  </div>
+</nav>
+
+<script>
+  (function () {
+    const btn       = document.getElementById('site-header-menu-btn');
+    const menu      = document.getElementById('site-header-mobile-menu');
+    const iconOpen  = document.getElementById('site-header-icon-open');
+    const iconClose = document.getElementById('site-header-icon-close');
+    if (!btn || !menu || !iconOpen || !iconClose) return;
+
+    btn.addEventListener('click', function () {
+      const expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', String(!expanded));
+      menu.classList.toggle('hidden', expanded);
+      iconOpen.classList.toggle('hidden', !expanded);
+      iconClose.classList.toggle('hidden', expanded);
+    });
+
+    // Close drawer when any link inside it is clicked.
+    menu.querySelectorAll('a').forEach(function (a) {
+      a.addEventListener('click', function () {
+        btn.setAttribute('aria-expanded', 'false');
+        menu.classList.add('hidden');
+        iconOpen.classList.remove('hidden');
+        iconClose.classList.add('hidden');
+      });
+    });
+  })();
+</script>
