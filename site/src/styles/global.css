@@ -27,6 +27,9 @@
     --viindoo-success: #00B365;
     --viindoo-warning: #C99700;
     --viindoo-info: #0099E6;
+    /* danger — WCAG AA on white: #C0331F = 5.74:1 */
+    --viindoo-danger: #C0331F;
+    --viindoo-danger-deep: #9A2817;
     --viindoo-dark: #21272B;
     --viindoo-body: #282F33;
     --viindoo-muted: #6B6D70;

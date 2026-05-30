@@ -36,6 +36,9 @@ interface Props {
 function flash(msg: string, isError = false) {
   const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
   if (!el) return;
+  // Ensure live-region semantics are present so screen readers announce the message.
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
   el.textContent = msg;
   el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
     isError

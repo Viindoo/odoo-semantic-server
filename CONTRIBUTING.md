@@ -25,6 +25,8 @@ Tài liệu này dành cho developer muốn contribute hoặc phát triển thê
 
 ## Setup Lần Đầu
 
+> **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
+
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-server
 cd odoo-semantic-server
@@ -525,6 +527,8 @@ The Claude Code plugin has moved to the [Viindoo/odoo-mcp-client](https://github
 Muốn test MCP local với Claude Code (không cần đợi production deploy)? 5 phút setup.
 
 ### 1. Clone + cài deps + bootstrap DB
+
+> **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
 
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-server

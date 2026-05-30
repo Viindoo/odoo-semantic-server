@@ -3,6 +3,11 @@
 
 declare namespace App {
   interface Locals {
-    user: { username: string; is_admin: boolean } | null;
+    user: {
+      username: string;
+      is_admin: boolean;
+      email: string;
+      is_tenant_admin: boolean;
+    } | null;
   }
 }

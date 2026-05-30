@@ -35,22 +35,25 @@ export const GET: APIRoute = async ({ request, cookies }) => {
     const state = url.searchParams.get('state');
     const storedState = cookies.get('oauth_state')?.value;
 
-    // F5 — mandatory: validate state (CSRF)
+    // Read all single-use OAuth cookies BEFORE any early return, then consume
+    // them immediately, so they are single-use on EVERY exit path (success /
+    // 403 / error). A stale value (600s TTL) left behind by an early 403 could
+    // misroute a later, unrelated OAuth flow.
+    //   - oauth_from   : set by init if ?from=signup
+    //   - oauth_return : set by init if ?return= was present and safe (WS1)
+    const oauthFrom = cookies.get('oauth_from')?.value ?? '';
+    const oauthReturn = cookies.get('oauth_return')?.value ?? '';
+    cookies.delete('oauth_state', { path: '/' });
+    cookies.delete('oauth_from', { path: '/' });
+    cookies.delete('oauth_return', { path: '/' });
+
+    // F5 — mandatory: validate state (CSRF). Runs AFTER the single-use cookies
+    // are consumed above so the 403 path leaves nothing stale.
     if (!code || !state || !storedState || state !== storedState) {
         return new Response('Invalid OAuth callback: state mismatch or missing parameters', {
             status: 403,
         });
     }
-
-    // Read oauth_from (set by init if ?from=signup) BEFORE any early return so
-    // we can consume it unconditionally — it must be single-use on every exit
-    // path (success / 403 / error), otherwise a stale value (600s TTL) could
-    // misroute a later, unrelated error.
-    const oauthFrom = cookies.get('oauth_from')?.value ?? '';
-
-    // Consume state + from cookies immediately (single-use)
-    cookies.delete('oauth_state', { path: '/' });
-    cookies.delete('oauth_from', { path: '/' });
 
     let tokens;
     try {
@@ -135,5 +138,5 @@ export const GET: APIRoute = async ({ request, cookies }) => {
         return new Response('Internal error contacting API', { status: 502 });
     }
 
-    return buildOAuthCallbackResponse(apiRes, oauthFrom, '[OAuth/github callback]');
+    return buildOAuthCallbackResponse(apiRes, oauthFrom, '[OAuth/github callback]', oauthReturn);
 };

@@ -30,17 +30,22 @@ import { resolveAuthLanding } from './auth-landing';
  *   - 409   → redirect /login?error=email_conflict
  *   - 403 signup_disabled → redirect to oauthFrom-origin page + ?error=signup_disabled
  *   - other error → redirect /login?error=oauth_failed
- *   - success → parse is_admin, resolveAuthLanding, forward Set-Cookie, redirect
+ *   - success → parse is_admin, resolveAuthLanding(isAdmin, oauthReturn),
+ *               forward Set-Cookie, redirect
  *
- * @param apiRes    - The Response from FastAPI /api/auth/oauth-login (already
- *                    awaited; body NOT yet consumed by the caller).
- * @param oauthFrom - Value of the `oauth_from` cookie ('signup' | '').
- * @param logPrefix - Provider-specific log prefix, e.g. '[OAuth/google callback]'.
+ * @param apiRes      - The Response from FastAPI /api/auth/oauth-login (already
+ *                      awaited; body NOT yet consumed by the caller).
+ * @param oauthFrom   - Value of the `oauth_from` cookie ('signup' | '').
+ * @param logPrefix   - Provider-specific log prefix, e.g. '[OAuth/google callback]'.
+ * @param oauthReturn - Value of the `oauth_return` cookie (validated safe path | '').
+ *                      Forwarded to resolveAuthLanding so the user returns to the
+ *                      page they originally tried to visit (WS1).
  */
 export async function buildOAuthCallbackResponse(
     apiRes: Response,
     oauthFrom: string,
     logPrefix: string,
+    oauthReturn: string = '',
 ): Promise<Response> {
     if (!apiRes.ok) {
         // Read body once as text; parse JSON separately (stream can only be read once).
@@ -74,8 +79,11 @@ export async function buildOAuthCallbackResponse(
 
     // Parse is_admin from FastAPI success body to determine correct landing page.
     // Guard against parse failure — default to non-admin landing (safest fallback).
+    // WS1: forward oauthReturn (already CWE-601-validated at init time) so the
+    // user lands on the page they originally tried to visit rather than the
+    // role default. resolveAuthLanding applies its own guard as belt-and-suspenders.
     const body = await apiRes.json().catch(() => ({ is_admin: false })) as { is_admin?: boolean };
-    const landing = resolveAuthLanding(body.is_admin === true);
+    const landing = resolveAuthLanding(body.is_admin === true, oauthReturn || undefined);
 
     // Forward session cookie from FastAPI → browser, then redirect to role-aware landing
     const setCookieHeader = apiRes.headers.get('set-cookie');

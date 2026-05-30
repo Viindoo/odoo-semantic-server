@@ -84,12 +84,22 @@ class TestNavigation:
         page.wait_for_load_state("load")
         assert "/admin/operations" in page.url
 
-    def test_logout_nav_link_present(self, astro_server, clean_browser, page):
-        """nav-logout link is present in the admin sidebar."""
+    def test_logout_reachable_via_user_menu(self, astro_server, clean_browser, page):
+        """Logout is reachable from the admin chrome via the avatar dropdown.
+
+        Logout moved out of the bottom-left sidebar into the avatar user-menu
+        dropdown. The business rule protected here is "an authenticated user can
+        always log out from the admin UI" — so we open the dropdown and assert
+        the logout item is visible and points at /admin/logout.
+        """
         page.goto(f"{astro_server}{ADMIN_BASE}/")
         page.wait_for_load_state("load")
 
-        expect(page.get_by_test_id("nav-logout")).to_be_visible(timeout=5000)
+        # Logout item lives inside the dropdown, hidden until the avatar opens it.
+        page.get_by_test_id("user-menu-trigger").click()
+        logout = page.get_by_test_id("user-menu-logout")
+        expect(logout).to_be_visible(timeout=5000)
+        assert logout.get_attribute("href") == "/admin/logout"
 
 
 class TestAdminRouting:

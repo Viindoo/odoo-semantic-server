@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import BaseLayout from './BaseLayout.astro';
 import StepUpMfaModal from '../components/StepUpMfaModal';
+import MobileSidebar from '../components/MobileSidebar.astro';
+import UserMenu from '../components/UserMenu';
+import { NAV_ICONS as ICONS } from '../lib/navIcons';
 
 export interface Props {
   title?: string;
@@ -9,97 +12,115 @@ export interface Props {
 
 const { title = 'Admin — Odoo Semantic MCP' } = Astro.props;
 
+// `icon` is a key into the inline SVG map below (L12 — emoji replaced by
+// consistent stroke-based line icons).
 const navItems = [
-  { id: 'dashboard', label: 'Dashboard', href: '/admin/', icon: '⬛' },
-  { id: 'repos', label: 'Repositories', href: '/admin/repos', icon: '📦' },
-  { id: 'api-keys', label: 'API Keys', href: '/admin/api-keys', icon: '🔑' },
-  { id: 'ssh-keys', label: 'SSH Keys', href: '/admin/ssh-keys', icon: '🔐' },
-  { id: 'operations', label: 'Operations', href: '/admin/operations', icon: '⚙️' },
-  { id: 'security', label: 'Security', href: '/admin/security', icon: '🛡️' },
-  { id: 'users', label: 'Users', href: '/admin/users', icon: '👥' },
-  { id: 'tenants', label: 'Tenants', href: '/admin/tenants', icon: 'T' },
-  { id: 'audit-log', label: 'Audit Log', href: '/admin/audit-log', icon: '📋' },
-  { id: 'settings', label: 'Settings', href: '/admin/settings', icon: '🛠️' },
+  { id: 'dashboard', label: 'Dashboard', href: '/admin/', icon: 'dashboard' },
+  { id: 'repos', label: 'Repositories', href: '/admin/repos', icon: 'box' },
+  { id: 'api-keys', label: 'API Keys', href: '/admin/api-keys', icon: 'key' },
+  { id: 'ssh-keys', label: 'SSH Keys', href: '/admin/ssh-keys', icon: 'lock' },
+  { id: 'operations', label: 'Operations', href: '/admin/operations', icon: 'cog' },
+  { id: 'security', label: 'Security', href: '/admin/security', icon: 'shield' },
+  { id: 'users', label: 'Users', href: '/admin/users', icon: 'users' },
+  { id: 'tenants', label: 'Tenants', href: '/admin/tenants', icon: 'building' },
+  { id: 'audit-log', label: 'Audit Log', href: '/admin/audit-log', icon: 'list' },
+  { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'sliders' },
 ];
 
 const currentPath = Astro.url.pathname;
 const currentUser = Astro.locals.user;
 const displayName = currentUser?.username ?? 'Admin';
 const displayBadge = currentUser?.is_admin === false ? 'USER' : 'ADMIN';
-const avatarLetter = displayName.charAt(0).toUpperCase();
+
+// L12 — inline SVG line-icon map (stroke="currentColor", 20px, aria-hidden via
+// wrapping <span>). Keys match navItems[].icon.
+// Nav icons sourced from the shared SSOT (site/src/lib/navIcons.ts).
 ---
 
-<BaseLayout title={title}>
+<BaseLayout title={title} provideMain={false}>
+  <a
+    href="#main-content"
+    class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-viindoo-primary focus:text-viindoo-bg-0 focus:font-medium focus:shadow-lg"
+  >
+    Skip to main content
+  </a>
   <div class="flex h-screen bg-gray-100">
-    <!-- Sidebar -->
-    <aside class="w-64 flex-shrink-0 bg-gray-900 text-white flex flex-col">
-      <!-- Logo / Brand -->
-      <div class="flex items-center gap-3 px-6 py-5 border-b border-gray-700">
-        <img src="/logo-mark-ondark.svg" alt="Logo" class="w-8 h-8" />
-        <span class="font-semibold text-sm leading-tight">
-          Odoo Semantic<br />
-          <span class="text-gray-400 font-normal">MCP Admin</span>
-        </span>
-      </div>
+    <!-- Sidebar (responsive off-canvas < md) -->
+    <MobileSidebar>
+      <aside class="w-64 h-full flex-shrink-0 bg-gray-900 text-white flex flex-col">
+        <!-- Logo / Brand -->
+        <div class="flex items-center gap-3 px-6 py-5 border-b border-gray-700">
+          <img src="/logo-mark-ondark.svg" alt="Logo" class="w-8 h-8" />
+          <span class="font-semibold text-sm leading-tight">
+            Odoo Semantic<br />
+            <span class="text-gray-400 font-normal">MCP Admin</span>
+          </span>
+        </div>
 
-      <!-- Navigation -->
-      <nav class="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => {
-          // Dashboard (`/admin/`) is active only on the exact admin root, otherwise
-          // every /admin/* path would highlight Dashboard alongside the real section.
-          const isActive =
-            item.href === '/admin/'
-              ? currentPath === '/admin' || currentPath === '/admin/'
-              : currentPath.startsWith(item.href);
-          return (
-            <a
-              href={item.href}
-              data-testid={`nav-${item.id}`}
-              class:list={[
-                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-viindoo-primary text-viindoo-bg-0'
-                  : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-              ]}
-            >
-              <span class="text-base leading-none" aria-hidden="true">{item.icon}</span>
-              {item.label}
-            </a>
-          );
-        })}
-      </nav>
-
-      <!-- Logout -->
-      <div class="px-4 py-4 border-t border-gray-700">
-        <a
-          href="/admin/logout"
-          data-testid="nav-logout"
-          class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 hover:bg-gray-800 hover:text-white transition-colors w-full"
-        >
-          <span class="text-base leading-none" aria-hidden="true">🚪</span>
-          Logout
-        </a>
-      </div>
-    </aside>
+        <!-- Navigation -->
+        <nav class="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
+          {navItems.map((item) => {
+            // Dashboard (`/admin/`) is active only on the exact admin root, otherwise
+            // every /admin/* path would highlight Dashboard alongside the real section.
+            const isActive =
+              item.href === '/admin/'
+                ? currentPath === '/admin' || currentPath === '/admin/'
+                : currentPath.startsWith(item.href);
+            return (
+              <a
+                href={item.href}
+                data-testid={`nav-${item.id}`}
+                class:list={[
+                  'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-viindoo-primary text-viindoo-bg-0'
+                    : 'text-gray-300 hover:bg-gray-800 hover:text-white',
+                ]}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  class="flex-shrink-0"
+                  aria-hidden="true"
+                  set:html={ICONS[item.icon]}
+                />
+                {item.label}
+              </a>
+            );
+          })}
+        </nav>
+      </aside>
+    </MobileSidebar>
 
     <!-- Main content area -->
     <div class="flex-1 flex flex-col overflow-hidden">
       <!-- Topbar -->
       <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <h1 class="text-lg font-semibold text-gray-800">{title}</h1>
+        <h1 class="text-lg font-semibold text-gray-800 pl-12 md:pl-0">{title}</h1>
         <div class="flex items-center gap-4">
-          <span class="text-sm text-gray-500 font-medium">{displayName}</span>
-          <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-viindoo-primary text-viindoo-bg-0 uppercase tracking-wide">
+          <span class="hidden sm:inline text-sm text-gray-500 font-medium">{displayName}</span>
+          <span class="hidden sm:inline text-xs font-semibold px-2 py-0.5 rounded-full bg-viindoo-primary text-viindoo-bg-0 uppercase tracking-wide">
             {displayBadge}
           </span>
-          <div class="w-8 h-8 rounded-full bg-viindoo-primary flex items-center justify-center text-viindoo-bg-0 text-sm font-bold">
-            {avatarLetter}
-          </div>
+          <UserMenu
+            client:idle
+            username={displayName}
+            email={currentUser?.email ?? ''}
+            isAdmin={currentUser?.is_admin ?? false}
+            isTenantAdmin={currentUser?.is_tenant_admin ?? false}
+          />
         </div>
       </header>
 
       <!-- Page content -->
-      <main class="flex-1 overflow-y-auto p-6">
+      <main id="main-content" class="flex-1 overflow-y-auto p-6">
         <slot />
       </main>
     </div>

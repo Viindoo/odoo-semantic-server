@@ -123,6 +123,8 @@ Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–
 
 Happy-path cho M9 (3 services):
 
+> **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
+
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-server && cd odoo-semantic-server
 make install && docker compose up -d

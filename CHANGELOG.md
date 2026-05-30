@@ -4,6 +4,77 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added — OAuth deep-link return + avatar dropdown + account UX (feat/webui-oauth-avatar-uiux)
+
+- **OAuth `?return=` deep-link threading.** Google/GitHub callbacks now honour a
+  `?return=<path>` query param on `/login` and `/signup`. The path is stored in a
+  single-use `oauth_return` cookie (strict same-origin safe-path validation — no open
+  redirect), consumed by the callback and discarded. Closes deferred item from PR #214.
+- **Avatar user-menu dropdown (all 3 layouts).** Authenticated header now shows a
+  user avatar button that opens a consolidated personal-actions menu: API Keys,
+  Repositories, Usage, Security/2FA, Change Password; role-gated entries for Admin
+  Dashboard + Admin Settings (admin only) and Tenant Settings (tenant_admin only);
+  Logout at the bottom. Logout removed from bottom-left sidebar across all 3 layouts.
+- **In-session change-password page (`/account/change-password`).** New page + React
+  island + `POST /api/auth/change-password` endpoint (requires valid session, enforces
+  `auth.password_min_length` + common-pw blocklist, re-auths session on success).
+- **Account-scoped 2FA page (`/account/security`).** Dedicated page for TOTP
+  enroll/disable + backup-code regeneration, accessible to all authenticated users
+  (previously only reachable deep in the admin settings flow).
+- **Mobile sidebar drawer (hamburger toggle)** added to admin, account, and tenant
+  layouts. Sidebar collapses to a hidden drawer on small screens and slides in/out via
+  hamburger button; JS-free CSS approach, zero dependency.
+- **Skip-to-content links** added to all 3 app layouts and the public `BaseLayout` for
+  keyboard/screen-reader navigation (WCAG 2.4.1).
+- **`viindoo-danger` colour token** (`#C0331F` / Tailwind `bg-viindoo-danger`) added to
+  the design-token layer for destructive-action buttons and error states.
+- **`/bootstrap` discoverability links.** Persona dev card now links to the install page;
+  install page links back to `/bootstrap`. Increases organic discovery for self-hosted
+  admins landing on the bootstrap page.
+- **`/api/auth/verify` now returns `email` + `is_tenant_admin`.** Extends the verify
+  response payload so Astro SSR middleware and client islands can surface user-specific
+  UI without an extra round-trip. Tool count stays **24** (web-UI only; no new MCP
+  tools).
+
+### Changed — OAuth deep-link return + avatar dropdown + account UX (feat/webui-oauth-avatar-uiux)
+
+- **Logout moved from bottom-left sidebar into the avatar dropdown** across admin,
+  account, and tenant layouts (consistent with the consolidated personal-actions menu
+  described above).
+- **Pricing page reconciled to the single unified Free plan.** Removed obsolete
+  grandfathered-tier copy left from the pre-PR-#214 plan structure; page now matches the
+  live `free` plan limits (100 calls/month, 30 rpm).
+- **Footer/landing/install "GitHub" links now point to the public `odoo-mcp-client`
+  repo** with a "Contribute" CTA. The server repo (`odoo-semantic-server`) is going
+  private; client tooling repo remains public and is the right destination for
+  community-facing links.
+- **Nav emoji icons replaced with SVGs** for all sidebar nav items and the header
+  branding mark. Eliminates font-fallback rendering differences across OS/browser.
+- **Version string bumped to v0.13.1** in `site/src/lib/version.ts` and the FastAPI
+  app version header.
+
+### Fixed — OAuth deep-link return + avatar dropdown + account UX (feat/webui-oauth-avatar-uiux)
+
+- **WCAG-AA contrast on persona cards + repo-table focus rings + footer meta.** Persona
+  cards previously failed SC 1.4.3 (contrast < 4.5:1 on body copy). Focus rings on the
+  repo table action buttons did not meet SC 1.4.11 (UI components, 3:1). Footer
+  meta-links used `gray-400` on dark — now `gray-300`. Lighthouse accessibility score
+  reaches **100 on the landing page** post-fix.
+- **`<main>` landmark added to public `BaseLayout`.** Previously absent, causing
+  screen-reader users to have no main-content landmark on landing, pricing, and
+  bootstrap pages (WCAG 1.3.1 / technique H69).
+- **`forgot-password` already-authed redirect is now role-aware.** Authenticated admins
+  who landed on `/forgot-password` were double-bounced (admin → `/login` → admin). Now
+  redirected directly to the correct role destination via `auth-landing.ts`.
+- **Toast/flash banners announce via `role=status` / `aria-live="polite"`.** Previously
+  silent to AT; status messages are now surfaced to screen readers without interrupting
+  the reading flow.
+- **Login button casing consistency.** "LOGIN" / "Log In" / "Sign In" variants
+  standardised to "Sign in" across all auth pages.
+
+> **Tool count stays 24.** All changes in this PR are web-UI/auth layer only. No new
+> MCP tools, no database migration.
+
 ### Changed — Free-plan consolidation + auto-onboarding (fix/auth-ux-oauth-cache-plans)
 
 - **Admin/CLI keys moved to `unlimited` plan; `free-grandfathered` plan deleted.** Migration `m13_013_consolidate_free_plans.sql`

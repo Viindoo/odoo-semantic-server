@@ -4,7 +4,12 @@
 // Used on /login (verb="Sign in") and /signup (verb="Sign up").
 //
 // Props:
-//   verb  — "Sign in" (default) | "Sign up"
+//   verb        — "Sign in" (default) | "Sign up"
+//   returnPath  — Optional safe return path (from ?return= query param).
+//                 When provided, forwarded as &return=<encoded> so the
+//                 init handler can set the oauth_return cookie (WS1).
+//                 Callers should pass raw ?return= value; the init handler
+//                 validates it again with isSafeInternalPath before storing.
 //
 // When verb="Sign up", href has ?from=signup so the init handler can set
 // the oauth_from cookie (O-A origin tracking, ADR auth-unify WI-2).
@@ -13,15 +18,24 @@
 
 interface Props {
   verb?: string;
+  returnPath?: string | null;
 }
-const { verb = 'Sign in' } = Astro.props;
+const { verb = 'Sign in', returnPath } = Astro.props;
 
 const isSignup = verb === 'Sign up';
 const gTestId  = isSignup ? 'signup-google-button' : 'login-google-button';
 const ghTestId = isSignup ? 'signup-github-button' : 'login-github-button';
 const dividerText = isSignup ? 'or sign up with' : 'or continue with';
-const gHref  = isSignup ? '/admin/auth/google?from=signup' : '/admin/auth/google';
-const ghHref = isSignup ? '/admin/auth/github?from=signup' : '/admin/auth/github';
+
+// Build base href — append ?from=signup when this is the signup flow.
+// Then append &return=<encoded> when a validated return path is present (WS1).
+const _returnSuffix = returnPath ? `&return=${encodeURIComponent(returnPath)}` : '';
+const gHref  = isSignup
+  ? `/admin/auth/google?from=signup${_returnSuffix}`
+  : `/admin/auth/google${returnPath ? `?return=${encodeURIComponent(returnPath)}` : ''}`;
+const ghHref = isSignup
+  ? `/admin/auth/github?from=signup${_returnSuffix}`
+  : `/admin/auth/github${returnPath ? `?return=${encodeURIComponent(returnPath)}` : ''}`;
 ---
 
 <!-- OAuth divider -->

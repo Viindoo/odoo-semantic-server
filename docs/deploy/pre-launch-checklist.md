@@ -179,6 +179,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [x] Tab Claude Code có 2 sub-tabs "Plugin (recommended)" + "Manual MCP" — sub-tab Plugin mặc định active *(2026-05-14 — `Plugin (recommended)` button has `active` class)*
 - [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic@viindoo-plugins`, `/odoo-semantic:connect` *(2026-05-14 — all 3 lệnh present in page)*
 - [x] Marketplace reachable: `claude plugin marketplace add Viindoo/claude-plugins --scope user` exit 0 *(2026-05-14 — `github.com/Viindoo/claude-plugins` → HTTP/2 200; verified via `gh`)*
+  > **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
 - [ ] SHA trong `marketplace.json` resolve được: `git ls-remote https://github.com/Viindoo/odoo-semantic-server.git | grep <sha>` thấy match **(admin SSH verify — requires local plugin install)**
 <!-- resolved 2026-05-16 (Wave 9): dropped download_url field from dist/marketplaces/viindoo/marketplace.json — install path is `claude plugin marketplace add Viindoo/claude-plugins` (SHA-pinned git-subdir), not zip download. Per dist/odoo-semantic-plugin/plugin-release.md: "Tags are for release visibility only — they do not affect how users receive updates (SHA is the version identifier)." -->
 

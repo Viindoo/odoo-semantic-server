@@ -63,6 +63,21 @@ const TOOLS = [
         <a href="#benchmark" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Benchmark</a>
         <a href="/pricing" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Pricing</a>
         <a href="#install" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Install</a>
+        <!-- Mobile menu toggle (md:hidden) -->
+        <button
+          id="mobile-menu-btn"
+          aria-expanded="false"
+          aria-controls="mobile-menu"
+          aria-label="Open navigation menu"
+          class="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-lg text-viindoo-on-dark-muted hover:text-viindoo-on-dark hover:bg-white/5 transition-colors duration-200"
+        >
+          <svg id="mobile-menu-icon-open" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+          <svg id="mobile-menu-icon-close" class="w-5 h-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
         <a
           href="#install"
           class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-4 py-2 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
@@ -74,7 +89,47 @@ const TOOLS = [
         </a>
       </div>
     </div>
+    <!-- Mobile nav drawer (hidden by default, toggled via JS) -->
+    <div
+      id="mobile-menu"
+      class="hidden md:hidden border-t bg-viindoo-bg-0/95 backdrop-blur px-6 py-4"
+      style="border-color: rgba(230,242,244,0.08);"
+      aria-label="Mobile navigation"
+    >
+      <nav class="flex flex-col gap-4 text-sm font-medium text-viindoo-on-dark-muted">
+        <a href="#showcase" class="hover:text-viindoo-on-dark transition-colors duration-200">Live demo</a>
+        <a href="#tools" class="hover:text-viindoo-on-dark transition-colors duration-200">Tools</a>
+        <a href="#benchmark" class="hover:text-viindoo-on-dark transition-colors duration-200">Benchmark</a>
+        <a href="/pricing" class="hover:text-viindoo-on-dark transition-colors duration-200">Pricing</a>
+        <a href="/install/" class="hover:text-viindoo-on-dark transition-colors duration-200">Install</a>
+      </nav>
+    </div>
   </nav>
+  <script>
+    (function () {
+      const btn = document.getElementById('mobile-menu-btn');
+      const menu = document.getElementById('mobile-menu');
+      const iconOpen = document.getElementById('mobile-menu-icon-open');
+      const iconClose = document.getElementById('mobile-menu-icon-close');
+      if (!btn || !menu || !iconOpen || !iconClose) return;
+      btn.addEventListener('click', function () {
+        var expanded = btn.getAttribute('aria-expanded') === 'true';
+        btn.setAttribute('aria-expanded', String(!expanded));
+        menu.classList.toggle('hidden', expanded);
+        iconOpen.classList.toggle('hidden', !expanded);
+        iconClose.classList.toggle('hidden', expanded);
+      });
+      // Close menu when any link inside it is clicked
+      menu.querySelectorAll('a').forEach(function (a) {
+        a.addEventListener('click', function () {
+          btn.setAttribute('aria-expanded', 'false');
+          menu.classList.add('hidden');
+          iconOpen.classList.remove('hidden');
+          iconClose.classList.add('hidden');
+        });
+      });
+    })();
+  </script>
 
   <!-- Hero section -->
   <Hero />
@@ -314,14 +369,15 @@ const TOOLS = [
     <div class="mx-auto max-w-7xl">
       <p class="font-mono text-[11px] text-viindoo-on-dark-dim">
         &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
-        <span class="text-viindoo-primary">v0.13.0</span>
+        <!-- version: sync from pyproject.toml [project].version (SSOT) -->
+        <span class="text-viindoo-primary">v0.13.1</span>
       </p>
       <div class="flex items-center justify-center gap-6 mt-3 text-[12px] text-viindoo-on-dark-dim">
         <a href="/login" class="hover:text-viindoo-primary-bright transition-colors duration-200">Admin</a>
-        <a href="https://github.com/Viindoo/odoo-semantic-server" class="hover:text-viindoo-primary-bright transition-colors duration-200">GitHub</a>
+        <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200" title="MCP client plugins + Odoo skill set">Contribute</a>
         <a href="/install/" class="hover:text-viindoo-primary-bright transition-colors duration-200">Install</a>
       </div>
-      <div class="mt-4 flex items-center justify-center gap-2 text-[11px] text-viindoo-on-dark-dim opacity-70">
+      <div class="mt-4 flex items-center justify-center gap-2 text-[11px] text-viindoo-on-dark-dim">
         <span>Powered by</span>
         <a href="https://viindoo.com" class="inline-flex items-center hover:opacity-100 transition-opacity duration-200" aria-label="Viindoo">
           <img src="/viindoo-logo.svg" alt="Viindoo" class="h-5 inline opacity-80" />

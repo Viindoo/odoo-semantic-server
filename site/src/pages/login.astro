@@ -156,7 +156,7 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
       </button>
     </form>
 
-    <OAuthButtons verb="Sign in" />
+    <OAuthButtons verb="Sign in" returnPath={_rawReturn} />
     </div><!-- /login-section -->
 
     <!-- Step 2: MFA verification (hidden until mfa_required) -->
@@ -261,7 +261,7 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
         _currentMfaToken = data.mfa_token ?? '';
         loginSection?.setAttribute('hidden', '');
         mfaSection?.removeAttribute('hidden');
-        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign in'; }
       } else {
         const rawReturn = new URLSearchParams(window.location.search).get('return');
         window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
@@ -279,7 +279,7 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
       }
       if (submitBtn) {
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Sign In';
+        submitBtn.textContent = 'Sign in';
       }
     }
   });
