@@ -222,26 +222,36 @@
     </div>
 
     <!-- Plugin sub-tab -->
+    <!-- sync from site/src/lib/plugins-data.ts (SSOT for plugin slugs + install commands) -->
     <div class="sub-tab-panel active" id="sub-tab-plugin">
+      <div style="margin-bottom:0.6rem;">
+        <span style="display:inline-flex;align-items:center;border-radius:9999px;background:rgba(0,187,206,0.1);color:#00BBCE;border:1px solid rgba(0,187,206,0.3);padding:0.1rem 0.55rem;font-size:0.72rem;font-weight:600;">Free &amp; open source · MIT</span>
+      </div>
+
       <div class="step-label">Step 1 — Add the Viindoo marketplace (one-time)</div>
       <div class="code-wrap">
         <button class="copy-btn" data-target="code-claude-plugin-step1">Copy</button>
         <pre class="code-block" id="code-claude-plugin-step1"><code class="language-bash">claude plugin marketplace add Viindoo/claude-plugins --scope user</code></pre>
       </div>
 
-      <div class="step-label">Step 2 — Install the plugin</div>
+      <div class="step-label">Step 2 — Install the skills plugin (auto-pulls the MCP plugin)</div>
       <div class="code-wrap">
         <button class="copy-btn" data-target="code-claude-plugin-step2">Copy</button>
-        <pre class="code-block" id="code-claude-plugin-step2"><code class="language-bash">claude plugin install odoo-semantic@viindoo-plugins --scope user</code></pre>
+        <pre class="code-block" id="code-claude-plugin-step2"><code class="language-bash">claude plugin install odoo-semantic-skills@viindoo-plugins --scope user</code></pre>
+      </div>
+      <div style="font-size:0.8rem;color:#666;margin-top:0.35rem;">
+        Skills plugin (26 skills · 3 agents · 9 personas) depends on <code>odoo-semantic-mcp</code> and pulls it in automatically.
+        MCP only? Run <code>claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user</code> instead.
       </div>
 
-      <div class="step-label">Step 3 — Run the setup command (prompts for URL + API key)</div>
+      <div class="step-label">Step 3 — Connect to the MCP server (prompts for URL + API key)</div>
       <div class="code-wrap">
         <button class="copy-btn" data-target="code-claude-plugin-step3">Copy</button>
-        <pre class="code-block" id="code-claude-plugin-step3"><code class="language-bash">/odoo-semantic:connect</code></pre>
+        <pre class="code-block" id="code-claude-plugin-step3"><code class="language-bash">/odoo-semantic-mcp:connect</code></pre>
       </div>
       <div style="font-size:0.8rem;color:#666;margin-top:0.35rem;">
         The command will prompt for your API key and server URL, then auto-configure permissions.
+        Both plugins are MIT-licensed and free forever — <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener">view on GitHub</a>.
       </div>
     </div>
 
@@ -260,7 +270,7 @@
         Skip permission prompts (optional)
       </summary>
       <div style="margin-top:0.5rem;font-size:0.85rem;color:#666;">
-        Plugin users: <code>/odoo-semantic:connect</code> does this for you. Otherwise, merge into <code>~/.claude/settings.json</code> so every <code>mcp__odoo-semantic__*</code> tool is auto-allowed:
+        Plugin users: <code>/odoo-semantic-mcp:connect</code> does this for you. Otherwise, merge into <code>~/.claude/settings.json</code> so every <code>mcp__odoo-semantic__*</code> tool is auto-allowed:
       </div>
       <div class="file-label-outer" style="font-size:0.8rem;color:#666;margin:0.4rem 0 0.3rem;">~/.claude/settings.json</div>
       <div class="code-wrap">
@@ -341,7 +351,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
 
   <div class="footer" style="margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.825rem; color: #888;">
     <div style="margin-bottom:0.5rem;">
-      MCP client plugins &amp; Odoo skill set:
+      Two free MIT plugins (odoo-semantic-mcp + odoo-semantic-skills):
       <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener">
         github.com/Viindoo/odoo-mcp-client
       </a>
@@ -368,7 +378,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
       <span>&middot;</span>
       <a href="/install/">Install</a>
       <span>&middot;</span>
-      <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener" title="MCP client plugins + Odoo skill set">Contribute</a>
+      <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener" title="2 free MIT plugins: odoo-semantic-mcp + odoo-semantic-skills">Contribute</a>
       <span>&middot;</span>
       <a href="/bootstrap">Bootstrap reference</a>
       <span>&middot;</span>

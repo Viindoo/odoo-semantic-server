@@ -153,7 +153,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 
 **Mỗi `odoo://` URI kind phải resolve và trả về nội dung đúng cấu trúc.**
 
-> **Resource surface:** 7 URI templates, all served from MCP Resources layer (ADR-0030). Bodies are cached (LRU 1000 entries / 300s TTL). Version sentinel `auto` resolves per-API-key session state (ADR-0029). Verify using an MCP client that supports `resources/read` (Claude Code via `/odoo-semantic:read-resource`, or direct MCP JSON-RPC).
+> **Resource surface:** 7 URI templates, all served from MCP Resources layer (ADR-0030). Bodies are cached (LRU 1000 entries / 300s TTL). Version sentinel `auto` resolves per-API-key session state (ADR-0029). Verify using an MCP client that supports `resources/read` (Claude Code via `/odoo-semantic-mcp:read-resource`, or direct MCP JSON-RPC).
 
 | # | URI Kind | Example URI | Expected body | Sign-off |
 |---|----------|------------|---------------|----------|
@@ -177,7 +177,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [x] Dán API key vào form → snippet cho Claude Code hiển thị đúng URL + header *(2026-05-14 — 5 vendor keywords present: Claude, Codex, Gemini, VS Code, Antigravity)*
   - *Snippet phải chứa đúng domain + port, không phải localhost*
 - [x] Tab Claude Code có 2 sub-tabs "Plugin (recommended)" + "Manual MCP" — sub-tab Plugin mặc định active *(2026-05-14 — `Plugin (recommended)` button has `active` class)*
-- [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic@viindoo-plugins`, `/odoo-semantic:connect` *(2026-05-14 — all 3 lệnh present in page)*
+- [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic-skills@viindoo-plugins` (auto-pulls `odoo-semantic-mcp`), `/odoo-semantic-mcp:connect` *(2026-05-14 — all 3 lệnh present in page; re-verify after plugin split)*
 - [x] Marketplace reachable: `claude plugin marketplace add Viindoo/claude-plugins --scope user` exit 0 *(2026-05-14 — `github.com/Viindoo/claude-plugins` → HTTP/2 200; verified via `gh`)*
   > **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
 - [ ] SHA trong `marketplace.json` resolve được: `git ls-remote https://github.com/Viindoo/odoo-semantic-server.git | grep <sha>` thấy match **(admin SSH verify — requires local plugin install)**
