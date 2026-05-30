@@ -11,6 +11,7 @@ import PromptSimulator from '../components/PromptSimulator.tsx';
 import TokenBenchmark from '../components/TokenBenchmark.tsx';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
+import OpenSourcePlugins from '../components/OpenSourcePlugins.astro';
 import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
 import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/tools-data';
 ---
@@ -208,6 +209,9 @@ import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/t
       </div>
     </div>
   </section>
+
+  <!-- 06b · Open-source plugins -->
+  <OpenSourcePlugins />
 
   <!-- CTA band before footer -->
   <section class="bg-viindoo-bg-0 px-6 pb-24">
