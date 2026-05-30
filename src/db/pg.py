@@ -56,9 +56,20 @@ class PgPool:
         # the caller. SimpleConnectionPool eagerly opens min_conn connections
         # at construction, so a missing PG raises here — callers that want to
         # tolerate a transient outage should use init_pool_with_retry().
+        self._dsn = dsn
         self._pool = psycopg2.pool.SimpleConnectionPool(
             min_conn, max_conn, dsn, connect_timeout=connect_timeout,
         )
+
+    @property
+    def dsn(self) -> str:
+        """Return the DSN string used to initialise this pool.
+
+        Exposed so callers that need a dedicated (non-pooled) connection —
+        e.g. session-level advisory locks that must span multiple pool
+        checkouts — can open one without reaching into private internals.
+        """
+        return self._dsn
 
     # ------------------------------------------------------------------
     # Connection checkout

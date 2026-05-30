@@ -508,6 +508,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Monthly Quota</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">RPM</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Seats</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Min Seats</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Price</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Model</th>
                 <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Public</th>
@@ -517,7 +518,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
             <tbody className="divide-y divide-gray-100">
               {plans.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400 text-sm">
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-400 text-sm">
                     No plans found.
                   </td>
                 </tr>
@@ -538,6 +539,9 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-sm text-gray-600">
                       {plan.seat_limit ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-sm text-gray-600">
+                      {plan.min_seats ?? '—'}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-sm text-gray-600">
                       {plan.price_cents !== null
