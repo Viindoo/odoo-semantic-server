@@ -19,7 +19,7 @@ interface Plan {
   currency: string | null;
   billing_interval: 'free' | 'monthly' | 'annual' | 'one_time' | null;
   trial_days: number | null;
-  prices: Record<string, number> | null;  // per-currency map e.g. {"USD": 1900, "VND": 490000}
+  prices: Record<string, number> | null;  // per-currency map e.g. {"USD": 1900} — USD only for now (multi-currency deferred)
 }
 
 interface Props {
@@ -127,11 +127,11 @@ function EditModal({
       try {
         parsedPrices = JSON.parse(pricesRaw) as Record<string, number>;
         if (typeof parsedPrices !== 'object' || Array.isArray(parsedPrices)) {
-          setFormError('Prices must be a JSON object e.g. {"USD": 1900, "VND": 490000}');
+          setFormError('Prices must be a JSON object e.g. {"USD": 1900}');
           return;
         }
       } catch {
-        setFormError('Prices JSON is invalid. Example: {"USD": 1900, "VND": 490000}');
+        setFormError('Prices JSON is invalid. Example: {"USD": 1900}');
         return;
       }
     }
@@ -374,7 +374,7 @@ function EditModal({
               <label className="block text-xs font-medium text-gray-600 mb-1">
                 Per-currency prices (JSON)
                 <span className="ml-1 text-gray-400 font-normal">
-                  e.g. {`{"USD": 1900, "VND": 490000}`} — VND is whole dong, not cents
+                  e.g. {`{"USD": 1900}`} — multi-currency deferred, USD only for now
                 </span>
               </label>
               <textarea

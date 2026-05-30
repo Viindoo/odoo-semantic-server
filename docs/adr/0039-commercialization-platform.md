@@ -198,9 +198,17 @@ MoR adapter, and claim-on-login provisioning. Migration `m13_014_billing_p1.sql`
   and processing-error capture. Every webhook attempt is recorded (signature_valid=FALSE for bad
   signatures) before any provisioning side-effect.
 
-- **NEW `plans` commercial columns** (`price_cents`, `currency`, `billing_interval`, `trial_days`,
-  `is_archived`) — data-driven pricing page (`GET /api/plans`) and webhook amount context.
-  Pricing seed (in-migration, idempotent): Free $0/200-calls, Pro $19/seat/month, Team $39/seat/month.
+- **NEW `plans` commercial columns** (`price_cents` **BIGINT**, `currency` with ISO-3-letter
+  `CHECK ~ '^[A-Z]{3}$'`, `billing_interval`, `trial_days`, `is_archived`) — data-driven pricing
+  page (`GET /api/plans`) and webhook amount context. `price_cents` is BIGINT (INTEGER→BIGINT upgrade
+  idempotent in the same migration; rationale: VND whole-units can exceed INT4 2.1B max).
+  Pricing seed (in-migration, idempotent, USD-only): Free $0/200-calls, Pro $19/seat/month,
+  Team $39/seat/month. The `subscriptions` table carries matching `amount_cents` **BIGINT** and
+  `currency` with the same ISO-3-letter CHECK. Additionally: `UNIQUE(source, external_ref)` composite
+  key replaces any former global `external_ref UNIQUE` (composite ensures the same Polar order ID
+  can appear across future vendors without false collision); `last_event_at TIMESTAMPTZ` column
+  acts as a monotonic guard — out-of-order webhook events are dropped when their timestamp is
+  older than the stored value, preventing late arrivals from reverting an upgrade.
 
 **Provisioning model — claim-on-login:**
 
@@ -223,8 +231,9 @@ On cancel/refund/revoke: `revoke_entitlement` marks subscription `cancelled`, do
 API key to the `free` plan, and flushes the middleware plan cache. Key stays `active=TRUE`.
 
 **Admin Activation API:** `POST /api/admin/entitlements` (grant) + `POST /{ref}/revoke` +
-`PATCH /{ref}` (update) + `GET` (list). All routes require `require_admin`; all mutating routes
-carry `@audit_action` per ADR-0021.
+`PATCH /{ref}` (update) + `GET` (list). Mutating routes require `require_admin_with_fresh_mfa`
+(DB-sourced admin check + MFA step-up per ADR-0026/ADR-0043); read-only `GET` uses plain
+`require_admin`. All mutating routes carry `@audit_action` per ADR-0021.
 
 **Pricing decisions (market research, report 03):** Free $0/200 calls, Pro $19/seat, Team $39/seat
 (3-seat min enforced at app layer), Enterprise from $149 (= `unlimited` slug + per-key overrides +
@@ -263,11 +272,13 @@ separate m13_015/m13_016/m13_017 files no longer exist.
   voluntary cancel-at-period-end. The column is a flag only; the actual period-end downgrade
   is driven by the Polar `subscription.canceled` webhook calling `revoke_entitlement(voluntary=False)`.
 - `plans.prices JSONB NOT NULL DEFAULT '{}'` — per-currency price map alongside the existing
-  scalar `price_cents/currency` (default-display currency). Example: `{"USD": 1900, "VND": 490000}`.
-  **VND is zero-decimal: values are whole Vietnamese Dong, NOT cents. Never multiply by 100.**
-  Seed guard: `UPDATE ... WHERE prices = '{}'::jsonb` so re-runs never clobber admin edits.
-  Seeded values: Pro `{"USD":1900,"VND":490000}`, Team `{"USD":3900,"VND":990000}`,
-  Free/Unlimited `{"USD":0}`.
+  scalar `price_cents/currency` (default-display currency). Example: `{"USD": 1900}`.
+  Seed guard: dual sentinel `WHERE price_cents = 0 AND prices = '{}'::jsonb` so re-runs never
+  clobber admin edits. Seeded values (USD-only; **multi-currency display deferred to P2**):
+  Pro `{"USD":1900}`, Team `{"USD":3900}`, Free/Unlimited `{"USD":0}`. The `prices` JSONB
+  column is designed to hold future currency keys (e.g. VND) — add them when a regional pricing
+  tier is decided. *Note for future VND support:* VND is zero-decimal; values should be whole
+  Vietnamese Dong, NOT cents — never multiply by 100.
 
 **Section 7 — terms_accepted_at** (formerly m13_016): `webui_users.terms_accepted_at TIMESTAMPTZ`
 — auditable proof-of-consent for ToS + Privacy Policy. `NULL` = legacy user (grandfathered).
@@ -301,6 +312,32 @@ adapter.
 
 **`subscriptions.product_id` remains DEFERRED to P2** (D2 posture: extract-gradually; sole
 product today; column added when a second product arrives).
+
+**Polar adapter behavioral decisions:**
+
+- **`recurring_interval` dual-path extraction:** `_extract_interval(data)` reads
+  `data["recurring_interval"]` first; falls back to `data["price"]["recurring_interval"]` for
+  older Polar payload shapes that nest the field in a `price` sub-object. The raw token is passed
+  to `polar.normalize_billing_interval`: `month→monthly`, `year→annual`, `day`/`week`→`monthly`
+  (safe fallback — no day/week product sold today; owner-flag to add enum values if that changes),
+  `null`→`one_time`.
+- **Status normalisation:** `map_subscription_status` maps Polar `unpaid`→`expired` (definitive
+  payment failure, not a retry), `ended`/`incomplete_expired`→`expired`. `trialing` and clearly
+  active tokens map to their OSM equivalents.
+- **Transient-vs-permanent error routing (money-safety invariant):** errors from
+  `grant/revoke/update_entitlement` are classified at the pipeline boundary.
+  *Permanent* (`IntegrityError`, `CheckViolation`, `ValueError` — bad data that will never succeed
+  on retry) → mark event processed + return **200** so Polar stops hammering a poison event.
+  *Transient* (`OperationalError`, DB pool timeout, any other exception) → do NOT mark processed +
+  return **5xx** so Polar retries later and the grant is not lost. All errors are written to
+  `billing_webhook_events.processing_error` for ops investigation.
+- **Self-heal / reprocess guard:** a webhook event that was NOT previously marked processed (e.g.
+  crash mid-flight) is re-dispatched on the next Polar delivery attempt; already-processed events
+  are deduped immediately (return 200 without re-dispatch). The `last_event_at` monotonic guard
+  on `subscriptions` prevents out-of-order events from reverting a newer state.
+- **Immediate-cancel path via PATCH:** the Polar cancel API call uses
+  `PATCH .../v1/subscriptions/{id}` with `{"cancel_at_period_end": true}` (FLAG: confirm against
+  live Polar docs before go-live; constant in `polar_api.py`).
 
 ### C — Self-service cancel (no refund, cancel-at-period-end)
 
@@ -358,7 +395,8 @@ AND is_archived=FALSE`); the hard-coded frozenset is removed; m13_014 §8 (forme
 the schema-level `CHECK` that encoded the same list (see §A).
 
 **`GET /api/plans`** now exposes the `prices` JSONB field alongside existing pricing columns,
-enabling the pricing page to display multi-currency prices without a separate query.
+enabling the data-driven USD pricing page without a separate query. Multi-currency display
+(additional keys in `prices` JSONB) is deferred to P2.
 
 ### E — Legal pages + consent gate
 
@@ -393,8 +431,8 @@ island. The island calls `GET /api/account/subscription` to display:
 - "Cancel subscription" button → `POST /api/account/subscription/cancel` (voluntary, at-period-end).
 
 **`/pricing`** page is now `prerender=false` (DB-driven). Fetches `GET /api/plans` at SSR time to
-render tier cards with live `prices` (USD + VND). Checkout CTA is gated by
-`billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s on the usage dashboard.
+render tier cards with live prices (USD; multi-currency display deferred to P2). Checkout CTA is
+gated by `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s on the usage dashboard.
 
 ### G — Owner decisions recorded
 

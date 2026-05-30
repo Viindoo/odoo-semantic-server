@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SETTINGS_CATALOGUE — 16 Tier-1 admin-tunable settings (ADR-0042).
+"""SETTINGS_CATALOGUE — 27 admin-tunable settings.
+
+16 original Tier-1 entries (ADR-0042) + 11 billing.* entries added in M10B P1 (ADR-0039).
 
 Each entry registers default + validation + metadata. Bootstrap inserts rows
 into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).

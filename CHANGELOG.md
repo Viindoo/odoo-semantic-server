@@ -8,12 +8,17 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 - **Migration `m13_014_billing_p1.sql`** (required on deploy). Three schema additions, all
   idempotent (`IF NOT EXISTS` + guarded `DO` blocks):
-  - `plans` gains commercial pricing columns: `price_cents`, `currency`, `billing_interval`
-    (CHECK: `free/monthly/annual/one_time`), `trial_days`, `is_archived`.
+  - `plans` gains commercial pricing columns: `price_cents` **BIGINT** (upgraded from INTEGER;
+    VND whole-units can exceed INT4 2.1B max), `currency` (with ISO-3-letter `CHECK ~ '^[A-Z]{3}$'`),
+    `billing_interval` (CHECK: `free/monthly/annual/one_time`), `trial_days`, `is_archived`.
   - `subscriptions` table — commercial-only, integer FKs (`plan_id→plans`,
     `claimed_user_id→webui_users`, `api_key_id→api_keys`, `tenant_id→tenants`),
-    `buyer_email` snapshot (claim-on-login anchor), `external_ref UNIQUE` (vendor idempotency
-    key), status/seats/source/money-snapshot/timeline columns. NO per-row limit columns —
+    `buyer_email` snapshot (claim-on-login anchor), `UNIQUE(source, external_ref)` composite key
+    (vendor idempotency key; composite so the same Polar order ID can appear across future vendors
+    without collision), `currency` (with ISO-3-letter `CHECK ~ '^[A-Z]{3}$'`),
+    `amount_cents` **BIGINT**, `last_event_at TIMESTAMPTZ` (monotonic guard — out-of-order
+    webhook events are dropped when their timestamp is older than the stored value),
+    status/seats/source/money-snapshot/timeline columns. NO per-row limit columns —
     limits live only in `plans`, resolved via `plan_id` at runtime.
   - `billing_webhook_events` idempotency ledger — `(vendor, event_id)` UNIQUE; every webhook
     attempt recorded with `signature_valid` flag, `processed_at`, `processing_error`.
@@ -32,8 +37,9 @@ All notable changes to Odoo Semantic MCP are documented here.
   - `POST /api/admin/entitlements/{external_ref}/revoke` — cancel + downgrade.
   - `PATCH /api/admin/entitlements/{external_ref}` — update plan/status/seats/period.
   - `GET /api/admin/entitlements` — list / search subscriptions.
-  - All routes require `require_admin` (DB-sourced, ADR-0026). All mutating routes carry
-    `@audit_action` (ADR-0021).
+  - Mutating routes (`POST` grant, `POST` revoke, `PATCH` update) require
+    `require_admin_with_fresh_mfa` (DB-sourced + MFA step-up, ADR-0026/ADR-0043). Read-only
+    `GET` (list) uses plain `require_admin`. All mutating routes carry `@audit_action` (ADR-0021).
 - **Polar.sh webhook sink** (`src/web_ui/routes/webhooks.py`):
   - `POST /api/webhooks/polar` — public route (auth-exempt via `_EXEMPT_EXACT`), HMAC-verified
     using Standard Webhooks spec (base64 HMAC-SHA256 over `"{id}.{timestamp}.{body}"`; `whsec_`
@@ -43,6 +49,20 @@ All notable changes to Odoo Semantic MCP are documented here.
     via `billing.webhook_rate_limit_rpm` app_setting.
   - Product→plan resolution via `billing.polar_product_map` (JSON app_setting, hot-reload ≤60s).
   - Handled events: `subscription.created/active/updated/canceled/revoked`, `order.paid/refunded`.
+  - **`recurring_interval` dual-path extraction:** reads `data.recurring_interval` first; falls back
+    to `data.price.recurring_interval` for older Polar payloads that nested it in the price object.
+    `day`/`week` tokens are normalised to `monthly` (safe fallback — no day/week product sold today).
+    `null` → `one_time`. Mapping: `month→monthly`, `year→annual`.
+  - **Status normalisation:** Polar `unpaid` maps to `expired` (definitive payment failure);
+    `ended`/`incomplete_expired` also map to `expired`.
+  - **Transient-vs-permanent error routing (money-safety):** `IntegrityError` / `CheckViolation` /
+    `ValueError` (bad data that will never succeed) → mark event processed + return **200** so Polar
+    stops retrying a poison event (permanent). `OperationalError` / DB pool timeout / any other
+    exception → do NOT mark processed + return **5xx** so Polar retries later (transient). Failed
+    events are always recorded in the ledger `processing_error` for ops investigation.
+  - **Self-heal / reprocess:** a webhook event that was NOT previously marked processed (crash
+    mid-flight) is re-dispatched on the next delivery attempt; already-processed events are
+    deduped and return 200 immediately.
 - **Public `GET /api/plans`** — returns active (non-archived) plans with new pricing columns for
   the pricing page; no auth required.
 - **Claim-on-login provisioning** (`src/billing/provisioning.py`). `claim_subscription_for_user(
@@ -75,9 +95,11 @@ All notable changes to Odoo Semantic MCP are documented here.
       voluntary cancel-at-period-end; actual period-end downgrade driven by the Polar
       `subscription.canceled` webhook.
     - `plans.prices JSONB NOT NULL DEFAULT '{}'` — per-currency price map (additive alongside
-      scalar `price_cents/currency`). Example: `{"USD": 1900, "VND": 490000}`. **VND is
-      zero-decimal (whole dong, NOT cents).** Seeded (guarded — only when `prices='{}'`):
-      Pro `{"USD":1900,"VND":490000}`, Team `{"USD":3900,"VND":990000}`, Free/Unlimited `{"USD":0}`.
+      scalar `price_cents/currency`). Example: `{"USD": 1900}`. Seeded (guarded — only when
+      `prices='{}'`): Pro `{"USD":1900}`, Team `{"USD":3900}`, Free/Unlimited `{"USD":0}`.
+      **Multi-currency display deferred to P2;** VND key removed from seed (the `prices` JSONB
+      column is designed to hold future currencies — add a VND key when a VND pricing tier is
+      decided).
   - **Section 7 — signup consent (formerly m13_016)** (idempotent):
     `webui_users.terms_accepted_at TIMESTAMPTZ` — auditable proof-of-consent. `NULL` = legacy
     (grandfathered). Non-NULL = timestamp of checkbox acceptance at signup (password or OAuth).
@@ -135,8 +157,8 @@ All notable changes to Odoo Semantic MCP are documented here.
   island. Displays plan name, status, seats, renewal/period-end date, `cancel_at_period_end`
   state, Polar portal link, and a cancel button (`POST /api/account/subscription/cancel`).
 - **`/pricing` data-driven** (`prerender=false`) — fetches `GET /api/plans` at SSR time for
-  live `prices` (USD + VND per `plans.prices`). Checkout CTA gated by
-  `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s.
+  live prices (USD per `plans.prices`; multi-currency display deferred to P2). Checkout CTA
+  gated by `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s.
 
 > **Tool count stays 24.** All W1-W6 completion changes are schema / web-UI / webhook /
 > Astro layer only. No new MCP tools.

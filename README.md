@@ -207,7 +207,8 @@ billing settings, 27 settings catalogue entries; includes `team_min_seats=3` **e
 Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge — pending legal sign-off before
 flipping `billing.paid_checkout_enabled`). Required signup consent checkbox + `terms_accepted_at`
 recording. `/account/billing` dashboard page + `BillingDashboard` React island (status/renewal/
-cancel state). `/pricing` data-driven (`prerender=false`) with USD + VND from `plans.prices`.
+cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices from `plans.prices`
+(multi-currency display deferred to P2).
 **Tool count stays 24** (all web/webhook/Astro only; no new MCP tools). See
 [ADR-0039 Amendment — completion](docs/adr/0039-commercialization-platform.md) and CHANGELOG.md `[Unreleased]`.
 **Pending (owner/legal):** legal DRAFT sign-off + `billing.paid_checkout_enabled` flip; Polar

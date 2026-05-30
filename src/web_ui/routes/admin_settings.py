@@ -107,7 +107,7 @@ async def list_settings(actor_id: int = Depends(require_admin)) -> dict:
         seen_keys.add(key)
 
     # F-002: backfill any catalogue entry missing from the DB so the admin UI
-    # always renders all 15 Tier-1 settings — bootstrap may have failed
+    # always renders all catalogue settings (currently 27) — bootstrap may have failed
     # silently and we must not hide the row from the operator.
     for sdef in SETTINGS_CATALOGUE:
         if sdef.key in seen_keys:
