@@ -939,6 +939,65 @@ class TestMigrationIdempotent:
             "waitlist_emails_plan_check must be dropped by m13_014 (merged m13_017)"
         )
 
+    def test_free_unlimited_currency_not_reverted_by_rerun(self, clean_pg):
+        """P2-A guard: admin-set currency on free/unlimited must NOT be reverted by a re-run.
+
+        §2 of m13_014 seeds free/unlimited currency='USD'.  Guard: AND currency='USD'.
+        If an admin sets free.currency='EUR' (cosmetic change on a $0 plan), a subsequent
+        migration re-run must leave it as 'EUR'.  Without the guard the seed would revert it.
+        """
+        from pathlib import Path
+
+        run_migrations(clean_pg)
+
+        # Admin changes free.currency to 'EUR'.
+        with clean_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET currency = 'EUR' WHERE slug = 'free'")
+        clean_pg.commit()
+        with clean_pg.cursor() as cur:
+            cur.execute("SELECT currency FROM plans WHERE slug = 'free'")
+            assert cur.fetchone()[0] == "EUR", "precondition: admin set free.currency='EUR'"
+
+        # Re-run the m13_014 SQL directly (yoyo would skip; direct exec tests the guard).
+        migration_path = (
+            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
+        )
+        with clean_pg.cursor() as cur:
+            cur.execute(migration_path.read_text())
+        clean_pg.commit()
+
+        with clean_pg.cursor() as cur:
+            cur.execute("SELECT currency FROM plans WHERE slug = 'free'")
+            after = cur.fetchone()[0]
+        assert after == "EUR", (
+            "P2-A: §2 seed re-run must NOT revert free.currency='EUR' back to 'USD'. "
+            "Guard AND currency='USD' must prevent the UPDATE from matching."
+        )
+
+    def test_unlimited_currency_not_reverted_by_rerun(self, clean_pg):
+        """P2-A guard: same as above but for the 'unlimited' plan."""
+        from pathlib import Path
+
+        run_migrations(clean_pg)
+
+        with clean_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET currency = 'EUR' WHERE slug = 'unlimited'")
+        clean_pg.commit()
+
+        migration_path = (
+            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
+        )
+        with clean_pg.cursor() as cur:
+            cur.execute(migration_path.read_text())
+        clean_pg.commit()
+
+        with clean_pg.cursor() as cur:
+            cur.execute("SELECT currency FROM plans WHERE slug = 'unlimited'")
+            after = cur.fetchone()[0]
+        assert after == "EUR", (
+            "P2-A: §2 seed re-run must NOT revert unlimited.currency='EUR' back to 'USD'."
+        )
+
     def test_schema_review_fixes_present_after_double_run(self, clean_pg):
         """Schema review fixes (#3/#5/#8/#9) survive a second run_migrations — idempotent."""
         run_migrations(clean_pg)
