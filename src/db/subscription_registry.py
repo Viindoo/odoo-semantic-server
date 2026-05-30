@@ -4,7 +4,6 @@ import logging
 
 import psycopg2.extras
 from psycopg2 import sql as pgsql
-from psycopg2.extras import RealDictCursor
 
 from src.db.pg import PgPool
 
@@ -28,6 +27,12 @@ _ALLOWED_UPDATE_COLS: frozenset[str] = frozenset({
     "cancelled_at",
     "buyer_email",
     "cancel_at_period_end",
+    # #5 monotonic guard high-water-mark: update_entitlement advances this via the
+    # partial-UPDATE path so a stale (out-of-order) event still moves the watermark
+    # forward without flipping authoritative status/plan/seats. The activation layer
+    # computes the GREATEST in Python (it already holds the stored value); this set
+    # only needs to permit the column to be written.
+    "last_event_at",
 })
 
 
@@ -59,11 +64,12 @@ class SubscriptionStore:
         claimed_user_id: int | None = None,
         api_key_id: int | None = None,
         tenant_id: int | None = None,
+        last_event_at=None,
     ) -> int:
-        """INSERT ... ON CONFLICT(external_ref) DO UPDATE -> subscription id. Idempotent.
+        """INSERT ... ON CONFLICT(source, external_ref) DO UPDATE -> subscription id. Idempotent.
 
         On conflict the mutable money/timeline fields are refreshed; the
-        idempotency key (external_ref) and immutable provenance columns
+        idempotency key (source, external_ref) and immutable provenance columns
         (source) are left intact.
 
         Optional snapshot columns are COALESCEd against the stored value
@@ -74,8 +80,20 @@ class SubscriptionStore:
         for ``buyer_email``: clobbering it with NULL would (a) break
         claim-on-login matching and (b) violate the ``subscriptions_no_orphan_active``
         CHECK on an active+unclaimed row → IntegrityError → silently dropped
-        grant.  ``status``/``plan_id``/``seats`` are authoritative on every event
-        and are always overwritten from EXCLUDED.
+        grant.
+
+        Monotonic guard (#5): ``status``/``plan_id``/``seats`` are authoritative
+        but ONLY when the incoming event is at least as recent as the stored one.
+        ``last_event_at`` is the vendor event timestamp (Polar ``modified_at`` /
+        event ``created_at``).  Webhooks can be delivered out of order, so an
+        older ``subscription.updated`` event must NOT overwrite a newer
+        ``subscription.canceled`` (or vice-versa).  The CASE WHEN below keeps the
+        stored authoritative columns whenever ``EXCLUDED.last_event_at`` is
+        strictly older than the stored ``last_event_at``.  When either side's
+        timestamp is NULL (caller did not supply one, or the row predates the
+        column) the guard degrades to last-write-wins so legacy callers keep
+        working.  ``last_event_at`` itself advances via ``GREATEST`` so the
+        high-water-mark never regresses.
         """
         with self._pool.checkout() as conn:
             with conn.cursor() as cur:
@@ -85,17 +103,39 @@ class SubscriptionStore:
                         external_ref, plan_id, source, status, seats,
                         buyer_email, amount_cents, currency, billing_interval,
                         current_period_start, current_period_end, trial_ends_at,
-                        claimed_user_id, api_key_id, tenant_id
+                        claimed_user_id, api_key_id, tenant_id, last_event_at
                     ) VALUES (
                         %s, %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s,
-                        %s, %s, %s
+                        %s, %s, %s, %s
                     )
                     ON CONFLICT (source, external_ref) DO UPDATE SET
-                        status = EXCLUDED.status,
-                        plan_id = EXCLUDED.plan_id,
-                        seats = EXCLUDED.seats,
+                        status = CASE
+                            WHEN EXCLUDED.last_event_at IS NULL
+                              OR subscriptions.last_event_at IS NULL
+                              OR EXCLUDED.last_event_at >= subscriptions.last_event_at
+                            THEN EXCLUDED.status
+                            ELSE subscriptions.status
+                        END,
+                        plan_id = CASE
+                            WHEN EXCLUDED.last_event_at IS NULL
+                              OR subscriptions.last_event_at IS NULL
+                              OR EXCLUDED.last_event_at >= subscriptions.last_event_at
+                            THEN EXCLUDED.plan_id
+                            ELSE subscriptions.plan_id
+                        END,
+                        seats = CASE
+                            WHEN EXCLUDED.last_event_at IS NULL
+                              OR subscriptions.last_event_at IS NULL
+                              OR EXCLUDED.last_event_at >= subscriptions.last_event_at
+                            THEN EXCLUDED.seats
+                            ELSE subscriptions.seats
+                        END,
+                        last_event_at = GREATEST(
+                            COALESCE(subscriptions.last_event_at, EXCLUDED.last_event_at),
+                            COALESCE(EXCLUDED.last_event_at, subscriptions.last_event_at)
+                        ),
                         amount_cents = COALESCE(
                             EXCLUDED.amount_cents, subscriptions.amount_cents),
                         currency = COALESCE(
@@ -117,7 +157,7 @@ class SubscriptionStore:
                         external_ref, plan_id, source, status, seats,
                         buyer_email, amount_cents, currency, billing_interval,
                         current_period_start, current_period_end, trial_ends_at,
-                        claimed_user_id, api_key_id, tenant_id,
+                        claimed_user_id, api_key_id, tenant_id, last_event_at,
                     ),
                 )
                 row_id = cur.fetchone()[0]
@@ -127,24 +167,20 @@ class SubscriptionStore:
     def get_by_external_ref(self, external_ref: str) -> dict | None:
         """Return subscription dict for the given external_ref, or None."""
         with self._pool.checkout() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM subscriptions WHERE external_ref = %s",
-                    (external_ref,),
-                )
-                row = cur.fetchone()
-        return dict(row) if row is not None else None
+            return self._pool.fetch_one(
+                conn,
+                "SELECT * FROM subscriptions WHERE external_ref = %s",
+                (external_ref,),
+            )
 
     def get_by_id(self, subscription_id: int) -> dict | None:
         """Return subscription dict for the given id, or None."""
         with self._pool.checkout() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM subscriptions WHERE id = %s",
-                    (subscription_id,),
-                )
-                row = cur.fetchone()
-        return dict(row) if row is not None else None
+            return self._pool.fetch_one(
+                conn,
+                "SELECT * FROM subscriptions WHERE id = %s",
+                (subscription_id,),
+            )
 
     def list_by_user(self, user_id: int) -> list[dict]:
         """Return all subscriptions claimed by the given user_id.
@@ -159,31 +195,56 @@ class SubscriptionStore:
         cancel_at_period_end column from m13_015) are preserved unchanged.
         """
         with self._pool.checkout() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT s.*,"
-                    "       p.slug        AS plan_slug,"
-                    "       p.display_name AS plan_name"
-                    " FROM subscriptions s"
-                    " LEFT JOIN plans p ON p.id = s.plan_id"
-                    " WHERE s.claimed_user_id = %s"
-                    " ORDER BY s.created_at DESC",
-                    (user_id,),
-                )
-                rows = cur.fetchall()
-        return [dict(r) for r in rows]
+            return self._pool.fetch_all(
+                conn,
+                "SELECT s.*,"
+                "       p.slug        AS plan_slug,"
+                "       p.display_name AS plan_name"
+                " FROM subscriptions s"
+                " LEFT JOIN plans p ON p.id = s.plan_id"
+                " WHERE s.claimed_user_id = %s"
+                " ORDER BY s.created_at DESC",
+                (user_id,),
+            )
 
     def list_by_tenant(self, tenant_id: int) -> list[dict]:
         """Return all subscriptions linked to the given tenant_id."""
         with self._pool.checkout() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM subscriptions WHERE tenant_id = %s"
-                    " ORDER BY created_at DESC",
-                    (tenant_id,),
-                )
-                rows = cur.fetchall()
-        return [dict(r) for r in rows]
+            return self._pool.fetch_all(
+                conn,
+                "SELECT * FROM subscriptions WHERE tenant_id = %s"
+                " ORDER BY created_at DESC",
+                (tenant_id,),
+            )
+
+    def list_all(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        """Return a page of all subscriptions (admin list), newest first.
+
+        Explicit column projection (no SELECT *) + LEFT JOIN plans for the
+        ``plan_slug``/``plan_name`` enrichment (mirrors list_by_user) so the
+        admin dashboard can render the human-readable plan without a second
+        round-trip.  Paginated via LIMIT/OFFSET; ORDER BY created_at DESC with
+        an id tiebreak for a deterministic page boundary when several rows
+        share the same created_at.
+        """
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                "SELECT s.id, s.plan_id, s.claimed_user_id, s.api_key_id,"
+                "       s.tenant_id, s.buyer_email, s.status, s.seats,"
+                "       s.source, s.external_ref, s.amount_cents, s.currency,"
+                "       s.billing_interval, s.current_period_start,"
+                "       s.current_period_end, s.trial_ends_at, s.cancelled_at,"
+                "       s.cancel_at_period_end, s.last_event_at,"
+                "       s.created_at, s.updated_at,"
+                "       p.slug         AS plan_slug,"
+                "       p.display_name AS plan_name"
+                " FROM subscriptions s"
+                " LEFT JOIN plans p ON p.id = s.plan_id"
+                " ORDER BY s.created_at DESC, s.id DESC"
+                " LIMIT %s OFFSET %s",
+                (limit, offset),
+            )
 
     def find_unclaimed_active_by_email(self, email: str) -> list[dict]:
         """Return active subscriptions whose buyer_email matches (case-insensitive)
@@ -193,17 +254,15 @@ class SubscriptionStore:
         newly-authenticated user.
         """
         with self._pool.checkout() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM subscriptions"
-                    " WHERE lower(buyer_email) = lower(%s)"
-                    "   AND status = 'active'"
-                    "   AND claimed_user_id IS NULL"
-                    " ORDER BY created_at DESC",
-                    (email,),
-                )
-                rows = cur.fetchall()
-        return [dict(r) for r in rows]
+            return self._pool.fetch_all(
+                conn,
+                "SELECT * FROM subscriptions"
+                " WHERE lower(buyer_email) = lower(%s)"
+                "   AND status = 'active'"
+                "   AND claimed_user_id IS NULL"
+                " ORDER BY created_at DESC",
+                (email,),
+            )
 
     def update_fields(
         self, subscription_id: int, updates: dict[str, object]
@@ -232,8 +291,50 @@ class SubscriptionStore:
             conn.commit()
         return updated
 
+    def claim_unclaimed_for_user(
+        self, subscription_id: int, user_id: int
+    ) -> bool:
+        """Atomically claim an UNCLAIMED subscription for ``user_id`` (CAS).
+
+        This is the race-safe claim path for claim-on-login (WI-3 claim-FIRST).
+        The compare-and-set lives entirely in the WHERE clause:
+
+            UPDATE ... SET claimed_user_id = %s
+             WHERE id = %s AND claimed_user_id IS NULL
+
+        Postgres takes a row lock on the matching row, so when two requests race
+        to claim the same subscription exactly one UPDATE matches a row with
+        ``claimed_user_id IS NULL`` and the other sees the already-set value and
+        matches zero rows.
+
+        Returns:
+            True  — this caller won the claim (rowcount == 1).
+            False — already claimed (by this or another user) or no such id;
+                    the caller lost the race / the sub was previously claimed.
+
+        Unlike ``link_to_user`` this NEVER re-points an already-claimed
+        subscription to a different user — claim is one-way and first-writer-wins.
+        """
+        with self._pool.checkout() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE subscriptions"
+                    " SET claimed_user_id = %s, updated_at = now()"
+                    " WHERE id = %s AND claimed_user_id IS NULL",
+                    (user_id, subscription_id),
+                )
+                claimed = cur.rowcount == 1
+            conn.commit()
+        return claimed
+
     def link_to_user(self, subscription_id: int, user_id: int) -> None:
-        """Set claimed_user_id on the given subscription."""
+        """Set claimed_user_id on the given subscription (unconditional re-link).
+
+        Used for internal/admin re-linking where overwriting an existing claim is
+        intentional.  For the race-safe first-writer-wins claim path used by
+        claim-on-login, prefer ``claim_unclaimed_for_user`` which only succeeds
+        when ``claimed_user_id`` is still NULL.
+        """
         with self._pool.checkout() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -316,23 +417,41 @@ class SubscriptionStore:
         event_type: str,
         signature_valid: bool,
         payload: dict,
-    ) -> tuple[int | None, bool]:
-        """INSERT ... ON CONFLICT(vendor, event_id) DO NOTHING RETURNING id.
+    ) -> tuple[int, bool, bool]:
+        """INSERT ... ON CONFLICT(vendor, event_id) idempotent upsert.
 
-        Returns (event_row_id, is_new).
-        - is_new=True  → first time we see this (vendor, event_id) pair.
-        - is_new=False → duplicate / replay; the row already existed and was
-                         not inserted. event_row_id is the id of the existing row.
+        Returns ``(pk, is_new, already_processed)``:
+          - pk                 — id of the ledger row. NEVER None: the
+                                 ``DO UPDATE`` no-op below always RETURNS the row
+                                 whether it was just inserted or already existed.
+          - is_new             — True the first time we see this
+                                 (vendor, event_id) pair; False on replay.
+          - already_processed  — True iff the existing row already has a
+                                 ``processed_at`` timestamp (i.e. a successful
+                                 prior run already applied this event).  The
+                                 webhook pipeline uses this to short-circuit a
+                                 fully-processed replay while still RE-processing
+                                 a row that was recorded but never finished
+                                 (crash between INSERT and mark_event_processed).
+
+        Why ``ON CONFLICT ... DO UPDATE`` instead of ``DO NOTHING``: a bare
+        ``DO NOTHING ... RETURNING`` returns NO row on conflict, forcing a
+        second SELECT that can race / return None.  A no-op ``DO UPDATE SET
+        received_at = received_at`` is guaranteed to touch the conflicting row
+        so ``RETURNING`` always yields exactly one row.  ``(xmax = 0)`` is the
+        canonical Postgres trick to tell a fresh INSERT (xmax 0) from a row that
+        went through the UPDATE branch (xmax set to the updating xid).
         """
         with self._pool.checkout() as conn:
-            # Attempt the insert; DO NOTHING silently on duplicate.
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO billing_webhook_events"
                     " (vendor, event_id, event_type, signature_valid, payload)"
                     " VALUES (%s, %s, %s, %s, %s)"
-                    " ON CONFLICT (vendor, event_id) DO NOTHING"
-                    " RETURNING id",
+                    " ON CONFLICT (vendor, event_id) DO UPDATE"
+                    "   SET received_at = billing_webhook_events.received_at"
+                    " RETURNING id, (xmax = 0) AS is_new,"
+                    "           (processed_at IS NOT NULL) AS already_processed",
                     (
                         vendor,
                         event_id,
@@ -341,21 +460,9 @@ class SubscriptionStore:
                         psycopg2.extras.Json(payload),
                     ),
                 )
-                row = cur.fetchone()
+                pk, is_new, already_processed = cur.fetchone()
             conn.commit()
-
-            if row is not None:
-                return row[0], True
-
-            # Duplicate — fetch the existing row id.
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id FROM billing_webhook_events"
-                    " WHERE vendor = %s AND event_id = %s",
-                    (vendor, event_id),
-                )
-                existing = cur.fetchone()
-            return (existing[0] if existing else None), False
+        return pk, is_new, already_processed
 
     def mark_event_processed(
         self,

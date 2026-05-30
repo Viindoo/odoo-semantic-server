@@ -98,7 +98,7 @@ def _key_plan_meta(conn, key_id: int) -> tuple[str | None, int] | None:
     return row["slug"], row["price_cents"]
 
 
-def _plan_outranks(current_plan_id: int, new_plan_id: int) -> bool:
+def plan_outranks(current_plan_id: int, new_plan_id: int) -> bool:
     """Return True if the CURRENT plan strictly outranks the NEW plan.
 
     When True, switching to ``new_plan_id`` would be a DOWNGRADE and must be
@@ -106,6 +106,10 @@ def _plan_outranks(current_plan_id: int, new_plan_id: int) -> bool:
     slug always beats any priced plan (ADR-0041 D5).  Shared by both the grant
     path (``provision_or_upgrade``) and ``activation.update_entitlement`` so
     neither ever downgrades a higher tier.  One pool checkout, both lookups.
+
+    Public (CL2 de-private coupling): ``activation`` imports this directly
+    rather than reaching through a leading-underscore name across the module
+    boundary.
     """
     if current_plan_id == new_plan_id:
         return False
@@ -130,17 +134,26 @@ def provision_or_upgrade(subscription_id: int, user_id: int) -> int:
          with ``update_*_override=False`` so per-key overrides are left untouched.
        - none active → ``create_api_key`` then set the plan on the fresh key.
        HIGHEST-TIER-WINS (ADR-0041 D5): if the active key is already on a plan
-       that OUTRANKS the purchased plan (``_plan_outranks`` — the ``unlimited``
+       that OUTRANKS the purchased plan (``plan_outranks`` — the ``unlimited``
        slug beats any priced plan; otherwise by ``price_cents``), the plan is
        NOT changed (no downgrade); the existing key is still linked to the sub.
     3. ``seats > 1`` → ``create_tenant("sub-<id>")`` (idempotent-guarded),
        ``add_tenant_member(user_id, tenant_id, 'tenant_admin')``,
        ``link_to_tenant``.
-    4. Link the api_key to the subscription FIRST, then set ``claimed_user_id``
-       LAST.  Invariant (I7): ``claimed_user_id`` is set ONLY once ``api_key_id``
-       is also set — so any failure before this point leaves ``claimed_user_id``
-       NULL and the sub is re-surfaced by ``find_unclaimed_active_by_email`` for
-       a retry (buyer never paid for a key they can't get).
+    4. Link the api_key to the subscription, then (re-)assert ``claimed_user_id``.
+
+    CLAIM-FIRST ordering (I7, owner decision #1): the authoritative claim is now
+    taken by the CALLER via the atomic CAS ``claim_unclaimed_for_user`` BEFORE
+    this function runs (see ``claim_subscription_for_user`` and
+    ``activation.grant_entitlement``).  So when we reach this function the sub is
+    already claimed by ``user_id``; the trailing ``link_to_user`` here is an
+    idempotent belt-and-suspenders that simply re-asserts the same value.  If a
+    failure occurs BEFORE ``link_to_api_key`` the sub is left ``api_key_id=NULL``
+    — claimed but unprovisioned — and is recovered on the next login by
+    ``claim_subscription_for_user``'s claimed-but-unprovisioned scan (it no longer
+    surfaces via ``find_unclaimed_active_by_email`` because the claim already
+    succeeded).  This is the recovery path the claim-FIRST inversion requires.
+
     5. Flush the middleware plan cache for the key.
 
     Raises if the subscription does not exist (programmer error: a claim path
@@ -206,44 +219,95 @@ def provision_or_upgrade(subscription_id: int, user_id: int) -> int:
         store.add_tenant_member(user_id, tenant_id, "tenant_admin")
         subs.link_to_tenant(subscription_id, tenant_id)
 
-    # ---- 3. link api_key FIRST, then claimed_user_id LAST (I7 invariant) ----
-    # If anything above raised, claimed_user_id is still NULL → the sub stays
-    # retryable via find_unclaimed_active_by_email.
+    # ---- 3. link api_key, then (re-)assert claimed_user_id (claim-FIRST I7) --
+    # The caller already won the claim CAS before calling us, so claimed_user_id
+    # is already user_id.  link_to_api_key is the step that moves the sub from
+    # "claimed-but-unprovisioned" to fully provisioned; if anything above raised,
+    # api_key_id is still NULL and the claimed-but-unprovisioned recovery scan in
+    # claim_subscription_for_user re-runs this on the next login.  link_to_user
+    # here is an idempotent re-assert (same value) covering the grant-at-purchase
+    # path where the caller relies on provision to finalize the claim too.
     subs.link_to_api_key(subscription_id, key_id)
     subs.link_to_user(subscription_id, user_id)
 
     # ---- 4. flush the middleware plan cache so the change is immediate -------
-    _invalidate_plan_cache(key_id)
+    invalidate_plan_cache(key_id)
 
     return key_id
 
 
 def claim_subscription_for_user(user_id: int, email: str) -> list[int]:
-    """Claim-on-login hook: claim + provision any unclaimed paid subs for ``email``.
+    """Claim-on-login hook: CLAIM-FIRST, then provision paid subs for ``user_id``.
 
     Best-effort by contract — this is wired into signup/oauth/password-login and
     MUST NEVER raise into the auth flow (same posture as ``_mint_default_api_key``).
     Any exception is caught, logged, and the partial result returned.
+
+    CLAIM-FIRST invariant (I7, owner decision #1 — inverted from the old
+    provision-then-claim order):
+
+    1. For each *unclaimed* active sub matching ``email`` we call
+       ``registry.claim_unclaimed_for_user(sub_id, user_id)`` — an atomic CAS
+       (``UPDATE ... WHERE claimed_user_id IS NULL``).  ONLY the caller that wins
+       the CAS (returns True) proceeds to provision; a loser (False) skips the
+       sub.  This makes the claim the single race-arbitration point: two
+       concurrent logins for the same buyer email can never both mint a paid key
+       for one seat — exactly one wins the row lock, the other no-ops.
+
+    2. A sub previously CLAIMED by this same user but left ``api_key_id IS NULL``
+       (a crash/failure mid-provision after the claim) is ALSO swept in and
+       re-provisioned.  Because claiming now precedes provisioning, such a sub no
+       longer surfaces in ``find_unclaimed_active_by_email`` — without this
+       second scan it could never finish and the buyer would keep paying for a
+       key they never received.  ``provision_or_upgrade`` is idempotent, so a
+       retry of an already-fully-provisioned sub is harmless; we only scan the
+       NULL-api_key ones to keep the sweep cheap.
+
+    The two scans are unioned and de-duplicated by sub id; the per-sub claim CAS
+    is itself the idempotency guard against double-provisioning.
 
     Returns the list of provisioned ``api_key_id`` values (possibly empty).
     """
     provisioned: list[int] = []
     try:
         subs = subscription_store()
-        candidates = subs.find_unclaimed_active_by_email(email)
-        for sub in candidates:
+
+        # ---- scan A: unclaimed active subs for this email (the common path) --
+        unclaimed = subs.find_unclaimed_active_by_email(email)
+        # ---- scan B: subs already claimed by THIS user but never provisioned -
+        # (claim succeeded, provision crashed mid-flight → api_key_id IS NULL).
+        half_claimed = _find_claimed_unprovisioned_active(user_id)
+
+        seen: set[int] = set()
+        for sub in [*unclaimed, *half_claimed]:
+            sub_id = sub["id"]
+            if sub_id in seen:
+                continue
+            seen.add(sub_id)
+            already_mine = sub.get("claimed_user_id") == user_id
             try:
-                sub_id = sub["id"]
-                # provision_or_upgrade owns the claim and sets claimed_user_id
-                # LAST (I7); do NOT pre-link here, or a mid-provision failure
-                # would orphan the sub (claimed but no key → never re-surfaced).
+                # CLAIM-FIRST: win the atomic CAS before any key/tenant write.
+                # A sub already claimed by THIS user (scan B) is past the CAS, so
+                # we skip claiming and go straight to the idempotent re-provision.
+                if not already_mine:
+                    won = subs.claim_unclaimed_for_user(sub_id, user_id)
+                    if not won:
+                        # Lost the race (another login claimed it first) or the
+                        # row was claimed by someone else: do NOT provision.
+                        logger.info(
+                            "claim_subscription_for_user: sub_id=%d not claimed by "
+                            "user_id=%d (lost race / already claimed) — skipping",
+                            sub_id, user_id,
+                        )
+                        continue
+                # Claim is ours → provision/upgrade the key (idempotent on retry).
                 key_id = provision_or_upgrade(sub_id, user_id)
                 provisioned.append(key_id)
             except Exception as exc:  # noqa: BLE001 — one bad sub must not abort the rest
                 logger.warning(
                     "claim_subscription_for_user: failed to provision sub_id=%s "
                     "for user_id=%d: %s",
-                    sub.get("id"), user_id, exc,
+                    sub_id, user_id, exc,
                 )
         if provisioned:
             logger.info(
@@ -256,6 +320,29 @@ def claim_subscription_for_user(user_id: int, email: str) -> list[int]:
             user_id, email, exc,
         )
     return provisioned
+
+
+def _find_claimed_unprovisioned_active(user_id: int) -> list[dict]:
+    """Return active subs CLAIMED by ``user_id`` but with no ``api_key_id`` yet.
+
+    These are recovery candidates: the claim CAS succeeded but provisioning
+    crashed before ``link_to_api_key`` ran, so the buyer holds the claim but not
+    the key.  Because the claim already precedes provisioning (claim-FIRST), such
+    a sub never re-surfaces via ``find_unclaimed_active_by_email`` — this scan is
+    the ONLY path that lets ``claim_subscription_for_user`` finish it on a later
+    login.  Read-only, fully parameterized.
+    """
+    pool = get_pool()
+    with pool.checkout() as conn:
+        return pool.fetch_all(
+            conn,
+            "SELECT * FROM subscriptions"
+            " WHERE claimed_user_id = %s"
+            "   AND status = 'active'"
+            "   AND api_key_id IS NULL"
+            " ORDER BY created_at DESC",
+            (user_id,),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +388,16 @@ def _username_for(user_id: int) -> str:
     return f"user-{user_id}"
 
 
-def _invalidate_plan_cache(key_id: int) -> None:
+def invalidate_plan_cache(key_id: int) -> None:
     """Flush the MCP middleware plan cache for ``key_id`` (best-effort).
 
     Imported lazily so this data-plane module does not pull the MCP server
     surface at import time, and so a missing/renamed hook degrades to the 300s
     TTL rather than crashing provisioning.
+
+    Public (CL2 de-private coupling): ``activation`` calls this directly on the
+    update/revoke paths so the cache flush is not a cross-module
+    leading-underscore reach.
     """
     try:
         from src.mcp.middleware import _cache_invalidate_by_key_id
@@ -317,3 +408,16 @@ def _invalidate_plan_cache(key_id: int) -> None:
             "(change still applies within the cache TTL)",
             key_id, exc,
         )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible private aliases (CL2 transition).
+#
+# ``_plan_outranks`` / ``_invalidate_plan_cache`` were de-privatised to
+# ``plan_outranks`` / ``invalidate_plan_cache``.  These thin aliases keep a
+# small number of out-of-module references (e.g. test_billing_cancel_voluntary)
+# working through the rename without a flag-day edit; new code MUST use the
+# public names.  Remove once all references are migrated.
+# ---------------------------------------------------------------------------
+_plan_outranks = plan_outranks
+_invalidate_plan_cache = invalidate_plan_cache

@@ -27,6 +27,7 @@ processing semantics above live once in that pipeline so a second payment adapte
 %s-parameterised values (ADR-0039 §11 SQLi guard).
 """
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -56,6 +57,136 @@ def _extract_buyer_email(data: dict) -> str | None:
         email = customer.get("email")
         if email:
             return str(email)
+    return None
+
+
+def _extract_seats(data: dict) -> int:
+    """Seat count from a Polar payload (default 1).
+
+    Polar carries the quantity under ``seats`` (older) or ``quantity`` (newer
+    SDK); accept either.  A non-int / absent / non-positive value falls back to 1
+    so a grant is never built with an invalid seat count that the seats>0 CHECK
+    would reject.
+    """
+    raw = data.get("seats")
+    if raw is None:
+        raw = data.get("quantity")
+    try:
+        seats = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return seats if seats > 0 else 1
+
+
+def _extract_amount(data: dict) -> int | None:
+    """Amount in minor units (cents) from a Polar payload, or None.
+
+    Reads ``amount`` (Polar's subscription/order amount in cents).  A non-int
+    value yields None so we store NULL rather than a bad value.
+    """
+    raw = data.get("amount")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_interval(data: dict):
+    """Raw Polar billing-interval token from a payload data dict, or None.
+
+    Polar carries the recurring cadence under ``recurring_interval`` (enum
+    ``day|week|month|year``; ``null`` for a one-time order).  Some older payloads
+    nested it under ``price.recurring_interval`` — accept that as a fallback.  The
+    RAW token is returned unchanged; ``polar.normalize_billing_interval`` maps it
+    to our enum.  Returning ``None`` (no recurring interval) → normalizer yields
+    ``one_time``.
+    """
+    raw = data.get("recurring_interval")
+    if raw is None:
+        price = data.get("price")
+        if isinstance(price, dict):
+            raw = price.get("recurring_interval")
+    return raw
+
+
+def _extract_currency(data: dict) -> str | None:
+    """ISO-4217 currency from a Polar payload, upper-cased, or None.
+
+    The subscriptions.currency CHECK requires ``^[A-Z]{3}$``; we upper-case here
+    so a lower-case ``usd`` from the vendor does not silently violate it.  A
+    value that is not a 3-letter string yields None (store NULL, CHECK permits).
+    """
+    raw = data.get("currency")
+    if not isinstance(raw, str):
+        return None
+    cur = raw.strip().upper()
+    return cur if len(cur) == 3 and cur.isalpha() else None
+
+
+def _parse_ts(value) -> datetime | None:
+    """Parse an ISO-8601 / Unix-epoch timestamp into an aware ``datetime``, or None.
+
+    Polar carries period bounds as ISO-8601 strings (``2026-01-01T00:00:00Z``).
+    Accepts the trailing ``Z``, an existing offset, or a Unix-epoch int/float.
+    Returns ``None`` for anything unparseable so a bad value stores NULL rather
+    than raising mid-dispatch.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # Normalize a trailing 'Z' (UTC) to the +00:00 offset fromisoformat wants.
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_period(data: dict) -> tuple:
+    """(current_period_start, current_period_end, trial_ends_at) as datetimes/None.
+
+    Reads Polar's ``current_period_start`` / ``current_period_end`` and the trial
+    end (``trial_ends_at`` or ``ends_at`` of a trial).  Each is parsed leniently
+    (``_parse_ts``); an absent/unparseable value yields ``None`` so the
+    subscription snapshot stores NULL for that bound.
+    """
+    start = _parse_ts(data.get("current_period_start"))
+    end = _parse_ts(data.get("current_period_end"))
+    trial = _parse_ts(data.get("trial_ends_at"))
+    return start, end, trial
+
+
+def _extract_event_at(headers, payload: dict) -> datetime | None:
+    """Vendor event timestamp for the monotonic out-of-order guard (#5).
+
+    Standard Webhooks deliver the signed event time in the ``webhook-timestamp``
+    header (Unix-epoch seconds); prefer it because it is part of the signed
+    envelope (tamper-evident).  Fall back to a payload ``modified_at`` /
+    ``created_at`` field if the header is missing.  Returns ``None`` when neither
+    yields a parseable value → the registry guard treats NULL as "no ordering
+    info" and lets the write through (last-write), which is the safe default.
+    """
+    ts_header = headers.get(polar.HEADER_TIMESTAMP) if headers is not None else None
+    parsed = _parse_ts(ts_header)
+    if parsed is not None:
+        return parsed
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _parse_ts(data.get("modified_at") or data.get("created_at"))
     return None
 
 
@@ -111,6 +242,12 @@ def _build_polar_adapter() -> WebhookAdapter:
         extract_email_fn=_extract_buyer_email,
         map_status_fn=polar.map_subscription_status,
         normalize_interval_fn=polar.normalize_billing_interval,
+        extract_interval_fn=_extract_interval,
+        extract_seats_fn=_extract_seats,
+        extract_amount_fn=_extract_amount,
+        extract_currency_fn=_extract_currency,
+        extract_period_fn=_extract_period,
+        extract_event_at_fn=_extract_event_at,
     )
 
 

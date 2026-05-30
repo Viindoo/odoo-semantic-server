@@ -98,12 +98,26 @@ EVENT_STATUS_MAP: dict[str, str] = {
 # ('free' | 'monthly' | 'annual' | 'one_time').  Unknown → None so the caller
 # stores NULL (the subscriptions CHECK permits NULL) rather than a bad enum that
 # would trip the constraint.
+#
+# Polar's recurring_interval enum is exactly day|week|month|year (one-time orders
+# carry recurring_interval=null → handled as one_time in normalize_billing_interval).
+# We only sell monthly / annual products, so 'day' and 'week' are mapped to
+# 'monthly' as a SAFE DISPLAY FALLBACK: it keeps a valid, non-NULL value that
+# satisfies the billing_interval CHECK ('free'|'monthly'|'annual'|'one_time') and
+# never silently drops a paid grant.  OWNER-FLAG: if we ever start selling
+# day/week-billed products, add 'daily'/'weekly' to the subscriptions
+# billing_interval CHECK (migration) and replace these fallback rows with their
+# own enum values.
 _BILLING_INTERVAL_MAP: dict[str, str] = {
     "month":     "monthly",
     "monthly":   "monthly",
     "year":      "annual",
     "annual":    "annual",
     "yearly":    "annual",
+    "day":       "monthly",   # OWNER-FLAG fallback (no daily product sold today)
+    "daily":     "monthly",   # OWNER-FLAG fallback
+    "week":      "monthly",   # OWNER-FLAG fallback (no weekly product sold today)
+    "weekly":    "monthly",   # OWNER-FLAG fallback
     "one_time":  "one_time",
     "one-time":  "one_time",
     "onetime":   "one_time",
@@ -122,7 +136,14 @@ _STATUS_MAP: dict[str, str] = {
     "trialing":          "trialing",
     "trial":             "trialing",
     "past_due":          "past_due",
-    "unpaid":            "past_due",
+    # OWNER-FLAG: Polar 'unpaid' = payment has DEFINITIVELY failed, distinct from
+    # 'past_due' (a dunning retry still in progress).  We map it to the terminal
+    # 'expired' to record that DEFINITIVE-failure semantic on the subscription
+    # snapshot.  (Both 'expired' and 'past_due' currently trip the CR3 key
+    # downgrade in activation._TERMINAL_STATUSES, so either is money-safe; the
+    # 'expired' choice is about correctly classifying a terminal failure, not a
+    # retry.)  Confirm with owner if Polar's 'unpaid' semantics differ.
+    "unpaid":            "expired",
     "canceled":          "cancelled",   # US spelling (Polar)
     "cancelled":         "cancelled",
     "revoked":           "cancelled",
@@ -134,17 +155,30 @@ _STATUS_MAP: dict[str, str] = {
 
 
 def normalize_billing_interval(value: Any) -> str | None:
-    """Map a raw Polar billing-interval token to our enum, or ``None`` if unknown.
+    """Map a raw Polar ``recurring_interval`` token to our enum.
 
-    Accepts e.g. ``'month'`` → ``'monthly'``, ``'year'`` → ``'annual'``,
-    ``'one_time'``/``'one-time'`` → ``'one_time'``.  Case-insensitive.  Returns
-    ``None`` for an unrecognised or non-string value so the caller stores NULL
-    (the ``subscriptions.billing_interval`` CHECK permits NULL) rather than a
-    value that would violate the constraint.
+    Polar's ``recurring_interval`` enum is ``day | week | month | year``; a
+    one-time order carries ``recurring_interval = null``.  Mapping:
+
+      * ``month`` → ``monthly``, ``year`` → ``annual`` (the only cadences we sell);
+      * ``day``/``week`` → ``monthly`` — a SAFE DISPLAY FALLBACK (see
+        ``_BILLING_INTERVAL_MAP``; OWNER-FLAG: revisit if day/week products ship);
+      * ``None`` / non-string (a one-time order with no recurring interval) →
+        ``one_time``;
+      * any other unrecognised string → ``None`` so the caller stores NULL (the
+        ``subscriptions.billing_interval`` CHECK permits NULL) rather than a value
+        that would violate the constraint.
+
+    Case-insensitive.
     """
     if not isinstance(value, str):
-        return None
-    return _BILLING_INTERVAL_MAP.get(value.strip().lower())
+        # Polar sends recurring_interval=null for a one-time order → 'one_time'.
+        return "one_time"
+    token = value.strip().lower()
+    if not token:
+        # An empty string is not a recurring interval → treat as one-time.
+        return "one_time"
+    return _BILLING_INTERVAL_MAP.get(token)
 
 
 def map_subscription_status(payload: dict[str, Any]) -> str:
@@ -211,7 +245,13 @@ def verify_signature(
         return False
     try:
         if secret.startswith(_WHSEC_PREFIX):
-            secret_bytes = base64.b64decode(secret[len(_WHSEC_PREFIX):])
+            # Defensive base64 padding (the Standard Webhooks reference lib pads
+            # before decoding).  Polar's exported secret is 32 base64 chars
+            # (already a multiple of 4, so this is a no-op today) but a future /
+            # differently-encoded secret missing its '=' padding would otherwise
+            # raise binascii.Error and fail-closed-reject a LEGITIMATE webhook.
+            b64_secret = secret[len(_WHSEC_PREFIX):]
+            secret_bytes = base64.b64decode(b64_secret + "==")
         else:
             secret_bytes = secret.encode()
     except Exception:

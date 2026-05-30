@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for src/db/subscription_registry.py.
 
-Business intent (6 test classes):
+Business intent:
   T1  upsert_by_external_ref: inserts a new row, then upserts same external_ref
       → exactly one row, fields updated (no duplicate).
   T2  record_webhook_event: first call is_new=True; replay (same vendor+event_id)
-      → is_new=False, no second row, existing id returned.
+      → is_new=False, no second row, existing id returned. Now a 3-tuple
+      (pk, is_new, already_processed) — pk NEVER None.
   T3  _safe_update_clause: rejects unknown column (ValueError before DB call);
       allowed columns use sql.Identifier via update_fields round-trip.
   T4  find_unclaimed_active_by_email: filters by status='active' AND
@@ -15,9 +16,19 @@ Business intent (6 test classes):
       status='cancelled' and cancelled_at IS NOT NULL.
   T6  mark_event_processed sets processed_at + subscription_id + processing_error.
 
+WI-2 additions (money-critical / concurrency):
+  #1   claim_unclaimed_for_user: atomic CAS — first claimer True, second False,
+       already-claimed False, nonexistent id False; never re-points an owner.
+  #10  record_webhook_event already_processed reflects a prior SUCCESSFUL run
+       (mark_event_processed), distinct from mere row existence → reprocess guard.
+  #5   monotonic upsert: an out-of-order OLDER last_event_at must not overwrite
+       newer status; high-water-mark never regresses; NULL ts → last-write-wins.
+  #11  list_all: explicit projection + plan_slug/plan_name enrichment + LIMIT/OFFSET.
+
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
 import time
+from datetime import UTC
 
 import pytest
 
@@ -185,7 +196,7 @@ class TestRecordWebhookEvent:
     """T2: record_webhook_event (vendor, event_id) is the idempotency key."""
 
     def test_first_call_is_new(self, migrated_pg):
-        event_pk, is_new = subscription_store().record_webhook_event(
+        event_pk, is_new, already_processed = subscription_store().record_webhook_event(
             vendor="polar",
             event_id="evt_aaa001",
             event_type="subscription.created",
@@ -193,17 +204,18 @@ class TestRecordWebhookEvent:
             payload={"data": {"id": "sub_001"}},
         )
         assert is_new is True
+        assert already_processed is False
         assert event_pk is not None and event_pk > 0
 
     def test_replay_returns_is_new_false(self, migrated_pg):
-        pk1, is_new1 = subscription_store().record_webhook_event(
+        pk1, is_new1, proc1 = subscription_store().record_webhook_event(
             vendor="polar",
             event_id="evt_bbb001",
             event_type="subscription.created",
             signature_valid=True,
             payload={"data": {"id": "sub_002"}},
         )
-        pk2, is_new2 = subscription_store().record_webhook_event(
+        pk2, is_new2, proc2 = subscription_store().record_webhook_event(
             vendor="polar",
             event_id="evt_bbb001",
             event_type="subscription.created",
@@ -212,7 +224,10 @@ class TestRecordWebhookEvent:
         )
         assert is_new1 is True
         assert is_new2 is False
+        assert proc1 is False
+        assert proc2 is False, "replay of an UN-processed row is not already_processed"
         assert pk1 == pk2, "replay must return the id of the existing row"
+        assert pk2 is not None, "pk must never be None on replay (no-op DO UPDATE)"
 
     def test_replay_does_not_create_second_row(self, migrated_pg):
         subscription_store().record_webhook_event(
@@ -235,14 +250,14 @@ class TestRecordWebhookEvent:
 
     def test_same_event_id_different_vendor_is_new(self, migrated_pg):
         """Same event_id but different vendor → separate rows (idempotency key is composite)."""
-        _, is_new1 = subscription_store().record_webhook_event(
+        _, is_new1, _ = subscription_store().record_webhook_event(
             vendor="polar",
             event_id="evt_ddd001",
             event_type="order.paid",
             signature_valid=True,
             payload={},
         )
-        _, is_new2 = subscription_store().record_webhook_event(
+        _, is_new2, _ = subscription_store().record_webhook_event(
             vendor="test",
             event_id="evt_ddd001",
             event_type="order.paid",
@@ -535,7 +550,7 @@ class TestMarkEventProcessed:
             status="active",
             buyer_email="proc1@example.com",
         )
-        event_pk, _ = subscription_store().record_webhook_event(
+        event_pk, _, _ = subscription_store().record_webhook_event(
             vendor="polar",
             event_id="evt_proc_001",
             event_type="subscription.created",
@@ -557,7 +572,7 @@ class TestMarkEventProcessed:
         assert row[2] is None, "processing_error must be NULL when no error"
 
     def test_mark_event_processed_with_error(self, migrated_pg):
-        event_pk, _ = subscription_store().record_webhook_event(
+        event_pk, _, _ = subscription_store().record_webhook_event(
             vendor="test",
             event_id="evt_proc_002",
             event_type="order.paid",
@@ -626,6 +641,267 @@ class TestResolvePlanIdConnOptional:
         payload = {"data": {"id": "sub_2", "product_id": "prod_missing"}}
         with pytest.raises(ValueError, match="unknown Polar product_id"):
             resolve_plan_id(payload)
+
+
+# ---------------------------------------------------------------------------
+# WI-2 #1: claim_unclaimed_for_user — atomic compare-and-set (first-writer-wins)
+# ---------------------------------------------------------------------------
+
+class TestClaimUnclaimedForUser:
+    """#1: claim_unclaimed_for_user is a one-way CAS — exactly one winner."""
+
+    def _make_user(self, conn, username: str, email: str) -> int:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO webui_users (username, email, password_hash)"
+                " VALUES (%s, %s, 'x') RETURNING id",
+                (username, email),
+            )
+            uid = cur.fetchone()[0]
+        conn.commit()
+        return uid
+
+    def test_first_claim_wins_second_loses(self, migrated_pg):
+        """Two sequential claims on the SAME unclaimed sub: first True, second False.
+
+        Simulates the claim race: both requests target the same row; the CAS
+        WHERE claimed_user_id IS NULL means only the first UPDATE matches a row.
+        """
+        plan_id = _free_plan_id(migrated_pg)
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="polar_claim_cas_01",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="cas1@example.com",
+        )
+        user_a = self._make_user(migrated_pg, "cas_user_a", "cas_a@example.com")
+        user_b = self._make_user(migrated_pg, "cas_user_b", "cas_b@example.com")
+
+        won_first = subscription_store().claim_unclaimed_for_user(sub_id, user_a)
+        won_second = subscription_store().claim_unclaimed_for_user(sub_id, user_b)
+
+        assert won_first is True, "first claimer must win the CAS"
+        assert won_second is False, "second claimer must lose — sub already claimed"
+
+        # The winner's user_id is the persisted owner; loser never overwrites it.
+        row = subscription_store().get_by_id(sub_id)
+        assert row["claimed_user_id"] == user_a
+
+    def test_claim_already_claimed_returns_false(self, migrated_pg):
+        """Claiming a sub that is ALREADY claimed returns False (no overwrite)."""
+        plan_id = _free_plan_id(migrated_pg)
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="polar_claim_cas_02",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="cas2@example.com",
+        )
+        owner = self._make_user(migrated_pg, "cas_owner", "cas_owner@example.com")
+        other = self._make_user(migrated_pg, "cas_other", "cas_other@example.com")
+        subscription_store().link_to_user(sub_id, owner)  # pre-claim
+
+        result = subscription_store().claim_unclaimed_for_user(sub_id, other)
+        assert result is False
+        row = subscription_store().get_by_id(sub_id)
+        assert row["claimed_user_id"] == owner, "claim must not re-point owner"
+
+    def test_claim_nonexistent_id_returns_false(self, migrated_pg):
+        user = self._make_user(migrated_pg, "cas_nx", "cas_nx@example.com")
+        assert subscription_store().claim_unclaimed_for_user(999_999_999, user) is False
+
+
+# ---------------------------------------------------------------------------
+# WI-2 #2/#10: record_webhook_event already_processed flag (reprocess guard)
+# ---------------------------------------------------------------------------
+
+class TestRecordWebhookEventAlreadyProcessed:
+    """#10: already_processed reflects a prior SUCCESSFUL run, not mere existence."""
+
+    def test_lifecycle_new_then_replay_then_processed(self, migrated_pg):
+        store = subscription_store()
+        # First sighting: brand-new, not processed.
+        pk1, is_new1, proc1 = store.record_webhook_event(
+            vendor="polar",
+            event_id="evt_reproc_01",
+            event_type="subscription.created",
+            signature_valid=True,
+            payload={},
+        )
+        assert (is_new1, proc1) == (True, False)
+
+        # Replay BEFORE processing: same pk, not new, still not processed
+        # → pipeline should RE-process (recorded-but-never-finished).
+        pk2, is_new2, proc2 = store.record_webhook_event(
+            vendor="polar",
+            event_id="evt_reproc_01",
+            event_type="subscription.created",
+            signature_valid=True,
+            payload={},
+        )
+        assert pk2 == pk1
+        assert (is_new2, proc2) == (False, False)
+
+        # Mark the event processed, then replay again.
+        store.mark_event_processed(pk1, None)
+        pk3, is_new3, proc3 = store.record_webhook_event(
+            vendor="polar",
+            event_id="evt_reproc_01",
+            event_type="subscription.created",
+            signature_valid=True,
+            payload={},
+        )
+        assert pk3 == pk1
+        assert is_new3 is False
+        assert proc3 is True, "after mark_event_processed, replay is already_processed"
+
+
+# ---------------------------------------------------------------------------
+# WI-2 #5: monotonic upsert — out-of-order events must not regress authoritative state
+# ---------------------------------------------------------------------------
+
+class TestMonotonicUpsert:
+    """#5: status/plan_id/seats only advance when last_event_at is non-decreasing."""
+
+    def test_older_event_does_not_overwrite_newer_status(self, migrated_pg):
+        from datetime import datetime, timedelta
+
+        plan_id = _free_plan_id(migrated_pg)
+        t2 = datetime(2026, 5, 30, 12, 0, 0, tzinfo=UTC)
+        t1 = t2 - timedelta(hours=1)  # older event
+        t3 = t2 + timedelta(hours=1)  # newer event
+
+        store = subscription_store()
+        # Newest-known state first: cancelled at T2.
+        sub_id = store.upsert_by_external_ref(
+            external_ref="polar_mono_01",
+            plan_id=plan_id,
+            source="polar",
+            status="cancelled",
+            buyer_email="mono1@example.com",
+            last_event_at=t2,
+        )
+        # An OLDER 'active' event (T1 < T2) arrives late — must NOT flip back.
+        store.upsert_by_external_ref(
+            external_ref="polar_mono_01",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="mono1@example.com",
+            last_event_at=t1,
+        )
+        row = store.get_by_id(sub_id)
+        assert row["status"] == "cancelled", (
+            "an out-of-order older event must NOT overwrite the newer status"
+        )
+
+        # A genuinely newer 'active' event (T3 > T2) IS applied.
+        store.upsert_by_external_ref(
+            external_ref="polar_mono_01",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="mono1@example.com",
+            last_event_at=t3,
+        )
+        row = store.get_by_id(sub_id)
+        assert row["status"] == "active", "a newer event must advance the status"
+
+    def test_high_water_mark_never_regresses(self, migrated_pg):
+        from datetime import datetime, timedelta
+
+        plan_id = _free_plan_id(migrated_pg)
+        t2 = datetime(2026, 5, 30, 12, 0, 0, tzinfo=UTC)
+        t1 = t2 - timedelta(hours=1)
+
+        store = subscription_store()
+        sub_id = store.upsert_by_external_ref(
+            external_ref="polar_mono_02",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="mono2@example.com",
+            last_event_at=t2,
+        )
+        store.upsert_by_external_ref(
+            external_ref="polar_mono_02",
+            plan_id=plan_id,
+            source="polar",
+            status="cancelled",
+            buyer_email="mono2@example.com",
+            last_event_at=t1,  # older
+        )
+        row = store.get_by_id(sub_id)
+        assert row["last_event_at"] == t2, (
+            "last_event_at high-water-mark must stay at the newest timestamp"
+        )
+
+    def test_null_last_event_at_degrades_to_last_write_wins(self, migrated_pg):
+        """Legacy callers omitting last_event_at keep last-write-wins semantics."""
+        plan_id = _free_plan_id(migrated_pg)
+        store = subscription_store()
+        sub_id = store.upsert_by_external_ref(
+            external_ref="polar_mono_03",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="mono3@example.com",
+        )
+        store.upsert_by_external_ref(
+            external_ref="polar_mono_03",
+            plan_id=plan_id,
+            source="polar",
+            status="cancelled",
+            buyer_email="mono3@example.com",
+        )
+        row = store.get_by_id(sub_id)
+        assert row["status"] == "cancelled", (
+            "with NULL last_event_at the latest write must win (backward compat)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# WI-2 #11: list_all — admin pagination + plan enrichment
+# ---------------------------------------------------------------------------
+
+class TestListAll:
+    """#11: list_all returns an explicit projection with plan_slug enrichment."""
+
+    def test_returns_projection_with_plan_slug(self, migrated_pg):
+        plan_id = _free_plan_id(migrated_pg)
+        subscription_store().upsert_by_external_ref(
+            external_ref="polar_listall_01",
+            plan_id=plan_id,
+            source="polar",
+            status="active",
+            buyer_email="listall1@example.com",
+        )
+        rows = subscription_store().list_all()
+        assert len(rows) >= 1
+        target = next(r for r in rows if r["external_ref"] == "polar_listall_01")
+        assert target["plan_slug"] == "free"
+        assert "plan_name" in target
+        # Explicit projection includes the WI-1 monotonic + cancel columns.
+        assert "last_event_at" in target
+        assert "cancel_at_period_end" in target
+
+    def test_limit_offset_paginate(self, migrated_pg):
+        plan_id = _free_plan_id(migrated_pg)
+        for i in range(3):
+            subscription_store().upsert_by_external_ref(
+                external_ref=f"polar_listall_pg_{i}",
+                plan_id=plan_id,
+                source="polar",
+                status="active",
+                buyer_email=f"listallpg{i}@example.com",
+            )
+        page1 = subscription_store().list_all(limit=2, offset=0)
+        page2 = subscription_store().list_all(limit=2, offset=2)
+        assert len(page1) == 2
+        ids_page1 = {r["id"] for r in page1}
+        ids_page2 = {r["id"] for r in page2}
+        assert ids_page1.isdisjoint(ids_page2), "pages must not overlap"
 
 
 def _plan_id_for(conn, slug: str) -> int:

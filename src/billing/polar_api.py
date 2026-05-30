@@ -22,7 +22,12 @@ https://docs.polar.sh (Subscriptions API).  Current best-known shape:
 
     cancel-at-period-end :  PATCH {base}/v1/subscriptions/{id}
                             JSON  {"cancel_at_period_end": true}
-    immediate cancel     :  DELETE {base}/v1/subscriptions/{id}
+    immediate cancel     :  PATCH {base}/v1/subscriptions/{id}
+                            JSON  {"revoke": true}
+
+Polar has NO DELETE on /v1/subscriptions; BOTH cancel modes are a PATCH — the
+period-end mode sets ``cancel_at_period_end``, the immediate mode sets ``revoke``
+(per https://docs.polar.sh — Subscriptions Update/Revoke).
 
 ``external_ref`` stored on the subscription IS the Polar subscription id, so it
 is interpolated directly as ``{id}``.  Auth is ``Authorization: Bearer <token>``.
@@ -41,10 +46,12 @@ logger = logging.getLogger(__name__)
 # --- FLAGGED Polar cancel contract (adjust here once confirmed) -------------
 # Path template is formatted with the Polar subscription id (= external_ref).
 _CANCEL_PATH_TEMPLATE = "/v1/subscriptions/{id}"
-# cancel-at-period-end uses PATCH + a body flag; immediate uses DELETE + no body.
+# Polar has no DELETE on subscriptions: BOTH modes PATCH the subscription.
+# cancel-at-period-end sets the schedule flag; immediate sets revoke=true.
 _CANCEL_AT_PERIOD_END_METHOD = "PATCH"
 _CANCEL_AT_PERIOD_END_PAYLOAD = {"cancel_at_period_end": True}
-_CANCEL_IMMEDIATE_METHOD = "DELETE"
+_CANCEL_IMMEDIATE_METHOD = "PATCH"
+_CANCEL_IMMEDIATE_PAYLOAD = {"revoke": True}
 # Short timeout — this is a synchronous user-facing call; do not hang the request.
 _REQUEST_TIMEOUT_SECONDS = 10.0
 
@@ -104,8 +111,9 @@ async def cancel_subscription(external_ref: str, *, at_period_end: bool = True) 
         method = _CANCEL_AT_PERIOD_END_METHOD
         json_body: dict | None = _CANCEL_AT_PERIOD_END_PAYLOAD
     else:
+        # Immediate cancel = PATCH {"revoke": true} (Polar has no DELETE).
         method = _CANCEL_IMMEDIATE_METHOD
-        json_body = None
+        json_body = _CANCEL_IMMEDIATE_PAYLOAD
 
     try:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
