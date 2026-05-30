@@ -8,11 +8,25 @@
 
 -- ===== 1. plans commercial pricing columns =====
 ALTER TABLE plans
-    ADD COLUMN IF NOT EXISTS price_cents      INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS price_cents      BIGINT  NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS currency         TEXT    NOT NULL DEFAULT 'USD',
     ADD COLUMN IF NOT EXISTS billing_interval TEXT    NOT NULL DEFAULT 'free',
     ADD COLUMN IF NOT EXISTS trial_days       INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS is_archived      BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- #3 BIGINT: upgrade price_cents INTEGER→BIGINT (VND whole-units can exceed INT4 2.1B).
+-- Idempotent: ALTER TYPE on an already-BIGINT column is a no-op.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'plans'
+           AND column_name = 'price_cents'
+           AND data_type = 'integer'
+    ) THEN
+        ALTER TABLE plans ALTER COLUMN price_cents TYPE BIGINT;
+    END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -40,22 +54,37 @@ BEGIN
         ALTER TABLE plans ADD CONSTRAINT plans_trial_days_nonneg
             CHECK (trial_days >= 0);
     END IF;
+    -- #9 currency CHECK on plans.currency
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'plans_currency_iso4217'
+           AND conrelid = 'plans'::regclass
+    ) THEN
+        ALTER TABLE plans ADD CONSTRAINT plans_currency_iso4217
+            CHECK (currency ~ '^[A-Z]{3}$');
+    END IF;
 END $$;
 
--- ===== 2. PRICING SEED (idempotent UPDATE, guarded by WHERE) =====
+-- ===== 2. PRICING SEED — scalar (price_cents / billing_interval) =====
+-- NOTE: The per-currency prices JSONB column is added in section 6.2.
+-- This section seeds the scalar columns that exist at this point in the script.
+-- #12 seed desync fix: The combined guard (price_cents AND prices) for paid plans
+-- lives in section 6.3 (where prices column already exists). The guards here cover
+-- only the scalar columns seeded before prices is added.
+--
 -- Free quota bump 100 -> 200 (report 03 §6).
 UPDATE plans SET quota_calls_per_month = 200
     WHERE slug = 'free' AND quota_calls_per_month = 100;
--- Price + billing_interval for each plan (WHERE guards prevent double-apply).
--- Guarded so a re-run never clobbers an admin's later edit (parity with pro/team):
--- only confirm rows still at the seed default (price_cents already 0 via column DEFAULT).
+-- Free/unlimited: currency + interval (both are zero-price by design; no desync risk).
 UPDATE plans SET currency = 'USD', billing_interval = 'free'
     WHERE slug IN ('free', 'unlimited')
       AND price_cents = 0 AND billing_interval = 'free';
+-- Pro: $19/seat/mo — guard on price_cents=0 (prices sentinel added in section 6.3).
 UPDATE plans SET price_cents = 1900, currency = 'USD', billing_interval = 'monthly'
-    WHERE slug = 'pro'  AND price_cents = 0;   -- $19/seat/mo
+    WHERE slug = 'pro'  AND price_cents = 0;
+-- Team: $39/seat/mo — guard on price_cents=0 (prices sentinel added in section 6.3).
 UPDATE plans SET price_cents = 3900, currency = 'USD', billing_interval = 'monthly'
-    WHERE slug = 'team' AND price_cents = 0;   -- $39/seat/mo (3-seat min enforced at app layer)
+    WHERE slug = 'team' AND price_cents = 0;
 -- Enterprise = unlimited slug + per-key overrides + manual invoice (no public price row).
 
 -- ===== 3. subscriptions (commercial-only, integer FKs, NO limit cols) =====
@@ -80,9 +109,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     source               TEXT NOT NULL DEFAULT 'polar'
                              CONSTRAINT subscriptions_source_check
                              CHECK (source IN ('polar', 'erp', 'admin', 'promo')),
-    external_ref         TEXT UNIQUE,
+    external_ref         TEXT,
     -- money snapshot (informational; Polar is accounting SoR)
-    amount_cents         INTEGER,
+    -- #3 BIGINT: VND whole-units can exceed INT4 2.1B max.
+    amount_cents         BIGINT,
     currency             TEXT,
     billing_interval     TEXT
                              CONSTRAINT subscriptions_billing_interval_check
@@ -120,6 +150,77 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_plan_status
 CREATE INDEX IF NOT EXISTS idx_subscriptions_buyer_email
     ON subscriptions(buyer_email)
     WHERE buyer_email IS NOT NULL AND claimed_user_id IS NULL;
+
+-- Post-CREATE ALTER TABLE corrections (applied idempotently via DO blocks).
+-- These are safe to run against both a freshly-created and a pre-existing table.
+
+-- #3 BIGINT: upgrade amount_cents INTEGER→BIGINT (same rationale as plans.price_cents).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'subscriptions'
+           AND column_name = 'amount_cents'
+           AND data_type = 'integer'
+    ) THEN
+        ALTER TABLE subscriptions ALTER COLUMN amount_cents TYPE BIGINT;
+    END IF;
+END $$;
+
+-- #8 UNIQUE(source, external_ref): replace the global external_ref UNIQUE with a
+-- composite key so the same Polar order ID cannot bleed across vendors, while
+-- still allowing NULL external_ref for admin/promo grants.
+-- Step 1: drop the old global UNIQUE constraint if it still exists (any name variant).
+DO $$
+DECLARE
+    _conname TEXT;
+BEGIN
+    SELECT conname INTO _conname
+      FROM pg_constraint
+     WHERE conrelid = 'subscriptions'::regclass
+       AND contype  = 'u'
+       AND conkey   = ARRAY(
+               SELECT a.attnum FROM pg_attribute a
+                WHERE a.attrelid = 'subscriptions'::regclass
+                  AND a.attname  = 'external_ref'
+               ORDER BY a.attnum
+           );
+    IF _conname IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE subscriptions DROP CONSTRAINT %I', _conname);
+    END IF;
+END $$;
+-- Step 2: add composite UNIQUE(source, external_ref) — idempotent.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname    = 'subscriptions_source_external_ref_key'
+           AND conrelid   = 'subscriptions'::regclass
+    ) THEN
+        ALTER TABLE subscriptions
+            ADD CONSTRAINT subscriptions_source_external_ref_key
+            UNIQUE (source, external_ref);
+    END IF;
+END $$;
+
+-- #9 currency CHECK on subscriptions.currency
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname  = 'subscriptions_currency_iso4217'
+           AND conrelid = 'subscriptions'::regclass
+    ) THEN
+        ALTER TABLE subscriptions
+            ADD CONSTRAINT subscriptions_currency_iso4217
+            CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$');
+    END IF;
+END $$;
+
+-- #5 last_event_at: monotonic guard column for out-of-order webhook events.
+-- WI-2/WI-4 write this column; DDL lives here as the SSOT.
+ALTER TABLE subscriptions
+    ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ;
 
 -- ===== 4. billing_webhook_events (idempotency ledger) =====
 CREATE TABLE IF NOT EXISTS billing_webhook_events (
@@ -181,12 +282,17 @@ ALTER TABLE plans
     ADD COLUMN IF NOT EXISTS prices JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- 6.3 PRICES SEED (idempotent, guarded)
--- Seed per-currency prices for existing plans only when prices is still the
--- column default ('{}'::jsonb) — so a re-run never clobbers admin edits.
+-- #12 seed desync fix: each paid plan seed guards BOTH price_cents AND prices in
+-- the same sentinel. A re-run after an admin edits either field leaves the row
+-- unchanged — the WHERE clause will not match a row where price_cents != 0 OR
+-- prices != '{}'::jsonb. Both sentinels must hold simultaneously for the seed to
+-- (re-)apply, preventing partial desync between the two price representations.
 -- New vendor: ALTER TABLE ... DROP CONSTRAINT subscriptions_source_check;
 --             ADD CONSTRAINT ... CHECK (source IN ('polar','erp','admin','promo','paddle'));
 
 -- Pro: $19/seat/mo USD; VND 490,000/seat/mo (whole dong, not cents).
+-- Dual sentinel: price_cents=0 AND prices='{}' (section 2 may have set price_cents already;
+-- re-run is safe because once price_cents != 0 the whole WHERE fails → no double-apply).
 UPDATE plans
    SET prices = '{"USD": 1900, "VND": 490000}'::jsonb
  WHERE slug = 'pro'
