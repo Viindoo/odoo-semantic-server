@@ -1,0 +1,70 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+/** Unified site footer — merges homepage footer (index.astro lines 369-388)
+ *  and BaseLayout footer (BaseLayout.astro lines 65-90) into one component.
+ *
+ *  Homepage footer had: copyright + version + Admin/Contribute/Install + Viindoo logo.
+ *  BaseLayout footer had: Bootstrap ref + Contribute + Terms/Privacy/Refund + Powered by Viindoo.
+ *  This component includes everything from both, deduplicated.
+ *
+ *  Props:
+ *    version  - semver string shown in the copyright line.
+ *               Defaults to SITE_VERSION from constants.ts.
+ *               WI-5/6 can override with a live value from /api/site-config. */
+import { SITE_VERSION } from '../lib/constants';
+
+export interface Props {
+  version?: string;
+}
+
+const { version = SITE_VERSION } = Astro.props;
+---
+
+<footer
+  class="bg-viindoo-bg-0 border-t py-10 px-6 text-center"
+  style="border-color: rgba(230,242,244,0.08);"
+>
+  <div class="mx-auto max-w-7xl">
+    <!-- Copyright + version -->
+    <p class="font-mono text-[11px] text-viindoo-on-dark-dim">
+      &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
+      <span class="text-viindoo-primary">v{version}</span>
+    </p>
+
+    <!-- Primary nav links -->
+    <div class="flex flex-wrap items-center justify-center gap-4 mt-3 text-[12px] text-viindoo-on-dark-dim">
+      <a href="/pricing"     class="hover:text-viindoo-primary-bright transition-colors duration-200">Pricing</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="/tools"       class="hover:text-viindoo-primary-bright transition-colors duration-200">Tools</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="/install/"    class="hover:text-viindoo-primary-bright transition-colors duration-200">Install</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200" title="MCP client plugins + Odoo skill set">Contribute</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="/bootstrap"   class="hover:text-viindoo-primary-bright transition-colors duration-200">Bootstrap reference</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="/login"       class="hover:text-viindoo-primary-bright transition-colors duration-200">Admin</a>
+    </div>
+
+    <!-- Legal links -->
+    <div class="flex flex-wrap items-center justify-center gap-4 mt-2 text-[12px] text-viindoo-on-dark-dim">
+      <a href="/terms"  class="hover:text-viindoo-primary-bright transition-colors duration-200">Terms</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="/privacy" class="hover:text-viindoo-primary-bright transition-colors duration-200">Privacy</a>
+      <span aria-hidden="true">&middot;</span>
+      <a href="/refund"  class="hover:text-viindoo-primary-bright transition-colors duration-200">Refund</a>
+    </div>
+
+    <!-- Powered by Viindoo -->
+    <div class="mt-4 flex items-center justify-center gap-2 text-[11px] text-viindoo-on-dark-dim">
+      <span>Powered by</span>
+      <a
+        href="https://viindoo.com"
+        class="inline-flex items-center hover:opacity-100 transition-opacity duration-200"
+        aria-label="Viindoo"
+      >
+        <img src="/viindoo-logo.svg" alt="Viindoo" class="h-5 inline opacity-80" />
+      </a>
+    </div>
+  </div>
+</footer>

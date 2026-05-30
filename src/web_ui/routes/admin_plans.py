@@ -44,6 +44,7 @@ class PlanPatch(BaseModel):
     trial_days: int | None = Field(None, ge=0, le=365)
     prices: dict | None = None  # per-currency map e.g. {"USD": 1900} (multi-currency deferred)
     is_archived: bool | None = None
+    pricing_model: str | None = Field(None, pattern=r"^(flat|per_seat)$")  # m13_015
     reason: str = Field(min_length=3, max_length=500)
 
 
@@ -67,7 +68,8 @@ async def list_plans(actor_id: int = Depends(require_admin)) -> dict:
             cur.execute(
                 "SELECT id, slug, display_name, quota_calls_per_month, rate_limit_rpm, "
                 "seat_limit, is_public, metadata, created_at, "
-                "price_cents, currency, billing_interval, trial_days, is_archived, prices "
+                "price_cents, currency, billing_interval, trial_days, is_archived, prices, "
+                "pricing_model "
                 "FROM plans "
                 "ORDER BY quota_calls_per_month ASC, id ASC"
             )
@@ -80,6 +82,7 @@ async def list_plans(actor_id: int = Depends(require_admin)) -> dict:
                     "price_cents": r[9], "currency": r[10],
                     "billing_interval": r[11], "trial_days": r[12],
                     "is_archived": r[13], "prices": r[14],
+                    "pricing_model": r[15],  # "flat" or "per_seat" (m13_015)
                 }
                 for r in cur.fetchall()
             ]
@@ -95,7 +98,8 @@ async def get_plan(slug: str, actor_id: int = Depends(require_admin)) -> dict:
             cur.execute(
                 "SELECT id, slug, display_name, quota_calls_per_month, rate_limit_rpm, "
                 "seat_limit, is_public, metadata, created_at, "
-                "price_cents, currency, billing_interval, trial_days, is_archived, prices "
+                "price_cents, currency, billing_interval, trial_days, is_archived, prices, "
+                "pricing_model "
                 "FROM plans WHERE slug = %s",
                 (slug,),
             )
@@ -110,6 +114,7 @@ async def get_plan(slug: str, actor_id: int = Depends(require_admin)) -> dict:
         "price_cents": row[9], "currency": row[10],
         "billing_interval": row[11], "trial_days": row[12],
         "is_archived": row[13], "prices": row[14],
+        "pricing_model": row[15],  # "flat" or "per_seat" (m13_015)
     }
 
 
