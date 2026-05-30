@@ -45,6 +45,7 @@ def web_app(pg_conn):
 
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM subscriptions")
+        cur.execute("DELETE FROM admin_audit_log")
         # Isolation-safe seed of the bypass user id=1.  `webui_users` has
         # `username` as PK *and* a separate UNIQUE index `ux_webui_users_id`
         # on the SERIAL `id`.  ON CONFLICT on a single column cannot guard
@@ -70,6 +71,7 @@ def web_app(pg_conn):
     # next test file starts from a clean slate (no leftover id=1 webui_users).
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM subscriptions")
+        cur.execute("DELETE FROM admin_audit_log")
         cur.execute(
             "DELETE FROM webui_users WHERE id = 1 OR username = '_sub_admin_id1'"
         )
@@ -313,3 +315,121 @@ class TestCancelSubscription:
         assert resp.status_code == 404, resp.text
         assert resp.json()["error"] == "no_active_subscription"
         assert called["hit"] is False, "Polar must not be called when there is no sub"
+
+    @pytest.mark.asyncio
+    async def test_cancel_calls_revoke_entitlement_voluntary(
+        self, web_app, pg_conn, monkeypatch
+    ):
+        """CR5: account cancel MUST go through revoke_entitlement(voluntary=True).
+
+        After Polar confirms, the route must call activation.revoke_entitlement
+        with voluntary=True (schedule cancel-at-period-end, preserve access) rather
+        than schedule_cancellation directly.  The observable outcome is the same:
+        sub stays active, cancel_at_period_end=TRUE — but the sole-writer path
+        (activation layer) is the contract we test.
+        """
+        sub_id = _seed_active_sub(pg_conn, external_ref="polar_cr5_voluntary")
+
+        async def _fake_cancel(external_ref, *, at_period_end=True):
+            return {"id": external_ref, "status": "active"}
+
+        monkeypatch.setattr("src.billing.polar_api.cancel_subscription", _fake_cancel)
+
+        revoke_calls: list[dict] = []
+
+        import src.billing.activation as activation_mod
+        orig_revoke = activation_mod.revoke_entitlement
+
+        def _track_revoke(external_ref, **kwargs):
+            revoke_calls.append({"ref": external_ref, **kwargs})
+            return orig_revoke(external_ref, **kwargs)
+
+        monkeypatch.setattr(activation_mod, "revoke_entitlement", _track_revoke)
+
+        async with _client(web_app) as client:
+            resp = await client.post("/api/account/subscription/cancel")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "cancellation_scheduled"
+
+        # revoke_entitlement must have been called with voluntary=True.
+        assert len(revoke_calls) == 1, (
+            f"Expected exactly 1 revoke_entitlement call, got {len(revoke_calls)}"
+        )
+        call = revoke_calls[0]
+        assert call["ref"] == "polar_cr5_voluntary", (
+            f"Expected external_ref='polar_cr5_voluntary', got {call['ref']!r}"
+        )
+        assert call.get("voluntary") is True, (
+            f"Expected voluntary=True (schedule cancel-at-period-end), got {call!r}"
+        )
+        assert call.get("reason") == "user-cancel", (
+            f"Expected reason='user-cancel', got {call.get('reason')!r}"
+        )
+
+        # Observable: sub still active, local cancel flag is set.
+        pg_conn.rollback()
+        assert _cancel_flag(pg_conn, sub_id) is True
+        assert _status(pg_conn, sub_id) == "active"
+
+    @pytest.mark.asyncio
+    async def test_cancel_audit_target_set_before_polar_call(
+        self, web_app, pg_conn, monkeypatch
+    ):
+        """CR8: request.state.audit_target must be set BEFORE any side-effect.
+
+        If Polar raises an error the audit log must still record which
+        subscription was being cancelled (the sub id), not an empty target.
+        We verify by raising PolarApiError and capturing the audit_target that
+        was set on request.state.
+        """
+        from src.billing import polar_api
+
+        _seed_active_sub(pg_conn, external_ref="polar_cr8_audit")
+
+        # Patch polar_api so it raises — the route catches this and returns 502.
+        # The audit_target is set BEFORE the polar call (CR8 fix), so the
+        # @audit_action decorator records the sub id even for the 502 path.
+        async def _raise_after_target(external_ref, *, at_period_end=True):
+            raise polar_api.PolarApiError("test error", status_code=500, body="err")
+
+        monkeypatch.setattr("src.billing.polar_api.cancel_subscription", _raise_after_target)
+
+        # Wrap the audit_action decorator's target capture.  The route sets
+        # request.state.audit_target before the polar_api call; we verify it
+        # is set when the exception is raised and the route returns 502.
+        async with _client(web_app) as client:
+            resp = await client.post("/api/account/subscription/cancel")
+
+        # Should have gotten a 502 from the Polar error.
+        assert resp.status_code == 502, (
+            f"Expected 502 from PolarApiError in CR8 test, got {resp.status_code}: {resp.text}"
+        )
+        # The audit_action decorator reads request.state.audit_target after the
+        # route function returns (regardless of exception path).  Since the route
+        # sets audit_target before calling polar_api, the audit log row must be
+        # present with the correct sub id.
+        pg_conn.rollback()
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT target FROM admin_audit_log"
+                " WHERE action = 'account.subscription.cancel'"
+                " ORDER BY created_at DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        # If audit_target was set before the Polar call the decorator logs it.
+        # If set after (old bug) the row either has NULL target or is absent.
+        assert row is not None, (
+            "Audit row for account.subscription.cancel must exist even when Polar fails"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM subscriptions WHERE external_ref = 'polar_cr8_audit'"
+            )
+            sub_row = cur.fetchone()
+        assert sub_row is not None
+        expected_target = str(sub_row[0])
+        assert row[0] == expected_target, (
+            f"audit_target must be the sub id ({expected_target!r}) set BEFORE "
+            f"the Polar call; got {row[0]!r}"
+        )
