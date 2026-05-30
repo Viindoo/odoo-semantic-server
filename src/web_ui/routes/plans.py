@@ -55,7 +55,7 @@ async def list_public_plans() -> dict:
             "price_cents": r[6],
             "currency": r[7],
             "billing_interval": r[8],
-            "prices": r[9],  # per-currency map e.g. {"USD": 1900, "VND": 490000}
+            "prices": r[9],  # per-currency map e.g. {"USD": 1900} (multi-currency deferred)
         }
         for r in rows
     ]

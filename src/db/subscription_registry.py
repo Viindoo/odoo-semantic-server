@@ -192,7 +192,7 @@ class SubscriptionStore:
 
         These extra keys let the account dashboard show the human-readable plan
         name without a second round-trip.  All existing keys (including the new
-        cancel_at_period_end column from m13_015) are preserved unchanged.
+        cancel_at_period_end column (added in m13_014_billing_p1)) are preserved unchanged.
         """
         with self._pool.checkout() as conn:
             return self._pool.fetch_all(

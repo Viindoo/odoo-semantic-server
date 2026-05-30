@@ -272,7 +272,7 @@ async def register(body: RegisterBody, request: Request):
             )
 
         # Insert unverified user; capture integer id for FK in email_verifications.
-        # terms_accepted_at = NOW() records auditable proof-of-consent (D4 / m13_016).
+        # terms_accepted_at = NOW() records auditable proof-of-consent (D4 / m13_014_billing_p1 §7).
         conn.autocommit = False
         try:
             with conn.cursor() as cur:

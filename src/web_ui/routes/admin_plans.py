@@ -42,7 +42,7 @@ class PlanPatch(BaseModel):
     currency: str | None = Field(None, min_length=3, max_length=3)   # ISO-4217
     billing_interval: str | None = Field(None, pattern=r"^(free|monthly|annual|one_time)$")
     trial_days: int | None = Field(None, ge=0, le=365)
-    prices: dict | None = None  # per-currency map e.g. {"USD": 1900, "VND": 490000}
+    prices: dict | None = None  # per-currency map e.g. {"USD": 1900} (multi-currency deferred)
     is_archived: bool | None = None
     reason: str = Field(min_length=3, max_length=500)
 

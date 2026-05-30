@@ -166,7 +166,7 @@ def _create_oauth_user(
             with conn.cursor() as cur:
                 # terms_accepted_at = NOW(): OAuth signups consent by completing
                 # the provider flow. Record the timestamp for auditable proof-of-consent
-                # (D4 / m13_016 / PDPL 91/2025 + card-network requirement).
+                # (D4 / m13_014_billing_p1 §7 / PDPL 91/2025 + card-network requirement).
                 cur.execute(
                     "INSERT INTO webui_users"
                     " (username, password_hash, oauth_provider, oauth_id,"
