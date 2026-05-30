@@ -84,8 +84,10 @@ function isHighlighted(plan: Plan, all: Plan[]): boolean {
 // Format a price for display given a currency preference.
 // USD and EUR are cent-based (/100); VND is zero-decimal.
 function formatPrice(plan: Plan, currency: 'USD' | 'VND'): string {
-  // If the plan is free tier, always show Free
-  if (!plan.billing_interval || plan.billing_interval === 'free') return 'Free';
+  // If the plan is free tier, show $0 / 0 ₫ (distinct from the plan name "Free")
+  if (!plan.billing_interval || plan.billing_interval === 'free') {
+    return currency === 'VND' ? '0 ₫' : '$0';
+  }
   // Try the per-currency prices map first (C3 — ADR-0039)
   if (plan.prices && typeof plan.prices === 'object') {
     const raw = plan.prices[currency];
@@ -216,7 +218,7 @@ function planDescription(slug: string): string {
                 <h2 class:list={['text-xl font-bold mb-1', highlight ? 'text-viindoo-secondary-bright' : 'text-white']}>
                   {plan.display_name}
                 </h2>
-                <p class="text-gray-500 text-xs mb-3">{planDescription(plan.slug)}</p>
+                <p class="text-gray-400 text-xs mb-3">{planDescription(plan.slug)}</p>
 
                 <!-- Price display — currency-toggled via JS -->
                 <div class="price-block text-2xl font-semibold text-gray-300">
@@ -227,7 +229,7 @@ function planDescription(slug: string): string {
                     {formatPrice(plan, 'VND')}
                   </span>
                   {!isFree && plan.billing_interval && (
-                    <span class="text-gray-500 text-sm font-normal ml-1">
+                    <span class="text-gray-400 text-sm font-normal ml-1">
                       /{plan.billing_interval === 'monthly' ? 'mo' : plan.billing_interval === 'annual' ? 'yr' : plan.billing_interval}
                     </span>
                   )}
@@ -312,7 +314,7 @@ function planDescription(slug: string): string {
             <h2 class:list={['text-xl font-bold mb-1', tier.highlight ? 'text-viindoo-secondary-bright' : 'text-white']}>
               {tier.name}
             </h2>
-            <p class="text-gray-500 text-xs mb-3">{tier.desc}</p>
+            <p class="text-gray-400 text-xs mb-3">{tier.desc}</p>
             <div class="text-2xl font-semibold text-gray-300 mb-8">{tier.price}</div>
             <a
               href="#waitlist"
@@ -373,7 +375,7 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           Yes. You can cancel at any time from your
           <a href="/account/billing" class="text-viindoo-primary hover:underline">billing page</a> or
           the Polar customer portal. Your subscription stays active until the end of the current billing period — there is no refund for the remaining days.
@@ -388,7 +390,7 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           MCP tool calls are rate-limited to your plan's monthly quota. When exhausted, calls return a quota error until the next billing cycle. Upgrade any time to get a higher limit immediately.
         </p>
       </details>
@@ -400,7 +402,7 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           Annual plans offer a discounted rate (equivalent to ~2 months free) billed upfront. Monthly plans let you pay as you go with the flexibility to cancel each month. Both plans include the same features.
         </p>
       </details>
@@ -412,7 +414,7 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           Upgrade or switch plans from your <a href="/account/billing" class="text-viindoo-primary hover:underline">billing page</a> or the Polar customer portal. Downgrades take effect at the end of your current billing period.
         </p>
       </details>
@@ -424,7 +426,7 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           Invoices and payment history are managed by <a href="https://polar.sh" target="_blank" rel="noopener" class="text-viindoo-primary hover:underline">Polar</a>, our Merchant of Record. Access them from the "Manage billing" link on your <a href="/account/billing" class="text-viindoo-primary hover:underline">billing page</a>.
         </p>
       </details>
@@ -436,7 +438,7 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           Yes. The full stack (Neo4j + PostgreSQL + MCP server) can be self-hosted via Docker Compose.
           <a href="mailto:admin@viindoo.com" class="text-viindoo-primary hover:underline">Contact us</a> for self-host access and the deployment guide. Self-hosted is always free.
         </p>
@@ -449,14 +451,14 @@ function planDescription(slug: string): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </summary>
-        <p class="text-gray-500 text-sm mt-3">
+        <p class="text-gray-400 text-sm mt-3">
           For the cloud-hosted plan: we index metadata only (model names, field names, method signatures). Source code lines are not stored. For sensitive EE code, use self-hosted.
         </p>
       </details>
     </div>
 
     <!-- Footer note -->
-    <p class="text-center text-gray-600 text-sm">
+    <p class="text-center text-gray-400 text-sm">
       Questions? <a href="mailto:admin@viindoo.com" class="text-viindoo-primary hover:underline">admin@viindoo.com</a>
       {' · '}
       <a href="/terms" class="text-viindoo-primary hover:underline">Terms</a>
