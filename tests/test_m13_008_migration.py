@@ -189,30 +189,67 @@ class TestMigrationIdempotent:
 
 
 # ---------------------------------------------------------------------------
-# T5: CHECK constraint on plan column rejects invalid values
+# T5: plan-column CHECK constraint REMOVED by C4 (ADR-0039)
 # ---------------------------------------------------------------------------
+#
+# Business rule change (C4 / ADR-0039, applied by migrations/m13_014_billing_p1.sql
+# section 8 — "drop waitlist_emails.plan CHECK constraint"):
+#
+#   The original m13_008 migration added
+#       CHECK (plan IS NULL OR plan IN ('free', 'pro', 'team'))
+#   which froze the allowed-plan list at the schema level — adding a new public
+#   plan would have required BOTH a code change AND a DB migration.  C4 moves the
+#   allow-list to the application layer (`_public_plan_slugs` in waitlist.py,
+#   derived from `plans WHERE is_public AND NOT is_archived`).  The DB CHECK was
+#   intentionally DROPPED so plans become admin-editable without a migration.
+#
+# After the full migration chain runs (which is what `migrated_pg` gives us),
+# the constraint no longer exists.  These tests now protect the NEW contract:
+# the schema imposes NO plan allow-list — validation lives in the app layer.
 
-class TestPlanCheckConstraint:
-    """T5: plan column CHECK rejects values outside ('free', 'pro', 'team', NULL)."""
+class TestPlanCheckConstraintRemovedByC4:
+    """T5 (post-C4): `waitlist_emails.plan` has NO CHECK constraint.
 
-    def test_plan_check_constraint_rejects_invalid(self, migrated_pg):
-        """INSERT plan='invalid' must raise IntegrityError / CheckViolation."""
-        with pytest.raises(Exception) as exc_info:
-            with migrated_pg.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO waitlist_emails (email, plan)"
-                    " VALUES ('check-test@example.com', 'invalid')"
-                )
-            migrated_pg.commit()
-        migrated_pg.rollback()
+    Validation of which plan slugs are acceptable is the application layer's job
+    (`_public_plan_slugs`), not the schema's.  See ADR-0039 / m13_014 section 8.
+    """
 
-        err = str(exc_info.value).lower()
-        assert "check" in err or "violat" in err or "constraint" in err, (
-            f"Expected CHECK violation on waitlist_emails.plan='invalid', got: {exc_info.value}"
+    def test_constraint_no_longer_present_in_catalog(self, migrated_pg):
+        """`waitlist_emails_plan_check` must be absent after m13_014 drops it."""
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_constraint"
+                " WHERE conrelid = 'waitlist_emails'::regclass"
+                "   AND contype = 'c'"
+                "   AND conname = 'waitlist_emails_plan_check'"
+            )
+            row = cur.fetchone()
+        assert row is None, (
+            "C4 (ADR-0039) drops waitlist_emails_plan_check; the schema must no "
+            "longer enforce a hard-coded plan allow-list"
         )
 
-    def test_plan_check_constraint_allows_valid_values(self, migrated_pg):
-        """Valid plan values ('free', 'pro', 'team', NULL) must INSERT without error."""
+    def test_arbitrary_plan_value_is_accepted_by_schema(self, migrated_pg):
+        """An off-list plan value must INSERT without error (no DB CHECK).
+
+        The app layer (`_public_plan_slugs`) is the sole gate now, so the schema
+        deliberately accepts any text — including a value that the old CHECK
+        would have rejected.
+        """
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO waitlist_emails (email, plan)"
+                " VALUES ('post-c4-arbitrary@example.com', 'enterprise-2099')"
+                " RETURNING plan"
+            )
+            stored = cur.fetchone()[0]
+        migrated_pg.commit()
+        assert stored == "enterprise-2099", (
+            "schema must store the plan verbatim now that the CHECK is gone"
+        )
+
+    def test_previously_valid_values_still_insert(self, migrated_pg):
+        """The slugs the old CHECK allowed still INSERT fine (regression guard)."""
         for plan, email_suffix in [
             ("free", "free"),
             ("pro", "pro"),

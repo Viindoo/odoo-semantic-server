@@ -11,8 +11,15 @@ interface Plan {
   rate_limit_rpm: number;
   seat_limit: number | null;
   is_public: boolean;
+  is_archived: boolean;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
+  // Pricing fields (C1 — ADR-0039)
+  price_cents: number | null;
+  currency: string | null;
+  billing_interval: 'free' | 'monthly' | 'annual' | 'one_time' | null;
+  trial_days: number | null;
+  prices: Record<string, number> | null;  // per-currency map e.g. {"USD": 1900, "VND": 490000}
 }
 
 interface Props {
@@ -43,7 +50,14 @@ interface EditState {
   rate_limit_rpm: string;
   seat_limit: string;
   is_public: boolean;
+  is_archived: boolean;
   reason: string;
+  // Pricing fields
+  price_cents: string;
+  currency: string;
+  billing_interval: string;
+  trial_days: string;
+  prices_json: string;  // JSON textarea; parsed before submit
 }
 
 function EditModal({
@@ -61,7 +75,13 @@ function EditModal({
     rate_limit_rpm: String(plan.rate_limit_rpm),
     seat_limit: plan.seat_limit !== null ? String(plan.seat_limit) : '',
     is_public: plan.is_public,
+    is_archived: plan.is_archived,
     reason: '',
+    price_cents: plan.price_cents !== null ? String(plan.price_cents) : '',
+    currency: plan.currency ?? 'USD',
+    billing_interval: plan.billing_interval ?? 'free',
+    trial_days: plan.trial_days !== null ? String(plan.trial_days) : '',
+    prices_json: plan.prices ? JSON.stringify(plan.prices, null, 2) : '{}',
   });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -100,11 +120,29 @@ function EditModal({
       }
     }
 
+    // Validate + parse prices JSON textarea
+    let parsedPrices: Record<string, number> | undefined;
+    const pricesRaw = form.prices_json.trim();
+    if (pricesRaw && pricesRaw !== '{}') {
+      try {
+        parsedPrices = JSON.parse(pricesRaw) as Record<string, number>;
+        if (typeof parsedPrices !== 'object' || Array.isArray(parsedPrices)) {
+          setFormError('Prices must be a JSON object e.g. {"USD": 1900, "VND": 490000}');
+          return;
+        }
+      } catch {
+        setFormError('Prices JSON is invalid. Example: {"USD": 1900, "VND": 490000}');
+        return;
+      }
+    }
+
     const payload: Record<string, unknown> = {
       display_name: form.display_name,
       quota_calls_per_month: newQuota,
       rate_limit_rpm: newRpm,
       is_public: form.is_public,
+      is_archived: form.is_archived,
+      billing_interval: form.billing_interval || undefined,
       reason,
     };
     const seatRaw = form.seat_limit.trim();
@@ -115,6 +153,33 @@ function EditModal({
         return;
       }
       payload.seat_limit = seatN;
+    }
+
+    // Pricing fields — only include when non-empty
+    const priceCentsRaw = form.price_cents.trim();
+    if (priceCentsRaw !== '') {
+      const pc = parseInt(priceCentsRaw, 10);
+      if (isNaN(pc) || pc < 0) {
+        setFormError('Price (cents) must be a non-negative integer.');
+        return;
+      }
+      payload.price_cents = pc;
+    }
+    const currencyRaw = form.currency.trim().toUpperCase();
+    if (currencyRaw.length === 3) {
+      payload.currency = currencyRaw;
+    }
+    const trialRaw = form.trial_days.trim();
+    if (trialRaw !== '') {
+      const td = parseInt(trialRaw, 10);
+      if (isNaN(td) || td < 0 || td > 365) {
+        setFormError('Trial days must be between 0 and 365.');
+        return;
+      }
+      payload.trial_days = td;
+    }
+    if (parsedPrices !== undefined) {
+      payload.prices = parsedPrices;
     }
 
     setSaving(true);
@@ -229,6 +294,98 @@ function EditModal({
             </label>
           </div>
 
+          <div className="flex items-center gap-2">
+            <input
+              id={`plan-archived-${plan.slug}`}
+              type="checkbox"
+              checked={form.is_archived}
+              onChange={(e) => field('is_archived', e.target.checked)}
+              className="rounded"
+            />
+            <label htmlFor={`plan-archived-${plan.slug}`} className="text-sm text-gray-700">
+              Archived (hidden from all selection)
+            </label>
+          </div>
+
+          {/* Pricing section */}
+          <div className="border-t border-gray-100 pt-3">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Pricing</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Price (cents / display currency)
+                  <span className="ml-1 text-gray-400 font-normal">(blank = no change)</span>
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.price_cents}
+                  onChange={(e) => field('price_cents', e.target.value)}
+                  placeholder="e.g. 1900"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Currency <span className="text-xs text-gray-400">(ISO-4217)</span>
+                </label>
+                <input
+                  type="text"
+                  maxLength={3}
+                  value={form.currency}
+                  onChange={(e) => field('currency', e.target.value.toUpperCase())}
+                  placeholder="USD"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Billing Interval
+                </label>
+                <select
+                  value={form.billing_interval}
+                  onChange={(e) => field('billing_interval', e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+                >
+                  <option value="free">free</option>
+                  <option value="monthly">monthly</option>
+                  <option value="annual">annual</option>
+                  <option value="one_time">one_time</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Trial Days <span className="text-xs text-gray-400">(0-365, blank=none)</span>
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={form.trial_days}
+                  onChange={(e) => field('trial_days', e.target.value)}
+                  placeholder="0"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+                />
+              </div>
+            </div>
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Per-currency prices (JSON)
+                <span className="ml-1 text-gray-400 font-normal">
+                  e.g. {`{"USD": 1900, "VND": 490000}`} — VND is whole dong, not cents
+                </span>
+              </label>
+              <textarea
+                rows={3}
+                value={form.prices_json}
+                onChange={(e) => field('prices_json', e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep resize-none"
+              />
+            </div>
+          </div>
+
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Reason <span className="text-red-500">*</span>
@@ -294,6 +451,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Monthly Quota</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">RPM</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Seats</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Price</th>
                 <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Public</th>
                 <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
               </tr>
@@ -301,7 +459,7 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
             <tbody className="divide-y divide-gray-100">
               {plans.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">
                     No plans found.
                   </td>
                 </tr>
@@ -322,6 +480,11 @@ export default function PlanTierEditorIsland({ initialPlans }: Props) {
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-sm text-gray-600">
                       {plan.seat_limit ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-sm text-gray-600">
+                      {plan.price_cents !== null
+                        ? `${plan.price_cents} ${plan.currency ?? ''}`
+                        : '—'}
                     </td>
                     <td className="px-4 py-3 text-center">
                       {plan.is_public ? (

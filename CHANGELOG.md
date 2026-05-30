@@ -4,6 +4,150 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added — M10B P1 billing: Entitlement Activation API + Polar webhook + claim-on-login (feat/m10b-p1-billing)
+
+- **Migration `m13_014_billing_p1.sql`** (required on deploy). Three schema additions, all
+  idempotent (`IF NOT EXISTS` + guarded `DO` blocks):
+  - `plans` gains commercial pricing columns: `price_cents`, `currency`, `billing_interval`
+    (CHECK: `free/monthly/annual/one_time`), `trial_days`, `is_archived`.
+  - `subscriptions` table — commercial-only, integer FKs (`plan_id→plans`,
+    `claimed_user_id→webui_users`, `api_key_id→api_keys`, `tenant_id→tenants`),
+    `buyer_email` snapshot (claim-on-login anchor), `external_ref UNIQUE` (vendor idempotency
+    key), status/seats/source/money-snapshot/timeline columns. NO per-row limit columns —
+    limits live only in `plans`, resolved via `plan_id` at runtime.
+  - `billing_webhook_events` idempotency ledger — `(vendor, event_id)` UNIQUE; every webhook
+    attempt recorded with `signature_valid` flag, `processed_at`, `processing_error`.
+  - `osm_reader` SELECT grants on both new tables (in-migration, pg_roles-guarded).
+- **Pricing seed (in-migration, idempotent):** Free quota bumped 100 → 200 calls/month; plan
+  pricing set: Free $0, Pro $19/seat/month, Team $39/seat/month.
+- **Vendor-agnostic Entitlement Activation API** (`src/billing/activation.py`,
+  `src/db/subscription_registry.py`). `EntitlementGrant` frozen dataclass uses integer `plan_id`
+  (never a text slug). `grant_entitlement` / `update_entitlement` / `revoke_entitlement` are the
+  sole writers of subscription state; both the admin API and the Polar webhook call through them.
+  On revoke/cancel: linked API key downgraded to `free` + middleware plan cache flushed immediately
+  via `_cache_invalidate_by_key_id`.
+- **Admin Activation API** (`src/web_ui/routes/entitlements.py`):
+  - `POST /api/admin/entitlements` — grant an entitlement (resolve plan_id from slug server-side,
+    `@audit_action("entitlement.grant")`).
+  - `POST /api/admin/entitlements/{external_ref}/revoke` — cancel + downgrade.
+  - `PATCH /api/admin/entitlements/{external_ref}` — update plan/status/seats/period.
+  - `GET /api/admin/entitlements` — list / search subscriptions.
+  - All routes require `require_admin` (DB-sourced, ADR-0026). All mutating routes carry
+    `@audit_action` (ADR-0021).
+- **Polar.sh webhook sink** (`src/web_ui/routes/webhooks.py`):
+  - `POST /api/webhooks/polar` — public route (auth-exempt via `_EXEMPT_EXACT`), HMAC-verified
+    using Standard Webhooks spec (base64 HMAC-SHA256 over `"{id}.{timestamp}.{body}"`; `whsec_`
+    prefix stripped + base64-decoded). **Fail-closed:** missing `POLAR_WEBHOOK_SECRET` → 503.
+    Idempotent: `billing_webhook_events (vendor, event_id)` UNIQUE deduplicates Polar retries.
+    Bad signature → 400 + ledger row `signature_valid=FALSE`, not processed. Per-IP rate-limit
+    via `billing.webhook_rate_limit_rpm` app_setting.
+  - Product→plan resolution via `billing.polar_product_map` (JSON app_setting, hot-reload ≤60s).
+  - Handled events: `subscription.created/active/updated/canceled/revoked`, `order.paid/refunded`.
+- **Public `GET /api/plans`** — returns active (non-archived) plans with new pricing columns for
+  the pricing page; no auth required.
+- **Claim-on-login provisioning** (`src/billing/provisioning.py`). `claim_subscription_for_user(
+  user_id, email)` runs best-effort (never raises into auth) at three verified-email call sites:
+  email-verify (`routes/signup.py`), OAuth login (`routes/oauth.py`), password login
+  (`routes/login.py`, only when `email_verified=TRUE`). Finds unclaimed active subscriptions for
+  the buyer email, upgrades the user's existing free API key in-place, links subscription to user
+  + key, flushes plan cache.
+- **3 new `billing.*` Tier-1 settings** in `src/settings_registry.py` (→ 19 Tier-1 settings
+  total): `billing.polar_product_map` (struct, default `{}`), `billing.webhook_tolerance_seconds`
+  (int, default 300), `billing.webhook_rate_limit_rpm` (int, default 120).
+- **`POLAR_WEBHOOK_SECRET`** added to `src/web_ui/config.py` (env var, fail-closed → 503 if
+  absent when the webhook route is called).
+
+> **Tool count stays 24.** All billing changes are web-UI / webhook layer only. No new MCP tools.
+> **Migration m13_014 required on deploy.** Set `POLAR_WEBHOOK_SECRET` in `webui.env` / systemd
+> BEFORE the webhook route goes live. Set `billing.polar_product_map` in Admin Settings
+> post-deploy. Re-run `ops/rls_create_osm_reader.sql` if not relying on the in-migration grant.
+> **FLAG:** Polar webhook header names / `whsec_` encoding / event-type spellings / payload field
+> paths must be confirmed against live Polar docs before production (constants in
+> `src/billing/polar.py`).
+
+### Added — M10B P1 billing completion: schema hardening + self-serve cancel + admin config + legal + dashboard (feat/m10b-p1-billing W1-W6)
+
+- **Migration `m13_014_billing_p1.sql` extended** — all W1 schema additions are now gộp vào
+  m13_014 (single migration for the entire billing schema, easier deploy + review). Sections 6-8
+  add the following on top of the original P1 schema (sections 1-5):
+  - **Section 6 — cancel_at_period_end + per-currency prices (formerly m13_015)** (idempotent):
+    - `subscriptions.cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE` — UI/state signal for
+      voluntary cancel-at-period-end; actual period-end downgrade driven by the Polar
+      `subscription.canceled` webhook.
+    - `plans.prices JSONB NOT NULL DEFAULT '{}'` — per-currency price map (additive alongside
+      scalar `price_cents/currency`). Example: `{"USD": 1900, "VND": 490000}`. **VND is
+      zero-decimal (whole dong, NOT cents).** Seeded (guarded — only when `prices='{}'`):
+      Pro `{"USD":1900,"VND":490000}`, Team `{"USD":3900,"VND":990000}`, Free/Unlimited `{"USD":0}`.
+  - **Section 7 — signup consent (formerly m13_016)** (idempotent):
+    `webui_users.terms_accepted_at TIMESTAMPTZ` — auditable proof-of-consent. `NULL` = legacy
+    (grandfathered). Non-NULL = timestamp of checkbox acceptance at signup (password or OAuth).
+    Required by PDPL 91/2025 + card-network requirements.
+  - **Section 8 — drop waitlist plan CHECK (formerly m13_017)** (idempotent):
+    Drops the hard-coded `CHECK (plan IN ('free','pro','team'))` from `waitlist_emails` (m13_008
+    artefact). Waitlist plan validation is now DB-derived (`_public_plan_slugs` queries
+    `plans WHERE is_public=TRUE AND is_archived=FALSE`). No replacement constraint.
+- **Vendor-generic webhook pipeline** (`src/billing/webhook_pipeline.py`):
+  `WebhookAdapter` frozen dataclass + `run_webhook_pipeline` function encapsulate the full
+  13-step processing order (rate-limit, fail-closed secret check, signature verify, ledger
+  record, dedup, event-action map, plan resolution, grant/update/revoke dispatch,
+  mark-processed) in vendor-agnostic code. The Polar handler is the first adapter. A second
+  vendor (Paddle/ERP) is ~25 lines of glue + a route — no pipeline duplication.
+- **Vendor-neutral slug helper** (`src/billing/_db.py`): `slug_to_plan_id(slug, conn)` —
+  fully parameterised `plans.id` resolver used by all adapters. No SQL injection vector.
+- **`src/billing/__init__.py` re-exports cleaned** to vendor-neutral surface only; vendor
+  adapters imported namespaced.
+- **Self-service cancel-at-period-end** (owner decision: no refund, access to period end):
+  - `src/billing/polar_api.py` — outbound Polar REST client (`httpx`, `POLAR_API_KEY`,
+    `billing.polar_api_base`). Fail-closed: absent key → `PolarApiNotConfigured` (HTTP 503 +
+    portal URL); non-2xx / transport → `PolarApiError` (HTTP 502). Cancel path:
+    `PATCH {base}/v1/subscriptions/{id}` with `{"cancel_at_period_end": true}`.
+    **FLAG: confirm endpoint + payload against live Polar docs before go-live.**
+  - `activation.revoke_entitlement(voluntary=True)` — schedules `cancel_at_period_end`;
+    leaves `status='active'`; does NOT downgrade key. `voluntary=False` (default) → immediate
+    downgrade (unchanged).
+  - `GET /api/account/subscription` — returns active subscriptions with `plan_slug`,
+    `plan_name`, `cancel_at_period_end`, `current_period_end`, `manage_url` (Polar portal).
+  - `POST /api/account/subscription/cancel` (`@audit_action`) — calls Polar API first; local
+    flag set ONLY on Polar success. 503 + `portal_url` when `POLAR_API_KEY` absent; 502 on
+    Polar error (local flag not set, no false "cancelled" confirmation).
+- **Admin plan price editing**: `PATCH /api/admin/plans/{slug}` (`PlanPatch`) now accepts
+  `price_cents`, `currency`, `billing_interval`, `trial_days`, `prices` (per-currency map),
+  and `is_archived`.
+- **8 new `billing.*` Tier-1 settings** in `src/settings_registry.py` (total billing settings:
+  11; total catalogue entries: 27):
+  `billing.free_plan_slug` (default `"free"`),
+  `billing.unlimited_sentinel_slug` (default `"unlimited"`),
+  `billing.team_plan_slug` (default `"team"`),
+  `billing.team_min_seats` (default `3` — **enforced** at `grant_entitlement`; `ValueError` →
+  HTTP 422 on admin API; webhook records in ledger `processing_error`),
+  `billing.polar_portal_url` (default `"https://polar.sh/"`),
+  `billing.polar_api_base` (default `"https://api.polar.sh"`),
+  `billing.paid_checkout_enabled` (default `False` — gates paid CTA on `/pricing` + legal pages),
+  `billing.polar_checkout_url_map` (default `{}`).
+- **Legal pages** (`/terms`, `/refund`, `/privacy`) — Astro static pages with DRAFT badge.
+  Stance: no-refund + cancel-at-period-end. All three pages marked "DRAFT — pending legal
+  review"; `paid_checkout_enabled` must remain `False` until legal sign-off + KYB complete.
+  Footer links to all three pages.
+- **Required signup consent checkbox** — disables submit until checked (client-side guard).
+  Backend records `terms_accepted_at = NOW()` in `webui_users` for both password signup
+  (`routes/signup.py`) and OAuth account-creation (`routes/oauth.py`).
+- **`/account/billing` dashboard page** — auth-gated Astro page + `BillingDashboard` React
+  island. Displays plan name, status, seats, renewal/period-end date, `cancel_at_period_end`
+  state, Polar portal link, and a cancel button (`POST /api/account/subscription/cancel`).
+- **`/pricing` data-driven** (`prerender=false`) — fetches `GET /api/plans` at SSR time for
+  live `prices` (USD + VND per `plans.prices`). Checkout CTA gated by
+  `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s.
+
+> **Tool count stays 24.** All W1-W6 completion changes are schema / web-UI / webhook /
+> Astro layer only. No new MCP tools.
+> **Migration m13_014 is the single migration required on deploy** — it covers all billing
+> schema (W1 schema additions are gộp vào m13_014; no separate m13_015/m13_016/m13_017 files).
+> Set `POLAR_API_KEY` in `webui.env` / systemd for the self-service cancel route.
+> **Owner sign-off still pending:** legal DRAFT text (`/terms`, `/refund`, `/privacy`) and
+> `billing.paid_checkout_enabled` flip require legal counsel review + Polar KYB completion.
+> **FLAG:** Polar cancel endpoint/payload must be confirmed against live Polar docs; constants
+> in `src/billing/polar_api.py` and `src/billing/polar.py`.
+
 ### Added — OAuth deep-link return + avatar dropdown + account UX (feat/webui-oauth-avatar-uiux)
 
 - **OAuth `?return=` deep-link threading.** Google/GitHub callbacks now honour a

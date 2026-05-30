@@ -1,0 +1,145 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// privacy.astro — Privacy Policy (static legal page, W6 billing)
+// PDPL 91/2025 + GDPR-aware
+export const prerender = true;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Privacy Policy — Odoo Semantic MCP" description="Privacy Policy for Odoo Semantic MCP by Viindoo — PDPL 91/2025 and GDPR-aware.">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+
+    <!-- DRAFT badge -->
+    <div class="mb-8 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4" role="note" aria-label="Draft notice">
+      <svg class="h-5 w-5 flex-shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+      </svg>
+      <p class="text-sm font-semibold text-amber-800">
+        DRAFT — pending legal review. This document is a draft scaffold and has not been reviewed or approved by legal counsel. It does not constitute a final, binding privacy notice. The final version will be published after legal sign-off.
+      </p>
+    </div>
+
+    <h1 class="text-3xl font-bold text-gray-900 mb-2" style="font-family: Montserrat, sans-serif;">Privacy Policy</h1>
+    <p class="text-sm text-gray-500 mb-10">Last updated: <span class="font-medium">[DATE — pending legal sign-off]</span></p>
+
+    <div class="prose prose-gray max-w-none space-y-8 text-gray-700 leading-relaxed">
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">1. Data Controller</h2>
+        <p>The data controller for personal data processed in connection with Odoo Semantic MCP is <strong>Viindoo</strong>, a company incorporated in Vietnam. Contact: <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: designate a DPO if required under PDPL 91/2025 or GDPR Art. 37.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">2. Personal Data We Collect</h2>
+        <p>We collect and process the following categories of personal data:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li><strong>Account data:</strong> email address, username, hashed password (bcrypt);</li>
+          <li><strong>OAuth identifiers:</strong> provider name (Google/GitHub) and provider-issued user ID, if you sign up via OAuth;</li>
+          <li><strong>Usage data:</strong> MCP tool call counts per API key (aggregated monthly quota counter; individual call content is not logged);</li>
+          <li><strong>Technical/security data:</strong> IP address (for rate-limiting and audit logs), browser user-agent string;</li>
+          <li><strong>Consent record:</strong> timestamp at which you accepted these Terms and Privacy Policy at signup;</li>
+          <li><strong>Billing data:</strong> subscription status, plan tier, billing interval — processed by Polar (our Merchant of Record); we do not store payment card data.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">3. Code Indexing</h2>
+        <p>When you connect a repository, our indexer processes your codebase to extract <strong>metadata only</strong> (model names, field names, inheritance chains, method signatures, view XML IDs). Individual source-code lines are not stored on our cloud infrastructure under standard plans. Metadata is stored in our graph database and vector store to power MCP tool responses.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">4. Legal Basis for Processing</h2>
+        <p>We process personal data on the following legal bases:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li><strong>Contract performance (PDPL 91/2025 Art. 17(b) / GDPR Art. 6(1)(b)):</strong> account data and usage data are necessary to provide the Service under our Terms;</li>
+          <li><strong>Legitimate interests (PDPL 91/2025 Art. 17(e) / GDPR Art. 6(1)(f)):</strong> IP address and audit logs for security, fraud prevention, and service integrity;</li>
+          <li><strong>Consent (PDPL 91/2025 Art. 17(a) / GDPR Art. 6(1)(a)):</strong> where we rely on your explicit consent (recorded at signup). You may withdraw consent at any time by deleting your account.</li>
+        </ul>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: verify PDPL 91/2025 article references and confirm consent-record obligations for cross-border data transfer under the Decree.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">5. Data Processors and Third Parties</h2>
+        <p>We share personal data with the following processors:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li><strong>Polar (polar.sh):</strong> Merchant of Record for payment processing. Your payment card data and billing address are collected and processed by Polar under their privacy policy;</li>
+          <li><strong>Hosting provider:</strong> our infrastructure provider hosts the Service and its databases in [datacenter region — TBD by ops];</li>
+          <li><strong>Email delivery provider:</strong> used to send account verification and notification emails (email address shared).</li>
+        </ul>
+        <p class="mt-2">We do not sell your personal data to third parties.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: complete the list of processors with DPA details and data-transfer mechanisms (SCCs, adequacy decision) before go-live for EU/international customers.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">6. International Data Transfers</h2>
+        <p>Your personal data may be transferred to and processed in countries outside Vietnam, including countries that may not provide the same level of data protection as your home country. Where such transfers occur, we implement appropriate safeguards such as Standard Contractual Clauses (for EU data subjects) or mechanisms recognized under PDPL 91/2025.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: document the specific transfer mechanisms in use before go-live. Confirm PDPL 91/2025 cross-border transfer notification obligations to the Ministry of Public Security.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">7. Data Retention</h2>
+        <p>We retain personal data for as long as your account is active or as needed to provide the Service. Specifically:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li>Account data: retained until you delete your account or request deletion;</li>
+          <li>Usage counters: retained for billing reconciliation for up to 13 months;</li>
+          <li>Audit logs: retained for 12 months for security purposes;</li>
+          <li>IP / rate-limit data: retained for up to 30 days;</li>
+          <li>Billing records: retained as required by applicable tax and accounting law (typically 5-7 years).</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">8. Your Rights</h2>
+        <p>Subject to applicable law, you have the following rights regarding your personal data:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li><strong>Access:</strong> request a copy of the personal data we hold about you;</li>
+          <li><strong>Rectification:</strong> request correction of inaccurate data;</li>
+          <li><strong>Erasure:</strong> request deletion of your data (subject to legal retention obligations);</li>
+          <li><strong>Restriction:</strong> request that we restrict processing in certain circumstances;</li>
+          <li><strong>Portability:</strong> receive your data in a machine-readable format;</li>
+          <li><strong>Objection:</strong> object to processing based on legitimate interests;</li>
+          <li><strong>Withdrawal of consent:</strong> where processing is consent-based, withdraw at any time without affecting lawfulness of prior processing.</li>
+        </ul>
+        <p class="mt-2">To exercise any right, email <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>. We will respond within 30 days. You also have the right to lodge a complaint with the relevant data-protection authority in your country.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: for PDPL 91/2025, identify the competent Vietnamese supervisory body and include contact details.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">9. Cookies and Session Data</h2>
+        <p>We use a single session cookie to maintain your login state. This cookie is:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li>HTTP-only and Secure (on HTTPS) — not accessible via JavaScript;</li>
+          <li>SameSite=Lax to mitigate CSRF;</li>
+          <li>Expires after 8 hours of inactivity.</li>
+        </ul>
+        <p class="mt-2">We do not use advertising cookies or third-party tracking cookies.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">10. Security</h2>
+        <p>We implement appropriate technical and organizational measures to protect your personal data, including bcrypt password hashing (cost factor 12), encrypted session cookies, TLS in transit, and Fernet encryption for sensitive secrets. We conduct regular security reviews.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">11. Changes to This Policy</h2>
+        <p>We may update this Privacy Policy. We will notify registered users by email at least 14 days before material changes take effect. The updated policy will be posted at this URL with a revised "Last updated" date.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">12. Contact and DPO</h2>
+        <p>For privacy questions or to exercise your rights, contact us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>. Response time: within 30 days.</p>
+      </section>
+
+    </div>
+
+    <div class="mt-12 pt-8 border-t border-gray-200 flex flex-wrap gap-4 text-sm text-gray-500">
+      <a href="/terms" class="hover:text-viindoo-primary-text transition-colors">Terms of Service</a>
+      <span>&middot;</span>
+      <a href="/refund" class="hover:text-viindoo-primary-text transition-colors">Refund &amp; Cancellation</a>
+      <span>&middot;</span>
+      <a href="/" class="hover:text-viindoo-primary-text transition-colors">Home</a>
+    </div>
+  </div>
+</BaseLayout>

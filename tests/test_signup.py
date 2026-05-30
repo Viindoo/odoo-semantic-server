@@ -158,6 +158,7 @@ class TestRegister:
                 "password": "SecurePass123!",
                 "confirm_password": "SecurePass123!",
                 "hcaptcha_token": "",
+                "consent": True,  # consent is a real requirement (W6 D4)
             })
 
         assert resp.status_code == 201, resp.text
@@ -204,6 +205,7 @@ class TestRegister:
                 "password": "SecurePass123!",
                 "confirm_password": "SecurePass123!",
                 "hcaptcha_token": "",
+                "consent": True,  # consent required (W6 D4) to reach duplicate check
             })
 
         assert resp.status_code == 409
@@ -230,6 +232,7 @@ class TestRegister:
                 "password": "SecurePass123!",
                 "confirm_password": "SecurePass123!",
                 "hcaptcha_token": "",
+                "consent": True,  # consent required (W6 D4) to reach duplicate check
             })
 
         assert resp.status_code == 409
@@ -250,6 +253,7 @@ class TestRegister:
                 "password": "short",
                 "confirm_password": "short",
                 "hcaptcha_token": "",
+                "consent": True,  # consent required (W6 D4) to reach password validation
             })
 
         assert resp.status_code == 400
@@ -270,6 +274,7 @@ class TestRegister:
                 "password": "password123456",  # not in blocklist but "password123" is
                 "confirm_password": "password123456",
                 "hcaptcha_token": "",
+                "consent": True,  # consent required (W6 D4) to reach password validation
             })
         # password123456 is not in the blocklist → should succeed
         assert resp.status_code in (201, 400)  # depends on exact blocklist
@@ -289,6 +294,7 @@ class TestRegister:
                 "password": "password123",  # exactly in blocklist
                 "confirm_password": "password123",
                 "hcaptcha_token": "",
+                "consent": True,  # consent required (W6 D4) to reach password validation
             })
         # password123 is < 12 chars so hits length check first
         assert resp.status_code == 400
@@ -317,6 +323,7 @@ class TestRegister:
                 "password": "SecurePass123!",
                 "confirm_password": "SecurePass123!",
                 "hcaptcha_token": "bad-token",
+                "consent": True,  # consent required (W6 D4) to reach captcha check
             })
 
         assert resp.status_code == 400

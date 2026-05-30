@@ -71,7 +71,16 @@ def get_mfa_grace_days() -> int:
 # wait would otherwise see 401 and time out before the subprocess is healthy.
 # /api/health is exempt for uptime monitoring (pre-launch checklist §10.5).
 _EXEMPT_PREFIXES = ("/api/auth/",)
-_EXEMPT_EXACT = {"/health", "/api/health", "/openapi.json", "/docs", "/redoc", "/api/waitlist"}
+_EXEMPT_EXACT = {
+    "/health",
+    "/api/health",
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+    "/api/waitlist",
+    "/api/webhooks/polar",   # public HMAC-verified endpoint (ADR-0039 §4.3)
+    "/api/plans",            # public pricing page endpoint (ADR-0039 §4.3)
+}
 
 # API paths that deliver MFA setup — exempt from MFA enforcement check
 # to avoid a redirect loop when the admin is trying to enroll.

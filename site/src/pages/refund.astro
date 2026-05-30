@@ -1,0 +1,93 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// refund.astro — Refund & Cancellation Policy (static legal page, W6 billing)
+// Owner decision: NO REFUND + cancel at period end + revert to Free.
+export const prerender = true;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Refund &amp; Cancellation Policy — Odoo Semantic MCP" description="Refund and Cancellation Policy for Odoo Semantic MCP by Viindoo.">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+
+    <!-- DRAFT badge -->
+    <div class="mb-8 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4" role="note" aria-label="Draft notice">
+      <svg class="h-5 w-5 flex-shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+      </svg>
+      <p class="text-sm font-semibold text-amber-800">
+        DRAFT — pending legal review. This document is a draft scaffold and has not been reviewed or approved by legal counsel. It does not constitute final, binding policy. The final version will be published after legal sign-off.
+      </p>
+    </div>
+
+    <h1 class="text-3xl font-bold text-gray-900 mb-2" style="font-family: Montserrat, sans-serif;">Refund &amp; Cancellation Policy</h1>
+    <p class="text-sm text-gray-500 mb-10">Last updated: <span class="font-medium">[DATE — pending legal sign-off]</span></p>
+
+    <div class="prose prose-gray max-w-none space-y-8 text-gray-700 leading-relaxed">
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Overview</h2>
+        <p>Odoo Semantic MCP subscriptions are billed in advance on a recurring basis (monthly or annual) through our Merchant of Record, <strong>Polar</strong> (polar.sh). This policy describes your cancellation rights and our refund stance.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Cancellation</h2>
+        <p><strong>You may cancel your subscription at any time</strong> — there is no minimum commitment period.</p>
+        <p class="mt-2">To cancel, use either of these methods:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li>Your account billing page at <a href="/account/billing" class="text-viindoo-primary-text hover:underline">/account/billing</a> → "Manage billing / cancel";</li>
+          <li>The Polar customer portal (link provided on your billing page), where payment records and invoices are also available.</li>
+        </ul>
+        <p class="mt-3"><strong>Cancellation takes effect at the end of your current billing period.</strong> You retain full access to all paid features until that date. After the period ends, your account automatically reverts to the Free tier — your data, repositories, and API key are retained.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Refund Policy</h2>
+        <p class="font-medium text-gray-900">We do not provide refunds or credits for:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li>Partial billing periods (e.g. cancelling mid-month);</li>
+          <li>Unused MCP tool calls or API quota;</li>
+          <li>Plan downgrades during an active billing period;</li>
+          <li>Periods during which you did not actively use the Service.</li>
+        </ul>
+        <p class="mt-3">This policy applies regardless of the reason for cancellation, except where a refund is required by applicable law.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Exceptions Required by Law</h2>
+        <p>Nothing in this policy limits or overrides rights you may have under applicable consumer-protection law. Customers in jurisdictions with mandatory cooling-off periods or statutory refund rights may be entitled to a refund within the legally prescribed window. Contact us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a> to exercise statutory rights.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: EU 14-day cooling-off right under Directive 2011/83/EU may apply to B2C sales. Verify whether digital-content exception applies and update this clause accordingly before go-live for EU customers.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">What Happens After Cancellation</h2>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li>Access to paid features continues until the end of your current billing period;</li>
+          <li>At period end, your account reverts to the Free tier automatically;</li>
+          <li>Your indexed repositories, API key, and account data are retained on the Free tier;</li>
+          <li>Free-tier limits (quota, repos, rate) apply from the revert date;</li>
+          <li>You may subscribe again at any time to restore paid-tier access.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Payment and Invoices</h2>
+        <p>Payments are processed by Polar (polar.sh), our Merchant of Record. Invoices and payment history are available in the Polar customer portal (link on your billing page). For payment disputes or charge queries, contact Polar's support or email us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Contact</h2>
+        <p>For questions about this policy, email us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+      </section>
+
+    </div>
+
+    <div class="mt-12 pt-8 border-t border-gray-200 flex flex-wrap gap-4 text-sm text-gray-500">
+      <a href="/terms" class="hover:text-viindoo-primary-text transition-colors">Terms of Service</a>
+      <span>&middot;</span>
+      <a href="/privacy" class="hover:text-viindoo-primary-text transition-colors">Privacy Policy</a>
+      <span>&middot;</span>
+      <a href="/" class="hover:text-viindoo-primary-text transition-colors">Home</a>
+    </div>
+  </div>
+</BaseLayout>

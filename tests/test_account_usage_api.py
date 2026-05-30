@@ -39,34 +39,44 @@ def web_app(pg_conn):
         cur.execute("DELETE FROM usage_counter")
         cur.execute("DELETE FROM api_keys WHERE user_id IN (1, 2)")
         # Seed admin user id=1 (auth bypass sentinel).
+        #
+        # `webui_users` has `username` as PK *and* a UNIQUE index
+        # `ux_webui_users_id` on the SERIAL `id`.  `ON CONFLICT (username)`
+        # cannot guard against a collision on the id key — if another test file
+        # (e.g. test_account_subscription.py, sorted before this one) left an
+        # id=1 row with a *different* username, the INSERT below would trip
+        # ux_webui_users_id.  Delete by BOTH id and username first to be fully
+        # isolation-safe under the full suite, then INSERT cleanly.
         cur.execute(
-            "DELETE FROM webui_users WHERE username = '_usage_admin_id1'"
+            "DELETE FROM webui_users WHERE id = 1 OR username = '_usage_admin_id1'"
         )
         cur.execute(
             "INSERT INTO webui_users (username, password_hash, is_admin, is_active, id)"
-            " VALUES (%s, %s, TRUE, TRUE, 1) ON CONFLICT (username) DO NOTHING",
+            " VALUES (%s, %s, TRUE, TRUE, 1)",
             ("_usage_admin_id1", "x"),
         )
         # Seed non-admin user id=2 (used by C4 tests via monkeypatch).
         cur.execute(
-            "DELETE FROM webui_users WHERE username = '_usage_nonadmin_id2'"
+            "DELETE FROM webui_users WHERE id = 2 OR username = '_usage_nonadmin_id2'"
         )
         cur.execute(
             "INSERT INTO webui_users (username, password_hash, is_admin, is_active, id)"
-            " VALUES (%s, %s, FALSE, TRUE, 2) ON CONFLICT (username) DO NOTHING",
+            " VALUES (%s, %s, FALSE, TRUE, 2)",
             ("_usage_nonadmin_id2", "x"),
         )
 
     app = create_app()
     yield app
 
-    # Cleanup.
+    # Symmetric cleanup: remove EXACTLY the rows this fixture created (match by
+    # both id and username) so the next test file starts from a clean slate.
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM usage_counter")
         cur.execute("DELETE FROM api_keys WHERE user_id IN (1, 2)")
         cur.execute(
             "DELETE FROM webui_users"
-            " WHERE username IN ('_usage_admin_id1', '_usage_nonadmin_id2')"
+            " WHERE id IN (1, 2)"
+            "    OR username IN ('_usage_admin_id1', '_usage_nonadmin_id2')"
         )
 
 
@@ -79,7 +89,7 @@ def free_grandfathered_plan_id(pg_conn):
     By the time the test harness runs (all migrations applied), 'free-grandfathered'
     no longer exists.  These tests exercise the usage-endpoint contract
     (plan slug + quota surfaced correctly) — the 'free' plan serves that
-    purpose identically.  Asserted quota values updated accordingly (100/month).
+    purpose identically.  Asserted quota values updated accordingly (200/month, post-m13_014).
     """
     with pg_conn.cursor() as cur:
         cur.execute("SELECT id FROM plans WHERE slug = 'free'")
@@ -174,11 +184,11 @@ class TestAuthenticatedUserFullUsage:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         body = resp.json()
 
-        # plan block — 'free' plan (100/month, 30 rpm) post-m13_013
+        # plan block — 'free' plan (200/month, 30 rpm) post-m13_014 pricing seed
         assert body["plan"] is not None
         assert body["plan"]["slug"] == "free"
         assert body["plan"]["name"] == "Free"
-        assert body["plan"]["quota_calls_per_month"] == 100
+        assert body["plan"]["quota_calls_per_month"] == 200
         assert body["plan"]["rate_limit_rpm"] == 30
 
         # current_period block
@@ -186,8 +196,8 @@ class TestAuthenticatedUserFullUsage:
         assert cp is not None
         assert cp["yyyymm"] == current_yyyymm
         assert cp["used"] == 87
-        assert cp["remaining"] == 13  # 100 - 87 = 13 (free plan quota)
-        assert cp["percent"] == 87.0  # 87/100 * 100
+        assert cp["remaining"] == 113  # 200 - 87 = 113 (free plan quota)
+        assert cp["percent"] == 43.5  # 87/200 * 100
 
         # history — 3 periods, DESC
         history = body["history"]
@@ -231,7 +241,7 @@ class TestZeroUsage:
         cp = body["current_period"]
         assert cp is not None
         assert cp["used"] == 0
-        assert cp["remaining"] == 100  # quota_calls_per_month for 'free' plan (post-m13_013)
+        assert cp["remaining"] == 200  # quota_calls_per_month for 'free' plan (post-m13_014)
         assert cp["percent"] == 0.0
         assert body["history"] == []
 

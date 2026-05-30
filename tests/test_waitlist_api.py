@@ -200,6 +200,68 @@ class TestInvalidPlan:
                     f"Expected 201 for plan={plan!r}, got {resp.status_code}: {resp.text}"
                 )
 
+    @pytest.mark.asyncio
+    async def test_new_public_plan_accepted_without_code_change(self, migrated_pg):
+        """C4 (ADR-0039): the waitlist allow-list is DB-derived.
+
+        Adding a new public plan to the plans table must make that slug
+        accepted by POST /api/waitlist without any code change.
+        This proves _ALLOWED_PLANS frozenset has been replaced with a DB query.
+        """
+        # Insert a brand-new public plan that did not exist in the seeded data.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO plans (slug, display_name, quota_calls_per_month,
+                                   rate_limit_rpm, is_public, is_archived)
+                VALUES ('starter', 'Starter', 50, 10, TRUE, FALSE)
+                ON CONFLICT (slug) DO UPDATE SET is_public = TRUE, is_archived = FALSE
+                """
+            )
+        migrated_pg.commit()
+
+        async with _make_client(_make_app()) as client:
+            resp = await client.post(
+                "/api/waitlist",
+                json={"email": "starter_user@example.com", "plan": "starter"},
+            )
+        assert resp.status_code == 201, (
+            f"Expected 201 for newly-added public plan 'starter', "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+        # Cleanup: remove the test plan
+        with migrated_pg.cursor() as cur:
+            cur.execute("DELETE FROM plans WHERE slug = 'starter'")
+        migrated_pg.commit()
+
+    @pytest.mark.asyncio
+    async def test_archived_plan_rejected(self, migrated_pg):
+        """C4: an archived plan slug must NOT be accepted by the waitlist.
+
+        Even if the slug is in the plans table, is_archived=TRUE plans are
+        excluded from the DB-derived allow-list.
+        """
+        # Archive the pro plan temporarily.
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET is_archived = TRUE WHERE slug = 'pro'")
+        migrated_pg.commit()
+
+        async with _make_client(_make_app()) as client:
+            resp = await client.post(
+                "/api/waitlist",
+                json={"email": "archived_pro@example.com", "plan": "pro"},
+            )
+
+        # Restore before asserting so cleanup always runs.
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET is_archived = FALSE WHERE slug = 'pro'")
+        migrated_pg.commit()
+
+        assert resp.status_code == 400, (
+            f"Expected 400 for archived plan 'pro', got {resp.status_code}: {resp.text}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # T5: 429 rate limit exceeded

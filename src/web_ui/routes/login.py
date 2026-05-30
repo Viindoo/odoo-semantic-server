@@ -82,7 +82,7 @@ def _load_common_passwords() -> frozenset[str]:
 
 
 def _lookup_user(username: str) -> dict | None:
-    """Return {id, password_hash, is_admin, is_active} for username, or None."""
+    """Return user row (id, password_hash, is_admin, is_active, email, email_verified) or None."""
     from src.db.pg import auth_store
 
     try:
@@ -91,7 +91,8 @@ def _lookup_user(username: str) -> dict | None:
             return pool.fetch_one(
                 conn,
                 "SELECT id, password_hash, is_admin,"
-                " COALESCE(is_active, TRUE) AS is_active"
+                " COALESCE(is_active, TRUE) AS is_active,"
+                " email, COALESCE(email_verified, FALSE) AS email_verified"
                 " FROM webui_users WHERE username = %s",
                 (username,),
             )
@@ -419,6 +420,22 @@ async def login_post(request: Request, body: LoginBody):
     request.session["username"] = username_clean
     request.session["user_id"] = user["id"]
     request.session["session_at"] = time.time()
+
+    # Claim any unclaimed paid subscriptions — ONLY when email is verified
+    # (prevents email-spoof claim; ADR-0039 D3 / design §5). Best-effort:
+    # never breaks the login flow.
+    if user.get("email_verified") and user.get("email"):
+        try:
+            from src.billing.provisioning import claim_subscription_for_user
+            claim_subscription_for_user(user["id"], user["email"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "login: claim_subscription_for_user failed for user %r (id=%s): %s"
+                " — continuing (non-fatal)",
+                username_clean,
+                user["id"],
+                exc,
+            )
 
     logger.info("Successful login for user %r (IP: %s)", username_clean, client_ip)
     return JSONResponse(

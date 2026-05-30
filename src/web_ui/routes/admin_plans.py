@@ -30,13 +30,20 @@ router = APIRouter(prefix="/api/admin/plans", tags=["admin-plans"])
 
 
 class PlanPatch(BaseModel):
-    """Update payload — only quota + rpm + seat_limit + display_name editable Phase 1."""
+    """Update payload — pricing + quota + rpm + seat_limit + display_name editable Phase 1."""
     quota_calls_per_month: int | None = Field(None, ge=0, le=1_000_000_000)
     rate_limit_rpm: int | None = Field(None, ge=1, le=100_000)
     seat_limit: int | None = Field(None, ge=1, le=10_000)
     display_name: str | None = Field(None, min_length=1, max_length=100)
     is_public: bool | None = None
     metadata: dict | None = None
+    # Pricing fields (C1 — ADR-0039): all editable at runtime via admin PATCH.
+    price_cents: int | None = Field(None, ge=0, le=100_000_000)
+    currency: str | None = Field(None, min_length=3, max_length=3)   # ISO-4217
+    billing_interval: str | None = Field(None, pattern=r"^(free|monthly|annual|one_time)$")
+    trial_days: int | None = Field(None, ge=0, le=365)
+    prices: dict | None = None  # per-currency map e.g. {"USD": 1900, "VND": 490000}
+    is_archived: bool | None = None
     reason: str = Field(min_length=3, max_length=500)
 
 
@@ -59,7 +66,9 @@ async def list_plans(actor_id: int = Depends(require_admin)) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, slug, display_name, quota_calls_per_month, rate_limit_rpm, "
-                "seat_limit, is_public, metadata, created_at FROM plans "
+                "seat_limit, is_public, metadata, created_at, "
+                "price_cents, currency, billing_interval, trial_days, is_archived, prices "
+                "FROM plans "
                 "ORDER BY quota_calls_per_month ASC, id ASC"
             )
             plans = [
@@ -68,6 +77,9 @@ async def list_plans(actor_id: int = Depends(require_admin)) -> dict:
                     "quota_calls_per_month": r[3], "rate_limit_rpm": r[4],
                     "seat_limit": r[5], "is_public": r[6], "metadata": r[7],
                     "created_at": r[8].isoformat() if r[8] else None,
+                    "price_cents": r[9], "currency": r[10],
+                    "billing_interval": r[11], "trial_days": r[12],
+                    "is_archived": r[13], "prices": r[14],
                 }
                 for r in cur.fetchall()
             ]
@@ -82,7 +94,9 @@ async def get_plan(slug: str, actor_id: int = Depends(require_admin)) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, slug, display_name, quota_calls_per_month, rate_limit_rpm, "
-                "seat_limit, is_public, metadata, created_at FROM plans WHERE slug = %s",
+                "seat_limit, is_public, metadata, created_at, "
+                "price_cents, currency, billing_interval, trial_days, is_archived, prices "
+                "FROM plans WHERE slug = %s",
                 (slug,),
             )
             row = cur.fetchone()
@@ -93,6 +107,9 @@ async def get_plan(slug: str, actor_id: int = Depends(require_admin)) -> dict:
         "quota_calls_per_month": row[3], "rate_limit_rpm": row[4],
         "seat_limit": row[5], "is_public": row[6], "metadata": row[7],
         "created_at": row[8].isoformat() if row[8] else None,
+        "price_cents": row[9], "currency": row[10],
+        "billing_interval": row[11], "trial_days": row[12],
+        "is_archived": row[13], "prices": row[14],
     }
 
 
@@ -154,7 +171,8 @@ async def update_plan(
             values = []
             for col, val in updates.items():
                 set_clauses.append(f"{col} = %s")
-                values.append(json.dumps(val) if col == "metadata" else val)
+                # JSON-encode JSONB columns (metadata, prices) before sending to psycopg2.
+                values.append(json.dumps(val) if col in ("metadata", "prices") else val)
             values.append(slug)
             conn.autocommit = False
             cur.execute(

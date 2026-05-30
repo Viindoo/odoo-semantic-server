@@ -9,7 +9,7 @@ import type { SettingDef } from '../../../lib/settings-types';
 
 // Valid categories served by this dynamic route
 // (quota/plans has its own page; ee-modules and patterns have their own pages)
-const VALID_CATEGORIES = ['auth', 'embedding', 'indexer', 'mcp'] as const;
+const VALID_CATEGORIES = ['auth', 'billing', 'embedding', 'indexer', 'mcp'] as const;
 type Category = (typeof VALID_CATEGORIES)[number];
 
 const CATEGORY_META: Record<Category, { label: string; icon: string; description: string }> = {
@@ -17,6 +17,11 @@ const CATEGORY_META: Record<Category, { label: string; icon: string; description
     label: 'Auth Settings',
     icon: '🔐',
     description: 'Session TTL, MFA policy, login attempt thresholds, and OAuth configuration.',
+  },
+  billing: {
+    label: 'Billing Settings',
+    icon: '💳',
+    description: 'Plan slugs, Polar portal/API base, team min seats, checkout gating + URLs, webhook tolerance/rate-limit.',
   },
   embedding: {
     label: 'Embedding Settings',

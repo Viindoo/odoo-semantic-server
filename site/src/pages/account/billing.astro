@@ -1,0 +1,29 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// /account/billing — subscription dashboard page (M10B P1, ADR-0039 E2).
+// Auth-gated by middleware (/account/* guard) — unauthenticated visitors are
+// redirected to /login?return=/account/billing before this page renders.
+export const prerender = false;
+
+import AccountLayout from '../../layouts/AccountLayout.astro';
+import BillingDashboard from './_billing-island';
+---
+
+<AccountLayout title="Billing">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Billing</h1>
+      <p class="text-sm text-gray-500 mt-1">
+        Your subscription plan, renewal date, and self-service cancel.
+      </p>
+    </div>
+    <a
+      href="/pricing"
+      class="text-sm text-viindoo-primary-text hover:text-viindoo-primary-deep font-medium transition-colors"
+    >
+      View plans →
+    </a>
+  </div>
+
+  <BillingDashboard client:load />
+</AccountLayout>

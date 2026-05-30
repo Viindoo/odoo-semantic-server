@@ -10,6 +10,8 @@ Resolution order (per src/config.py convention):
 Boolean flags are read via ``_bool_flag(env_var, default)`` which treats "1",
 "true", "yes" (case-insensitive) as True, everything else as False.
 """
+import os
+
 from src import config as _config
 
 
@@ -88,3 +90,42 @@ def signup_enabled() -> bool:
     import sys
     _mod = sys.modules[__name__]
     return bool(getattr(_mod, "SIGNUP_ENABLED", False))
+
+
+# ---------------------------------------------------------------------------
+# POLAR_WEBHOOK_SECRET — Standard-Webhooks HMAC signing secret from Polar.sh.
+#
+# Read once at import.  The webhook route (POST /api/webhooks/polar) reads this
+# module attribute at request time and fails-closed with HTTP 503 when it is
+# None — unknown/unsigned webhooks are NEVER processed.
+#
+# In production set via systemd EnvironmentFile= (webui.env, mode 600) or
+# LoadCredential=.  In local dev leave unset; the route will reject calls
+# unless you export a matching test secret.
+#
+# Value: the raw secret string as provided by Polar ("whsec_..." base64 form
+# or a plain hex token).  The verify_signature() helper in src/billing/polar.py
+# handles both encodings.
+# ---------------------------------------------------------------------------
+POLAR_WEBHOOK_SECRET: str | None = os.environ.get("POLAR_WEBHOOK_SECRET")
+
+
+# ---------------------------------------------------------------------------
+# POLAR_API_KEY — outbound Polar REST API token (Organization Access Token).
+#
+# Read once at import.  The outbound cancel client (src/billing/polar_api.py)
+# reads this module attribute at call time and fails-closed by raising
+# ``PolarApiNotConfigured`` when it is None — the in-app cancel endpoint maps
+# that to HTTP 503 and points the user at the Polar customer portal instead.
+# An in-app "cancel" is NEVER reported as successful unless Polar confirmed it,
+# so a missing key can never tell a paying user they were cancelled while Polar
+# keeps charging them.
+#
+# In production set via systemd EnvironmentFile= (webui.env, mode 600) or
+# LoadCredential=.  In local dev leave unset; the cancel endpoint then returns
+# 503 with the portal link until a real token is provided.
+#
+# Value: the raw Polar token string ("polar_oat_..." form) used as a Bearer
+# credential against ``billing.polar_api_base``.
+# ---------------------------------------------------------------------------
+POLAR_API_KEY: str | None = os.environ.get("POLAR_API_KEY")

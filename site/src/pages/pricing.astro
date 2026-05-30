@@ -1,66 +1,145 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
-export const prerender = true;
+// Pricing page — data-driven tiers from GET /api/plans (M10B P1, ADR-0039).
+// prerender=false: plan prices are DB-driven (admin can change them without
+// redeploy); billing.paid_checkout_enabled gates the live checkout CTA.
+export const prerender = false;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
+import { FASTAPI_BASE } from '../lib/fastapi';
 
-const tiers = [
-  {
-    name: 'Free',
-    price: 'Coming Soon',
-    color: 'gray',
-    highlight: false,
-    features: [
-      '1 Odoo repo indexed',
-      'Up to Odoo 17.0',
-      '100 MCP tool calls / month',
-      '30 requests / minute',
-      'All 24 MCP tools',
-      'Community support',
-    ],
-    cta: 'Join Waitlist',
-  },
-  {
-    name: 'Pro',
-    price: 'Coming Soon',
-    color: 'violet',
-    highlight: true,
-    features: [
-      'Unlimited repos',
-      'v8 → v19+ cross-version',
-      'All 24 MCP tools',
-      '10,000 MCP tool calls / month',
-      '120 requests / minute',
-      'Claude Code plugin included',
-      'Email support (48h SLA)',
-      'API key management',
-    ],
-    cta: 'Join Waitlist',
-  },
-  {
-    name: 'Team',
-    price: 'Coming Soon',
-    color: 'blue',
-    highlight: false,
-    features: [
-      'Everything in Pro',
-      '100,000 MCP tool calls / month',
-      '300 requests / minute',
-      '20 seats included',
-      'Team API key management',
-      'SSO / SAML (planned)',
-      'Dedicated Neo4j instance',
-      'Priority support (24h SLA)',
-      'Custom deployment options',
-    ],
-    cta: 'Contact Us',
-  },
-] as const;
+type Plan = {
+  id: number;
+  slug: string;
+  display_name: string;
+  quota_calls_per_month: number;
+  rate_limit_rpm: number;
+  seat_limit: number | null;
+  price_cents: number | null;
+  currency: string | null;
+  billing_interval: string | null;
+  prices: Record<string, number> | null;
+};
+
+// Fetch public plan tiers (no auth required)
+let plans: Plan[] = [];
+let plansError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/plans`);
+  if (res.ok) {
+    const data = await res.json();
+    plans = (data.plans ?? []) as Plan[];
+  } else {
+    plansError = `Could not load pricing (${res.status}).`;
+  }
+} catch {
+  plansError = 'Could not connect to API server.';
+}
+
+// Fetch billing settings server-side (admin endpoint).
+// pricing.astro is a public page — a non-admin visitor's cookie will
+// yield 401/403, which is the expected safe default: show waitlist CTA.
+// Only when an admin loads the page (or internal SSR tooling hits it)
+// will paid_checkout_enabled be respected.  Because this is server-side,
+// the actual checkout URL is never sent to the browser when the flag is off.
+let paidCheckoutEnabled = false;
+let checkoutUrlMap: Record<string, string> = {};
+
+try {
+  const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/settings`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    const data = await res.json() as { categories: Record<string, Array<{ key: string; value: unknown }>> };
+    const billingSettings: Array<{ key: string; value: unknown }> = data.categories['billing'] ?? [];
+    for (const s of billingSettings) {
+      if (s.key === 'billing.paid_checkout_enabled') {
+        paidCheckoutEnabled = s.value === true || s.value === 'true';
+      }
+      if (s.key === 'billing.polar_checkout_url_map' && s.value && typeof s.value === 'object') {
+        checkoutUrlMap = s.value as Record<string, string>;
+      }
+    }
+  }
+  // 401/403 = not admin; default stays false (safe — no checkout links for public visitors)
+} catch {
+  // Network or parse error — keep safe default
+}
+
+// Logged-in user email for ?reference_id= pre-fill (pass-through only when checkout enabled)
+const currentEmail = Astro.locals.user?.email ?? '';
+
+// Highlight the middle paid tier (Pro) by default;
+// fall back to second plan if only 2 tiers, or first if only 1.
+function isHighlighted(plan: Plan, all: Plan[]): boolean {
+  if (all.length <= 1) return true;
+  const paidPlans = all.filter((p) => p.billing_interval && p.billing_interval !== 'free');
+  if (paidPlans.length === 0) return false;
+  // Highlight the cheapest paid plan (Pro), not the most expensive (Team)
+  return plan.id === paidPlans[0]?.id;
+}
+
+// Format a price for display given a currency preference.
+// USD and EUR are cent-based (/100); VND is zero-decimal.
+function formatPrice(plan: Plan, currency: 'USD' | 'VND'): string {
+  // If the plan is free tier, always show Free
+  if (!plan.billing_interval || plan.billing_interval === 'free') return 'Free';
+  // Try the per-currency prices map first (C3 — ADR-0039)
+  if (plan.prices && typeof plan.prices === 'object') {
+    const raw = plan.prices[currency];
+    if (raw !== undefined) {
+      if (currency === 'VND') {
+        // VND stored as whole VND (zero-decimal — ADR-0039 C3 note)
+        return `${Number(raw).toLocaleString('en-US')} ₫`;
+      }
+      // USD: stored as cents
+      const usd = Number(raw) / 100;
+      return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    }
+  }
+  // Fallback to scalar price_cents (USD cents)
+  if (plan.price_cents !== null && plan.price_cents !== undefined) {
+    if (currency === 'USD' || !plan.currency || plan.currency.toUpperCase() === 'USD') {
+      const usd = plan.price_cents / 100;
+      return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    }
+  }
+  return 'Contact us';
+}
+
+// Build feature bullets from plan fields — readable summary
+function planFeatures(plan: Plan): string[] {
+  const features: string[] = [];
+  if (plan.quota_calls_per_month === 0) {
+    features.push('Unlimited MCP tool calls / month');
+  } else {
+    features.push(`${plan.quota_calls_per_month.toLocaleString()} tool calls / month`);
+  }
+  features.push(`${plan.rate_limit_rpm} requests / minute`);
+  if (plan.seat_limit && plan.seat_limit > 1) {
+    features.push(`Up to ${plan.seat_limit} seats`);
+  }
+  features.push('All 24 MCP tools');
+  return features;
+}
+
+// Per-plan description copy
+const PLAN_DESCRIPTIONS: Record<string, string> = {
+  free: 'Get started for free. Index your first Odoo repo and explore the full tool surface.',
+  pro: 'For professional developers. Unlimited repos, full version range, email support.',
+  team: 'For growing teams. High quota, multi-seat, priority support, dedicated instance.',
+};
+
+function planDescription(slug: string): string {
+  return PLAN_DESCRIPTIONS[slug] ?? 'Odoo Semantic MCP plan';
+}
 ---
 
 <BaseLayout
   title="Pricing — Odoo Semantic MCP"
-  description="Pricing tiers for Odoo Semantic MCP. Free, Pro, and Team plans coming soon."
+  description="Transparent pricing for Odoo Semantic MCP. Free, Pro, and Team plans."
   theme="dark"
 >
   <section class="bg-gray-950 min-h-screen py-20 px-4">
@@ -74,78 +153,196 @@ const tiers = [
       </a>
       <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">Pricing</h1>
       <p class="text-gray-400 text-lg max-w-xl mx-auto">
-        Simple, transparent tiers. Pricing is in development — join the waitlist to be notified when we launch.
+        Simple, transparent tiers for every team size.
       </p>
+
+      <!-- Currency toggle (USD / VND) — client-side -->
+      <div class="mt-6 inline-flex items-center bg-gray-900 border border-gray-700 rounded-xl p-1 gap-1">
+        <button
+          id="btn-usd"
+          data-currency="USD"
+          class="currency-btn px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors bg-viindoo-primary text-viindoo-bg-0"
+        >
+          USD
+        </button>
+        <button
+          id="btn-vnd"
+          data-currency="VND"
+          class="currency-btn px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors text-gray-400 hover:text-white"
+        >
+          VND
+        </button>
+      </div>
     </div>
+
+    {plansError && (
+      <div class="max-w-4xl mx-auto mb-8 bg-red-900/30 border border-red-700 text-red-300 px-4 py-3 rounded-xl text-sm text-center">
+        {plansError} Showing default tier overview below.
+      </div>
+    )}
 
     <!-- Tier cards -->
-    <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
-      {tiers.map((tier) => (
-        <div
-          class={`
-            relative flex flex-col rounded-2xl p-6 border
-            ${tier.highlight
-              ? 'bg-viindoo-secondary/10 border-viindoo-secondary shadow-lg shadow-viindoo-secondary/20'
-              : 'bg-gray-900 border-gray-800'}
-          `}
-        >
-          {tier.highlight && (
-            <div class="absolute -top-3 left-1/2 -translate-x-1/2">
-              <span class="bg-viindoo-secondary text-white text-xs font-bold px-3 py-1 rounded-full">
-                Most Popular
-              </span>
-            </div>
-          )}
+    {plans.length > 0 ? (
+      <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+        {plans.map((plan) => {
+          const highlight = isHighlighted(plan, plans);
+          const isFree = !plan.billing_interval || plan.billing_interval === 'free';
+          const checkoutUrl = paidCheckoutEnabled ? (checkoutUrlMap[plan.slug] ?? null) : null;
+          const ctaHref = checkoutUrl
+            ? `${checkoutUrl}${currentEmail ? `?reference_id=${encodeURIComponent(currentEmail)}` : ''}`
+            : '#waitlist';
+          const ctaLabel = isFree
+            ? 'Get started free'
+            : (checkoutUrl ? `Subscribe to ${plan.display_name}` : 'Join Waitlist');
+          const features = planFeatures(plan);
+          return (
+            <div
+              class:list={[
+                'relative flex flex-col rounded-2xl p-6 border',
+                highlight
+                  ? 'bg-viindoo-secondary/10 border-viindoo-secondary shadow-lg shadow-viindoo-secondary/20'
+                  : 'bg-gray-900 border-gray-800',
+              ]}
+            >
+              {highlight && (
+                <div class="absolute -top-3 left-1/2 -translate-x-1/2">
+                  <span class="bg-viindoo-secondary text-white text-xs font-bold px-3 py-1 rounded-full">
+                    Most Popular
+                  </span>
+                </div>
+              )}
 
-          <div class="mb-6">
-            <h2 class={`text-xl font-bold mb-2 ${tier.highlight ? 'text-viindoo-secondary-bright' : 'text-white'}`}>
+              <div class="mb-4">
+                <h2 class:list={['text-xl font-bold mb-1', highlight ? 'text-viindoo-secondary-bright' : 'text-white']}>
+                  {plan.display_name}
+                </h2>
+                <p class="text-gray-500 text-xs mb-3">{planDescription(plan.slug)}</p>
+
+                <!-- Price display — currency-toggled via JS -->
+                <div class="price-block text-2xl font-semibold text-gray-300">
+                  <span class="price-usd" data-plan={plan.slug}>
+                    {formatPrice(plan, 'USD')}
+                  </span>
+                  <span class="price-vnd hidden" data-plan={plan.slug}>
+                    {formatPrice(plan, 'VND')}
+                  </span>
+                  {!isFree && plan.billing_interval && (
+                    <span class="text-gray-500 text-sm font-normal ml-1">
+                      /{plan.billing_interval === 'monthly' ? 'mo' : plan.billing_interval === 'annual' ? 'yr' : plan.billing_interval}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <ul class="flex-1 space-y-2 mb-8">
+                {features.map((f) => (
+                  <li class="flex items-start gap-2 text-sm text-gray-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" class:list={['w-4 h-4 mt-0.5 flex-shrink-0', highlight ? 'text-viindoo-secondary-bright' : 'text-gray-600']} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    {f}
+                  </li>
+                ))}
+              </ul>
+
+              {isFree ? (
+                <a
+                  href="/signup"
+                  class:list={[
+                    'w-full text-center py-3 rounded-xl font-semibold text-sm transition-colors',
+                    'bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700',
+                  ]}
+                >
+                  {ctaLabel}
+                </a>
+              ) : checkoutUrl ? (
+                <!-- Live checkout CTA (only rendered when paid_checkout_enabled=true) -->
+                <a
+                  href={ctaHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class:list={[
+                    'w-full text-center py-3 rounded-xl font-semibold text-sm transition-colors',
+                    highlight
+                      ? 'bg-viindoo-secondary hover:bg-viindoo-secondary-bright text-white'
+                      : 'bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0',
+                  ]}
+                >
+                  {ctaLabel}
+                </a>
+              ) : (
+                <!-- Waitlist CTA (default when checkout not yet enabled) -->
+                <a
+                  href="#waitlist"
+                  class:list={[
+                    'w-full text-center py-3 rounded-xl font-semibold text-sm transition-colors',
+                    highlight
+                      ? 'bg-viindoo-secondary hover:bg-viindoo-secondary-bright text-white'
+                      : 'bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700',
+                  ]}
+                >
+                  Join Waitlist
+                </a>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    ) : (
+      <!-- Fallback static tiers when API is unavailable -->
+      <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+        {[
+          { name: 'Free', desc: 'For individuals exploring Odoo AI tooling.', price: 'Free', highlight: false },
+          { name: 'Pro', desc: 'For professional Odoo developers.', price: 'Coming soon', highlight: true },
+          { name: 'Team', desc: 'For growing development teams.', price: 'Coming soon', highlight: false },
+        ].map((tier) => (
+          <div
+            class:list={[
+              'relative flex flex-col rounded-2xl p-6 border',
+              tier.highlight
+                ? 'bg-viindoo-secondary/10 border-viindoo-secondary shadow-lg shadow-viindoo-secondary/20'
+                : 'bg-gray-900 border-gray-800',
+            ]}
+          >
+            {tier.highlight && (
+              <div class="absolute -top-3 left-1/2 -translate-x-1/2">
+                <span class="bg-viindoo-secondary text-white text-xs font-bold px-3 py-1 rounded-full">Most Popular</span>
+              </div>
+            )}
+            <h2 class:list={['text-xl font-bold mb-1', tier.highlight ? 'text-viindoo-secondary-bright' : 'text-white']}>
               {tier.name}
             </h2>
-            <div class="text-2xl font-semibold text-gray-300">{tier.price}</div>
+            <p class="text-gray-500 text-xs mb-3">{tier.desc}</p>
+            <div class="text-2xl font-semibold text-gray-300 mb-8">{tier.price}</div>
+            <a
+              href="#waitlist"
+              class:list={[
+                'w-full text-center py-3 rounded-xl font-semibold text-sm transition-colors mt-auto',
+                tier.highlight
+                  ? 'bg-viindoo-secondary hover:bg-viindoo-secondary-bright text-white'
+                  : 'bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700',
+              ]}
+            >
+              Join Waitlist
+            </a>
           </div>
+        ))}
+      </div>
+    )}
 
-          <ul class="flex-1 space-y-3 mb-8">
-            {tier.features.map((f) => (
-              <li class="flex items-start gap-2 text-sm text-gray-400">
-                <svg xmlns="http://www.w3.org/2000/svg" class={`w-4 h-4 mt-0.5 flex-shrink-0 ${tier.highlight ? 'text-viindoo-secondary-bright' : 'text-gray-600'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-                {f}
-              </li>
-            ))}
-          </ul>
-
-          <a
-            href="#waitlist"
-            class={`
-              w-full text-center py-3 rounded-xl font-semibold text-sm transition-colors
-              ${tier.highlight
-                ? 'bg-viindoo-secondary hover:bg-viindoo-secondary-bright text-white'
-                : 'bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700'}
-            `}
-          >
-            {tier.cta}
-          </a>
-        </div>
-      ))}
-    </div>
-
-    <!-- Plan note: all signups (including beta) are on the unified Free plan -->
+    <!-- Plan note -->
     <p class="text-center text-gray-400 text-sm max-w-2xl mx-auto mb-8">
       All accounts — including existing beta users — are on the unified <strong>Free plan</strong>.
       Your current plan and usage are visible at <a href="/account/usage" class="text-viindoo-primary hover:underline">/account/usage</a>.
     </p>
 
-    <!-- Waitlist form -->
+    <!-- Waitlist form (shown when checkout not enabled, or as a fallback) -->
     <div id="waitlist" class="max-w-lg mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center mb-12">
       <h2 class="text-2xl font-bold text-white mb-3">Join the Waitlist</h2>
       <p class="text-gray-400 text-sm mb-6">
-        Be first to know when pricing launches. We'll notify you by email — no spam.
+        Be first to know when paid plans launch. We'll notify you by email — no spam.
       </p>
-      <form
-        id="waitlist-form"
-        class="flex flex-col sm:flex-row gap-3"
-      >
+      <form id="waitlist-form" class="flex flex-col sm:flex-row gap-3">
         <input
           type="email"
           id="waitlist-email"
@@ -165,9 +362,72 @@ const tiers = [
       <p id="waitlist-msg" class="text-sm mt-3 hidden"></p>
     </div>
 
-    <!-- FAQ teaser -->
+    <!-- FAQ -->
     <div class="max-w-2xl mx-auto space-y-4 mb-12">
-      <h3 class="text-lg font-semibold text-white text-center mb-6">Common Questions</h3>
+      <h3 class="text-lg font-semibold text-white text-center mb-6">Frequently Asked Questions</h3>
+
+      <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
+        <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
+          Can I cancel anytime?
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <p class="text-gray-500 text-sm mt-3">
+          Yes. You can cancel at any time from your
+          <a href="/account/billing" class="text-viindoo-primary hover:underline">billing page</a> or
+          the Polar customer portal. Your subscription stays active until the end of the current billing period — there is no refund for the remaining days.
+          See our <a href="/refund" class="text-viindoo-primary hover:underline">Refund &amp; Cancellation Policy</a>.
+        </p>
+      </details>
+
+      <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
+        <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
+          What happens when I hit my monthly quota?
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <p class="text-gray-500 text-sm mt-3">
+          MCP tool calls are rate-limited to your plan's monthly quota. When exhausted, calls return a quota error until the next billing cycle. Upgrade any time to get a higher limit immediately.
+        </p>
+      </details>
+
+      <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
+        <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
+          Monthly vs annual — any difference?
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <p class="text-gray-500 text-sm mt-3">
+          Annual plans offer a discounted rate (equivalent to ~2 months free) billed upfront. Monthly plans let you pay as you go with the flexibility to cancel each month. Both plans include the same features.
+        </p>
+      </details>
+
+      <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
+        <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
+          How do I upgrade or downgrade?
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <p class="text-gray-500 text-sm mt-3">
+          Upgrade or switch plans from your <a href="/account/billing" class="text-viindoo-primary hover:underline">billing page</a> or the Polar customer portal. Downgrades take effect at the end of your current billing period.
+        </p>
+      </details>
+
+      <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
+        <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
+          Where are my invoices?
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <p class="text-gray-500 text-sm mt-3">
+          Invoices and payment history are managed by <a href="https://polar.sh" target="_blank" rel="noopener" class="text-viindoo-primary hover:underline">Polar</a>, our Merchant of Record. Access them from the "Manage billing" link on your <a href="/account/billing" class="text-viindoo-primary hover:underline">billing page</a>.
+        </p>
+      </details>
 
       <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
         <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
@@ -178,8 +438,7 @@ const tiers = [
         </summary>
         <p class="text-gray-500 text-sm mt-3">
           Yes. The full stack (Neo4j + PostgreSQL + MCP server) can be self-hosted via Docker Compose.
-          <a href="mailto:admin@viindoo.com" class="text-viindoo-primary hover:underline">Contact us</a> for self-host access and deployment guide.
-          Self-hosted is always free.
+          <a href="mailto:admin@viindoo.com" class="text-viindoo-primary hover:underline">Contact us</a> for self-host access and the deployment guide. Self-hosted is always free.
         </p>
       </details>
 
@@ -191,34 +450,52 @@ const tiers = [
           </svg>
         </summary>
         <p class="text-gray-500 text-sm mt-3">
-          For the cloud-hosted plan: we index metadata only (model names, field names, method signatures).
-          Source code lines are not stored. For sensitive EE code, use self-hosted.
-        </p>
-      </details>
-
-      <details class="bg-gray-900 border border-gray-800 rounded-xl p-4 group">
-        <summary class="text-gray-300 font-medium cursor-pointer list-none flex items-center justify-between">
-          Which AI tools are supported?
-          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
-        </summary>
-        <p class="text-gray-500 text-sm mt-3">
-          Claude Code (plugin + manual), Codex CLI, Gemini CLI, VS Code Copilot (v1.99+), Google Antigravity.
-          Any MCP-compatible client works.
+          For the cloud-hosted plan: we index metadata only (model names, field names, method signatures). Source code lines are not stored. For sensitive EE code, use self-hosted.
         </p>
       </details>
     </div>
 
     <!-- Footer note -->
     <p class="text-center text-gray-600 text-sm">
-      Pricing in development — ETA Q3 2026.
       Questions? <a href="mailto:admin@viindoo.com" class="text-viindoo-primary hover:underline">admin@viindoo.com</a>
+      {' · '}
+      <a href="/terms" class="text-viindoo-primary hover:underline">Terms</a>
+      {' · '}
+      <a href="/privacy" class="text-viindoo-primary hover:underline">Privacy</a>
+      {' · '}
+      <a href="/refund" class="text-viindoo-primary hover:underline">Refund Policy</a>
     </p>
   </section>
 </BaseLayout>
 
 <script>
+  // ---- Currency toggle ----
+  const usdBtn = document.getElementById('btn-usd') as HTMLButtonElement | null;
+  const vndBtn = document.getElementById('btn-vnd') as HTMLButtonElement | null;
+
+  function setCurrency(cur: 'USD' | 'VND') {
+    const activeClass = ['bg-viindoo-primary', 'text-viindoo-bg-0'];
+    const inactiveClass = ['text-gray-400', 'hover:text-white'];
+
+    [usdBtn, vndBtn].forEach((btn) => {
+      if (!btn) return;
+      const isActive = btn.dataset.currency === cur;
+      activeClass.forEach((c) => btn.classList.toggle(c, isActive));
+      inactiveClass.forEach((c) => btn.classList.toggle(c, !isActive));
+    });
+
+    document.querySelectorAll('.price-usd').forEach((el) => {
+      (el as HTMLElement).classList.toggle('hidden', cur !== 'USD');
+    });
+    document.querySelectorAll('.price-vnd').forEach((el) => {
+      (el as HTMLElement).classList.toggle('hidden', cur !== 'VND');
+    });
+  }
+
+  usdBtn?.addEventListener('click', () => setCurrency('USD'));
+  vndBtn?.addEventListener('click', () => setCurrency('VND'));
+
+  // ---- Waitlist form ----
   const form = document.getElementById('waitlist-form') as HTMLFormElement | null;
   const emailInput = document.getElementById('waitlist-email') as HTMLInputElement | null;
   const submitBtn = document.getElementById('waitlist-submit') as HTMLButtonElement | null;
@@ -229,7 +506,6 @@ const tiers = [
       e.preventDefault();
       submitBtn.disabled = true;
       submitBtn.textContent = 'Submitting…';
-      msgEl.classList.add('hidden');
       msgEl.className = 'text-sm mt-3 hidden';
 
       try {
@@ -243,11 +519,11 @@ const tiers = [
 
         if (res.status === 201) {
           form.classList.add('hidden');
-          msgEl.textContent = 'You\'re on the list! We\'ll notify you when pricing launches.';
+          msgEl.textContent = "You're on the list! We'll notify you when paid plans launch.";
           msgEl.classList.remove('hidden');
           msgEl.classList.add('text-viindoo-success');
         } else if (res.status === 409) {
-          msgEl.textContent = 'You\'re already on the waitlist - we\'ll be in touch!';
+          msgEl.textContent = "You're already on the waitlist — we'll be in touch!";
           msgEl.classList.remove('hidden');
           msgEl.classList.add('text-viindoo-warning');
           submitBtn.disabled = false;

@@ -148,6 +148,8 @@ class RegisterBody(BaseModel):
     password: str
     confirm_password: str
     hcaptcha_token: str = ""
+    # D4 consent gate: must be True to proceed (PDPL 91/2025 + card-network requirement).
+    consent: bool = False
 
 
 class VerifyEmailBody(BaseModel):
@@ -189,6 +191,25 @@ async def register(body: RegisterBody, request: Request):
         return JSONResponse(
             _json_safe({"error": "signup_disabled", "detail": "Public signup is not enabled."}),
             status_code=403,
+        )
+
+    # D4 consent gate — PDPL 91/2025 + card-network requirement.
+    # Must be True; absence/False → 422 (client error, not auth error).
+    if not body.consent:
+        logger.warning(
+            "Signup rejected: consent not given — email=%s username=%s",
+            body.email,
+            body.username,
+        )
+        return JSONResponse(
+            _json_safe({
+                "error": "consent_required",
+                "detail": (
+                    "You must agree to the Terms of Service and Privacy Policy"
+                    " to create an account."
+                ),
+            }),
+            status_code=422,
         )
 
     client_ip = _get_client_ip(request)
@@ -250,14 +271,15 @@ async def register(body: RegisterBody, request: Request):
                 status_code=409,
             )
 
-        # Insert unverified user; capture integer id for FK in email_verifications
+        # Insert unverified user; capture integer id for FK in email_verifications.
+        # terms_accepted_at = NOW() records auditable proof-of-consent (D4 / m13_016).
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO webui_users"
-                    " (username, password_hash, email, email_verified, is_admin)"
-                    " VALUES (%s, %s, %s, FALSE, FALSE) RETURNING id",
+                    " (username, password_hash, email, email_verified, is_admin, terms_accepted_at)"
+                    " VALUES (%s, %s, %s, FALSE, FALSE, NOW()) RETURNING id",
                     (username, password_hash, email),
                 )
                 row = cur.fetchone()
@@ -367,7 +389,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
             # Resolve username for session (needed for auto-login)
             user_row = pool.fetch_one(
                 conn,
-                "SELECT username, is_admin FROM webui_users WHERE id = %s",
+                "SELECT username, email, is_admin FROM webui_users WHERE id = %s",
                 (user_id,),
             )
             if user_row is None:
@@ -376,6 +398,7 @@ async def verify_email(body: VerifyEmailBody, request: Request):
                 return JSONResponse(_json_safe({"error": "expired_or_invalid"}), status_code=410)
 
             username = user_row["username"]
+            user_email = user_row["email"]
 
             # Mark verified + consume token in one transaction
             with conn.cursor() as cur:
@@ -427,6 +450,20 @@ async def verify_email(body: VerifyEmailBody, request: Request):
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "verify-email: default API key mint failed for user %r (id=%d): %s"
+            " — continuing (non-fatal)",
+            username,
+            user_id,
+            exc,
+        )
+
+    # Claim any unclaimed paid subscriptions for this now-verified email (WI-6).
+    # Best-effort: never breaks the login flow.
+    try:
+        from src.billing.provisioning import claim_subscription_for_user
+        claim_subscription_for_user(user_id, user_email)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "verify-email: claim_subscription_for_user failed for user %r (id=%d): %s"
             " — continuing (non-fatal)",
             username,
             user_id,

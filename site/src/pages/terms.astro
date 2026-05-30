@@ -1,0 +1,112 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// terms.astro — Terms of Service (static legal page, W6 billing)
+export const prerender = true;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Terms of Service — Odoo Semantic MCP" description="Terms of Service for Odoo Semantic MCP by Viindoo.">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+
+    <!-- DRAFT badge -->
+    <div class="mb-8 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4" role="note" aria-label="Draft notice">
+      <svg class="h-5 w-5 flex-shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+      </svg>
+      <p class="text-sm font-semibold text-amber-800">
+        DRAFT — pending legal review. This document is a draft scaffold and has not been reviewed or approved by legal counsel. It does not constitute final, binding terms. The final version will be published after legal sign-off.
+      </p>
+    </div>
+
+    <h1 class="text-3xl font-bold text-gray-900 mb-2" style="font-family: Montserrat, sans-serif;">Terms of Service</h1>
+    <p class="text-sm text-gray-500 mb-10">Last updated: <span class="font-medium">[DATE — pending legal sign-off]</span></p>
+
+    <div class="prose prose-gray max-w-none space-y-8 text-gray-700 leading-relaxed">
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">1. Acceptance of Terms</h2>
+        <p>By creating an account or accessing Odoo Semantic MCP ("the Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree, do not use the Service. These Terms apply to all users, including free and paid subscribers.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">2. Description of Service</h2>
+        <p>Odoo Semantic MCP is a knowledge-engine service that indexes Odoo codebase metadata (inheritance chains, view structures, module relationships) and exposes it via the MCP protocol to AI coding tools. The Service indexes metadata only — source code lines are not stored on our cloud infrastructure under standard plans.</p>
+        <p class="mt-2">The Service is provided by Viindoo ("we", "us", "our"), a company incorporated in Vietnam.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">3. Account and API-Key Responsibility</h2>
+        <p>You are responsible for maintaining the confidentiality of your account credentials and API keys. You must notify us immediately of any unauthorized use. We are not liable for any loss resulting from unauthorized use of your account.</p>
+        <p class="mt-2">You must be at least 18 years old, or the age of majority in your jurisdiction, to create an account. Accounts registered on behalf of organizations require authorization from that organization.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">4. Acceptable Use</h2>
+        <p>You may use the Service only for lawful purposes and in accordance with these Terms. You agree not to:</p>
+        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
+          <li>Resell, sublicense, or redistribute API access without written permission;</li>
+          <li>Use the Service to build a competing product using our indexed data;</li>
+          <li>Attempt to reverse-engineer, scrape, or abuse the API beyond your plan quota;</li>
+          <li>Upload or index code that infringes third-party intellectual property rights;</li>
+          <li>Use the Service in a way that violates applicable laws or regulations.</li>
+        </ul>
+        <p class="mt-2">We reserve the right to suspend or terminate accounts that violate these rules without prior notice.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">5. Plans, Billing, and Taxes</h2>
+        <p>Paid subscriptions are processed by our Merchant of Record, Polar (polar.sh). Prices are displayed in USD (and VND where applicable). Subscriptions renew automatically at the end of each billing period unless cancelled.</p>
+        <p class="mt-2">All prices are exclusive of applicable taxes. You are responsible for any taxes, duties, or government levies applicable in your jurisdiction.</p>
+        <p class="mt-2">We reserve the right to change pricing with at least 30 days' notice to subscribers.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">6. Cancellation and Refunds</h2>
+        <p>Please see our <a href="/refund" class="text-viindoo-primary-text hover:underline">Refund &amp; Cancellation Policy</a> for full details. In summary: you may cancel at any time; cancellation takes effect at the end of the current billing period; no refunds are provided for partial periods.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">7. Service Availability</h2>
+        <p>The Service is provided "as is" without warranty of any kind, express or implied. We do not guarantee uninterrupted or error-free operation. The Service may be in beta; features may change without notice.</p>
+        <p class="mt-2">We are not liable for any data loss, downtime, or damages arising from use of the Service.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">8. Limitation of Liability</h2>
+        <p>To the maximum extent permitted by applicable law, Viindoo's total liability for any claim arising out of or relating to these Terms or the Service shall not exceed the amount you paid us in the 12 months preceding the claim. We are not liable for indirect, incidental, or consequential damages.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: liability cap and consequential-damage exclusion must be reviewed for enforceability under Vietnamese law and applicable international sale jurisdictions.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">9. Intellectual Property</h2>
+        <p>The Service, including its software, design, and content, is owned by Viindoo and protected by intellectual property laws. Your use of the Service does not grant you any ownership rights. Code and repositories you index remain your property.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">10. Governing Law and Dispute Resolution</h2>
+        <p>These Terms are governed by the laws of Vietnam. Disputes shall first be submitted to good-faith negotiation. If unresolved within 30 days, disputes shall be submitted to the competent courts of Hanoi, Vietnam.</p>
+        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: governing-law clause must be reviewed for international consumer-protection obligations, particularly EU/EEA buyers.]</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">11. Changes to These Terms</h2>
+        <p>We may update these Terms from time to time. We will notify registered users by email at least 14 days before material changes take effect. Continued use of the Service after that date constitutes acceptance of the updated Terms.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">12. Contact</h2>
+        <p>For questions about these Terms, contact us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+      </section>
+
+    </div>
+
+    <div class="mt-12 pt-8 border-t border-gray-200 flex flex-wrap gap-4 text-sm text-gray-500">
+      <a href="/privacy" class="hover:text-viindoo-primary-text transition-colors">Privacy Policy</a>
+      <span>&middot;</span>
+      <a href="/refund" class="hover:text-viindoo-primary-text transition-colors">Refund &amp; Cancellation</a>
+      <span>&middot;</span>
+      <a href="/" class="hover:text-viindoo-primary-text transition-colors">Home</a>
+    </div>
+  </div>
+</BaseLayout>

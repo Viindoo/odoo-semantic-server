@@ -1,0 +1,142 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// /account/claim — post-checkout provisioning page (M10B P1, ADR-0039 D5).
+// Polar redirects here after a successful checkout.  The page polls
+// GET /api/account/subscription every ~3s until a paid plan appears,
+// then redirects to /account/billing.
+//
+// Auth-gated by middleware (/account/*); unauthenticated visitors are
+// redirected to /login?return=/account/claim?<original-qs> first.
+export const prerender = false;
+
+import AccountLayout from '../../layouts/AccountLayout.astro';
+
+// Pass the Polar-supplied query params to client-side (for debug/logging only)
+const subscriptionId = Astro.url.searchParams.get('subscription_id') ?? '';
+const referenceId = Astro.url.searchParams.get('reference_id') ?? '';
+---
+
+<AccountLayout title="Activating subscription">
+  <div class="max-w-lg mx-auto py-12 text-center">
+    <!-- Spinner icon -->
+    <div
+      id="claim-spinner"
+      class="mx-auto mb-6 w-16 h-16 rounded-full border-4 border-viindoo-primary/30 border-t-viindoo-primary animate-spin"
+    ></div>
+
+    <h1 id="claim-title" class="text-2xl font-bold text-gray-900 mb-3">
+      Activating your subscription…
+    </h1>
+    <p id="claim-msg" class="text-sm text-gray-500">
+      Hang tight — this usually takes just a few seconds.
+    </p>
+
+    <!-- Timeout / error state (hidden by default) -->
+    <div id="claim-error" class="hidden mt-6 bg-yellow-50 border border-yellow-200 rounded-xl px-5 py-4 text-sm text-yellow-800 text-left">
+      <p class="font-semibold mb-1">Still processing…</p>
+      <p>
+        Your payment was received but the subscription may take a moment to activate.
+        Check back in a few minutes or view your billing page.
+      </p>
+      <div class="mt-4 flex flex-wrap gap-3">
+        <a
+          href="/account/billing"
+          class="inline-block bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+        >
+          Go to billing
+        </a>
+        <a
+          id="portal-link"
+          href="https://polar.sh/"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-block border border-gray-300 hover:border-gray-400 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          Polar portal
+        </a>
+        <a
+          href="mailto:admin@viindoo.com"
+          class="inline-block border border-gray-300 hover:border-gray-400 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          Contact support
+        </a>
+      </div>
+    </div>
+  </div>
+</AccountLayout>
+
+<script define:vars={{ subscriptionId, referenceId }}>
+  // Claim polling — poll /api/account/subscription until a paid plan appears.
+  // Strategy: 3-second poll, 30-second timeout (10 attempts), then show the
+  // "still processing" message with a manage_url link.
+
+  const POLL_INTERVAL_MS = 3000;
+  const TIMEOUT_MS = 30000;
+  const FREE_SLUGS = new Set(['free']);
+
+  const titleEl = document.getElementById('claim-title');
+  const msgEl = document.getElementById('claim-msg');
+  const spinnerEl = document.getElementById('claim-spinner');
+  const errorEl = document.getElementById('claim-error');
+  const portalLink = document.getElementById('portal-link');
+
+  let elapsed = 0;
+  let intervalId = null;
+
+  async function poll() {
+    elapsed += POLL_INTERVAL_MS;
+
+    try {
+      const res = await fetch('/api/account/subscription', { credentials: 'include' });
+      if (res.status === 401) {
+        // Session expired mid-poll — redirect to login with return
+        window.location.href = '/login?return=/account/billing';
+        return;
+      }
+      if (!res.ok) return; // transient error, keep polling
+
+      const data = await res.json();
+      const subs = data.subscriptions ?? [];
+      const manage = data.manage_url;
+
+      // Update portal link if we have a real manage_url
+      if (manage && portalLink) {
+        portalLink.setAttribute('href', manage);
+      }
+
+      // Look for any active, non-free subscription
+      const paidSub = subs.find(
+        (s) =>
+          (s.status === 'active' || s.status === 'trialing') &&
+          !FREE_SLUGS.has(s.plan_slug ?? '') &&
+          s.billing_interval &&
+          s.billing_interval !== 'free'
+      );
+
+      if (paidSub) {
+        clearInterval(intervalId);
+        if (spinnerEl) spinnerEl.className = 'mx-auto mb-6 w-16 h-16 rounded-full bg-green-100 flex items-center justify-center text-3xl';
+        if (spinnerEl) spinnerEl.textContent = '✓';
+        if (titleEl) titleEl.textContent = 'Subscription activated!';
+        if (msgEl) msgEl.textContent = 'Redirecting to your billing page…';
+        setTimeout(() => { window.location.href = '/account/billing'; }, 1200);
+        return;
+      }
+    } catch {
+      // Network error — keep polling
+    }
+
+    // Timeout guard
+    if (elapsed >= TIMEOUT_MS) {
+      clearInterval(intervalId);
+      if (spinnerEl) spinnerEl.classList.add('hidden');
+      if (titleEl) titleEl.textContent = 'Taking longer than expected';
+      if (msgEl) msgEl.classList.add('hidden');
+      if (errorEl) errorEl.classList.remove('hidden');
+    }
+  }
+
+  // Start polling immediately, then on interval
+  poll();
+  intervalId = setInterval(poll, POLL_INTERVAL_MS);
+</script>

@@ -571,6 +571,9 @@ def pg_conn():
     _pg_mod._auth_store = None
     _pg_mod._repo_store = None
     _pg_mod._job_store = None
+    # Reset the billing store singleton too, else a later test gets a
+    # SubscriptionStore wrapping the now-closed pool (M10B P1).
+    _pg_mod._subscription_store = None
     conn.close()
 
 

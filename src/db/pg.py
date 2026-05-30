@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from src.db.auth_registry import AuthStore
     from src.db.job_registry import JobStore
     from src.db.repo_registry import RepoStore
+    from src.db.subscription_registry import SubscriptionStore
 
 
 _log = logging.getLogger(__name__)
@@ -233,7 +234,8 @@ def get_pool() -> PgPool:
 _auth_store: "AuthStore | None" = None
 _repo_store: "RepoStore | None" = None
 _job_store: "JobStore | None" = None
-_store_lock = threading.Lock()  # guards auth_store / repo_store / job_store lazy init
+_subscription_store: "SubscriptionStore | None" = None
+_store_lock = threading.Lock()  # guards all store lazy-init singletons
 
 
 def auth_store() -> "AuthStore":
@@ -270,6 +272,18 @@ def job_store() -> "JobStore":
             from src.db.job_registry import JobStore  # noqa: PLC0415
             _job_store = JobStore(get_pool())
     return _job_store
+
+
+def subscription_store() -> "SubscriptionStore":
+    """Return module-level SubscriptionStore singleton (lazy init after init_pool)."""
+    global _subscription_store
+    if _subscription_store is not None:  # fast path — no lock overhead on hot calls
+        return _subscription_store
+    with _store_lock:
+        if _subscription_store is None:  # re-check after acquiring lock
+            from src.db.subscription_registry import SubscriptionStore  # noqa: PLC0415
+            _subscription_store = SubscriptionStore(get_pool())
+    return _subscription_store
 
 
 # ---------------------------------------------------------------------------

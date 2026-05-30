@@ -4,7 +4,7 @@
 
 Business intent (6 cases):
   Case 1  free-grandfathered key (1000/month) consume normally — passes.
-  Case 2  free key (100/month) hits 100 → 101st call is blocked.
+  Case 2  free key (200/month) hits 200 → 201st call is blocked.
   Case 3  free key (30 rpm) bursts 31 → rpm block returned, NOT monthly.
   Case 4  admin key (quota=0) is unlimited — passes 10000-call simulation.
   Case 5  PlanInfo cache TTL — after cache expiry reassigned plan picked up.
@@ -183,12 +183,12 @@ class _FakePool:
 
 
 class TestFreeGrandfatheredUnderQuotaPasses:
-    """Case 1: finite-quota plan (100/month, 30 rpm) allows calls within quota.
+    """Case 1: finite-quota plan (200/month, 30 rpm) allows calls within quota.
 
     NOTE (m13_013): m13_013_consolidate_free_plans.sql deletes 'free-grandfathered'
     from the plans table (repoints its keys to 'unlimited').  This test was renamed
     in spirit only — the class name is kept for history; the slug is now 'free'
-    (100/month, 30 rpm), which exercises the same quota-enforcement code path.
+    (200/month, 30 rpm), which exercises the same quota-enforcement code path.
     """
 
     _KEY_HASH = "hash_mq_c1_fg"
@@ -207,7 +207,8 @@ class TestFreeGrandfatheredUnderQuotaPasses:
 
             plan_info = _get_plan_for_key(key_id, pool)
             assert plan_info.slug == "free"
-            assert plan_info.quota_calls_per_month == 100
+            # Free tier seeded at 200 calls/month by m13_014 pricing seed (M10B P1).
+            assert plan_info.quota_calls_per_month == 200
             assert plan_info.rate_limit_rpm == 30
 
             # Simulate 5 calls under quota (usage_counter row absent = 0 used)
@@ -222,12 +223,12 @@ class TestFreeGrandfatheredUnderQuotaPasses:
 
 
 # ---------------------------------------------------------------------------
-# Case 2: free key (100/month) hits ceiling — 101st call blocked
+# Case 2: free key (200/month) hits ceiling — next call blocked
 # ---------------------------------------------------------------------------
 
 
 class TestFreeKeyHitsMonthlyQuota:
-    """Case 2: free plan (100/month) — once counter reaches 100, next call blocked."""
+    """Case 2: free plan (200/month) — once counter reaches the ceiling, next call blocked."""
 
     _KEY_HASH = "hash_mq_c2_free"
 
@@ -247,23 +248,25 @@ class TestFreeKeyHitsMonthlyQuota:
 
             plan_info = _get_plan_for_key(key_id, pool)
             assert plan_info.slug == "free"
-            assert plan_info.quota_calls_per_month == 100
+            # Free tier seeded at 200 calls/month by m13_014 pricing seed (M10B P1).
+            assert plan_info.quota_calls_per_month == 200
+            ceiling = plan_info.quota_calls_per_month
 
             period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
 
-            # Set counter to exactly the quota limit
+            # Set counter to exactly the quota limit (derived from the plan, not hard-coded)
             _set_usage_counter(
-                migrated_db, api_key_id=key_id, period=period, count=100
+                migrated_db, api_key_id=key_id, period=period, count=ceiling
             )
             migrated_db.commit()
 
-            # 101st check — must be blocked
+            # Next check at the ceiling — must be blocked
             allowed, used, quota = _check_monthly_quota(key_id, plan_info, pool)
             assert allowed is False, (
                 f"Expected blocked at quota={quota}, used={used}"
             )
-            assert used == 100
-            assert quota == 100
+            assert used == ceiling
+            assert quota == ceiling
         finally:
             _cleanup_test_keys(migrated_db, [self._KEY_HASH])
             migrated_db.commit()
@@ -450,12 +453,14 @@ class TestPeriodBoundaryResets:
             pool = _FakePool(migrated_db)
 
             plan_info = _get_plan_for_key(key_id, pool)
-            assert plan_info.quota_calls_per_month == 100
+            # Free tier seeded at 200 calls/month by m13_014 pricing seed (M10B P1).
+            assert plan_info.quota_calls_per_month == 200
+            ceiling = plan_info.quota_calls_per_month
 
             # Simulate previous month exhausted (e.g. Jan 2025)
             prev_period = "202501"
             _set_usage_counter(
-                migrated_db, api_key_id=key_id, period=prev_period, count=100
+                migrated_db, api_key_id=key_id, period=prev_period, count=ceiling
             )
             migrated_db.commit()
 
@@ -470,7 +475,7 @@ class TestPeriodBoundaryResets:
             # Now set current month to exactly quota
             current_period = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
             _set_usage_counter(
-                migrated_db, api_key_id=key_id, period=current_period, count=100
+                migrated_db, api_key_id=key_id, period=current_period, count=ceiling
             )
             migrated_db.commit()
 
