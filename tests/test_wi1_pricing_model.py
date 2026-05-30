@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for WI-1 pricing-model backend data layer.
 
-7 test cases covering:
-1. test_migration_idempotent_pricing_model   migration m13_015 is idempotent
-2. test_plans_api_includes_pricing_model     GET /api/plans returns pricing_model per plan
-3. test_plans_api_includes_team_min_seats    GET /api/plans returns top-level team_min_seats
-4. test_plans_api_no_auth_required           GET /api/plans is public (no session)
-5. test_admin_patch_pricing_model_accept     PATCH /api/admin/plans/{slug} accepts flat/per_seat
-6. test_admin_patch_pricing_model_reject     PATCH /api/admin/plans/{slug} rejects invalid value
-7. test_site_config_public_no_auth           GET /api/site-config is public, returns config keys
+12 test cases covering:
+ 1. test_migration_idempotent_pricing_model   migration m13_015 is idempotent
+ 2. test_migration_idempotent_min_seats       migration m13_016 is idempotent + seeds correct values
+ 3. test_plans_api_includes_pricing_model     GET /api/plans returns pricing_model per plan
+ 4. test_plans_api_includes_min_seats         GET /api/plans returns min_seats per plan
+ 5. test_plans_api_includes_team_min_seats    GET /api/plans returns top-level team_min_seats
+ 6. test_plans_api_no_auth_required           GET /api/plans is public (no session)
+ 7. test_admin_patch_pricing_model_accept     PATCH /api/admin/plans/{slug} accepts flat/per_seat
+ 8. test_admin_patch_pricing_model_reject     PATCH /api/admin/plans/{slug} rejects invalid value
+ 9. test_admin_patch_min_seats_accept         PATCH /api/admin/plans/{slug} accepts min_seats int
+10. test_admin_patch_min_seats_null           PATCH /api/admin/plans/{slug} accepts null min_seats
+11. test_admin_patch_min_seats_reject_zero    PATCH /api/admin/plans/{slug} rejects min_seats < 1
+12. test_site_config_public_no_auth           GET /api/site-config is public, returns config keys
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 WEBUI_AUTH_DISABLED is active via conftest autouse; admin endpoints return user_id=1.
@@ -76,6 +81,36 @@ class TestMigrationIdempotent:
             f"Expected team.pricing_model='per_seat', got {rows['team']!r}"
         )
 
+    @pytest.mark.asyncio
+    async def test_migration_idempotent_min_seats(self, migrated_pg):
+        """m13_016 re-run must not error and must leave min_seats seeds intact.
+
+        Asserts:
+        - Column exists with correct seeds (team=3, pro=1, free=NULL).
+        - Second run is a no-op (UPDATE guards ensure already-set values are
+          not reverted by the seed UPDATEs).
+        """
+        from src.db.migrate import run_migrations
+        # Second run — must not raise
+        run_migrations(migrated_pg)
+
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT slug, min_seats FROM plans WHERE slug IN ('pro', 'team', 'free')"
+                " ORDER BY slug"
+            )
+            rows = {r[0]: r[1] for r in cur.fetchall()}
+
+        assert rows.get("free") is None, (
+            f"Expected free.min_seats=NULL, got {rows.get('free')!r}"
+        )
+        assert rows.get("pro") == 1, (
+            f"Expected pro.min_seats=1, got {rows.get('pro')!r}"
+        )
+        assert rows.get("team") == 3, (
+            f"Expected team.min_seats=3, got {rows.get('team')!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 2. GET /api/plans — pricing_model per plan
@@ -128,7 +163,56 @@ class TestPlansApiPricingModel:
 
 
 # ---------------------------------------------------------------------------
-# 3. GET /api/plans — team_min_seats at top level
+# 3. GET /api/plans — min_seats per plan (m13_016)
+# ---------------------------------------------------------------------------
+
+
+class TestPlansApiMinSeats:
+    @pytest.mark.asyncio
+    async def test_plans_api_includes_min_seats(self, migrated_pg):
+        """GET /api/plans returns min_seats per plan (display SSOT, m13_016).
+
+        After m13_016: team=3, pro=1, free=None (null).
+        min_seats must be inside the plan dict, NOT at the response top level.
+        """
+        async with _client() as client:
+            resp = await client.get("/api/plans")
+
+        assert resp.status_code == 200, (
+            f"Expected 200 from /api/plans, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert "plans" in body
+        plans = body["plans"]
+
+        by_slug = {p["slug"]: p for p in plans}
+
+        # Every public plan must have min_seats field (may be null)
+        for slug, plan in by_slug.items():
+            assert "min_seats" in plan, (
+                f"Plan {slug!r} missing 'min_seats' field in /api/plans response"
+            )
+            assert plan["min_seats"] is None or isinstance(plan["min_seats"], int), (
+                f"Plan {slug!r} min_seats must be int or null, got {type(plan['min_seats']).__name__}"
+            )
+
+        # Validate seed values
+        if "team" in by_slug:
+            assert by_slug["team"]["min_seats"] == 3, (
+                f"Expected team.min_seats=3, got {by_slug['team']['min_seats']!r}"
+            )
+        if "pro" in by_slug:
+            assert by_slug["pro"]["min_seats"] == 1, (
+                f"Expected pro.min_seats=1, got {by_slug['pro']['min_seats']!r}"
+            )
+        if "free" in by_slug:
+            assert by_slug["free"]["min_seats"] is None, (
+                f"Expected free.min_seats=None, got {by_slug['free']['min_seats']!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 4. GET /api/plans — team_min_seats at top level
 # ---------------------------------------------------------------------------
 
 
@@ -260,7 +344,7 @@ class TestAdminPatchPricingModelReject:
 
     @pytest.mark.asyncio
     async def test_admin_plans_list_includes_pricing_model(self, migrated_pg):
-        """GET /api/admin/plans includes pricing_model field in each plan (admin view)."""
+        """GET /api/admin/plans includes pricing_model and min_seats fields in each plan."""
         async with _client() as client:
             resp = await client.get("/api/admin/plans")
         assert resp.status_code == 200
@@ -269,10 +353,70 @@ class TestAdminPatchPricingModelReject:
             assert "pricing_model" in plan, (
                 f"Admin plan {plan.get('slug')!r} missing pricing_model field"
             )
+            assert "min_seats" in plan, (
+                f"Admin plan {plan.get('slug')!r} missing min_seats field"
+            )
 
 
 # ---------------------------------------------------------------------------
-# 7. GET /api/site-config — public, returns helpdesk_url + site_version
+# 7. PATCH /api/admin/plans — min_seats accept/null/reject
+# ---------------------------------------------------------------------------
+
+
+class TestAdminPatchMinSeats:
+    @pytest.mark.asyncio
+    async def test_admin_patch_min_seats_accept(self, migrated_pg):
+        """PATCH min_seats=5 for team persists to DB (m13_016)."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/team",
+                json={"min_seats": 5, "reason": "set min_seats to 5 for test"},
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200 on min_seats PATCH, got {resp.status_code}: {resp.text}"
+        )
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
+            row = cur.fetchone()
+        assert row[0] == 5, f"Expected min_seats=5 in DB, got {row[0]!r}"
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
+
+    @pytest.mark.asyncio
+    async def test_admin_patch_min_seats_null(self, migrated_pg):
+        """PATCH min_seats=null clears the minimum (sets to NULL in DB)."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/team",
+                json={"min_seats": None, "reason": "clear min_seats for test"},
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200 on min_seats null PATCH, got {resp.status_code}: {resp.text}"
+        )
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
+            row = cur.fetchone()
+        assert row[0] is None, f"Expected min_seats=NULL in DB, got {row[0]!r}"
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
+
+    @pytest.mark.asyncio
+    async def test_admin_patch_min_seats_reject_zero(self, migrated_pg):
+        """PATCH min_seats=0 must be rejected (ge=1 constraint)."""
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/team",
+                json={"min_seats": 0, "reason": "invalid min_seats test"},
+            )
+        assert resp.status_code == 422, (
+            f"Expected 422 for min_seats=0, got {resp.status_code}: {resp.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. GET /api/site-config — public, returns helpdesk_url + site_version
 # ---------------------------------------------------------------------------
 
 

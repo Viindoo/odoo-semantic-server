@@ -45,6 +45,7 @@ class PlanPatch(BaseModel):
     prices: dict | None = None  # per-currency map e.g. {"USD": 1900} (multi-currency deferred)
     is_archived: bool | None = None
     pricing_model: str | None = Field(None, pattern=r"^(flat|per_seat)$")  # m13_015
+    min_seats: int | None = Field(None, ge=1)  # per-plan display SSOT (m13_016); null = no minimum
     reason: str = Field(min_length=3, max_length=500)
 
 
@@ -69,7 +70,7 @@ async def list_plans(actor_id: int = Depends(require_admin)) -> dict:
                 "SELECT id, slug, display_name, quota_calls_per_month, rate_limit_rpm, "
                 "seat_limit, is_public, metadata, created_at, "
                 "price_cents, currency, billing_interval, trial_days, is_archived, prices, "
-                "pricing_model "
+                "pricing_model, min_seats "
                 "FROM plans "
                 "ORDER BY quota_calls_per_month ASC, id ASC"
             )
@@ -83,6 +84,7 @@ async def list_plans(actor_id: int = Depends(require_admin)) -> dict:
                     "billing_interval": r[11], "trial_days": r[12],
                     "is_archived": r[13], "prices": r[14],
                     "pricing_model": r[15],  # "flat" or "per_seat" (m13_015)
+                    "min_seats": r[16],       # per-plan display SSOT; null = no minimum (m13_016)
                 }
                 for r in cur.fetchall()
             ]
@@ -99,7 +101,7 @@ async def get_plan(slug: str, actor_id: int = Depends(require_admin)) -> dict:
                 "SELECT id, slug, display_name, quota_calls_per_month, rate_limit_rpm, "
                 "seat_limit, is_public, metadata, created_at, "
                 "price_cents, currency, billing_interval, trial_days, is_archived, prices, "
-                "pricing_model "
+                "pricing_model, min_seats "
                 "FROM plans WHERE slug = %s",
                 (slug,),
             )
@@ -115,6 +117,7 @@ async def get_plan(slug: str, actor_id: int = Depends(require_admin)) -> dict:
         "billing_interval": row[11], "trial_days": row[12],
         "is_archived": row[13], "prices": row[14],
         "pricing_model": row[15],  # "flat" or "per_seat" (m13_015)
+        "min_seats": row[16],       # per-plan display SSOT; null = no minimum (m13_016)
     }
 
 
@@ -141,7 +144,16 @@ async def update_plan(
     A >50% reduction in quota or RPM is logged at WARNING level — the
     UI should also prompt a confirmation dialog client-side before submitting.
     """
+    # exclude_none=True so omitted optional fields don't overwrite existing values.
+    # Exception: min_seats explicitly set to null means "clear the minimum" — handled
+    # below by checking payload.model_fields_set separately after the main update dict.
     updates = payload.model_dump(exclude_none=True, exclude={"reason"})
+
+    # If min_seats was explicitly provided as null in the request body, include it
+    # in the update dict so the column is set to NULL (clearing the seat minimum).
+    if "min_seats" in payload.model_fields_set and payload.min_seats is None:
+        updates["min_seats"] = None
+
     if not updates:
         raise HTTPException(400, "No fields to update")
 
