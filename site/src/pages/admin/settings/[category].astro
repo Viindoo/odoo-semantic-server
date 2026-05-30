@@ -5,6 +5,7 @@
 import AdminLayout from '../../../layouts/AdminLayout.astro';
 import SettingEditorIsland from './_setting-editor-island';
 import { FASTAPI_BASE } from '../../../lib/fastapi';
+import type { SettingDef } from '../../../lib/settings-types';
 
 // Valid categories served by this dynamic route
 // (quota/plans has its own page; ee-modules and patterns have their own pages)
@@ -45,24 +46,7 @@ const meta = CATEGORY_META[categoryKey];
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
-type SettingEntry = {
-  key: string;
-  value: unknown;
-  default_value: unknown;
-  data_type: string;
-  validation: Record<string, unknown> | null;
-  description: string;
-  requires_restart: boolean;
-  requires_reseed: boolean;
-  is_secret: boolean;
-  tenant_scopable: boolean;
-  effective_source: string;
-  updated_at: string | null;
-  updated_by: number | null;
-  change_reason: string | null;
-};
-
-let settings: SettingEntry[] = [];
+let settings: SettingDef[] = [];
 let fetchError: string | null = null;
 
 try {
@@ -70,7 +54,7 @@ try {
     headers: { cookie: cookieHeader },
   });
   if (res.ok) {
-    const data: { categories: Record<string, SettingEntry[]> } = await res.json();
+    const data: { categories: Record<string, SettingDef[]> } = await res.json();
     settings = data.categories[categoryKey] ?? [];
   } else if (res.status === 403) {
     return Astro.redirect('/admin?error=admin_required');
@@ -81,7 +65,7 @@ try {
   fetchError = 'Could not connect to API server.';
 }
 
-const customizedCount = settings.filter((s) => s.updated_at !== null).length;
+const customizedCount = settings.filter((s) => s.updated_at != null).length;
 ---
 
 <AdminLayout title={`${meta.label} — Admin`}>
