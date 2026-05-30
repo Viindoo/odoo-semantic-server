@@ -532,3 +532,119 @@ class TestMidProvisionFailureRecovery:
         assert _key_plan_id(migrated_pg, sub["api_key_id"]) == pro_id, (
             "recovered key must be on the purchased plan"
         )
+
+
+# ---------------------------------------------------------------------------
+# #5 multi-seat mid-provision failure → claimed-but-unprovisioned recovery
+# ---------------------------------------------------------------------------
+
+class TestMultiSeatMidProvisionRecovery:
+    def test_multiseat_add_tenant_member_crash_then_retry_converges(
+        self, migrated_pg, monkeypatch
+    ):
+        """#5: for seats>1, a crash AFTER create_tenant but BEFORE link_to_api_key
+        must recover on the next login — exactly one tenant, no duplicate membership.
+
+        Sequence:
+          1. claim_subscription_for_user wins the CAS → claimed_user_id=user.
+          2. provision_or_upgrade runs _ensure_tenant (creates tenant), then
+             add_tenant_member raises once (simulated mid-flight crash).
+             → sub remains claimed (claimed_user_id set) but api_key_id IS NULL
+               (link_to_api_key never ran) — half-state.
+          3. Second login: claimed-but-unprovisioned scan picks the sub up.
+             _ensure_tenant recovers-by-name (UniqueViolation path),
+             add_tenant_member is idempotent (ON CONFLICT DO UPDATE — no duplicate),
+             link_to_api_key sets api_key_id, sub is fully provisioned.
+
+        The test FAILS if recovery is missing (sub orphaned: tenant exists but
+        api_key_id never set) or if add_tenant_member raises on the idempotent
+        retry (duplicate membership error), or if a second tenant is created.
+
+        Business rule: buying a team seat and crashing mid-provisioning must
+        not permanently orphan the buyer — next login must complete the grant.
+        """
+        team_id = _plan_id(migrated_pg, "team")
+        email = "msrecover@example.com"
+        user_id = _make_user(migrated_pg, "msrecu", email)
+        auth_store().create_api_key(name="Default key (msrecu)", user_id=user_id)
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="ms_recover_sub",
+            plan_id=team_id,
+            source="polar",
+            status="active",
+            seats=3,
+            buyer_email=email,
+        )
+
+        from src.db.auth_registry import AuthStore
+
+        real_add_member = AuthStore.add_tenant_member
+        calls = {"n": 0}
+
+        def _flaky_add_member(self, user_id_, tenant_id_, role="member"):  # noqa: ANN001
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated crash in add_tenant_member")
+            return real_add_member(self, user_id_, tenant_id_, role)
+
+        monkeypatch.setattr(AuthStore, "add_tenant_member", _flaky_add_member)
+
+        # ---- First login: CAS wins, provision crashes → half-state ----
+        first = provisioning.claim_subscription_for_user(user_id, email)
+        assert first == [], "crashing provision must not report success"
+
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["claimed_user_id"] == user_id, (
+            "claim-FIRST: CAS committed before the crash"
+        )
+        assert sub["api_key_id"] is None, (
+            "link_to_api_key never ran — sub is claimed-but-unprovisioned"
+        )
+
+        # A tenant may or may not exist at this point depending on where the
+        # exception propagated; crucially the sub is NOT fully provisioned yet.
+        # Regardless, the claimed-but-unprovisioned scan must finish the job.
+
+        # Confirm the sub does NOT surface as unclaimed (claim already took).
+        unclaimed = subscription_store().find_unclaimed_active_by_email(email)
+        assert all(r["id"] != sub_id for r in unclaimed), (
+            "a claimed sub must NOT re-surface via the unclaimed scan"
+        )
+
+        # ---- Second login: remove the patch, recovery must converge ----
+        monkeypatch.setattr(AuthStore, "add_tenant_member", real_add_member)
+
+        second = provisioning.claim_subscription_for_user(user_id, email)
+        assert len(second) == 1, "retry must re-provision the orphaned multi-seat sub"
+
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["api_key_id"] is not None, "api_key linked on retry"
+        assert _key_plan_id(migrated_pg, sub["api_key_id"]) == team_id, (
+            "recovered key must be on the team plan"
+        )
+
+        tenant_id = sub["tenant_id"]
+        assert tenant_id is not None, "tenant must be provisioned after recovery"
+
+        # Exactly ONE tenant created — _ensure_tenant must not duplicate it.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM tenants WHERE name = %s", (f"sub-{sub_id}",)
+            )
+            tenant_count = cur.fetchone()[0]
+        assert tenant_count == 1, (
+            "_ensure_tenant idempotency: retry must not create a second tenant"
+        )
+
+        # Exactly ONE membership for this user in this tenant.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT role FROM tenant_members"
+                " WHERE user_id = %s AND tenant_id = %s",
+                (user_id, tenant_id),
+            )
+            rows = cur.fetchall()
+        assert len(rows) == 1, (
+            "add_tenant_member idempotency: retry must not insert a duplicate membership"
+        )
+        assert rows[0][0] == "tenant_admin", "buyer role must be tenant_admin after recovery"
