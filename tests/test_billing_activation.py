@@ -389,6 +389,72 @@ class TestUpdateTerminalStatusDowngrades:
 
 
 # ---------------------------------------------------------------------------
+# Contract hardening: cancel_at_period_end reconciliation on the update path.
+# A subscription.uncanceled (reactivation) arrives as an "update" carrying
+# cancel_at_period_end=False → the locally-scheduled cancel must be CLEARED.
+# A scheduling update carrying True re-records it; None leaves it untouched.
+# See docs/reference/polar-contract-verification.md.
+# ---------------------------------------------------------------------------
+
+class TestUpdateReconcilesCancelAtPeriodEnd:
+    def test_uncanceled_update_clears_scheduled_cancel(self, migrated_pg):
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "uncancel", "uncancel@example.com", verified=True)
+        auth_store().create_api_key(name="Default key (uncancel)", user_id=user_id)
+        sub_id = grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_uncancel", source="polar",
+            buyer_email="uncancel@example.com",
+        ))
+        subs = subscription_store()
+
+        # User voluntarily scheduled a cancel-at-period-end.
+        subs.schedule_cancellation(sub_id)
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+        # Polar fires subscription.uncanceled → update with status=active +
+        # cancel_at_period_end=False → reconcile the local flag back to False.
+        update_entitlement(
+            "grant_uncancel", status="active", cancel_at_period_end=False
+        )
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is False, (
+            "subscription.uncanceled must clear the locally-scheduled cancel"
+        )
+
+    def test_update_records_scheduled_cancel_true(self, migrated_pg):
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "schedcap", "schedcap@example.com", verified=True)
+        auth_store().create_api_key(name="Default key (schedcap)", user_id=user_id)
+        sub_id = grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_schedcap", source="polar",
+            buyer_email="schedcap@example.com",
+        ))
+        subs = subscription_store()
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is False
+
+        update_entitlement(
+            "grant_schedcap", status="active", cancel_at_period_end=True
+        )
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+    def test_update_without_flag_leaves_cancel_at_period_end_untouched(self, migrated_pg):
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "capnone", "capnone@example.com", verified=True)
+        auth_store().create_api_key(name="Default key (capnone)", user_id=user_id)
+        sub_id = grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_capnone", source="polar",
+            buyer_email="capnone@example.com",
+        ))
+        subs = subscription_store()
+        subs.schedule_cancellation(sub_id)
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+        # An update that omits the flag (cancel_at_period_end=None) must NOT
+        # erase the stored schedule (partial-write contract).
+        update_entitlement("grant_capnone", status="active")
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+
+# ---------------------------------------------------------------------------
 # #5 out-of-order events: last_event_at monotonic guard at the activation layer
 # ---------------------------------------------------------------------------
 
@@ -498,6 +564,121 @@ class TestActivationMonotonicGuard:
         assert _key_plan_id(migrated_pg, key_id) == team_id, (
             "a newer event re-points the live key (not stale)"
         )
+
+
+# ---------------------------------------------------------------------------
+# H1: subscription.uncanceled must REACTIVATE a key that a prior involuntary
+# cancel downgraded to free, even when sub.plan_id never changed.
+# See docs/reference/polar-contract-verification.md.
+# ---------------------------------------------------------------------------
+
+class TestUncanceledReactivationRepoint:
+    def test_uncanceled_update_restores_downgraded_key_to_paid_plan(self, migrated_pg):
+        """H1: after an involuntary cancel downgrades the key to free (while the
+        sub snapshot keeps plan_id=paid via mark_cancelled), a subscription.
+        uncanceled-style update (status=active, SAME paid plan_id,
+        cancel_at_period_end=False) must RESTORE the key to the paid plan AND
+        clear the scheduled-cancel flag — even though plan_id is unchanged.
+
+        Without the H1 fix this FAILS: plan_changed is False, so the old update
+        path never re-points the key and the customer is stuck on free while the
+        sub reads active/paid (under-serve + snapshot↔key divergence).
+        """
+        from datetime import UTC, datetime, timedelta
+
+        free_id = _plan_id(migrated_pg, "free")
+        pro_id = _plan_id(migrated_pg, "pro")
+        t1 = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        t2 = t1 + timedelta(hours=1)
+        t3 = t1 + timedelta(hours=2)
+
+        user_id = _make_user(migrated_pg, "uncre", "uncre@example.com", verified=True)
+        _raw, _prefix, key_id = auth_store().create_api_key(
+            name="Default key (uncre)", user_id=user_id
+        )
+        sub_id = grant_entitlement(
+            EntitlementGrant(
+                plan_id=pro_id, external_ref="grant_uncre", source="polar",
+                buyer_email="uncre@example.com",
+            ),
+            last_event_at=t1,
+        )
+        assert _key_plan_id(migrated_pg, key_id) == pro_id
+
+        # The period-end involuntary cancel lands at t2: status='cancelled',
+        # key downgraded to free, but sub.plan_id stays on pro (mark_cancelled).
+        revoke_entitlement("grant_uncre", reason="cancelled", last_event_at=t2)
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["status"] == "cancelled"
+        assert sub["plan_id"] == pro_id, "mark_cancelled leaves plan_id on the paid plan"
+        assert _key_plan_id(migrated_pg, key_id) == free_id, "cancel downgraded key to free"
+
+        # subscription.uncanceled arrives (newer, t3) as an update: status=active,
+        # SAME paid plan_id (pro), cancel_at_period_end=False.
+        update_entitlement(
+            "grant_uncre",
+            plan_id=pro_id,
+            status="active",
+            cancel_at_period_end=False,
+            last_event_at=t3,
+        )
+
+        assert _key_plan_id(migrated_pg, key_id) == pro_id, (
+            "H1: uncanceled must restore the downgraded key to the paid plan "
+            "even though plan_id did not change"
+        )
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["status"] == "active", "uncanceled re-activates the sub"
+        assert sub["cancel_at_period_end"] is False, (
+            "uncanceled clears the locally-scheduled cancel"
+        )
+
+    def test_stale_uncanceled_does_not_reactivate_scheduled_cancel(self, migrated_pg):
+        """#5 × cancel_at_period_end: a STALE uncanceled (older last_event_at)
+        must be dropped wholesale, so a NEWER voluntary schedule-cancel survives.
+
+        Order: schedule-cancel (cancel_at_period_end=True) at the NEWER t2; then
+        replay an uncanceled (cancel_at_period_end=False, status=active) at the
+        OLDER t1.  The monotonic guard must drop the stale event so the flag
+        stays True and the key is NOT wrongly reactivated.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        pro_id = _plan_id(migrated_pg, "pro")
+        t0 = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        t1 = t0 + timedelta(hours=1)   # stale uncanceled
+        t2 = t0 + timedelta(hours=2)   # newer schedule-cancel
+
+        user_id = _make_user(migrated_pg, "staleunc", "staleunc@example.com", verified=True)
+        _raw, _prefix, key_id = auth_store().create_api_key(
+            name="Default key (staleunc)", user_id=user_id
+        )
+        sub_id = grant_entitlement(
+            EntitlementGrant(
+                plan_id=pro_id, external_ref="grant_staleunc", source="polar",
+                buyer_email="staleunc@example.com",
+            ),
+            last_event_at=t0,
+        )
+        subs = subscription_store()
+
+        # A schedule-cancel update lands at the NEWER t2 (cancel_at_period_end=True).
+        update_entitlement(
+            "grant_staleunc", status="active", cancel_at_period_end=True, last_event_at=t2
+        )
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True
+
+        # A STALE uncanceled replay (cancel_at_period_end=False) arrives at the
+        # OLDER t1 → the #5 guard must drop it BEFORE any snapshot/key change.
+        update_entitlement(
+            "grant_staleunc", status="active", cancel_at_period_end=False, last_event_at=t1
+        )
+        assert subs.get_by_id(sub_id)["cancel_at_period_end"] is True, (
+            "#5: a stale uncanceled must NOT clear a newer scheduled cancel"
+        )
+        # Key stays on pro throughout (never downgraded here) — the point is the
+        # stale event made no change at all.
+        assert _key_plan_id(migrated_pg, key_id) == pro_id
 
 
 # ---------------------------------------------------------------------------

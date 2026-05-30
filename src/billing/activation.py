@@ -134,11 +134,20 @@ def update_entitlement(
     current_period_start=None,
     current_period_end=None,
     trial_ends_at=None,
+    cancel_at_period_end: bool | None = None,
     last_event_at=None,
 ) -> int:
     """Update commercial fields of an existing entitlement. Returns subscription_id.
 
     Only the fields passed (non-None) are written.
+
+    ``cancel_at_period_end`` reconciles the local cancel-at-period-end schedule
+    flag with the vendor's payload (Polar carries ``data.cancel_at_period_end``).
+    A ``subscription.uncanceled`` reactivation arrives as an ``update`` with the
+    flag ``False`` → the locally-scheduled cancel is CLEARED; a scheduling
+    ``update`` carrying ``True`` re-records it.  ``None`` (the vendor omitted the
+    field) leaves the stored flag untouched — same partial-write contract as the
+    other snapshot fields.  See docs/reference/polar-contract-verification.md.
 
     Monotonic guard (#5) — TWO PATHS NOW PROTECTED.  Webhooks can be delivered
     out of order, so a stale ``subscription.updated`` (older event) must never
@@ -174,6 +183,19 @@ def update_entitlement(
       + cache flush, **unless** the key's current plan OUTRANKS the new plan
       (highest-tier-wins, ADR-0041 D5): an ``unlimited``-granted key, or a key on
       a pricier plan, is never silently downgraded by an ``updated`` event.
+    * Reactivation re-point (H1) — a NON-terminal update resolving to a PAID
+      ``plan_id`` re-grants the key UP even when ``plan_id == sub.plan_id``.
+      Needed for ``subscription.uncanceled``: an involuntary ``subscription.
+      canceled`` (period-end) downgrades the key to free yet ``mark_cancelled``
+      leaves ``sub.plan_id`` on the paid plan, so the later ``uncanceled`` arrives
+      as an ``update`` with status=active and the SAME paid ``plan_id`` →
+      ``plan_changed`` is False → without this branch the key would stay on free
+      while the sub shows active/paid (under-serve + snapshot↔key divergence).
+      Same highest-tier guard applies (never downgrade a higher-tier key); and the
+      #5 monotonic guard short-circuits a stale ``uncanceled`` BEFORE any re-point.
+      Implemented defensively (correct under event reordering/duplication)
+      regardless of Polar's exact ``uncanceled`` timing.  See
+      docs/reference/polar-contract-verification.md.
     * CR4 — the live-key change is applied BEFORE the sub snapshot commit is
       considered authoritative for access: we update the key first, and if the
       key is gone (``KeyError``) we DO NOT leave the sub recording paid access on
@@ -229,6 +251,11 @@ def update_entitlement(
         updates["current_period_end"] = current_period_end
     if trial_ends_at is not None:
         updates["trial_ends_at"] = trial_ends_at
+    if cancel_at_period_end is not None:
+        # Reconcile the local schedule flag with the vendor (reactivation clears
+        # it; a scheduling update re-records it).  Audit-snapshot only — it does
+        # NOT itself drive a key change; the terminal-status path (CR3) does that.
+        updates["cancel_at_period_end"] = cancel_at_period_end
     # Advance the #5 high-water-mark on every non-stale event carrying a
     # timestamp, so a LATER out-of-order replay is caught by the guard above.
     # GREATEST in Python (stored may be NULL on the first timestamped event).
@@ -249,24 +276,48 @@ def update_entitlement(
                 # CR3: terminal status → downgrade to free (involuntary-revoke
                 # semantics), independent of any plan_id change.
                 _downgrade_key_to_free(sub_id, key_id, reason=status or "terminal")
-            elif plan_changed:
-                cur_key_plan_id = _key_plan_id(key_id)
-                if cur_key_plan_id is not None and provisioning.plan_outranks(
-                    cur_key_plan_id, plan_id
+            else:
+                # Non-terminal update.  Re-point the live key UP to ``plan_id`` when
+                # the event resolves to a PAID plan AND the key is currently below
+                # it — i.e. an ordinary plan-change upgrade (plan_changed) OR an
+                # uncanceled-style REACTIVATION where plan_id == sub.plan_id but the
+                # key was already downgraded to free by a prior involuntary cancel
+                # (H1: plan_changed is False yet the key must be restored).  The
+                # highest-tier guard below means a key on a HIGHER tier than the
+                # incoming plan is never downgraded, and a key already AT the
+                # incoming paid plan is a no-op (set is idempotent), so a benign
+                # status='active' update on a healthy paid key does not churn.
+                # See docs/reference/polar-contract-verification.md.
+                resolved_plan_id = plan_id if plan_id is not None else sub["plan_id"]
+                if plan_changed or (
+                    resolved_plan_id is not None
+                    and _is_paid_plan(resolved_plan_id)
                 ):
-                    logger.info(
-                        "update_entitlement: sub_id=%d plan change to plan_id=%d "
-                        "ignored for key_id=%d — current key plan outranks it "
-                        "(no downgrade)",
-                        sub_id, plan_id, key_id,
-                    )
-                else:
-                    set_api_key_plan_and_overrides(
-                        get_pool(), key_id, plan_id, None, None,
-                        update_rate_limit_override=False,
-                        update_quota_override=False,
-                    )
-                    provisioning.invalidate_plan_cache(key_id)
+                    cur_key_plan_id = _key_plan_id(key_id)
+                    if cur_key_plan_id is not None and provisioning.plan_outranks(
+                        cur_key_plan_id, resolved_plan_id
+                    ):
+                        logger.info(
+                            "update_entitlement: sub_id=%d re-point to plan_id=%d "
+                            "ignored for key_id=%d — current key plan outranks it "
+                            "(no downgrade)",
+                            sub_id, resolved_plan_id, key_id,
+                        )
+                    elif cur_key_plan_id != resolved_plan_id:
+                        # Key is on a LOWER (or different non-outranking) plan than
+                        # the sub — (re)grant it up.  Covers both upgrade and the
+                        # H1 reactivation case (free key restored to the paid plan).
+                        set_api_key_plan_and_overrides(
+                            get_pool(), key_id, resolved_plan_id, None, None,
+                            update_rate_limit_override=False,
+                            update_quota_override=False,
+                        )
+                        provisioning.invalidate_plan_cache(key_id)
+                        logger.info(
+                            "update_entitlement: sub_id=%d re-pointed key_id=%d "
+                            "to plan_id=%d (plan_changed=%s)",
+                            sub_id, key_id, resolved_plan_id, plan_changed,
+                        )
         except KeyError:
             # CR4: the key vanished (deactivated+purged) between our read and the
             # write.  Do not abort — record the sub snapshot for audit, but make
@@ -503,6 +554,22 @@ def _free_plan_id() -> int | None:
             conn, "SELECT id FROM plans WHERE slug = %s", (free_slug,)
         )
     return row["id"] if row is not None else None
+
+
+def _is_paid_plan(plan_id: int) -> bool:
+    """Return True if ``plan_id`` is NOT the free plan (i.e. a paid/upgrade tier).
+
+    Used by the H1 reactivation re-point: only re-grant the live key UP when the
+    sub resolves to a paid plan.  "Paid" is defined as "not the configured free
+    plan" — the same free plan that revoke/terminal downgrades target — so the
+    reactivation re-point and the downgrade share one definition of the free tier
+    and can never disagree.  If the free plan cannot be resolved (misconfigured /
+    absent) we conservatively treat ``plan_id`` as paid (True): re-granting a key
+    that was already paid is harmless and idempotent, whereas treating everything
+    as free would silently disable reactivation.  Read-only.
+    """
+    free_id = _free_plan_id()
+    return free_id is None or plan_id != free_id
 
 
 def _enforce_team_min_seats(plan_id: int, seats: int) -> None:

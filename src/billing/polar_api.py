@@ -14,20 +14,22 @@ Fail-closed posture (IRON LAW — money logic):
 * Network error / 4xx / 5xx → :class:`PolarApiError` carrying status + body
   (caller → 502).  The caller does NOT set the local schedule flag in this case.
 
-FLAG — CONFIRM AGAINST LIVE POLAR DOCS before go-live
------------------------------------------------------
+Cancel contract — Confirmed against https://docs.polar.sh 2026-05-30
+--------------------------------------------------------------------
 The exact cancel endpoint + method + payload are centralised in the module
-constants below so they can be adjusted in ONE place once verified against
-https://docs.polar.sh (Subscriptions API).  Current best-known shape:
+constants below so they can be adjusted in ONE place.  Verified shapes:
 
     cancel-at-period-end :  PATCH {base}/v1/subscriptions/{id}
                             JSON  {"cancel_at_period_end": true}
-    immediate cancel     :  PATCH {base}/v1/subscriptions/{id}
-                            JSON  {"revoke": true}
+    immediate cancel     :  DELETE {base}/v1/subscriptions/{id}
+                            (no request body)
 
-Polar has NO DELETE on /v1/subscriptions; BOTH cancel modes are a PATCH — the
-period-end mode sets ``cancel_at_period_end``, the immediate mode sets ``revoke``
-(per https://docs.polar.sh — Subscriptions Update/Revoke).
+cancel-at-period-end is Polar's Update Subscription API (PATCH with
+``SubscriptionCancel`` body); the immediate path is Polar's dedicated Revoke
+Subscription endpoint (``DELETE /v1/subscriptions/{id}`` with NO body — there is
+no ``PATCH {"revoke": true}`` endpoint).  ``httpx`` omits the request body when
+``json=None`` so the DELETE goes out body-less.  See the verification report
+``docs/reference/polar-contract-verification.md`` (immediate-cancel MISMATCH).
 
 ``external_ref`` stored on the subscription IS the Polar subscription id, so it
 is interpolated directly as ``{id}``.  Auth is ``Authorization: Bearer <token>``.
@@ -43,15 +45,16 @@ from src.web_ui import config
 
 logger = logging.getLogger(__name__)
 
-# --- FLAGGED Polar cancel contract (adjust here once confirmed) -------------
+# --- Polar cancel contract (confirmed vs https://docs.polar.sh 2026-05-30) --
 # Path template is formatted with the Polar subscription id (= external_ref).
 _CANCEL_PATH_TEMPLATE = "/v1/subscriptions/{id}"
-# Polar has no DELETE on subscriptions: BOTH modes PATCH the subscription.
-# cancel-at-period-end sets the schedule flag; immediate sets revoke=true.
+# cancel-at-period-end is the Update Subscription API (PATCH + schedule flag);
+# immediate cancel is the dedicated Revoke endpoint (DELETE, NO body).  There is
+# no PATCH {"revoke": true} endpoint — see docs/reference/polar-contract-verification.md.
 _CANCEL_AT_PERIOD_END_METHOD = "PATCH"
 _CANCEL_AT_PERIOD_END_PAYLOAD = {"cancel_at_period_end": True}
-_CANCEL_IMMEDIATE_METHOD = "PATCH"
-_CANCEL_IMMEDIATE_PAYLOAD = {"revoke": True}
+_CANCEL_IMMEDIATE_METHOD = "DELETE"
+_CANCEL_IMMEDIATE_PAYLOAD = None  # DELETE /v1/subscriptions/{id} carries no body
 # Short timeout — this is a synchronous user-facing call; do not hang the request.
 _REQUEST_TIMEOUT_SECONDS = 10.0
 
@@ -111,12 +114,14 @@ async def cancel_subscription(external_ref: str, *, at_period_end: bool = True) 
         method = _CANCEL_AT_PERIOD_END_METHOD
         json_body: dict | None = _CANCEL_AT_PERIOD_END_PAYLOAD
     else:
-        # Immediate cancel = PATCH {"revoke": true} (Polar has no DELETE).
+        # Immediate cancel = DELETE /v1/subscriptions/{id} with NO body (Polar's
+        # dedicated Revoke endpoint).  json_body is None → httpx sends no body.
         method = _CANCEL_IMMEDIATE_METHOD
         json_body = _CANCEL_IMMEDIATE_PAYLOAD
 
     try:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
+            # json=None → httpx omits the request body entirely (correct for DELETE).
             response = await client.request(method, url, headers=headers, json=json_body)
     except httpx.HTTPError as exc:
         # Transport-level failure (DNS, connect, timeout) — never reached Polar.

@@ -46,18 +46,49 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
 
 def _extract_buyer_email(data: dict) -> str | None:
-    """Best-effort extraction of buyer email from a Polar payload data dict."""
-    # Direct field: data.customer_email
-    email = data.get("customer_email")
-    if email:
-        return str(email)
-    # Nested customer object: data.customer.email
+    """Best-effort extraction of buyer email from a Polar payload data dict.
+
+    Tolerant of every shape Polar may emit (the nested ``customer.email`` is
+    confirmed for subscription events but unconfirmed over the wire — see
+    docs/reference/polar-contract-verification.md), and never crashes when email is absent
+    (it is optional/nullable on some events):
+
+      1. ``data.customer.email`` (nested customer object — full schema);
+      2. ``data.customer_email`` (flat fallback — simplified payloads);
+      3. ``data.user.email`` (legacy/alternate user object).
+    """
+    # 1. Nested customer object: data.customer.email
     customer = data.get("customer")
     if isinstance(customer, dict):
         email = customer.get("email")
         if email:
             return str(email)
+    # 2. Flat field: data.customer_email
+    email = data.get("customer_email")
+    if email:
+        return str(email)
+    # 3. Nested user object: data.user.email
+    user = data.get("user")
+    if isinstance(user, dict):
+        email = user.get("email")
+        if email:
+            return str(email)
     return None
+
+
+def _extract_cancel_at_period_end(data: dict) -> bool | None:
+    """Vendor cancel-at-period-end flag from a Polar payload, or None if absent.
+
+    Polar carries ``data.cancel_at_period_end`` (bool).  Returning ``None`` when
+    the field is missing leaves the local schedule flag untouched (partial-write
+    contract); when present we coerce to a strict bool so a
+    ``subscription.uncanceled`` (flag=False) reconciles a locally-scheduled
+    cancel and a scheduling update (flag=True) re-records it.
+    """
+    raw = data.get("cancel_at_period_end")
+    if raw is None:
+        return None
+    return bool(raw)
 
 
 def _extract_seats(data: dict) -> int:
@@ -242,6 +273,7 @@ def _build_polar_adapter() -> WebhookAdapter:
         extract_email_fn=_extract_buyer_email,
         map_status_fn=polar.map_subscription_status,
         normalize_interval_fn=polar.normalize_billing_interval,
+        extract_cancel_at_period_end_fn=_extract_cancel_at_period_end,
         extract_interval_fn=_extract_interval,
         extract_seats_fn=_extract_seats,
         extract_amount_fn=_extract_amount,

@@ -21,6 +21,7 @@ import pytest
 
 from src.billing.polar import (
     EVENT_STATUS_MAP,
+    _extract_product_id,
     map_subscription_status,
     normalize_billing_interval,
     parse_event,
@@ -430,7 +431,16 @@ class TestEventStatusMap:
             assert EVENT_STATUS_MAP[event] == "grant", f"{event!r} should be 'grant'"
 
     def test_update_events(self):
-        assert EVENT_STATUS_MAP["subscription.updated"] == "update"
+        # subscription.updated plus the two contract-hardening additions: a
+        # past_due and an uncanceled both route through "update" so the snapshot
+        # re-reads data.status (past_due → terminal downgrade; uncanceled →
+        # status=active + cancel_at_period_end reconciled).
+        for event in (
+            "subscription.updated",
+            "subscription.past_due",
+            "subscription.uncanceled",
+        ):
+            assert EVENT_STATUS_MAP[event] == "update", f"{event!r} should be 'update'"
 
     def test_revoke_events(self):
         for event in ("subscription.canceled", "subscription.revoked", "order.refunded"):
@@ -448,9 +458,75 @@ class TestEventStatusMap:
         for k in EVENT_STATUS_MAP:
             assert isinstance(k, str) and k, f"Invalid key in EVENT_STATUS_MAP: {k!r}"
 
-    def test_seven_entries(self):
-        """Map has exactly 7 entries — the full P1 event surface."""
-        assert len(EVENT_STATUS_MAP) == 7
+    def test_nine_entries(self):
+        """Map has exactly 9 entries — the P1 event surface (7) plus the two
+        contract-hardening additions (subscription.past_due / .uncanceled)."""
+        assert len(EVENT_STATUS_MAP) == 9
+
+
+# ---------------------------------------------------------------------------
+# Product-id extraction — tolerant of BOTH the flat (subscription) and nested
+# (order.paid) Polar shapes.  Pure unit, no DB.
+# ---------------------------------------------------------------------------
+
+class TestExtractProductId:
+    def test_flat_product_id(self):
+        """Subscription events carry a flat data.product_id."""
+        assert _extract_product_id({"product_id": "prod_flat"}) == "prod_flat"
+
+    def test_nested_product_id(self):
+        """order.paid carries the product as a nested data.product object."""
+        assert _extract_product_id({"product": {"id": "prod_nested"}}) == "prod_nested"
+
+    def test_flat_wins_when_both_present(self):
+        """If both shapes are present the flat product_id is preferred (and both
+        should reference the same product anyway)."""
+        assert (
+            _extract_product_id(
+                {"product_id": "prod_flat", "product": {"id": "prod_nested"}}
+            )
+            == "prod_flat"
+        )
+
+    def test_missing_returns_none(self):
+        assert _extract_product_id({}) is None
+        assert _extract_product_id({"product": "not-a-dict"}) is None
+        assert _extract_product_id({"product": {}}) is None
+        assert _extract_product_id({"product_id": ""}) is None
+
+
+class TestResolvePlanIdProductShapes:
+    """resolve_plan_id resolves product id from BOTH shapes; hermetic (stub conn)."""
+
+    def _patch_lookup(self, monkeypatch, *, product_map):
+        # Stub get_setting (used inside _resolve_with_conn via a local import of
+        # src.settings.get_setting) and slug_to_plan_id so no DB is touched.
+        import src.billing._db as billing_db
+        import src.billing.polar as polar_mod
+        import src.settings as settings_mod
+
+        monkeypatch.setattr(
+            settings_mod, "get_setting",
+            lambda key, conn=None: product_map if key == "billing.polar_product_map" else None,
+        )
+        monkeypatch.setattr(billing_db, "slug_to_plan_id", lambda slug, conn: 42)
+        return polar_mod
+
+    def test_resolves_from_flat_product_id(self, monkeypatch):
+        polar_mod = self._patch_lookup(monkeypatch, product_map={"prod_flat": "pro"})
+        payload = {"data": {"id": "sub_1", "product_id": "prod_flat"}}
+        assert polar_mod.resolve_plan_id(payload, conn=object()) == 42
+
+    def test_resolves_from_nested_product_id(self, monkeypatch):
+        polar_mod = self._patch_lookup(monkeypatch, product_map={"prod_nested": "pro"})
+        payload = {"data": {"id": "ord_1", "product": {"id": "prod_nested"}}}
+        assert polar_mod.resolve_plan_id(payload, conn=object()) == 42
+
+    def test_missing_product_id_raises_clear_error(self, monkeypatch):
+        polar_mod = self._patch_lookup(monkeypatch, product_map={})
+        payload = {"data": {"id": "sub_1"}}
+        with pytest.raises(ValueError, match="product id missing"):
+            polar_mod.resolve_plan_id(payload, conn=object())
 
 
 # ---------------------------------------------------------------------------
@@ -556,11 +632,13 @@ class TestMapSubscriptionStatus:
 
 
 # ---------------------------------------------------------------------------
-# FIX-E: outbound cancel HTTP contract — Polar has NO DELETE on subscriptions.
-#   cancel-at-period-end : PATCH {"cancel_at_period_end": true}
-#   immediate            : PATCH {"revoke": true}
-# These tests intercept the httpx request to assert the method + JSON body the
-# client sends, with NO real network call (no DB either).
+# Outbound cancel HTTP contract (confirmed vs https://docs.polar.sh 2026-05-30).
+#   cancel-at-period-end : PATCH {"cancel_at_period_end": true}   (Update API)
+#   immediate            : DELETE (no body)                       (Revoke API)
+# Polar has NO PATCH {"revoke": true} endpoint — the dedicated immediate-cancel
+# is DELETE /v1/subscriptions/{id} with no request body.  These tests intercept
+# the httpx request to assert the method + JSON body, with NO real network call
+# (no DB either).
 # ---------------------------------------------------------------------------
 
 
@@ -596,10 +674,11 @@ class _CapturingAsyncClient:
 
 class TestOutboundCancelHttpContract:
     @pytest.mark.asyncio
-    async def test_immediate_cancel_uses_patch_with_revoke_body(self, monkeypatch):
-        """FIX-E: an immediate cancel (at_period_end=False) must issue a PATCH with
-        body {"revoke": true} — Polar exposes no DELETE on /v1/subscriptions, and a
-        DELETE would 404/405 and leave the user still billed."""
+    async def test_immediate_cancel_uses_delete_with_no_body(self, monkeypatch):
+        """An immediate cancel (at_period_end=False) must issue a DELETE with NO
+        body — Polar's dedicated Revoke endpoint is DELETE /v1/subscriptions/{id}
+        (there is no PATCH {"revoke": true}).  A wrong method/body would 404/405
+        and leave the user still billed."""
         import src.billing.polar_api as polar_api
         from src.web_ui import config as web_config
 
@@ -610,11 +689,11 @@ class TestOutboundCancelHttpContract:
         result = await polar_api.cancel_subscription("sub_imm_001", at_period_end=False)
 
         cap = _CapturingAsyncClient.captured
-        assert cap["method"] == "PATCH", (
-            f"immediate cancel must PATCH (Polar has no DELETE), got {cap['method']!r}"
+        assert cap["method"] == "DELETE", (
+            f"immediate cancel must DELETE (Polar's Revoke endpoint), got {cap['method']!r}"
         )
-        assert cap["json"] == {"revoke": True}, (
-            f"immediate cancel body must be {{'revoke': True}}, got {cap['json']!r}"
+        assert cap["json"] is None, (
+            f"immediate cancel must send NO body (json=None), got {cap['json']!r}"
         )
         assert cap["url"].endswith("/v1/subscriptions/sub_imm_001")
         assert result == {"id": "sub_x", "status": "revoked"}
