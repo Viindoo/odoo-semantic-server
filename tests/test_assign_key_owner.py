@@ -208,29 +208,37 @@ class TestAssignKeyOwner:
 
     @pytest.mark.asyncio
     async def test_non_admin_assign_key_owner_returns_403(self, migrated_pg):
-        """PATCH /api/admin/api-keys/{id}/owner returns 403 when caller is not admin."""
+        """The assign-owner route dependency (require_admin) raises 403 for a non-admin.
+
+        Tests the dependency directly rather than through the HTTP stack — the
+        latter flips the global auth bypass off and relies on the auth middleware
+        still bypassing, an order-dependent asymmetry (issue #220 follow-up).
+        """
+        from fastapi import HTTPException
+        from starlette.requests import Request as StarletteRequest
+
         import src.web_ui.auth as auth_mod
 
         user_id = _seed_user(migrated_pg, username="nonadmin_user", is_admin=False)
-        key_id = _seed_key(migrated_pg, name="some_key")
+        scope = {"type": "http", "method": "PATCH", "path": "/", "headers": [], "query_string": b""}
+        fake_request = StarletteRequest(scope)
 
         orig_bypass = auth_mod.is_test_bypass_active
         orig_cuid = auth_mod.current_user_id
+        raised: HTTPException | None = None
         try:
             auth_mod.is_test_bypass_active = lambda: False
             auth_mod.current_user_id = lambda req: user_id
-
-            app = create_app()
-            async with _async_client(app) as client:
-                resp = await client.patch(
-                    f"/api/admin/api-keys/{key_id}/owner",
-                    json={"user_id": user_id},
-                )
+            try:
+                await auth_mod.require_admin(fake_request)
+            except HTTPException as exc:
+                raised = exc
         finally:
             auth_mod.is_test_bypass_active = orig_bypass
             auth_mod.current_user_id = orig_cuid
 
-        assert resp.status_code == 403
+        assert raised is not None, "require_admin must reject a non-admin"
+        assert raised.status_code == 403
 
     @pytest.mark.asyncio
     async def test_assign_to_nonexistent_user_returns_404(self, migrated_pg):
