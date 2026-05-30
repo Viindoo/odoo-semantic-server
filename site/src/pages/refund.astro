@@ -5,10 +5,13 @@
 export const prerender = true;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import { HELPDESK_URL_FALLBACK } from '../lib/contact';
 ---
 
 <BaseLayout title="Refund &amp; Cancellation Policy — Odoo Semantic MCP" description="Refund and Cancellation Policy for Odoo Semantic MCP by Viindoo.">
-  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+  <SiteHeader currentPath="/refund" />
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12 pt-28">
 
     <!-- DRAFT badge -->
     <div class="mb-8 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4" role="note" aria-label="Draft notice">
@@ -55,7 +58,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
       <section>
         <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Exceptions Required by Law</h2>
-        <p>Nothing in this policy limits or overrides rights you may have under applicable consumer-protection law. Customers in jurisdictions with mandatory cooling-off periods or statutory refund rights may be entitled to a refund within the legally prescribed window. Contact us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a> to exercise statutory rights.</p>
+        <p>Nothing in this policy limits or overrides rights you may have under applicable consumer-protection law. Customers in jurisdictions with mandatory cooling-off periods or statutory refund rights may be entitled to a refund within the legally prescribed window. <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">Contact our support team</a> to exercise statutory rights.</p>
         <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: EU 14-day cooling-off right under Directive 2011/83/EU may apply to B2C sales. Verify whether digital-content exception applies and update this clause accordingly before go-live for EU customers.]</p>
       </section>
 
@@ -72,12 +75,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
       <section>
         <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Payment and Invoices</h2>
-        <p>Payments are processed by Polar (polar.sh), our Merchant of Record. Invoices and payment history are available in the Polar customer portal (link on your billing page). For payment disputes or charge queries, contact Polar's support or email us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+        <p>Payments are processed by Polar (polar.sh), our Merchant of Record. Invoices and payment history are available in the Polar customer portal (link on your billing page). For payment disputes or charge queries, contact Polar's support or <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">open a ticket</a>.</p>
       </section>
 
       <section>
         <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Contact</h2>
-        <p>For questions about this policy, email us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+        <p>For questions about this policy, <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">contact our support team</a>.</p>
       </section>
 
     </div>

@@ -1,0 +1,184 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Canonical /tools page — data-driven from tools-data.ts SSOT (WI-4).
+// Static: no DB needed. Counts from constants.ts (test-enforced).
+export const prerender = true;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import {
+  TOOLS,
+  RESOURCES,
+  TOOL_GROUP_COLORS,
+  TOOL_GROUP_LABELS,
+  type ToolGroup,
+} from '../lib/tools-data';
+import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
+
+// Build ordered group list (preserve canonical order: resolve → version → quality
+// → superset → session → stylesheet → orm).
+const GROUP_ORDER: ToolGroup[] = ['resolve', 'version', 'quality', 'superset', 'session', 'stylesheet', 'orm'];
+
+// Group tools by their group key, preserving insertion order within each group.
+const toolsByGroup = new Map<ToolGroup, typeof TOOLS>();
+for (const g of GROUP_ORDER) {
+  toolsByGroup.set(g, TOOLS.filter((t) => t.group === g));
+}
+---
+
+<BaseLayout
+  title="The Toolbox — Odoo Semantic MCP"
+  description={`Every Odoo Semantic MCP tool, grouped by what it does. ${TOOL_COUNT} MCP tools + ${RESOURCE_COUNT} resources. One endpoint, one API key.`}
+  theme="dark"
+  showFooter={false}
+>
+  <SiteHeader currentPath="/tools" />
+
+  <!-- Page hero -->
+  <section class="bg-viindoo-bg-0 pt-32 pb-12 px-6">
+    <div class="mx-auto max-w-7xl">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true"></span>
+        THE TOOLBOX
+      </div>
+      <h1 class="text-4xl md:text-5xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
+        The Toolbox &mdash; {TOOL_COUNT} MCP tools, {RESOURCE_COUNT} resources
+      </h1>
+      <p class="text-viindoo-on-dark-muted mt-5 text-lg max-w-2xl leading-relaxed">
+        Every Odoo Semantic MCP tool, grouped by what it does. One endpoint, one API key.
+        Your AI coding tool calls these automatically &mdash; no manual lookups, no hallucinated field names.
+      </p>
+    </div>
+  </section>
+
+  <!-- Section A: 24 tools grouped -->
+  <section class="bg-viindoo-bg-0 py-12 px-6" aria-label="MCP tools">
+    <div class="mx-auto max-w-7xl">
+
+      <!-- Flat grid (all 24 tools) matching homepage #tools style -->
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-px bg-white/5 rounded-2xl overflow-hidden border border-white/10">
+        {TOOLS.map((tool) => (
+          <div
+            class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[120px]"
+            data-tool-group={tool.group}
+          >
+            <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
+            <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
+            <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
+            <!-- Animated color stripe — same technique as homepage -->
+            <span
+              class:list={[
+                'absolute top-0 left-0 h-px w-8 group-hover:w-full transition-all duration-300',
+                TOOL_GROUP_COLORS[tool.group],
+              ]}
+            ></span>
+          </div>
+        ))}
+      </div>
+
+      <!-- Legend -->
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-5 font-mono text-xs text-viindoo-on-dark-muted">
+        {GROUP_ORDER.map((g) => (
+          <span class="inline-flex items-center gap-2">
+            <span class:list={['w-2 h-2 rounded-full', TOOL_GROUP_COLORS[g]]}></span>
+            {TOOL_GROUP_LABELS[g]}
+          </span>
+        ))}
+      </div>
+
+      <!-- Per-group detail sections -->
+      <div class="mt-16 space-y-14">
+        {GROUP_ORDER.map((g) => {
+          const groupTools = toolsByGroup.get(g)!;
+          return (
+            <div>
+              <div class="flex items-center gap-3 mb-5">
+                <span class:list={['w-2 h-2 rounded-full flex-shrink-0', TOOL_GROUP_COLORS[g]]}></span>
+                <h2 class="text-base font-display font-semibold text-viindoo-on-dark tracking-tight">
+                  {TOOL_GROUP_LABELS[g]}
+                </h2>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-white/5 rounded-xl overflow-hidden border border-white/10">
+                {groupTools.map((tool) => (
+                  <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5">
+                    <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
+                    <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
+                    <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
+                    <span
+                      class:list={[
+                        'absolute top-0 left-0 h-px w-8 group-hover:w-full transition-all duration-300',
+                        TOOL_GROUP_COLORS[tool.group],
+                      ]}
+                    ></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  </section>
+
+  <!-- Section B: 7 MCP Resources -->
+  <section class="bg-viindoo-bg-1 py-16 px-6" aria-label="MCP resources">
+    <div class="mx-auto max-w-7xl">
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true"></span>
+        RESOURCES
+      </div>
+      <h2 class="text-3xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
+        {RESOURCE_COUNT} MCP Resources. Bookmark any entity.
+      </h2>
+      <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
+        Stable <code class="font-mono text-viindoo-primary-bright">odoo://&#123;version&#125;/&#123;kind&#125;/&#123;path&#125;</code> URIs for direct entity reads.
+        Bookmark-stable across sessions &mdash; works as native pinned context in VS Code, Claude, and any MCP-aware client.
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-white/5 rounded-2xl overflow-hidden mt-10 border border-white/10">
+        {RESOURCES.map((r) => (
+          <div class="group relative bg-viindoo-bg-0 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+            <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">{r.uri}</div>
+            <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{r.desc}</p>
+          </div>
+        ))}
+      </div>
+
+      <p class="text-xs text-viindoo-on-dark-dim mt-6 font-mono text-center">
+        Resources are read-only &middot; per-tenant cache &middot; same auth as tools (X-API-Key).
+      </p>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="bg-viindoo-bg-0 py-16 px-6 text-center" aria-label="Get started">
+    <div class="mx-auto max-w-xl">
+      <p class="text-viindoo-on-dark-muted text-base mb-8">
+        One endpoint, one API key &mdash; your AI coding tool calls these automatically.
+      </p>
+      <div class="flex flex-wrap items-center justify-center gap-4">
+        <a
+          href="/signup"
+          class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold px-6 py-3 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
+        >
+          Get started
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+        </a>
+        <a
+          href="/pricing"
+          class="inline-flex items-center gap-2 border border-white/20 text-viindoo-on-dark-muted font-semibold px-6 py-3 rounded-lg hover:text-viindoo-on-dark hover:border-white/40 transition-all duration-200"
+        >
+          See pricing
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <SiteFooter />
+</BaseLayout>

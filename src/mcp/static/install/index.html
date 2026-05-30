@@ -11,7 +11,69 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; line-height: 1.6; }
-    .container { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
+
+    /* Header styling */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(8px);
+      background: rgba(10, 10, 10, 0.7);
+      border-bottom: 1px solid rgba(230, 242, 244, 0.08);
+    }
+    .header-inner {
+      max-width: 7xl;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      color: #e6f2f4;
+      text-decoration: none;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+      transition: color 0.2s;
+    }
+    .logo-link:hover { color: #00BBCE; }
+    .logo-mark { width: 28px; height: 28px; flex-shrink: 0; }
+    .logo-mcp { display: none; font-family: monospace; font-size: 10px; color: #00BBCE; letter-spacing: 0.05em; margin-top: 0.125rem; }
+    @media (min-width: 640px) { .logo-mcp { display: block; } }
+
+    nav.desktop-nav { display: none; flex-items: center; gap: 1rem; }
+    @media (min-width: 768px) { nav.desktop-nav { display: flex; } }
+    nav.desktop-nav a {
+      color: #b5cbd0;
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    nav.desktop-nav a:hover, nav.desktop-nav a.active { color: #e6f2f4; }
+
+    .header-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #00BBCE;
+      color: #0a0a0a;
+      font-weight: 600;
+      font-size: 0.875rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .header-cta:hover { background: #00d4e8; transform: translateY(-2px); }
+    .header-cta svg { width: 14px; height: 14px; }
+
+    .container { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; margin-top: 64px; }
     .brand-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
     .brand-mark { width: 44px; height: 44px; flex-shrink: 0; }
     h1 { font-size: 1.6rem; font-weight: 700; color: #1a1a1a; }
@@ -73,9 +135,59 @@
     .sub-tab-panel { display: none; }
     .sub-tab-panel.active { display: block; }
     .step-label { font-size: 0.8rem; color: #888; margin: 0.5rem 0 0.2rem; font-weight: 600; }
+
+    /* Footer styling */
+    footer {
+      background: #0a0a0a;
+      border-top: 1px solid rgba(230, 242, 244, 0.08);
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      margin-top: 2.5rem;
+    }
+    footer .footer-inner { max-width: 7xl; margin: 0 auto; }
+    .footer-copy { font-family: monospace; font-size: 11px; color: #7a8a8e; margin-bottom: 0.75rem; }
+    .footer-copy span { color: #00BBCE; }
+    .footer-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1rem; font-size: 12px; color: #7a8a8e; margin-bottom: 0.75rem; }
+    .footer-links a { color: #7a8a8e; text-decoration: none; transition: color 0.2s; }
+    .footer-links a:hover { color: #00d4e8; }
+    .footer-links span { opacity: 0.5; }
+    .footer-legal { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1rem; font-size: 12px; color: #7a8a8e; }
+    .footer-legal a { color: #7a8a8e; text-decoration: none; transition: color 0.2s; }
+    .footer-legal a:hover { color: #00d4e8; }
+    .footer-legal span { opacity: 0.5; }
+    .footer-powered { margin-top: 1rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-size: 11px; color: #7a8a8e; }
+    .footer-powered a { display: inline-flex; opacity: 0.8; transition: opacity 0.2s; }
+    .footer-powered a:hover { opacity: 1; }
+    .footer-powered img { height: 20px; }
   </style>
 </head>
 <body>
+<!-- Header -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="/" class="logo-link">
+      <img class="logo-mark" src="logo-mark.svg" alt="OSM" aria-hidden="true">
+      Odoo Semantic
+      <span class="logo-mcp">MCP</span>
+    </a>
+
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a href="/#showcase">Live demo</a>
+      <a href="/tools">Tools</a>
+      <a href="/#benchmark">Benchmark</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/install/" class="active">Install</a>
+    </nav>
+
+    <a href="/signup" class="header-cta">
+      Get started
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 12h14M13 6l6 6-6 6" />
+      </svg>
+    </a>
+  </div>
+</header>
+
 <div class="container">
   <div class="brand-row">
     <img class="brand-mark" src="logo-mark.svg" alt="" aria-hidden="true">
@@ -227,7 +339,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
     </div>
   </div>
 
-  <div class="footer">
+  <div class="footer" style="margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.825rem; color: #888;">
     <div style="margin-bottom:0.5rem;">
       MCP client plugins &amp; Odoo skill set:
       <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener">
@@ -240,6 +352,45 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
     </div>
   </div>
 </div>
+
+<!-- Site Footer -->
+<footer role="contentinfo">
+  <div class="footer-inner">
+    <div class="footer-copy">
+      &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
+      <span>v0.13.1</span>
+    </div>
+
+    <div class="footer-links">
+      <a href="/pricing">Pricing</a>
+      <span>&middot;</span>
+      <a href="/tools">Tools</a>
+      <span>&middot;</span>
+      <a href="/install/">Install</a>
+      <span>&middot;</span>
+      <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener" title="MCP client plugins + Odoo skill set">Contribute</a>
+      <span>&middot;</span>
+      <a href="/bootstrap">Bootstrap reference</a>
+      <span>&middot;</span>
+      <a href="/login">Admin</a>
+    </div>
+
+    <div class="footer-legal">
+      <a href="/terms">Terms</a>
+      <span>&middot;</span>
+      <a href="/privacy">Privacy</a>
+      <span>&middot;</span>
+      <a href="/refund">Refund</a>
+    </div>
+
+    <div class="footer-powered">
+      <span>Powered by</span>
+      <a href="https://viindoo.com" aria-label="Viindoo">
+        <img src="/viindoo-logo.svg" alt="Viindoo">
+      </a>
+    </div>
+  </div>
+</footer>
 
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
 <script>

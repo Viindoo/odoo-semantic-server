@@ -1,6 +1,7 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import '../styles/global.css';
+import SiteFooter from '../components/SiteFooter.astro';
 
 export interface Props {
   title?: string;
@@ -62,31 +63,6 @@ const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.vi
     ) : (
       <slot />
     )}
-    {showFooter && (
-    <footer
-      class:list={[
-        'text-center text-sm py-6 border-t',
-        isDark ? 'text-viindoo-on-dark-dim' : 'text-viindoo-muted',
-      ]}
-      style={`border-color: ${isDark ? 'rgba(230,242,244,0.08)' : 'rgba(0,0,0,0.1)'};`}
-    >
-      <a href="/bootstrap" class="hover:text-viindoo-primary-bright transition-colors duration-200">Bootstrap reference</a>
-      <span class="mx-2">&middot;</span>
-      <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200">Contribute</a>
-      <span class="mx-2">&middot;</span>
-      <a href="/terms" class="hover:text-viindoo-primary-bright transition-colors duration-200">Terms</a>
-      <span class="mx-2">&middot;</span>
-      <a href="/privacy" class="hover:text-viindoo-primary-bright transition-colors duration-200">Privacy</a>
-      <span class="mx-2">&middot;</span>
-      <a href="/refund" class="hover:text-viindoo-primary-bright transition-colors duration-200">Refund</a>
-      <span class="mx-2">&middot;</span>
-      <a href="https://viindoo.com" class="inline-flex items-center gap-1.5 hover:opacity-100 transition-opacity duration-200 opacity-70" aria-label="Powered by Viindoo">
-        Powered by
-        {isDark
-          ? <img src="/viindoo-logo.svg" alt="Viindoo" class="h-4 inline" />
-          : <span class="font-semibold text-viindoo-secondary">Viindoo</span>}
-      </a>
-    </footer>
-    )}
+    {showFooter && <SiteFooter />}
   </body>
 </html>

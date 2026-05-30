@@ -3,6 +3,7 @@
 export const prerender = true;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
 import bootstrapData from '../../../src/indexer/spec_data/bootstrap_versions.json';
 
 type VersionInfo = {
@@ -29,25 +30,10 @@ const source = bootstrapData._source;
   description="Reference table mapping each Odoo major version (v8 to v19) to the Bootstrap version it ships, key SCSS variable files, and breaking changes for frontend developers."
   theme="dark"
 >
+  <SiteHeader currentPath="/bootstrap" />
   <section class="bg-gray-950 min-h-screen py-20 px-4">
-    <!-- Header -->
-    <div class="max-w-5xl mx-auto mb-12">
-      <a
-        href="/"
-        class="inline-flex items-center gap-1 text-viindoo-primary text-sm hover:text-viindoo-primary-bright transition-colors mb-6"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          class="w-4 h-4"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-        </svg>
-        Back to home
-      </a>
+    <!-- Page header (pt-16 to clear fixed SiteHeader) -->
+    <div class="max-w-5xl mx-auto mb-12 pt-16">
       <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">
         Bootstrap &amp; SCSS by Odoo version
       </h1>
