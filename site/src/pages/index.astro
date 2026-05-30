@@ -9,34 +9,10 @@ import PersonaCards from '../components/PersonaCards.astro';
 import GraphShowcase from '../components/GraphShowcase.tsx';
 import PromptSimulator from '../components/PromptSimulator.tsx';
 import TokenBenchmark from '../components/TokenBenchmark.tsx';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
 import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
-
-const TOOLS = [
-  { num: '01', name: 'find_examples', desc: 'Pull real-world usage from indexed repos.', group: 'resolve' },
-  { num: '02', name: 'impact_analysis', desc: 'Measure blast radius of a field change.', group: 'resolve' },
-  { num: '03', name: 'lookup_core_api', desc: 'Identify ORM, CLI, and framework symbols.', group: 'resolve' },
-  { num: '04', name: 'api_version_diff', desc: 'Delta between two versions.', group: 'version' },
-  { num: '05', name: 'find_deprecated_usage', desc: 'Scan a codebase for deprecated APIs.', group: 'version' },
-  { num: '06', name: 'lint_check', desc: 'Odoo-specific lint, not generic Python.', group: 'quality' },
-  { num: '07', name: 'cli_help', desc: 'odoo-bin flags for your installed version.', group: 'quality' },
-  { num: '08', name: 'suggest_pattern', desc: 'Curated implementation patterns.', group: 'resolve' },
-  { num: '09', name: 'check_module_exists', desc: 'Settle "is this built-in" debates.', group: 'resolve' },
-  { num: '10', name: 'find_override_point', desc: 'Pinpoint the safest hook for custom logic.', group: 'resolve' },
-  { num: '11', name: 'describe_module', desc: 'Architecture overview of a module: manifest, defined/extended models, view + JS-patch counts.', group: 'resolve' },
-  { num: '12', name: 'model_inspect', desc: 'Superset of resolve_model/list_fields/list_methods — discriminator-based.', group: 'superset' },
-  { num: '13', name: 'module_inspect', desc: 'Superset for module-scoped queries — fields/views/owl/qweb/patches.', group: 'superset' },
-  { num: '14', name: 'entity_lookup', desc: 'Superset of resolve_field/resolve_method/resolve_view.', group: 'superset' },
-  { num: '15', name: 'set_active_version', desc: 'Sticky version for the session — call once, every tool uses it.', group: 'session' },
-  { num: '16', name: 'set_active_profile', desc: 'Sticky profile for the session.', group: 'session' },
-  { num: '17', name: 'list_available_versions', desc: 'What versions are indexed.', group: 'session' },
-  { num: '18', name: 'list_available_profiles', desc: 'What profiles you can switch to.', group: 'session' },
-  { num: '19', name: 'resolve_stylesheet', desc: 'Full stylesheet chain + variable list for a module.', group: 'stylesheet' },
-  { num: '20', name: 'find_style_override', desc: 'Trace which module last overrides a CSS selector or custom property.', group: 'stylesheet' },
-  { num: '21', name: 'resolve_orm_chain', desc: 'Trace a dotted field path through the model graph — validates each hop.', group: 'orm' },
-  { num: '22', name: 'validate_domain', desc: 'Static-check an Odoo domain: unknown fields, invalid operators per version.', group: 'orm' },
-  { num: '23', name: 'validate_depends', desc: 'Validate @api.depends paths before runtime; flags depends-on-id.', group: 'orm' },
-  { num: '24', name: 'validate_relation', desc: "Confirm a relational field's comodel matches the expected model.", group: 'orm' },
-];
+import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/tools-data';
 ---
 
 <BaseLayout
@@ -45,92 +21,7 @@ const TOOLS = [
   theme="dark"
   showFooter={false}
 >
-  <!-- Sticky nav -->
-  <nav aria-label="Main navigation" class="fixed top-0 left-0 right-0 z-50 backdrop-blur bg-viindoo-bg-0/70 border-b border-white/5">
-    <div class="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
-      <a href="/" class="inline-flex items-center gap-3 font-display font-bold text-viindoo-on-dark text-[15px] tracking-tight hover:text-viindoo-primary transition-colors duration-200">
-        <img
-          src="/logo-mark-ondark.svg"
-          alt="OSM"
-          class="w-7 h-7 flex-shrink-0"
-          aria-hidden="true"
-        />
-        Odoo Semantic
-        <span class="font-mono text-[10px] text-viindoo-primary tracking-widest mt-0.5 hidden sm:block">MCP</span>
-      </a>
-      <div class="flex items-center gap-6 lg:gap-8 text-sm font-medium text-viindoo-on-dark-muted">
-        <a href="#showcase" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Live demo</a>
-        <a href="#tools" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Tools</a>
-        <a href="#benchmark" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Benchmark</a>
-        <a href="/pricing" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Pricing</a>
-        <a href="#install" class="hover:text-viindoo-on-dark transition-colors duration-200 hidden md:block">Install</a>
-        <!-- Mobile menu toggle (md:hidden) -->
-        <button
-          id="mobile-menu-btn"
-          aria-expanded="false"
-          aria-controls="mobile-menu"
-          aria-label="Open navigation menu"
-          class="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-lg text-viindoo-on-dark-muted hover:text-viindoo-on-dark hover:bg-white/5 transition-colors duration-200"
-        >
-          <svg id="mobile-menu-icon-open" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
-          <svg id="mobile-menu-icon-close" class="w-5 h-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-        <a
-          href="#install"
-          class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-4 py-2 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
-        >
-          Get started
-          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M5 12h14M13 6l6 6-6 6" />
-          </svg>
-        </a>
-      </div>
-    </div>
-    <!-- Mobile nav drawer (hidden by default, toggled via JS) -->
-    <div
-      id="mobile-menu"
-      class="hidden md:hidden border-t bg-viindoo-bg-0/95 backdrop-blur px-6 py-4"
-      style="border-color: rgba(230,242,244,0.08);"
-      aria-label="Mobile navigation"
-    >
-      <nav class="flex flex-col gap-4 text-sm font-medium text-viindoo-on-dark-muted">
-        <a href="#showcase" class="hover:text-viindoo-on-dark transition-colors duration-200">Live demo</a>
-        <a href="#tools" class="hover:text-viindoo-on-dark transition-colors duration-200">Tools</a>
-        <a href="#benchmark" class="hover:text-viindoo-on-dark transition-colors duration-200">Benchmark</a>
-        <a href="/pricing" class="hover:text-viindoo-on-dark transition-colors duration-200">Pricing</a>
-        <a href="/install/" class="hover:text-viindoo-on-dark transition-colors duration-200">Install</a>
-      </nav>
-    </div>
-  </nav>
-  <script>
-    (function () {
-      const btn = document.getElementById('mobile-menu-btn');
-      const menu = document.getElementById('mobile-menu');
-      const iconOpen = document.getElementById('mobile-menu-icon-open');
-      const iconClose = document.getElementById('mobile-menu-icon-close');
-      if (!btn || !menu || !iconOpen || !iconClose) return;
-      btn.addEventListener('click', function () {
-        var expanded = btn.getAttribute('aria-expanded') === 'true';
-        btn.setAttribute('aria-expanded', String(!expanded));
-        menu.classList.toggle('hidden', expanded);
-        iconOpen.classList.toggle('hidden', !expanded);
-        iconClose.classList.toggle('hidden', expanded);
-      });
-      // Close menu when any link inside it is clicked
-      menu.querySelectorAll('a').forEach(function (a) {
-        a.addEventListener('click', function () {
-          btn.setAttribute('aria-expanded', 'false');
-          menu.classList.add('hidden');
-          iconOpen.classList.remove('hidden');
-          iconClose.classList.add('hidden');
-        });
-      });
-    })();
-  </script>
+  <SiteHeader currentPath={Astro.url.pathname} />
 
   <!-- Hero section -->
   <Hero />
@@ -216,20 +107,19 @@ const TOOLS = [
             <span class="absolute top-3 right-4 font-mono text-[10px] text-viindoo-on-dark-dim">{tool.num}</span>
             <div class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1.5">{tool.name}</div>
             <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{tool.desc}</p>
-            <span class={`absolute top-0 left-0 h-px ${tool.group === 'version' ? 'bg-viindoo-secondary' : tool.group === 'quality' ? 'bg-viindoo-warning' : tool.group === 'superset' ? 'bg-viindoo-success' : tool.group === 'session' ? 'bg-viindoo-info' : tool.group === 'stylesheet' ? 'bg-viindoo-secondary' : tool.group === 'orm' ? 'bg-viindoo-secondary-bright' : 'bg-viindoo-primary'} w-8 group-hover:w-full transition-all duration-300`}></span>
+            <span class:list={['absolute top-0 left-0 h-px w-8 group-hover:w-full transition-all duration-300', TOOL_GROUP_COLORS[tool.group]]}></span>
           </div>
         ))}
       </div>
 
-      <!-- Tool legend -->
+      <!-- Tool legend — data-driven from TOOL_GROUP_LABELS / TOOL_GROUP_COLORS -->
       <div class="mt-6 flex flex-wrap items-center justify-center gap-5 font-mono text-xs text-viindoo-on-dark-muted">
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-primary"></span>Resolve (7)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary"></span>Version (2)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-warning"></span>Quality (2)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-success"></span>Supersets (3)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-info"></span>Session (4)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary"></span>Stylesheet (2)</span>
-        <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-viindoo-secondary-bright"></span>ORM (4)</span>
+        {(Object.entries(TOOL_GROUP_LABELS) as [keyof typeof TOOL_GROUP_LABELS, string][]).map(([group, label]) => (
+          <span class="inline-flex items-center gap-2">
+            <span class:list={['w-2 h-2 rounded-full', TOOL_GROUP_COLORS[group]]}></span>
+            {label}
+          </span>
+        ))}
       </div>
     </div>
   </section>
@@ -249,34 +139,12 @@ const TOOLS = [
       </p>
 
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-white/5 rounded-2xl overflow-hidden mt-12 border border-white/10">
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/model/&#123;name&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Snapshot of a model — fields, methods, inheritance, defining module.</p>
-        </div>
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/module/&#123;name&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Module manifest, depends, defined+extended models, view counts.</p>
-        </div>
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/field/&#123;model&#125;/&#123;name&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Field record — type, defaults, compute, related, overrides.</p>
-        </div>
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/method/&#123;model&#125;/&#123;name&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">Method record — signature, decorators, override chain across modules.</p>
-        </div>
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/view/&#123;xml_id&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">View + its XPath inheritance order, by xml_id.</p>
-        </div>
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/owl/&#123;module&#125;/&#123;name&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">OWL component record (Odoo v15+).</p>
-        </div>
-        <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
-          <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">odoo://&#123;v&#125;/qweb/&#123;xml_id&#125;</div>
-          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">QWeb template — inheritance hints + render context.</p>
-        </div>
+        {RESOURCES.map((resource) => (
+          <div class="group relative bg-viindoo-bg-1 hover:bg-viindoo-bg-2 transition p-5 min-h-[110px]">
+            <div class="font-mono text-xs text-viindoo-primary-bright mb-1.5">{resource.uri}</div>
+            <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">{resource.desc}</p>
+          </div>
+        ))}
       </div>
 
       <p class="text-xs text-viindoo-on-dark-dim mt-6 font-mono text-center">
@@ -365,25 +233,5 @@ const TOOLS = [
     </div>
   </section>
 
-  <!-- Footer -->
-  <footer class="bg-viindoo-bg-0 border-t py-10 px-6 text-center" style="border-color: rgba(230,242,244,0.08);">
-    <div class="mx-auto max-w-7xl">
-      <p class="font-mono text-[11px] text-viindoo-on-dark-dim">
-        &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
-        <!-- version: sync from pyproject.toml [project].version (SSOT) -->
-        <span class="text-viindoo-primary">v0.13.1</span>
-      </p>
-      <div class="flex items-center justify-center gap-6 mt-3 text-[12px] text-viindoo-on-dark-dim">
-        <a href="/login" class="hover:text-viindoo-primary-bright transition-colors duration-200">Admin</a>
-        <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200" title="MCP client plugins + Odoo skill set">Contribute</a>
-        <a href="/install/" class="hover:text-viindoo-primary-bright transition-colors duration-200">Install</a>
-      </div>
-      <div class="mt-4 flex items-center justify-center gap-2 text-[11px] text-viindoo-on-dark-dim">
-        <span>Powered by</span>
-        <a href="https://viindoo.com" class="inline-flex items-center hover:opacity-100 transition-opacity duration-200" aria-label="Viindoo">
-          <img src="/viindoo-logo.svg" alt="Viindoo" class="h-5 inline opacity-80" />
-        </a>
-      </div>
-    </div>
-  </footer>
+  <SiteFooter />
 </BaseLayout>

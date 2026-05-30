@@ -41,5 +41,13 @@ const { title, heading = 'Odoo Semantic MCP', subtitle } = Astro.props;
         </main>
       </div>
     </div>
+    <!-- Minimal auth footer — intentionally terse (no full SiteHeader on auth routes) -->
+    <footer class="text-center text-xs text-gray-400 py-4">
+      <a href="/" class="hover:text-gray-600 transition-colors duration-200">Home</a>
+      <span class="mx-2">&middot;</span>
+      <a href="/terms" class="hover:text-gray-600 transition-colors duration-200">Terms</a>
+      <span class="mx-2">&middot;</span>
+      <a href="/privacy" class="hover:text-gray-600 transition-colors duration-200">Privacy</a>
+    </footer>
   </body>
 </html>

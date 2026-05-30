@@ -5,10 +5,13 @@
 export const prerender = true;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import { HELPDESK_URL_FALLBACK } from '../lib/contact';
 ---
 
 <BaseLayout title="Privacy Policy — Odoo Semantic MCP" description="Privacy Policy for Odoo Semantic MCP by Viindoo — PDPL 91/2025 and GDPR-aware.">
-  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+  <SiteHeader currentPath="/privacy" />
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12 pt-28">
 
     <!-- DRAFT badge -->
     <div class="mb-8 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4" role="note" aria-label="Draft notice">
@@ -27,7 +30,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
       <section>
         <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">1. Data Controller</h2>
-        <p>The data controller for personal data processed in connection with Odoo Semantic MCP is <strong>Viindoo</strong>, a company incorporated in Vietnam. Contact: <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>.</p>
+        <p>The data controller for personal data processed in connection with Odoo Semantic MCP is <strong>Viindoo</strong>, a company incorporated in Vietnam. Contact: <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">open a support ticket</a>.</p>
         <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: designate a DPO if required under PDPL 91/2025 or GDPR Art. 37.]</p>
       </section>
 
@@ -102,7 +105,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           <li><strong>Objection:</strong> object to processing based on legitimate interests;</li>
           <li><strong>Withdrawal of consent:</strong> where processing is consent-based, withdraw at any time without affecting lawfulness of prior processing.</li>
         </ul>
-        <p class="mt-2">To exercise any right, email <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>. We will respond within 30 days. You also have the right to lodge a complaint with the relevant data-protection authority in your country.</p>
+        <p class="mt-2">To exercise any right, <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">open a support ticket</a>. We will respond within 30 days. You also have the right to lodge a complaint with the relevant data-protection authority in your country.</p>
         <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: for PDPL 91/2025, identify the competent Vietnamese supervisory body and include contact details.]</p>
       </section>
 
@@ -129,7 +132,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
       <section>
         <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">12. Contact and DPO</h2>
-        <p>For privacy questions or to exercise your rights, contact us at <a href="mailto:admin@viindoo.com" class="text-viindoo-primary-text hover:underline">admin@viindoo.com</a>. Response time: within 30 days.</p>
+        <p>For privacy questions or to exercise your rights, <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">contact us via our support helpdesk</a>. Response time: within 30 days.</p>
       </section>
 
     </div>
