@@ -9,7 +9,7 @@ import type { SettingDef } from '../../../lib/settings-types';
 
 // Valid categories served by this dynamic route
 // (quota/plans has its own page; ee-modules and patterns have their own pages)
-const VALID_CATEGORIES = ['auth', 'billing', 'embedding', 'indexer', 'mcp'] as const;
+const VALID_CATEGORIES = ['auth', 'billing', 'embedding', 'indexer', 'mcp', 'support'] as const;
 type Category = (typeof VALID_CATEGORIES)[number];
 
 const CATEGORY_META: Record<Category, { label: string; icon: string; description: string }> = {
@@ -37,6 +37,11 @@ const CATEGORY_META: Record<Category, { label: string; icon: string; description
     label: 'MCP Server Settings',
     icon: '🔌',
     description: 'MCP tool response limits, resource cache TTL, and output caps.',
+  },
+  support: {
+    label: 'Support Settings',
+    icon: '🎫',
+    description: 'Helpdesk URL and support contact configuration.',
   },
 };
 

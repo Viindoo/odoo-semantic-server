@@ -192,8 +192,9 @@ class TestPlansApiMinSeats:
             assert "min_seats" in plan, (
                 f"Plan {slug!r} missing 'min_seats' field in /api/plans response"
             )
-            assert plan["min_seats"] is None or isinstance(plan["min_seats"], int), (
-                f"Plan {slug!r} min_seats must be int or null, got {type(plan['min_seats']).__name__}"
+            ms = plan["min_seats"]
+            assert ms is None or isinstance(ms, int), (
+                f"Plan {slug!r} min_seats must be int or null, got {type(ms).__name__}"
             )
 
         # Validate seed values

@@ -103,7 +103,16 @@ def grant_entitlement(grant: EntitlementGrant, *, last_event_at=None) -> int:
             already_mine = sub is not None and sub.get("claimed_user_id") == user_id
             won = already_mine or subs.claim_unclaimed_for_user(sub_id, user_id)
             if won:
-                provisioning.provision_or_upgrade(sub_id, user_id)
+                try:
+                    provisioning.provision_or_upgrade(sub_id, user_id)
+                except provisioning._AlreadyProvisioned:
+                    # Sub was already fully provisioned (idempotent re-grant or
+                    # concurrent sweep finished first) — nothing to do.
+                    logger.info(
+                        "grant_entitlement: sub_id=%d already provisioned"
+                        " (idempotent re-grant) — no key change needed",
+                        sub_id,
+                    )
             else:
                 logger.info(
                     "grant_entitlement: sub_id=%d claimed by another user "

@@ -20,11 +20,76 @@ Two entry points:
   NEVER raises into the auth flow (same contract as ``_mint_default_api_key``).
 """
 import logging
+from contextlib import contextmanager
+
+import psycopg2
 
 from src.db.auth_registry import set_api_key_plan_and_overrides
 from src.db.pg import auth_store, get_pool, subscription_store
 
 logger = logging.getLogger(__name__)
+
+# Advisory-lock namespace for provision_or_upgrade serialization.
+# 0x0550 = decimal 1360; stable, does not conflict with backup (0x05DA0E05) or
+# migration (0x05DA0E05) lock namespaces.
+_PROVISION_LOCK_NS: int = 0x0550
+
+
+class _AlreadyProvisioned(Exception):
+    """Raised by _provision_or_upgrade_locked when the sub is already fully
+    provisioned (api_key_id != NULL after acquiring the advisory lock).
+
+    This is NOT an error — it signals the idempotent short-circuit so the
+    caller (claim_subscription_for_user) can distinguish "did work" from
+    "work already done by a concurrent sweep" without changing the public
+    provision_or_upgrade return type (always int).  api_key_id is stored on
+    the exception so callers that only need the key can still access it.
+    """
+
+    def __init__(self, key_id: int) -> None:
+        super().__init__(f"subscription already provisioned with api_key_id={key_id}")
+        self.key_id = key_id
+
+
+@contextmanager
+def _provision_advisory_lock(subscription_id: int):
+    """Acquire a session-level Postgres advisory lock keyed on (ns, subscription_id).
+
+    Uses a **dedicated connection** (not a pool checkout) so the session lock
+    survives across the multiple independent pool checkouts that
+    ``provision_or_upgrade`` makes internally.  Released in the ``finally``
+    block; the connection is closed after unlock.
+
+    This serialises concurrent calls to ``provision_or_upgrade`` for the SAME
+    subscription so that crash-recovery scan-B can never mint a second key
+    while T1 is between its claim CAS and ``link_to_api_key``.
+    """
+    pool = get_pool()
+    # Borrow a raw psycopg2 connection outside the managed pool so we can hold
+    # the lock across multiple independent pool.checkout() calls.
+    conn = psycopg2.connect(pool.dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_lock(%s, %s)",
+                (_PROVISION_LOCK_NS, subscription_id),
+            )
+        yield
+    finally:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_unlock(%s, %s)",
+                    (_PROVISION_LOCK_NS, subscription_id),
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
 
 # ADR-0041 D5: the 'unlimited' SLUG is the SSOT for unlimited access.  It is
 # seeded at price_cents=0 (same as 'free'), so price alone CANNOT distinguish
@@ -159,6 +224,17 @@ def provision_or_upgrade(subscription_id: int, user_id: int) -> int:
     Raises if the subscription does not exist (programmer error: a claim path
     must pass a real subscription_id).
     """
+    with _provision_advisory_lock(subscription_id):
+        return _provision_or_upgrade_locked(subscription_id, user_id)
+
+
+def _provision_or_upgrade_locked(subscription_id: int, user_id: int) -> int:
+    """Inner body of provision_or_upgrade — called under the advisory lock.
+
+    Re-reads ``api_key_id`` after acquiring the lock: if another sweep already
+    finalised provisioning for this sub (scan-B double-provision race, see
+    ADR-0039 I7), the key is returned immediately without a second grant.
+    """
     store = auth_store()
     subs = subscription_store()
     pool = get_pool()
@@ -166,6 +242,20 @@ def provision_or_upgrade(subscription_id: int, user_id: int) -> int:
     sub = subs.get_by_id(subscription_id)
     if sub is None:
         raise ValueError(f"provision_or_upgrade: subscription id={subscription_id} not found")
+
+    # Idempotency short-circuit: if api_key_id is already set another sweep
+    # finished while we waited for the advisory lock.  Raise _AlreadyProvisioned
+    # so the CALLER can distinguish "did work" from "already done by a concurrent
+    # sweep" — prevents double-billing and the provisioned_total==2 invariant
+    # violation (both sweeps would otherwise count as provisioned).
+    if sub.get("api_key_id") is not None:
+        logger.info(
+            "provision_or_upgrade: sub_id=%d already provisioned (api_key_id=%s)"
+            " — idempotent re-read after advisory lock (concurrent sweep finished first)",
+            subscription_id, sub["api_key_id"],
+        )
+        raise _AlreadyProvisioned(sub["api_key_id"])
+
     plan_id: int = sub["plan_id"]
     seats: int = sub["seats"] or 1
 
@@ -300,8 +390,24 @@ def claim_subscription_for_user(user_id: int, email: str) -> list[int]:
                             sub_id, user_id,
                         )
                         continue
-                # Claim is ours → provision/upgrade the key (idempotent on retry).
-                key_id = provision_or_upgrade(sub_id, user_id)
+                # Claim is ours → provision/upgrade the key.
+                # provision_or_upgrade raises _AlreadyProvisioned when the
+                # advisory lock reveals a concurrent sweep has already finished
+                # (scan-B race): we must NOT append in that case so
+                # provisioned_total remains 1 (the sweep that did the work).
+                try:
+                    key_id = provision_or_upgrade(sub_id, user_id)
+                except _AlreadyProvisioned as ap:
+                    # Another concurrent sweep finished while we waited for the
+                    # advisory lock.  The seat is provisioned — we just weren't
+                    # the one to do it.
+                    logger.info(
+                        "claim_subscription_for_user: sub_id=%d already provisioned"
+                        " by concurrent sweep (api_key_id=%s) — not counting this"
+                        " sweep as a provision for user_id=%d",
+                        sub_id, ap.key_id, user_id,
+                    )
+                    continue
                 provisioned.append(key_id)
             except Exception as exc:  # noqa: BLE001 — one bad sub must not abort the rest
                 logger.warning(
