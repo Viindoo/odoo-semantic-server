@@ -336,6 +336,171 @@ class TestRevokeEntitlement:
 
 
 # ---------------------------------------------------------------------------
+# CR3: a TERMINAL status update downgrades the key, even with no plan change
+# ---------------------------------------------------------------------------
+
+class TestUpdateTerminalStatusDowngrades:
+    @pytest.mark.parametrize("terminal", ["cancelled", "expired", "refunded", "past_due"])
+    def test_terminal_status_downgrades_key_to_free(self, migrated_pg, terminal):
+        """CR3: update_entitlement(status=<terminal>) on a claimed+paid sub must
+        downgrade the live key to free, the same as an involuntary revoke —
+        regardless of whether plan_id changed.  Before CR3 only a plan_id change
+        touched the key, so a past_due/cancelled update silently kept paid access.
+        """
+        free_id = _plan_id(migrated_pg, "free")
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(
+            migrated_pg, f"term{terminal}", f"term-{terminal}@example.com", verified=True
+        )
+        _raw, _prefix, key_id = auth_store().create_api_key(
+            name=f"Default key (term{terminal})", user_id=user_id
+        )
+        grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref=f"grant_term_{terminal}", source="polar",
+            buyer_email=f"term-{terminal}@example.com",
+        ))
+        assert _key_plan_id(migrated_pg, key_id) == pro_id
+
+        # Terminal status arrives with NO plan_id change.
+        update_entitlement(f"grant_term_{terminal}", status=terminal)
+
+        assert _key_plan_id(migrated_pg, key_id) == free_id, (
+            f"terminal status {terminal!r} must downgrade the paid key to free (CR3)"
+        )
+        assert _key_active(migrated_pg, key_id) is True, (
+            "key stays active on the free tier after a terminal-status downgrade"
+        )
+
+    def test_non_terminal_status_does_not_downgrade(self, migrated_pg):
+        """A benign status (e.g. 'active') with no plan change must NOT touch the key."""
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "actstat", "actstat@example.com", verified=True)
+        _raw, _prefix, key_id = auth_store().create_api_key(
+            name="Default key (actstat)", user_id=user_id
+        )
+        grant_entitlement(EntitlementGrant(
+            plan_id=pro_id, external_ref="grant_actstat", source="polar",
+            buyer_email="actstat@example.com",
+        ))
+        update_entitlement("grant_actstat", status="active")
+        assert _key_plan_id(migrated_pg, key_id) == pro_id, (
+            "a non-terminal status update must leave the paid key untouched"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #5 out-of-order events: last_event_at monotonic guard at the activation layer
+# ---------------------------------------------------------------------------
+
+class TestActivationMonotonicGuard:
+    def test_stale_grant_does_not_revive_a_newer_cancellation(self, migrated_pg):
+        """#5: a grant carrying an OLDER last_event_at must NOT flip a sub that a
+        NEWER event already moved to cancelled.
+
+        Drives the guard through the public activation API (grant_entitlement
+        passes last_event_at to the registry upsert).  Order of arrival:
+          1. grant at t0 (active).
+          2. a NEWER cancellation lands (status=cancelled) at t2.
+          3. a STALE grant replay at t1 (t0<t1<t2) arrives out of order — it must
+             NOT resurrect 'active'.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        pro_id = _plan_id(migrated_pg, "pro")
+        t0 = datetime(2026, 1, 1, tzinfo=UTC)
+        t1 = t0 + timedelta(hours=1)
+        t2 = t0 + timedelta(hours=2)
+
+        # 1. initial grant (no claimable user → just the sub row).
+        sub_id = grant_entitlement(
+            EntitlementGrant(
+                plan_id=pro_id, external_ref="ooo_ref", source="polar",
+                buyer_email="ooo@example.com",
+            ),
+            last_event_at=t0,
+        )
+
+        # 2. a newer cancellation moves the sub to cancelled at t2.
+        subscription_store().upsert_by_external_ref(
+            external_ref="ooo_ref", plan_id=pro_id, source="polar",
+            status="cancelled", buyer_email="ooo@example.com", last_event_at=t2,
+        )
+        assert subscription_store().get_by_id(sub_id)["status"] == "cancelled"
+
+        # 3. a STALE grant replay at t1 must NOT revive 'active'.
+        grant_entitlement(
+            EntitlementGrant(
+                plan_id=pro_id, external_ref="ooo_ref", source="polar",
+                buyer_email="ooo@example.com",
+            ),
+            last_event_at=t1,
+        )
+        assert subscription_store().get_by_id(sub_id)["status"] == "cancelled", (
+            "an out-of-order (older) grant must not overwrite a newer cancellation (#5)"
+        )
+
+    def test_stale_update_does_not_resurrect_a_cancelled_subscription(self, migrated_pg):
+        """#5 update path (money-critical): a stale subscription.updated(active) must
+        NOT resurrect access on a sub a newer subscription.canceled already revoked.
+
+        Live scenario: the period-end cancel lands first (status=cancelled, key
+        downgraded to free at T2); then an OLD subscription.updated(active) replay
+        arrives out of order (T1<T2).  Without the update-path guard this flips the
+        sub back to active AND re-points the key to the paid plan — illegitimate
+        resurrection of paid access for a non-paying subscriber.  The guard must
+        keep status='cancelled' and leave the key on free.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        free_id = _plan_id(migrated_pg, "free")
+        pro_id = _plan_id(migrated_pg, "pro")
+        t1 = datetime(2026, 2, 1, 10, 0, tzinfo=UTC)
+        t2 = t1 + timedelta(hours=1)
+        t3 = t1 + timedelta(hours=2)
+
+        user_id = _make_user(migrated_pg, "resur", "resur@example.com", verified=True)
+        _raw, _prefix, key_id = auth_store().create_api_key(
+            name="Default key (resur)", user_id=user_id
+        )
+        # Grant pro (claims + upgrades the key) at t1.
+        grant_entitlement(
+            EntitlementGrant(
+                plan_id=pro_id, external_ref="resur_ref", source="polar",
+                buyer_email="resur@example.com",
+            ),
+            last_event_at=t1,
+        )
+        assert _key_plan_id(migrated_pg, key_id) == pro_id
+
+        # The period-end cancel lands at t2 → status=cancelled, key downgraded to free.
+        revoke_entitlement("resur_ref", reason="cancelled", last_event_at=t2)
+        sub = subscription_store().get_by_external_ref("resur_ref")
+        assert sub["status"] == "cancelled"
+        assert _key_plan_id(migrated_pg, key_id) == free_id
+
+        # A STALE subscription.updated(active) replay arrives out of order at t1<t2.
+        update_entitlement("resur_ref", status="active", plan_id=pro_id, last_event_at=t1)
+
+        sub = subscription_store().get_by_external_ref("resur_ref")
+        assert sub["status"] == "cancelled", (
+            "#5: a stale update(active) must NOT resurrect a newer cancellation"
+        )
+        assert _key_plan_id(migrated_pg, key_id) == free_id, (
+            "#5: a stale update must NOT re-point the key back to the paid plan"
+        )
+
+        # A genuinely NEWER update (t3>t2) IS applied normally — guard only drops stale.
+        team_id = _plan_id(migrated_pg, "team")
+        update_entitlement("resur_ref", status="active", plan_id=team_id, last_event_at=t3)
+        sub = subscription_store().get_by_external_ref("resur_ref")
+        assert sub["status"] == "active", "a newer event must be applied normally"
+        assert sub["plan_id"] == team_id, "a newer event re-points the sub plan"
+        assert _key_plan_id(migrated_pg, key_id) == team_id, (
+            "a newer event re-points the live key (not stale)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # I26(c): half-claimed retry — claimed_user_id is set ONLY with api_key_id
 # ---------------------------------------------------------------------------
 

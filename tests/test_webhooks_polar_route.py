@@ -11,7 +11,9 @@ Business intent (7 cases required by spec):
   T4  missing POLAR_WEBHOOK_SECRET -> 503.
   T5  unknown event_type -> 200 {"status":"ignored"}.
   T6  unknown Polar product (product_id not in billing.polar_product_map) ->
-       200 {"status":"unprocessable"}, no 500.
+       200 {"status":"config_error"}, no 500.  (Per I9 the status is the
+       ops-LOUD ``config_error`` — a mis-configured product map on a real first
+       purchase is ERROR-logged + queryable, never a quiet ``unprocessable``.)
   T7  malformed JSON body -> 400.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
@@ -110,7 +112,8 @@ def _make_payload(
             "customer_email": buyer_email,
             "amount": 1900,
             "currency": "USD",
-            "billing_interval": "monthly",
+            # Polar sends the cadence under recurring_interval (NOT billing_interval).
+            "recurring_interval": "month",
         },
     }
 
@@ -787,12 +790,14 @@ class TestUpdateStatusNotForcedActive:
 
 
 class TestGrantBillingIntervalNormalized:
-    """I8: a grant whose payload billing_interval='month' must be written as the
-    enum value 'monthly' (no silent drop from a CHECK violation)."""
+    """FIX-C/FIX-D: a grant's cadence comes from Polar's ``recurring_interval``
+    field (NOT ``billing_interval``); the raw token is normalized to our enum so
+    the subscription stores a valid, non-NULL value (no silent drop from a CHECK
+    violation, and no NULL from reading the wrong field name)."""
 
-    @pytest.mark.asyncio
-    async def test_month_normalized_to_monthly(self, migrated_pg, app_with_secret):
-        external_ref = "sub_i23_interval"
+    async def _grant_and_read_interval(
+        self, migrated_pg, app_with_secret, *, external_ref, data_extra, msg_id
+    ):
         payload = {
             "type": "subscription.created",
             "data": {
@@ -801,11 +806,11 @@ class TestGrantBillingIntervalNormalized:
                 "customer_email": "wh_interval@example.com",
                 "amount": 1900,
                 "currency": "USD",
-                "billing_interval": "month",  # raw Polar token, NOT our enum
+                **data_extra,
             },
         }
         body = json.dumps(payload).encode()
-        headers = _webhook_headers("msg_i23_interval", _now_ts(), body)
+        headers = _webhook_headers(msg_id, _now_ts(), body)
         async with _client(app_with_secret) as client:
             resp = await client.post(
                 "/api/webhooks/polar", content=body,
@@ -815,7 +820,6 @@ class TestGrantBillingIntervalNormalized:
         assert resp.json().get("status") == "ok", (
             f"grant must succeed (no silent drop), got: {resp.json()}"
         )
-
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "SELECT billing_interval FROM subscriptions WHERE external_ref = %s",
@@ -823,6 +827,55 @@ class TestGrantBillingIntervalNormalized:
             )
             row = cur.fetchone()
         assert row is not None, "Subscription must be written (proves no CHECK drop)"
-        assert row[0] == "monthly", (
-            f"billing_interval 'month' must normalize to 'monthly', got {row[0]!r}"
+        return row[0]
+
+    @pytest.mark.asyncio
+    async def test_recurring_interval_month_normalized_to_monthly(
+        self, migrated_pg, app_with_secret
+    ):
+        """FIX-C: the cadence is read from ``recurring_interval`` (Polar's real
+        field), normalized 'month'→'monthly' — NOT NULL (which is what reading the
+        wrong 'billing_interval' key would have produced)."""
+        interval = await self._grant_and_read_interval(
+            migrated_pg, app_with_secret,
+            external_ref="sub_i23_interval",
+            data_extra={"recurring_interval": "month"},
+            msg_id="msg_i23_interval",
+        )
+        assert interval == "monthly", (
+            f"recurring_interval 'month' must normalize to 'monthly', got {interval!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_recurring_interval_is_not_null_proving_correct_field_read(
+        self, migrated_pg, app_with_secret
+    ):
+        """FIX-C regression guard: a payload carrying the cadence ONLY under
+        ``recurring_interval`` (and the old wrong key absent) must still persist a
+        non-NULL interval — proving the pipeline reads recurring_interval."""
+        interval = await self._grant_and_read_interval(
+            migrated_pg, app_with_secret,
+            external_ref="sub_i23_interval_notnull",
+            data_extra={"recurring_interval": "year"},
+            msg_id="msg_i23_interval_notnull",
+        )
+        assert interval == "annual", (
+            f"recurring_interval 'year' must normalize to 'annual' (non-NULL), got {interval!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_recurring_interval_day_falls_back_to_monthly(
+        self, migrated_pg, app_with_secret
+    ):
+        """FIX-D: Polar's 'day' cadence has no own enum; it falls back to a valid
+        'monthly' (CHECK-safe) rather than NULL/CHECK-violation — the grant is
+        never silently dropped."""
+        interval = await self._grant_and_read_interval(
+            migrated_pg, app_with_secret,
+            external_ref="sub_i23_interval_day",
+            data_extra={"recurring_interval": "day"},
+            msg_id="msg_i23_interval_day",
+        )
+        assert interval == "monthly", (
+            f"recurring_interval 'day' must fall back to 'monthly', got {interval!r}"
         )

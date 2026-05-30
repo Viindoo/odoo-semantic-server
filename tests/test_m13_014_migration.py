@@ -870,6 +870,50 @@ class TestMigrationIdempotent:
             "free plan price_cents must still be 0 after double run"
         )
 
+    def test_admin_price_cents_zero_not_reverted_by_rerun(self, clean_pg):
+        """#12 dual-sentinel: an admin who sets price_cents=0 on a paid plan whose
+        prices JSONB is already custom must NOT have the seed re-run revert it.
+
+        Before the fix, section 2 seeded price_cents with only a price_cents=0 guard
+        while section 6.3 seeded prices with a prices='{}' guard.  An admin promo
+        that set pro.price_cents=0 (prices already {"USD":1900,...}) was reverted to
+        1900 on the next migration run.  The combined dual-sentinel seed in section
+        6.3 (WHERE price_cents=0 AND prices='{}') makes the re-run a true no-op
+        because prices is no longer '{}'.
+        """
+        from pathlib import Path
+
+        run_migrations(clean_pg)
+
+        # Admin promo: set pro price_cents=0; prices stays custom (non-empty).
+        with clean_pg.cursor() as cur:
+            cur.execute(
+                "UPDATE plans SET price_cents = 0 WHERE slug = 'pro'"
+            )
+        clean_pg.commit()
+        row = _plan_row(clean_pg, "pro")
+        assert row["price_cents"] == 0, "precondition: admin set pro price_cents=0"
+        with clean_pg.cursor() as cur:
+            cur.execute("SELECT prices FROM plans WHERE slug = 'pro'")
+            prices = cur.fetchone()[0]
+        assert prices != {}, (
+            "precondition: pro.prices must already be custom (non-empty) after seed"
+        )
+
+        # Re-run the migration SQL directly (yoyo would skip it as applied).
+        migration_path = (
+            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
+        )
+        with clean_pg.cursor() as cur:
+            cur.execute(migration_path.read_text())
+        clean_pg.commit()
+
+        row = _plan_row(clean_pg, "pro")
+        assert row["price_cents"] == 0, (
+            "#12: migration re-run must NOT revert an admin-set price_cents=0 when "
+            "prices is already custom (dual-sentinel guard)"
+        )
+
     def test_merged_columns_present_after_double_run(self, clean_pg):
         """Columns merged from m13_015/m13_016/m13_017 survive a second run_migrations."""
         run_migrations(clean_pg)

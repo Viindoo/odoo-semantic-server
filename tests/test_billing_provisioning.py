@@ -359,3 +359,176 @@ class TestClaimSubscriptionForUser:
         # claim_subscription_for_user must swallow it and return [] (best-effort).
         result = provisioning.claim_subscription_for_user(9_999_999, "bad@example.com")
         assert result == [], "best-effort claim must not raise on bad data"
+
+
+# ---------------------------------------------------------------------------
+# #1 CLAIM-FIRST concurrency: one seat → at most one paid key, never two
+# ---------------------------------------------------------------------------
+
+class TestClaimFirstConcurrency:
+    def test_concurrent_claims_same_user_no_key_mint_only_one_paid_key(
+        self, migrated_pg
+    ):
+        """#1: two CONCURRENT claim sweeps for the same keyless user + one sub →
+        exactly ONE paid key minted, never two.
+
+        Email is unique per account, so the dangerous race is the SAME buyer
+        logging in twice in parallel (two tabs / retried request) before either
+        has a key.  Without claim-FIRST both sweeps could each mint a fresh key
+        and set it to the paid plan → two paid keys for one seat.  The atomic
+        claim CAS (taken BEFORE provisioning) lets exactly one sweep proceed; the
+        other loses the CAS and mints/upgrades nothing.
+
+        Two real threads (each its own pooled connection) exercise the CAS at the
+        DB row-lock level, not a serialized simulation.
+        """
+        import threading
+
+        pro_id = _plan_id(migrated_pg, "pro")
+        email = "race@example.com"
+        user_id = _make_user(migrated_pg, "raceu", email)
+        # Deliberately NO api key yet: each winning sweep would mint one.
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="race_sub", plan_id=pro_id, source="polar",
+            status="active", buyer_email=email,
+        )
+
+        results: list[list[int]] = []
+        barrier = threading.Barrier(2)
+
+        def _claim():
+            barrier.wait()  # maximise overlap on the CAS
+            results.append(provisioning.claim_subscription_for_user(user_id, email))
+
+        t1 = threading.Thread(target=_claim)
+        t2 = threading.Thread(target=_claim)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exactly one sweep provisioned the single seat.
+        provisioned_total = sum(len(r) for r in results)
+        assert provisioned_total == 1, (
+            "exactly one of two concurrent claims may provision the single seat "
+            f"(got {provisioned_total})"
+        )
+
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["claimed_user_id"] == user_id
+
+        # The seat yielded exactly ONE paid key — never two.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM api_keys WHERE user_id = %s AND plan_id = %s",
+                (user_id, pro_id),
+            )
+            paid_count = cur.fetchone()[0]
+        assert paid_count == 1, "one seat must never yield two paid keys (#1)"
+        # And no orphan free keys minted by a losing race either.
+        assert _count_keys_for_user(migrated_pg, user_id) == 1, (
+            "a losing concurrent claim must not mint an extra key"
+        )
+
+    def test_claim_first_taken_before_provision(self, migrated_pg, monkeypatch):
+        """#1 ordering: the claim CAS must run BEFORE provision_or_upgrade.
+
+        If provisioning were attempted first (old invariant), a sub whose CAS we
+        LOSE would still get a key.  Here we make provision_or_upgrade blow up; a
+        correct claim-FIRST implementation only reaches provision AFTER a winning
+        CAS, so the sub is left claimed (CAS won) but unprovisioned — never a key
+        minted ahead of the claim.
+        """
+        pro_id = _plan_id(migrated_pg, "pro")
+        email = "order@example.com"
+        user_id = _make_user(migrated_pg, "orderu", email)
+        auth_store().create_api_key(name="ord", user_id=user_id)
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="order_sub", plan_id=pro_id, source="polar",
+            status="active", buyer_email=email,
+        )
+
+        calls = {"claimed_before_provision": None}
+        real_provision = provisioning.provision_or_upgrade
+
+        def _spy_provision(subscription_id, uid):  # noqa: ANN001
+            # Observe the sub state at the moment provision is invoked.
+            s = subscription_store().get_by_id(subscription_id)
+            calls["claimed_before_provision"] = s["claimed_user_id"]
+            return real_provision(subscription_id, uid)
+
+        monkeypatch.setattr(provisioning, "provision_or_upgrade", _spy_provision)
+        provisioning.claim_subscription_for_user(user_id, email)
+
+        assert calls["claimed_before_provision"] == user_id, (
+            "claim CAS must be committed BEFORE provision_or_upgrade is called"
+        )
+        # The spy delegated to the real provision, so the sub is fully provisioned.
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["api_key_id"] is not None
+
+
+# ---------------------------------------------------------------------------
+# #4 mid-sequence provision failure → claimed-but-unprovisioned recovery
+# ---------------------------------------------------------------------------
+
+class TestMidProvisionFailureRecovery:
+    def test_claim_first_then_provision_fail_then_retry_converges(
+        self, migrated_pg, monkeypatch
+    ):
+        """#4: with claim-FIRST, a provision crash AFTER the claim must still
+        converge — the next login's claimed-but-unprovisioned scan re-provisions.
+
+        Sequence:
+          1. claim_subscription_for_user wins the CAS (sub.claimed_user_id=user).
+          2. provision_or_upgrade raises mid-flight (link_to_api_key fails once).
+             → sub is claimed but api_key_id IS NULL (no longer surfaced by
+               find_unclaimed_active_by_email).
+          3. A second login re-runs claim_subscription_for_user; the
+             claimed-but-unprovisioned scan picks the sub up and finishes it.
+
+        The test FAILS if recovery is missing (sub orphaned: claimed, no key).
+        """
+        pro_id = _plan_id(migrated_pg, "pro")
+        email = "recover@example.com"
+        user_id = _make_user(migrated_pg, "recu", email)
+        auth_store().create_api_key(name="rec", user_id=user_id)
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="recover_sub", plan_id=pro_id, source="polar",
+            status="active", buyer_email=email,
+        )
+
+        real_link = subscription_store().link_to_api_key
+        calls = {"n": 0}
+
+        def _flaky_link(self, subscription_id, api_key_id):  # noqa: ANN001
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated provision crash after claim")
+            return real_link(subscription_id, api_key_id)
+
+        from src.db.subscription_registry import SubscriptionStore
+        monkeypatch.setattr(SubscriptionStore, "link_to_api_key", _flaky_link)
+
+        # First login: CAS wins, provision crashes → claimed but unprovisioned.
+        first = provisioning.claim_subscription_for_user(user_id, email)
+        assert first == [], "the crashing provision must not report success"
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["claimed_user_id"] == user_id, (
+            "claim-FIRST: the CAS committed the claim before the crash"
+        )
+        assert sub["api_key_id"] is None, "provision crashed before linking the key"
+        # Crucially: it no longer surfaces as UNCLAIMED (claim already took).
+        unclaimed = subscription_store().find_unclaimed_active_by_email(email)
+        assert all(r["id"] != sub_id for r in unclaimed), (
+            "a claimed sub must NOT be re-claimable via the unclaimed scan"
+        )
+
+        # Second login: claimed-but-unprovisioned scan must finish the job.
+        second = provisioning.claim_subscription_for_user(user_id, email)
+        assert len(second) == 1, "retry must re-provision the orphaned claimed sub"
+        sub = subscription_store().get_by_id(sub_id)
+        assert sub["api_key_id"] is not None, "key linked on retry"
+        assert _key_plan_id(migrated_pg, sub["api_key_id"]) == pro_id, (
+            "recovered key must be on the purchased plan"
+        )

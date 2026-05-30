@@ -65,12 +65,16 @@ BEGIN
     END IF;
 END $$;
 
--- ===== 2. PRICING SEED — scalar (price_cents / billing_interval) =====
--- NOTE: The per-currency prices JSONB column is added in section 6.2.
--- This section seeds the scalar columns that exist at this point in the script.
--- #12 seed desync fix: The combined guard (price_cents AND prices) for paid plans
--- lives in section 6.3 (where prices column already exists). The guards here cover
--- only the scalar columns seeded before prices is added.
+-- ===== 2. FREE/UNLIMITED SEED — zero-price plans (no desync risk) =====
+-- #12 seed desync fix: the PAID-plan seed (pro/team) is intentionally NOT here.
+-- It is deferred to section 6.3 as a SINGLE combined UPDATE that guards BOTH
+-- price_cents AND prices in one sentinel, so an admin who edits either field
+-- (e.g. price_cents=0 for a promo) can never have the re-run silently revert it.
+-- Seeding price_cents here with only a price_cents=0 guard caused exactly that
+-- desync: a re-run reverted price_cents→1900 even when prices was already custom.
+--
+-- The two zero-price plans are safe to seed here: both are $0 by design, so there
+-- is no second representation (prices) to drift out of sync with price_cents.
 --
 -- Free quota bump 100 -> 200 (report 03 §6).
 UPDATE plans SET quota_calls_per_month = 200
@@ -79,12 +83,6 @@ UPDATE plans SET quota_calls_per_month = 200
 UPDATE plans SET currency = 'USD', billing_interval = 'free'
     WHERE slug IN ('free', 'unlimited')
       AND price_cents = 0 AND billing_interval = 'free';
--- Pro: $19/seat/mo — guard on price_cents=0 (prices sentinel added in section 6.3).
-UPDATE plans SET price_cents = 1900, currency = 'USD', billing_interval = 'monthly'
-    WHERE slug = 'pro'  AND price_cents = 0;
--- Team: $39/seat/mo — guard on price_cents=0 (prices sentinel added in section 6.3).
-UPDATE plans SET price_cents = 3900, currency = 'USD', billing_interval = 'monthly'
-    WHERE slug = 'team' AND price_cents = 0;
 -- Enterprise = unlimited slug + per-key overrides + manual invoice (no public price row).
 
 -- ===== 3. subscriptions (commercial-only, integer FKs, NO limit cols) =====
@@ -281,30 +279,43 @@ ALTER TABLE subscriptions
 ALTER TABLE plans
     ADD COLUMN IF NOT EXISTS prices JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- 6.3 PRICES SEED (idempotent, guarded)
--- #12 seed desync fix: each paid plan seed guards BOTH price_cents AND prices in
--- the same sentinel. A re-run after an admin edits either field leaves the row
--- unchanged — the WHERE clause will not match a row where price_cents != 0 OR
--- prices != '{}'::jsonb. Both sentinels must hold simultaneously for the seed to
--- (re-)apply, preventing partial desync between the two price representations.
+-- 6.3 PAID-PLAN SEED — single combined block, DUAL-SENTINEL guarded (idempotent)
+-- #12 seed desync fix: each PAID plan (pro/team) is seeded HERE in ONE UPDATE
+-- that writes BOTH the scalar columns (price_cents/currency/billing_interval) AND
+-- the per-currency prices JSONB, guarded by a DUAL sentinel:
+--     WHERE slug = '<slug>' AND price_cents = 0 AND prices = '{}'::jsonb
+-- Both sentinels must hold SIMULTANEOUSLY for the seed to (re-)apply.  The moment
+-- an admin edits EITHER field — price_cents away from 0 (e.g. a promo to 0 is
+-- already non-applying once prices is set) OR prices away from '{}' — the WHERE
+-- no longer matches, so a migration re-run is a true no-op and NEVER reverts the
+-- admin's value.  This eliminates the previous split-seed desync where section 2
+-- (price_cents, guard price_cents=0) and section 6.3 (prices, guard prices='{}')
+-- could revert one representation while the other stayed custom.
 -- New vendor: ALTER TABLE ... DROP CONSTRAINT subscriptions_source_check;
 --             ADD CONSTRAINT ... CHECK (source IN ('polar','erp','admin','promo','paddle'));
 
 -- Pro: $19/seat/mo USD; VND 490,000/seat/mo (whole dong, not cents).
--- Dual sentinel: price_cents=0 AND prices='{}' (section 2 may have set price_cents already;
--- re-run is safe because once price_cents != 0 the whole WHERE fails → no double-apply).
 UPDATE plans
-   SET prices = '{"USD": 1900, "VND": 490000}'::jsonb
+   SET price_cents      = 1900,
+       currency         = 'USD',
+       billing_interval = 'monthly',
+       prices           = '{"USD": 1900, "VND": 490000}'::jsonb
  WHERE slug = 'pro'
+   AND price_cents = 0
    AND prices = '{}'::jsonb;
 
 -- Team: $39/seat/mo USD; VND 990,000/seat/mo.
 UPDATE plans
-   SET prices = '{"USD": 3900, "VND": 990000}'::jsonb
+   SET price_cents      = 3900,
+       currency         = 'USD',
+       billing_interval = 'monthly',
+       prices           = '{"USD": 3900, "VND": 990000}'::jsonb
  WHERE slug = 'team'
+   AND price_cents = 0
    AND prices = '{}'::jsonb;
 
--- Free + unlimited: $0 (zero-decimal currencies also 0).
+-- Free + unlimited: $0 (zero-decimal currencies also 0). Single sentinel on prices
+-- is fine — these are zero-price by design so price_cents has nothing to drift to.
 UPDATE plans
    SET prices = '{"USD": 0}'::jsonb
  WHERE slug IN ('free', 'unlimited')

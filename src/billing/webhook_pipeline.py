@@ -1,21 +1,35 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Vendor-parametric webhook pipeline (M10B P1, ADR-0039 Area A).
 
-The 13-step webhook-processing pipeline — rate-limit, fail-closed secret check,
-signature verification, ledger recording, dedup guard, event→action mapping,
-plan resolution, grant/update/revoke dispatch, mark-processed — is vendor-agnostic.
-Only four concerns differ per payment vendor: how a signature is verified, how an
-event is parsed, how an event type maps to a grant/update/revoke action, and how a
-payload resolves to a plan_id.  Those four (plus a handful of header names + the
-buyer-email / status / interval extractors) are captured in :class:`WebhookAdapter`.
+The webhook-processing pipeline — rate-limit, fail-closed secret check,
+signature verification, ledger recording, dedup/reprocess guard, event→action
+mapping, plan resolution, grant/update/revoke dispatch, transient-vs-permanent
+error classification, mark-processed — is vendor-agnostic.  Only the vendor
+specifics differ per payment vendor: how a signature is verified, how an event
+is parsed, how an event type maps to a grant/update/revoke action, how a payload
+resolves to a plan_id, and how the commercial snapshot fields (seats, amount,
+currency, interval, period bounds, trial end, event timestamp) are extracted.
+Those are captured in :class:`WebhookAdapter`.
 
-A new vendor (Paddle, an ERP, …) is therefore ~25 lines of adapter glue + a route
+A new vendor (Paddle, an ERP, …) is therefore a small adapter of glue + a route
 that builds a :class:`WebhookAdapter` and calls :func:`run_webhook_pipeline`.  The
 pipeline itself lives **once**, here.
 
-This module is a behaviour-preserving extraction of the original ``polar_webhook``
-handler: every guard, status code, ledger write and log site is identical; the
-``vendor`` string and the per-vendor callables are simply parameterised.
+This module is money-critical: a paid grant must never be silently lost.  Two
+defenses make that concrete:
+
+* **Reprocess-after-crash (#2):** the ledger records EVERY delivery before
+  dispatch.  If a prior delivery was recorded but never marked processed (a crash
+  between INSERT and ``mark_event_processed``), the replay RE-DISPATCHES the
+  idempotent grant/update/revoke instead of treating it as a duplicate — so a
+  crash mid-flight self-heals on Polar's automatic retry.
+
+* **Transient-vs-permanent (#6):** a dispatch error is classified.  A *permanent*
+  error (bad data that will never succeed: ``IntegrityError`` / ``CheckViolation``
+  / ``ValueError``) marks the event processed-with-error and returns 200 so the
+  vendor stops hammering a poison event.  A *transient* error (DB pool timeout,
+  ``OperationalError``, network blip) does NOT mark the event processed and
+  returns 5xx so the vendor RETRIES later — the grant is not lost, just deferred.
 """
 
 from __future__ import annotations
@@ -24,9 +38,12 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from fastapi.responses import JSONResponse
+from psycopg2 import IntegrityError
+from psycopg2.errors import CheckViolation
 from starlette.requests import Request
 
 from src.billing import activation
@@ -37,6 +54,21 @@ from src.web_ui.rate_limit import check_ip_rate_limit, get_client_ip
 logger = logging.getLogger(__name__)
 
 
+# Errors that mean "this event will NEVER succeed as delivered" — bad/poison
+# data.  We ack (200) + mark processed-with-error so the vendor stops retrying a
+# permanently-broken event; ops investigate via the ledger processing_error.
+_PERMANENT_DISPATCH_ERRORS: tuple[type[BaseException], ...] = (
+    IntegrityError,    # FK/UNIQUE/NOT-NULL violation — data shape is wrong
+    CheckViolation,    # a CHECK enum/range violation — same
+    ValueError,        # bad enum token, malformed field, business-rule reject
+)
+# NB: IntegrityError is the psycopg2 base class for CheckViolation in modern
+# psycopg2; listing both is harmless (isinstance is fine with the duplicate) and
+# documents intent.  A *transient* error (OperationalError, pool timeout, any
+# non-permanent Exception) is NOT marked processed and returns 5xx → vendor
+# RETRIES, so a momentary DB hiccup never loses a paid grant.
+
+
 @dataclass(frozen=True)
 class WebhookAdapter:
     """Per-vendor binding consumed by :func:`run_webhook_pipeline`.
@@ -45,13 +77,20 @@ class WebhookAdapter:
     stays vendor-agnostic.  A second adapter (Paddle/ERP) supplies its own
     callables + header names + ``vendor`` string and reuses the entire pipeline.
 
+    The commercial-field extractors (``extract_*_fn``) keep vendor field names
+    (e.g. Polar's ``seats``/``amount``/``current_period_end``) OUT of the
+    pipeline: the pipeline asks the adapter for the values, it never reaches into
+    the ``data`` dict by key.  Each extractor has a safe default (returns ``None``
+    / a benign value) so a vendor that does not carry a field is no special case.
+
     Attributes:
         vendor: Ledger / subscription ``source`` discriminator — MUST be a value
             permitted by the ``billing_webhook_events.vendor`` and
             ``subscriptions.source`` CHECK enums (e.g. ``'polar'``).
         secret: The signing secret, or ``None`` when unconfigured → 503.
         tolerance_seconds: Signature timestamp tolerance window.
-        rate_limit_rpm: Per-IP requests/minute ceiling for this endpoint.
+        rate_limit_rpm: Per-VENDOR requests/minute ceiling for this endpoint
+            (CR6 — keyed by ``vendor`` not client IP; see ``run_webhook_pipeline``).
         header_id: HTTP header carrying the event id (e.g. ``webhook-id``).
         header_timestamp: HTTP header carrying the signed timestamp.
         header_signature: HTTP header carrying the signature.
@@ -66,7 +105,23 @@ class WebhookAdapter:
             grant/update only — never for revoke.
         extract_email_fn: ``(data: dict) -> str | None`` buyer-email extractor.
         map_status_fn: ``(payload: dict) -> str`` → ``subscriptions.status`` enum.
-        normalize_interval_fn: ``(raw) -> str | None`` billing-interval normaliser.
+        extract_interval_fn: ``(data: dict) -> Any`` — pulls the RAW vendor
+            billing-interval token out of the ``data`` dict (e.g. Polar's
+            ``recurring_interval``).  Keeping the vendor field NAME in the adapter
+            (not hard-coded in the pipeline) is what lets a second vendor that
+            carries the interval under a different key reuse the pipeline; default
+            returns ``None`` (one-time / no recurring interval).
+        normalize_interval_fn: ``(raw) -> str | None`` billing-interval normaliser
+            applied to the value ``extract_interval_fn`` returns.
+        extract_seats_fn: ``(data: dict) -> int`` seat-count extractor (default 1).
+        extract_amount_fn: ``(data: dict) -> int | None`` amount-cents extractor.
+        extract_currency_fn: ``(data: dict) -> str | None`` ISO-4217 extractor.
+        extract_period_fn: ``(data: dict) -> (start, end, trial)`` — the three
+            TIMESTAMPTZ period/trial bounds (any may be ``None``).
+        extract_event_at_fn: ``(headers: Mapping, payload: dict) -> datetime | None``
+            — the vendor event timestamp used for the monotonic out-of-order
+            guard (#5).  Standard Webhooks carry it in the ``webhook-timestamp``
+            header; a vendor may instead carry it in the payload.
     """
 
     vendor: str
@@ -83,36 +138,66 @@ class WebhookAdapter:
     extract_email_fn: Callable[[dict], str | None]
     map_status_fn: Callable[[dict], str]
     normalize_interval_fn: Callable[[Any], str | None]
+    # CL1 — vendor-agnostic commercial extractors (safe defaults supplied below).
+    # extract_interval_fn pulls the RAW vendor interval token out of ``data`` so
+    # the pipeline never hard-codes a vendor field name (Polar = recurring_interval).
+    extract_interval_fn: Callable[[dict], Any] = lambda data: None
+    extract_seats_fn: Callable[[dict], int] = lambda data: 1
+    extract_amount_fn: Callable[[dict], int | None] = lambda data: None
+    extract_currency_fn: Callable[[dict], str | None] = lambda data: None
+    extract_period_fn: Callable[
+        [dict], tuple[Any, Any, Any]
+    ] = lambda data: (None, None, None)
+    extract_event_at_fn: Callable[
+        [Any, dict], datetime | None
+    ] = lambda headers, payload: None
 
 
 async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSONResponse:
     """Process one inbound webhook delivery for ``adapter.vendor``.
 
-    Reproduces the exact 13-step processing order (per design §4.2):
+    Processing order (money-critical guards spelled out):
 
-      1.  IP rate-limit gate (``adapter.rate_limit_rpm``).
+      1.  Rate-limit gate keyed by ``adapter.vendor`` (CR6 — NOT client IP: behind
+          nginx every delivery arrives from 127.0.0.1, so an IP bucket would be a
+          single shared bucket and a legitimate retry-storm from one vendor would
+          throttle ALL vendors.  The signature is HMAC-verified at step 4, so
+          per-IP abuse protection is redundant; we bound load per *vendor*).
       2.  Fail-closed: 503 if ``adapter.secret`` is absent.
       3.  Read raw body + ``adapter.header_*`` headers.
       4.  Verify signature via ``adapter.verify_fn`` (fail-closed).
-      5.  Parse JSON body (400 on unparseable).
-      6.  Extract (event_id, event_type, external_ref) via ``adapter.parse_event_fn``,
-          injecting the header event id under ``data['id']``'s sibling key ``'id'``.
-      7.  Record EVERY attempt to ``billing_webhook_events`` (signature-invalid too).
+      5.  Parse JSON body (400 on unparseable / non-object envelope).
+      6.  Extract (event_id, event_type, external_ref) via ``adapter.parse_event_fn``.
+      7.  Record EVERY attempt to ``billing_webhook_events`` (signature-invalid too);
+          ``record_webhook_event`` returns ``(pk, is_new, already_processed)``.
       8.  Guard: 400 on bad signature.
-      9.  Guard: 200 ``duplicate`` on replay.
+      9.  Dedup/reprocess (#2):
+            - ``already_processed`` → 200 ``duplicate`` (a prior run finished; safe
+              to drop).
+            - recorded-but-not-processed (``is_new`` False, ``already_processed``
+              False) → RE-DISPATCH (a prior delivery crashed mid-flight; the
+              grant/update/revoke is idempotent on ``external_ref``, so replaying
+              self-heals the lost grant).
+            - ``is_new`` → process normally.
       10. Guard: 200 ``ignored`` on UNMAPPED event_type (ops-visible processing_error).
       11. Resolve plan_id ONLY for grant/update; a config / unknown-product failure
           → ERROR log + 200 ``config_error``.  Revoke NEVER resolves a plan.
-      12. Dispatch grant / update / revoke via ``activation.*``.
+      12. Dispatch grant / update / revoke via ``activation.*`` with the adapter's
+          extracted commercial fields + the event timestamp (monotonic guard #5).
+          A dispatch error is classified transient-vs-permanent (#6).
       13. Mark event processed; return 200.
-
-    Returns a :class:`JSONResponse`; the status codes + bodies are identical to the
-    pre-refactor Polar handler, only ``vendor`` and the per-vendor callables vary.
     """
     # ------------------------------------------------------------------ step 1
+    # CR6: rate-limit per VENDOR, not per client IP.  After nginx the TCP peer is
+    # always 127.0.0.1 → a single shared IP bucket → one vendor's retry-storm
+    # would throttle grants for every vendor.  The endpoint is HMAC-authenticated
+    # (step 4) so per-IP abuse protection is redundant; we instead bound load by
+    # the (signed) vendor identity.  ``check_ip_rate_limit`` keys on an opaque
+    # string, so passing the vendor name gives one bucket per vendor.
     client_ip = await get_client_ip(request)
+    rl_key = f"vendor:{adapter.vendor}"
     allowed = await check_ip_rate_limit(
-        client_ip, limit=adapter.rate_limit_rpm, window_seconds=60
+        rl_key, limit=adapter.rate_limit_rpm, window_seconds=60
     )
     if not allowed:
         return JSONResponse(
@@ -145,17 +230,12 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
     )
 
     # ------------------------------------------------------------------ step 5 + 6
-    # Pydantic-gate happens at the route boundary if needed; here we parse the
-    # body for processing.  A malformed body is a 400; we skip ledger recording
-    # for unparseable bodies.
     try:
         raw_payload = json.loads(raw_body)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning("%s_webhook: unparseable body — %s", adapter.vendor, exc)
         return JSONResponse(_json_safe({"error": "invalid_json"}), status_code=400)
 
-    # A valid-JSON-but-not-object body (list, scalar) is a malformed envelope: a
-    # clean 400, never a 500 from a later dict operation.
     if not isinstance(raw_payload, dict):
         logger.warning(
             "%s_webhook: payload is not a JSON object — rejecting", adapter.vendor
@@ -183,13 +263,25 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
     # ------------------------------------------------------------------ step 7
     from src.db.pg import subscription_store
     subs = subscription_store()
-    event_pk, is_new = subs.record_webhook_event(
+    event_pk, is_new, already_processed = subs.record_webhook_event(
         vendor=adapter.vendor,
         event_id=event_id,
         event_type=event_type,
         signature_valid=sig_ok,
         payload=enriched_payload,
     )
+    # The ledger upsert always RETURNS the row, so pk is non-None.  Guard anyway:
+    # a None pk would make mark_event_processed a silent no-op and lose the
+    # money-state audit trail — fail LOUD rather than process blind.
+    if event_pk is None:
+        logger.error(
+            "%s_webhook: record_webhook_event returned a NULL pk for event_id=%s — "
+            "cannot safely mark processed; rejecting for retry",
+            adapter.vendor, event_id,
+        )
+        return JSONResponse(
+            _json_safe({"error": "ledger_write_failed"}), status_code=500
+        )
 
     # ------------------------------------------------------------------ step 8
     if not sig_ok:
@@ -200,16 +292,25 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
         return JSONResponse(_json_safe({"error": "invalid_signature"}), status_code=400)
 
     # ------------------------------------------------------------------ step 9
-    if not is_new:
+    # #2 reprocess-after-crash: distinguish a FINISHED replay (already_processed)
+    # from a recorded-but-unfinished one (a crash between the ledger INSERT and
+    # mark_event_processed).  Only the finished case is a true duplicate; the
+    # unfinished case must RE-DISPATCH the (idempotent) grant/update/revoke so a
+    # paid grant interrupted by a crash is not lost.
+    if already_processed:
         logger.debug(
-            "%s_webhook: duplicate event_id=%s — returning 200", adapter.vendor, event_id
+            "%s_webhook: event_id=%s already processed — returning 200 duplicate",
+            adapter.vendor, event_id,
         )
         return JSONResponse(_json_safe({"status": "duplicate"}), status_code=200)
+    if not is_new:
+        logger.warning(
+            "%s_webhook: event_id=%s was recorded but never processed "
+            "(prior crash?) — RE-DISPATCHING idempotently to self-heal",
+            adapter.vendor, event_id,
+        )
 
     # ------------------------------------------------------------------ step 10
-    # Unmapped event_type → ack WITHOUT dispatch, but make it ops-VISIBLE: record
-    # a descriptive processing_error on the ledger row and log at WARNING so a
-    # newly-emitted event type we forgot to map surfaces in monitoring.
     action = adapter.event_action_fn(event_type)
     if action is None:
         ignore_msg = f"unmapped event_type={event_type!r}"
@@ -221,20 +322,16 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
 
     data_dict = raw_payload.get("data") or {}
 
+    # CR1/#5 — extract the commercial snapshot + event timestamp through the
+    # adapter (no Polar field names leak into the pipeline).
+    last_event_at = adapter.extract_event_at_fn(request.headers, enriched_payload)
+
     # ------------------------------------------------------------------ step 11
-    # Resolve plan_id ONLY for actions that need it (grant / update).  A revoke
-    # (cancellation / refund) carries no product_id, so resolving here would raise
-    # and block the cancellation entirely — the customer would cancel yet KEEP
-    # paid access.  Revoke skips resolution outright.
     plan_id: int | None = None
     if action in ("grant", "update"):
         try:
             plan_id = adapter.resolve_plan_fn(enriched_payload)
         except ValueError as exc:
-            # Distinguish a genuinely-unknown product from an unconfigured map.
-            # Either way a real first purchase is at stake → ops-LOUD: ERROR log +
-            # config_error status + a queryable processing_error.  HTTP stays 200
-            # so the vendor does not hammer the endpoint while ops fix the map.
             logger.error(
                 "%s_webhook: CONFIG/PRODUCT error resolving plan for event_id=%s "
                 "event_type=%s — %s",
@@ -250,51 +347,82 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
     sub_id: int | None = None
     try:
         if action == "grant":
+            period_start, period_end, trial_ends_at = adapter.extract_period_fn(data_dict)
             grant = EntitlementGrant(
                 plan_id=plan_id,
                 external_ref=external_ref,
                 source=adapter.vendor,
                 buyer_email=buyer_email,
-                seats=int(data_dict.get("seats") or 1),
-                amount_cents=data_dict.get("amount"),
-                currency=data_dict.get("currency"),
+                seats=adapter.extract_seats_fn(data_dict),
+                amount_cents=adapter.extract_amount_fn(data_dict),
+                currency=adapter.extract_currency_fn(data_dict),
                 # Normalize raw vendor enum-ish tokens before they reach SQL.  A
                 # raw 'month'/'year' would violate the billing_interval CHECK →
-                # IntegrityError → caught below → 200 → subscription silently lost.
+                # IntegrityError → permanent → 200 → subscription silently lost.
+                # The adapter's extractor pulls the RAW token from the vendor's
+                # own field (Polar = recurring_interval) so no vendor field name
+                # is hard-coded here.
                 billing_interval=adapter.normalize_interval_fn(
-                    data_dict.get("billing_interval")
+                    adapter.extract_interval_fn(data_dict)
                 ),
+                current_period_start=period_start,
+                current_period_end=period_end,
+                trial_ends_at=trial_ends_at,
             )
-            sub_id = activation.grant_entitlement(grant)
+            sub_id = activation.grant_entitlement(grant, last_event_at=last_event_at)
 
         elif action == "update":
             # Derive the REAL status from the payload instead of forcing 'active'.
             # A past_due / paused / trialing update must not silently keep a
             # non-paying subscriber on full paid access.
             mapped_status = adapter.map_status_fn(raw_payload or {})
+            period_start, period_end, trial_ends_at = adapter.extract_period_fn(data_dict)
             sub_id = activation.update_entitlement(
                 external_ref,
                 plan_id=plan_id,
                 status=mapped_status,
+                seats=adapter.extract_seats_fn(data_dict),
+                current_period_start=period_start,
+                current_period_end=period_end,
+                trial_ends_at=trial_ends_at,
+                last_event_at=last_event_at,
             )
 
         elif action == "revoke":
             sub = subs.get_by_external_ref(external_ref)
             if sub is not None:
                 sub_id = sub["id"]
-            activation.revoke_entitlement(external_ref, reason=event_type)
+            activation.revoke_entitlement(
+                external_ref, reason=event_type, last_event_at=last_event_at
+            )
 
-    except Exception as exc:
+    except _PERMANENT_DISPATCH_ERRORS as exc:
+        # #6 PERMANENT: bad/poison data that will NEVER succeed as delivered.  Ack
+        # (200) + mark processed-with-error so the vendor stops retrying a broken
+        # event; the processing_error makes it ops-queryable.
         logger.error(
-            "%s_webhook: dispatch error for event_id=%s action=%s — %s",
+            "%s_webhook: PERMANENT dispatch error for event_id=%s action=%s — %s",
             adapter.vendor, event_id, action, exc, exc_info=True,
         )
         subs.mark_event_processed(event_pk, sub_id, error=str(exc))
-        # Return 200 to prevent the vendor from retrying a permanently-broken
-        # event; processing_error is set in the ledger for ops investigation.
         return JSONResponse(
-            _json_safe({"status": "error", "detail": "internal processing error"}),
+            _json_safe({"status": "error", "detail": "permanent processing error"}),
             status_code=200,
+        )
+    except Exception as exc:
+        # #6 TRANSIENT: a momentary failure (OperationalError, DB pool timeout,
+        # network blip, anything not classified permanent).  Do NOT mark
+        # processed — leave the ledger row unfinished so the vendor's retry
+        # RE-DISPATCHES it (step 9), and return 5xx to ASK for that retry.  This
+        # is the money-safe default: when unsure, retry rather than drop the grant.
+        logger.error(
+            "%s_webhook: TRANSIENT dispatch error for event_id=%s action=%s — "
+            "NOT marking processed, returning 5xx for vendor retry — %s",
+            adapter.vendor, event_id, action, exc, exc_info=True,
+        )
+        return JSONResponse(
+            _json_safe({"status": "retry", "detail": "transient processing error"}),
+            status_code=503,
         )
 
     # ------------------------------------------------------------------ step 13

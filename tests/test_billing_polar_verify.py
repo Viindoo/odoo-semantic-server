@@ -477,8 +477,27 @@ class TestNormalizeBillingInterval:
     def test_known_intervals_map_to_enum(self, raw, expected):
         assert normalize_billing_interval(raw) == expected
 
-    @pytest.mark.parametrize("raw", ["weekly", "biennial", "", "bogus", None, 5, {}])
-    def test_unknown_or_non_string_returns_none(self, raw):
+    @pytest.mark.parametrize("raw", ["day", "daily", "week", "weekly", "  WEEK "])
+    def test_day_and_week_fall_back_to_monthly(self, raw):
+        """FIX-D: Polar's day/week recurring_interval has no own enum value; it
+        falls back to 'monthly' (a valid CHECK value) so a paid grant is never
+        dropped on a NULL/CHECK violation.  OWNER-FLAG: revisit if we sell
+        day/week products."""
+        assert normalize_billing_interval(raw) == "monthly"
+
+    @pytest.mark.parametrize("raw", [None, "", "   ", 5, {}, ["x"]])
+    def test_missing_recurring_interval_is_one_time(self, raw):
+        """FIX-D: Polar sends recurring_interval=null (or omits it) for a ONE-TIME
+        order.  A non-string / empty value must map to 'one_time', NOT NULL — a
+        NULL would lose the one-time purchase classification on the subscription
+        snapshot."""
+        assert normalize_billing_interval(raw) == "one_time"
+
+    @pytest.mark.parametrize("raw", ["biennial", "bogus", "fortnightly"])
+    def test_unknown_recurring_string_returns_none(self, raw):
+        """A non-empty but UNRECOGNISED interval string maps to None so the caller
+        stores NULL (CHECK permits NULL) rather than a value that would violate
+        the constraint — a forward-compat guard for a new Polar enum value."""
         assert normalize_billing_interval(raw) is None
 
 
@@ -490,7 +509,9 @@ class TestMapSubscriptionStatus:
             ("trialing", "trialing"),
             ("trial", "trialing"),
             ("past_due", "past_due"),
-            ("unpaid", "past_due"),
+            # Polar 'unpaid' is a TERMINAL payment failure → 'expired' (money-safe
+            # downgrade), NOT 'past_due' (which is a retry-in-progress).
+            ("unpaid", "expired"),
             ("canceled", "cancelled"),   # US spelling
             ("cancelled", "cancelled"),
             ("revoked", "cancelled"),
@@ -503,6 +524,14 @@ class TestMapSubscriptionStatus:
     )
     def test_known_statuses_map_to_enum(self, raw, expected):
         assert map_subscription_status({"data": {"status": raw}}) == expected
+
+    def test_unpaid_maps_to_terminal_expired_not_past_due(self):
+        """Polar 'unpaid' is a definitive payment failure (terminal), not a
+        dunning retry.  It MUST map to 'expired' (a terminal status that drives
+        the CR3 key downgrade) and NOT to 'past_due' — leaving a non-paying
+        subscriber on 'past_due' would keep full paid access while not paying."""
+        assert map_subscription_status({"data": {"status": "unpaid"}}) == "expired"
+        assert map_subscription_status({"data": {"status": "UNPAID"}}) == "expired"
 
     def test_unknown_status_defaults_to_active(self):
         assert map_subscription_status({"data": {"status": "weird"}}) == "active"
@@ -524,3 +553,87 @@ class TestMapSubscriptionStatus:
             "incomplete", "incomplete_expired", "pending", "weird-unknown",
         ):
             assert map_subscription_status({"data": {"status": raw}}) in valid
+
+
+# ---------------------------------------------------------------------------
+# FIX-E: outbound cancel HTTP contract — Polar has NO DELETE on subscriptions.
+#   cancel-at-period-end : PATCH {"cancel_at_period_end": true}
+#   immediate            : PATCH {"revoke": true}
+# These tests intercept the httpx request to assert the method + JSON body the
+# client sends, with NO real network call (no DB either).
+# ---------------------------------------------------------------------------
+
+
+class _CapturingResponse:
+    """Minimal httpx-response stand-in returning a 200 JSON body."""
+
+    status_code = 200
+    text = "{}"
+
+    def json(self):
+        return {"id": "sub_x", "status": "revoked"}
+
+
+class _CapturingAsyncClient:
+    """Records the (method, url, json) of the single request the cancel makes."""
+
+    captured: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def request(self, method, url, *, headers=None, json=None):
+        type(self).captured = {"method": method, "url": url, "json": json,
+                               "headers": headers}
+        return _CapturingResponse()
+
+
+class TestOutboundCancelHttpContract:
+    @pytest.mark.asyncio
+    async def test_immediate_cancel_uses_patch_with_revoke_body(self, monkeypatch):
+        """FIX-E: an immediate cancel (at_period_end=False) must issue a PATCH with
+        body {"revoke": true} — Polar exposes no DELETE on /v1/subscriptions, and a
+        DELETE would 404/405 and leave the user still billed."""
+        import src.billing.polar_api as polar_api
+        from src.web_ui import config as web_config
+
+        monkeypatch.setattr(web_config, "POLAR_API_KEY", "polar_test_token")
+        monkeypatch.setattr(polar_api.httpx, "AsyncClient", _CapturingAsyncClient)
+        _CapturingAsyncClient.captured = {}
+
+        result = await polar_api.cancel_subscription("sub_imm_001", at_period_end=False)
+
+        cap = _CapturingAsyncClient.captured
+        assert cap["method"] == "PATCH", (
+            f"immediate cancel must PATCH (Polar has no DELETE), got {cap['method']!r}"
+        )
+        assert cap["json"] == {"revoke": True}, (
+            f"immediate cancel body must be {{'revoke': True}}, got {cap['json']!r}"
+        )
+        assert cap["url"].endswith("/v1/subscriptions/sub_imm_001")
+        assert result == {"id": "sub_x", "status": "revoked"}
+
+    @pytest.mark.asyncio
+    async def test_period_end_cancel_uses_patch_with_schedule_flag(self, monkeypatch):
+        """The at_period_end path (the in-app default) stays PATCH
+        {"cancel_at_period_end": true} — unchanged by FIX-E."""
+        import src.billing.polar_api as polar_api
+        from src.web_ui import config as web_config
+
+        monkeypatch.setattr(web_config, "POLAR_API_KEY", "polar_test_token")
+        monkeypatch.setattr(polar_api.httpx, "AsyncClient", _CapturingAsyncClient)
+        _CapturingAsyncClient.captured = {}
+
+        await polar_api.cancel_subscription("sub_pe_001", at_period_end=True)
+
+        cap = _CapturingAsyncClient.captured
+        assert cap["method"] == "PATCH"
+        assert cap["json"] == {"cancel_at_period_end": True}, (
+            f"period-end cancel body must set cancel_at_period_end, got {cap['json']!r}"
+        )
