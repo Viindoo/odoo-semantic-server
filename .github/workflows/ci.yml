@@ -196,6 +196,10 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: site
 
+      - name: Type-check Astro (astro check)
+        run: pnpm check
+        working-directory: site
+
       - name: Build Astro site
         run: pnpm build
         working-directory: site

@@ -3,25 +3,7 @@
 // Handles: NumberSlider, DurationPicker, ToggleSwitch, TextInput, TagListInput
 import { useState, useCallback } from 'react';
 import { withStepUp } from '../../../lib/mfaStepUp';
-
-type DataType = 'int' | 'float' | 'str' | 'bool' | 'duration_seconds' | 'list_str' | 'struct';
-
-export interface SettingDef {
-  key: string;
-  value: unknown;
-  default_value: unknown;
-  data_type: DataType;
-  validation: { min?: number; max?: number; enum?: string[]; regex?: string } | null;
-  description: string;
-  requires_restart: boolean;
-  requires_reseed: boolean;
-  is_secret: boolean;
-  tenant_scopable: boolean;
-  effective_source?: string;
-  updated_at?: string | null;
-  updated_by?: number | null;
-  change_reason?: string | null;
-}
+import type { SettingDef } from '../../../lib/settings-types';
 
 // ─── Flash helper ────────────────────────────────────────────────────────────
 

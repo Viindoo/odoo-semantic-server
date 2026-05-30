@@ -5,25 +5,7 @@
 // the tenant endpoint contract (effective_value / tenant_override / system_default).
 import { useState, useCallback } from 'react';
 import { withStepUp } from '../../../lib/mfaStepUp';
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-type DataType = 'int' | 'float' | 'str' | 'bool' | 'duration_seconds' | 'list_str' | 'struct';
-
-export interface TenantSettingDef {
-  key: string;
-  effective_value: unknown;
-  effective_source: 'tenant_override' | 'system_or_default';
-  tenant_override: unknown;
-  system_default: unknown;
-  category: string;
-  data_type: DataType;
-  validation: { min?: number; max?: number; enum?: string[]; regex?: string } | null;
-  description: string;
-  updated_at: string | null;
-  updated_by: number | null;
-  change_reason: string | null;
-}
+import type { TenantSettingDef } from '../../../lib/settings-types';
 
 interface Props {
   tenantId: number;

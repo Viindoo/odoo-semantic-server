@@ -7,6 +7,7 @@
 import TenantLayout from '../../../layouts/TenantLayout.astro';
 import TenantSettingsIsland from './_tenant-settings-island';
 import { FASTAPI_BASE } from '../../../lib/fastapi';
+import type { TenantSettingDef } from '../../../lib/settings-types';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
@@ -14,21 +15,6 @@ type TenantEntry = {
   tenant_id: number;
   name: string;
   role: string;
-};
-
-type TenantSettingDef = {
-  key: string;
-  effective_value: unknown;
-  effective_source: 'tenant_override' | 'system_or_default';
-  tenant_override: unknown;
-  system_default: unknown;
-  category: string;
-  data_type: string;
-  validation: Record<string, unknown> | null;
-  description: string;
-  updated_at: string | null;
-  updated_by: number | null;
-  change_reason: string | null;
 };
 
 let allTenants: TenantEntry[] = [];
@@ -144,11 +130,14 @@ const overriddenCount = settings.filter((s) => s.effective_source === 'tenant_ov
           ))}
         </select>
         <script>
-          document.getElementById('tenant-selector').addEventListener('change', function (e) {
-            const url = new URL(window.location.href);
-            url.searchParams.set('tenant_id', e.target.value);
-            window.location.href = url.toString();
-          });
+          const sel = document.getElementById('tenant-selector');
+          if (sel instanceof HTMLSelectElement) {
+            sel.addEventListener('change', () => {
+              const url = new URL(window.location.href);
+              url.searchParams.set('tenant_id', sel.value);
+              window.location.href = url.toString();
+            });
+          }
         </script>
       </div>
     )}
