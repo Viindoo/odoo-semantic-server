@@ -65,7 +65,7 @@ BEGIN
     END IF;
 END $$;
 
--- ===== 2. FREE/UNLIMITED SEED — zero-price plans (no desync risk) =====
+-- ===== 2. FREE/UNLIMITED SEED — zero-price plans =====
 -- #12 seed desync fix: the PAID-plan seed (pro/team) is intentionally NOT here.
 -- It is deferred to section 6.3 as a SINGLE combined UPDATE that guards BOTH
 -- price_cents AND prices in one sentinel, so an admin who edits either field
@@ -79,10 +79,17 @@ END $$;
 -- Free quota bump 100 -> 200 (report 03 §6).
 UPDATE plans SET quota_calls_per_month = 200
     WHERE slug = 'free' AND quota_calls_per_month = 100;
--- Free/unlimited: currency + interval (both are zero-price by design; no desync risk).
+-- Free/unlimited: currency + interval.
+-- Guard: AND currency = 'USD' — sentinel against admin who changed currency (e.g. 'EUR').
+-- billing_interval defaults to 'free' for the column so it is also included as a sentinel.
+-- On first-run both columns are at their DEFAULT values (USD / free) → seed applies.
+-- On re-run after admin edit (e.g. free.currency='EUR') → guard fails → no revert.
+-- This mirrors the dual-sentinel principle used for the paid-plan seed in §6.3.
 UPDATE plans SET currency = 'USD', billing_interval = 'free'
     WHERE slug IN ('free', 'unlimited')
-      AND price_cents = 0 AND billing_interval = 'free';
+      AND price_cents = 0
+      AND currency = 'USD'
+      AND billing_interval = 'free';
 -- Enterprise = unlimited slug + per-key overrides + manual invoice (no public price row).
 
 -- ===== 3. subscriptions (commercial-only, integer FKs, NO limit cols) =====
@@ -271,11 +278,11 @@ ALTER TABLE subscriptions
 
 -- 6.2 prices JSONB on plans (per-currency map)
 -- Additive alongside existing scalar price_cents/currency (default-display currency).
--- Example: {"USD": 1900, "VND": 490000}
--- IMPORTANT: VND is zero-decimal — prices['VND'] is whole VND, NOT cents.
---   price_cents semantics = USD cents (or display-currency minor unit).
---   prices["VND"]  semantics = whole Vietnamese Dong.
---   NEVER multiply prices["VND"] by 100. This is documented here and in ADR-0039 C3.
+-- Current seed is USD-only: {"USD": 1900}  (multi-currency display deferred to P2).
+-- FUTURE NOTE (when VND is added): VND is zero-decimal — prices['VND'] is whole VND,
+--   NOT cents. price_cents semantics = USD cents (or display-currency minor unit).
+--   prices["VND"] semantics = whole Vietnamese Dong.
+--   NEVER multiply prices["VND"] by 100. Document in ADR-0039 C3 when implemented.
 ALTER TABLE plans
     ADD COLUMN IF NOT EXISTS prices JSONB NOT NULL DEFAULT '{}'::jsonb;
 
