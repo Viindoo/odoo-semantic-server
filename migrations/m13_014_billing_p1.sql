@@ -294,22 +294,22 @@ ALTER TABLE plans
 -- New vendor: ALTER TABLE ... DROP CONSTRAINT subscriptions_source_check;
 --             ADD CONSTRAINT ... CHECK (source IN ('polar','erp','admin','promo','paddle'));
 
--- Pro: $19/seat/mo USD; VND 490,000/seat/mo (whole dong, not cents).
+-- Pro: $19/seat/mo USD. Multi-currency display deferred; VND key removed from prices.
 UPDATE plans
    SET price_cents      = 1900,
        currency         = 'USD',
        billing_interval = 'monthly',
-       prices           = '{"USD": 1900, "VND": 490000}'::jsonb
+       prices           = '{"USD": 1900}'::jsonb
  WHERE slug = 'pro'
    AND price_cents = 0
    AND prices = '{}'::jsonb;
 
--- Team: $39/seat/mo USD; VND 990,000/seat/mo.
+-- Team: $39/seat/mo USD. Multi-currency display deferred; VND key removed from prices.
 UPDATE plans
    SET price_cents      = 3900,
        currency         = 'USD',
        billing_interval = 'monthly',
-       prices           = '{"USD": 3900, "VND": 990000}'::jsonb
+       prices           = '{"USD": 3900}'::jsonb
  WHERE slug = 'team'
    AND price_cents = 0
    AND prices = '{}'::jsonb;

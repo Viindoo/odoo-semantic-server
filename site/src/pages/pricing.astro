@@ -81,32 +81,24 @@ function isHighlighted(plan: Plan, all: Plan[]): boolean {
   return plan.id === paidPlans[0]?.id;
 }
 
-// Format a price for display given a currency preference.
-// USD and EUR are cent-based (/100); VND is zero-decimal.
-function formatPrice(plan: Plan, currency: 'USD' | 'VND'): string {
-  // If the plan is free tier, show $0 / 0 ₫ (distinct from the plan name "Free")
+// Format a price for display in USD (cent-based, /100).
+function formatPrice(plan: Plan): string {
+  // If the plan is free tier, show $0 (distinct from the plan name "Free")
   if (!plan.billing_interval || plan.billing_interval === 'free') {
-    return currency === 'VND' ? '0 ₫' : '$0';
+    return '$0';
   }
   // Try the per-currency prices map first (C3 — ADR-0039)
   if (plan.prices && typeof plan.prices === 'object') {
-    const raw = plan.prices[currency];
+    const raw = plan.prices['USD'];
     if (raw !== undefined) {
-      if (currency === 'VND') {
-        // VND stored as whole VND (zero-decimal — ADR-0039 C3 note)
-        return `${Number(raw).toLocaleString('en-US')} ₫`;
-      }
-      // USD: stored as cents
       const usd = Number(raw) / 100;
       return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
     }
   }
   // Fallback to scalar price_cents (USD cents)
   if (plan.price_cents !== null && plan.price_cents !== undefined) {
-    if (currency === 'USD' || !plan.currency || plan.currency.toUpperCase() === 'USD') {
-      const usd = plan.price_cents / 100;
-      return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-    }
+    const usd = plan.price_cents / 100;
+    return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   }
   return 'Contact us';
 }
@@ -157,24 +149,6 @@ function planDescription(slug: string): string {
       <p class="text-gray-400 text-lg max-w-xl mx-auto">
         Simple, transparent tiers for every team size.
       </p>
-
-      <!-- Currency toggle (USD / VND) — client-side -->
-      <div class="mt-6 inline-flex items-center bg-gray-900 border border-gray-700 rounded-xl p-1 gap-1">
-        <button
-          id="btn-usd"
-          data-currency="USD"
-          class="currency-btn px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors bg-viindoo-primary text-viindoo-bg-0"
-        >
-          USD
-        </button>
-        <button
-          id="btn-vnd"
-          data-currency="VND"
-          class="currency-btn px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors text-gray-400 hover:text-white"
-        >
-          VND
-        </button>
-      </div>
     </div>
 
     {plansError && (
@@ -220,13 +194,10 @@ function planDescription(slug: string): string {
                 </h2>
                 <p class="text-gray-400 text-xs mb-3">{planDescription(plan.slug)}</p>
 
-                <!-- Price display — currency-toggled via JS -->
+                <!-- Price display — USD only -->
                 <div class="price-block text-2xl font-semibold text-gray-300">
-                  <span class="price-usd" data-plan={plan.slug}>
-                    {formatPrice(plan, 'USD')}
-                  </span>
-                  <span class="price-vnd hidden" data-plan={plan.slug}>
-                    {formatPrice(plan, 'VND')}
+                  <span data-plan={plan.slug}>
+                    {formatPrice(plan)}
                   </span>
                   {!isFree && plan.billing_interval && (
                     <span class="text-gray-400 text-sm font-normal ml-1">
@@ -471,32 +442,6 @@ function planDescription(slug: string): string {
 </BaseLayout>
 
 <script>
-  // ---- Currency toggle ----
-  const usdBtn = document.getElementById('btn-usd') as HTMLButtonElement | null;
-  const vndBtn = document.getElementById('btn-vnd') as HTMLButtonElement | null;
-
-  function setCurrency(cur: 'USD' | 'VND') {
-    const activeClass = ['bg-viindoo-primary', 'text-viindoo-bg-0'];
-    const inactiveClass = ['text-gray-400', 'hover:text-white'];
-
-    [usdBtn, vndBtn].forEach((btn) => {
-      if (!btn) return;
-      const isActive = btn.dataset.currency === cur;
-      activeClass.forEach((c) => btn.classList.toggle(c, isActive));
-      inactiveClass.forEach((c) => btn.classList.toggle(c, !isActive));
-    });
-
-    document.querySelectorAll('.price-usd').forEach((el) => {
-      (el as HTMLElement).classList.toggle('hidden', cur !== 'USD');
-    });
-    document.querySelectorAll('.price-vnd').forEach((el) => {
-      (el as HTMLElement).classList.toggle('hidden', cur !== 'VND');
-    });
-  }
-
-  usdBtn?.addEventListener('click', () => setCurrency('USD'));
-  vndBtn?.addEventListener('click', () => setCurrency('VND'));
-
   // ---- Waitlist form ----
   const form = document.getElementById('waitlist-form') as HTMLFormElement | null;
   const emailInput = document.getElementById('waitlist-email') as HTMLInputElement | null;

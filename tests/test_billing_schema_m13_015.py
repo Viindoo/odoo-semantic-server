@@ -7,8 +7,8 @@ Business intent:
       expected columns/defaults exist (cancel_at_period_end, prices, terms_accepted_at).
   S2  cancel_at_period_end DEFAULT FALSE is present on subscriptions.
   S3  prices JSONB DEFAULT '{}' is present on plans.
-  S4  Prices seed applied: pro gets {"USD": 1900, "VND": 490000},
-      team gets {"USD": 3900, "VND": 990000}, free/unlimited get {"USD": 0}.
+  S4  Prices seed applied: pro gets {"USD": 1900}, team gets {"USD": 3900},
+      free/unlimited get {"USD": 0}. VND display deferred — no VND key in seed.
   S5  Seed is NOT clobbered on re-run (guard condition check).
   S6  terms_accepted_at TIMESTAMPTZ column exists on webui_users, nullable, idempotent.
   S7  schedule_cancellation sets cancel_at_period_end=TRUE + cancelled_at,
@@ -148,8 +148,9 @@ class TestM13015PricesSeed:
         assert prices.get("USD") == 1900, (
             f"pro USD price must be 1900 cents, got {prices!r}"
         )
-        assert prices.get("VND") == 490000, (
-            f"pro VND price must be 490000 (whole dong), got {prices!r}"
+        # VND display deferred — prices seed is USD-only; no VND key expected.
+        assert "VND" not in prices, (
+            f"pro prices must not contain VND key (USD-only display), got {prices!r}"
         )
 
     def test_team_prices_seeded(self, migrated_pg):
@@ -158,8 +159,9 @@ class TestM13015PricesSeed:
         assert prices.get("USD") == 3900, (
             f"team USD price must be 3900 cents, got {prices!r}"
         )
-        assert prices.get("VND") == 990000, (
-            f"team VND price must be 990000 (whole dong), got {prices!r}"
+        # VND display deferred — prices seed is USD-only; no VND key expected.
+        assert "VND" not in prices, (
+            f"team prices must not contain VND key (USD-only display), got {prices!r}"
         )
 
     def test_free_prices_seeded(self, migrated_pg):
