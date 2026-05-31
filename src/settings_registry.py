@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SETTINGS_CATALOGUE — 28 admin-tunable settings.
+"""SETTINGS_CATALOGUE — 29 admin-tunable settings.
 
 16 original Tier-1 entries (ADR-0042) + 11 billing.* entries added in M10B P1 (ADR-0039)
-+ 1 support.* entry (helpdesk URL, WI-1 pricing UX overhaul).
++ 1 support.* entry (helpdesk URL, WI-1 pricing UX overhaul)
++ 1 analytics.* entry (GA4 measurement ID, WI-1).
 
 Each entry registers default + validation + metadata. Bootstrap inserts rows
 into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).
@@ -219,6 +220,16 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
             "Surfaced live on the pricing page and GET /api/site-config (within the 60s "
             "settings TTL). Static pages (terms/privacy/refund/account) use a build-time "
             "default synced from this value; changing it there needs a site rebuild."
+        ),
+    ),
+
+    # analytics category (GA4 — data-driven measurement ID)
+    SettingDef(
+        "analytics.ga_measurement_id", "analytics", "str", "", {},
+        description=(
+            "Google Analytics 4 measurement ID (e.g. 'G-XXXXXXXX') injected into "
+            "public pages via GET /api/site-config. Empty = analytics disabled. "
+            "Admin-tunable; data-driven so changing it needs no site rebuild."
         ),
     ),
 ]
