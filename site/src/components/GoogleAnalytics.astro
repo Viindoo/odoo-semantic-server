@@ -1,0 +1,46 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+/**
+ * GoogleAnalytics — injects GA4 with Consent Mode v2 (all consent denied by default).
+ * Renders nothing when gaId is empty/falsy so disabling analytics = empty setting.
+ */
+export interface Props {
+  gaId: string;
+}
+
+const { gaId } = Astro.props;
+---
+
+{gaId && (
+  <>
+    {/* GA4 loader — async so it never blocks rendering */}
+    <script async src={`https://www.googletagmanager.com/gtag/js?id=${gaId}`}></script>
+    {/*
+      Consent Mode v2 init: all storage denied by default.
+      `is:inline` prevents Astro/Vite from bundling this script so the global
+      `window.gtag` assignment and `dataLayer` manipulation execute immediately
+      before any other GA network request fires.
+      If a previous visit already granted consent the stored preference is
+      restored from localStorage so returning visitors are not re-prompted.
+    */}
+    <script is:inline define:vars={{ gaId }}>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      window.gtag = gtag;
+      gtag('consent', 'default', {
+        ad_storage: 'denied',
+        analytics_storage: 'denied',
+        ad_user_data: 'denied',
+        ad_personalization: 'denied',
+      });
+      gtag('js', new Date());
+      gtag('config', gaId, { anonymize_ip: true });
+      // Restore consent for returning visitors who previously accepted.
+      try {
+        if (localStorage.getItem('osm_analytics_consent') === 'granted') {
+          gtag('consent', 'update', { analytics_storage: 'granted' });
+        }
+      } catch (e) {}
+    </script>
+  </>
+)}

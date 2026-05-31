@@ -31,15 +31,21 @@ const _HCAPTCHA_PATHS = new Set(['/signup']);
  * connect-src 'self' — React islands fetch /api/* via same-origin proxy.
  * form-action 'self' — OAuth redirect is browser navigation, NOT a form submit;
  *   form-action 'self' does not block it.
+ *
+ * Google Analytics 4 / Consent Mode v2 origins (GoogleAnalytics.astro):
+ *   - script-src   https://www.googletagmanager.com — loads gtag/js loader script
+ *   - connect-src  https://www.google-analytics.com — GA4 beacon / collect endpoint
+ *                  https://www.googletagmanager.com — GTM tag configuration fetch
+ *   - img-src already permits https: (GA pixels) — no change needed.
  */
 function _defaultCspDirectives(): Record<string, string[]> {
   return {
     'default-src': ["'self'"],
-    'script-src': ["'self'", "'unsafe-inline'"],
+    'script-src': ["'self'", "'unsafe-inline'", 'https://www.googletagmanager.com'],
     'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'https:'],
     'font-src': ["'self'", 'data:'],
-    'connect-src': ["'self'"],
+    'connect-src': ["'self'", 'https://www.google-analytics.com', 'https://www.googletagmanager.com'],
     'frame-src': ["'self'"],
     'frame-ancestors': ["'none'"],
     'base-uri': ["'self'"],

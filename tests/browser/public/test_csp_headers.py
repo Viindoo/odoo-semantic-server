@@ -15,11 +15,20 @@ Background (PR #118 reviewer follow-up — both reviewers, same finding):
   origins on /signup only — NOT on /, NOT on /admin/* — to keep the
   third-party-script blast-radius minimal.
 
+GA4 / Consent Mode v2 (GoogleAnalytics.astro — all pages via BaseLayout):
+  The default CSP now includes Google Analytics origins so the gtag loader
+  and beacon are not blocked. These are granted globally (not path-scoped)
+  because the GA snippet is injected in BaseLayout on every public page.
+    - script-src  https://www.googletagmanager.com
+    - connect-src https://www.google-analytics.com
+                  https://www.googletagmanager.com
+
 Tests:
   1. /signup CSP includes js.hcaptcha.com, api.hcaptcha.com, newassets.hcaptcha.com
   2. / (landing) CSP does NOT include any hCaptcha origin
   3. /admin/login CSP does NOT include any hCaptcha origin
   4. All paths still carry Permissions-Policy with the expected disables
+  5. Default CSP (all paths) includes GA4 origins in script-src and connect-src
 """
 import urllib.error
 import urllib.request
@@ -78,6 +87,51 @@ class TestSignupCspHcaptcha:
         headers = _get_headers(f"{astro_server}/signup")
         assert "permissions-policy" in headers
         assert "camera=()" in headers["permissions-policy"]
+
+
+class TestDefaultCspIncludesGaOrigins:
+    """Default CSP must include GA4 origins on all SSR paths (BaseLayout injects GA snippet).
+
+    GA origins are added to _defaultCspDirectives() in middleware.ts so they
+    are present on every response — not gated on a specific path like hCaptcha.
+    """
+
+    def test_login_script_src_includes_googletagmanager(self, astro_server):
+        csp = _get_headers(f"{astro_server}/login")["content-security-policy"]
+        directives = {d.strip().split(" ", 1)[0]: d.strip() for d in csp.split(";") if d.strip()}
+        script_src = directives.get("script-src", "")
+        assert "https://www.googletagmanager.com" in script_src, (
+            f"script-src must allow googletagmanager.com (GA4 loader); got: {script_src!r}"
+        )
+
+    def test_login_connect_src_includes_google_analytics(self, astro_server):
+        csp = _get_headers(f"{astro_server}/login")["content-security-policy"]
+        directives = {d.strip().split(" ", 1)[0]: d.strip() for d in csp.split(";") if d.strip()}
+        connect_src = directives.get("connect-src", "")
+        assert "https://www.google-analytics.com" in connect_src, (
+            f"connect-src must allow google-analytics.com (GA4 beacon); got: {connect_src!r}"
+        )
+        assert "https://www.googletagmanager.com" in connect_src, (
+            f"connect-src must allow googletagmanager.com (GTM config fetch); got: {connect_src!r}"
+        )
+
+    def test_signup_script_src_includes_googletagmanager(self, astro_server):
+        """GA origins must also be present on /signup (which also adds hCaptcha)."""
+        csp = _get_headers(f"{astro_server}/signup")["content-security-policy"]
+        directives = {d.strip().split(" ", 1)[0]: d.strip() for d in csp.split(";") if d.strip()}
+        script_src = directives.get("script-src", "")
+        assert "https://www.googletagmanager.com" in script_src, (
+            f"script-src must allow googletagmanager.com on /signup too; got: {script_src!r}"
+        )
+
+    def test_signup_connect_src_includes_google_analytics(self, astro_server):
+        """GA connect-src must also be present on /signup alongside hCaptcha origins."""
+        csp = _get_headers(f"{astro_server}/signup")["content-security-policy"]
+        directives = {d.strip().split(" ", 1)[0]: d.strip() for d in csp.split(";") if d.strip()}
+        connect_src = directives.get("connect-src", "")
+        assert "https://www.google-analytics.com" in connect_src, (
+            f"connect-src must allow google-analytics.com on /signup; got: {connect_src!r}"
+        )
 
 
 class TestNonHcaptchaPathsDoNotLeakAllowlist:
