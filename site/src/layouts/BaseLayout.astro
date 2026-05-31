@@ -5,7 +5,6 @@ import SiteFooter from '../components/SiteFooter.astro';
 import GoogleAnalytics from '../components/GoogleAnalytics.astro';
 import CookieConsentBanner from '../components/CookieConsentBanner';
 import { BRAND_FULL } from '../lib/constants';
-import { FASTAPI_BASE } from '../lib/fastapi';
 
 export interface Props {
   title?: string;
@@ -29,15 +28,6 @@ const {
   provideMain = true,
 } = Astro.props;
 const isDark = theme === 'dark';
-// Fetch GA measurement ID from site-config (SSR). Empty string = analytics off.
-let gaId = '';
-try {
-  const r = await fetch(`${FASTAPI_BASE}/api/site-config`);
-  if (r.ok) {
-    const d = await r.json() as { ga_measurement_id?: unknown };
-    gaId = typeof d.ga_measurement_id === 'string' ? d.ga_measurement_id : '';
-  }
-} catch { /* site-config unavailable — proceed without analytics */ }
 // Absolute URL for social-card image (OG/Twitter need absolute). Prefer the
 // configured Astro.site so self-hosted deploys emit their own origin.
 const siteOrigin = Astro.site ?? new URL('https://odoo-semantic.viindoo.com');
@@ -86,7 +76,7 @@ const orgJsonLd = JSON.stringify({
     <meta name="twitter:image" content={ogImage} />
     <title>{title}</title>
     <script type="application/ld+json" set:html={orgJsonLd} />
-    <GoogleAnalytics gaId={gaId} />
+    <GoogleAnalytics />
     <slot name="head" />
   </head>
   <body>
@@ -103,6 +93,6 @@ const orgJsonLd = JSON.stringify({
       <slot />
     )}
     {showFooter && <SiteFooter />}
-    {gaId && <CookieConsentBanner client:load />}
+    <CookieConsentBanner client:load />
   </body>
 </html>

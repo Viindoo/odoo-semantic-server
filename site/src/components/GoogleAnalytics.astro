@@ -1,46 +1,55 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /**
- * GoogleAnalytics — injects GA4 with Consent Mode v2 (all consent denied by default).
- * Renders nothing when gaId is empty/falsy so disabling analytics = empty setting.
+ * GoogleAnalytics — GA4 with Consent Mode v2, fully runtime / data-driven.
+ *
+ * The measurement ID is fetched CLIENT-SIDE from the public GET /api/site-config
+ * at page load — NOT baked at build time. This is deliberate: the landing page
+ * and /benchmark are prerendered (static HTML), so a build-time value would (a)
+ * require FASTAPI to be up during `pnpm build` and (b) force a site rebuild to
+ * change or disable the ID. Fetching at runtime makes it work identically on
+ * prerendered and SSR pages and lets an admin change/disable GA via Admin
+ * Settings with no rebuild. Empty ID = analytics stays off (no script injected).
+ *
+ * Consent Mode v2 denies all storage synchronously before any GA request, so no
+ * tracking happens until the visitor accepts via CookieConsentBanner. When GA is
+ * actually configured the bootstrap dispatches `osm-ga-ready` so the banner only
+ * appears on deploys where analytics is enabled.
  */
-export interface Props {
-  gaId: string;
-}
-
-const { gaId } = Astro.props;
 ---
-
-{gaId && (
-  <>
-    {/* GA4 loader — async so it never blocks rendering */}
-    <script async src={`https://www.googletagmanager.com/gtag/js?id=${gaId}`}></script>
-    {/*
-      Consent Mode v2 init: all storage denied by default.
-      `is:inline` prevents Astro/Vite from bundling this script so the global
-      `window.gtag` assignment and `dataLayer` manipulation execute immediately
-      before any other GA network request fires.
-      If a previous visit already granted consent the stored preference is
-      restored from localStorage so returning visitors are not re-prompted.
-    */}
-    <script is:inline define:vars={{ gaId }}>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      window.gtag = gtag;
-      gtag('consent', 'default', {
-        ad_storage: 'denied',
-        analytics_storage: 'denied',
-        ad_user_data: 'denied',
-        ad_personalization: 'denied',
-      });
-      gtag('js', new Date());
-      gtag('config', gaId, { anonymize_ip: true });
-      // Restore consent for returning visitors who previously accepted.
-      try {
-        if (localStorage.getItem('osm_analytics_consent') === 'granted') {
-          gtag('consent', 'update', { analytics_storage: 'granted' });
-        }
-      } catch (e) {}
-    </script>
-  </>
-)}
+<script is:inline>
+  (function () {
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    window.gtag = gtag;
+    // Consent Mode v2 — deny everything until the visitor opts in.
+    gtag('consent', 'default', {
+      ad_storage: 'denied',
+      analytics_storage: 'denied',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied',
+    });
+    fetch('/api/site-config')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var id = d && typeof d.ga_measurement_id === 'string' ? d.ga_measurement_id : '';
+        if (!id) return;
+        window.__osmGaId = id;
+        var s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(id);
+        document.head.appendChild(s);
+        gtag('js', new Date());
+        gtag('config', id, { anonymize_ip: true });
+        // Restore consent for returning visitors who previously accepted.
+        try {
+          if (localStorage.getItem('osm_analytics_consent') === 'granted') {
+            gtag('consent', 'update', { analytics_storage: 'granted' });
+          }
+        } catch (e) { /* localStorage blocked — leave denied */ }
+        // Signal the consent banner that GA is live (only then should it prompt).
+        window.dispatchEvent(new CustomEvent('osm-ga-ready'));
+      })
+      .catch(function () { /* site-config unavailable — analytics stays off */ });
+  })();
+</script>

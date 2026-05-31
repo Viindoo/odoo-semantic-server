@@ -17,6 +17,8 @@ import IslandErrorBoundary from './IslandErrorBoundary';
 declare global {
   interface Window {
     gtag?: (...args: unknown[]) => void;
+    /** Set by GoogleAnalytics.astro once a measurement ID is resolved at runtime. */
+    __osmGaId?: string;
   }
 }
 
@@ -25,17 +27,27 @@ function CookieConsentBannerInner() {
   const [decided, setDecided] = useState<boolean | null>(null);
 
   useEffect(() => {
+    let stored: string | null = null;
     try {
-      const stored = localStorage.getItem('osm_analytics_consent');
-      if (stored === 'granted' || stored === 'denied') {
-        setDecided(true); // already decided — no banner needed
-      } else {
-        setDecided(false); // show banner
-      }
+      stored = localStorage.getItem('osm_analytics_consent');
     } catch {
       // localStorage blocked (private mode, etc.) — hide banner gracefully.
       setDecided(true);
+      return;
     }
+    if (stored === 'granted' || stored === 'denied') {
+      setDecided(true); // already decided — no banner needed
+      return;
+    }
+    // Undecided: only prompt once GA is actually configured (runtime-resolved by
+    // GoogleAnalytics.astro). If analytics is disabled (empty ID), no banner.
+    if (window.__osmGaId) {
+      setDecided(false);
+      return;
+    }
+    const onReady = () => setDecided(false);
+    window.addEventListener('osm-ga-ready', onReady);
+    return () => window.removeEventListener('osm-ga-ready', onReady);
   }, []);
 
   const handleAccept = () => {
