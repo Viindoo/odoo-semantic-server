@@ -29,7 +29,20 @@ from src.web_ui._json import _json_safe
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["site-config"])
 
-_DEFAULT_HELPDESK_URL = "https://viindoo.com/ticket/team/88"
+
+def _helpdesk_url_catalogue_default() -> str:
+    """Return the catalogue default for ``support.helpdesk_url``.
+
+    The literal URL lives exactly once in :data:`src.settings_registry.SETTINGS_CATALOGUE`.
+    This helper is the fallback for when the DB is unavailable so the endpoint
+    never returns null.  The catalogue default is also the value that a fresh
+    install returns before any admin override is written.
+    """
+    from src.settings_registry import SETTINGS_CATALOGUE
+    for sdef in SETTINGS_CATALOGUE:
+        if sdef.key == "support.helpdesk_url":
+            return str(sdef.default_value)
+    return "https://viindoo.com/ticket/team/88"  # last-resort if catalogue missing entry
 
 
 @router.get("/api/site-config")
@@ -38,15 +51,18 @@ async def get_site_config() -> dict:
 
     No authentication required — only safe-to-expose values are included.
     Currently exposes:
-    - ``helpdesk_url``: support ticket URL (admin-tunable via settings overlay).
+    - ``helpdesk_url``: support ticket URL (admin-tunable via settings overlay,
+      live on the pricing page within the 60s settings TTL; static pages use the
+      build-time default and require a site rebuild to reflect a change).
     - ``site_version``: package version string from pyproject.toml metadata.
     """
     from src.settings import get_setting
 
+    _default = _helpdesk_url_catalogue_default()
     try:
-        helpdesk_url = str(get_setting("support.helpdesk_url") or _DEFAULT_HELPDESK_URL)
+        helpdesk_url = str(get_setting("support.helpdesk_url") or _default)
     except Exception:
-        helpdesk_url = _DEFAULT_HELPDESK_URL
+        helpdesk_url = _default
 
     try:
         from src._version import __version__ as site_version

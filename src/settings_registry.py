@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SETTINGS_CATALOGUE — 27 admin-tunable settings.
+"""SETTINGS_CATALOGUE — 28 admin-tunable settings.
 
-16 original Tier-1 entries (ADR-0042) + 11 billing.* entries added in M10B P1 (ADR-0039).
+16 original Tier-1 entries (ADR-0042) + 11 billing.* entries added in M10B P1 (ADR-0039)
++ 1 support.* entry (helpdesk URL, WI-1 pricing UX overhaul).
 
 Each entry registers default + validation + metadata. Bootstrap inserts rows
 into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).
@@ -214,8 +215,10 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
         description=(
             "Public helpdesk/ticket URL surfaced on UI-facing contact touchpoints "
             "(pricing FAQ/footer, account claim error panel). "
-            "Change this when the Viindoo support-team ID or platform changes — "
-            "a single admin PATCH takes effect site-wide within the 60s TTL."
+            "Change this when the Viindoo support-team ID or platform changes. "
+            "Surfaced live on the pricing page and GET /api/site-config (within the 60s "
+            "settings TTL). Static pages (terms/privacy/refund/account) use a build-time "
+            "default synced from this value; changing it there needs a site rebuild."
         ),
     ),
 ]

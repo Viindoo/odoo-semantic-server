@@ -24,18 +24,24 @@ from contextlib import contextmanager
 
 import psycopg2
 
+from src.constants import PG_CONNECT_TIMEOUT_SECONDS
 from src.db.auth_registry import set_api_key_plan_and_overrides
 from src.db.pg import auth_store, get_pool, subscription_store
 
 logger = logging.getLogger(__name__)
 
 # Advisory-lock namespace for provision_or_upgrade serialization.
-# 0x0550 = decimal 1360; stable, does not conflict with backup (0x05DA0E05) or
+# 0x0550 = decimal 1360; stable, does not conflict with backup (0xBA17C9) or
 # migration (0x05DA0E05) lock namespaces.
+# Safety: backup + migration use the 1-arg form pg_advisory_lock(bigint); this
+# module uses the 2-arg form pg_advisory_lock(int4, int4) where the first arg is
+# this namespace and the second is subscription_id.  The two forms occupy
+# different Postgres lock namespaces regardless of numeric values, so collision
+# is impossible even if the int4 values happened to overlap.
 _PROVISION_LOCK_NS: int = 0x0550
 
 
-class _AlreadyProvisioned(Exception):
+class AlreadyProvisioned(Exception):
     """Raised by _provision_or_upgrade_locked when the sub is already fully
     provisioned (api_key_id != NULL after acquiring the advisory lock).
 
@@ -44,6 +50,10 @@ class _AlreadyProvisioned(Exception):
     "work already done by a concurrent sweep" without changing the public
     provision_or_upgrade return type (always int).  api_key_id is stored on
     the exception so callers that only need the key can still access it.
+
+    Public (CL2 de-private coupling): ``activation`` catches this directly
+    rather than reaching through a leading-underscore name across the module
+    boundary.
     """
 
     def __init__(self, key_id: int) -> None:
@@ -67,7 +77,7 @@ def _provision_advisory_lock(subscription_id: int):
     pool = get_pool()
     # Borrow a raw psycopg2 connection outside the managed pool so we can hold
     # the lock across multiple independent pool.checkout() calls.
-    conn = psycopg2.connect(pool.dsn)
+    conn = psycopg2.connect(pool.dsn, connect_timeout=PG_CONNECT_TIMEOUT_SECONDS)
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
@@ -244,7 +254,7 @@ def _provision_or_upgrade_locked(subscription_id: int, user_id: int) -> int:
         raise ValueError(f"provision_or_upgrade: subscription id={subscription_id} not found")
 
     # Idempotency short-circuit: if api_key_id is already set another sweep
-    # finished while we waited for the advisory lock.  Raise _AlreadyProvisioned
+    # finished while we waited for the advisory lock.  Raise AlreadyProvisioned
     # so the CALLER can distinguish "did work" from "already done by a concurrent
     # sweep" — prevents double-billing and the provisioned_total==2 invariant
     # violation (both sweeps would otherwise count as provisioned).
@@ -254,7 +264,7 @@ def _provision_or_upgrade_locked(subscription_id: int, user_id: int) -> int:
             " — idempotent re-read after advisory lock (concurrent sweep finished first)",
             subscription_id, sub["api_key_id"],
         )
-        raise _AlreadyProvisioned(sub["api_key_id"])
+        raise AlreadyProvisioned(sub["api_key_id"])
 
     plan_id: int = sub["plan_id"]
     seats: int = sub["seats"] or 1
@@ -391,13 +401,13 @@ def claim_subscription_for_user(user_id: int, email: str) -> list[int]:
                         )
                         continue
                 # Claim is ours → provision/upgrade the key.
-                # provision_or_upgrade raises _AlreadyProvisioned when the
+                # provision_or_upgrade raises AlreadyProvisioned when the
                 # advisory lock reveals a concurrent sweep has already finished
                 # (scan-B race): we must NOT append in that case so
                 # provisioned_total remains 1 (the sweep that did the work).
                 try:
                     key_id = provision_or_upgrade(sub_id, user_id)
-                except _AlreadyProvisioned as ap:
+                except AlreadyProvisioned as ap:
                     # Another concurrent sweep finished while we waited for the
                     # advisory lock.  The seat is provisioned — we just weren't
                     # the one to do it.
