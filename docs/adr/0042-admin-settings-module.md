@@ -137,3 +137,15 @@ serial/identity PK must also get `USAGE` on its backing sequence.** Granting
 grant lives in BOTH `migrations/m13_010_app_settings.sql` and
 `ops/rls_create_osm_reader.sql` (SSOT). Discovered during the live ADR-0042
 deploy and hotfixed in prod; codified in `fix/admin-settings-grants-dotenv`.
+
+---
+
+### Amendment 2026-05-31 (PR #223 — feat/site-pricing-ux)
+
+- **28th catalogue entry:** `support.helpdesk_url` (`support` category, `str`, default `""`)
+  added in `src/settings_registry.py`. When non-empty, the SiteHeader renders a "Help" link.
+- **`GET /api/site-config` (public, no auth):** New endpoint that exposes only two settings
+  deemed safe for anonymous access: `helpdesk_url` + `site_version`. Registered in
+  `src/web_ui/app.py`; exempt from the auth middleware via `src/web_ui/middleware.py` allowlist.
+  Policy: only settings whose exposure carries no security or business risk are added here;
+  consult this ADR + ADR-0026 before extending the response payload.

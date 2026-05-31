@@ -177,7 +177,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [x] Dán API key vào form → snippet cho Claude Code hiển thị đúng URL + header *(2026-05-14 — 5 vendor keywords present: Claude, Codex, Gemini, VS Code, Antigravity)*
   - *Snippet phải chứa đúng domain + port, không phải localhost*
 - [x] Tab Claude Code có 2 sub-tabs "Plugin (recommended)" + "Manual MCP" — sub-tab Plugin mặc định active *(2026-05-14 — `Plugin (recommended)` button has `active` class)*
-- [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic-skills@viindoo-plugins` (auto-pulls `odoo-semantic-mcp`), `/odoo-semantic-mcp:connect` *(2026-05-14 — all 3 lệnh present in page; re-verify after plugin split)*
+- [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic-skills@viindoo-plugins` (auto-pulls `odoo-semantic-mcp`), `/odoo-semantic-mcp:connect` *(2026-05-14 — all 3 lệnh present in page; plugin split resolved 2026-05-31 PR #223)*
 - [x] Marketplace reachable: `claude plugin marketplace add Viindoo/claude-plugins --scope user` exit 0 *(2026-05-14 — `github.com/Viindoo/claude-plugins` → HTTP/2 200; verified via `gh`)*
   > **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
 - [ ] SHA trong `marketplace.json` resolve được: `git ls-remote https://github.com/Viindoo/odoo-semantic-server.git | grep <sha>` thấy match **(admin SSH verify — requires local plugin install)**
@@ -260,6 +260,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [x] `curl -sI https://<domain>/admin` → 302 redirect đến `/login` (Astro middleware auth-gate; auth-unify bounce target = `/login`) **(admin SSH verify)**
 <!-- verified 2026-05-16: curl -sI https://odoo-semantic.viindoo.com/admin → HTTP/2 302, location: /admin/login (auth-unify: now /login) -->
 - [x] `curl -sI https://<domain>/api/health` → HTTP 200 `Content-Type: application/json` — FastAPI JSON-only confirm **(NOT `text/html`)**
+- [ ] `curl -s https://<domain>/api/site-config` → HTTP 200 JSON with `helpdesk_url` + `site_version` fields, **no auth required** (public endpoint added PR #223; verifies middleware exemption) **(admin SSH verify)**
 <!-- verified 2026-05-17 (PR #119 WI-4): GET /api/health → HTTP 200 application/json, body {"status":"ok","version":"0.4.0"}. Route added via src/web_ui/app.py, exempted in src/web_ui/middleware.py _EXEMPT_EXACT set. -->
   - *Nếu trả HTML: FastAPI vẫn mount Jinja2 — kiểm tra `pyproject.toml` đã xóa `jinja2` dependency*
 - [x] Nginx routing sanity:

@@ -379,7 +379,7 @@ Polar customer portal (`billing.polar_portal_url` setting, default `https://pola
 the existing quota/rpm/seat_limit/display_name/is_public/metadata fields.
 
 **8 new `billing.*` settings** added to `src/settings_registry.py` (total billing settings: 11;
-total `SETTINGS_CATALOGUE` entries: 27):
+total `SETTINGS_CATALOGUE` entries: 27 at time of P1 billing; 28 after PR #223 adds `support.helpdesk_url`):
 `billing.free_plan_slug` (default `"free"`),
 `billing.unlimited_sentinel_slug` (default `"unlimited"`),
 `billing.team_plan_slug` (default `"team"`),
@@ -472,3 +472,27 @@ No new MCP tools added.
 are gộp vào m13_014 and no longer exist. Set `POLAR_API_KEY` in `webui.env` / systemd
 `Environment=` for the self-service cancel route; set `billing.polar_api_base` if using a
 non-default Polar base URL.
+
+---
+
+### Amendment 2026-05-31 (PR #223 — feat/site-pricing-ux)
+
+**Migration number reuse:** The file numbers `m13_015` and `m13_016` were freed when their
+draft contents were merged into `m13_014`. PR #223 reuses these numbers for new migrations:
+- `migrations/m13_015_pricing_model.sql` — adds `plans.pricing_model TEXT CHECK IN ('flat','per_seat')`,
+  seeds `pro` + `team` as `per_seat`.
+- `migrations/m13_016_plan_min_seats.sql` — adds `plans.min_seats INTEGER` (display SSOT for
+  per-seat minimum copy on the pricing page).
+
+**Per-seat pricing schema decision (two-SSOT pattern):**
+- `plans.min_seats` column = **display SSOT** (pricing page copy, admin UI).
+- `billing.team_min_seats` setting = **enforcement SSOT** at `grant_entitlement` (ADR-0042).
+- The two values are intentionally separate; keep them in sync manually (default both = 3).
+
+**Settings catalogue count:** `support.helpdesk_url` added as the 28th entry. Total = 28
+(see `src/settings_registry.py` docstring — SSOT, not this ADR).
+
+**Billing provision advisory lock:** `src/billing/provisioning.py` wraps `provision_or_upgrade`
+in a session-level Postgres advisory lock `pg_advisory_lock(ns, subscription_id)` to prevent
+the scan-B double-provision race. This is a money-safety mechanism distinct from indexer locks
+(ADR-0006) and git locks (ADR-0035).
