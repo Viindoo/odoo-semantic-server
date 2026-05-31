@@ -7,7 +7,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Odoo Semantic MCP — Install for your AI tool</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <!-- Dark hljs theme: code blocks render on a dark (#1e1e2e) background, so the
+       light github theme would paint near-black text on dark = unreadable. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; line-height: 1.6; }
@@ -22,7 +24,7 @@
       border-bottom: 1px solid rgba(230, 242, 244, 0.08);
     }
     .header-inner {
-      max-width: 7xl;
+      max-width: 80rem;
       margin: 0 auto;
       padding: 0 1.5rem;
       height: 64px;
@@ -43,11 +45,10 @@
     }
     .logo-link:hover { color: #00BBCE; }
     .logo-mark { width: 28px; height: 28px; flex-shrink: 0; }
-    .logo-mcp { display: none; font-family: monospace; font-size: 10px; color: #00BBCE; letter-spacing: 0.05em; margin-top: 0.125rem; }
-    @media (min-width: 640px) { .logo-mcp { display: block; } }
+    .logo-mcp { display: inline; font-family: monospace; font-size: 10px; color: #00BBCE; letter-spacing: 0.05em; margin-top: 0.125rem; }
 
-    nav.desktop-nav { display: none; flex-items: center; gap: 1rem; }
-    @media (min-width: 768px) { nav.desktop-nav { display: flex; } }
+    nav.desktop-nav { display: none; align-items: center; gap: 1rem; }
+    @media (min-width: 768px) { nav.desktop-nav { display: flex; align-items: center; } }
     nav.desktop-nav a {
       color: #b5cbd0;
       text-decoration: none;
@@ -144,7 +145,7 @@
       text-align: center;
       margin-top: 2.5rem;
     }
-    footer .footer-inner { max-width: 7xl; margin: 0 auto; }
+    footer .footer-inner { max-width: 80rem; margin: 0 auto; }
     .footer-copy { font-family: monospace; font-size: 11px; color: #7a8a8e; margin-bottom: 0.75rem; }
     .footer-copy span { color: #00BBCE; }
     .footer-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1rem; font-size: 12px; color: #7a8a8e; margin-bottom: 0.75rem; }
@@ -166,7 +167,7 @@
 <header role="banner">
   <div class="header-inner">
     <a href="/" class="logo-link">
-      <img class="logo-mark" src="logo-mark.svg" alt="OSM" aria-hidden="true">
+      <img class="logo-mark" src="logo-mark.svg" alt="Odoo Semantic MCP" aria-hidden="true">
       Odoo Semantic
       <span class="logo-mcp">MCP</span>
     </a>
@@ -234,14 +235,10 @@
         <pre class="code-block" id="code-claude-plugin-step1"><code class="language-bash">claude plugin marketplace add Viindoo/claude-plugins --scope user</code></pre>
       </div>
 
-      <div class="step-label">Step 2 — Install the skills plugin (auto-pulls the MCP plugin)</div>
+      <div class="step-label">Step 2 — Install the MCP plugin (24 tools + 7 resources)</div>
       <div class="code-wrap">
         <button class="copy-btn" data-target="code-claude-plugin-step2">Copy</button>
-        <pre class="code-block" id="code-claude-plugin-step2"><code class="language-bash">claude plugin install odoo-semantic-skills@viindoo-plugins --scope user</code></pre>
-      </div>
-      <div style="font-size:0.8rem;color:#666;margin-top:0.35rem;">
-        Skills plugin (26 skills · 3 agents · 9 personas) depends on <code>odoo-semantic-mcp</code> and pulls it in automatically.
-        MCP only? Run <code>claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user</code> instead.
+        <pre class="code-block" id="code-claude-plugin-step2"><code class="language-bash">claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user</code></pre>
       </div>
 
       <div class="step-label">Step 3 — Connect to the MCP server (prompts for URL + API key)</div>
@@ -251,7 +248,21 @@
       </div>
       <div style="font-size:0.8rem;color:#666;margin-top:0.35rem;">
         The command will prompt for your API key and server URL, then auto-configure permissions.
-        Both plugins are MIT-licensed and free forever — <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener">view on GitHub</a>.
+        Plugin is MIT-licensed and free forever — <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener">view on GitHub</a>.
+      </div>
+
+      <!-- Optional: skills add-on -->
+      <div style="margin-top:1.25rem;padding:0.9rem 1rem;border-radius:8px;background:rgba(127,66,130,0.07);border:1px solid rgba(127,66,130,0.25);">
+        <div style="font-size:0.8rem;font-weight:700;color:#7F4282;margin-bottom:0.4rem;">Optional — Supercharge with the free skills plugin</div>
+        <div style="font-size:0.8rem;color:#555;margin-bottom:0.6rem;">
+          <strong>odoo-semantic-skills</strong> (MIT · free forever) adds 26 skills · 3 agents · 9 personas on top of the MCP tools —
+          fire from plain-English intent, no tool names to memorize.
+          Also auto-pulls <code>odoo-semantic-mcp</code> if you skipped Step 2.
+        </div>
+        <div class="code-wrap" style="margin-bottom:0;">
+          <button class="copy-btn" data-target="code-claude-plugin-skills">Copy</button>
+          <pre class="code-block" id="code-claude-plugin-skills"><code class="language-bash">claude plugin install odoo-semantic-skills@viindoo-plugins --scope user</code></pre>
+        </div>
       </div>
     </div>
 
@@ -351,7 +362,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
 
   <div class="footer" style="margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.825rem; color: #888;">
     <div style="margin-bottom:0.5rem;">
-      Two free MIT plugins (odoo-semantic-mcp + odoo-semantic-skills):
+      All plugins are MIT-licensed, free forever:
       <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener">
         github.com/Viindoo/odoo-mcp-client
       </a>
@@ -367,7 +378,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
 <footer role="contentinfo">
   <div class="footer-inner">
     <div class="footer-copy">
-      &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
+      &copy; Viindoo &middot; Odoo Semantic MCP &middot; Built on the Model Context Protocol &middot;
       <span>v0.13.1</span>
     </div>
 

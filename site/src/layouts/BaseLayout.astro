@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import '../styles/global.css';
 import SiteFooter from '../components/SiteFooter.astro';
+import { BRAND_FULL } from '../lib/constants';
 
 export interface Props {
   title?: string;
@@ -27,7 +28,27 @@ const {
 const isDark = theme === 'dark';
 // Absolute URL for social-card image (OG/Twitter need absolute). Prefer the
 // configured Astro.site so self-hosted deploys emit their own origin.
-const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.viindoo.com').href;
+const siteOrigin = Astro.site ?? new URL('https://odoo-semantic.viindoo.com');
+const ogImage = new URL('/og-image.png', siteOrigin).href;
+// Canonical URL — strip query string to avoid duplicate-content signals.
+const canonicalUrl = new URL(Astro.url.pathname, siteOrigin).href;
+// JSON-LD Organization structured data.
+const orgJsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  name: BRAND_FULL,
+  url: siteOrigin.toString(),
+  // Google logo rich-result requires ImageObject (raster PNG), not a plain SVG URL.
+  // /og-image.png (1200x630 raster) satisfies the format requirement.
+  logo: {
+    '@type': 'ImageObject',
+    url: new URL('/og-image.png', siteOrigin).href,
+  },
+  sameAs: [
+    'https://github.com/Viindoo',
+    'https://viindoo.com',
+  ],
+});
 ---
 
 <!doctype html>
@@ -36,6 +57,7 @@ const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.vi
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalUrl} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -45,9 +67,13 @@ const ogImage = new URL('/og-image.png', Astro.site ?? 'https://odoo-semantic.vi
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={ogImage} />
+    <meta property="og:url" content={canonicalUrl} />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage} />
     <title>{title}</title>
+    <script type="application/ld+json" set:html={orgJsonLd} />
     <slot name="head" />
   </head>
   <body>

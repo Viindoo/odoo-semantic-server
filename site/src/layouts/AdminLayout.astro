@@ -5,12 +5,13 @@ import StepUpMfaModal from '../components/StepUpMfaModal';
 import MobileSidebar from '../components/MobileSidebar.astro';
 import UserMenu from '../components/UserMenu';
 import { NAV_ICONS as ICONS } from '../lib/navIcons';
+import { BRAND_FULL } from '../lib/constants';
 
 export interface Props {
   title?: string;
 }
 
-const { title = 'Admin — Odoo Semantic MCP' } = Astro.props;
+const { title = `Admin — ${BRAND_FULL}` } = Astro.props;
 
 // `icon` is a key into the inline SVG map below (L12 — emoji replaced by
 // consistent stroke-based line icons).
@@ -51,10 +52,10 @@ const displayBadge = currentUser?.is_admin === false ? 'USER' : 'ADMIN';
       <aside class="w-64 h-full flex-shrink-0 bg-gray-900 text-white flex flex-col">
         <!-- Logo / Brand -->
         <div class="flex items-center gap-3 px-6 py-5 border-b border-gray-700">
-          <img src="/logo-mark-ondark.svg" alt="Logo" class="w-8 h-8" />
+          <img src="/logo-mark-ondark.svg" alt="Odoo Semantic MCP" class="w-8 h-8" />
           <span class="font-semibold text-sm leading-tight">
-            Odoo Semantic<br />
-            <span class="text-gray-400 font-normal">MCP Admin</span>
+            {BRAND_FULL}<br />
+            <span class="text-gray-400 font-normal">Admin</span>
           </span>
         </div>
 

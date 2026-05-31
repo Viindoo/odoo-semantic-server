@@ -12,8 +12,30 @@ import TokenBenchmark from '../components/TokenBenchmark.tsx';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import OpenSourcePlugins from '../components/OpenSourcePlugins.astro';
-import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
+import { TOOL_COUNT, RESOURCE_COUNT, BRAND_FULL } from '../lib/constants';
 import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/tools-data';
+
+const softwareAppJsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: BRAND_FULL,
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'Any',
+  description: 'A semantic knowledge engine for the entire Odoo ecosystem. Resolve models, trace overrides, prove what\'s standard — across v8 to v19+. Queryable by any AI tool via MCP.',
+  url: 'https://odoo-semantic.viindoo.com',
+  offers: {
+    '@type': 'AggregateOffer',
+    url: 'https://odoo-semantic.viindoo.com/pricing',
+    priceCurrency: 'USD',
+    lowPrice: '0',
+    offerCount: '3',
+  },
+  author: {
+    '@type': 'Organization',
+    name: 'Viindoo',
+    url: 'https://viindoo.com',
+  },
+});
 ---
 
 <BaseLayout
@@ -22,6 +44,7 @@ import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/t
   theme="dark"
   showFooter={false}
 >
+  <script type="application/ld+json" set:html={softwareAppJsonLd} slot="head" />
   <SiteHeader currentPath={Astro.url.pathname} />
 
   <!-- Hero section -->
@@ -122,6 +145,11 @@ import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/t
           </span>
         ))}
       </div>
+      <div class="mt-8 text-center">
+        <a href="/tools" class="inline-flex items-center gap-2 font-semibold text-viindoo-primary hover:gap-3 transition text-sm">
+          See all {TOOL_COUNT} tools &rarr;
+        </a>
+      </div>
     </div>
   </section>
 
@@ -189,6 +217,11 @@ import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/t
       </p>
       <div class="mt-12">
         <TokenBenchmark client:visible />
+      </div>
+      <div class="mt-8 text-center">
+        <a href="/benchmarks" class="inline-flex items-center gap-2 font-semibold text-viindoo-secondary hover:gap-3 transition text-sm">
+          Full methodology &rarr;
+        </a>
       </div>
     </div>
   </section>

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// BillingDashboard React island — subscription state, renewal date, cancel UX.
+// BillingDashboard React island — subscription state, renewal date, cancel UX,
+// and CRD-compliant checkout consent pre-redirect (m13_017, ADR-0039 D2).
 // IMPORTANT: use className= and htmlFor= (NOT class= or for=) — this is a .tsx React island.
 import { useEffect, useState } from 'react';
 
@@ -42,6 +43,21 @@ interface UsageResponse {
   } | null;
   error?: string;
 }
+
+interface CheckoutConfig {
+  paid_checkout_enabled: boolean;
+  checkout_url_map: Record<string, string>;
+  user_email: string;
+}
+
+// ---- CRD consent copy (single source of truth for wording) ----
+// English-only: platform is global-first; single-language consent avoids translation drift.
+
+const CRD_WAIVER_EN = (
+  'I request <strong>immediate delivery</strong> of the Odoo Semantic MCP digital service ' +
+  'and I acknowledge that my <strong>14-day right of withdrawal is extinguished</strong> ' +
+  'upon delivery of the service, in accordance with EU Consumer Rights Directive Art. 16(a).'
+);
 
 // ---- helpers ----
 
@@ -107,11 +123,217 @@ function statusBadge(sub: Subscription): { label: string; className: string } {
   };
 }
 
+// ---- CRD Consent Modal ----
+
+interface ConsentModalProps {
+  planSlug: string;
+  planName: string;
+  checkoutUrl: string;
+  userEmail: string;
+  onClose: () => void;
+}
+
+function ConsentModal({ planSlug, planName, checkoutUrl, userEmail, onClose }: ConsentModalProps) {
+  const [buyerType, setBuyerType] = useState<'consumer' | 'business' | ''>('');
+  const [waiverAccepted, setWaiverAccepted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
+
+  const isConsumer = buyerType === 'consumer';
+  const isBusiness = buyerType === 'business';
+  // Business can proceed without waiver; consumer needs the waiver ticked.
+  const canProceed = isBusiness || (isConsumer && waiverAccepted);
+
+  const handleProceed = async () => {
+    if (!canProceed) return;
+    setSubmitting(true);
+    setConsentError(null);
+    try {
+      const res = await fetch('/api/account/checkout-consent', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plan_slug: planSlug,
+          buyer_type: buyerType,
+          waiver_accepted: isConsumer ? waiverAccepted : false,
+        }),
+      });
+
+      if (res.status === 401) {
+        window.location.href = `/login?return=/account/billing`;
+        return;
+      }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { detail?: string };
+        setConsentError(data.detail ?? 'Failed to record consent. Please try again.');
+        return;
+      }
+
+      // Consent recorded — redirect to Polar with email pre-fill.
+      const polar = userEmail
+        ? `${checkoutUrl}${checkoutUrl.includes('?') ? '&' : '?'}reference_id=${encodeURIComponent(userEmail)}`
+        : checkoutUrl;
+      window.location.href = polar;
+    } catch {
+      setConsentError('Network error. Please check your connection and try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      data-testid="consent-modal"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="consent-modal-title"
+    >
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 overflow-y-auto max-h-[90vh]">
+        <div className="flex items-start justify-between mb-4">
+          <h2 id="consent-modal-title" className="text-lg font-bold text-gray-900">
+            Subscribe to {planName}
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-gray-400 hover:text-gray-600 ml-3 p-1"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Step 1: Buyer type */}
+        <fieldset className="mb-5">
+          <legend className="text-sm font-semibold text-gray-700 mb-2">
+            I am purchasing as: <span className="text-red-500">*</span>
+          </legend>
+          <div className="space-y-2">
+            <label className="flex items-center gap-3 cursor-pointer p-3 rounded-xl border border-gray-200 hover:border-viindoo-primary transition-colors">
+              <input
+                type="radio"
+                name="buyer_type"
+                value="business"
+                checked={isBusiness}
+                onChange={() => { setBuyerType('business'); setWaiverAccepted(false); }}
+                className="w-4 h-4 text-viindoo-primary"
+              />
+              <div>
+                <span className="font-medium text-gray-800">Business / organization</span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Purchasing on behalf of a company, team, or registered entity
+                </p>
+              </div>
+            </label>
+            <label className="flex items-center gap-3 cursor-pointer p-3 rounded-xl border border-gray-200 hover:border-viindoo-primary transition-colors">
+              <input
+                type="radio"
+                name="buyer_type"
+                value="consumer"
+                checked={isConsumer}
+                onChange={() => setBuyerType('consumer')}
+                className="w-4 h-4 text-viindoo-primary"
+              />
+              <div>
+                <span className="font-medium text-gray-800">Individual consumer</span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Purchasing for personal use — EU / CRD withdrawal rights may apply
+                </p>
+              </div>
+            </label>
+          </div>
+        </fieldset>
+
+        {/* Step 2 (consumers only): CRD withdrawal waiver — MUST NOT be pre-ticked (CRD Art.22) */}
+        {isConsumer && (
+          <div
+            data-testid="waiver-section"
+            className="mb-5 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm"
+          >
+            <p className="font-semibold text-blue-800 mb-2">
+              Right of withdrawal - acknowledgment required
+            </p>
+            <p className="text-blue-700 mb-3 text-xs leading-relaxed">
+              As an individual consumer you have a 14-day right of withdrawal under EU law
+              (Consumer Rights Directive Art. 9). However, if you request immediate delivery
+              of a digital service, this right is extinguished upon delivery (Art. 16(a)).
+            </p>
+            <label
+              htmlFor="waiver-checkbox"
+              className="flex items-start gap-3 cursor-pointer"
+              data-testid="waiver-label"
+            >
+              <input
+                id="waiver-checkbox"
+                type="checkbox"
+                checked={waiverAccepted}
+                onChange={(e) => setWaiverAccepted(e.target.checked)}
+                data-testid="waiver-checkbox"
+                className="mt-0.5 w-4 h-4 text-viindoo-primary border-gray-300 rounded"
+              />
+              <span className="text-blue-800 text-xs leading-relaxed">
+                <span dangerouslySetInnerHTML={{ __html: CRD_WAIVER_EN }} />
+              </span>
+            </label>
+          </div>
+        )}
+
+        {/* Error */}
+        {consentError && (
+          <div
+            data-testid="consent-error"
+            className="mb-4 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700"
+          >
+            {consentError}
+          </div>
+        )}
+
+        {/* Legal note */}
+        <p className="text-xs text-gray-400 mb-5">
+          Payments processed by{' '}
+          <a href="https://polar.sh" target="_blank" rel="noopener noreferrer" className="underline">
+            Polar Software Inc.
+          </a>{' '}
+          (Merchant of Record). By continuing you accept our{' '}
+          <a href="/terms" className="underline">Terms of Service</a>{' '}
+          and{' '}
+          <a href="/refund" className="underline">Refund Policy</a>.
+        </p>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-3 justify-end">
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="px-4 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            data-testid="proceed-to-checkout-btn"
+            onClick={handleProceed}
+            disabled={!canProceed || !buyerType || submitting}
+            className="px-5 py-2 rounded-lg bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {submitting ? 'Please wait…' : 'Proceed to payment →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ---- main component ----
 
 export default function BillingDashboard() {
   const [subData, setSubData] = useState<SubscriptionResponse | null>(null);
   const [usageData, setUsageData] = useState<UsageResponse | null>(null);
+  const [checkoutConfig, setCheckoutConfig] = useState<CheckoutConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -121,12 +343,20 @@ export default function BillingDashboard() {
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelSuccess, setCancelSuccess] = useState(false);
 
+  // Consent modal state
+  const [consentTarget, setConsentTarget] = useState<{
+    planSlug: string;
+    planName: string;
+    checkoutUrl: string;
+  } | null>(null);
+
   useEffect(() => {
     const loadAll = async () => {
       try {
-        const [subRes, usageRes] = await Promise.allSettled([
+        const [subRes, usageRes, checkoutRes] = await Promise.allSettled([
           fetch('/api/account/subscription', { credentials: 'include' }),
           fetch('/api/account/usage', { credentials: 'include' }),
+          fetch('/api/account/checkout-config', { credentials: 'include' }),
         ]);
 
         if (subRes.status === 'fulfilled') {
@@ -148,6 +378,11 @@ export default function BillingDashboard() {
         if (usageRes.status === 'fulfilled' && usageRes.value.ok) {
           const d = await usageRes.value.json() as UsageResponse;
           setUsageData(d);
+        }
+
+        if (checkoutRes.status === 'fulfilled' && checkoutRes.value.ok) {
+          const d = await checkoutRes.value.json() as CheckoutConfig;
+          setCheckoutConfig(d);
         }
       } finally {
         setLoading(false);
@@ -237,6 +472,24 @@ export default function BillingDashboard() {
     activeSub.plan_slug === 'free' ||
     activeSub.billing_interval === 'free' ||
     activeSub.billing_interval === null;
+
+  // Helper: open the consent modal for a specific plan.
+  const openConsentModal = (planSlug: string, planName: string, url: string) => {
+    setConsentTarget({ planSlug, planName, checkoutUrl: url });
+  };
+  const closeConsentModal = () => setConsentTarget(null);
+
+  // Derived: available paid plans with checkout URLs.
+  const upgradeOptions: Array<{ slug: string; name: string; url: string }> =
+    checkoutConfig?.paid_checkout_enabled
+      ? Object.entries(checkoutConfig.checkout_url_map)
+          .filter(([slug]) => slug !== 'free' && slug !== 'unlimited')
+          .map(([slug, url]) => ({
+            slug,
+            name: slug.charAt(0).toUpperCase() + slug.slice(1),
+            url: url as string,
+          }))
+      : [];
 
   return (
     <div className="space-y-6" data-testid="billing-dashboard">
@@ -395,12 +648,27 @@ export default function BillingDashboard() {
           <p className="text-sm text-gray-500 mt-2 mb-5">
             You are on the Free plan. Upgrade to unlock higher quota, more repos, and priority support.
           </p>
-          <a
-            href="/pricing"
-            className="inline-block bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
-          >
-            View pricing plans
-          </a>
+          {upgradeOptions.length > 0 ? (
+            <div className="flex flex-wrap gap-3 justify-center">
+              {upgradeOptions.map((opt) => (
+                <button
+                  key={opt.slug}
+                  data-testid={`upgrade-btn-${opt.slug}`}
+                  onClick={() => openConsentModal(opt.slug, opt.name, opt.url)}
+                  className="inline-block bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+                >
+                  Upgrade to {opt.name}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <a
+              href="/pricing"
+              className="inline-block bg-viindoo-primary hover:bg-viindoo-primary-bright text-viindoo-bg-0 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+            >
+              View pricing plans
+            </a>
+          )}
         </div>
       )}
 
@@ -459,6 +727,17 @@ export default function BillingDashboard() {
             </>
           )}
         </div>
+      )}
+
+      {/* CRD Consent Modal — shown before redirecting to Polar checkout */}
+      {consentTarget && (
+        <ConsentModal
+          planSlug={consentTarget.planSlug}
+          planName={consentTarget.planName}
+          checkoutUrl={consentTarget.checkoutUrl}
+          userEmail={checkoutConfig?.user_email ?? ''}
+          onClose={closeConsentModal}
+        />
       )}
 
       {/* Cancel confirmation dialog (modal-style overlay) */}

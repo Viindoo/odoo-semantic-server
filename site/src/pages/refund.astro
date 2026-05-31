@@ -1,69 +1,78 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // refund.astro — Refund & Cancellation Policy (static legal page, W6 billing)
-// Owner decision: NO REFUND + cancel at period end + revert to Free.
+// Legal posture (WI-4, per 2-counsel + 1 legal-research review):
+//   OSM paid = digital SERVICE (SaaS MCP/API) → CRD 2011/83/EU Art. 16(a),
+//   NOT Art. 16(m). Absolute B2C no-refund is unlawful: EEA/UK consumers keep a
+//   14-day withdrawal right; if they withdraw mid-period they get a PRO-RATA
+//   refund (Art. 14(3)) for the portion not yet performed. B2B = all sales final
+//   (traders have no withdrawal right — CRD Art. 3.1). VN consumers: VN Law on
+//   Protection of Consumer Rights 19/2023 (Art. 23 Vietnamese-language duty;
+//   Art. 37 complaint procedure). Polar = Merchant of Record may apply its own
+//   refund policy.
 export const prerender = true;
 
 import BaseLayout from '../layouts/BaseLayout.astro';
 import SiteHeader from '../components/SiteHeader.astro';
-import { HELPDESK_URL_FALLBACK } from '../lib/contact';
+import { HELPDESK_URL_FALLBACK, LEGAL_ENTITY, LEGAL_EFFECTIVE_DATE_EN } from '../lib/contact';
+
+const effectiveDate = LEGAL_EFFECTIVE_DATE_EN;
 ---
 
-<BaseLayout title="Refund &amp; Cancellation Policy — Odoo Semantic MCP" description="Refund and Cancellation Policy for Odoo Semantic MCP by Viindoo.">
+<BaseLayout title="Refund &amp; Cancellation Policy — Odoo Semantic MCP" description="Refund and Cancellation Policy for Odoo Semantic MCP by Viindoo — B2B final-sale, EEA/UK 14-day withdrawal with pro-rata, and Vietnamese-consumer rights.">
   <SiteHeader currentPath="/refund" />
   <div class="max-w-3xl mx-auto px-4 sm:px-6 py-12 pt-28">
 
-    <!-- DRAFT badge -->
-    <div class="mb-8 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4" role="note" aria-label="Draft notice">
-      <svg class="h-5 w-5 flex-shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
-      </svg>
-      <p class="text-sm font-semibold text-amber-800">
-        DRAFT — pending legal review. This document is a draft scaffold and has not been reviewed or approved by legal counsel. It does not constitute final, binding policy. The final version will be published after legal sign-off.
-      </p>
-    </div>
-
     <h1 class="text-3xl font-bold text-gray-900 mb-2" style="font-family: Montserrat, sans-serif;">Refund &amp; Cancellation Policy</h1>
-    <p class="text-sm text-gray-500 mb-10">Last updated: <span class="font-medium">[DATE — pending legal sign-off]</span></p>
+    <p class="text-sm text-gray-500 mb-10">Last updated: <span class="font-medium">{effectiveDate}</span></p>
 
     <div class="prose prose-gray max-w-none space-y-8 text-gray-700 leading-relaxed">
 
       <section>
         <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Overview</h2>
-        <p>Odoo Semantic MCP subscriptions are billed in advance on a recurring basis (monthly or annual) through our Merchant of Record, <strong>Polar</strong> (polar.sh). This policy describes your cancellation rights and our refund stance.</p>
+        <p>Odoo Semantic MCP ("the Service") is a paid digital <strong>service</strong> (a hosted MCP/API, billed per seat). Subscriptions are billed in advance on a recurring basis (monthly or annual) and sold through our Merchant of Record, <strong>{LEGAL_ENTITY.merchantOfRecord}</strong>. The Service is operated by {LEGAL_ENTITY.name} ({LEGAL_ENTITY.country}).</p>
+        <p class="mt-2">Your refund and cancellation rights depend on whether you buy as a <strong>business</strong>, as a <strong>consumer in the EEA or UK</strong>, or as a <strong>consumer elsewhere (including Vietnam)</strong>. The section that applies to you governs.</p>
       </section>
 
       <section>
-        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Cancellation</h2>
-        <p><strong>You may cancel your subscription at any time</strong> — there is no minimum commitment period.</p>
-        <p class="mt-2">To cancel, use either of these methods:</p>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Cancellation (all customers)</h2>
+        <p><strong>You may cancel your subscription at any time</strong> — there is no minimum commitment period. Cancellation stops the next renewal; it does not, by itself, trigger a refund (see the refund rules below).</p>
+        <p class="mt-2">To cancel, use either:</p>
         <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
           <li>Your account billing page at <a href="/account/billing" class="text-viindoo-primary-text hover:underline">/account/billing</a> → "Manage billing &amp; invoices";</li>
-          <li>The Polar customer portal (link provided on your billing page), where payment records and invoices are also available.</li>
+          <li>The Polar customer portal (link on your billing page), where invoices are also available.</li>
         </ul>
-        <p class="mt-3"><strong>Cancellation takes effect at the end of your current billing period.</strong> You retain full access to all paid features until that date. After the period ends, your account automatically reverts to the Free tier — your data, repositories, and API key are retained.</p>
+        <p class="mt-3"><strong>Cancellation takes effect at the end of your current billing period.</strong> You keep full access to paid features until that date, after which your account reverts to the Free tier — your data, repositories, and API key are retained.</p>
       </section>
 
       <section>
-        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Refund Policy</h2>
-        <p class="font-medium text-gray-900">We do not provide refunds or credits for:</p>
-        <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
-          <li>Partial billing periods (e.g. cancelling mid-month);</li>
-          <li>Unused MCP tool calls or API quota;</li>
-          <li>Plan downgrades during an active billing period;</li>
-          <li>Periods during which you did not actively use the Service.</li>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">A. Business customers (B2B)</h2>
+        <p>If you purchase in the course of a trade, business, craft, or profession, you contract as a <strong>trader</strong>, not a consumer. Statutory cooling-off / withdrawal rights for consumers do not apply (CRD 2011/83/EU Art. 3.1).</p>
+        <p class="mt-2"><strong>All business sales are final.</strong> We do not provide refunds or credits for partial billing periods (e.g. cancelling mid-month), unused MCP tool calls or quota, plan downgrades during an active period, or periods you did not actively use. Cancellation simply stops the next renewal as described above.</p>
+      </section>
+
+      <section>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">B. Consumers in the EEA or United Kingdom (B2C)</h2>
+        <p>If you are a consumer resident in the European Economic Area or the United Kingdom, you have a statutory right to withdraw from your purchase within <strong>14 days</strong> of entering the contract, under the Consumer Rights Directive (2011/83/EU) and equivalent UK law. Odoo Semantic MCP is supplied as a <strong>digital service</strong> (not "digital content supplied on a non-tangible medium"), so the rules in Art. 16(a) and Art. 14(3) apply:</p>
+        <ul class="list-disc list-inside mt-2 space-y-2 pl-2">
+          <li><strong>Before the service begins:</strong> if you have not asked us to start during the 14-day window, you may withdraw for any reason and receive a full refund.</li>
+          <li><strong>If you ask us to start during the 14-day window</strong> (you give your express prior request to begin immediately and acknowledge the consequences — see our checkout consent and the signup notice): you may still withdraw within 14 days, but you must <strong>pay for the portion of the service already provided up to the moment you withdraw</strong>. We will refund the rest on a <strong>pro-rata</strong> basis (Art. 14(3)). The pro-rata refund is calculated as (days remaining in the current billing period ÷ total days in the billing period) × the subscription fee paid for that period.</li>
+          <li><strong>Once the service is fully performed</strong> within the 14-day window — i.e. the paid period you bought has fully elapsed — with your prior express request and acknowledgement that you would lose the right of withdrawal on full performance, the right of withdrawal is <strong>lost</strong> (Art. 16(a)). One-time or lifetime purchases that have been fully performed are likewise non-refundable from that point.</li>
         </ul>
-        <p class="mt-3">This policy applies regardless of the reason for cancellation, except where a refund is required by applicable law.</p>
+        <p class="mt-3">To withdraw, tell us clearly within 14 days via your <a href="/account/billing" class="text-viindoo-primary-text hover:underline">billing page</a> or by <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">opening a support ticket</a>. You do not need to give a reason. Refunds are issued through Polar to your original payment method.</p>
+        <p class="mt-2">Using the Free tier does <strong>not</strong> remove or shorten your withdrawal right on a later paid purchase; the 14-day window runs from the start of the paid contract.</p>
       </section>
 
       <section>
-        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Exceptions Required by Law</h2>
-        <p>Nothing in this policy limits or overrides rights you may have under applicable consumer-protection law. Customers in jurisdictions with mandatory cooling-off periods or statutory refund rights may be entitled to a refund within the legally prescribed window. <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">Contact our support team</a> to exercise statutory rights.</p>
-        <p class="mt-2 text-amber-700 text-sm font-medium">[Note to counsel: EU 14-day cooling-off right under Directive 2011/83/EU may apply to B2C sales. Verify whether digital-content exception applies and update this clause accordingly before go-live for EU customers.]</p>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">C. Consumers elsewhere, including Vietnam</h2>
+        <p>If you are a consumer who is not resident in the EEA or UK, sales are final and we do not provide refunds for partial periods, unused quota, downgrades, or non-use, <strong>except where a refund is required by the mandatory consumer-protection law of your country</strong>.</p>
+        <p class="mt-2">For consumers in <strong>Vietnam</strong>, your rights under the Law on Protection of Consumer Rights No. 19/2023/QH15 are preserved. If you believe the Service is defective or not as described, you may submit a complaint following the procedure in Article 37 of that Law.</p>
+        <p class="mt-2">Because purchases are processed by our Merchant of Record, <strong>{LEGAL_ENTITY.merchantOfRecord}</strong>, Polar may apply its own refund policy to your transaction. Where Polar's policy is more generous than this one, the more favourable terms apply to you.</p>
+        <p class="mt-3">To exercise any statutory right or raise a complaint, <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">contact our support team</a>.</p>
       </section>
 
       <section>
-        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">What Happens After Cancellation</h2>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">What happens after cancellation</h2>
         <ul class="list-disc list-inside mt-2 space-y-1 pl-2">
           <li>Access to paid features continues until the end of your current billing period;</li>
           <li>At period end, your account reverts to the Free tier automatically;</li>
@@ -74,8 +83,8 @@ import { HELPDESK_URL_FALLBACK } from '../lib/contact';
       </section>
 
       <section>
-        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Payment and Invoices</h2>
-        <p>Payments are processed by Polar (polar.sh), our Merchant of Record. Invoices and payment history are available in the Polar customer portal (link on your billing page). For payment disputes or charge queries, contact Polar's support or <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">open a ticket</a>.</p>
+        <h2 class="text-xl font-semibold text-gray-900 mt-8 mb-3">Payment and invoices</h2>
+        <p>Payments are processed by {LEGAL_ENTITY.merchantOfRecord}, our Merchant of Record and seller of record for your purchase. Invoices and payment history are available in the Polar customer portal (link on your billing page). For payment disputes or charge queries, contact Polar's support or <a href={HELPDESK_URL_FALLBACK} class="text-viindoo-primary-text hover:underline" target="_blank" rel="noopener noreferrer">open a ticket</a>.</p>
       </section>
 
       <section>

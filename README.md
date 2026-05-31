@@ -83,16 +83,16 @@ Người dùng **không cài gì**. Nhận URL + API key từ admin → chọn A
 
 ### Quick install — Claude Code
 
-Hai plugin miễn phí (MIT): `odoo-semantic-mcp` (MCP config) + `odoo-semantic-skills` (26 skills, 3 agents, 9 personas). Cài skills tự kéo theo mcp:
+Hai plugin miễn phí (MIT): `odoo-semantic-mcp` (MCP config) + `odoo-semantic-skills` (26 skills, 3 agents, 9 personas, tùy chọn). Bắt đầu với plugin MCP:
 
 ```bash
 claude plugin marketplace add Viindoo/claude-plugins --scope user
-claude plugin install odoo-semantic-skills@viindoo-plugins --scope user   # auto-pulls odoo-semantic-mcp
+claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user
 ```
 
 Sau đó trong Claude Code session: `/odoo-semantic-mcp:connect` để nhập URL + API key.
 
-> Chỉ muốn MCP? `claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user` rồi `/odoo-semantic-mcp:connect`.
+> Muốn thêm skills, agents & personas? Cài thêm: `claude plugin install odoo-semantic-skills@viindoo-plugins --scope user` (tự kéo theo `odoo-semantic-mcp` nếu bạn bỏ qua bước trên).
 > Self-hosted hoặc không dùng plugin? Xem [manual MCP setup](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md#manual-mcp-setup-advanced--self-hosted) cho `claude mcp add` flow + pitfalls.
 
 ---
@@ -172,7 +172,7 @@ Different roles get the most value from different tools. Quick-start guides:
 | Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/marketer.md) |
 | Sales | `check_module_exists`, `find_examples`, `model_inspect` | [→ Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/sales.md) |
 
-> **Claude Code users:** Install the two free MIT plugins — `claude plugin install odoo-semantic-skills@viindoo-plugins` (sau khi `claude plugin marketplace add Viindoo/claude-plugins`; skills tự kéo theo `odoo-semantic-mcp`), rồi `/odoo-semantic-mcp:connect`. Alternative: dùng [install page](https://odoo-semantic.viindoo.com/install/) → tab Claude Code → sub-tab "Plugin".
+> **Claude Code users:** Thêm marketplace rồi cài plugin MCP — `claude plugin marketplace add Viindoo/claude-plugins --scope user` rồi `claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user`, sau đó `/odoo-semantic-mcp:connect`. Tùy chọn: cài thêm `odoo-semantic-skills@viindoo-plugins` để có skills + agents + personas. Hoặc dùng [install page](https://odoo-semantic.viindoo.com/install/) → tab Claude Code → sub-tab "Plugin".
 > **Gemini users:** See [Gem instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/snippets/gemini-gem-instructions.md).
 > **ChatGPT users:** See [Custom GPT instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/snippets/openai-gpt-instructions.md).
 > **Cursor users:** See [Cursor rules](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/snippets/cursor-rules.md).
@@ -200,7 +200,7 @@ completion across 6 waves (W1-W6). Single migration **m13_014** covers the entir
 original P1 base (subscriptions + webhook ledger) **plus** all W1 schema hardening gộp vào:
 `subscriptions.cancel_at_period_end` + `plans.prices` JSONB + guarded seed (formerly m13_015 draft),
 `webui_users.terms_accepted_at` consent (formerly m13_016 draft), drop waitlist plan CHECK — now
-DB-derived (formerly m13_017 draft). **Note:** file numbers m13_015 and m13_016 were subsequently
+DB-derived (formerly m13_017 draft; **m13_017 file number subsequently reused by PR #224 for CRD withdrawal consent** — see PR #224 entry below). **Note:** file numbers m13_015 and m13_016 were subsequently
 reused by PR #223 for new migrations (`plans.pricing_model` and `plans.min_seats` respectively) —
 deploy must also run those two files after m13_014. Vendor-generic webhook pipeline (`WebhookAdapter` + `run_webhook_pipeline` in
 `src/billing/webhook_pipeline.py`); `src/billing/_db.py` (`slug_to_plan_id`). Self-service
@@ -209,28 +209,23 @@ fail-closed); `POST /api/account/subscription/cancel` + `GET /api/account/subscr
 Admin plan price editing (`PATCH /api/admin/plans/{slug}` now accepts `price_cents / currency /
 billing_interval / trial_days / prices / is_archived`); 8 new `billing.*` settings (total 11
 billing settings, 28 settings catalogue entries; includes `team_min_seats=3` **enforced**).
-Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge — pending legal sign-off before
-flipping `billing.paid_checkout_enabled`). Required signup consent checkbox + `terms_accepted_at`
+Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge removed — CEO sign-off 2026-06-01, PR #224; external counsel pass recommended post-launch). Required signup consent checkbox + `terms_accepted_at`
 recording. `/account/billing` dashboard page + `BillingDashboard` React island (status/renewal/
 cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices from `plans.prices`
 (multi-currency display deferred to P2).
 **Tool count stays 24** (all web/webhook/Astro only; no new MCP tools). See
 [ADR-0039 Amendment — completion](docs/adr/0039-commercialization-platform.md) and CHANGELOG.md `[Unreleased]`.
-**Pending (owner/legal):** legal DRAFT sign-off + `billing.paid_checkout_enabled` flip; Polar
-KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` constants) + webhook
+**Pending:** `billing.paid_checkout_enabled` flip + Polar KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` constants) + webhook
 fields (`src/billing/polar.py`) against live Polar docs; register webhook URL + product→plan map
 in Polar dashboard.
 
-**Active work:** PR #223 (`feat/site-pricing-ux`) — per-seat pricing UX, `/tools` page, shared
-SiteHeader/SiteFooter, `support.helpdesk_url` setting + `GET /api/site-config`, plugin content
-split, billing provision race fix. Migrations: m13_015 (`plans.pricing_model`) + m13_016
-(`plans.min_seats`). Tool count stays **24**.
+**Active work / recently merged:** PR #224 (`feat/launch-prep`) — install MCP-first (static + `InstallSnippets.astro` + `plugins-data.ts` SSOT), brand SSOT `BRAND_FULL`/`BRAND_SHORT`/`BRAND_DEF`, SEO (`@astrojs/sitemap` + JSON-LD Org/SoftwareApp/Product/FAQPage + `llms.txt` + `robots.txt` + canonical), English-only legal, legal pages rewrite + DRAFT removal (CEO sign-off 2026-06-01) + `ObfuscatedEmail.astro` + real Viindoo entity, CRD-compliant checkout consent (m13_017 + `POST /api/account/checkout-consent` + `GET /api/account/checkout-config` + consent modal + `list_all` expose consent cols + durable-medium email). Migration: m13_017 (`subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`). Tool count stays **24**.
 **Deferred:** M10B P2 (multi-IdP "Viindoo Account", buyer≠user split, ERP/VAS adapter),
 M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep),
 VN persona docs.
 
 **Next milestones (roadmap):**
-- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). Single migration **m13_014** covers all billing schema (cancel_at_period_end, prices JSONB, terms_accepted_at, waitlist CHECK drop — formerly separate drafts, now merged into m13_014). **Note:** m13_015 and m13_016 file numbers reused by PR #223 (pricing_model, min_seats). **Owner/legal sign-off pending** (legal DRAFT pages, `paid_checkout_enabled` flip, KYB, Polar endpoint confirmation). **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
+- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). Single migration **m13_014** covers all billing schema (cancel_at_period_end, prices JSONB, terms_accepted_at, waitlist CHECK drop — formerly separate drafts, now merged into m13_014). **Note:** m13_015 and m13_016 file numbers reused by PR #223 (pricing_model, min_seats); m13_017 file number reused by PR #224 (CRD withdrawal consent). **Legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01); remaining pending:** `paid_checkout_enabled` flip + KYB + Polar endpoint confirmation. **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
 - **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped (Unreleased). Ops
   tune RPM/quota/batch without SSH/redeploy. See [ADR-0042](docs/adr/0042-admin-settings-module.md).
   **fix/mfa-step-up-freshness** — Bug fix: fresh-MFA gate was permanently 403 because

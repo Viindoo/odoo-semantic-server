@@ -1736,3 +1736,37 @@ is deferred to Phase 2 (multi-host deployments).
 
 See [`docs/adr/0042-admin-settings-module.md`](adr/0042-admin-settings-module.md)
 for full architecture + Phase 2 roadmap.
+
+---
+
+## M10B Billing Migrations (m13_014 → m13_017)
+
+Apply in order after `python -m src.db.migrate` (which handles older migrations up through m13_013):
+
+| File | Contents | When to run |
+|------|----------|-------------|
+| `migrations/m13_014_billing_p1.sql` | Full billing schema: `subscriptions`, `billing_webhook_events`, `plans` commercial cols, cancel_at_period_end, `plans.prices` JSONB, `webui_users.terms_accepted_at`, drop waitlist CHECK | After merging `feat/m10b-p1-billing` |
+| `migrations/m13_015_pricing_model.sql` | `plans.pricing_model TEXT CHECK IN ('flat','per_seat')` — seeds pro + team as `per_seat` | After merging PR #223 |
+| `migrations/m13_016_plan_min_seats.sql` | `plans.min_seats INTEGER` — display SSOT for per-seat minimum; seeds team.min_seats=3 | After merging PR #223 |
+| `migrations/m13_017_withdrawal_consent.sql` | `subscriptions.buyer_type TEXT` + `subscriptions.withdrawal_waiver_accepted_at TIMESTAMPTZ` — CRD checkout consent; run after m13_016 | After merging PR #224 (feat/launch-prep) |
+
+**Re-run osm_reader grants** after each migration batch:
+```bash
+psql "$PG_DSN" -f ops/rls_create_osm_reader.sql
+```
+
+---
+
+## Enable Paid Checkout (post-KYB)
+
+After Polar KYB onboarding is complete:
+
+1. In Admin Settings (`/admin/settings` → Billing category), set:
+   - `billing.paid_checkout_enabled` = `true`
+   - `billing.polar_checkout_url_map` = JSON `{"pro": "<polar_checkout_url>", "team": "<polar_checkout_url>"}`
+2. Verify the paid CTA appears on `/pricing` and the billing dashboard.
+3. Register the webhook endpoint URL in the Polar dashboard: `https://<domain>/api/webhooks/polar`
+4. Set `POLAR_WEBHOOK_SECRET` in `webui.env` / systemd `Environment=` before the webhook route goes live.
+5. Set `billing.polar_product_map` (JSON `{polar_product_id: plan_slug}`) in Admin Settings.
+
+> **Note:** `billing.paid_checkout_enabled` defaults to `False` — no live payments are accepted until this flag is explicitly set. Legal text is CEO-authorized (PR #224, 2026-06-01); external counsel review is recommended post-launch but is not a blocking deployment prerequisite.

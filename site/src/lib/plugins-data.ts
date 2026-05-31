@@ -52,18 +52,34 @@ export const SKILLS_PLUGIN: PluginMeta = {
   ],
 };
 
-/** Install command lines (slash-command form for in-session Claude Code). */
+/** Install command lines (slash-command form for in-session Claude Code).
+ *
+ *  PRIMARY install path  → marketplace + installMcp + connect
+ *  OPTIONAL add-on       → installSkills (26 skills · 3 agents · 9 personas; auto-pulls MCP)
+ */
 export const INSTALL_STEPS_SLASH = {
   marketplace: `/plugin marketplace add ${PLUGIN_MARKETPLACE}`,
-  installSkills: `/plugin install ${SKILLS_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS}`,
+  /** PRIMARY — install the MCP plugin. */
+  installMcp: `/plugin install ${MCP_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS}`,
+  /** Alias kept for back-compat. */
   installMcpOnly: `/plugin install ${MCP_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS}`,
+  /** OPTIONAL add-on — adds skills/agents/personas; also auto-pulls MCP if not yet installed. */
+  installSkills: `/plugin install ${SKILLS_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS}`,
   connect: CONNECT_COMMAND,
 } as const;
 
-/** Install command lines (CLI form — `claude plugin ...`). */
+/** Install command lines (CLI form — `claude plugin ...`).
+ *
+ *  PRIMARY install path  → marketplace + installMcp (= installMcpOnly alias) + connect
+ *  OPTIONAL add-on       → installSkills (26 skills · 3 agents · 9 personas; auto-pulls MCP)
+ */
 export const INSTALL_STEPS_CLI = {
   marketplace: `claude plugin marketplace add ${PLUGIN_MARKETPLACE} --scope user`,
-  installSkills: `claude plugin install ${SKILLS_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS} --scope user`,
+  /** PRIMARY — install the MCP plugin (24 tools + 7 resources, no skills). */
+  installMcp: `claude plugin install ${MCP_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS} --scope user`,
+  /** Alias kept for back-compat with existing component references. */
   installMcpOnly: `claude plugin install ${MCP_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS} --scope user`,
+  /** OPTIONAL add-on — adds skills/agents/personas; also auto-pulls MCP if not yet installed. */
+  installSkills: `claude plugin install ${SKILLS_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS} --scope user`,
   connect: CONNECT_COMMAND,
 } as const;
