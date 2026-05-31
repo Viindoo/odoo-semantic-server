@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import '../styles/global.css';
 import SiteFooter from '../components/SiteFooter.astro';
+import GoogleAnalytics from '../components/GoogleAnalytics.astro';
+import CookieConsentBanner from '../components/CookieConsentBanner';
 import { BRAND_FULL } from '../lib/constants';
 
 export interface Props {
@@ -74,6 +76,7 @@ const orgJsonLd = JSON.stringify({
     <meta name="twitter:image" content={ogImage} />
     <title>{title}</title>
     <script type="application/ld+json" set:html={orgJsonLd} />
+    <GoogleAnalytics />
     <slot name="head" />
   </head>
   <body>
@@ -90,5 +93,6 @@ const orgJsonLd = JSON.stringify({
       <slot />
     )}
     {showFooter && <SiteFooter />}
+    <CookieConsentBanner client:load />
   </body>
 </html>
