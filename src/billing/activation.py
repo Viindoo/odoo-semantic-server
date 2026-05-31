@@ -105,7 +105,7 @@ def grant_entitlement(grant: EntitlementGrant, *, last_event_at=None) -> int:
             if won:
                 try:
                     provisioning.provision_or_upgrade(sub_id, user_id)
-                except provisioning._AlreadyProvisioned:
+                except provisioning.AlreadyProvisioned:
                     # Sub was already fully provisioned (idempotent re-grant or
                     # concurrent sweep finished first) — nothing to do.
                     logger.info(

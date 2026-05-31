@@ -82,13 +82,13 @@ export const TOOLS: Tool[] = [
   { num: '24', name: 'validate_relation',      desc: "Confirm a relational field's comodel matches the expected model.",                                       group: 'orm' },
 ];
 
-/** 7 MCP resources — verbatim from index.astro lines 251-280. */
+/** 7 MCP resources — verbatim from README.md "MCP Resources" table + src/mcp/resources.py. */
 export const RESOURCES: Resource[] = [
-  { uri: 'odoo://{v}/model/{name}',            desc: 'Snapshot of a model — fields, methods, inheritance, defining module.' },
-  { uri: 'odoo://{v}/module/{name}',           desc: 'Module manifest, depends, defined+extended models, view counts.' },
-  { uri: 'odoo://{v}/field/{model}/{name}',    desc: 'Field record — type, defaults, compute, related, overrides.' },
-  { uri: 'odoo://{v}/method/{model}/{name}',   desc: 'Method record — signature, decorators, override chain across modules.' },
-  { uri: 'odoo://{v}/view/{xml_id}',           desc: 'View + its XPath inheritance order, by xml_id.' },
-  { uri: 'odoo://{v}/owl/{module}/{name}',     desc: 'OWL component record (Odoo v15+).' },
-  { uri: 'odoo://{v}/qweb/{xml_id}',           desc: 'QWeb template — inheritance hints + render context.' },
+  { uri: 'odoo://{v}/model/{name}',                    desc: 'Snapshot of a model — fields, methods, inheritance, defining module.' },
+  { uri: 'odoo://{v}/field/{model}/{field}',           desc: 'Field record — type, defaults, compute, related, overrides.' },
+  { uri: 'odoo://{v}/method/{model}/{method}',         desc: 'Method record — signature, decorators, override chain across modules.' },
+  { uri: 'odoo://{v}/view/{xmlid}',                    desc: 'View + its XPath inheritance order, by xml_id.' },
+  { uri: 'odoo://{v}/module/{name}',                   desc: 'Module manifest, depends, defined+extended models, view counts.' },
+  { uri: 'odoo://{v}/pattern/{pattern_id}',            desc: 'Curated pattern snippet + gotchas for common Odoo coding patterns.' },
+  { uri: 'odoo://{v}/stylesheet/{module}/{file_path}', desc: 'Raw CSS/SCSS source for stylesheet override analysis and branding.' },
 ];

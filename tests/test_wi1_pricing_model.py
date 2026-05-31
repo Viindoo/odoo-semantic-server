@@ -294,16 +294,18 @@ class TestAdminPatchPricingModelAccept:
                 "/api/admin/plans/pro",
                 json={"pricing_model": "flat", "reason": "switch pro to flat for test"},
             )
-        assert resp.status_code == 200, (
-            f"Expected 200 on pricing_model PATCH, got {resp.status_code}: {resp.text}"
-        )
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT pricing_model FROM plans WHERE slug = 'pro'")
-            row = cur.fetchone()
-        assert row[0] == "flat", f"Expected pricing_model='flat' in DB, got {row[0]!r}"
-        # Restore
-        with migrated_pg.cursor() as cur:
-            cur.execute("UPDATE plans SET pricing_model = 'per_seat' WHERE slug = 'pro'")
+        try:
+            assert resp.status_code == 200, (
+                f"Expected 200 on pricing_model PATCH, got {resp.status_code}: {resp.text}"
+            )
+            with migrated_pg.cursor() as cur:
+                cur.execute("SELECT pricing_model FROM plans WHERE slug = 'pro'")
+                row = cur.fetchone()
+            assert row[0] == "flat", f"Expected pricing_model='flat' in DB, got {row[0]!r}"
+        finally:
+            # Restore — always runs so state does not leak to subsequent tests
+            with migrated_pg.cursor() as cur:
+                cur.execute("UPDATE plans SET pricing_model = 'per_seat' WHERE slug = 'pro'")
 
     @pytest.mark.asyncio
     async def test_admin_patch_pricing_model_per_seat(self, migrated_pg):
@@ -313,16 +315,18 @@ class TestAdminPatchPricingModelAccept:
                 "/api/admin/plans/free",
                 json={"pricing_model": "per_seat", "reason": "switch free to per_seat for test"},
             )
-        assert resp.status_code == 200, (
-            f"Expected 200 on pricing_model PATCH, got {resp.status_code}: {resp.text}"
-        )
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT pricing_model FROM plans WHERE slug = 'free'")
-            row = cur.fetchone()
-        assert row[0] == "per_seat"
-        # Restore
-        with migrated_pg.cursor() as cur:
-            cur.execute("UPDATE plans SET pricing_model = 'flat' WHERE slug = 'free'")
+        try:
+            assert resp.status_code == 200, (
+                f"Expected 200 on pricing_model PATCH, got {resp.status_code}: {resp.text}"
+            )
+            with migrated_pg.cursor() as cur:
+                cur.execute("SELECT pricing_model FROM plans WHERE slug = 'free'")
+                row = cur.fetchone()
+            assert row[0] == "per_seat"
+        finally:
+            # Restore — always runs so state does not leak to subsequent tests
+            with migrated_pg.cursor() as cur:
+                cur.execute("UPDATE plans SET pricing_model = 'flat' WHERE slug = 'free'")
 
 
 # ---------------------------------------------------------------------------
@@ -373,16 +377,18 @@ class TestAdminPatchMinSeats:
                 "/api/admin/plans/team",
                 json={"min_seats": 5, "reason": "set min_seats to 5 for test"},
             )
-        assert resp.status_code == 200, (
-            f"Expected 200 on min_seats PATCH, got {resp.status_code}: {resp.text}"
-        )
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
-            row = cur.fetchone()
-        assert row[0] == 5, f"Expected min_seats=5 in DB, got {row[0]!r}"
-        # Restore
-        with migrated_pg.cursor() as cur:
-            cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
+        try:
+            assert resp.status_code == 200, (
+                f"Expected 200 on min_seats PATCH, got {resp.status_code}: {resp.text}"
+            )
+            with migrated_pg.cursor() as cur:
+                cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
+                row = cur.fetchone()
+            assert row[0] == 5, f"Expected min_seats=5 in DB, got {row[0]!r}"
+        finally:
+            # Restore — always runs so state does not leak to subsequent tests
+            with migrated_pg.cursor() as cur:
+                cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
 
     @pytest.mark.asyncio
     async def test_admin_patch_min_seats_null(self, migrated_pg):
@@ -392,16 +398,18 @@ class TestAdminPatchMinSeats:
                 "/api/admin/plans/team",
                 json={"min_seats": None, "reason": "clear min_seats for test"},
             )
-        assert resp.status_code == 200, (
-            f"Expected 200 on min_seats null PATCH, got {resp.status_code}: {resp.text}"
-        )
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
-            row = cur.fetchone()
-        assert row[0] is None, f"Expected min_seats=NULL in DB, got {row[0]!r}"
-        # Restore
-        with migrated_pg.cursor() as cur:
-            cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
+        try:
+            assert resp.status_code == 200, (
+                f"Expected 200 on min_seats null PATCH, got {resp.status_code}: {resp.text}"
+            )
+            with migrated_pg.cursor() as cur:
+                cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
+                row = cur.fetchone()
+            assert row[0] is None, f"Expected min_seats=NULL in DB, got {row[0]!r}"
+        finally:
+            # Restore — always runs so state does not leak to subsequent tests
+            with migrated_pg.cursor() as cur:
+                cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
 
     @pytest.mark.asyncio
     async def test_admin_patch_min_seats_reject_zero(self, migrated_pg):
@@ -480,4 +488,47 @@ class TestSiteConfigEndpoint:
         assert "viindoo.com" in body["helpdesk_url"], (
             f"Expected helpdesk_url to contain 'viindoo.com' (catalogue default), "
             f"got: {body['helpdesk_url']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. min_seats display SSOT vs team_min_seats enforcement SSOT — drift guard
+# ---------------------------------------------------------------------------
+
+
+class TestMinSeatsSettingDrift:
+    def test_team_plan_min_seats_matches_catalogue_default(self, migrated_pg):
+        """After a clean migration, plans.min_seats for 'team' == billing.team_min_seats default.
+
+        Business rule: the DB column (display SSOT for GET /api/plans) and the
+        catalogue setting (enforcement SSOT for grant/checkout validation in
+        activation._enforce_team_min_seats) must start from the same value (3).
+        Drift here means the pricing page would show a different minimum than
+        what the server actually enforces, causing confusing rejection errors.
+        """
+        from src.settings_registry import SETTINGS_CATALOGUE
+
+        # Resolve the catalogue default for billing.team_min_seats
+        catalogue_default = None
+        for sdef in SETTINGS_CATALOGUE:
+            if sdef.key == "billing.team_min_seats":
+                catalogue_default = sdef.default_value
+                break
+        assert catalogue_default is not None, (
+            "billing.team_min_seats not found in SETTINGS_CATALOGUE — "
+            "add it back or update this guard"
+        )
+
+        # Read the seeded value from the DB after migration
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
+            row = cur.fetchone()
+        assert row is not None, "team plan not found in DB after migration"
+        db_min_seats = row[0]
+
+        assert db_min_seats == catalogue_default, (
+            f"plans.min_seats for 'team' ({db_min_seats!r}) != "
+            f"billing.team_min_seats catalogue default ({catalogue_default!r}). "
+            "The display SSOT (DB column) and enforcement SSOT (setting) have drifted. "
+            "Update the migration seed or the catalogue default to match."
         )
