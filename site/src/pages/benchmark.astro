@@ -69,7 +69,11 @@ import TokenBenchmark from '../components/TokenBenchmark';
       <p class="font-mono text-xs uppercase tracking-widest text-viindoo-secondary mb-8">
         7 real workflows &middot; live-measured
       </p>
-      <TokenBenchmark client:visible />
+      <!-- client:load (not client:visible): on the dedicated benchmark page the
+           cards ARE the primary content and must not sit behind a "Loading…"
+           placeholder until the visitor scrolls. The landing teaser keeps
+           client:visible because it is below the fold. -->
+      <TokenBenchmark client:load />
     </div>
   </section>
 
