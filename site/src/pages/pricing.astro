@@ -268,7 +268,7 @@ function planDescription(slug: string): string {
                 <!-- Price display — USD only -->
                 <div class="price-block">
                   <div class="flex items-baseline gap-1">
-                    <span class="text-2xl font-semibold text-gray-300" data-plan={plan.slug}>
+                    <span class="text-4xl font-bold text-white" data-plan={plan.slug}>
                       {formatPrice(plan)}
                     </span>
                     {suffix && (
@@ -278,7 +278,7 @@ function planDescription(slug: string): string {
                     )}
                   </div>
                   {subLabel && (
-                    <p class="text-xs text-gray-500 mt-0.5">{subLabel}</p>
+                    <p class="text-xs text-gray-400 mt-1">{subLabel}</p>
                   )}
                 </div>
               </div>
@@ -372,7 +372,7 @@ function planDescription(slug: string): string {
               {tier.name}
             </h2>
             <p class="text-gray-400 text-xs mb-3">{tier.desc}</p>
-            <div class="text-2xl font-semibold text-gray-300 mb-8">{tier.price}</div>
+            <div class="text-4xl font-bold text-white mb-8">{tier.price}</div>
             <a
               href="#waitlist"
               class:list={[
