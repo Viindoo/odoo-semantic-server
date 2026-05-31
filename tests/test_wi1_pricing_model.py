@@ -479,11 +479,12 @@ class TestSiteConfigEndpoint:
             f"Expected 'paid_checkout_enabled' in /api/site-config response, "
             f"keys: {list(body.keys())}"
         )
-        assert isinstance(body["paid_checkout_enabled"], bool), (
-            f"paid_checkout_enabled must be bool, got: {type(body['paid_checkout_enabled']).__name__}"
+        _pce = body["paid_checkout_enabled"]
+        assert isinstance(_pce, bool), (
+            f"paid_checkout_enabled must be bool, got: {type(_pce).__name__}"
         )
-        assert body["paid_checkout_enabled"] is False, (
-            f"paid_checkout_enabled catalogue default is False, got: {body['paid_checkout_enabled']!r}"
+        assert _pce is False, (
+            f"paid_checkout_enabled catalogue default is False, got: {_pce!r}"
         )
 
         # WI-1: checkout_url_map — dict, catalogue default {}

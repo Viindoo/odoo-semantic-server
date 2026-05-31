@@ -4,6 +4,18 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed / Added — Public data-driven site-config, waitlist fix, standalone benchmark, GA4 (feat/website-data-driven-launch)
+
+Tool count stays **24** (web/Astro/settings layer only; no new MCP tools).
+**No migration** — the one new setting is seeded by the idempotent settings bootstrap (`ON CONFLICT DO NOTHING`).
+
+- **Fixed: Waitlist never hid on `/pricing` even with billing enabled (root-cause = wrong data source).** `pricing.astro` read `billing.paid_checkout_enabled` + `billing.polar_checkout_url_map` from `GET /api/admin/settings` — an **admin-only** endpoint. A logged-out visitor's request returned 401/403, so `paidCheckoutEnabled` stayed `false` forever and every paid plan fell back to "Join Waitlist". Flipping the flag could never reach the public. Now the page reads checkout state from the **public** `GET /api/site-config` (single fetch). Per-plan fallback preserved (plan with a checkout URL → "Subscribe"; plan without → "Join Waitlist"); the bottom waitlist form renders only when ≥1 paid plan still lacks a checkout URL.
+- **`GET /api/site-config` is now the single public runtime-config point.** Extended response contract (still no-auth, reuses the 3-tier settings resolver with its 60s L1 LRU — no new cache): `{ helpdesk_url, site_version, paid_checkout_enabled: bool, checkout_url_map: {slug:url}, ga_measurement_id: str }`. Polar checkout URLs are public buy-links, safe to expose.
+- **`analytics.ga_measurement_id` setting (29th catalogue entry, new `analytics` category).** Default `""` (analytics off until an admin sets a `G-XXXXXXXX` id). Admin-tunable, data-driven — no rebuild to change/disable.
+- **GA4 with Consent Mode v2 cookie banner, fully runtime/data-driven.** `GoogleAnalytics.astro` resolves the measurement id **client-side** from `/api/site-config` at page load (NOT baked at build) so it works identically on prerendered pages (landing, `/benchmark`) and SSR pages, and needs no rebuild. Consent defaults to denied for all storage; `CookieConsentBanner.tsx` (React island) prompts only when GA is configured and writes `osm_analytics_consent` to localStorage, calling `gtag('consent','update')` on accept. CSP (`site/src/middleware.ts`) gains `https://www.googletagmanager.com` (script-src) + `https://www.google-analytics.com` + `https://www.googletagmanager.com` (connect-src); `test_csp_headers.py` updated.
+- **Standalone `/benchmark` showcase page + 4-axis examples.** New `site/src/pages/benchmark.astro` (prerendered) renders 7 cases across the value axes **Accuracy (no hallucination) · Full codebase picture · Token savings · Speed**. `benchmark-data.json` schema gains `title` + `accuracy`/`completeness`/`speed` fields; every `with_mcp` token count is **live-measured** against the indexed graph via the odoo-semantic MCP tools (tiktoken `cl100k_base`), `without_mcp` is a documented methodology estimate. Nav "Benchmark" now points to `/benchmark`; landing `#benchmark` becomes a teaser linking to it; `/benchmarks` remains the methodology page.
+- **i18n: English-only public surface.** Translated the 3 benchmark `query` strings (were Vietnamese, shown on the landing cards) and the comments in `site/src/lib/plugins-data.ts` to English.
+
 ### Added / Changed / Fixed — Launch prep: install MCP-first, SEO/brand, legal compliance, checkout consent (feat/launch-prep)
 
 Tool count stays **24** (web/Astro/billing layer only; no new MCP tools).
