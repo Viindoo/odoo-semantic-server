@@ -208,7 +208,7 @@ cancel-at-period-end: outbound Polar REST client (`src/billing/polar_api.py`, `P
 fail-closed); `POST /api/account/subscription/cancel` + `GET /api/account/subscription`.
 Admin plan price editing (`PATCH /api/admin/plans/{slug}` now accepts `price_cents / currency /
 billing_interval / trial_days / prices / is_archived`); 8 new `billing.*` settings (total 11
-billing settings, 28 settings catalogue entries; includes `team_min_seats=3` **enforced**).
+billing settings, 29 settings catalogue entries per `src/settings_registry.py`; includes `team_min_seats=3` **enforced**).
 Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge removed — CEO sign-off 2026-06-01, PR #224; external counsel pass recommended post-launch). Required signup consent checkbox + `terms_accepted_at`
 recording. `/account/billing` dashboard page + `BillingDashboard` React island (status/renewal/
 cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices from `plans.prices`
@@ -239,8 +239,9 @@ VN persona docs.
 ### Admin Settings Module (ADR-0042 — Unreleased)
 
 OSM v0.14.0 (upcoming) ship **Admin Settings** — web UI cho phép admin +
-tenant_owner tinker 16 Tier-1 settings (auth + embedding + indexer + mcp,
-incl. `auth.mfa_freshness_seconds` per ADR-0043) + 4 plan tier + 16 EE module
+tenant_owner tinker 18 Tier-1 settings (auth + quota + embedding + indexer + mcp + support + analytics,
+incl. `auth.mfa_freshness_seconds` per ADR-0043, `support.helpdesk_url` PR #223,
+`analytics.ga_measurement_id` PR #225) + 4 plan tier + 16 EE module
 + 115 pattern KHÔNG cần SSH/redeploy. Hot-reload ≤60s. Audit + rollback per
 ADR-0021. Tenant `quota.*` override Phase 1.
 

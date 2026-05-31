@@ -380,7 +380,7 @@ Polar customer portal (`billing.polar_portal_url` setting, default `https://pola
 the existing quota/rpm/seat_limit/display_name/is_public/metadata fields.
 
 **8 new `billing.*` settings** added to `src/settings_registry.py` (total billing settings: 11;
-total `SETTINGS_CATALOGUE` entries: 27 at time of P1 billing; 28 after PR #223 adds `support.helpdesk_url`):
+total `SETTINGS_CATALOGUE` entries: 27 at time of P1 billing; 28 after PR #223 adds `support.helpdesk_url`; 29 after PR #225 adds `analytics.ga_measurement_id`):
 `billing.free_plan_slug` (default `"free"`),
 `billing.unlimited_sentinel_slug` (default `"unlimited"`),
 `billing.team_plan_slug` (default `"team"`),
@@ -494,7 +494,8 @@ draft contents were merged into `m13_014`. PR #223 reuses these numbers for new 
 - `billing.team_min_seats` setting = **enforcement SSOT** at `grant_entitlement` (ADR-0042).
 - The two values are intentionally separate; keep them in sync manually (default both = 3).
 
-**Settings catalogue count:** `support.helpdesk_url` added as the 28th entry. Total = 28
+**Settings catalogue count:** `support.helpdesk_url` added as the 28th entry (PR #223);
+`analytics.ga_measurement_id` added as the 29th entry (PR #225). Total = 29
 (see `src/settings_registry.py` docstring — SSOT, not this ADR).
 
 **Billing provision advisory lock:** `src/billing/provisioning.py` wraps `provision_or_upgrade`
