@@ -46,50 +46,33 @@ try {
   plansError = 'Could not connect to API server.';
 }
 
-// Fetch billing settings server-side (admin endpoint).
-// pricing.astro is a public page — a non-admin visitor's cookie will
-// yield 401/403, which is the expected safe default: show waitlist CTA.
-// Only when an admin loads the page (or internal SSR tooling hits it)
-// will paid_checkout_enabled be respected.  Because this is server-side,
-// the actual checkout URL is never sent to the browser when the flag is off.
+// Fetch public site-config for helpdesk_url + checkout state (no auth required).
+// Safe defaults: paidCheckoutEnabled=false and checkoutUrlMap={} so a fetch
+// failure degrades gracefully to the waitlist CTA.
+let helpdeskUrl: string = HELPDESK_URL_FALLBACK;
 let paidCheckoutEnabled = false;
 let checkoutUrlMap: Record<string, string> = {};
 
 try {
-  const cookieHeader = Astro.request.headers.get('cookie') ?? '';
-  const res = await fetch(`${FASTAPI_BASE}/api/admin/settings`, {
-    headers: { cookie: cookieHeader },
-  });
-  if (res.ok) {
-    const data = await res.json() as { categories: Record<string, Array<{ key: string; value: unknown }>> };
-    const billingSettings: Array<{ key: string; value: unknown }> = data.categories['billing'] ?? [];
-    for (const s of billingSettings) {
-      if (s.key === 'billing.paid_checkout_enabled') {
-        paidCheckoutEnabled = s.value === true || s.value === 'true';
-      }
-      if (s.key === 'billing.polar_checkout_url_map' && s.value && typeof s.value === 'object') {
-        checkoutUrlMap = s.value as Record<string, string>;
-      }
-    }
-  }
-  // 401/403 = not admin; default stays false (safe — no checkout links for public visitors)
-} catch {
-  // Network or parse error — keep safe default
-}
-
-// Fetch public site-config for helpdesk_url (no auth required)
-let helpdeskUrl: string = HELPDESK_URL_FALLBACK;
-
-try {
   const res = await fetch(`${FASTAPI_BASE}/api/site-config`);
   if (res.ok) {
-    const data = await res.json() as { helpdesk_url?: string; site_version?: string };
+    const data = await res.json() as {
+      helpdesk_url?: string;
+      site_version?: string;
+      paid_checkout_enabled?: boolean;
+      checkout_url_map?: Record<string, string>;
+      ga_measurement_id?: string;
+    };
     if (data.helpdesk_url) {
       helpdeskUrl = data.helpdesk_url;
     }
+    paidCheckoutEnabled = data.paid_checkout_enabled === true;
+    checkoutUrlMap = (data.checkout_url_map && typeof data.checkout_url_map === 'object')
+      ? data.checkout_url_map
+      : {};
   }
 } catch {
-  // Network error — fall back to constant
+  // Network error — fall back to safe defaults (waitlist CTA)
 }
 
 // Logged-in user email for ?reference_id= pre-fill (pass-through only when checkout enabled)
@@ -522,7 +505,14 @@ const faqJsonLd = JSON.stringify({
       Your current plan and usage are visible at <a href="/account/usage" class="text-viindoo-primary hover:underline">/account/usage</a>.
     </p>
 
-    <!-- Waitlist form (shown when checkout not enabled, or as a fallback) -->
+    <!-- Waitlist form: only render when at least one paid plan has no checkout URL.
+         anyWaitlist=true means ≥1 paid plan falls back to "Join Waitlist" CTA. -->
+    {(() => {
+      const anyWaitlist = plans.some(p => {
+        const isFree = !p.billing_interval || p.billing_interval === 'free';
+        return !isFree && !(paidCheckoutEnabled && checkoutUrlMap[p.slug]);
+      });
+      return anyWaitlist && (
     <div id="waitlist" class="max-w-lg mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center mb-12">
       <h2 class="text-2xl font-bold text-white mb-3">Join the Waitlist</h2>
       <p class="text-gray-400 text-sm mb-6">
@@ -547,6 +537,8 @@ const faqJsonLd = JSON.stringify({
       </form>
       <p id="waitlist-msg" class="text-sm mt-3 hidden"></p>
     </div>
+      );
+    })()}
 
     <!-- FAQ -->
     <div class="max-w-2xl mx-auto space-y-4 mb-12">
