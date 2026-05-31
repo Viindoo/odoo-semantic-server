@@ -4,6 +4,32 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added / Changed / Fixed — Pricing UX, /tools page, helpdesk setting, plugin split (feat/site-pricing-ux, PR #223)
+
+Tool count stays **24** (web/Astro layer only; no new MCP tools).
+**Migrations required on deploy (after m13_014):** `m13_015_pricing_model.sql` + `m13_016_plan_min_seats.sql`.
+
+- **Per-seat pricing data layer.** Two new migrations:
+  - `m13_015_pricing_model.sql` — adds `plans.pricing_model TEXT CHECK IN ('flat','per_seat')` (default `'flat'`); seeds `pro` + `team` plans as `per_seat`.
+  - `m13_016_plan_min_seats.sql` — adds `plans.min_seats INTEGER` (display SSOT); seeds `team.min_seats = 3` to match `billing.team_min_seats` enforcement default. Note: `plans.min_seats` = display SSOT (pricing page copy); `billing.team_min_seats` setting = enforcement SSOT at checkout — keep in sync manually.
+  - `GET /api/plans` now returns `pricing_model` + `team_min_seats` + `min_seats` fields. Admin plan editor gains a `pricing_model` dropdown and `min_seats` input.
+- **`support.helpdesk_url` setting (28th catalogue entry).** New `support.*` category in `src/settings_registry.py`. Default `""` (helpdesk link hidden when empty).
+- **`GET /api/site-config` endpoint (public, no auth).** Returns `{helpdesk_url, site_version}` — the only two fields safe for anonymous exposure. Exempt from auth middleware (`src/web_ui/middleware.py`). Consumed by `SiteHeader` to render the helpdesk link.
+- **`/tools` page** (`site/src/pages/tools.astro`) — new public route listing all 24 MCP tools + 7 resources, with links to the install page.
+- **Shared `SiteHeader` + `SiteFooter` components** (`site/src/components/`) — unified header/footer for public marketing pages (landing, pricing, tools); replaces duplicated inline markup.
+- **Auth footer mini** — condensed auth footer (sign-in / sign-up links) added to public-page footer.
+- **Terminology: "calls/minute" in rate-limit copy.** Two FAQ entries updated; pricing tier cards use consistent "calls/min" abbreviation.
+- **Plugin content split.** Plugin documentation separates `odoo-semantic-mcp` (server connection) from `odoo-semantic-skills` (skill routing); promo page highlights MIT license for the client plugin.
+- **Fixed: billing double-provision race (advisory lock).** `src/billing/provisioning.py` wraps `provision_or_upgrade` in a session-level Postgres advisory lock keyed on `(ns, subscription_id)` — closes the scan-B double-provision race where two concurrent webhook events for the same subscription could both pass the `api_key_id IS NULL` check before either committed.
+- **Fixed: `connect_timeout` hot-path.** Database connection timeout no longer blocks the MCP request hot-path on cold-start.
+- Lint / ruff fixes (no behaviour change).
+
+### Added — Admin Settings category: support (feat/site-pricing-ux, PR #223)
+
+- Admin Settings UI adds a **Support** category exposing `support.helpdesk_url` (the 28th catalogue entry). Admins can set the helpdesk URL at runtime without redeploy; the public `GET /api/site-config` endpoint exposes it to anonymous visitors.
+
+---
+
 ### Added / Changed / Security — Billing & admin follow-ups from PR #219 (fix/issue-220-billing-followups)
 
 Resolves issue #220 (three follow-ups deferred from PR #219), shipped as one PR.
@@ -163,7 +189,7 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
   `price_cents`, `currency`, `billing_interval`, `trial_days`, `prices` (per-currency map),
   and `is_archived`.
 - **8 new `billing.*` Tier-1 settings** in `src/settings_registry.py` (total billing settings:
-  11; total catalogue entries: 27):
+  11; total catalogue entries: 28 — including `support.helpdesk_url` added in PR #223):
   `billing.free_plan_slug` (default `"free"`),
   `billing.unlimited_sentinel_slug` (default `"unlimited"`),
   `billing.team_plan_slug` (default `"team"`),
@@ -189,8 +215,11 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
 
 > **Tool count stays 24.** All W1-W6 completion changes are schema / web-UI / webhook /
 > Astro layer only. No new MCP tools.
-> **Migration m13_014 is the single migration required on deploy** — it covers all billing
-> schema (W1 schema additions are gộp vào m13_014; no separate m13_015/m13_016/m13_017 files).
+> **Migration m13_014 is the single migration required for M10B P1 billing** — it covers all
+> billing schema (W1 schema additions are gộp vào m13_014; the previously separate draft files
+> m13_015/m13_016/m13_017 were merged into m13_014 and do not exist as separate files for this PR).
+> **PR #223 adds NEW migrations m13_015 (`plans.pricing_model`) and m13_016 (`plans.min_seats`)**
+> using the now-available file numbers. Deploy order: m13_014 → m13_015 → m13_016.
 > Set `POLAR_API_KEY` in `webui.env` / systemd for the self-service cancel route.
 > **Owner sign-off still pending:** legal DRAFT text (`/terms`, `/refund`, `/privacy`) and
 > `billing.paid_checkout_enabled` flip require legal counsel review + Polar KYB completion.
@@ -243,7 +272,7 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
   community-facing links.
 - **Nav emoji icons replaced with SVGs** for all sidebar nav items and the header
   branding mark. Eliminates font-fallback rendering differences across OS/browser.
-- **Version string bumped to v0.13.1** in `site/src/lib/version.ts` and the FastAPI
+- **Version string bumped to v0.13.1** in `site/src/lib/constants.ts` (`SITE_VERSION`) and the FastAPI
   app version header.
 
 ### Fixed — OAuth deep-link return + avatar dropdown + account UX (feat/webui-oauth-avatar-uiux)

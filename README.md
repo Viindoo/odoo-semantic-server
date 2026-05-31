@@ -198,15 +198,17 @@ Different roles get the most value from different tools. Quick-start guides:
 **M10B P1 billing — engineering complete (feat/m10b-p1-billing, 2026-05-30):** Full billing
 completion across 6 waves (W1-W6). Single migration **m13_014** covers the entire billing schema:
 original P1 base (subscriptions + webhook ledger) **plus** all W1 schema hardening gộp vào:
-`subscriptions.cancel_at_period_end` + `plans.prices` JSONB + guarded seed (formerly m13_015),
-`webui_users.terms_accepted_at` consent (formerly m13_016), drop waitlist plan CHECK — now
-DB-derived (formerly m13_017). Vendor-generic webhook pipeline (`WebhookAdapter` + `run_webhook_pipeline` in
+`subscriptions.cancel_at_period_end` + `plans.prices` JSONB + guarded seed (formerly m13_015 draft),
+`webui_users.terms_accepted_at` consent (formerly m13_016 draft), drop waitlist plan CHECK — now
+DB-derived (formerly m13_017 draft). **Note:** file numbers m13_015 and m13_016 were subsequently
+reused by PR #223 for new migrations (`plans.pricing_model` and `plans.min_seats` respectively) —
+deploy must also run those two files after m13_014. Vendor-generic webhook pipeline (`WebhookAdapter` + `run_webhook_pipeline` in
 `src/billing/webhook_pipeline.py`); `src/billing/_db.py` (`slug_to_plan_id`). Self-service
 cancel-at-period-end: outbound Polar REST client (`src/billing/polar_api.py`, `POLAR_API_KEY`,
 fail-closed); `POST /api/account/subscription/cancel` + `GET /api/account/subscription`.
 Admin plan price editing (`PATCH /api/admin/plans/{slug}` now accepts `price_cents / currency /
 billing_interval / trial_days / prices / is_archived`); 8 new `billing.*` settings (total 11
-billing settings, 27 settings catalogue entries; includes `team_min_seats=3` **enforced**).
+billing settings, 28 settings catalogue entries; includes `team_min_seats=3` **enforced**).
 Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge — pending legal sign-off before
 flipping `billing.paid_checkout_enabled`). Required signup consent checkbox + `terms_accepted_at`
 recording. `/account/billing` dashboard page + `BillingDashboard` React island (status/renewal/
@@ -219,15 +221,16 @@ KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` consta
 fields (`src/billing/polar.py`) against live Polar docs; register webhook URL + product→plan map
 in Polar dashboard.
 
-**Active work:** M10B P1 engineering-complete on `feat/m10b-p1-billing` (pending PR/merge).
-Post-PR-#200/#204 cleanup PR in flight — TD-1 (backup format pg_dump -F custom), TD-2 (conftest
-Priority 2 guard), TD-4 (Neo4j auth_max_failed_attempts), backup retention pruning.
+**Active work:** PR #223 (`feat/site-pricing-ux`) — per-seat pricing UX, `/tools` page, shared
+SiteHeader/SiteFooter, `support.helpdesk_url` setting + `GET /api/site-config`, plugin content
+split, billing provision race fix. Migrations: m13_015 (`plans.pricing_model`) + m13_016
+(`plans.min_seats`). Tool count stays **24**.
 **Deferred:** M10B P2 (multi-IdP "Viindoo Account", buyer≠user split, ERP/VAS adapter),
 M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep),
 VN persona docs.
 
 **Next milestones (roadmap):**
-- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** on `feat/m10b-p1-billing` (pending PR/merge): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). Single migration **m13_014** covers all billing schema (cancel_at_period_end, prices JSONB, terms_accepted_at, waitlist CHECK drop — formerly m13_015/016/017 — now merged). **Owner/legal sign-off pending** (legal DRAFT pages, `paid_checkout_enabled` flip, KYB, Polar endpoint confirmation). **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
+- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). Single migration **m13_014** covers all billing schema (cancel_at_period_end, prices JSONB, terms_accepted_at, waitlist CHECK drop — formerly separate drafts, now merged into m13_014). **Note:** m13_015 and m13_016 file numbers reused by PR #223 (pricing_model, min_seats). **Owner/legal sign-off pending** (legal DRAFT pages, `paid_checkout_enabled` flip, KYB, Polar endpoint confirmation). **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
 - **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped (Unreleased). Ops
   tune RPM/quota/batch without SSH/redeploy. See [ADR-0042](docs/adr/0042-admin-settings-module.md).
   **fix/mfa-step-up-freshness** — Bug fix: fresh-MFA gate was permanently 403 because

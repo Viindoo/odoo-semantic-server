@@ -773,6 +773,15 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
       Schema: m13_010 (app_settings + history) + m13_011 (ee_modules) + m13_012
       (patterns). Tool count stays 24.
 
+**PR #223 — Pricing UX, /tools, helpdesk setting, plugin split, billing race fix (feat/site-pricing-ux)**
+- [x] **WI-1 Per-seat pricing data layer** — `m13_015_pricing_model.sql` (`plans.pricing_model TEXT CHECK('flat','per_seat')`); `m13_016_plan_min_seats.sql` (`plans.min_seats INTEGER`, display SSOT); `GET /api/plans` returns `pricing_model`+`team_min_seats`+`min_seats`; admin plan editor dropdown+input. (tool count stays 24)
+- [x] **WI-2 `support.helpdesk_url` + `GET /api/site-config`** — 28th `SETTINGS_CATALOGUE` entry (`support.*` category); public no-auth endpoint returns `{helpdesk_url, site_version}`; middleware exemption; `SiteHeader` renders helpdesk link when non-empty; Admin Settings "Support" category. (tool count stays 24)
+- [x] **WI-3 `/tools` Astro page** — new public route listing all 24 MCP tools + 7 resources; links to install page. (tool count stays 24)
+- [x] **WI-4 Shared `SiteHeader` + `SiteFooter` + auth footer mini** — unified public marketing page layout components; replaces duplicated inline markup across landing/pricing/tools pages.
+- [x] **WI-5 Plugin content split** — `odoo-semantic-mcp` (server connection) vs `odoo-semantic-skills` (skill routing) separated in plugin documentation; MIT promo. Post-split install verified.
+- [x] **WI-6 Billing provision advisory lock (race fix)** — `src/billing/provisioning.py` wraps `provision_or_upgrade` in `pg_advisory_lock(ns, subscription_id)` to prevent scan-B double-provision race. Pre-existing safety gap; fixed in this PR.
+- [x] **WI-7 Minor: terminology "calls/minute", FAQ copy, `connect_timeout` hot-path, lint fixes.**
+
 **P2 — Multi-IdP + regional segment**
 - [ ] **Viindoo OIDC provider** — add a 3rd IdP slot per the [ADR-0017](docs/adr/0017-oauth-arctic-oslo.md) amendment (extensible IdP registry; arctic `OAuth2Client` generic already available; reuse account-linking-by-verified-email at `src/web_ui/routes/oauth.py:252-352`).
 - [ ] **ERP sale.order webhook + VAS e-invoice** — regional/domestic activation adapter (thin webhook, not two-way sync); the ERP stays accounting system-of-record (ADR-0039 D4).
@@ -1162,7 +1171,7 @@ Small items surfaced post-PR-#200 deploy (2026-05-28). Not milestone-gated — d
 - [ ] **Account-deletion + data-export self-service endpoints (GDPR baseline)** — `DELETE /api/account/me` (soft-delete: deactivate + anonymize PII) + `GET /api/account/export` (JSON dump of own API keys + usage counters + profile memberships). Needed before public growth.
 - [ ] **Tenant self-service creation** — currently tenants are admin-created only per ADR-0038 W1. Customer self-service tenant creation (W2 portal has `/account/repos` but not new-tenant form) requires ADR-0038 D11 work. Deferred until M10B P1 Polar payment flow lands (creation gated by paid checkout).
 - [ ] **Plan-selection UI at signup** — `/signup` currently provisions a `free` plan silently. Show a plan picker (Free / Pro / Team) at signup so users understand tier. Deferred until M10B P1 Polar adapter ships (pricing page CTA → checkout → key provisioning).
-- [ ] **`GET /api/plans` public endpoint** — data-driven pricing page; returns `[{id, name, rpm_limit, monthly_quota, price_display}]`. Currently pricing page is static Astro. Needed for `/pricing` → dynamic CTA when plan data changes without a redeploy.
+- [x] **`GET /api/plans` public endpoint** — DONE (marked [x] at M10B P1 W4, TASKS line ~764). Duplicate stale item; cross-ref: `src/web_ui/routes/plans.py`.
 - [ ] **`/install/` Astro page** — currently `/install/` is served by MCP server `:8002` (static HTML). If we want consistent Astro UX (same nav/footer, CSP headers, SSR analytics), migrate to an Astro page at `site/src/pages/install.astro`. Separate ticket; not a regression.
 
 ### Track 2 prod waves (post-PR cleanup-merge)
