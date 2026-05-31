@@ -33,7 +33,9 @@
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         var id = d && typeof d.ga_measurement_id === 'string' ? d.ga_measurement_id : '';
-        if (!id) return;
+        // Only accept a well-formed GA4 measurement id (G-XXXXXXXX). Rejects an
+        // empty / malformed / malicious admin-set value before it reaches gtag.
+        if (!/^G-[A-Z0-9]+$/.test(id)) return;
         window.__osmGaId = id;
         var s = document.createElement('script');
         s.async = true;

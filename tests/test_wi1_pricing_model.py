@@ -524,6 +524,51 @@ class TestSiteConfigEndpoint:
             f"got: {body['helpdesk_url']!r}"
         )
 
+    async def test_checkout_map_hidden_when_checkout_off(self, migrated_pg, monkeypatch):
+        """Business rule: unreleased Polar checkout URLs must NOT be exposed on the
+        public endpoint while paid checkout is OFF — even if the URL-map setting is
+        populated. Returning them pre-launch would leak buy-links before go-live.
+        """
+        import src.settings as settings_mod
+
+        values = {
+            "support.helpdesk_url": "https://viindoo.com/ticket/team/88",
+            "billing.paid_checkout_enabled": False,
+            "billing.polar_checkout_url_map": {"pro": "https://buy.polar.sh/secret-pro"},
+            "analytics.ga_measurement_id": "",
+        }
+        monkeypatch.setattr(settings_mod, "get_setting", lambda key, *a, **k: values.get(key))
+        async with _client() as client:
+            resp = await client.get("/api/site-config")
+        body = resp.json()
+        assert body["paid_checkout_enabled"] is False
+        assert body["checkout_url_map"] == {}, (
+            "checkout_url_map must be empty while paid_checkout_enabled is False — "
+            f"unreleased buy-links leaked: {body['checkout_url_map']!r}"
+        )
+
+    async def test_checkout_map_shown_when_checkout_on(self, migrated_pg, monkeypatch):
+        """Counterpart: once paid checkout is ON, the per-plan checkout URLs flow
+        through so the pricing page can render Subscribe buttons.
+        """
+        import src.settings as settings_mod
+
+        url_map = {"pro": "https://buy.polar.sh/pro", "team": "https://buy.polar.sh/team"}
+        values = {
+            "support.helpdesk_url": "https://viindoo.com/ticket/team/88",
+            "billing.paid_checkout_enabled": True,
+            "billing.polar_checkout_url_map": url_map,
+            "analytics.ga_measurement_id": "",
+        }
+        monkeypatch.setattr(settings_mod, "get_setting", lambda key, *a, **k: values.get(key))
+        async with _client() as client:
+            resp = await client.get("/api/site-config")
+        body = resp.json()
+        assert body["paid_checkout_enabled"] is True
+        assert body["checkout_url_map"] == url_map, (
+            f"checkout_url_map must pass through when enabled, got: {body['checkout_url_map']!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 9. min_seats display SSOT vs team_min_seats enforcement SSOT — drift guard

@@ -342,7 +342,13 @@ const faqJsonLd = JSON.stringify({
         {plans.map((plan) => {
           const highlight = isHighlighted(plan, plans);
           const isFree = !plan.billing_interval || plan.billing_interval === 'free';
-          const checkoutUrl = paidCheckoutEnabled ? (checkoutUrlMap[plan.slug] ?? null) : null;
+          // Only honour an https:// absolute URL as the checkout target. The map
+          // comes from an admin setting; rejecting any other scheme (javascript:,
+          // relative, http:) keeps a bad/compromised value from reaching href=.
+          const rawCheckout = paidCheckoutEnabled ? (checkoutUrlMap[plan.slug] ?? null) : null;
+          const checkoutUrl = (typeof rawCheckout === 'string' && rawCheckout.startsWith('https://'))
+            ? rawCheckout
+            : null;
           const ctaHref = checkoutUrl
             ? `${checkoutUrl}${currentEmail ? `?reference_id=${encodeURIComponent(currentEmail)}` : ''}`
             : '#waitlist';

@@ -31,7 +31,7 @@ const pageTitle = `${title}${tenantName ? ` · ${tenantName}` : ''}`;
 // Nav icons sourced from the shared SSOT (site/src/lib/navIcons.ts).
 ---
 
-<BaseLayout title={pageTitle} provideMain={false}>
+<BaseLayout title={pageTitle} provideMain={false} analytics={false}>
   <a
     href="#main-content"
     class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-viindoo-primary focus:text-viindoo-bg-0 focus:font-medium focus:shadow-lg"

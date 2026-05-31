@@ -70,7 +70,9 @@ async def get_site_config() -> dict:
     - ``paid_checkout_enabled``: bool — gates paid-checkout CTA on pricing page
       (``billing.paid_checkout_enabled``, default False).
     - ``checkout_url_map``: dict — plan slug → Polar checkout URL
-      (``billing.polar_checkout_url_map``, default {}).
+      (``billing.polar_checkout_url_map``, default {}). Returned ONLY when
+      ``paid_checkout_enabled`` is true; otherwise an empty dict so unreleased
+      checkout URLs are not exposed pre-launch.
     - ``ga_measurement_id``: str — GA4 measurement ID for public pages
       (``analytics.ga_measurement_id``, default ""; empty = disabled).
     """
@@ -92,10 +94,17 @@ async def get_site_config() -> dict:
     except Exception:
         paid_checkout_enabled = False
 
-    try:
-        _url_map = get_setting("billing.polar_checkout_url_map")
-        checkout_url_map = _url_map if isinstance(_url_map, dict) else {}
-    except Exception:
+    # Only expose the Polar buy-links once paid checkout is actually enabled.
+    # While the flag is off (pre-launch), there is no public CTA that uses them,
+    # so withholding the map keeps unreleased checkout URLs off the public
+    # endpoint (preserves the server-side gating the pricing page used to have).
+    if paid_checkout_enabled:
+        try:
+            _url_map = get_setting("billing.polar_checkout_url_map")
+            checkout_url_map = _url_map if isinstance(_url_map, dict) else {}
+        except Exception:
+            checkout_url_map = {}
+    else:
         checkout_url_map = {}
 
     try:
