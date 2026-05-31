@@ -1,0 +1,36 @@
+# Odoo Semantic MCP (OSM)
+
+> Knowledge engine that understands Odoo codebases deeply — inheritance chains, view overrides, JS patches, field/method resolution — and exposes the graph via the MCP (Model Context Protocol) so any AI coding tool can query it without hallucinating.
+
+## MCP Endpoint
+
+- MCP server: https://odoo-semantic.viindoo.com/mcp
+- Protocol: MCP over HTTP (Streamable HTTP transport)
+- Auth: X-API-Key header (obtain a key after signup)
+
+## Tools & Resources
+
+- [24 MCP tools + 7 MCP resources](/tools) — resolve models, trace overrides, validate ORM domains, measure impact, find deprecated usage, suggest patterns, and more
+- Covers Odoo v8 through v19+ (v18 indexer-ready)
+- Tool categories: resolve, version lifecycle, quality/lint, superset discriminators, session state, CSS/SCSS stylesheet, ORM validation
+
+## Pricing & Install
+
+- [Pricing](/pricing) — Free plan available; Pro and Team plans (per-seat) for professional developers and teams
+- [Install & setup guide](/install/) — zero-install for end users; add the URL + API key to your AI tool config in under 5 minutes
+- [Benchmark methodology](/benchmarks) — 99% fewer tokens vs. grep-based approaches; 100% precision vs. 43% without MCP, measured on 40 real Odoo developer tasks
+
+## Source & Community
+
+- Client plugins (MIT): https://github.com/Viindoo/odoo-mcp-client — Claude Code, Codex CLI, Gemini CLI, VS Code, Cursor snippets
+- Built by Viindoo: https://viindoo.com
+
+## Key capabilities for AI agents
+
+- Resolve any Odoo model's full field/method/view tree (cross-repo, cross-version)
+- Trace XPath override chains and JS OWL component patches
+- Validate `@api.depends` paths, domain operators, and relation comodels against the indexed graph before suggesting code
+- Impact analysis: every model/method/view/report affected by a field change
+- Module architecture overview: manifest, dependencies, model inventory
+- CSS/SCSS stylesheet indexing: variable definitions, import chains, mixin resolution
+- Session-sticky odoo_version + profile_name (24 h TTL) — no need to repeat version on every call

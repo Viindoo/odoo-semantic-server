@@ -4,6 +4,21 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added / Changed / Fixed — Launch prep: install MCP-first, SEO/brand, legal compliance, checkout consent (feat/launch-prep)
+
+Tool count stays **24** (web/Astro/billing layer only; no new MCP tools).
+**Migration required on deploy (after m13_016):** `m13_017_withdrawal_consent.sql`.
+
+- **Install page is MCP-first.** `/install/` (static HTML) + homepage `InstallSnippets.astro` now lead with the core client plugin `odoo-semantic-mcp` as the primary 3-step path (marketplace → install → `/odoo-semantic-mcp:connect`); `odoo-semantic-skills` is promoted afterward as an optional free (MIT) advanced add-on. `plugins-data.ts` SSOT gains a primary `installMcp` alias. `OpenSourcePlugins.astro` repositions MCP as core connector, skills as add-on.
+- **Brand convention (SSOT).** New `BRAND_FULL`/`BRAND_SHORT`/`BRAND_DEF` in `site/src/lib/constants.ts`. "Odoo Semantic MCP" (full name) is primary across titles/H1/legal/first-mention/footer; "OSM" is the shorthand. Fixed wordmark (full name no longer drops "MCP" on mobile), unified logo `alt`, repaired Admin/Account/Tenant sidebar lockups, footer now prints the product name + defines "OSM (Odoo Semantic MCP)" once.
+- **SEO + AI-discovery.** Canonical tags + JSON-LD (`Organization` in BaseLayout, `SoftwareApplication` on homepage, `Product`/`Offer` on pricing) + OG/Twitter on auth pages. Data-driven sitemap via `@astrojs/sitemap` (replaces drift-prone static `sitemap.xml`; now includes `/tools`, `/bootstrap`, `/terms`, `/privacy`, `/refund`; excludes auth/admin/account/tenant). New `public/llms.txt`. `robots.txt` disallows `/admin/`, `/account/`, `/tenant/`. `/benchmarks` (was orphaned) now renders shared SiteHeader/SiteFooter; homepage gains "See all tools →" / "Full methodology →" cross-links.
+- **Legal pages — B2B + B2C compliant (B2B + B2C compliant; CEO sign-off 2026-06-01, external counsel pass recommended post-launch).** `terms`/`privacy`/`refund` rewritten per dual legal review + EU CRD research: submitter represent-and-warrant + indemnity + notice-and-takedown (ADR-0036 D5), derivative metadata/embedding license grant, Polar Merchant-of-Record / seller-of-record disclosure, liability-cap statutory carve-outs, EU consumer-forum clause. Refund split into B2B (all-sales-final) / EEA-UK consumers (14-day withdrawal + **pro-rata** mid-period per CRD Art. 9/14(3)/16(a) — **not** absolute no-refund) / VN+other. Full data-processor list (hosting, email, OAuth, hCaptcha, Polar as independent controller). Vietnamese-language versions for VN consumers (Law 19/2023 Art. 23). Legal entity + contact + effective-date SSOT in `contact.ts` with graceful-degradation for unfilled placeholders.
+- **CRD-compliant checkout consent (billing).** New buyer-type capture (business/consumer) + non-pre-ticked withdrawal-waiver checkbox (CRD Art. 22) at checkout (`/account/billing` pre-redirect, since Polar checkout is URL-map based); consumer-without-waiver is blocked, business path skips the waiver. Persisted via `m13_017` (`subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`). Durable-medium confirmation email (`src/web_ui/email.py`, CRD Art. 7(3)/8(8)). New endpoints in `src/web_ui/routes/account.py`; `_billing-island.tsx` consent modal. 10 new postgres integration tests.
+
+- **Legal entity + contacts filled; DRAFT removed (CEO-authorized).** Real Viindoo Technology Joint Stock Company details (business reg-no 0201994665, registered address, hotline), effective date 2026-06-01, and `support@`/`sales@`/`privacy@`/`legal@viindoo.com` are now in the `contact.ts` SSOT. Public-page emails render via a new `ObfuscatedEmail.astro` component (JS-assembled; no plaintext address or `mailto:` in the static HTML — anti-harvest). DRAFT badges removed from terms/privacy/refund on CEO sign-off.
+
+> **Launch gate (runtime ops, not in this PR):** legal text is CEO-authorized (no external counsel review yet — a post-launch counsel pass is recommended; no-refund-absolute for B2C subscriptions stays unlawful under EU CRD, which is why the compliant pro-rata mechanism ships here). Enabling live paid sales is a production runtime step, not a code change: an admin must set `billing.paid_checkout_enabled=true` and configure `billing.polar_checkout_url_map` in Admin Settings, and complete Polar KYB. Self-hosted deploys re-point `repos.local_path` / set `Astro.site` as usual.
+
 ### Added / Changed / Fixed — Pricing UX, /tools page, helpdesk setting, plugin split (feat/site-pricing-ux, PR #223)
 
 Tool count stays **24** (web/Astro layer only; no new MCP tools).
@@ -157,7 +172,7 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
     `webui_users.terms_accepted_at TIMESTAMPTZ` — auditable proof-of-consent. `NULL` = legacy
     (grandfathered). Non-NULL = timestamp of checkbox acceptance at signup (password or OAuth).
     Required by PDPL 91/2025 + card-network requirements.
-  - **Section 8 — drop waitlist plan CHECK (formerly m13_017)** (idempotent):
+  - **Section 8 — drop waitlist plan CHECK (formerly m13_017 draft; file number reused by PR #224 for CRD consent — see [Unreleased] entry above)** (idempotent):
     Drops the hard-coded `CHECK (plan IN ('free','pro','team'))` from `waitlist_emails` (m13_008
     artefact). Waitlist plan validation is now DB-derived (`_public_plan_slugs` queries
     `plans WHERE is_public=TRUE AND is_archived=FALSE`). No replacement constraint.
@@ -218,11 +233,15 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
 > **Migration m13_014 is the single migration required for M10B P1 billing** — it covers all
 > billing schema (W1 schema additions are gộp vào m13_014; the previously separate draft files
 > m13_015/m13_016/m13_017 were merged into m13_014 and do not exist as separate files for this PR).
+> (m13_017 file number subsequently reused by PR #224 for CRD withdrawal consent — see [Unreleased] entry above)
 > **PR #223 adds NEW migrations m13_015 (`plans.pricing_model`) and m13_016 (`plans.min_seats`)**
 > using the now-available file numbers. Deploy order: m13_014 → m13_015 → m13_016.
+> **PR #224 adds NEW migration m13_017 (`subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`).**
+> Full deploy order: m13_014 → m13_015 → m13_016 → m13_017.
 > Set `POLAR_API_KEY` in `webui.env` / systemd for the self-service cancel route.
-> **Owner sign-off still pending:** legal DRAFT text (`/terms`, `/refund`, `/privacy`) and
-> `billing.paid_checkout_enabled` flip require legal counsel review + Polar KYB completion.
+> **Legal pages CEO-signed (DRAFT removed, PR #224, 2026-06-01).** External counsel review
+> recommended post-launch. Enabling live paid sales: admin set `billing.paid_checkout_enabled=true`
+> + configure `billing.polar_checkout_url_map` after Polar KYB.
 > **FLAG:** Polar cancel endpoint/payload must be confirmed against live Polar docs; constants
 > in `src/billing/polar_api.py` and `src/billing/polar.py`.
 

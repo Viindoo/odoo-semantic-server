@@ -14,6 +14,9 @@ Route table:
                                          cancel state + Polar manage URL (M10B P1)
   POST /api/account/subscription/cancel - self-service cancel-at-period-end via the
                                          Polar API (no refund, access to period end)
+  POST /api/account/checkout-consent   - CRD-compliant withdrawal waiver consent
+                                         collection BEFORE Polar checkout redirect
+                                         (m13_017; ADR-0039 D2).
 """
 import logging
 
@@ -28,6 +31,59 @@ from src.web_ui.auth import ALL_TENANTS, current_user_id, resolve_tenant_scope_w
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/account")
+
+
+@router.get("/checkout-config")
+async def get_checkout_config(request: Request):
+    """Return checkout configuration for the billing dashboard upgrade flow.
+
+    Auth: requires an authenticated user session (cookie). 401 if absent.
+    This endpoint is intentionally restricted to logged-in users so that the
+    Polar checkout URL map (admin-configured, may contain promo or time-limited
+    URLs) is not exposed to anonymous visitors.
+
+    Response:
+      {
+        "paid_checkout_enabled": true,
+        "checkout_url_map": {"pro": "https://polar.sh/...", "team": "https://polar.sh/..."},
+        "user_email": "user@example.com"   -- pre-fill for Polar reference_id
+      }
+    """
+    uid = current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    from src.settings import get_setting
+
+    try:
+        paid_checkout_enabled = bool(get_setting("billing.paid_checkout_enabled") or False)
+        checkout_url_map = get_setting("billing.polar_checkout_url_map") or {}
+        if not isinstance(checkout_url_map, dict):
+            checkout_url_map = {}
+
+        from src.db.pg import get_pool
+        pool = get_pool()
+        with pool.checkout() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT email FROM webui_users WHERE id = %s", (uid,))
+                row = cur.fetchone()
+        user_email = row[0] if row else ""
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.warning("get_checkout_config failed for uid=%d: %s", uid, exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    return JSONResponse(
+        _json_safe(
+            {
+                "paid_checkout_enabled": paid_checkout_enabled,
+                "checkout_url_map": checkout_url_map,
+                "user_email": user_email,
+            }
+        )
+    )
 
 
 def _polar_portal_url() -> str:
@@ -386,6 +442,235 @@ async def cancel_my_subscription(request: Request):
                 "status": "cancellation_scheduled",
                 "access_until": active["current_period_end"],
                 "manage_url": portal,
+            }
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# CRD withdrawal-waiver consent (m13_017, ADR-0039 D2)
+# ---------------------------------------------------------------------------
+
+# Permitted buyer_type values.  Only 'consumer' requires a waiver;
+# 'business' traders have no CRD withdrawal right.
+_VALID_BUYER_TYPES: frozenset[str] = frozenset({"business", "consumer"})
+
+
+@router.post("/checkout-consent")
+@audit_action("account.checkout_consent")
+async def record_checkout_consent(request: Request):
+    """Record CRD withdrawal-waiver consent before a Polar checkout redirect.
+
+    Must be called BEFORE the frontend redirects the user to the Polar
+    checkout URL.  This is the only point in the OSM purchase flow where we
+    hold the user on our own page; once they leave for Polar we cannot
+    collect consent.
+
+    Request body (JSON):
+      {
+        "plan_slug":   "pro",          -- which plan they intend to buy (informational)
+        "buyer_type":  "consumer",     -- "business" | "consumer"
+        "waiver_accepted": true        -- required true when buyer_type="consumer"
+                                       -- must be false/absent for "business"
+      }
+
+    Business rules (CRD Art.16(a) / Art.22):
+      - buyer_type = 'business': waiver is NOT required (B2B traders have no
+        withdrawal right).  waiver_accepted must be false/absent.
+      - buyer_type = 'consumer': waiver MUST be explicitly true (CRD Art.22
+        requires a non-pre-ticked opt-in; frontend MUST NOT send true unless
+        the user actively ticked the checkbox).
+      - Consent is appended to an existing unclaimed subscription row if one
+        exists for this user (by email); otherwise a lightweight pending row
+        is inserted so the consent survives until the webhook arrives.
+      - A durable-medium confirmation email is sent to the authenticated user
+        (CRD Art.7(3) / Art.8(8)).
+
+    Response:
+      200 {"status": "consent_recorded", "buyer_type": "consumer",
+           "waiver_accepted": true}
+      The frontend already holds the plan's Polar checkout URL (from
+      GET /api/account/checkout-config) and redirects there itself once this
+      call succeeds — the URL is intentionally NOT echoed back here.
+    Errors:
+      400 if buyer_type is missing/invalid, or a consumer did not tick the waiver.
+      401 if unauthenticated.
+      500 for unexpected DB errors.
+    """
+    uid = current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+
+    buyer_type: str | None = body.get("buyer_type")
+    waiver_accepted: bool = bool(body.get("waiver_accepted", False))
+    plan_slug: str | None = body.get("plan_slug")  # informational only
+
+    # ---- validate buyer_type ------------------------------------------------
+    if buyer_type not in _VALID_BUYER_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"buyer_type must be one of {sorted(_VALID_BUYER_TYPES)}",
+        )
+
+    # ---- CRD Art.22 waiver check --------------------------------------------
+    if buyer_type == "consumer" and not waiver_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Consumer checkout requires an explicit withdrawal waiver "
+                "(CRD Art.16(a)). Tick the checkbox to proceed."
+            ),
+        )
+    if buyer_type == "business" and waiver_accepted:
+        # Business buyers cannot / should not tick a consumer-only waiver.
+        # Accept gracefully but log a warning: this is a frontend bug not a
+        # security issue (waiver data is stored as-is, null for business).
+        _logger.warning(
+            "checkout_consent: uid=%d sent waiver_accepted=True for buyer_type='business' "
+            "— waiver will NOT be recorded (business buyers have no CRD right)",
+            uid,
+        )
+        waiver_accepted = False  # always null for business in the DB
+
+    # ---- resolve user email for email notification + consent record ---------
+    from src.db.pg import get_pool
+
+    pool = get_pool()
+    with pool.checkout() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, username FROM webui_users WHERE id = %s",
+                (uid,),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        _logger.error("checkout_consent: webui_users row missing for uid=%d", uid)
+        raise HTTPException(status_code=500, detail="User record not found")
+
+    user_email: str = row[0] or ""
+    username: str = row[1] or f"user-{uid}"
+
+    # ---- write consent to DB ------------------------------------------------
+    import datetime as _dt
+
+    waiver_ts: object = _dt.datetime.now(_dt.UTC) if buyer_type == "consumer" else None
+
+    # CR8: set audit_target BEFORE the DB side-effect so a partial failure is
+    # still logged with the buyer context (matches cancel_my_subscription).
+    request.state.audit_target = f"uid={uid} buyer_type={buyer_type}"
+
+    try:
+        with pool.checkout() as conn:
+            with conn.cursor() as cur:
+                # Prefer updating an existing pending/unclaimed subscription for
+                # this user (most recent one created in the last 24 h without a
+                # buyer_type yet) so the consent is co-located with the sub row
+                # that will be activated by the upcoming webhook.
+                cur.execute(
+                    """
+                    UPDATE subscriptions
+                       SET buyer_type = %s,
+                           withdrawal_waiver_accepted_at = %s
+                     WHERE id = (
+                         SELECT id FROM subscriptions
+                          WHERE (claimed_user_id = %s OR buyer_email = %s)
+                            AND buyer_type IS NULL
+                            AND created_at >= now() - INTERVAL '24 hours'
+                          ORDER BY created_at DESC
+                          LIMIT 1
+                     )
+                    RETURNING id
+                    """,
+                    (buyer_type, waiver_ts, uid, user_email),
+                )
+                updated_row = cur.fetchone()
+
+                if updated_row is None:
+                    # No in-flight sub row yet (checkout pre-creates the sub before
+                    # the webhook arrives, OR this is their first purchase and no
+                    # pending row exists).  Insert a lightweight pending row so the
+                    # consent is durable even if the browser crashes before redirect.
+                    #
+                    # Guard against double-submit: check for an existing pending row
+                    # for this user created in the last 10 minutes with no external_ref
+                    # yet (i.e. a pre-checkout consent row).  If one exists, skip the
+                    # INSERT — the prior row already holds the consent.
+                    # NOTE: "ON CONFLICT DO NOTHING" was intentionally removed here.
+                    # The subscriptions table UNIQUE constraint is on (source, external_ref).
+                    # When external_ref IS NULL, NULL != NULL in Postgres, so the
+                    # constraint never fires and ON CONFLICT DO NOTHING was a silent no-op
+                    # that gave a false sense of safety while still allowing duplicates.
+                    cur.execute(
+                        """
+                        SELECT 1 FROM subscriptions
+                         WHERE (claimed_user_id = %s OR buyer_email = %s)
+                           AND status = 'pending'
+                           AND source = 'polar'
+                           AND external_ref IS NULL
+                           AND created_at >= now() - INTERVAL '10 minutes'
+                         LIMIT 1
+                        """,
+                        (uid, user_email),
+                    )
+                    if cur.fetchone() is None:
+                        cur.execute(
+                            """
+                            INSERT INTO subscriptions
+                                (plan_id, buyer_email, status, source,
+                                 buyer_type, withdrawal_waiver_accepted_at)
+                            VALUES (
+                                (SELECT id FROM plans WHERE slug = %s LIMIT 1),
+                                %s, 'pending', 'polar',
+                                %s, %s
+                            )
+                            """,
+                            (plan_slug or "free", user_email, buyer_type, waiver_ts),
+                        )
+                conn.commit()
+    except Exception as exc:
+        # Match the file's error contract: every sibling route returns a
+        # structured JSON 500 so the frontend's res.json() never chokes on an
+        # HTML error body.
+        _logger.error("checkout_consent: DB write failed for uid=%d: %s", uid, exc)
+        return JSONResponse(
+            _json_safe({"error": "Failed to record consent"}), status_code=500
+        )
+
+    # ---- durable-medium email (CRD Art.7(3) / Art.8(8)) --------------------
+    if user_email:
+        try:
+            base_url = str(request.base_url).rstrip("/")
+            from src.web_ui.email import send_checkout_consent_email
+            send_checkout_consent_email(
+                to=user_email,
+                username=username,
+                buyer_type=buyer_type,
+                plan_slug=plan_slug,
+                waiver_accepted=waiver_accepted,
+                base_url=base_url,
+            )
+        except Exception as exc:
+            # Email failure MUST NOT block the checkout redirect — best-effort.
+            _logger.warning(
+                "checkout_consent: consent email failed for uid=%d: %s", uid, exc
+            )
+
+    _logger.info(
+        "checkout_consent: uid=%d buyer_type=%s waiver=%s plan_slug=%s",
+        uid, buyer_type, waiver_accepted, plan_slug,
+    )
+    return JSONResponse(
+        _json_safe(
+            {
+                "status": "consent_recorded",
+                "buyer_type": buyer_type,
+                "waiver_accepted": waiver_accepted,
             }
         )
     )

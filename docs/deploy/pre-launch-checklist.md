@@ -177,7 +177,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [x] Dán API key vào form → snippet cho Claude Code hiển thị đúng URL + header *(2026-05-14 — 5 vendor keywords present: Claude, Codex, Gemini, VS Code, Antigravity)*
   - *Snippet phải chứa đúng domain + port, không phải localhost*
 - [x] Tab Claude Code có 2 sub-tabs "Plugin (recommended)" + "Manual MCP" — sub-tab Plugin mặc định active *(2026-05-14 — `Plugin (recommended)` button has `active` class)*
-- [x] Sub-tab Plugin hiển thị đúng 3 lệnh: `claude plugin marketplace add Viindoo/claude-plugins`, `claude plugin install odoo-semantic-skills@viindoo-plugins` (auto-pulls `odoo-semantic-mcp`), `/odoo-semantic-mcp:connect` *(2026-05-14 — all 3 lệnh present in page; plugin split resolved 2026-05-31 PR #223)*
+- [x] Sub-tab Plugin shows 3 steps: Step 1 `claude plugin marketplace add Viindoo/claude-plugins`, Step 2 `claude plugin install odoo-semantic-mcp@viindoo-plugins` (PRIMARY — core MCP connector), Step 3 `/odoo-semantic-mcp:connect`; skills plugin (`odoo-semantic-skills`) listed as optional add-on *(2026-05-14 — all steps present; MCP-first order confirmed PR #224)*
 - [x] Marketplace reachable: `claude plugin marketplace add Viindoo/claude-plugins --scope user` exit 0 *(2026-05-14 — `github.com/Viindoo/claude-plugins` → HTTP/2 200; verified via `gh`)*
   > **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
 - [ ] SHA trong `marketplace.json` resolve được: `git ls-remote https://github.com/Viindoo/odoo-semantic-server.git | grep <sha>` thấy match **(admin SSH verify — requires local plugin install)**
@@ -342,6 +342,17 @@ Items left unchecked after 2026-05-16 read-only verification sweep. Each needs a
     > Tracked at TASKS.md → M10A "§6 tools 15-21 prod smoke".
 
 16. **PR #160 DB-impact reindex (NEW 2026-05-22)** — PR #160 ("reindex-prep DB-impact wave v8→v19") introduces parser fixes for v18/v19 field types (WI-1), v8/v9 CLICommand (WI-2), LESS indexing v8-v11 (WI-3), `odoo.tools` curated symbols (WI-4), lint rules ≥50/version (WI-5). After deploying PR #160, admin must run the full reindex sequence. See [`docs/deploy/reindex-v8-v19-runbook.md`](reindex-v8-v19-runbook.md) for the complete step-by-step with verification block (CoreSymbol counts, field_type v18/v19, LESS nodes, `odoo.tools.SQL` availability, MCP smoke). Non-blocking pre-launch — existing graph data is still correct for v12+ (SCSS/era2); the gap is only in v8-v11 LESS coverage and v18/v19 field_type classification.
+
+17. **PR #224 launch-prep verify (NEW 2026-05-31)** — After deploying PR #224 (`feat/launch-prep`), verify:
+    - `curl -sI https://<domain>/terms` → HTTP 200, no "DRAFT" in page body
+    - `curl -sI https://<domain>/privacy` → HTTP 200, no "DRAFT" in page body
+    - `curl -sI https://<domain>/refund` → HTTP 200, no "DRAFT" in page body
+    - `/account/billing` renders consent modal (buyer-type selector + waiver checkbox) when `billing.paid_checkout_enabled=true`
+    - `curl -s https://<domain>/sitemap-index.xml` → HTTP 200, XML with sitemap entries (static `sitemap.xml` removed; data-driven via `@astrojs/sitemap`)
+    - `curl -s https://<domain>/llms.txt` → HTTP 200, text content
+    - `curl -s https://<domain>/robots.txt` → HTTP 200; body contains `Disallow: /admin/`, `Disallow: /account/`, `Disallow: /tenant/`
+    - `psql "$PG_DSN" -c "SELECT column_name FROM information_schema.columns WHERE table_name='subscriptions' AND column_name IN ('buyer_type','withdrawal_waiver_accepted_at');"` → 2 rows (m13_017 applied)
+    - Re-run `psql "$PG_DSN" -f ops/rls_create_osm_reader.sql` and verify osm_reader grants on `subscriptions` new columns
 
 ---
 

@@ -7,13 +7,14 @@ import StepUpMfaModal from '../components/StepUpMfaModal';
 import MobileSidebar from '../components/MobileSidebar.astro';
 import UserMenu from '../components/UserMenu';
 import { NAV_ICONS as ICONS } from '../lib/navIcons';
+import { BRAND_FULL } from '../lib/constants';
 
 export interface Props {
   title?: string;
   tenantName?: string;
 }
 
-const { title = 'Tenant — Odoo Semantic MCP', tenantName } = Astro.props;
+const { title = `Tenant — ${BRAND_FULL}`, tenantName } = Astro.props;
 
 // `icon` keys into the inline SVG map (L12 — emoji replaced by line icons).
 const navItems = [
@@ -43,9 +44,9 @@ const pageTitle = `${title}${tenantName ? ` · ${tenantName}` : ''}`;
       <aside class="w-64 h-full flex-shrink-0 bg-gray-900 text-white flex flex-col">
         <!-- Logo / Brand -->
         <div class="flex items-center gap-3 px-6 py-5 border-b border-gray-700">
-          <img src="/logo-mark-ondark.svg" alt="Logo" class="w-8 h-8" />
+          <img src="/logo-mark-ondark.svg" alt="Odoo Semantic MCP" class="w-8 h-8" />
           <span class="font-semibold text-sm leading-tight">
-            Odoo Semantic<br />
+            {BRAND_FULL}<br />
             <span class="text-gray-400 font-normal">
               {tenantName ? tenantName : 'Tenant Portal'}
             </span>

@@ -11,7 +11,8 @@
  *    version  - semver string shown in the copyright line.
  *               Defaults to SITE_VERSION from constants.ts.
  *               WI-5/6 can override with a live value from /api/site-config. */
-import { SITE_VERSION } from '../lib/constants';
+import { SITE_VERSION, BRAND_FULL, BRAND_DEF } from '../lib/constants';
+import { NAV_ITEMS } from '../lib/nav';
 
 export interface Props {
   version?: string;
@@ -27,19 +28,24 @@ const { version = SITE_VERSION } = Astro.props;
   <div class="mx-auto max-w-7xl">
     <!-- Copyright + version -->
     <p class="font-mono text-[11px] text-viindoo-on-dark-dim">
-      &copy; Viindoo &middot; Built on the Model Context Protocol &middot;
+      &copy; Viindoo &middot; {BRAND_FULL} &middot; Built on the Model Context Protocol &middot;
       <span class="text-viindoo-primary">v{version}</span>
     </p>
+    <!-- Brand definition — introduces the OSM shorthand (used in docs + UI) -->
+    <p class="font-mono text-[10px] text-viindoo-on-dark-dim/60 mt-1" title={BRAND_FULL}>
+      Also known as <span class="text-viindoo-on-dark-dim">{BRAND_DEF}</span>
+    </p>
 
-    <!-- Primary nav links -->
+    <!-- Primary nav links — driven by NAV_ITEMS SSOT (mirrors SiteHeader) -->
     <div class="flex flex-wrap items-center justify-center gap-4 mt-3 text-[12px] text-viindoo-on-dark-dim">
-      <a href="/pricing"     class="hover:text-viindoo-primary-bright transition-colors duration-200">Pricing</a>
+      {NAV_ITEMS.map((item, i) => (
+        <Fragment key={item.href}>
+          {i > 0 && <span aria-hidden="true">&middot;</span>}
+          <a href={item.href} class="hover:text-viindoo-primary-bright transition-colors duration-200">{item.label}</a>
+        </Fragment>
+      ))}
       <span aria-hidden="true">&middot;</span>
-      <a href="/tools"       class="hover:text-viindoo-primary-bright transition-colors duration-200">Tools</a>
-      <span aria-hidden="true">&middot;</span>
-      <a href="/install/"    class="hover:text-viindoo-primary-bright transition-colors duration-200">Install</a>
-      <span aria-hidden="true">&middot;</span>
-      <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200" title="2 free MIT plugins: odoo-semantic-mcp + odoo-semantic-skills">Contribute</a>
+      <a href="https://github.com/Viindoo/odoo-mcp-client" class="hover:text-viindoo-primary-bright transition-colors duration-200" title="MIT plugins: odoo-semantic-mcp + odoo-semantic-skills">Contribute</a>
       <span aria-hidden="true">&middot;</span>
       <a href="/bootstrap"   class="hover:text-viindoo-primary-bright transition-colors duration-200">Bootstrap reference</a>
       <span aria-hidden="true">&middot;</span>

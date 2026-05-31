@@ -237,6 +237,7 @@ class SubscriptionStore:
                 "       s.current_period_end, s.trial_ends_at, s.cancelled_at,"
                 "       s.cancel_at_period_end, s.last_event_at,"
                 "       s.created_at, s.updated_at,"
+                "       s.buyer_type, s.withdrawal_waiver_accepted_at,"
                 "       p.slug         AS plan_slug,"
                 "       p.display_name AS plan_name"
                 " FROM subscriptions s"

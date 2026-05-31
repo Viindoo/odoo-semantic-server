@@ -2,9 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 export const prerender = true;
 import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { TOOL_COUNT } from '../lib/constants';
 ---
 
-<BaseLayout title="Benchmark methodology — Odoo Semantic MCP" theme="dark">
+<BaseLayout
+  title="Benchmark methodology — Odoo Semantic MCP"
+  description="How we measured 99% token savings and 100% precision for Odoo developer tasks using MCP vs. grep-based approaches. Raw token counts, three real workflows."
+  theme="dark"
+  showFooter={false}
+>
+  <SiteHeader currentPath="/benchmarks" />
   <div class="bg-viindoo-bg-0 text-viindoo-on-dark min-h-screen pt-24 pb-32">
     <div class="mx-auto max-w-3xl px-6">
       <p class="font-mono text-xs uppercase tracking-widest text-viindoo-primary mb-3">Methodology</p>
@@ -68,9 +77,15 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         </article>
       </section>
 
-      <a href="/" class="mt-12 inline-flex items-center gap-2 font-semibold text-viindoo-primary hover:gap-3 transition">
-        &larr; Back to landing
-      </a>
+      <div class="mt-12 flex flex-wrap items-center gap-6">
+        <a href="/" class="inline-flex items-center gap-2 font-semibold text-viindoo-primary hover:gap-3 transition">
+          &larr; Back to landing
+        </a>
+        <a href="/tools" class="inline-flex items-center gap-2 font-semibold text-viindoo-primary hover:gap-3 transition">
+          See all {TOOL_COUNT} tools &rarr;
+        </a>
+      </div>
     </div>
   </div>
+  <SiteFooter />
 </BaseLayout>

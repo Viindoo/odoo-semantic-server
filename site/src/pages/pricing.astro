@@ -197,6 +197,131 @@ const PLAN_DESCRIPTIONS: Record<string, string> = {
 function planDescription(slug: string): string {
   return PLAN_DESCRIPTIONS[slug] ?? 'Odoo Semantic MCP plan';
 }
+
+// Build JSON-LD Product with Offer[] data-driven from plans (SSR — no hard-coded prices).
+// Falls back to a minimal Product node when plans are unavailable (API error path).
+const productOffers = plans.length > 0
+  ? plans.map((plan) => {
+      const isFree = !plan.billing_interval || plan.billing_interval === 'free';
+      // Resolve price in USD cents from the prices map first, then scalar fallback
+      let priceCents: number = 0;
+      if (!isFree) {
+        if (plan.prices && typeof plan.prices === 'object' && plan.prices['USD'] !== undefined) {
+          priceCents = Number(plan.prices['USD']);
+        } else if (plan.price_cents !== null && plan.price_cents !== undefined) {
+          priceCents = plan.price_cents;
+        }
+      }
+      const priceUsd = priceCents / 100;
+      return {
+        '@type': 'Offer',
+        name: plan.display_name,
+        description: planDescription(plan.slug),
+        price: priceUsd.toString(),
+        priceCurrency: 'USD',
+        priceSpecification: plan.pricing_model === 'per_seat'
+          ? { '@type': 'UnitPriceSpecification', price: priceUsd, priceCurrency: 'USD', unitText: 'SEAT' }
+          : undefined,
+        availability: 'https://schema.org/InStock',
+        url: `https://odoo-semantic.viindoo.com/pricing`,
+      };
+    })
+  : [{ '@type': 'Offer', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock', url: 'https://odoo-semantic.viindoo.com/pricing' }];
+
+const productJsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@type': 'Product',
+  name: 'Odoo Semantic MCP',
+  description: 'A semantic knowledge engine for the entire Odoo ecosystem. Resolve models, trace overrides, validate ORM, measure impact — exposed via MCP protocol for any AI coding tool.',
+  url: 'https://odoo-semantic.viindoo.com',
+  image: 'https://odoo-semantic.viindoo.com/og-image.png',
+  brand: {
+    '@type': 'Brand',
+    name: 'Viindoo',
+  },
+  offers: productOffers,
+});
+
+// FAQPage JSON-LD — questions sourced from the 9 <details> FAQ items below.
+// Keep in sync manually when FAQ content changes.
+const faqJsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: [
+    {
+      '@type': 'Question',
+      name: 'Can I cancel anytime?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Yes. You can cancel at any time from your billing page or the Polar customer portal. Your subscription stays active until the end of the current billing period — there is no refund for the remaining days. See our Refund & Cancellation Policy.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What happens when I hit my monthly quota?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'MCP tool calls are rate-limited to your plan\'s monthly quota. When exhausted, calls return a quota error until the next billing cycle. Upgrade any time to get a higher limit immediately.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How does seat-based pricing work?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Paid plans are priced per seat — one seat is one developer (one API key). The Pro plan is $19 per seat per month (up to 5 seats). The Team plan is $39 per seat per month with a 3-seat minimum, so a Team subscription starts at $117 per month. You only pay for the seats you assign; add or remove seats from your billing page at any time.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What\'s the difference between "tool calls / month" and "calls / minute"?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'They are two separate limits. Tool calls / month is your total monthly allowance — every MCP tool call (like model_inspect or find_examples) counts toward it and it resets each billing cycle. Calls / minute is a speed limit (rate limit) that caps how many calls you can make in any 60-second window; hitting it just means slow down for a moment and does not use up your monthly allowance.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Monthly vs annual — any difference?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Annual plans offer a discounted rate (equivalent to ~2 months free) billed upfront. Monthly plans let you pay as you go with the flexibility to cancel each month. Both plans include the same features.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How do I upgrade or downgrade?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Upgrade or switch plans from your billing page or the Polar customer portal. Downgrades take effect at the end of your current billing period.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Where are my invoices?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Invoices and payment history are managed by Polar, our Merchant of Record. Access them from the "Manage billing" link on your billing page.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Can I self-host?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Yes. The full stack (Neo4j + PostgreSQL + MCP server) can be self-hosted via Docker Compose. Contact our support team for self-host access and the deployment guide. Self-hosted is always free.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Is my Odoo code sent to your servers?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'For the cloud-hosted plan: we index metadata only (model names, field names, method signatures). Source code lines are not stored. For sensitive EE code, use self-hosted.',
+      },
+    },
+  ],
+});
 ---
 
 <BaseLayout
@@ -205,6 +330,8 @@ function planDescription(slug: string): string {
   theme="dark"
   showFooter={false}
 >
+  <script type="application/ld+json" set:html={productJsonLd} slot="head" />
+  <script type="application/ld+json" set:html={faqJsonLd} slot="head" />
   <!-- Shared site header (replaces the old "Back to home" link) -->
   <SiteHeader currentPath="/pricing" />
 
@@ -543,6 +670,12 @@ function planDescription(slug: string): string {
           For the cloud-hosted plan: we index metadata only (model names, field names, method signatures). Source code lines are not stored. For sensitive EE code, use self-hosted.
         </p>
       </details>
+
+      <!-- Cross-link to benchmarks for readers curious about accuracy / token savings -->
+      <p class="text-center text-gray-500 text-sm pt-4">
+        Curious about accuracy and token savings?
+        <a href="/benchmarks" class="text-viindoo-primary hover:underline ml-1">See benchmark methodology &rarr;</a>
+      </p>
     </div>
   </section>
 

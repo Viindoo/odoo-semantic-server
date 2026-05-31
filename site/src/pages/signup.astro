@@ -181,6 +181,22 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
         </label>
       </div>
 
+      <!--
+        Informational-only withdrawal notice (WI-4). Signing up creates a FREE
+        account, so no paid-service withdrawal waiver is needed here. The binding
+        "begin immediately / waive withdrawal" consent is collected at checkout by
+        WI-5 (see /refund §B). This note is purely to inform consumers; it is NOT a
+        second required checkbox and does NOT change form logic.
+      -->
+      <p class="text-xs text-gray-400 leading-relaxed" data-testid="signup-withdrawal-notice">
+        Creating an account is free. When you later subscribe to a paid plan, EEA/UK
+        consumers keep a 14-day right of withdrawal; if you ask us to start the paid
+        service immediately you may be asked to confirm that you will lose that right
+        once the service is fully performed, and will pay pro-rata for any portion
+        already provided if you withdraw earlier. See our
+        <a href="/refund" target="_blank" rel="noopener noreferrer" class="text-viindoo-primary-text hover:underline">Refund &amp; Cancellation Policy</a>.
+      </p>
+
       <!-- hCaptcha widget (only shown when site key is configured) -->
       {hcaptchaSiteKey ? (
         <div

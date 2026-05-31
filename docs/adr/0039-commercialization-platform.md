@@ -264,7 +264,8 @@ refactor, self-service cancel, admin configurability, legal/consent, billing das
 
 All W1 schema additions are gộp vào `m13_014_billing_p1.sql` (single migration for the entire
 billing schema — sections 1-5 are the original P1 DDL; sections 6-8 extend it). The previously
-separate m13_015/m13_016/m13_017 files no longer exist.
+separate m13_015/m13_016/m13_017 draft files no longer exist as separate files for this PR
+(note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31).
 
 **Section 6 — cancel_at_period_end + per-currency prices** (formerly m13_015):
 
@@ -285,7 +286,7 @@ separate m13_015/m13_016/m13_017 files no longer exist.
 Non-NULL = timestamp the user checked the consent checkbox at signup (password) or completed OAuth
 account-creation. Required by PDPL 91/2025 + card-network consent requirements before taking payments.
 
-**Section 8 — drop waitlist CHECK** (formerly m13_017): drops the hard-coded
+**Section 8 — drop waitlist CHECK** (formerly m13_017; note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31): drops the hard-coded
 `CHECK (plan IS NULL OR plan IN ('free','pro','team'))` from `waitlist_emails` (added in m13_008).
 The constraint encoded the allowed-plan list at the schema level; the application layer
 (`_public_plan_slugs` query in `waitlist.py`) is now the sole gate, DB-derived from
@@ -391,7 +392,7 @@ on webhook, surface to ops via ledger `processing_error`),
 `billing.polar_checkout_url_map` (default `{}`).
 
 **Waitlist allow-list is now DB-derived** (`_public_plan_slugs` queries `plans WHERE is_public=TRUE
-AND is_archived=FALSE`); the hard-coded frozenset is removed; m13_014 §8 (formerly m13_017) drops
+AND is_archived=FALSE`); the hard-coded frozenset is removed; m13_014 §8 (formerly m13_017; note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31) drops
 the schema-level `CHECK` that encoded the same list (see §A).
 
 **`GET /api/plans`** now exposes the `prices` JSONB field alongside existing pricing columns,
@@ -400,12 +401,14 @@ enabling the data-driven USD pricing page without a separate query. Multi-curren
 
 ### E — Legal pages + consent gate
 
-Three Astro pages shipped with **DRAFT badge** (pending legal review before `paid_checkout_enabled`
-is flipped to `True`):
+Three Astro pages initially shipped with **DRAFT badge**; **DRAFT removed per CEO sign-off
+2026-06-01 (PR #224); paid_checkout_enabled flip remains runtime ops** (external counsel review
+recommended post-launch):
 
 - **`/terms`** — Terms of Service, including the no-refund + cancel-at-period-end policy
-  (owner decision #1). DRAFT notice visible; date field is `[DATE — pending legal sign-off]`.
-- **`/refund`** — Refund Policy page.
+  (owner decision #1). DRAFT notice removed; real Viindoo entity + effective date 2026-06-01.
+- **`/refund`** — Refund Policy page; B2B all-sales-final + EEA/UK consumer 14-day withdrawal
+  pro-rata (CRD Art. 9/14(3)/16(a)).
 - **`/privacy`** — Privacy Policy, citing PDPL 91/2025 Art. 17(a) consent basis.
 
 Footer links to all three pages added to the shared layout.
@@ -441,8 +444,9 @@ gated by `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s
    at actual period end drives the downgrade.
 2. **In-app cancel calls Polar API** (fail-closed, `POLAR_API_KEY`): the local flag is only set
    after Polar confirms. If Polar is unavailable, user sees 503 + portal URL.
-3. **Legal DRAFT:** `/terms`, `/refund`, `/privacy` ship with DRAFT badge; paid checkout CTA is
-   gated by `billing.paid_checkout_enabled` (default `False`) until legal sign-off.
+3. **Legal DRAFT removed per CEO sign-off 2026-06-01 (PR #224):** external counsel review
+   recommended post-launch; paid checkout CTA is gated by `billing.paid_checkout_enabled`
+   (default `False`); flip remains runtime ops (requires Polar KYB completion).
 4. **`team_min_seats` default 3, enforced** at `grant_entitlement` (not just advisory).
 
 ### H — Pending / human follow-up (non-engineering)
@@ -451,8 +455,9 @@ gated by `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s
   (`webhook-id` / `webhook-timestamp` / `webhook-signature`), `whsec_` prefix encoding, event-type
   spellings (`subscription.canceled` US), payload field paths (`data.id`, `data.product_id`,
   `data.customer.email`). Constants centralized in `src/billing/polar.py` + `polar_api.py`.
-- **Legal sign-off on `/terms`, `/refund`, `/privacy` DRAFT text** before setting
-  `billing.paid_checkout_enabled = True`.
+- **Legal pages CEO-signed (DRAFT removed per PR #224, 2026-06-01).** External counsel review
+  recommended post-launch. Enable live paid sales: admin set
+  `billing.paid_checkout_enabled = True` in Admin Settings after Polar KYB + counsel review.
 - **KYB onboarding** (Polar + accounting treatment of NET MoR payout + foreign-exchange compliance).
 - **Register webhook endpoint URL + product→plan map** in the Polar dashboard + set
   `billing.polar_product_map` in Admin Settings post-deploy.
@@ -468,8 +473,8 @@ gated by `billing.paid_checkout_enabled`. Usage counter auto-refreshes every 60s
 No new MCP tools added.
 
 **Migration required on deploy:** `m13_014` is the single migration covering all billing schema
-(sections 1-8; idempotent, safe to re-run). The previously separate m13_015/m13_016/m13_017 files
-are gộp vào m13_014 and no longer exist. Set `POLAR_API_KEY` in `webui.env` / systemd
+(sections 1-8; idempotent, safe to re-run). The previously separate m13_015/m13_016/m13_017 draft files
+are gộp vào m13_014 and no longer exist as separate files for this PR (note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31). Set `POLAR_API_KEY` in `webui.env` / systemd
 `Environment=` for the self-service cancel route; set `billing.polar_api_base` if using a
 non-default Polar base URL.
 
@@ -496,3 +501,60 @@ draft contents were merged into `m13_014`. PR #223 reuses these numbers for new 
 in a session-level Postgres advisory lock `pg_advisory_lock(ns, subscription_id)` to prevent
 the scan-B double-provision race. This is a money-safety mechanism distinct from indexer locks
 (ADR-0006) and git locks (ADR-0035).
+
+---
+
+## Amendment 2026-05-31 (PR #224 — feat/launch-prep)
+
+**Branch:** `feat/launch-prep`. Install MCP-first, brand SSOT, SEO/AI-discovery, English-only
+legal, legal pages DRAFT removal, CRD-compliant checkout consent.
+
+### m13_017 file number reuse
+
+The `m13_017` file number was freed when the waitlist CHECK-drop content was merged into
+`m13_014` §8. **PR #224 reuses this number** for a new migration:
+
+- `migrations/m13_017_withdrawal_consent.sql` — adds `subscriptions.buyer_type TEXT` (values
+  `'business'` / `'consumer'`) and `subscriptions.withdrawal_waiver_accepted_at TIMESTAMPTZ`
+  for CRD-compliant checkout consent capture.
+
+**Full deploy order (PR #224 and later):** `m13_014` → `m13_015` → `m13_016` → **`m13_017`**.
+
+### DRAFT badge removal (CEO sign-off 2026-06-01)
+
+`/terms`, `/privacy`, `/refund` DRAFT badges removed. Real Viindoo Technology Joint Stock
+Company details (business reg-no 0201994665, registered address, hotline), effective date
+2026-06-01, and `support@`/`sales@`/`privacy@`/`legal@viindoo.com` are now in the
+`site/src/lib/contact.ts` SSOT. Public-page emails render via `ObfuscatedEmail.astro`
+(JS-assembled; no plaintext address in static HTML — anti-harvest).
+
+External counsel review is recommended post-launch (no blocking dependency on code changes;
+the no-refund-absolute posture for B2C was replaced by the CRD-compliant pro-rata mechanism
+below). Enabling live paid sales is a runtime admin step: set
+`billing.paid_checkout_enabled = True` + configure `billing.polar_checkout_url_map` in Admin
+Settings after Polar KYB is complete.
+
+### CRD checkout consent mechanism
+
+EU Consumer Rights Directive compliance layer, wired at the `/account/billing` pre-Polar-redirect
+step (since Polar checkout is URL-map based):
+
+- **Buyer-type capture:** `business` vs `consumer` radio selection before Polar redirect.
+  Business path skips the waiver entirely.
+- **Withdrawal-waiver checkbox (consumer path):** non-pre-ticked (CRD Art. 22). Consumer
+  without waiver is blocked from proceeding to Polar checkout.
+- **Persisted** via `m13_017` (`subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`).
+- **Durable-medium confirmation email** (`src/web_ui/email.py`): sent after consent capture,
+  satisfying CRD Art. 7(3)/8(8) "durable medium" obligation.
+- **Refund policy split** (already reflected in `/refund` page): B2B = all-sales-final;
+  EEA/UK consumer = 14-day withdrawal right + **pro-rata** mid-period refund per CRD
+  Art. 9/14(3)/16(a) — NOT absolute no-refund for consumers.
+- **New endpoints:** `POST /api/account/checkout-consent` (record buyer_type + waiver),
+  `GET /api/account/checkout-config` (returns current consent state for the billing island).
+- **`_billing-island.tsx` consent modal** — renders buyer-type selector + conditional waiver
+  checkbox before emitting the Polar checkout redirect.
+- **`list_all` admin endpoint** now exposes `buyer_type` + `withdrawal_waiver_accepted_at`
+  columns on subscription rows (admin visibility, no new MCP tool).
+- **10 new postgres integration tests** covering the consent flow.
+
+**Tool count stays 24.** All PR #224 changes are web/Astro/billing layer only.

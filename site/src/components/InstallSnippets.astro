@@ -57,26 +57,27 @@ import {
       <span class="inline-flex items-center rounded-full bg-viindoo-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-viindoo-primary border border-viindoo-primary/30">Free &amp; open source · MIT</span>
     </div>
     <p class="text-sm text-gray-600 mb-3">
-      Plugin install (recommended). The <code class="bg-gray-100 px-1 rounded text-xs">{SKILLS_PLUGIN.slug}</code> plugin
-      auto-pulls <code class="bg-gray-100 px-1 rounded text-xs">{MCP_PLUGIN.slug}</code> (MCP config + {TOOL_COUNT} tools + {RESOURCE_COUNT} resources),
-      adding {SKILLS_COUNT} skills + {AGENTS_COUNT} agents + {PERSONA_COUNT} personas:
+      Three commands to wire <code class="bg-gray-100 px-1 rounded text-xs">{TOOL_COUNT} tools</code> +
+      <code class="bg-gray-100 px-1 rounded text-xs">{RESOURCE_COUNT} resources</code> into Claude Code via the
+      <code class="bg-gray-100 px-1 rounded text-xs">{MCP_PLUGIN.slug}</code> plugin:
     </p>
     <pre class="code-block"><code>{INSTALL_STEPS_CLI.marketplace}
-{INSTALL_STEPS_CLI.installSkills}  # auto-pulls {MCP_PLUGIN.slug}</code></pre>
+{INSTALL_STEPS_CLI.installMcp}</code></pre>
     <p class="text-sm text-gray-600 mt-3 mb-2">
       Then connect in Claude Code:
     </p>
     <pre class="code-block"><code>{INSTALL_STEPS_CLI.connect}</code></pre>
     <p class="text-xs text-gray-600 mt-3">
-      MCP only (no skills/agents):
-      <code class="bg-gray-100 px-1 rounded text-xs">{INSTALL_STEPS_CLI.installMcpOnly}</code> &rarr; <code class="bg-gray-100 px-1 rounded text-xs">{INSTALL_STEPS_CLI.connect}</code>
-    </p>
-    <p class="text-xs text-gray-600 mt-2">
-      Manual setup:
+      Manual setup (no plugin):
       <code class="bg-gray-100 px-1 rounded text-xs">claude mcp add --scope user --transport http odoo-semantic &lt;MCP_URL&gt; --header "X-API-Key: &lt;API_KEY&gt;"</code>
     </p>
     <p class="text-xs text-gray-600 mt-2">
-      Both plugins are MIT-licensed, free forever &mdash;
+      Want {SKILLS_COUNT} skills + {AGENTS_COUNT} agents + {PERSONA_COUNT} personas?
+      Add the free <code class="bg-gray-100 px-1 rounded text-xs">{SKILLS_PLUGIN.slug}</code> plugin (MIT, also auto-pulls MCP):
+      <code class="bg-gray-100 px-1 rounded text-xs">{INSTALL_STEPS_CLI.installSkills}</code>
+    </p>
+    <p class="text-xs text-gray-600 mt-2">
+      All plugins are MIT-licensed, free forever &mdash;
       <a href={PLUGIN_REPO_URL} class="text-viindoo-primary hover:underline" target="_blank" rel="noopener">view on GitHub</a>.
     </p>
   </div>

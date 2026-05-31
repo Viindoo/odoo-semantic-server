@@ -366,6 +366,151 @@ def send_waitlist_notify_email(
         return False
 
 
+def send_checkout_consent_email(
+    to: str,
+    username: str,
+    buyer_type: str,
+    plan_slug: str | None,
+    waiver_accepted: bool,
+    base_url: str,
+) -> None:
+    """Send a durable-medium CRD consent confirmation email (Art.7(3) / Art.8(8)).
+
+    This email is the legally required "durable medium" confirmation that:
+    - repeats the key contract terms (service delivered immediately on payment),
+    - confirms the buyer's own waiver statement (consumer only), and
+    - names the Merchant of Record so the buyer knows who charges them.
+
+    Best-effort: the caller catches exceptions and continues with the
+    checkout redirect regardless — a failed notification is a compliance gap
+    that should be investigated, but it MUST NOT block the purchase flow.
+
+    Args:
+        to:              Recipient email address.
+        username:        Buyer display name (HTML-escaped in body).
+        buyer_type:      'business' or 'consumer'.
+        plan_slug:       Plan they are purchasing (e.g. 'pro', 'team'). May be None.
+        waiver_accepted: True iff the user ticked the CRD withdrawal-waiver checkbox.
+        base_url:        Public deployment origin (e.g. https://odoo-semantic.viindoo.com).
+    """
+    import datetime as _dt
+
+    now_utc = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    safe_username = escape(username)
+    plan_display = escape(plan_slug.capitalize() if plan_slug else "Paid plan")
+    terms_url = escape(f"{base_url.rstrip('/')}/terms")
+    refund_url = escape(f"{base_url.rstrip('/')}/refund")
+
+    is_consumer = buyer_type == "consumer"
+
+    subject = "Your Odoo Semantic MCP purchase - order confirmation & service acknowledgment"
+
+    # Plain-text body
+    plain_parts = [
+        f"Hi {username},",
+        "",
+        "This email confirms that you have initiated a purchase on Odoo Semantic MCP.",
+        "",
+        f"  Plan:        {plan_slug or 'Paid plan'}",
+        f"  Buyer type:  {buyer_type}",
+        f"  Date/time:   {now_utc}",
+        "",
+    ]
+    if is_consumer and waiver_accepted:
+        plain_parts += [
+            "SERVICE DELIVERY ACKNOWLEDGMENT",
+            "You have confirmed that:",
+            "  - You request immediate delivery of the Odoo Semantic MCP digital service.",
+            "  - You acknowledge that your 14-day right of withdrawal is extinguished",
+            "    upon delivery of the service (EU Consumer Rights Directive Art.16(a)).",
+            "",
+        ]
+    plain_parts += [
+        f"Terms of Service: {base_url.rstrip('/')}/terms",
+        f"Refund Policy:    {base_url.rstrip('/')}/refund",
+        "",
+        "Payments are processed by Polar Software Inc. (polar.sh), our Merchant of Record.",
+        "If you did not initiate this purchase, please contact our support team immediately.",
+    ]
+    plain_body = "\n".join(plain_parts)
+
+    # HTML body
+    waiver_section = ""
+    if is_consumer and waiver_accepted:
+        waiver_section = (
+            '<div style="margin:20px 0;padding:14px 16px;background:#F0FDF4;'
+            'border-left:4px solid #16A34A;border-radius:4px;font-size:14px;">'
+            "<p style=\"margin:0 0 8px;font-weight:600;color:#15803D;\">"
+            "Service delivery acknowledgment</p>"
+            "<p style=\"margin:0;color:#166534;\">You have confirmed that you "
+            "<strong>request immediate delivery</strong> of the Odoo Semantic MCP "
+            "digital service, and you acknowledge that your "
+            "<strong>14-day right of withdrawal is extinguished</strong> upon "
+            "delivery (EU Consumer Rights Directive Art.16(a)).</p>"
+            "</div>"
+        )
+    elif buyer_type == "business":
+        waiver_section = (
+            '<div style="margin:20px 0;padding:12px 16px;background:#F1F5F9;'
+            'border-left:4px solid #64748B;border-radius:4px;font-size:14px;'
+            'color:#475569;">'
+            "Business purchase - no consumer withdrawal right applies."
+            "</div>"
+        )
+
+    body = (
+        f"<p>Hi {safe_username},</p>"
+        f"<p>This email confirms that you have initiated a purchase on "
+        f"<strong>Odoo Semantic MCP</strong>.</p>"
+        f'<table cellpadding="6" cellspacing="0" border="0"'
+        f' style="border-collapse:collapse;font-size:14px;margin:16px 0;">'
+        f'<tr><td style="padding-right:16px;color:{_BRAND_MUTED};">Plan</td>'
+        f"<td><strong>{plan_display}</strong></td></tr>"
+        f'<tr><td style="padding-right:16px;color:{_BRAND_MUTED};">Buyer type</td>'
+        f"<td>{escape(buyer_type)}</td></tr>"
+        f'<tr><td style="padding-right:16px;color:{_BRAND_MUTED};">Date / time</td>'
+        f"<td>{now_utc}</td></tr>"
+        f"</table>"
+        f"{waiver_section}"
+        f'<p style="font-size:13px;">Useful links: '
+        f'<a href="{terms_url}" style="color:{_BRAND_CYAN};">Terms of Service</a>'
+        f' &middot; '
+        f'<a href="{refund_url}" style="color:{_BRAND_CYAN};">Refund Policy</a>'
+        f"</p>"
+        f'<p style="color:{_BRAND_MUTED};font-size:13px;">'
+        f"Payments are processed by <strong>Polar Software Inc. (polar.sh)</strong>, "
+        f"our Merchant of Record.</p>"
+        f'<p style="color:{_BRAND_MUTED};font-size:13px;">'
+        f"If you did not initiate this purchase, please contact our support team "
+        f"immediately.</p>"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = _from_address()
+    msg["To"] = to
+    msg.set_content(plain_body)
+    msg.add_alternative(
+        _email_wrapper(body, subject, base_url),
+        subtype="html",
+    )
+
+    if not _smtp_host():
+        logger.info(
+            "DEV MODE — checkout consent confirmation suppressed. to=%s buyer_type=%s waiver=%s",
+            to, buyer_type, waiver_accepted,
+        )
+        return
+
+    try:
+        _send(msg)
+    except Exception as exc:
+        # Best-effort per the docstring contract: a failed durable-medium
+        # confirmation is a compliance gap to investigate, but it MUST NOT
+        # block the purchase flow, so we log and swallow rather than raise.
+        logger.error("Failed to send checkout consent email to %s: %s", to, exc)
+
+
 def send_password_reset_email(to: str, username: str, token: str, base_url: str) -> None:
     """Send password-reset email.
 

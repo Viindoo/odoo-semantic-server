@@ -1,0 +1,88 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+/**
+ * ObfuscatedEmail — anti-harvest email link component.
+ *
+ * Renders an anchor whose href and text content are assembled client-side from
+ * split data-* attributes so that bots/AI crawlers reading static HTML never
+ * see a complete email address or mailto: URI.
+ *
+ * Usage:
+ *   <ObfuscatedEmail user="legal" domain="viindoo.com" />
+ *   <ObfuscatedEmail user="privacy" domain="viindoo.com" label="Contact privacy team" subject="Data request" />
+ *
+ * Static HTML output (bot-visible):
+ *   <a class="obf-email" data-user="legal" data-domain="viindoo.com"
+ *      aria-label="Email legal team" data-subject="">
+ *     legal [at] viindoo [dot] com
+ *   </a>
+ *
+ * After JS runs (human-visible, link is clickable):
+ *   <a href="mailto:legal@viindoo.com" aria-label="Email legal team">
+ *     legal@viindoo.com
+ *   </a>
+ *
+ * Security note: the data-user / data-domain values are NOT a complete address.
+ * A simple grep for "@" in the HTML will NOT match. Scraper needs to parse,
+ * find both attributes, and concatenate them — a non-trivial extra step that
+ * stops unsophisticated crawlers and most AI HTML-scraping pipelines.
+ */
+
+export interface Props {
+  /** Local-part of the email address (before @). */
+  user: string;
+  /** Domain part of the email address (after @). */
+  domain: string;
+  /** Optional display label override. Defaults to user@domain. */
+  label?: string;
+  /** Optional mailto subject parameter. */
+  subject?: string;
+  /** Extra CSS classes forwarded to the <a> element. */
+  class?: string;
+}
+
+const { user, domain, label, subject = '', class: extraClass = '' } = Astro.props;
+
+// Static fallback text: no "@" present so grep won't match the assembly.
+const staticFallback = `${user} [at] ${domain.replace('.', ' [dot] ')}`;
+// aria-label describes purpose without embedding the address.
+const ariaLabel = label ?? `Email ${user} team`;
+---
+
+<a
+  class={`obf-email${extraClass ? ' ' + extraClass : ''}`}
+  data-user={user}
+  data-domain={domain}
+  data-subject={subject}
+  aria-label={ariaLabel}
+>
+  {staticFallback}
+</a>
+
+<!--
+  Single global handler — guards against double-registration when the
+  component is used multiple times on the same page.
+-->
+<script is:inline>
+  (function () {
+    if (window.__obfEmailInit) return;
+    window.__obfEmailInit = true;
+    function initObfEmails() {
+      document.querySelectorAll('a.obf-email').forEach(function (el) {
+        var u = el.getAttribute('data-user');
+        var d = el.getAttribute('data-domain');
+        if (!u || !d) return;
+        var addr = u + '@' + d;
+        var subj = el.getAttribute('data-subject');
+        el.href = 'mailto:' + addr + (subj ? '?subject=' + encodeURIComponent(subj) : '');
+        el.textContent = addr;
+        el.setAttribute('aria-label', el.getAttribute('aria-label').replace(u + ' team', addr));
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initObfEmails);
+    } else {
+      initObfEmails();
+    }
+  })();
+</script>

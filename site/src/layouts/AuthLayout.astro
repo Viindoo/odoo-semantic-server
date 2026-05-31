@@ -4,14 +4,19 @@
 // reset-password, verify-email). Provides brand lockup + centered card shell.
 // No developer footer (suppresses "Bootstrap reference" on auth routes — item #21).
 import '../styles/global.css';
+import { BRAND_FULL } from '../lib/constants';
 
 export interface Props {
   title: string;       // browser <title>
-  heading?: string;    // app name — "Odoo Semantic MCP" default
+  heading?: string;    // app name — BRAND_FULL default
   subtitle: string;    // page subtitle shown under app name
 }
 
-const { title, heading = 'Odoo Semantic MCP', subtitle } = Astro.props;
+const { title, heading = BRAND_FULL, subtitle } = Astro.props;
+const siteOrigin = Astro.site ?? new URL('https://odoo-semantic.viindoo.com');
+const canonicalUrl = new URL(Astro.url.pathname, siteOrigin).href;
+const ogImage = new URL('/og-image.png', siteOrigin).href;
+const ogDescription = subtitle || 'Knowledge engine for Odoo — inheritance chain, view structure, JS patch.';
 ---
 
 <!doctype html>
@@ -19,8 +24,18 @@ const { title, heading = 'Odoo Semantic MCP', subtitle } = Astro.props;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Odoo Semantic MCP — Knowledge engine for Odoo." />
+    <meta name="description" content={ogDescription} />
+    <link rel="canonical" href={canonicalUrl} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={ogDescription} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={ogDescription} />
+    <meta name="twitter:image" content={ogImage} />
     <title>{title}</title>
     <slot name="head" />
   </head>
@@ -30,7 +45,7 @@ const { title, heading = 'Odoo Semantic MCP', subtitle } = Astro.props;
         <!-- Brand lockup — shared across all auth pages (items #1 #2 #20) -->
         <div class="text-center mb-8">
           <div class="inline-flex items-center justify-center w-14 h-14 bg-viindoo-primary rounded-2xl mb-3">
-            <img src="/logo-mark-white.svg" alt="Odoo Semantic MCP Logo" class="w-8 h-8" />
+            <img src="/logo-mark-white.svg" alt="Odoo Semantic MCP" class="w-8 h-8" />
           </div>
           <h1 class="text-xl font-bold text-gray-900 font-display">{heading}</h1>
           <p class="text-sm text-gray-600 mt-1">{subtitle}</p>
