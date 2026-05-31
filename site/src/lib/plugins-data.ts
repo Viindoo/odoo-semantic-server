@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** SSOT cho 2 plugin Claude Code (MIT, free) — slug, lệnh install, value props.
+/** SSOT for 2 Claude Code plugins (MIT, free) — slug, install command, value props.
  *
- *  Dùng bởi Astro components: InstallSnippets.astro (tab Claude Code) +
+ *  Used by Astro components: InstallSnippets.astro (Claude Code tab) +
  *  OpenSourcePlugins.astro (promo section). Static HTML
- *  (`src/mcp/static/install/index.html`) và README/docs KHÔNG import được —
- *  phải sync thủ công, ghi chú "sync from plugins-data.ts".
+ *  (`src/mcp/static/install/index.html`) and README/docs cannot import this —
+ *  must sync manually, with note "sync from plugins-data.ts".
  *
- *  Nguồn sự thật cho slug/version/dependency: repo client
+ *  Source of truth for slug/version/dependency: client repo
  *  github.com/Viindoo/odoo-mcp-client (split commit 806a159, 2026-05-29). */
 
 export const PLUGIN_MARKETPLACE = 'Viindoo/claude-plugins';
