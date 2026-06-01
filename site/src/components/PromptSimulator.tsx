@@ -70,7 +70,7 @@ const EXAMPLES: Example[] = [
         { text: '✓ sale_loyalty (CE)    // sale.order integration', cls: 'text-viindoo-success' },
         { text: '✓ pos_loyalty (CE)     // PoS integration', cls: 'text-viindoo-success' },
         { text: '' },
-        { text: 'Available since v15.0 · Free in Community edition' },
+        { text: 'Bundled in Community — no Enterprise license needed' },
         { text: '' },
         { text: '✓ verified against module index', cls: 'text-viindoo-success' },
       ],

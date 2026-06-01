@@ -3,7 +3,7 @@
 // Hero.astro — "Living Cartography" aesthetic
 // Aurora field + blueprint grid + grain, staggered load reveal, developer-first
 // copy, a living inheritance graph (pulsing nodes + tracing edges), and a
-// source-grounded proof quote. Motion degrades under prefers-reduced-motion.
+// "hallucination tax" proof callout. Motion degrades under prefers-reduced-motion.
 import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
 ---
 
@@ -52,22 +52,20 @@ import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
           stop inventing names that don&apos;t exist.
         </p>
 
-        <!-- Proof quote — grounds the pain in a real, citable developer voice -->
-        <figure
-          class="animate-cv-rise mt-7 max-w-[52ch] border-l-2 border-viindoo-primary/40 pl-4"
+        <!-- The hallucination tax — verifiable Odoo specifics, no fabricated quote -->
+        <div
+          class="animate-cv-rise cv-glass mt-7 max-w-[52ch] rounded-xl px-4 py-3.5"
           style="animation-delay: 0.24s;"
         >
-          <blockquote class="text-[15px] leading-relaxed text-viindoo-on-dark-muted italic">
-            &ldquo;It invents method names that look right but don&apos;t exist &mdash;
-            <code class="not-italic font-mono text-viindoo-danger/90 text-[13px]">account.invoice.search</code>
-            instead of <code class="not-italic font-mono text-viindoo-primary-bright text-[13px]">account.move</code>,
-            <code class="not-italic font-mono text-viindoo-danger/90 text-[13px]">customer_id</code>
-            instead of <code class="not-italic font-mono text-viindoo-primary-bright text-[13px]">partner_id</code>.&rdquo;
-          </blockquote>
-          <figcaption class="mt-2 font-mono text-[11px] uppercase tracking-widest text-viindoo-on-dark-dim">
-            &mdash; Marc Fargas, Odoo developer
-          </figcaption>
-        </figure>
+          <p class="font-mono text-[10px] uppercase tracking-[0.18em] text-viindoo-danger/90 mb-1.5">The hallucination tax</p>
+          <p class="text-[14.5px] leading-relaxed text-viindoo-on-dark-muted">
+            Ungrounded AI invents names that look right but don&apos;t exist &mdash;
+            <code class="font-mono text-viindoo-danger/90 text-[13px]">account.invoice.search</code>
+            instead of <code class="font-mono text-viindoo-primary-bright text-[13px]">account.move</code>,
+            <code class="font-mono text-viindoo-danger/90 text-[13px]">customer_id</code>
+            instead of <code class="font-mono text-viindoo-primary-bright text-[13px]">partner_id</code>.
+          </p>
+        </div>
 
         <!-- CTAs -->
         <div class="animate-cv-rise flex flex-wrap gap-3.5 mt-9" style="animation-delay: 0.3s;">
