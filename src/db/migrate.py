@@ -35,6 +35,7 @@ from pathlib import Path
 import psycopg2
 
 from src import config
+from src.constants import DEFAULT_EMBEDDER_DIM
 from src.db._types import PgConn
 
 # ---------------------------------------------------------------------------
@@ -92,23 +93,39 @@ ALTER TABLE repos ADD COLUMN IF NOT EXISTS clone_status TEXT NOT NULL DEFAULT 'm
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS clone_error_msg TEXT;
 """
 
-_EMBEDDINGS_SQL = """
+def _build_embeddings_ddl(dim: int = DEFAULT_EMBEDDER_DIM) -> str:
+    """Return CREATE TABLE DDL for the embeddings table with the given vector dim.
+
+    dim is always an int constant controlled by this codebase (never user input),
+    so f-string interpolation is safe here.  Changing dim requires a full reindex
+    because existing vectors live in a different latent space and cosine similarity
+    across spaces is meaningless.
+
+    NOTE: Changing DEFAULT_EMBEDDER_DIM in src/constants.py is not enough — you
+    must also run a full reindex so all stored vectors are in the new space.
+    """
+    dim = int(dim)  # defensive cast: guarantee no injection even if type widens
+    return f"""
 CREATE TABLE IF NOT EXISTS embeddings (
-    id           BIGSERIAL PRIMARY KEY,
-    chunk_type   TEXT NOT NULL,
-    module       TEXT NOT NULL,
-    odoo_version TEXT NOT NULL,
-    entity_name  TEXT NOT NULL,
-    model_name   TEXT,
-    file_path    TEXT NOT NULL,
-    chunk_idx    INTEGER NOT NULL DEFAULT 0,
-    content      TEXT NOT NULL,
-    vec          vector(1024) NOT NULL,
-    indexed_at   TIMESTAMP DEFAULT NOW(),
+    id             BIGSERIAL PRIMARY KEY,
+    chunk_type     TEXT NOT NULL,
+    module         TEXT NOT NULL,
+    odoo_version   TEXT NOT NULL,
+    entity_name    TEXT NOT NULL,
+    model_name     TEXT,
+    file_path      TEXT NOT NULL,
+    chunk_idx      INTEGER NOT NULL DEFAULT 0,
+    content        TEXT NOT NULL,
+    vec            vector({dim}) NOT NULL,
+    indexed_at     TIMESTAMP DEFAULT NOW(),
+    embedding_model TEXT,
+    embedding_dim   INT,
     CONSTRAINT ux_embeddings_chunk
         UNIQUE (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx)
-);
+);"""
 
+
+_EMBEDDINGS_INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_embeddings_vec
     ON embeddings USING hnsw (vec vector_cosine_ops)
     WITH (m = 16, ef_construction = 200);
@@ -116,6 +133,8 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_vec
 CREATE INDEX IF NOT EXISTS idx_embeddings_filter
     ON embeddings (odoo_version, chunk_type, module);
 """
+
+_EMBEDDINGS_SQL = _build_embeddings_ddl() + _EMBEDDINGS_INDEXES_SQL
 
 # Upgrade existing installations: add file_path to the unique constraint if missing.
 # Safe to re-run; the DO block is a no-op when the constraint already has file_path.

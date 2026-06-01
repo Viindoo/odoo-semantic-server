@@ -4,6 +4,113 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — Code-review wave (R6): diagnostics alive-status + runbook/nginx /ready alignment
+
+- **`src/diagnostics.py` mcp_health check false-error (HIGH):** `/api/diagnose` was permanently
+  reporting `mcp_health=error` even when the server was healthy. Root cause: check compared
+  `health_status == "ok"` but `/health` now returns `status: "alive"` (pure liveness, ADR-0046
+  PR #227). Fixed: accept both `"alive"` (new) and `"ok"` (legacy) so diagnostics is correct
+  across deployed versions. Detail message updated to clarify liveness context.
+- **`docs/deploy/runbooks/post-pr-ops.md`:** Precondition health check updated from
+  `expect "healthy"` → `expect "alive"` (liveness); added a second command showing `/ready`
+  for readiness + embeddings counts.
+- **`docs/deploy/reindex-v8-v19-runbook.md`:** GAP1 verify command switched from
+  `/health` to `/ready` (`embeddings_total` is `null` on `/health` until the first `/ready`
+  hit; `/ready` runs the real `SELECT COUNT(*)`).
+- **`docs/deploy/nginx.conf.example`:** Added `/ready` location block (readiness probe) alongside
+  the existing `/health` (liveness); clarified comments distinguishing the two endpoints.
+
+---
+
+### Fixed / Added / Changed — Token-bounded embedding, provider abstraction, MCP anti-hang (#226 #227)
+
+Tool count stays **24** (no new MCP tools; `/ready` is a new HTTP endpoint, not a tool).
+**Migration required on deploy:** `m13_018_embedding_model_dim.sql` (after m13_017).
+
+#### Fixed — #226: token-bounded chunking (ADR-0044)
+
+- **Root cause:** the chunking layer (`_sliding`, `make_pattern_chunks`, view/JS/style chunk helpers)
+  split text by character window only. Character count is not a reliable proxy for token count;
+  large patterns and code-dense chunks could exceed the embedder model's context window
+  (`EMBEDDER_NUM_CTX`, default 4096 tokens), producing truncated or erroneous vectors.
+- **Token helpers (`estimate_tokens` / `split_by_token_budget`)** added to `src/indexer/embedder.py`
+  (module-level, shared with the chunking layer). Cheap heuristic: `ceil(len(text) / chars_per_token)`.
+  Deliberately conservative (low ratio = over-estimate = safe over-split direction).
+- **`_sliding` token-aware:** after each char window is produced, `_token_split_window` further
+  splits by `EMBEDDER_TOKEN_BUDGET` (default 3500 tokens) if needed. Same pattern applied in
+  `make_pattern_chunks`, `make_view_chunks`, `make_js_chunks`, `make_style_chunks`.
+- **MCP query cap (`_cap_query_text`):** user-supplied query/intent/selector strings capped to
+  `EMBEDDER_TOKEN_BUDGET` tokens before embedding. Only the leading chunk is used for search.
+- **Truncation choke-point (`_truncate_to_ctx`):** last-resort safety-net in `_BaseHttpEmbedder`
+  clamps any text exceeding `num_ctx * chars_per_token` chars with a `WARNING` log. Never splits
+  into extra vectors; `len(out) == len(texts)` invariant preserved.
+- **Bug B — length guard in `_embed_one`:** if the backend returns a different number of vectors
+  than input texts, `RuntimeError` is raised immediately (prevents silent chunk-to-vector misalignment
+  in the `embeddings` table).
+- **Resilient skip-log (`_embed_chunks_resilient`):** `write_module_embeddings` now uses this helper.
+  Happy path: one batch embed call. On batch failure: degrade to per-chunk embedding; any chunk that
+  fails individually is logged as `WARNING` and skipped. A single malformed chunk cannot abort the
+  entire module write.
+
+New env vars: `EMBEDDER_NUM_CTX` (default `4096`), `EMBEDDER_TOKEN_BUDGET` (default `3500`),
+`EMBEDDER_CHARS_PER_TOKEN` (default `3.0`). See [ADR-0044](docs/adr/0044-token-bounded-embedding.md).
+
+#### Added — Provider abstraction (ADR-0045)
+
+- **`EmbedderClient` structural Protocol** — `model`, `dim`, `num_ctx`, `chars_per_token` read-only
+  attrs + `embed()` / `embed_async()` methods. `@runtime_checkable` so tests can assert the contract.
+- **`_BaseHttpEmbedder`** — shared batch / retry / timeout / observability machinery. Subclasses
+  override only: `endpoint_path`, `query_instruction`, `_build_payload`, `_extract_vectors`.
+- **`OpenAICompatEmbedder`** — new `/v1/embeddings` client (POST `{model, input}`, extract
+  `data["data"][i]["embedding"]`). No INSTRUCT prefix (symmetric models). Covers OpenAI, Voyage AI,
+  TEI, vLLM, LiteLLM.
+- **`make_embedder(backend, **kwargs)` factory** — selects `Qwen3Embedder` (`ollama` / `qwen` /
+  `qwen3`), `OpenAICompatEmbedder` (`openai` / `tei` / `voyage` / `vllm` / `litellm`), or
+  `FakeEmbedder` (`fake` / `test`) based on `EMBEDDER_BACKEND` env var (default `ollama`).
+- **`embedding_model` + `embedding_dim` columns** — migration `m13_018` adds two columns to the
+  `embeddings` table; existing rows backfilled to `('qwen3-embedding-q5km', 1024)`. Writer stamps
+  every new row with the live embedder's `model` and `dim` attributes. `ON CONFLICT DO UPDATE` also
+  refreshes provenance on re-index.
+- **Fail-fast dim mismatch guard (`src/db/embedding_guard.py`)** — `assert_dim_matches(conn, dim)`
+  raises `EmbedderDimMismatch` if the configured dim differs from the stored dim. Called once per
+  `write_module_embeddings` batch. Prevents silent cosine-similarity corruption across incompatible
+  vector spaces. **Switching embedding dimension requires a full reindex.**
+- `EMBEDDER_BACKEND` env var added (default `ollama`). See [ADR-0045](docs/adr/0045-embedding-provider-abstraction.md).
+
+#### Fixed — #227: MCP embed concurrency + anti-hang (ADR-0046)
+
+- **Root cause (production wedge ~11h):** FastMCP invokes `sync def` tool handlers directly on the
+  asyncio event loop thread. The three query-embed tools called `embedder.embed()` (blocking HTTP via
+  `httpx.Client`) synchronously, freezing the entire event loop — including `/health`. Evidence: TCP
+  `Recv-Q` grew 113→147 during wedge; wedge duration ~11h exceeded the 1200s batch timeout by ~30x.
+- **Async hot path:** `find_examples`, `suggest_pattern`, `find_style_override` converted to
+  `async def` and embed via `embedder.embed_async()` (runs `embed()` in a worker thread via
+  `asyncio.to_thread`). Event loop stays free during embed.
+- **Short query timeout (30s):** `embed_async(read_timeout="query")` uses `TIMEOUT_EMBEDDER_READ_QUERY`
+  (default 30s), separate from the 1200s batch timeout. A single hung query embed fails fast rather
+  than blocking a user for 20 minutes.
+- **`asyncio.Semaphore` cap (`EMBEDDER_MAX_CONCURRENCY`, default 4):** bounds concurrent in-flight
+  embed requests. Semaphore constructed lazily on first use (must be inside the running event loop).
+- **Fast rejection (`EmbedOverloaded`):** callers wait at most `EMBEDDER_SLOT_ACQUIRE_TIMEOUT_S`
+  (default 5s) for a slot. On timeout: raise `EmbedOverloaded` — surfaced as an actionable overload
+  message instead of an unbounded queue.
+- **uvicorn `limit_concurrency`:** set to `EMBEDDER_MAX_CONCURRENCY * 16` at server startup. Beyond
+  this ceiling, uvicorn returns HTTP 503 immediately (not queuing). Tunable via `MCP_LIMIT_CONCURRENCY`.
+- **`/health` — pure liveness, no DB I/O:** removed all `SELECT COUNT(*)` and pool checkout from the
+  liveness path. `/health` reads a module-level cache (populated by `/ready` hits) in O(1), pool-
+  independent. The `embeddings_total` / `embeddings_by_chunk_type` fields are retained in the
+  response body (backward compat) but are `null` until the first `/ready` hit.
+- **`/ready` — readiness probe with 60s cache:** new HTTP endpoint (`GET /ready`) runs Neo4j +
+  Postgres connectivity checks + the `SELECT COUNT(*)` scan. Results cached 60s in-memory
+  (double-checked lock); a burst of readiness probes triggers at most one DB scan per TTL. Not an
+  MCP tool; **tool count stays 24**.
+
+New env vars: `EMBEDDER_MAX_CONCURRENCY` (default `4`), `EMBEDDER_TIMEOUT_READ_QUERY` (default `30`),
+`EMBEDDER_SLOT_ACQUIRE_TIMEOUT` (default `5`), `MCP_LIMIT_CONCURRENCY` (default `EMBEDDER_MAX_CONCURRENCY * 16`).
+See [ADR-0046](docs/adr/0046-mcp-embed-concurrency-anti-hang.md).
+
+---
+
 ### Fixed / Added — Public data-driven site-config, waitlist fix, standalone benchmark, GA4 (feat/website-data-driven-launch)
 
 Tool count stays **24** (web/Astro/settings layer only; no new MCP tools).

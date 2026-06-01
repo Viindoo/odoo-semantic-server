@@ -30,6 +30,7 @@ from src.indexer.models import PatternExample
 from src.indexer.writer_neo4j import Neo4jWriter
 from src.indexer.writer_pgvector import (
     EmbeddingChunk,
+    _embedder_meta,
     make_pattern_chunks,
 )
 
@@ -487,16 +488,34 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
     Replaces existing pattern_example rows for clean re-seed (idempotent).
     This variant accepts an external embedder object (unlike _write_pgvector which
     constructs one from config).
+
+    WI-B: uses _embed_chunks_resilient for partial-failure tolerance; writes
+    embedding_model/embedding_dim into each row; calls assert_dim_matches
+    once as fail-fast guard against incompatible vector spaces.
     """
     from psycopg2.extras import execute_values
 
+    from src.db.embedding_guard import assert_dim_matches
     from src.db.pg import get_pool
-    from src.indexer.writer_pgvector import _INSERT_SQL
+    from src.indexer.writer_pgvector import _INSERT_SQL, _embed_chunks_resilient
 
-    texts = [c.content for c in chunks]
-    vecs = embedder.embed(texts)
+    live_chunks, vecs, _embed_calls = _embed_chunks_resilient(embedder, chunks)
+
+    # Guard: if all chunks failed embedding, preserve existing rows.
+    if not live_chunks:
+        _logger.error(
+            "embed produced 0 usable vectors for pattern chunks — "
+            "preserving existing rows, skipping destructive rewrite"
+        )
+        return
+
+    # Tolerate embedders without .model/.dim (test doubles, pre-ADR-0045) — see
+    # writer_pgvector.write_module_embeddings for rationale.
+    emb_model, emb_dim = _embedder_meta(embedder)
 
     with get_pool().checkout_vec() as conn:
+        if emb_dim is not None:
+            assert_dim_matches(conn, emb_dim, emb_model)
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
@@ -508,10 +527,11 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
                     "AND profile_name IS NOT DISTINCT FROM %s",
                     (None,),
                 )
-                execute_values(
-                    cur, _INSERT_SQL,
-                    [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
-                )
+                rows = [
+                    c.as_tuple(vecs[i], emb_model, emb_dim)
+                    for i, c in enumerate(live_chunks)
+                ]
+                execute_values(cur, _INSERT_SQL, rows)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -562,15 +582,21 @@ def _get_neo4j_writer():
 
 
 def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
-    """Embed pattern chunks via Qwen3 + write to pgvector embeddings table.
+    """Embed pattern chunks via configured embedder + write to pgvector embeddings table.
 
     Replaces existing pattern_example rows for clean re-seed (idempotent).
+
+    WI-B: constructs embedder via make_embedder() (factory, respects EMBEDDER_BACKEND);
+    uses _embed_chunks_resilient for partial-failure tolerance; writes
+    embedding_model/embedding_dim into each row; calls assert_dim_matches
+    once as fail-fast guard against incompatible vector spaces.
     """
     from psycopg2.extras import execute_values
 
+    from src.db.embedding_guard import assert_dim_matches
     from src.db.pg import get_pool
-    from src.indexer.embedder import Qwen3Embedder
-    from src.indexer.writer_pgvector import _INSERT_SQL
+    from src.indexer.embedder import make_embedder
+    from src.indexer.writer_pgvector import _INSERT_SQL, _embed_chunks_resilient
 
     embedder_url = config.from_env_or_ini(
         "EMBEDDER_URL", "embedder", "url",
@@ -586,14 +612,25 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
     embedder_auth = config.from_env_or_ini(
         "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,
     )
-    embedder = Qwen3Embedder(
-        embedder_url, embedder_model, dim=embedder_dim, auth_token=embedder_auth,
+    embedder = make_embedder(
+        url=embedder_url, model=embedder_model, dim=embedder_dim, auth_token=embedder_auth,
     )
 
-    texts = [c.content for c in chunks]
-    vecs = embedder.embed(texts)
+    live_chunks, vecs, _embed_calls = _embed_chunks_resilient(embedder, chunks)
+
+    # Guard: if all chunks failed embedding, preserve existing rows.
+    if not live_chunks:
+        _logger.error(
+            "embed produced 0 usable vectors for pattern chunks — "
+            "preserving existing rows, skipping destructive rewrite"
+        )
+        return
+
+    emb_model, emb_dim = _embedder_meta(embedder)
 
     with get_pool().checkout_vec() as conn:
+        if emb_dim is not None:
+            assert_dim_matches(conn, emb_dim, emb_model)
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
@@ -604,10 +641,11 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
                     "AND profile_name IS NOT DISTINCT FROM %s",
                     (None,),
                 )
-                execute_values(
-                    cur, _INSERT_SQL,
-                    [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
-                )
+                rows = [
+                    c.as_tuple(vecs[i], emb_model, emb_dim)
+                    for i, c in enumerate(live_chunks)
+                ]
+                execute_values(cur, _INSERT_SQL, rows)
             conn.commit()
         except Exception:
             conn.rollback()

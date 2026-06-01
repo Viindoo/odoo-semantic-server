@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/mcp/server.py
+import asyncio
+import functools
 import math
 import os
 import threading
@@ -17,6 +19,8 @@ from src.constants import (
     DEFAULT_EMBEDDER_MODEL,
     EDITION_PRIORITY,
     EDITION_PRIORITY_ELSE,
+    EMBEDDER_MAX_CONCURRENCY,
+    EMBEDDER_TOKEN_BUDGET,
     FIND_EXAMPLES_ANN_LIMIT,
     IMPACT_MODULES_MAX,
     IMPACT_RISK_HIGH_THRESHOLD,
@@ -35,6 +39,7 @@ from src.constants import (
     REL_USES_CORE_SYMBOL,
     REL_USES_FIELD,
     SNIPPET_PREVIEW_MAX_LINES,
+    TIMEOUT_EMBEDDER_READ_QUERY,
     VALID_CHUNK_TYPES,
 )
 from src.mcp import session as _session
@@ -284,6 +289,126 @@ _driver = None
 _embedder_instance = None
 _version_checked = False
 _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
+
+# --- Anti-freeze hot-path embed guards (#227) -------------------------------
+# FastMCP runs sync `def` tool handlers DIRECTLY on the asyncio event-loop
+# thread (no to_thread). A single blocking embedder.embed() call therefore
+# freezes the whole server (including /health). The three query-embed tools
+# (find_examples, suggest_pattern, find_style_override) now embed via
+# embedder.embed_async() on the event loop, bounded by a module-level
+# Semaphore so a burst of concurrent embeds cannot exhaust the upstream
+# Ollama connection pool / queue unboundedly.
+#
+# EMBEDDER_MAX_CONCURRENCY caps in-flight query embeds. Callers that cannot
+# acquire a slot within _EMBED_SLOT_ACQUIRE_TIMEOUT_S fail fast (a 503-style
+# overloaded error) instead of queueing forever — the whole point of #227.
+_embed_semaphore: asyncio.Semaphore | None = None
+_embed_sem_lock = threading.Lock()  # guards lazy Semaphore construction
+# Short bound: if we cannot start an embed within this window we are already
+# saturated; reject quickly rather than pile up an unbounded backlog. Read
+# from env at call time (no constants.py edit per WI-C scope) with a small
+# default. Must stay < the embed read timeout so the reject is genuinely fast.
+_EMBED_SLOT_ACQUIRE_TIMEOUT_S = float(os.getenv("EMBEDDER_SLOT_ACQUIRE_TIMEOUT", "5"))
+
+
+class EmbedOverloaded(RuntimeError):
+    """Raised when the bounded embed semaphore cannot be acquired in time.
+
+    Surfaced to the MCP client as a fast, actionable overload message rather
+    than letting the request hang on an unbounded queue (#227).
+    """
+
+
+def _get_embed_semaphore() -> asyncio.Semaphore:
+    """Lazily build the embed Semaphore inside the running event loop.
+
+    asyncio.Semaphore binds to the loop running when it is first awaited, so
+    we must NOT construct it at import time (no loop yet) — build it on first
+    use from within a handler coroutine. Double-checked under a thread lock so
+    concurrent first-callers share one instance.
+    """
+    global _embed_semaphore
+    if _embed_semaphore is not None:
+        return _embed_semaphore
+    with _embed_sem_lock:
+        if _embed_semaphore is None:
+            _embed_semaphore = asyncio.Semaphore(EMBEDDER_MAX_CONCURRENCY)
+    return _embed_semaphore
+
+
+def _cap_query_text(embedder, text: str) -> str:
+    """Truncate `text` to EMBEDDER_TOKEN_BUDGET tokens BEFORE prepending INSTRUCT.
+
+    A user can paste kilobytes of text into a query/intent/selector argument;
+    embedding the whole thing wastes the upstream context window and slows the
+    hot path. We keep only the first budgeted chunk (split_by_token_budget
+    returns the whole string unchanged when it already fits — a cheap no-op for
+    normal short queries).
+    """
+    from src.indexer.embedder import split_by_token_budget
+
+    chars_per_token = getattr(embedder, "chars_per_token", None) or 4.0
+    return split_by_token_budget(text, EMBEDDER_TOKEN_BUDGET, chars_per_token)[0]
+
+
+async def _embed_query(embedder, instruct: str, text: str) -> list[float]:
+    """Embed a single query string off the event-loop's blocking path (#227).
+
+    - Caps `text` to the token budget before prepending `instruct`.
+    - Acquires the bounded Semaphore with a short timeout → fail fast on
+      overload (EmbedOverloaded) instead of an unbounded queue.
+    - Runs embed via embed_async with the SHORT query read timeout (30s) so a
+      single hung query never inherits the 1200s batch timeout.
+
+    Returns the embedding vector. Raises on embed failure (caller maps to the
+    tool's existing "embedding query failed" message to preserve behaviour).
+    """
+    capped = _cap_query_text(embedder, text)
+    sem = _get_embed_semaphore()
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=_EMBED_SLOT_ACQUIRE_TIMEOUT_S)
+    except TimeoutError as e:
+        raise EmbedOverloaded(
+            "server busy — too many concurrent embedding requests"
+            f" (max {EMBEDDER_MAX_CONCURRENCY}); retry shortly"
+        ) from e
+    try:
+        vecs = await embedder.embed_async(
+            [instruct + capped], read_timeout=TIMEOUT_EMBEDDER_READ_QUERY
+        )
+    finally:
+        sem.release()
+    return vecs[0]
+
+
+def offload(fn):
+    """Move a blocking sync tool body off the asyncio event loop (#227 root).
+
+    FastMCP 2.14.x runs a sync ``def`` tool handler DIRECTLY on the event-loop
+    thread (no implicit to_thread). Any Neo4j/Postgres I/O inside such a handler
+    therefore blocks the whole server — a single slow/locked query freezes
+    /health and every concurrent request (the #227 504). This decorator wraps a
+    sync handler in an ``async def`` that runs the original body in a worker
+    thread via ``asyncio.to_thread``, so the loop stays free.
+
+    Mechanism notes:
+      * ``functools.wraps`` copies ``__wrapped__`` so ``inspect.signature``
+        (which FastMCP uses to build the input schema) resolves to the ORIGINAL
+        handler signature — the generic ``*a, **k`` wrapper is invisible to
+        introspection, so the tool schema and FastMCP's "no **kwargs" rule are
+        preserved.
+      * ``asyncio.to_thread`` copies the current ``contextvars.Context``, so the
+        per-request ContextVars (``_api_key_id_var``, tenant, profile) propagate
+        into the worker thread unchanged.
+      * Place BETWEEN ``@mcp.tool(...)`` and the sync ``def`` so FastMCP
+        registers the resulting async callable. Do NOT apply to handlers that
+        are already ``async def`` (they offload their own blocking body).
+    """
+    @functools.wraps(fn)
+    async def wrapper(*a, **k):
+        return await asyncio.to_thread(functools.partial(fn, *a, **k))
+
+    return wrapper
 
 
 def _get_api_key_id() -> str:
@@ -583,7 +708,7 @@ def _get_embedder():
         if _embedder_instance is not None:  # re-check after acquiring lock
             return _embedder_instance
         from src import config
-        from src.indexer.embedder import Qwen3Embedder
+        from src.indexer.embedder import make_embedder
         url = config.from_env_or_ini(
             "EMBEDDER_URL", "embedder", "url",
             fallback="http://localhost:11434",
@@ -598,8 +723,10 @@ def _get_embedder():
         auth_token = config.from_env_or_ini(
             "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,
         )
-        _embedder_instance = Qwen3Embedder(
-            url, model, dim=int(dim_str), auth_token=auth_token,
+        # WI-A factory: backend chosen by EMBEDDER_BACKEND (default ollama →
+        # Qwen3Embedder). url/model/dim/auth forwarded to the constructor.
+        _embedder_instance = make_embedder(
+            url=url, model=model, dim=int(dim_str), auth_token=auth_token,
         )
     return _embedder_instance
 
@@ -1139,7 +1266,12 @@ def _find_examples(
     _driver=None,
     _pg_conn=None,
     _embedder=None,
+    _query_vec=None,
 ) -> str:
+    # _query_vec: when the async tool wrapper has already embedded the query off
+    # the event loop (#227), it passes the vector here so this blocking body can
+    # run inside asyncio.to_thread without re-embedding. When None (sync tests,
+    # entity_lookup, CLI), we embed synchronously as before — never on a loop.
     if not query.strip():
         # ADR-0023 §2: tool output must be English-only.
         return (
@@ -1163,15 +1295,22 @@ def _find_examples(
         if odoo_version in ("auto", "latest"):
             odoo_version = _resolve_version("auto", session)
 
-    try:
-        query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + query])[0]
-    except Exception as e:
-        return (
-            f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
-            "Hint: Ollama may be down, model not loaded, or network issue. "
-            "Verify with: curl http://localhost:11434/api/tags\n"
-            "Found 0 results\n"
-        )
+    if _query_vec is not None:
+        query_vec = _query_vec
+    else:
+        try:
+            # Cap the query to the token budget before INSTRUCT so a giant
+            # paste cannot blow the embedder context (#227, sync path).
+            capped = _cap_query_text(embedder, query)
+            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+            query_vec = embedder.embed([instruct + capped])[0]
+        except Exception as e:
+            return (
+                f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
+                "Hint: Ollama may be down, model not loaded, or network issue. "
+                "Verify with: curl http://localhost:11434/api/tags\n"
+                "Found 0 results\n"
+            )
 
     selected_types = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
 
@@ -1329,7 +1468,7 @@ def _find_examples(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-def find_examples(
+async def find_examples(
     query: str,
     odoo_version: str = "auto",
     limit: int = 5,
@@ -1369,8 +1508,37 @@ def find_examples(
           #1 · score 0.82 · method · [sale] sale.order.action_confirm
              File: [odoo_17.0] addons/sale/models/sale_order.py:412
     """
-    return _find_examples(
-        query, odoo_version, limit, context_module, chunk_types, profile_name
+    # #227: embed on the event loop (async, bounded, short timeout), then run
+    # the blocking Neo4j/PG body in a worker thread so the loop stays free —
+    # /health and other requests never freeze behind one slow embed.
+    if not query.strip():
+        return _find_examples(query, odoo_version, limit, context_module,
+                              chunk_types, profile_name)
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+    try:
+        embedder = _get_embedder()
+    except Exception as e:
+        return (
+            f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama server is running (default: http://localhost:11434) "
+            "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
+        )
+    try:
+        instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+        query_vec = await _embed_query(embedder, instruct, query)
+    except EmbedOverloaded as e:
+        return f"find_examples: {e}\nFound 0 results\n"
+    except Exception as e:
+        return (
+            f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
+            "Hint: Ollama may be down, model not loaded, or network issue. "
+            "Verify with: curl http://localhost:11434/api/tags\n"
+            "Found 0 results\n"
+        )
+    return await asyncio.to_thread(
+        _find_examples,
+        query, odoo_version, limit, context_module, chunk_types, profile_name,
+        _embedder=embedder, _query_vec=query_vec,
     )
 
 
@@ -1787,6 +1955,7 @@ def _impact_analysis(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def impact_analysis(
     entity_type: str,
     entity_name: str,
@@ -1983,6 +2152,7 @@ def _api_version_diff(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     """Look up an Odoo core API symbol: signature, status, replacement.
 
@@ -2366,6 +2536,7 @@ def _lint_check(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def find_deprecated_usage(
     odoo_version: str = "auto",
     kind: str | None = None,
@@ -2408,6 +2579,7 @@ def find_deprecated_usage(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
@@ -2591,6 +2763,7 @@ def _cli_help(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def cli_help(
     command: str | None = None,
     flag: str | None = None,
@@ -2628,6 +2801,7 @@ def cli_help(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     """Diff a single Odoo core API symbol between two indexed versions.
 
@@ -2672,6 +2846,7 @@ def _suggest_pattern(
     _driver=None,
     _pg_conn=None,
     _embedder=None,
+    _query_vec=None,
 ) -> str:
     """ANN-rank curated PatternExample chunks by intent string.
 
@@ -2705,12 +2880,18 @@ def _suggest_pattern(
     with driver.session() as session:
         v = _resolve_version(odoo_version, session)
 
-    try:
-        intent_vec = embedder.embed([INSTRUCT_NL_TO_CODE + intent])[0]
-    except Exception as e:
-        return (
-            f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
-        )
+    if _query_vec is not None:
+        intent_vec = _query_vec
+    else:
+        try:
+            # Cap intent to the token budget before INSTRUCT (#227, sync path).
+            capped = _cap_query_text(embedder, intent)
+            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+            intent_vec = embedder.embed([instruct + capped])[0]
+        except Exception as e:
+            return (
+                f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
+            )
 
     # Use injected connection (test path) or check out from pool (production).
     # RLS note (WI-7 / ADR-0034 D3/A2): pattern catalogue chunks are stored
@@ -4689,7 +4870,7 @@ def _format_find_override_point(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-def suggest_pattern(
+async def suggest_pattern(
     intent: str,
     odoo_version: str = "auto",
     language: str = "python",
@@ -4725,10 +4906,36 @@ def suggest_pattern(
               └─ Gotchas:
                    • Reading old values AFTER super().write() returns new value
     """
-    return _suggest_pattern(intent, odoo_version, language, limit)
+    # #227: guard cheaply (empty/invalid → sync impl returns the error string),
+    # then embed async + offload the blocking body to a worker thread.
+    if not intent.strip() or language not in _VALID_PATTERN_LANGUAGES:
+        return _suggest_pattern(intent, odoo_version, language, limit)
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+    try:
+        embedder = _get_embedder()
+    except Exception as e:
+        return (
+            f"suggest_pattern: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama is running (default: http://localhost:11434)."
+        )
+    try:
+        instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+        intent_vec = await _embed_query(embedder, instruct, intent)
+    except EmbedOverloaded as e:
+        return f"suggest_pattern: {e}"
+    except Exception as e:
+        return (
+            f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
+        )
+    return await asyncio.to_thread(
+        _suggest_pattern,
+        intent, odoo_version, language, limit,
+        _embedder=embedder, _query_vec=intent_vec,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def check_module_exists(
     name: str,
     odoo_version: str = "auto",
@@ -4770,6 +4977,7 @@ def check_module_exists(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def find_override_point(
     model: str, method: str, odoo_version: str = "auto", to_version: str = "",
 ) -> str:
@@ -5450,6 +5658,7 @@ def _list_methods_structured(
 
 
 @mcp.tool(output_schema=DescribeModuleOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
+@offload
 def describe_module(
     name: str,
     odoo_version: str = "auto",
@@ -5495,6 +5704,7 @@ def describe_module(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def model_inspect(
     model: str,
     method: str,
@@ -5551,6 +5761,7 @@ def model_inspect(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def module_inspect(
     name: str,
     method: str,
@@ -5606,7 +5817,7 @@ def module_inspect(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-def entity_lookup(
+async def entity_lookup(
     kind: str,
     *,
     odoo_version: str = "auto",
@@ -5648,7 +5859,30 @@ def entity_lookup(
         entity_lookup("field", model="sale.order", field="amount_total")
         → same as model_inspect(model="sale.order", method="field", field="amount_total")
     """
-    text = _entity_lookup(
+    # #227: entity_lookup(kind='pattern') routes to _suggest_pattern, whose
+    # embedder.embed() blocks. Capture the api_key_id ContextVar on the event
+    # loop (it does not propagate into a raw worker thread), then run the whole
+    # dispatch off-loop so a slow embed never freezes the server.
+    api_key_id = _get_api_key_id()
+    # Pre-embed the pattern intent on the loop through the SAME bounded path as
+    # suggest_pattern (semaphore + 30s query timeout) so this discriminator
+    # route can't pin an unbounded worker on the 1200s batch client. Any failure
+    # leaves _query_vec=None → _suggest_pattern's sync path reports the error.
+    _embedder = None
+    _query_vec = None
+    if kind == "pattern" and name and name.strip():
+        from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+        try:
+            _embedder = _get_embedder()
+            instruct = getattr(_embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+            _query_vec = await _embed_query(_embedder, instruct, name)
+        except EmbedOverloaded as e:
+            return ToolResult(content=[TextContent(type="text", text=f"entity_lookup: {e}")])
+        except Exception:
+            _embedder = None
+            _query_vec = None
+    text = await asyncio.to_thread(
+        _entity_lookup,
         kind=kind,
         odoo_version=odoo_version,
         profile_name=profile_name,
@@ -5657,8 +5891,10 @@ def entity_lookup(
         method_name=method_name,
         xmlid=xmlid,
         name=name,
-        api_key_id=_get_api_key_id(),
+        api_key_id=api_key_id,
         from_module=from_module,
+        _embedder=_embedder,
+        _query_vec=_query_vec,
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
@@ -5669,6 +5905,7 @@ def entity_lookup(
 
 
 @mcp.tool(**MUTATING_TOOL_KWARGS)
+@offload
 def set_active_version(odoo_version: str) -> ToolResult:
     """Pin the active Odoo version for this API key (ADR-0029 implicit context).
 
@@ -5746,6 +5983,7 @@ def set_active_version(odoo_version: str) -> ToolResult:
 
 
 @mcp.tool(**MUTATING_TOOL_KWARGS)
+@offload
 def set_active_profile(profile_name: str | None) -> ToolResult:
     """Pin the active profile for this API key (ADR-0029 implicit context).
 
@@ -5815,6 +6053,7 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def list_available_versions() -> ToolResult:
     """List all Odoo versions indexed in this knowledge base.
 
@@ -5861,6 +6100,7 @@ def list_available_versions() -> ToolResult:
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def list_available_profiles() -> ToolResult:
     """List all profiles registered in this knowledge base.
 
@@ -6055,6 +6295,7 @@ def _find_style_override(
     _driver=None,
     _pg_conn=None,
     _embedder=None,
+    _query_vec=None,
 ) -> str:
     """Impl for find_style_override tool — no FastMCP wrapper overhead.
 
@@ -6085,14 +6326,20 @@ def _find_style_override(
     with driver.session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-    try:
-        query_vec = embedder.embed([INSTRUCT_NL_TO_CODE + selector_or_variable])[0]
-    except Exception as e:
-        return (
-            f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
-            "Found 0 results\n"
-            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
-        )
+    if _query_vec is not None:
+        query_vec = _query_vec
+    else:
+        try:
+            # Cap selector/variable text to the token budget (#227, sync path).
+            capped = _cap_query_text(embedder, selector_or_variable)
+            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+            query_vec = embedder.embed([instruct + capped])[0]
+        except Exception as e:
+            return (
+                f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+                "Found 0 results\n"
+                f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+            )
 
     # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer (see
     # _find_examples). No explicit profile arg here → tenant boundary only.
@@ -6199,6 +6446,7 @@ def _find_style_override(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def resolve_stylesheet(
     module: str,
     odoo_version: str = "auto",
@@ -6240,7 +6488,7 @@ def resolve_stylesheet(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-def find_style_override(
+async def find_style_override(
     selector_or_variable: str,
     odoo_version: str = "auto",
     limit: int = 5,
@@ -6279,10 +6527,45 @@ def find_style_override(
              Override chain (1 importer(s)):
              ├─ addons/website/static/src/scss/views.scss [website]
     """
-    return _find_style_override(selector_or_variable, odoo_version, limit)
+    # #227: empty input → sync impl returns the guard string; otherwise embed
+    # async (bounded, short timeout) then offload the blocking body off-loop.
+    if not selector_or_variable.strip():
+        return _find_style_override(selector_or_variable, odoo_version, limit)
+    from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+    try:
+        embedder = _get_embedder()
+    except Exception as e:
+        return (
+            f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+            "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
+            "Found 0 results\n"
+            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+        )
+    try:
+        instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+        query_vec = await _embed_query(
+            embedder, instruct, selector_or_variable
+        )
+    except EmbedOverloaded as e:
+        return (
+            f"find_style_override: {e}\nFound 0 results\n"
+            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+        )
+    except Exception as e:
+        return (
+            f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+            "Found 0 results\n"
+            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+        )
+    return await asyncio.to_thread(
+        _find_style_override,
+        selector_or_variable, odoo_version, limit,
+        _embedder=embedder, _query_vec=query_vec,
+    )
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def resolve_orm_chain(
     model: str,
     dotted_path: str,
@@ -6317,6 +6600,7 @@ def resolve_orm_chain(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def validate_domain(
     model: str,
     domain: str,
@@ -6350,6 +6634,7 @@ def validate_domain(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def validate_depends(
     model: str,
     method: str,
@@ -6383,6 +6668,7 @@ def validate_depends(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
 def validate_relation(
     model: str,
     field: str,
@@ -6432,6 +6718,16 @@ def _mcp_port() -> int:
 async def health_check(request: Request):
     from src.mcp.health import health_handler
     return await health_handler(request)
+
+
+# Readiness endpoint (WI-D) — cached DB-count readiness probe. Distinct from
+# /health liveness: /ready reports whether the index is populated and both DBs
+# are reachable, reading from the shared TTL cache so it never scans on the hot
+# path. Registered as an HTTP custom route (NOT an MCP tool — tool count stays 24).
+@mcp.custom_route("/ready", methods=["GET"])
+async def ready_check(request: Request):
+    from src.mcp.health import ready_handler
+    return await ready_handler(request)
 
 
 # Prometheus metrics endpoint — no auth (mirroring /health bypass in middleware.py).
@@ -6607,6 +6903,16 @@ if __name__ == "__main__":
     _feedback_app.include_router(_deploy_key.router)
     _app.mount("", _feedback_app)
 
+    # #227 backpressure: cap the number of concurrent connections uvicorn will
+    # service. Beyond this, uvicorn returns HTTP 503 immediately instead of
+    # letting the accept-backlog grow unbounded (which turns overload into
+    # latency + OOM). The ceiling is a multiple of EMBEDDER_MAX_CONCURRENCY so
+    # there is headroom for cheap non-embed tools + /health while the embed
+    # semaphore independently bounds the expensive embed slots. Tunable via
+    # MCP_LIMIT_CONCURRENCY (no constants.py edit — WI-C scope).
+    _limit_concurrency = int(
+        os.getenv("MCP_LIMIT_CONCURRENCY", str(EMBEDDER_MAX_CONCURRENCY * 16))
+    )
     _uvicorn.run(
         _app,
         host=_mcp_host(),
@@ -6614,4 +6920,5 @@ if __name__ == "__main__":
         timeout_graceful_shutdown=0,
         lifespan="on",
         access_log=True,
+        limit_concurrency=_limit_concurrency,
     )

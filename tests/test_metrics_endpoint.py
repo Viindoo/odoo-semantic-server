@@ -9,6 +9,7 @@ Covers:
 - Qwen3Embedder.embed() observes the histogram on each _embed_one call.
 """
 import contextlib
+import json
 import math
 
 import httpx
@@ -90,7 +91,10 @@ def test_histogram_has_correct_buckets():
 
 def _mock_transport_ok(dim: int = 4):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"embeddings": [[0.5] * dim]})
+        # Echo one vector per input text so the response is well-formed
+        # (Qwen3Embedder enforces len(vectors) == len(inputs)).
+        n = len(json.loads(request.content)["input"])
+        return httpx.Response(200, json={"embeddings": [[0.5] * dim for _ in range(n)]})
 
     return httpx.MockTransport(handler)
 

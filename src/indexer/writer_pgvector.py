@@ -2,11 +2,14 @@
 """pgvector writer — chunk, embed, and store Odoo code in PostgreSQL embeddings table."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from psycopg2.extras import execute_values
 
-from .embedder import EmbedderClient
+from src.constants import EMBEDDER_TOKEN_BUDGET
+
+from .embedder import EmbedderClient, estimate_tokens, split_by_token_budget
 from .models import (
     CSSChunk,
     JSChunk,
@@ -17,17 +20,20 @@ from .models import (
     ViewParseResult,
 )
 
+_logger = logging.getLogger(__name__)
+
 _WINDOW_CHARS = 2048
 _OVERLAP_CHARS = 256
 
 _INSERT_SQL = """
 INSERT INTO embeddings
     (chunk_type, module, odoo_version, entity_name, model_name, file_path, chunk_idx, content, vec,
-     profile_name, line_start, repo, repo_id)
+     profile_name, line_start, repo, repo_id, embedding_model, embedding_dim)
 VALUES %s
 ON CONFLICT ON CONSTRAINT ux_embeddings_chunk
 DO UPDATE SET content = EXCLUDED.content, vec = EXCLUDED.vec, indexed_at = NOW(),
-              line_start = EXCLUDED.line_start, repo = EXCLUDED.repo, repo_id = EXCLUDED.repo_id
+              line_start = EXCLUDED.line_start, repo = EXCLUDED.repo, repo_id = EXCLUDED.repo_id,
+              embedding_model = EXCLUDED.embedding_model, embedding_dim = EXCLUDED.embedding_dim
 """
 
 
@@ -48,14 +54,53 @@ class EmbeddingChunk:
     repo: str | None = None         # repo basename (ModuleInfo.repo)
     repo_id: int | None = None      # FK to repos.id (ModuleInfo.repo_id)
 
-    def as_tuple(self, vec: list[float]) -> tuple:
+    def as_tuple(
+        self, vec: list[float],
+        embedding_model: str | None = None,
+        embedding_dim: int | None = None,
+    ) -> tuple:
         return (
             self.chunk_type, self.module, self.odoo_version,
             self.entity_name, self.model_name, self.file_path,
             self.chunk_idx, self.content, vec,
             self.profile_name,
             self.line_start, self.repo, self.repo_id,
+            embedding_model, embedding_dim,
         )
+
+
+def _embedder_meta(embedder: object) -> tuple[str | None, int | None]:
+    """Return (model, dim) from an embedder object; None for missing attrs.
+
+    Tolerates pre-ADR-0045 embedders and test doubles that do not expose
+    .model / .dim.  Callers stamp NULL and skip the dim guard rather than
+    crash.  Centralises the three identical getattr pairs in writer +
+    seed_patterns._write_pgvector*.
+    """
+    return getattr(embedder, "model", None), getattr(embedder, "dim", None)
+
+
+def _token_split_chunk(
+    base_chunk: EmbeddingChunk, content: str, start_idx: int,
+) -> list[EmbeddingChunk]:
+    """Split *content* by token budget, producing EmbeddingChunks starting at *start_idx*.
+
+    Returns a single-element list when content fits within EMBEDDER_TOKEN_BUDGET
+    (using start_idx as chunk_idx).  Otherwise splits and returns one chunk per
+    piece with monotonically increasing chunk_idx starting at start_idx.
+
+    Uses dataclasses.replace so all provenance fields (repo, repo_id, line_start,
+    profile_name) are copied from *base_chunk* without repetition.
+    """
+    import dataclasses
+
+    if estimate_tokens(content) <= EMBEDDER_TOKEN_BUDGET:
+        return [dataclasses.replace(base_chunk, chunk_idx=start_idx, content=content)]
+    pieces = split_by_token_budget(content, EMBEDDER_TOKEN_BUDGET)
+    return [
+        dataclasses.replace(base_chunk, chunk_idx=start_idx + i, content=piece)
+        for i, piece in enumerate(pieces)
+    ]
 
 
 def _sliding(
@@ -76,27 +121,110 @@ def _sliding(
     A3: optional keyword arguments `line_start`, `repo`, `repo_id` are
     propagated to every produced chunk (all windows share the same provenance —
     line_start points to the first line of the entity regardless of window).
+
+    WI-B: after char-window splitting, each window is further split by
+    split_by_token_budget if it exceeds EMBEDDER_TOKEN_BUDGET tokens. All
+    sub-chunks from token splitting keep the same provenance.  chunk_idx is
+    monotonically allocated across all windows and their token-split pieces
+    so no two chunks for the same (entity_name, file_path) share an index.
     """
+    # Build a prototype chunk; _token_split_chunk copies it with correct idx/content.
+    _proto = EmbeddingChunk(
+        chunk_type, module, version, entity_name, model_name, file_path, 0, "",
+        line_start=line_start, repo=repo, repo_id=repo_id,
+    )
+
     if len(raw) <= _WINDOW_CHARS:
-        return [
-            EmbeddingChunk(
-                chunk_type, module, version, entity_name, model_name, file_path, 0, raw,
-                line_start=line_start, repo=repo, repo_id=repo_id,
-            )
-        ]
+        return _token_split_chunk(_proto, raw, 0)
+
     chunks: list[EmbeddingChunk] = []
-    start, idx = 0, 0
+    start = 0
+    idx = 0
     while start < len(raw):
         end = min(start + _WINDOW_CHARS, len(raw))
-        chunks.append(EmbeddingChunk(
-            chunk_type, module, version, entity_name, model_name, file_path, idx, raw[start:end],
-            line_start=line_start, repo=repo, repo_id=repo_id,
-        ))
+        window = raw[start:end]
+        sub_chunks = _token_split_chunk(_proto, window, idx)
+        chunks.extend(sub_chunks)
+        idx += len(sub_chunks)
         if end == len(raw):
             break
         start = end - _OVERLAP_CHARS
-        idx += 1
+
     return chunks
+
+
+def _embed_chunks_resilient(
+    embedder: EmbedderClient,
+    chunks: list[EmbeddingChunk],
+) -> tuple[list[EmbeddingChunk], list[list[float]], int]:
+    """Embed all chunks, retrying the batch once on failure then degrading per-chunk.
+
+    Happy path: embedder.embed([all contents]) in one call.
+    If the batch raises (RuntimeError / any exception): retry the full batch
+    once (reduces request storm for transient errors).  If the retry also
+    fails: degrade to embedding chunk-by-chunk; any chunk that raises
+    individually is logged as a warning and skipped.  The returned lists are
+    aligned: chunks_ok[i] produced vecs[i].
+
+    Returns:
+        (chunks_ok, vecs, embed_calls)
+        - chunks_ok: surviving chunks (may be shorter than input on failures)
+        - vecs:      corresponding embedding vectors (same length as chunks_ok)
+        - embed_calls: number of embed() calls made (for observability)
+    """
+    if not chunks:
+        return [], [], 0
+
+    texts = [c.content for c in chunks]
+    count_before = getattr(embedder, "call_count", None)
+    try:
+        vecs = embedder.embed(texts)
+        count_after = getattr(embedder, "call_count", None)
+        if count_before is not None and count_after is not None:
+            embed_calls = count_after - count_before
+        else:
+            embed_calls = 1
+        return chunks, vecs, embed_calls
+    except Exception as batch_exc:
+        _logger.warning(
+            "embed batch failed (%s) — retrying full batch once before per-chunk fallback",
+            batch_exc,
+        )
+
+    # Retry full batch once (fix #7: reduce request storm on transient errors)
+    try:
+        count_before2 = getattr(embedder, "call_count", None)
+        vecs = embedder.embed(texts)
+        count_after2 = getattr(embedder, "call_count", None)
+        if count_before2 is not None and count_after2 is not None:
+            embed_calls = count_after2 - count_before2
+        else:
+            embed_calls = 1
+        _logger.info("embed batch retry succeeded for %d chunks", len(chunks))
+        return chunks, vecs, embed_calls
+    except Exception as retry_exc:
+        _logger.warning(
+            "embed batch retry also failed (%s) — degrading to per-chunk embed; "
+            "individual failures will be logged and skipped",
+            retry_exc,
+        )
+
+    # Per-chunk degraded path
+    ok_chunks: list[EmbeddingChunk] = []
+    ok_vecs: list[list[float]] = []
+    embed_calls = 0
+    for c in chunks:
+        try:
+            [vec] = embedder.embed([c.content])
+            embed_calls += 1
+            ok_chunks.append(c)
+            ok_vecs.append(vec)
+        except Exception as chunk_exc:
+            _logger.warning(
+                "embed chunk skipped (module=%s entity=%s file=%s version=%s): %s",
+                c.module, c.entity_name, c.file_path, c.odoo_version, chunk_exc,
+            )
+    return ok_chunks, ok_vecs, embed_calls
 
 
 def make_chunks(
@@ -172,12 +300,15 @@ def make_chunks(
 
     for jsc in (js_chunks or []):
         chunk_type = f"js_{jsc.era}"
-        chunks.append(EmbeddingChunk(
+        content = jsc.content
+        fp = mod.relative_path(jsc.file_path)
+        _proto = EmbeddingChunk(
             chunk_type, module, version,
-            jsc.entity_name, None, mod.relative_path(jsc.file_path),
-            jsc.chunk_idx, jsc.content,
+            jsc.entity_name, None, fp,
+            0, "",
             repo=mod_repo, repo_id=mod_repo_id,
-        ))
+        )
+        chunks.extend(_token_split_chunk(_proto, content, jsc.chunk_idx))
 
     return chunks
 
@@ -196,24 +327,28 @@ def make_css_chunks(
     parity with method/field/view chunks so stylesheet chunks keep their repo
     identity after the file_path is relativized — and relativizes file_path to
     repo-relative form.  None → file_path verbatim, repo/repo_id NULL (back-compat).
+
+    WI-B: each CSSChunk content that exceeds EMBEDDER_TOKEN_BUDGET is split into
+    multiple EmbeddingChunks with incrementing chunk_idx.
     """
     repo = module_info.repo if module_info else None
     repo_id = module_info.repo_id if module_info else None
     chunks: list[EmbeddingChunk] = []
     for c in css_chunks:
         fp = module_info.relative_path(c.file_path) if module_info else c.file_path
-        chunks.append(EmbeddingChunk(
+        _proto = EmbeddingChunk(
             chunk_type="css",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=c.entity_name,
             model_name=None,
             file_path=fp,
-            chunk_idx=c.chunk_idx,
-            content=c.content,
+            chunk_idx=0,
+            content="",
             repo=repo,
             repo_id=repo_id,
-        ))
+        )
+        chunks.extend(_token_split_chunk(_proto, c.content, c.chunk_idx))
     return chunks
 
 
@@ -229,6 +364,9 @@ def make_scss_chunks(
 
     ADR-0037: *module_info* stamps repo + repo_id and relativizes file_path
     (see make_css_chunks).
+
+    WI-B: each SCSSChunk content that exceeds EMBEDDER_TOKEN_BUDGET is split into
+    multiple EmbeddingChunks with incrementing chunk_idx.
     """
     repo = module_info.repo if module_info else None
     repo_id = module_info.repo_id if module_info else None
@@ -236,18 +374,19 @@ def make_scss_chunks(
     for c in scss_chunks:
         entity = f"{c.chunk_kind}:{c.entity_name}"
         fp = module_info.relative_path(c.file_path) if module_info else c.file_path
-        chunks.append(EmbeddingChunk(
+        _proto = EmbeddingChunk(
             chunk_type="scss",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=entity,
             model_name=None,
             file_path=fp,
-            chunk_idx=c.chunk_idx,
-            content=c.content,
+            chunk_idx=0,
+            content="",
             repo=repo,
             repo_id=repo_id,
-        ))
+        )
+        chunks.extend(_token_split_chunk(_proto, c.content, c.chunk_idx))
     return chunks
 
 
@@ -264,6 +403,9 @@ def make_less_chunks(
 
     ADR-0037: *module_info* stamps repo + repo_id and relativizes file_path
     (see make_css_chunks).
+
+    WI-B: each SCSSChunk content that exceeds EMBEDDER_TOKEN_BUDGET is split into
+    multiple EmbeddingChunks with incrementing chunk_idx.
     """
     repo = module_info.repo if module_info else None
     repo_id = module_info.repo_id if module_info else None
@@ -271,18 +413,19 @@ def make_less_chunks(
     for c in less_chunks:
         entity = f"{c.chunk_kind}:{c.entity_name}"
         fp = module_info.relative_path(c.file_path) if module_info else c.file_path
-        chunks.append(EmbeddingChunk(
+        _proto = EmbeddingChunk(
             chunk_type="less",
             module=c.module,
             odoo_version=c.odoo_version,
             entity_name=entity,
             model_name=None,
             file_path=fp,
-            chunk_idx=c.chunk_idx,
-            content=c.content,
+            chunk_idx=0,
+            content="",
             repo=repo,
             repo_id=repo_id,
-        ))
+        )
+        chunks.extend(_token_split_chunk(_proto, c.content, c.chunk_idx))
     return chunks
 
 
@@ -293,6 +436,11 @@ def make_pattern_chunks(patterns: list[PatternExample]) -> list[EmbeddingChunk]:
     `<language>__<pattern_id>` so `suggest_pattern` can filter by language
     via B-tree LIKE without ALTERing the embeddings table.
     Module sentinel is `__patterns__`. odoo_version = pattern.odoo_version_min.
+
+    WI-B: large patterns (content > EMBEDDER_TOKEN_BUDGET tokens) are split into
+    multiple EmbeddingChunks with increasing chunk_idx. Each split chunk shares
+    the same entity_name/file_path/module/odoo_version; unique key is
+    (chunk_type, entity_name, file_path, chunk_idx).
     """
     chunks: list[EmbeddingChunk] = []
     for p in patterns:
@@ -301,16 +449,18 @@ def make_pattern_chunks(patterns: list[PatternExample]) -> list[EmbeddingChunk]:
             text_parts.append("---")
             text_parts.extend(p.gotchas)
         text = "\n".join(text_parts)
-        chunks.append(EmbeddingChunk(
+        entity_name = f"{p.language}__{p.pattern_id}"
+        _proto = EmbeddingChunk(
             chunk_type="pattern_example",
             module="__patterns__",
             odoo_version=p.odoo_version_min,
-            entity_name=f"{p.language}__{p.pattern_id}",
+            entity_name=entity_name,
             model_name=None,
             file_path=p.file_ref,
             chunk_idx=0,
-            content=text,
-        ))
+            content="",
+        )
+        chunks.extend(_token_split_chunk(_proto, text, 0))
     return chunks
 
 
@@ -332,6 +482,10 @@ def write_module_embeddings(
     Returns the number of embed() calls made to the embedder during this
     write (0 when chunks is empty, 1 for a normal module batch). Callers
     use this to aggregate embed_calls for the run-level observability log.
+
+    WI-B: uses _embed_chunks_resilient to degrade gracefully on partial failures;
+    writes embedding_model and embedding_dim into each row; calls assert_dim_matches
+    once per batch as fail-fast guard against incompatible vector spaces.
     """
     if not chunks:
         return 0
@@ -351,19 +505,34 @@ def write_module_embeddings(
     for c in chunks:
         seen[(c.chunk_type, c.entity_name, c.file_path, c.chunk_idx)] = c
     chunks = list(seen.values())
-    texts = [c.content for c in chunks]
-    count_before = getattr(embedder, "call_count", None)
-    vecs = embedder.embed(texts)
-    count_after = getattr(embedder, "call_count", None)
-    # Determine how many embed() calls happened. For Qwen3Embedder large batches
-    # (>_MAX_BATCH) embed() makes multiple sub-calls but the public embed() is
-    # counted as 1 call overall (call_count incremented once per embed() call).
-    if count_before is not None and count_after is not None:
-        embed_calls = count_after - count_before
-    else:
-        embed_calls = 1  # embedder without call_count tracking — assume 1
+
+    live_chunks, vecs, embed_calls = _embed_chunks_resilient(embedder, chunks)
+
+    # Guard: if all chunks failed embedding (total failure), do NOT delete existing
+    # rows and insert nothing — that would silently wipe the module's embeddings.
+    # Preserve the existing rows and let the caller retry later.
+    if not live_chunks:
+        _logger.error(
+            "embed produced 0 usable vectors for module=%s version=%s — "
+            "preserving existing rows, skipping destructive rewrite",
+            module, version,
+        )
+        return embed_calls
+
+    # Embedders that pre-date the provider-abstraction (ADR-0045) — and some test
+    # doubles — may not expose .model/.dim. Tolerate their absence: stamp NULL
+    # (the columns are nullable) and skip the dim guard rather than crash.
+    emb_model, emb_dim = _embedder_meta(embedder)
+
     from src.db.pg import get_pool  # noqa: PLC0415
     with get_pool().checkout_vec() as conn:
+        # Fail-fast guard: raises EmbedderDimMismatch if configured dim != stored dim.
+        # Pass emb_model so R5's extended guard can also detect model-switch with
+        # same dim (assert_dim_matches signature extended per R5 cross-contract).
+        if emb_dim is not None:
+            from src.db.embedding_guard import assert_dim_matches  # noqa: PLC0415
+            assert_dim_matches(conn, emb_dim, emb_model)
+
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
@@ -373,7 +542,10 @@ def write_module_embeddings(
                     "AND profile_name IS NOT DISTINCT FROM %s",
                     (module, version, profile_name),
                 )
-                rows = [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)]
+                rows = [
+                    c.as_tuple(vecs[i], emb_model, emb_dim)
+                    for i, c in enumerate(live_chunks)
+                ]
                 execute_values(cur, _INSERT_SQL, rows)
             conn.commit()
         except Exception:

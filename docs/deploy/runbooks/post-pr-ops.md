@@ -18,7 +18,10 @@ These three commands bring the data layer into parity with shipped code logic.
 - Verify: `git log --oneline -1` on prod server = matching commit SHA.
 - Both Postgres and Neo4j are healthy:
   ```bash
-  curl -s <HEALTH_URL>/health | jq '.status'  # expect "healthy"
+  # /health = liveness probe (status "alive", no DB I/O)
+  curl -s <HEALTH_URL>/health | jq '.status'  # expect "alive"
+  # /ready = readiness probe (status ok/degraded/error, neo4j + postgres + embeddings counts)
+  curl -s <HEALTH_URL>/ready | jq '{status, neo4j, postgres, embeddings_total}'
   ```
 - Disk space ≥ 5GB free on Postgres and Neo4j volumes (for temp state during reindex).
 - Low-traffic window (actions #2 and #3 are CPU-bound, 30–60 min each).
@@ -349,8 +352,8 @@ read-only verification surfaces in addition to the Actions above:
   `usage_counter` directly (also used to verify buffer flushes — see the
   "Best-effort usage counter" section above).
 - **`/admin/audit-log`** — admin-side audit viewer for mutating routes.
-- **`<HEALTH_URL>/health`** — JSON health: Postgres pool status, Neo4j
-  reachability, embedding service.
+- **`<HEALTH_URL>/health`** — liveness probe: `status="alive"`, no DB I/O (O(1), pool-independent).
+- **`<HEALTH_URL>/ready`** — readiness probe: `status ok/degraded/error` + Neo4j/Postgres connectivity + `embeddings_total` count (cached 60s). Use this to verify post-deploy state and embedding counts.
 
 ---
 

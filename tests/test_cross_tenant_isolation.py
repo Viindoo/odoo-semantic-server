@@ -19,6 +19,7 @@ private modules across tenants are the documented residual (deferred REC-8).
 Pinning the tenant requires a real pg (profiles with tenant_id, for
 resolve_allowed_profiles) + a Neo4j with profile-tagged nodes + pgvector chunks.
 """
+import asyncio
 from contextlib import contextmanager
 
 import pytest
@@ -436,7 +437,7 @@ def test_set_active_version_probe_no_cross_tenant_version_leak(world):
     with as_tenant(world["acme"]):
         # @mcp.tool wraps into a FunctionTool — call the underlying .fn (CLAUDE.md).
         # The version-presence probe runs before any DB persist, so it must reject.
-        res = set_active_version.fn(priv_ver)
+        res = asyncio.run(set_active_version.fn(priv_ver))
         text = res.content[0].text
     assert "not indexed" in text.lower(), \
         f"CROSS-TENANT VERSION-PRESENCE LEAK: {text!r}"
@@ -451,7 +452,7 @@ def test_set_active_version_admin_sees_globex_only_version(world):
         s.run("MERGE (m:Module {name:$n, odoo_version:$v}) SET m.profile=$p",
               n=f"{_PFX}globex_only2", v=priv_ver, p=[world["globex_p"]])
     with as_tenant(None):
-        res = set_active_version.fn(priv_ver)
+        res = asyncio.run(set_active_version.fn(priv_ver))
         text = res.content[0].text
     # admin: the version IS visible → no "not indexed" rejection from the probe.
     assert "not indexed" not in text.lower(), \

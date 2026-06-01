@@ -99,8 +99,9 @@ IMPACT_RISK_MED_THRESHOLD: int = 4
 NEO4J_WRITE_BATCH_SIZE: int = int(os.getenv("NEO4J_WRITE_BATCH_SIZE", "500"))
 
 # EMBEDDER_MAX_BATCH: texts per Ollama /api/embed call.
-# Empirical: ~22s per 100 texts on qwen3-embedding-q5km.
-# Keep at 50 to stay well under any reverse-proxy proxy_read_timeout (120s).
+# Empirical (production, qwen3-embedding-q5km behind Ollama): a 50-text batch
+# takes ~10-56s depending on text density and concurrent profile-worker load.
+# Keep at 50 to stay clear of any reverse-proxy proxy_read_timeout on a slow box.
 # Override via EMBEDDER_MAX_BATCH env var for tuning on faster hardware.
 EMBEDDER_MAX_BATCH: int = int(os.getenv("EMBEDDER_MAX_BATCH", "50"))
 
@@ -140,6 +141,13 @@ TIMEOUT_EMBEDDER_READ: int = int(os.getenv("EMBEDDER_TIMEOUT_READ", _embedder_ti
 # Override via EMBEDDER_TIMEOUT_WRITE.
 TIMEOUT_EMBEDDER_WRITE: int = int(os.getenv("EMBEDDER_TIMEOUT_WRITE", "30"))
 
+# TIMEOUT_EMBEDDER_READ_QUERY: read timeout for a single *query* embed (the
+# online MCP/search path), kept deliberately short and separate from the
+# 1200s batch-indexing read timeout. A query embeds one short text; if the
+# embedder can't answer in 30s the caller should fail fast rather than block a
+# user request for 20 minutes. Override via EMBEDDER_TIMEOUT_READ_QUERY.
+TIMEOUT_EMBEDDER_READ_QUERY: int = int(os.getenv("EMBEDDER_TIMEOUT_READ_QUERY", "30"))
+
 # Backward-compat alias — callers that imported TIMEOUT_EMBEDDER_REQUEST continue to work.
 TIMEOUT_EMBEDDER_REQUEST: int = TIMEOUT_EMBEDDER_READ
 
@@ -159,6 +167,48 @@ EMBEDDER_RETRY_BACKOFF_MAX: float = float(os.getenv("EMBEDDER_RETRY_BACKOFF_MAX"
 
 DEFAULT_EMBEDDER_MODEL: str = "qwen3-embedding-q5km"
 DEFAULT_EMBEDDER_DIM: int = 1024
+
+# EMBEDDER_BACKEND: which embedder provider make_embedder() constructs.
+#   ollama -> Qwen3Embedder (Ollama /api/embed, Qwen INSTRUCT prefix on queries)
+#   openai / tei -> OpenAICompatEmbedder (/v1/embeddings, OpenAI/Voyage/TEI/vLLM/LiteLLM)
+#   fake -> FakeEmbedder (deterministic, no network — CI/tests)
+# Override via EMBEDDER_BACKEND env var.
+EMBEDDER_BACKEND: str = os.getenv("EMBEDDER_BACKEND", "ollama")
+
+# EMBEDDER_NUM_CTX: the embedder model's context window in tokens. Used by the
+# choke-point truncation safety-net so no single text is sent past what the
+# model can encode. Mirror your Ollama Modelfile `num_ctx`. Override via
+# EMBEDDER_NUM_CTX.
+EMBEDDER_NUM_CTX: int = int(os.getenv("EMBEDDER_NUM_CTX", "4096"))
+
+# EMBEDDER_TOKEN_BUDGET: target per-chunk token budget kept as a margin *below*
+# num_ctx, so chunking (WI-B) leaves headroom for any instruction prefix and
+# tokenizer drift. Override via EMBEDDER_TOKEN_BUDGET.
+EMBEDDER_TOKEN_BUDGET: int = int(os.getenv("EMBEDDER_TOKEN_BUDGET", "3500"))
+
+# EMBEDDER_CHARS_PER_TOKEN: conservative chars-per-token ratio for the cheap
+# heuristic token estimate (no real tokenizer dependency). Deliberately LOW:
+# a low ratio over-estimates token count, which over-truncates / over-splits —
+# the safe direction. Code and XML pack more tokens per char than prose, so 3.0
+# leaves margin. Override via EMBEDDER_CHARS_PER_TOKEN.
+EMBEDDER_CHARS_PER_TOKEN: float = float(os.getenv("EMBEDDER_CHARS_PER_TOKEN", "3.0"))
+
+# EMBEDDER_TRUNCATE_CHARS_PER_TOKEN: worst-case chars-per-token ratio used
+# EXCLUSIVELY as a safety-net floor in _truncate_to_ctx().  Code with dense
+# tokens (identifiers, operators, short words) can approach 1–2 chars/token.
+# Using 2.0 here ensures that after truncation the estimated token count is
+# ≤ num_ctx even for token-dense code, regardless of the (higher) estimation
+# ratio used elsewhere.  The main chunking cap (WI-B) runs before this; this
+# is a last-resort guard and intentionally conservative.
+# Override via EMBEDDER_TRUNCATE_CHARS_PER_TOKEN.
+EMBEDDER_TRUNCATE_CHARS_PER_TOKEN: float = float(
+    os.getenv("EMBEDDER_TRUNCATE_CHARS_PER_TOKEN", "2.0")
+)
+
+# EMBEDDER_MAX_CONCURRENCY: ceiling on concurrent in-flight embed requests for
+# async callers that fan out (e.g. an asyncio.Semaphore around embed_async).
+# Override via EMBEDDER_MAX_CONCURRENCY.
+EMBEDDER_MAX_CONCURRENCY: int = int(os.getenv("EMBEDDER_MAX_CONCURRENCY", "4"))
 
 # ---------------------------------------------------------------------------
 # PostgreSQL connection pool

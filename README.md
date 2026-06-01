@@ -219,6 +219,29 @@ cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices f
 fields (`src/billing/polar.py`) against live Polar docs; register webhook URL + product→plan map
 in Polar dashboard.
 
+**Embedding infrastructure wave (wave/wi-f, PR #228 — fix #226 + #227 + provider decoupling):**
+Token-bounded chunking + provider abstraction + MCP anti-hang. Three concerns addressed:
+
+1. **Fix #226 — token-bounded chunking (ADR-0044):** chunking layer (`_sliding`, pattern/view/JS/style
+   helpers) now enforces `EMBEDDER_TOKEN_BUDGET` (3500 tokens) via `estimate_tokens` /
+   `split_by_token_budget` helpers. MCP query strings capped at the same budget. Truncation
+   choke-point in `_BaseHttpEmbedder` as last defence. Bug B length-guard in `_embed_one`. Resilient
+   skip-log in `_embed_chunks_resilient` — single bad chunk cannot abort full module write.
+2. **Provider abstraction (ADR-0045):** `EmbedderClient` Protocol + `_BaseHttpEmbedder` shared base +
+   `OpenAICompatEmbedder` (OpenAI / Voyage / TEI / vLLM / LiteLLM) + `make_embedder()` factory
+   (select backend via `EMBEDDER_BACKEND` env). `embedding_model` + `embedding_dim` columns
+   (migration **m13_018**) stamp every vector row; fail-fast `EmbedderDimMismatch` guard prevents
+   silent vector-space corruption on provider switch.
+3. **Fix #227 — MCP embed concurrency / anti-hang (ADR-0046):** root cause was FastMCP calling
+   `sync def` tool handlers on the event loop thread — one blocking embed froze all requests for ~11h
+   (production). Fix: async hot path (`embed_async` via `asyncio.to_thread`), 30s query timeout vs.
+   1200s batch timeout, `asyncio.Semaphore(EMBEDDER_MAX_CONCURRENCY)` cap, `EmbedOverloaded`
+   fast-reject in 5s, uvicorn `limit_concurrency` backpressure. `/health` is now a pure liveness
+   probe (no DB I/O); `/ready` is a new HTTP readiness endpoint (cached 60s, NOT an MCP tool).
+
+Tool count stays **24**. Migration **m13_018** required on deploy (after m13_017).
+See [ADR-0044](docs/adr/0044-token-bounded-embedding.md), [ADR-0045](docs/adr/0045-embedding-provider-abstraction.md), [ADR-0046](docs/adr/0046-mcp-embed-concurrency-anti-hang.md).
+
 **Active work / recently merged:** PR #224 (`feat/launch-prep`) — install MCP-first (static + `InstallSnippets.astro` + `plugins-data.ts` SSOT), brand SSOT `BRAND_FULL`/`BRAND_SHORT`/`BRAND_DEF`, SEO (`@astrojs/sitemap` + JSON-LD Org/SoftwareApp/Product/FAQPage + `llms.txt` + `robots.txt` + canonical), English-only legal, legal pages rewrite + DRAFT removal (CEO sign-off 2026-06-01) + `ObfuscatedEmail.astro` + real Viindoo entity, CRD-compliant checkout consent (m13_017 + `POST /api/account/checkout-consent` + `GET /api/account/checkout-config` + consent modal + `list_all` expose consent cols + durable-medium email). Migration: m13_017 (`subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`). Tool count stays **24**.
 **Deferred:** M10B P2 (multi-IdP "Viindoo Account", buyer≠user split, ERP/VAS adapter),
 M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep),

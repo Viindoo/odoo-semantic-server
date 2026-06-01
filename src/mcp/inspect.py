@@ -314,6 +314,8 @@ def _entity_lookup(
     name: str | None = None,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
     from_module: str | None = None,
+    _embedder=None,
+    _query_vec=None,
 ) -> str:
     """Unified entity lookup by kind discriminator.
 
@@ -396,7 +398,12 @@ def _entity_lookup(
                 "Error: entity_lookup(kind='pattern') requires"
                 " name='<pattern_intent_string>'."
             )
-        return srv._suggest_pattern(name, odoo_version)
+        # #227: forward a pre-embedded (semaphore-bounded, short-timeout) query
+        # vector when the async wrapper supplied one; falls back to a sync embed
+        # inside _suggest_pattern when called from a sync context (_query_vec=None).
+        return srv._suggest_pattern(
+            name, odoo_version, _embedder=_embedder, _query_vec=_query_vec,
+        )
 
     # Unreachable — guard for exhaustiveness
     return _invalid_kind_error(kind)  # pragma: no cover

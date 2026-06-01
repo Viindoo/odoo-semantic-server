@@ -32,6 +32,7 @@ used by other test modules).
 Runtime: ~10s (Neo4j round-trips for positive tests).
 """
 
+import asyncio
 import os
 
 import pytest
@@ -314,7 +315,9 @@ def test_positive_text_channel_byte_identical_to_impl(b4_db):
     server = importlib.import_module("src.mcp.server")
 
     inner_text = server._resolve_model("b4.order", TEST_VERSION)
-    result = server.model_inspect.fn(model="b4.order", method="summary", odoo_version=TEST_VERSION)
+    result = asyncio.run(server.model_inspect.fn(
+        model="b4.order", method="summary", odoo_version=TEST_VERSION
+    ))
 
     wrapper_text = result.content[0].text
     assert wrapper_text == inner_text, (
@@ -593,9 +596,9 @@ def test_next_step_hint_matches_text_footer(b4_db, tool_name, args_fn):
     tool = getattr(server, tool_name)
     raw = args_fn()
     if isinstance(raw, dict):
-        result = tool.fn(**raw)
+        result = asyncio.run(tool.fn(**raw))
     else:
-        result = tool.fn(*raw)
+        result = asyncio.run(tool.fn(*raw))
 
     text = result.content[0].text
     # The footer is the last line of the text channel.

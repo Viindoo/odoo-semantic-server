@@ -896,7 +896,7 @@ Xem `docs/deploy/nginx.conf.example` để biết config đầy đủ (pre-M8, M
 **M8 — sử dụng `docs/deploy/nginx-m8.conf` thay thế.** Template này route:
 - `/api/*` → FastAPI :8003 (JSON only)
 - `/admin/*` và `/` → Astro SSR :4321 (landing + admin UI)
-- `/mcp`, `/install/`, `/health` → MCP :8002 (unchanged)
+- `/mcp`, `/install/`, `/health`, `/ready` → MCP :8002 (unchanged)
 
 ```bash
 sudo cp /opt/odoo-semantic-mcp/docs/deploy/nginx-m8.conf \
@@ -1029,11 +1029,19 @@ Xem danh sách đầy đủ tại TASKS.md → "UI Completion — OPS-SKIP (7)".
 
 **Proxy phải forward header `X-API-Key`** (nginx mặc định không strip header — không cần config thêm nếu dùng `proxy_pass`). Caddy forward tất cả headers mặc định.
 
-**/health bypass auth:** `GET /health` không yêu cầu API key — dùng cho load balancer health check:
+**/health bypass auth (liveness probe):** `GET /health` không yêu cầu API key — thuần liveness, không DB I/O, dùng cho load balancer:
 
 ```bash
 curl http://127.0.0.1:8002/health
-# → {"neo4j": "ok", "postgres": "ok"}
+# → {"status": "alive", "mcp_tools": 24, ...}
+# NOTE: embeddings_total/embeddings_by_chunk_type = null cho đến lần /ready đầu tiên
+```
+
+**/ready bypass auth (readiness probe):** `GET /ready` cũng không yêu cầu API key — chạy Neo4j + Postgres ping + `SELECT COUNT(*)` embeddings (cached 60s). Dùng để verify sau deploy và cho monitoring dashboards:
+
+```bash
+curl http://127.0.0.1:8002/ready
+# → {"status": "ok", "neo4j": "ok", "postgres": "ok", "embeddings_total": N, ...}
 ```
 
 **/metrics bypass auth — BẮT BUỘC hạn chế theo IP scraper ở nginx:**
@@ -1268,7 +1276,7 @@ Indexer chạy với `--no-embed` (xem §3.4) là đủ.
 
 ## 10. API Key Auth (M5)
 
-MCP server (port 8002) yêu cầu `X-API-Key` header với mọi request trừ `GET /health`.
+MCP server (port 8002) yêu cầu `X-API-Key` header với mọi request trừ `GET /health` (liveness) và `GET /ready` (readiness).
 
 ### Tạo API key đầu tiên
 
@@ -1749,6 +1757,7 @@ Apply in order after `python -m src.db.migrate` (which handles older migrations 
 | `migrations/m13_015_pricing_model.sql` | `plans.pricing_model TEXT CHECK IN ('flat','per_seat')` — seeds pro + team as `per_seat` | After merging PR #223 |
 | `migrations/m13_016_plan_min_seats.sql` | `plans.min_seats INTEGER` — display SSOT for per-seat minimum; seeds team.min_seats=3 | After merging PR #223 |
 | `migrations/m13_017_withdrawal_consent.sql` | `subscriptions.buyer_type TEXT` + `subscriptions.withdrawal_waiver_accepted_at TIMESTAMPTZ` — CRD checkout consent; run after m13_016 | After merging PR #224 (feat/launch-prep) |
+| `migrations/m13_018_embedding_model_dim.sql` | `embeddings.embedding_model TEXT` + `embeddings.embedding_dim INT` — provider provenance columns; backfill pre-existing rows to `('qwen3-embedding-q5km', 1024)`; partial index `idx_embeddings_model`; osm_reader grant | After merging PR #228 (wave/wi-f embedding infra) |
 
 **Re-run osm_reader grants** after each migration batch:
 ```bash

@@ -19,6 +19,7 @@ Remaining coverage:
 
 DB version: TEST_VERSION = "91.0" (unchanged — same Neo4j namespace as before).
 """
+import asyncio
 import importlib
 import inspect
 import os
@@ -111,9 +112,9 @@ def test_model_inspect_summary_matches_resolve_model_impl(dual_db):
     server = importlib.import_module("src.mcp.server")
 
     direct = server._resolve_model("c3.order", TEST_VERSION)
-    via_superset = server.model_inspect.fn(
+    via_superset = asyncio.run(server.model_inspect.fn(
         model="c3.order", method="summary", odoo_version=TEST_VERSION
-    )
+    ))
 
     superset_text = via_superset.content[0].text
     assert "c3.order" in superset_text, f"Expected model name in output: {superset_text!r}"
@@ -138,12 +139,12 @@ def test_model_inspect_field_matches_resolve_field_impl(dual_db):
     server = importlib.import_module("src.mcp.server")
 
     direct = server._resolve_field("c3.order", "amount_total", TEST_VERSION)
-    via_superset = server.model_inspect.fn(
+    via_superset = asyncio.run(server.model_inspect.fn(
         model="c3.order",
         method="field",
         odoo_version=TEST_VERSION,
         field="amount_total",
-    )
+    ))
 
     superset_text = via_superset.content[0].text
     assert "amount_total" in superset_text, (
@@ -169,9 +170,9 @@ def test_model_inspect_invalid_method_returns_error_string():
     """
     server = importlib.import_module("src.mcp.server")
 
-    result = server.model_inspect.fn(
+    result = asyncio.run(server.model_inspect.fn(
         model="c3.order", method="nonexistent_method", odoo_version=TEST_VERSION
-    )
+    ))
 
     text = result.content[0].text
     assert "Error" in text, f"Expected 'Error' in output: {text!r}"
@@ -185,9 +186,10 @@ def test_entity_lookup_invalid_kind_returns_error_string():
     """
     server = importlib.import_module("src.mcp.server")
 
-    result = server.entity_lookup.fn(
+    # entity_lookup is async (#227 — offloads blocking body off the event loop).
+    result = asyncio.run(server.entity_lookup.fn(
         kind="nonexistent_kind", odoo_version=TEST_VERSION
-    )
+    ))
 
     text = result.content[0].text
     assert "Error" in text, f"Expected 'Error' in output: {text!r}"

@@ -1,6 +1,7 @@
 # ADR-0010 — Embedding Observability (M7 C5)
 
 **Status:** Accepted (2026-05-11)
+**Amended by ADR-0046 (2026-06-01):** `embeddings_total` and `embeddings_by_chunk_type` fields were moved from `/health` to `/ready`. They remain present in `/health` response body for backward compatibility but are `null` until the first `/ready` hit. `/health` is now a pure liveness probe (no DB I/O). See [ADR-0046](0046-mcp-embed-concurrency-anti-hang.md).
 
 **Context:** Admins had no way to see how many embedding API calls a run made
 or how many embedding rows are stored in pgvector. Debugging cost issues (Ollama

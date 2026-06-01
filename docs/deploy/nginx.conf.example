@@ -45,8 +45,17 @@ server {
         proxy_set_header Host $host;
     }
 
+    # /health = liveness probe (status "alive", O(1), no DB I/O — use for load-balancer health checks)
     location /health {
         proxy_pass http://127.0.0.1:8002/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # /ready = readiness probe (status ok/degraded/error, neo4j + postgres + embeddings counts,
+    #          60s in-memory cache) — use for monitoring dashboards and post-deploy verification
+    location /ready {
+        proxy_pass http://127.0.0.1:8002/ready;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
     }

@@ -26,6 +26,7 @@ DB isolation strategy:
   - Neo4j:    version "E4_99.0" — wipe before/after each test via wipe_neo4j fixture.
 """
 
+import asyncio
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -216,7 +217,7 @@ class TestSentinelRejection:
 
         with patch("src.mcp.server._checkout_pg", checkout):
             # Access the underlying function through the MCP tool
-            tool_result = _srv.set_active_version.fn("default")
+            tool_result = asyncio.run(_srv.set_active_version.fn("default"))
 
         assert isinstance(tool_result, ToolResult)
         text = tool_result.content[0].text
@@ -441,7 +442,7 @@ class TestListAvailableVersions:
 
         from src.mcp import server as _srv
 
-        result = _srv.list_available_versions.fn()
+        result = asyncio.run(_srv.list_available_versions.fn())
         assert isinstance(result, ToolResult)
         text = result.content[0].text
         # Must be non-empty (either a list or an empty-DB message).
@@ -459,7 +460,7 @@ class TestListAvailableVersions:
 
         from src.mcp import server as _srv
 
-        result = _srv.list_available_versions.fn()
+        result = asyncio.run(_srv.list_available_versions.fn())
         assert isinstance(result, ToolResult)
 
 
@@ -480,7 +481,7 @@ class TestListAvailableProfiles:
 
         checkout = _make_checkout_pg(session_db)
         with patch("src.mcp.server._checkout_pg", checkout):
-            result = _srv.list_available_profiles.fn()
+            result = asyncio.run(_srv.list_available_profiles.fn())
 
         assert isinstance(result, ToolResult)
         text = result.content[0].text
@@ -511,7 +512,7 @@ class TestListAvailableProfiles:
         checkout = _make_checkout_pg(session_db)
         try:
             with patch("src.mcp.server._checkout_pg", checkout):
-                result = _srv.list_available_profiles.fn()
+                result = asyncio.run(_srv.list_available_profiles.fn())
         finally:
             with session_db.cursor() as cur:
                 cur.execute("DELETE FROM profiles WHERE name = %s", (_profile_name,))
@@ -720,7 +721,7 @@ class TestListAvailableVersionsSeeded:
 
         from src.mcp import server as _srv
 
-        result = _srv.list_available_versions.fn()
+        result = asyncio.run(_srv.list_available_versions.fn())
         assert isinstance(result, ToolResult)
         text = result.content[0].text
 
