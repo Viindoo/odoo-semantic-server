@@ -626,7 +626,7 @@ Thay bằng **keyset-by-PK** — range-batch trên primary key đã có index:
 
 ```sql
 -- ✅ O(n): mỗi batch là PK index-range scan, mỗi row duyệt đúng 1 lần.
-DECLARE batch_lo BIGINT; max_id BIGINT; step BIGINT := 50000;
+DECLARE batch_lo BIGINT; max_id BIGINT; step BIGINT := 10000;  -- step cap WAL/lock per COMMIT
 SELECT min(id), max(id) INTO batch_lo, max_id FROM t;
 WHILE batch_lo <= max_id LOOP
     UPDATE t SET col = ... WHERE id >= batch_lo AND id < batch_lo + step AND col IS NULL;
@@ -635,7 +635,7 @@ WHILE batch_lo <= max_id LOOP
 END LOOP;
 ```
 
-**Phân biệt 2 chi phí (mấu chốt):** per-batch `COMMIT` bound **lock duration + WAL burst**, nó KHÔNG bound **scan cost**. Chỉ thêm COMMIT vào loop cũ vẫn để lại O(n²). PK sparse (gap do delete khi reindex) chỉ tạo vài batch rỗng = index seek rẻ, vẫn bounded. Xem `migrations/m13_018_embedding_model_dim.sql` làm mẫu.
+**Phân biệt 2 chi phí (mấu chốt):** per-batch `COMMIT` bound **lock duration + WAL burst**, nó KHÔNG bound **scan cost**. Chỉ thêm COMMIT vào loop cũ vẫn để lại O(n²). PK sparse (gap do delete khi reindex) chỉ tạo vài batch rỗng = index seek rẻ, vẫn bounded — nên chọn `step` nhỏ để giữ WAL/lock per COMMIT thấp (≤ `step` rows), KHÔNG cần `step` lớn để "nhảy" gap. Xem `migrations/m13_018_embedding_model_dim.sql` làm mẫu.
 
 ---
 

@@ -22,7 +22,7 @@
 --
 -- Backfill (batched, keyset-by-PK):
 --   Existing rows are backfilled by walking the BIGSERIAL primary key in
---   fixed id-ranges (50 000 ids per batch), committing each batch, on a
+--   fixed id-ranges (10 000 ids per batch), committing each batch, on a
 --   large embeddings table (~591k rows in production).
 --
 --   Why keyset-by-PK and not "SELECT ctid ... WHERE embedding_model IS NULL
@@ -75,7 +75,11 @@ DO $$
 DECLARE
     batch_lo BIGINT;
     max_id   BIGINT;
-    step     BIGINT := 50000;
+    -- step caps WAL + lock footprint per COMMIT at <= step wide vector(1024)
+    -- rows (~step * 4 KB).  A smaller step is the WAL-safe choice: empty
+    -- batches over PK gaps (rows deleted on reindex) cost only a cheap bounded
+    -- index-range scan, so there is no need to inflate step to "skip" gaps.
+    step     BIGINT := 10000;
 BEGIN
     SELECT min(id), max(id) INTO batch_lo, max_id FROM embeddings;
     IF max_id IS NULL THEN

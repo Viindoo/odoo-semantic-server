@@ -10,9 +10,10 @@ All notable changes to Odoo Semantic MCP are documented here.
   the loop used `WHERE ctid IN (SELECT ctid FROM embeddings WHERE embedding_model IS NULL LIMIT 10000)`.
   The `IS NULL` predicate has no supporting index, so every batch was a full sequential scan past an
   ever-growing filled prefix → `O(n²/batch_size)` (32+ min on prod's 591k-row / 7.3 GB table). Fixed by
-  range-batching over the `BIGSERIAL` primary key (`id >= lo AND id < lo + step`, step 50k) so each batch
+  range-batching over the `BIGSERIAL` primary key (`id >= lo AND id < lo + step`, step 10k) so each batch
   is a bounded PK index-range scan → `O(n)`. Per-batch `COMMIT` retained (bounds lock + WAL, independent
-  of scan cost). Backfill stays idempotent (`AND embedding_model IS NULL`).
+  of scan cost); `step` kept small so each COMMIT caps WAL/lock at ≤ step wide-vector rows. Backfill
+  stays idempotent (`AND embedding_model IS NULL`).
 - **No re-deploy needed:** prod m13_018 already applied and finished with the old loop; yoyo tracks by
   migration id (not file content), so editing the file does not re-run it on migrated instances. This is
   a forward-looking fix for fresh-install / restore / CI / copy-paste reuse.

@@ -140,13 +140,22 @@ class TestMigrationFileContent:
 
         sql = MIGRATION_PATH.read_text()
 
+        # Assert against CODE only, never comments.  This migration's header
+        # comment deliberately quotes BOTH the banned anti-pattern AND the
+        # keyset shape ("id >= lo AND id < lo+step"), so matching raw text
+        # would let every check below pass on the explanatory prose even if the
+        # actual backfill regressed.  Strip "--" line comments once and share
+        # the result across all assertions (positive + negative guard).
+        code = "\n".join(line.split("--", 1)[0] for line in sql.splitlines()).upper()
+
         # Positive: still batched (committed in chunks, not one giant UPDATE)...
-        assert "LOOP" in sql.upper(), (
+        assert "LOOP" in code, (
             "m13_018 backfill must stay batched (LOOP) to bound lock duration + "
             "WAL burst on large tables (~591k rows)."
         )
-        # ...and the batching mechanism must be a primary-key range scan.
-        assert re.search(r"\bid\s*[<>]=?", sql), (
+        # ...and the batching mechanism must be a primary-key range scan
+        # (half-open `id >= lo AND id < hi`, or `id BETWEEN lo AND hi`).
+        assert re.search(r"\bID\s*(?:[<>]=?|BETWEEN\b)", code), (
             "m13_018 backfill must range-batch over the primary key "
             "(e.g. 'id >= lo AND id < lo + step') so each batch is an index-range "
             "scan -> O(n).  See issue #230."
@@ -154,11 +163,7 @@ class TestMigrationFileContent:
 
         # Negative regression guard (the important one): the O(n^2) signature
         # -- selecting ctids filtered by the unindexed IS NULL predicate with a
-        # LIMIT -- must not reappear.  Strip SQL comments first so a cautionary
-        # note describing the anti-pattern does not trip the guard.
-        code = "\n".join(
-            line.split("--", 1)[0] for line in sql.splitlines()
-        ).upper()
+        # LIMIT -- must not reappear.
         has_ctid_select = "SELECT CTID" in code
         has_isnull_filter = "EMBEDDING_MODEL IS NULL" in code
         # LIMIT is only an anti-pattern signal when paired with the ctid+IS NULL
