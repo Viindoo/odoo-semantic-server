@@ -84,6 +84,8 @@ const orgJsonLd = JSON.stringify({
     <title>{title}</title>
     <script type="application/ld+json" set:html={orgJsonLd} />
     {analytics && <GoogleAnalytics />}
+    <!-- No-JS fallback: never keep scroll-reveal content hidden. -->
+    <noscript><style>.cv-reveal{opacity:1 !important;transform:none !important;}</style></noscript>
     <slot name="head" />
   </head>
   <body>
@@ -101,5 +103,26 @@ const orgJsonLd = JSON.stringify({
     )}
     {showFooter && <SiteFooter />}
     {analytics && <CookieConsentBanner client:load />}
+    <!-- Scroll-reveal: toggle .is-in as .cv-reveal elements enter the viewport.
+         Reduced-motion + no-JS users are handled in CSS / <noscript> above. -->
+    <script is:inline>
+      (function () {
+        var els = document.querySelectorAll('.cv-reveal');
+        if (!els.length) return;
+        if (!('IntersectionObserver' in window)) {
+          els.forEach(function (el) { el.classList.add('is-in'); });
+          return;
+        }
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-in');
+              io.unobserve(entry.target);
+            }
+          });
+        }, { rootMargin: '0px 0px -10% 0px', threshold: 0.08 });
+        els.forEach(function (el) { io.observe(el); });
+      })();
+    </script>
   </body>
 </html>
