@@ -1,0 +1,57 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+/**
+ * GoogleAnalytics — GA4 with Consent Mode v2, fully runtime / data-driven.
+ *
+ * The measurement ID is fetched CLIENT-SIDE from the public GET /api/site-config
+ * at page load — NOT baked at build time. This is deliberate: the landing page
+ * and /benchmark are prerendered (static HTML), so a build-time value would (a)
+ * require FASTAPI to be up during `pnpm build` and (b) force a site rebuild to
+ * change or disable the ID. Fetching at runtime makes it work identically on
+ * prerendered and SSR pages and lets an admin change/disable GA via Admin
+ * Settings with no rebuild. Empty ID = analytics stays off (no script injected).
+ *
+ * Consent Mode v2 denies all storage synchronously before any GA request, so no
+ * tracking happens until the visitor accepts via CookieConsentBanner. When GA is
+ * actually configured the bootstrap dispatches `osm-ga-ready` so the banner only
+ * appears on deploys where analytics is enabled.
+ */
+---
+<script is:inline>
+  (function () {
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    window.gtag = gtag;
+    // Consent Mode v2 — deny everything until the visitor opts in.
+    gtag('consent', 'default', {
+      ad_storage: 'denied',
+      analytics_storage: 'denied',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied',
+    });
+    fetch('/api/site-config')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var id = d && typeof d.ga_measurement_id === 'string' ? d.ga_measurement_id : '';
+        // Only accept a well-formed GA4 measurement id (G-XXXXXXXX). Rejects an
+        // empty / malformed / malicious admin-set value before it reaches gtag.
+        if (!/^G-[A-Z0-9]+$/.test(id)) return;
+        window.__osmGaId = id;
+        var s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(id);
+        document.head.appendChild(s);
+        gtag('js', new Date());
+        gtag('config', id, { anonymize_ip: true });
+        // Restore consent for returning visitors who previously accepted.
+        try {
+          if (localStorage.getItem('osm_analytics_consent') === 'granted') {
+            gtag('consent', 'update', { analytics_storage: 'granted' });
+          }
+        } catch (e) { /* localStorage blocked — leave denied */ }
+        // Signal the consent banner that GA is live (only then should it prompt).
+        window.dispatchEvent(new CustomEvent('osm-ga-ready'));
+      })
+      .catch(function () { /* site-config unavailable — analytics stays off */ });
+  })();
+</script>

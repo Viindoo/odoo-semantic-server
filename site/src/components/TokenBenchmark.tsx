@@ -2,13 +2,22 @@
 import { useEffect, useRef, useState } from 'react';
 import IslandErrorBoundary from './IslandErrorBoundary';
 
+interface BenchmarkAxis {
+  with_osm: string;
+  without_osm: string;
+}
+
 interface BenchmarkCase {
   id: string;
+  title?: string;
   persona: string;
   query: string;
   without_mcp: { tokens: number; steps?: string[]; note?: string };
   with_mcp: { tokens: number; tool?: string; note?: string };
   savings_pct: number;
+  accuracy?: BenchmarkAxis;
+  completeness?: BenchmarkAxis;
+  speed?: BenchmarkAxis;
 }
 
 interface BenchmarkData {
@@ -18,6 +27,7 @@ interface BenchmarkData {
   cases: BenchmarkCase[];
 }
 
+/** Fallback titles for cases that pre-date the `title` field */
 const CASE_TITLES: Record<string, string> = {
   'find-override-point': 'Find override point',
   'check-module-exists': 'Check standard feature',
@@ -28,17 +38,30 @@ function formatTokens(n: number): string {
   return n.toLocaleString('en-US');
 }
 
+function AxisRow({ label, with_osm, without_osm }: { label: string; with_osm: string; without_osm: string }) {
+  return (
+    <div className="mt-2 text-[11px] leading-tight">
+      <span className="font-mono uppercase tracking-wider text-viindoo-muted mr-1">{label}:</span>
+      <span className="text-viindoo-success font-medium">&#10003;&nbsp;{with_osm}</span>
+      <span className="text-viindoo-muted mx-1">/</span>
+      <span className="text-red-400 line-through">{without_osm}</span>
+    </div>
+  );
+}
+
 function BenchmarkCard({ c, index, animate }: { c: BenchmarkCase; index: number; animate: boolean }) {
   const ratio = c.with_mcp.tokens / c.without_mcp.tokens;
   const withWidth = Math.max(2, ratio * 100); // min 2% visual clamp
   const savings = c.savings_pct.toFixed(1);
+  const title = c.title ?? CASE_TITLES[c.id] ?? c.id;
+  const num = String(index + 1).padStart(2, '0');
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-7 shadow-sm">
+    <div className="rounded-2xl border border-gray-200 bg-white p-7 shadow-sm flex flex-col">
       <div className="mb-4 inline-flex h-8 w-8 items-center justify-center rounded-full bg-viindoo-primary/10 border border-viindoo-primary text-viindoo-primary font-mono font-semibold text-xs">
-        0{index + 1}
+        {num}
       </div>
-      <h3 className="font-display text-lg font-bold text-viindoo-dark leading-tight">{CASE_TITLES[c.id] || c.id}</h3>
+      <h3 className="font-display text-lg font-bold text-viindoo-dark leading-tight">{title}</h3>
       <p className="font-mono text-[10px] uppercase tracking-widest text-viindoo-primary-deep mt-1 mb-4">{c.persona}</p>
       <div className="rounded bg-gray-50 border-l-2 border-viindoo-primary p-3 font-mono text-xs text-viindoo-body mb-5">
         &ldquo;{c.query}&rdquo;
@@ -73,8 +96,22 @@ function BenchmarkCard({ c, index, animate }: { c: BenchmarkCase; index: number;
 
       <div className="mt-5 flex items-center justify-between rounded-lg border border-viindoo-success/30 bg-viindoo-success/10 px-3 py-2.5">
         <span className="text-xs uppercase tracking-wider text-viindoo-muted font-mono">Saved</span>
-        <span className="font-mono text-xl font-bold text-viindoo-success">−{savings}%</span>
+        <span className="font-mono text-xl font-bold text-viindoo-success">&#8722;{savings}%</span>
       </div>
+
+      {(c.accuracy || c.completeness || c.speed) && (
+        <div className="mt-4 pt-4 border-t border-gray-100 space-y-1">
+          {c.accuracy && (
+            <AxisRow label="Accuracy" with_osm={c.accuracy.with_osm} without_osm={c.accuracy.without_osm} />
+          )}
+          {c.completeness && (
+            <AxisRow label="Coverage" with_osm={c.completeness.with_osm} without_osm={c.completeness.without_osm} />
+          )}
+          {c.speed && (
+            <AxisRow label="Speed" with_osm={c.speed.with_osm} without_osm={c.speed.without_osm} />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -119,7 +156,7 @@ function TokenBenchmarkInner() {
         <div className="text-viindoo-muted font-mono text-sm">Loading benchmark&hellip;</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {data.cases.map((c, i) => (
               <BenchmarkCard key={c.id} c={c} index={i} animate={animate} />
             ))}

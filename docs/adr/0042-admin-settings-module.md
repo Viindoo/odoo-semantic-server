@@ -149,3 +149,34 @@ deploy and hotfixed in prod; codified in `fix/admin-settings-grants-dotenv`.
   `src/web_ui/app.py`; exempt from the auth middleware via `src/web_ui/middleware.py` allowlist.
   Policy: only settings whose exposure carries no security or business risk are added here;
   consult this ADR + ADR-0026 before extending the response payload.
+
+---
+
+### Amendment 2026-06-01 (PR #225 — feat/web-integration)
+
+- **29th catalogue entry:** `analytics.ga_measurement_id` (`analytics` category, `str`, default `""`)
+  added in `src/settings_registry.py`. Injected into public Astro pages for GA4 + Consent Mode v2.
+  Empty string = analytics disabled. Public client-side token; no security or business-confidentiality risk.
+- **`GET /api/site-config` response extended (5 fields):** The endpoint now returns five fields
+  (previously two). Full contract in `src/web_ui/routes/site_config.py` module docstring:
+  ```json
+  {
+    "helpdesk_url": "https://viindoo.com/ticket/team/88",
+    "site_version": "0.13.1",
+    "paid_checkout_enabled": false,
+    "checkout_url_map": {"<plan_slug>": "<url>"},
+    "ga_measurement_id": ""
+  }
+  ```
+  Safety rationale for each new field:
+  - `paid_checkout_enabled` — boolean CTA gate; boolean flags carry no sensitive info.
+  - `checkout_url_map` — Polar buy-links are intentionally public; returned **only** when
+    `paid_checkout_enabled` is `true` (pre-launch the flag is `false`, so the Polar URLs remain
+    unexposed). Gating logic in `site_config.py`.
+  - `ga_measurement_id` — GA4 measurement ID is a public client token (`G-XXXXXXXX`); its
+    purpose is to appear in public page source.
+  Policy unchanged: consult this ADR + ADR-0026 before adding any further fields.
+- **New `analytics` category** — `/admin/settings/analytics` page in `site/src/pages/admin/settings/`
+  (dynamic `[category].astro` + index card). Admin-tunable without redeploy; hot-reload ≤60s.
+- **CSP updated** — `connect-src` in `site/src/middleware.ts` and `docs/deploy/nginx-m8.conf`
+  extended to allow `https://www.google-analytics.com` (GA4 beacon endpoint).

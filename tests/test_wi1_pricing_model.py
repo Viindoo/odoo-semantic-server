@@ -432,12 +432,15 @@ class TestAdminPatchMinSeats:
 class TestSiteConfigEndpoint:
     @pytest.mark.asyncio
     async def test_site_config_public_no_auth(self, migrated_pg):
-        """GET /api/site-config is public and returns helpdesk_url + site_version.
+        """GET /api/site-config is public and returns the full WI-1 response shape.
 
         Validates:
         - HTTP 200 without session (middleware exempts the path)
         - Response has 'helpdesk_url' key (non-empty string, valid URL-ish)
         - Response has 'site_version' key (non-empty string)
+        - Response has 'paid_checkout_enabled' key (bool, default False)
+        - Response has 'checkout_url_map' key (dict, default {})
+        - Response has 'ga_measurement_id' key (str, default "")
         """
         import os
         # Temporarily re-enable auth to verify the endpoint is truly exempt
@@ -471,6 +474,37 @@ class TestSiteConfigEndpoint:
             f"site_version must be a non-empty string, got: {body['site_version']!r}"
         )
 
+        # WI-1: paid_checkout_enabled — bool, catalogue default False
+        assert "paid_checkout_enabled" in body, (
+            f"Expected 'paid_checkout_enabled' in /api/site-config response, "
+            f"keys: {list(body.keys())}"
+        )
+        _pce = body["paid_checkout_enabled"]
+        assert isinstance(_pce, bool), (
+            f"paid_checkout_enabled must be bool, got: {type(_pce).__name__}"
+        )
+        assert _pce is False, (
+            f"paid_checkout_enabled catalogue default is False, got: {_pce!r}"
+        )
+
+        # WI-1: checkout_url_map — dict, catalogue default {}
+        assert "checkout_url_map" in body, (
+            f"Expected 'checkout_url_map' in /api/site-config response, "
+            f"keys: {list(body.keys())}"
+        )
+        assert isinstance(body["checkout_url_map"], dict), (
+            f"checkout_url_map must be dict, got: {type(body['checkout_url_map']).__name__}"
+        )
+
+        # WI-1: ga_measurement_id — str, catalogue default "" (disabled)
+        assert "ga_measurement_id" in body, (
+            f"Expected 'ga_measurement_id' in /api/site-config response, "
+            f"keys: {list(body.keys())}"
+        )
+        assert isinstance(body["ga_measurement_id"], str), (
+            f"ga_measurement_id must be str, got: {type(body['ga_measurement_id']).__name__}"
+        )
+
     @pytest.mark.asyncio
     async def test_site_config_helpdesk_url_is_catalogue_default(self, migrated_pg):
         """GET /api/site-config returns the catalogue default helpdesk URL.
@@ -488,6 +522,51 @@ class TestSiteConfigEndpoint:
         assert "viindoo.com" in body["helpdesk_url"], (
             f"Expected helpdesk_url to contain 'viindoo.com' (catalogue default), "
             f"got: {body['helpdesk_url']!r}"
+        )
+
+    async def test_checkout_map_hidden_when_checkout_off(self, migrated_pg, monkeypatch):
+        """Business rule: unreleased Polar checkout URLs must NOT be exposed on the
+        public endpoint while paid checkout is OFF — even if the URL-map setting is
+        populated. Returning them pre-launch would leak buy-links before go-live.
+        """
+        import src.settings as settings_mod
+
+        values = {
+            "support.helpdesk_url": "https://viindoo.com/ticket/team/88",
+            "billing.paid_checkout_enabled": False,
+            "billing.polar_checkout_url_map": {"pro": "https://buy.polar.sh/secret-pro"},
+            "analytics.ga_measurement_id": "",
+        }
+        monkeypatch.setattr(settings_mod, "get_setting", lambda key, *a, **k: values.get(key))
+        async with _client() as client:
+            resp = await client.get("/api/site-config")
+        body = resp.json()
+        assert body["paid_checkout_enabled"] is False
+        assert body["checkout_url_map"] == {}, (
+            "checkout_url_map must be empty while paid_checkout_enabled is False — "
+            f"unreleased buy-links leaked: {body['checkout_url_map']!r}"
+        )
+
+    async def test_checkout_map_shown_when_checkout_on(self, migrated_pg, monkeypatch):
+        """Counterpart: once paid checkout is ON, the per-plan checkout URLs flow
+        through so the pricing page can render Subscribe buttons.
+        """
+        import src.settings as settings_mod
+
+        url_map = {"pro": "https://buy.polar.sh/pro", "team": "https://buy.polar.sh/team"}
+        values = {
+            "support.helpdesk_url": "https://viindoo.com/ticket/team/88",
+            "billing.paid_checkout_enabled": True,
+            "billing.polar_checkout_url_map": url_map,
+            "analytics.ga_measurement_id": "",
+        }
+        monkeypatch.setattr(settings_mod, "get_setting", lambda key, *a, **k: values.get(key))
+        async with _client() as client:
+            resp = await client.get("/api/site-config")
+        body = resp.json()
+        assert body["paid_checkout_enabled"] is True
+        assert body["checkout_url_map"] == url_map, (
+            f"checkout_url_map must pass through when enabled, got: {body['checkout_url_map']!r}"
         )
 
 

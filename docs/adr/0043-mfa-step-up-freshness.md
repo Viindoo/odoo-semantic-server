@@ -150,6 +150,10 @@ This raises the Tier-1 settings count from 15 to **16** (see ADR-0042 §Phase 1 
 > **Amendment 2026-05-31 (PR #223):** PR #223 adds `support.helpdesk_url` as the 17th non-billing
 > Tier-1 entry (`support.*` category). The authoritative count is always `src/settings_registry.py`
 > docstring — not this ADR.
+>
+> **Amendment 2026-06-01 (PR #225):** PR #225 adds `analytics.ga_measurement_id` as the 18th
+> non-billing Tier-1 entry (`analytics.*` category). Total catalogue = 29. SSOT unchanged:
+> `src/settings_registry.py` docstring.
 
 ### D5 — Frontend: sentinel-detect → StepUpMfaModal → retry-once
 

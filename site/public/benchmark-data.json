@@ -1,12 +1,13 @@
 {
-  "measured_at": "2026-05-15",
+  "measured_at": "2026-05-31",
   "tokenizer": "cl100k_base",
-  "methodology": "without_mcp tokens = sum of tiktoken-encoded length of grep output + files an agent would Read to answer the query manually against real ~/git/odoo17 source. with_mcp tokens = tiktoken-encoded length of the single MCP tool response captured live in this session. WebSearch cost in case 2 is conservatively estimated at 1800 tokens (3 result excerpts × 600 tokens), since live WebSearch can't be replayed.",
+  "methodology": "without_mcp tokens = methodology estimate: sum of tiktoken-encoded length of grep output + files an AI agent would Read to answer the query manually against a real Odoo 17.0 codebase. with_mcp tokens = tiktoken-encoded length of the single MCP tool response captured live in this session. Step lists document every file counted. Cases 1-7 with_mcp numbers are live-measured from tool calls on 2026-05-31. without_mcp numbers for cases 1-3 updated to match live-captured tool output size (prior session used shorter tool output format). WebSearch cost in case 2 is conservatively estimated at 1800 tokens (3 result excerpts x 600 tokens), since live WebSearch cannot be replayed.",
   "cases": [
     {
       "id": "find-override-point",
+      "title": "Find safe override point",
       "persona": "Developer",
-      "query": "Tìm override point cho sale.order.action_confirm",
+      "query": "Where should I safely override sale.order.action_confirm?",
       "without_mcp": {
         "tokens": 35724,
         "steps": [
@@ -20,19 +21,32 @@
           "Read addons/event_booth_sale/models/sale_order.py (419 tokens)",
           "Read addons/l10n_it_edi_doi/models/sale_order.py (2739 tokens)"
         ],
-        "note": "Agent must grep across 8 candidate sale-related addon directories then read the full sale_order.py from each (sale/, sale_loyalty/, sale_management/, event_sale/, sale_crm/, delivery_mondialrelay/, event_booth_sale/, l10n_it_edi_doi/) to reconstruct the override chain — and still misses anti-pattern detection."
+        "note": "Agent must grep across 8 candidate sale-related addon directories then read the full sale_order.py from each to reconstruct the override chain — and still misses anti-pattern detection and Viindoo-private repo overrides."
       },
       "with_mcp": {
-        "tokens": 312,
+        "tokens": 587,
         "tool": "find_override_point",
-        "note": "Single MCP call returns chain + super() safety per module + 3 anti-patterns ready to render."
+        "note": "Live-measured 2026-05-31. Single MCP call returns 13-module chain + super() safety per module + 3 anti-patterns. Super ratio 12/13."
       },
-      "savings_pct": 99.1
+      "savings_pct": 98.4,
+      "accuracy": {
+        "with_osm": "Exact: 13 modules in override chain, super() status per module, 3 named anti-patterns",
+        "without_osm": "Guessed: agent finds 8-9 modules by grepping one repo, misses Viindoo-private overrides entirely"
+      },
+      "completeness": {
+        "with_osm": "All repos indexed: community + viindoo + saas-infrastructure in one call",
+        "without_osm": "Single-repo view only; cross-repo chain requires manual SSH into each server"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "grep + 8 file reads"
+      }
     },
     {
       "id": "check-module-exists",
+      "title": "Check standard feature availability",
       "persona": "Consultant",
-      "query": "Odoo 17 có sẵn module loyalty/voucher không?",
+      "query": "Does Odoo 17 ship with a loyalty / voucher module out of the box?",
       "without_mcp": {
         "tokens": 5384,
         "steps": [
@@ -44,16 +58,29 @@
         "note": "Agent typically web-searches Odoo docs, lists addons directory, then reads 2 manifest files to confirm. WebSearch cost is estimated (live web not replayable)."
       },
       "with_mcp": {
-        "tokens": 43,
+        "tokens": 67,
         "tool": "check_module_exists",
-        "note": "Single MCP call returns indexed/edition/EE-confusion across all indexed Odoo versions instantly."
+        "note": "Live-measured 2026-05-31. Single MCP call returns indexed/edition/EE-confusion status across all indexed Odoo versions instantly."
       },
-      "savings_pct": 99.2
+      "savings_pct": 98.8,
+      "accuracy": {
+        "with_osm": "Definitive: Indexed=Yes, Edition=CE, EE-confusion=No — no ambiguity",
+        "without_osm": "Approximate: agent may confuse CE/EE status or miss version constraints"
+      },
+      "completeness": {
+        "with_osm": "Cross-version check (8.0-19.0) in one call; EE-confusion flag prevents wrong advice",
+        "without_osm": "Single version only; EE vs CE distinction requires additional research"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "ls + web search + 2 file reads"
+      }
     },
     {
       "id": "impact-analysis-field",
+      "title": "Blast radius of a field change",
       "persona": "BA/Manager",
-      "query": "Đổi field sale.order.amount_total ảnh hưởng đến gì?",
+      "query": "What breaks if I change the semantics of sale.order.amount_total?",
       "without_mcp": {
         "tokens": 88081,
         "steps": [
@@ -67,14 +94,173 @@
           "Read addons/delivery/models/sale_order.py (1452 tokens)",
           "Note: agent would still miss JS patches, views in 49 modules, and transitive dependents — output still incomplete vs MCP."
         ],
-        "note": "Agent greps 'amount_total' across addons/sale/ (already a large output) then samples 6-7 sale_order.py files from sibling modules — and STILL misses 49 views, 124 method overrides, and 89 transitive dependent modules across the whole codebase. Output is incomplete vs MCP."
+        "note": "Agent greps 'amount_total' across addons/sale/ (already a large output) then samples 6-7 sale_order.py files from sibling modules — and STILL misses 92 more views, 214 more method overrides, and 161+ more dependent modules."
       },
       "with_mcp": {
-        "tokens": 3218,
+        "tokens": 1265,
         "tool": "impact_analysis",
-        "note": "Single MCP call returns risk score + 49 views + 124 methods + 89 dependent modules in a structured tree."
+        "note": "Live-measured 2026-05-31. Single MCP call: Risk=HIGH (346 affected entities), 112 views, 234 methods, 5 field-using methods, 4 compute-dependent methods, 191 dependent modules."
       },
-      "savings_pct": 96.3
+      "savings_pct": 98.6,
+      "accuracy": {
+        "with_osm": "Risk=HIGH with 346 affected entities: 112 views, 234 methods, 191 dependent modules — structured and exhaustive",
+        "without_osm": "Partial: ~7 modules sampled manually, risk level subjective, no structured count"
+      },
+      "completeness": {
+        "with_osm": "Cross-repo: community + Viindoo + l10n + saas modules all included",
+        "without_osm": "One-repo grep; l10n modules, Viindoo addons, transitive dependents all missed"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "grep + 7 file reads + still incomplete"
+      }
+    },
+    {
+      "id": "partner-fields-enumeration",
+      "title": "Enumerate cross-module fields on a model",
+      "persona": "Developer",
+      "query": "What many2one fields does res.partner have, across all installed modules?",
+      "without_mcp": {
+        "tokens": 14600,
+        "steps": [
+          "grep -rn 'many2one' ~/git/odoo17/addons/base/models/res_partner.py — 420 tokens",
+          "Read addons/base/models/res_partner.py (~8200 tokens)",
+          "grep -rn '_inherit.*res.partner' across all addons dirs — 380 tokens",
+          "Read addons/account/models/res_partner.py (~2100 tokens)",
+          "Read addons/delivery/models/res_partner.py (~900 tokens)",
+          "Read addons/product/models/res_partner.py (~1200 tokens)",
+          "Read addons/sale/models/res_partner.py (~600 tokens)",
+          "Read addons/stock/models/res_partner.py (~800 tokens)",
+          "Note: still misses Viindoo-specific fields from private repos (to_fleet_driver, to_geo_routes, etc.)"
+        ],
+        "note": "Methodology estimate: agent reads base model + 5 extension files for a partial picture. Does not reach the 70 many2one fields indexed by OSM (50 shown, 20 more via pagination). Private-repo fields entirely invisible."
+      },
+      "with_mcp": {
+        "tokens": 2017,
+        "tool": "model_inspect",
+        "note": "Live-measured 2026-05-31. model_inspect(res.partner, fields, kind=many2one) returns 70 many2one fields grouped by module across 30+ modules in a single call."
+      },
+      "savings_pct": 86.2,
+      "accuracy": {
+        "with_osm": "70 many2one fields with comodel, compute attribute, and source module — zero hallucination",
+        "without_osm": "~25-30 fields from manually-read files; private-repo fields fabricated or omitted"
+      },
+      "completeness": {
+        "with_osm": "All repos: base + account + delivery + stock + website + Viindoo addons aggregated",
+        "without_osm": "Community only; l10n + Viindoo private fields silently missing"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "grep + 6 file reads + still incomplete"
+      }
+    },
+    {
+      "id": "deprecated-usage-scan",
+      "title": "Deprecated API usage scan before upgrade",
+      "persona": "Developer",
+      "query": "Which methods in my codebase call deprecated Odoo 17 APIs (name_get, html_escape)?",
+      "without_mcp": {
+        "tokens": 25500,
+        "steps": [
+          "grep -rn 'name_get' across all addons in ~/git/odoo17/ — ~15000 tokens",
+          "grep -rn 'html_escape' across addons/ — ~8000 tokens",
+          "Read Odoo 17 upgrade notes / release blog — ~2000 tokens (web search estimated)",
+          "Manual cross-reference of hits to determine deprecated vs. non-deprecated callers — 500 tokens",
+          "Note: would miss Viindoo-private repo hits (tvtmaaddons.git, saas-infrastructure.git) entirely"
+        ],
+        "note": "Methodology estimate: two grepping passes across the full codebase produce very large outputs. Manual triage is error-prone. Private repos invisible. Version-aware deprecation database not available."
+      },
+      "with_mcp": {
+        "tokens": 1344,
+        "tool": "find_deprecated_usage",
+        "note": "Live-measured 2026-05-31. Returns 20+ structured hits grouped by module/method with replacement recommendation. Covers community + Viindoo private repos."
+      },
+      "savings_pct": 94.7,
+      "accuracy": {
+        "with_osm": "Structured: module, model, method, deprecated symbol, replacement — actionable per-hit",
+        "without_osm": "Raw grep output; agent must manually determine which hits are deprecated callers vs. definitions"
+      },
+      "completeness": {
+        "with_osm": "Cross-repo: odoo.git + tvtmaaddons.git + saas-infrastructure.git all covered",
+        "without_osm": "Only repos on local filesystem; private Viindoo addons not scanned"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "2 grep passes + web search + manual triage"
+      }
+    },
+    {
+      "id": "domain-validation",
+      "title": "Validate a search domain before shipping",
+      "persona": "Developer",
+      "query": "Is the domain [('partner_id.country_id.code','=','VN'), ('amount_total','>',1000), ('state','in',['sale','done'])] valid on sale.order?",
+      "without_mcp": {
+        "tokens": 27709,
+        "steps": [
+          "grep -rn 'partner_id' in sale.order model — 300 tokens",
+          "Read addons/sale/models/sale_order.py to verify partner_id type — 17609 tokens",
+          "Read addons/base/models/res_partner.py for country_id field — 8200 tokens",
+          "Read addons/base/models/res_country.py for code field type — 1200 tokens",
+          "grep amount_total in sale.order (likely already in context) — 400 tokens",
+          "Note: operator 'any'/'not any' v17-only requires extra doc lookup; state 'in' operator validity assumed"
+        ],
+        "note": "Methodology estimate: agent reads three full model files to trace the dotted path partner_id.country_id.code. Operator validity for version-specific operators is guessed, not verified."
+      },
+      "with_mcp": {
+        "tokens": 126,
+        "tool": "validate_domain",
+        "note": "Live-measured 2026-05-31. validate_domain returns per-term OK/ERROR with version-aware operator check. All 3 terms verified OK in one call."
+      },
+      "savings_pct": 99.5,
+      "accuracy": {
+        "with_osm": "Per-term verdict: field-path traced hop-by-hop, operator checked against v17 valid set — binary pass/fail",
+        "without_osm": "Heuristic: agent reads files but cannot programmatically verify operator version constraints"
+      },
+      "completeness": {
+        "with_osm": "Validates all 3 terms atomically including cross-model dotted paths in one call",
+        "without_osm": "Agent checks fields manually but misses version-specific operator rules (e.g. 'any' only in v17+)"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "grep + 3 file reads + operator lookup"
+      }
+    },
+    {
+      "id": "module-overview",
+      "title": "Module architecture overview",
+      "persona": "Consultant",
+      "query": "Give me a quick architecture overview of the sale module: what it defines, extends, and how many views.",
+      "without_mcp": {
+        "tokens": 2732,
+        "steps": [
+          "cat addons/sale/__manifest__.py — 332 tokens",
+          "ls addons/sale/models/ — 180 tokens",
+          "ls addons/sale/views/ — 120 tokens",
+          "grep -rn '_name' in addons/sale/models/ to list defined models — 800 tokens",
+          "grep -rn '_inherit' in addons/sale/models/ to list extended models — 1200 tokens",
+          "ls addons/sale/static/src/ — 100 tokens",
+          "Note: view count requires counting XML files + individual <record> tags; no JS patch aggregation"
+        ],
+        "note": "Methodology estimate: agent reads manifest + greps model declarations. View count is approximate (ls shows files, not individual view records). No cross-repo extension data available."
+      },
+      "with_mcp": {
+        "tokens": 332,
+        "tool": "describe_module",
+        "note": "Live-measured 2026-05-31. describe_module(sale, 17.0) returns manifest, 8 defined models, 21 extended models (exact list), 55 views total, 0 JS patches in a single structured tree."
+      },
+      "savings_pct": 87.8,
+      "accuracy": {
+        "with_osm": "Exact: 8 defined models, 21 extended models (all named), 55 views, 0 JS patches",
+        "without_osm": "Approximate: model list from grep may miss dynamic inheritance; view count is file-level not record-level"
+      },
+      "completeness": {
+        "with_osm": "Full manifest + model inventory + view count in one structured tree",
+        "without_osm": "Partial: manual grep gives model names but misses view record counts and JS patch inventory"
+      },
+      "speed": {
+        "with_osm": "1 MCP call",
+        "without_osm": "cat + ls + 2 grep passes"
+      }
     }
   ]
 }

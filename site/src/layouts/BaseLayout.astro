@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import '../styles/global.css';
 import SiteFooter from '../components/SiteFooter.astro';
+import GoogleAnalytics from '../components/GoogleAnalytics.astro';
+import CookieConsentBanner from '../components/CookieConsentBanner';
 import { BRAND_FULL } from '../lib/constants';
 
 export interface Props {
@@ -16,6 +18,12 @@ export interface Props {
    *  `<main>` + skip-link, so they set this false to avoid a nested `<main>`
    *  and a duplicate `id="main-content"` / skip-link. */
   provideMain?: boolean;
+  /** Load Google Analytics + the cookie-consent banner. Public marketing pages
+   *  keep this true; the authenticated app shells (AdminLayout/AccountLayout/
+   *  TenantLayout) pass false so logged-in admin/account/tenant sessions are NOT
+   *  tracked and the GA third-party origin is never actionable on those pages
+   *  (keeps the third-party-script blast-radius scoped, per the CSP design). */
+  analytics?: boolean;
 }
 
 const {
@@ -24,6 +32,7 @@ const {
   theme = 'light',
   showFooter = true,
   provideMain = true,
+  analytics = true,
 } = Astro.props;
 const isDark = theme === 'dark';
 // Absolute URL for social-card image (OG/Twitter need absolute). Prefer the
@@ -74,6 +83,7 @@ const orgJsonLd = JSON.stringify({
     <meta name="twitter:image" content={ogImage} />
     <title>{title}</title>
     <script type="application/ld+json" set:html={orgJsonLd} />
+    {analytics && <GoogleAnalytics />}
     <slot name="head" />
   </head>
   <body>
@@ -90,5 +100,6 @@ const orgJsonLd = JSON.stringify({
       <slot />
     )}
     {showFooter && <SiteFooter />}
+    {analytics && <CookieConsentBanner client:load />}
   </body>
 </html>

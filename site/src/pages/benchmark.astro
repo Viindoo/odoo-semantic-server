@@ -1,0 +1,140 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+export const prerender = true;
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import TokenBenchmark from '../components/TokenBenchmark';
+---
+
+<BaseLayout
+  title="Benchmark — Odoo Semantic MCP"
+  description="Real-measured token savings: 7 developer workflows, 4 value axes. No hallucinations, full codebase picture, 86–99% fewer tokens, one MCP call."
+  theme="light"
+  showFooter={false}
+>
+  <SiteHeader currentPath="/benchmark" />
+
+  <!-- Hero -->
+  <section class="bg-viindoo-bg-0 text-viindoo-on-dark pt-28 pb-16">
+    <div class="mx-auto max-w-5xl px-6">
+      <p class="font-mono text-xs uppercase tracking-widest text-viindoo-primary mb-3">Benchmark</p>
+      <h1 class="font-display text-4xl md:text-5xl font-bold leading-tight mb-6">
+        Why context quality<br class="hidden md:block" /> beats context volume.
+      </h1>
+      <p class="text-viindoo-on-dark-muted text-lg max-w-3xl leading-relaxed mb-10">
+        Seven real Odoo developer workflows. Each measured on four axes:
+        accuracy, full-codebase coverage, token savings, and speed.
+        Token counts are tiktoken <code class="font-mono text-viindoo-primary">cl100k_base</code>,
+        MCP side live-captured on 2026-05-31.
+      </p>
+
+      <!-- 4-axis explainer cards -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="rounded-xl border border-white/10 bg-viindoo-bg-1 p-5">
+          <div class="text-viindoo-primary text-2xl mb-2">&#10003;</div>
+          <h3 class="font-display font-bold text-viindoo-on-dark text-sm mb-1">Accuracy</h3>
+          <p class="text-viindoo-on-dark-muted text-xs leading-snug">
+            Exact field/method names from the indexed graph — zero hallucination vs. agent guessing.
+          </p>
+        </div>
+        <div class="rounded-xl border border-white/10 bg-viindoo-bg-1 p-5">
+          <div class="text-viindoo-primary text-2xl mb-2">&#9783;</div>
+          <h3 class="font-display font-bold text-viindoo-on-dark text-sm mb-1">Full picture</h3>
+          <p class="text-viindoo-on-dark-muted text-xs leading-snug">
+            Cross-repo blast radius — community + Viindoo + l10n modules aggregated, not just one repo.
+          </p>
+        </div>
+        <div class="rounded-xl border border-white/10 bg-viindoo-bg-1 p-5">
+          <div class="text-viindoo-primary text-2xl mb-2">&#9681;</div>
+          <h3 class="font-display font-bold text-viindoo-on-dark text-sm mb-1">Token savings</h3>
+          <p class="text-viindoo-on-dark-muted text-xs leading-snug">
+            86–99% fewer tokens per workflow. Context window savings pay for the server in week one.
+          </p>
+        </div>
+        <div class="rounded-xl border border-white/10 bg-viindoo-bg-1 p-5">
+          <div class="text-viindoo-primary text-2xl mb-2">&#9889;</div>
+          <h3 class="font-display font-bold text-viindoo-on-dark text-sm mb-1">Speed</h3>
+          <p class="text-viindoo-on-dark-muted text-xs leading-snug">
+            One MCP call replaces grep + multiple file reads. No manual scanning required.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Case grid -->
+  <section class="bg-white py-16">
+    <div class="mx-auto max-w-7xl px-6">
+      <p class="font-mono text-xs uppercase tracking-widest text-viindoo-secondary mb-8">
+        7 real workflows &middot; live-measured
+      </p>
+      <!-- client:load (not client:visible): on the dedicated benchmark page the
+           cards ARE the primary content and must not sit behind a "Loading…"
+           placeholder until the visitor scrolls. The landing teaser keeps
+           client:visible because it is below the fold. -->
+      <TokenBenchmark client:load />
+    </div>
+  </section>
+
+  <!-- Reproduce + methodology link -->
+  <section class="bg-gray-50 py-16">
+    <div class="mx-auto max-w-3xl px-6">
+      <h2 class="font-display text-2xl font-bold text-viindoo-dark mb-4">Reproduce these numbers</h2>
+      <p class="text-viindoo-muted mb-6 leading-relaxed">
+        All MCP-side token counts were captured live from the indexed server on 2026-05-31 using
+        <code class="font-mono text-viindoo-secondary">tiktoken cl100k_base</code>.
+        Without-MCP estimates follow the same tokenizer applied to grep output and file reads
+        that an AI agent would perform against a real <code class="font-mono">~/git/odoo17</code> checkout.
+        Full step-by-step accounting is in the raw data file.
+      </p>
+      <div class="flex flex-wrap gap-4">
+        <a
+          href="/benchmark-data.json"
+          class="inline-flex items-center gap-2 rounded-lg border border-viindoo-secondary/30 bg-white px-4 py-2 font-mono text-sm text-viindoo-secondary hover:bg-viindoo-secondary/5 transition"
+        >
+          /benchmark-data.json &darr;
+        </a>
+        <a
+          href="/benchmarks"
+          class="inline-flex items-center gap-2 font-semibold text-viindoo-secondary hover:gap-3 transition text-sm"
+        >
+          Full methodology &rarr;
+        </a>
+      </div>
+      <p class="mt-6 text-xs text-viindoo-muted font-mono">
+        To re-run: index your own Odoo addons with the OSM indexer, call the same MCP tools,
+        pipe the response text through <code>tiktoken cl100k_base</code>, and compare against
+        the grep + file-read baseline for your corpus.
+      </p>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="bg-viindoo-bg-0 py-16">
+    <div class="mx-auto max-w-3xl px-6 text-center">
+      <h2 class="font-display text-2xl font-bold text-viindoo-on-dark mb-4">
+        Try it on your Odoo codebase
+      </h2>
+      <p class="text-viindoo-on-dark-muted mb-8">
+        Connect your AI tool in under 5 minutes. No installation on your end.
+      </p>
+      <div class="flex flex-wrap justify-center gap-4">
+        <a
+          href="/install/"
+          class="inline-flex items-center gap-2 rounded-xl bg-viindoo-primary px-6 py-3 font-semibold text-white hover:bg-viindoo-primary/90 transition"
+        >
+          Install &rarr;
+        </a>
+        <a
+          href="/signup"
+          class="inline-flex items-center gap-2 rounded-xl border border-white/20 px-6 py-3 font-semibold text-viindoo-on-dark hover:bg-white/5 transition"
+        >
+          Get API key
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <SiteFooter />
+</BaseLayout>
