@@ -353,6 +353,63 @@ class TestReadyEndpoint:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
+    async def test_ready_single_db_down_is_degraded_503(self):
+        """One DB down: status='degraded' (granular) but HTTP 503 so an
+        HTTP-status-only external monitor catches the single-DB outage."""
+        from src.mcp import health as health_mod
+
+        fake_cache = {
+            "embeddings_total": 42,
+            "embeddings_by_chunk_type": {"field": 42},
+            "cached_at": time.monotonic(),
+        }
+
+        with (
+            patch.object(health_mod, "_ready_cache", fake_cache),
+            patch.object(health_mod, "_check_neo4j", AsyncMock(return_value="ok")),
+            patch.object(
+                health_mod, "_check_pg", AsyncMock(return_value="error: pool down")
+            ),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+        ):
+            resp = await health_mod.ready_handler(_make_request("/ready"))
+
+        import json
+
+        data = json.loads(resp.body)
+        assert data["status"] == "degraded"
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_ready_both_db_down_is_error_503(self):
+        """Both DBs down: status='error' and HTTP 503."""
+        from src.mcp import health as health_mod
+
+        fake_cache = {
+            "embeddings_total": 0,
+            "embeddings_by_chunk_type": {},
+            "cached_at": time.monotonic(),
+        }
+
+        with (
+            patch.object(health_mod, "_ready_cache", fake_cache),
+            patch.object(
+                health_mod, "_check_neo4j", AsyncMock(return_value="error: down")
+            ),
+            patch.object(
+                health_mod, "_check_pg", AsyncMock(return_value="error: down")
+            ),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+        ):
+            resp = await health_mod.ready_handler(_make_request("/ready"))
+
+        import json
+
+        data = json.loads(resp.body)
+        assert data["status"] == "error"
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
     async def test_ready_cache_ttl_field_matches_constant(self):
         """cache_ttl_s in /ready response must equal _READY_CACHE_TTL_S constant."""
         from src.mcp import health as health_mod

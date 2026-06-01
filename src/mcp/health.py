@@ -345,7 +345,11 @@ async def ready_handler(request: Request) -> JSONResponse:
     both_ok = neo4j_status == "ok" and pg_status == "ok"
     one_ok = neo4j_status == "ok" or pg_status == "ok"
     status = "ok" if both_ok else ("degraded" if one_ok else "error")
-    http_code = 503 if status == "error" else 200
+    # An HTTP-status-only external monitor must catch a single-DB outage, so
+    # both "degraded" (one DB down) and "error" (both down) return 503; only a
+    # fully-ready index stays 200. The JSON body still reports the granular
+    # "ok"/"degraded"/"error" status for richer probes.
+    http_code = 200 if both_ok else 503
 
     embeddings_total = ready_data["embeddings_total"]
     embeddings_by_chunk_type = ready_data["embeddings_by_chunk_type"]

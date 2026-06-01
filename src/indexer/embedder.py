@@ -258,6 +258,11 @@ class _BaseHttpEmbedder:
         num_ctx: int = EMBEDDER_NUM_CTX,
         chars_per_token: float = EMBEDDER_CHARS_PER_TOKEN,
     ):
+        # Normalize an optional Ollama ":latest" tag so the dim/model guard
+        # (src/db/embedding_guard.py) compares bare names — a configured
+        # "qwen3-embedding-q5km:latest" must not falsely trip against a stored
+        # bare "qwen3-embedding-q5km" on a later reindex.
+        model = model.removesuffix(":latest")
         self._url = url.rstrip("/") + self.endpoint_path
         self._model = model
         self._dim = dim
