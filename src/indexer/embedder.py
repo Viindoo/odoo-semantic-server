@@ -41,6 +41,7 @@ from src.constants import (
     TIMEOUT_EMBEDDER_READ,
     TIMEOUT_EMBEDDER_READ_QUERY,
     TIMEOUT_EMBEDDER_WRITE,
+    normalize_embedder_model_name,
 )
 from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 from src.metrics import embedder_batch_duration_seconds
@@ -258,6 +259,10 @@ class _BaseHttpEmbedder:
         num_ctx: int = EMBEDDER_NUM_CTX,
         chars_per_token: float = EMBEDDER_CHARS_PER_TOKEN,
     ):
+        # Normalize an optional Ollama ":latest" tag (shared helper, applied
+        # symmetrically in the dim/model guard) so the bare name is what gets
+        # stamped onto each vector row and compared on a later reindex.
+        model = normalize_embedder_model_name(model)
         self._url = url.rstrip("/") + self.endpoint_path
         self._model = model
         self._dim = dim

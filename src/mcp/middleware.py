@@ -364,7 +364,7 @@ def _increment_usage_buffer(api_key_id: int, pg_pool) -> bool:
 _BG_TASKS: set[asyncio.Task] = set()
 
 # Paths that bypass auth entirely
-_PUBLIC_PATHS = frozenset({"/health", "/metrics"})
+_PUBLIC_PATHS = frozenset({"/health", "/ready", "/metrics"})
 _PUBLIC_PATH_PREFIXES = frozenset({"/install"})
 
 

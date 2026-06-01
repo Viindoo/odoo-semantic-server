@@ -90,6 +90,11 @@ class TestPublicPaths:
     def test_health_is_public(self):
         assert "/health" in _PUBLIC_PATHS
 
+    def test_ready_is_public(self):
+        # Unauthenticated readiness probes must not be rejected with 403 —
+        # same treatment as /health and /metrics (fix/ready-public-probe).
+        assert "/ready" in _PUBLIC_PATHS
+
 
 class TestAuthMiddlewareUnit:
     """Unit tests using httpx + mock — no real DB."""
@@ -131,6 +136,26 @@ class TestAuthMiddlewareUnit:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/health")
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_ready_path_bypasses_auth(self):
+        import httpx
+        from starlette.applications import Starlette
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        async def ready(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/ready", ready)])
+        app.add_middleware(AuthMiddleware)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # No X-API-Key header — the readiness probe must still pass through.
+            resp = await client.get("/ready")
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
