@@ -20,11 +20,33 @@
 --   at runtime and raise an error rather than silently mix incompatible vectors.
 --   The fail-fast guard lives in src/db/embedding_guard.py.
 --
--- Backfill (batched):
---   Existing rows are backfilled in batches of 10 000 rows to avoid a
---   single-statement table lock + WAL burst on large embeddings tables
---   (~591k rows in production).  Each batch is committed individually.
---   The WHERE clause is idempotent (only touches NULL rows).
+-- Backfill (batched, keyset-by-PK):
+--   Existing rows are backfilled by walking the BIGSERIAL primary key in
+--   fixed id-ranges (50 000 ids per batch), committing each batch, on a
+--   large embeddings table (~591k rows in production).
+--
+--   Why keyset-by-PK and not "SELECT ctid ... WHERE embedding_model IS NULL
+--   LIMIT N" (issue #230): the IS-NULL predicate has no supporting index, so
+--   every such SELECT is a full sequential scan.  As rows get filled, each
+--   batch must scan past an ever-growing prefix of already-filled rows ->
+--   O(n^2 / batch_size) total (32+ min on prod).  Range-scanning the PK
+--   (id >= lo AND id < lo+step) bounds each batch to an index-range scan that
+--   visits every row exactly once across the whole loop -> O(n).
+--
+--   NOTE: per-batch COMMIT bounds lock duration + WAL burst; it does NOT
+--   bound scan cost.  The two are independent -- batching COMMITs alone would
+--   still leave the old loop O(n^2).  Future wide-table backfills must follow
+--   the keyset-by-PK pattern, not just add COMMITs.
+--
+--   The WHERE clause stays idempotent (only touches NULL rows).  Rows written
+--   concurrently by the indexer already carry embedding_model (writer_pgvector
+--   stamps it on INSERT), so the one-shot max(id) snapshot cannot miss them.
+--
+--   2026-06-01: backfill loop rewritten ctid-seqscan -> PK-range (issue #230).
+--   Prod m13_018 was already applied with the old loop and finished (idempotent),
+--   so this is a forward-looking fix for fresh-install / restore / CI; it does
+--   NOT require a re-deploy and does not re-run on instances already migrated
+--   (yoyo tracks by migration id, not file content).
 --
 -- Index:
 --   Created with CONCURRENTLY so no write-lock is held on the live table.
@@ -42,26 +64,32 @@ ALTER TABLE embeddings
 ALTER TABLE embeddings
     ADD COLUMN IF NOT EXISTS embedding_dim INT;
 
--- ===== 3. Backfill pre-existing rows (batched, idempotent) =====
--- Batches of 10 000 rows to prevent long-held locks and WAL burst on
--- large tables.  Each DO-block iteration is committed immediately because
--- the migration runs outside a wrapping transaction (transactional: false).
+-- ===== 3. Backfill pre-existing rows (keyset-by-PK, idempotent) =====
+-- Walk the primary key in fixed id-ranges so each batch is an index-range
+-- scan (O(step)) instead of a repeated full seq-scan on the unindexed
+-- "embedding_model IS NULL" predicate (issue #230 -- O(n^2) on the old loop).
+-- Each batch COMMITs to bound lock duration + WAL burst.  The migration runs
+-- outside a wrapping transaction (transactional: false), so COMMIT here runs
+-- on an autocommit connection (valid in a DO block on PG11+).
 DO $$
 DECLARE
-    rows_updated INT;
+    batch_lo BIGINT;
+    max_id   BIGINT;
+    step     BIGINT := 50000;
 BEGIN
-    LOOP
+    SELECT min(id), max(id) INTO batch_lo, max_id FROM embeddings;
+    IF max_id IS NULL THEN
+        RETURN;  -- empty table (fresh install) -> nothing to backfill
+    END IF;
+    WHILE batch_lo <= max_id LOOP
         UPDATE embeddings
            SET embedding_model = 'qwen3-embedding-q5km',
                embedding_dim   = 1024
-         WHERE ctid IN (
-             SELECT ctid FROM embeddings
-              WHERE embedding_model IS NULL
-              LIMIT 10000
-         );
-        GET DIAGNOSTICS rows_updated = ROW_COUNT;
-        EXIT WHEN rows_updated = 0;
+         WHERE id >= batch_lo
+           AND id <  batch_lo + step
+           AND embedding_model IS NULL;  -- idempotent: only touches NULL rows
         COMMIT;
+        batch_lo := batch_lo + step;
     END LOOP;
 END $$;
 

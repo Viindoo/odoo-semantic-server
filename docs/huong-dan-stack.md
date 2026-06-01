@@ -607,6 +607,36 @@ Embedding backend có thể đổi qua env var `EMBEDDER_BACKEND` (ADR-0045):
 
 Chunking layer dùng `EMBEDDER_TOKEN_BUDGET` (default 3500 tokens) qua helpers `estimate_tokens` / `split_by_token_budget` để tránh overflow context window của model (ADR-0044).
 
+### Backfill bảng rộng phải O(n) — keyset-by-PK, KHÔNG seq-scan lặp (issue #230)
+
+Khi một migration backfill cột mới trên bảng lớn (vd `embeddings` ~591k rows), **CẤM** mẫu:
+
+```sql
+-- ❌ O(n²): predicate IS NULL không có index → mỗi batch seq-scan từ đầu bảng,
+--    prefix đã-fill dài thêm sau mỗi vòng → tổng O(n²/batch_size).
+LOOP
+    UPDATE t SET col = ... WHERE ctid IN (
+        SELECT ctid FROM t WHERE col IS NULL LIMIT 10000  -- seq-scan mỗi vòng
+    );
+    COMMIT;
+END LOOP;
+```
+
+Thay bằng **keyset-by-PK** — range-batch trên primary key đã có index:
+
+```sql
+-- ✅ O(n): mỗi batch là PK index-range scan, mỗi row duyệt đúng 1 lần.
+DECLARE batch_lo BIGINT; max_id BIGINT; step BIGINT := 50000;
+SELECT min(id), max(id) INTO batch_lo, max_id FROM t;
+WHILE batch_lo <= max_id LOOP
+    UPDATE t SET col = ... WHERE id >= batch_lo AND id < batch_lo + step AND col IS NULL;
+    COMMIT;
+    batch_lo := batch_lo + step;
+END LOOP;
+```
+
+**Phân biệt 2 chi phí (mấu chốt):** per-batch `COMMIT` bound **lock duration + WAL burst**, nó KHÔNG bound **scan cost**. Chỉ thêm COMMIT vào loop cũ vẫn để lại O(n²). PK sparse (gap do delete khi reindex) chỉ tạo vài batch rỗng = index seek rẻ, vẫn bounded. Xem `migrations/m13_018_embedding_model_dim.sql` làm mẫu.
+
 ---
 
 ## Incremental Indexer

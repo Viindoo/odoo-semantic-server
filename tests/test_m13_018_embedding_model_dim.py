@@ -125,15 +125,48 @@ class TestMigrationFileContent:
             "m13_018 must use CREATE INDEX CONCURRENTLY to avoid write-lock on production table."
         )
 
-    def test_migration_uses_batched_update(self):
+    def test_backfill_is_bounded_not_repeated_seqscan(self):
+        """Business rule: the backfill must be O(n) bounded, never a repeated
+        full seq-scan on the unindexed ``embedding_model IS NULL`` predicate.
+
+        Issue #230: the original loop used
+        ``WHERE ctid IN (SELECT ctid FROM embeddings WHERE embedding_model IS NULL LIMIT N)``.
+        That predicate has no supporting index, so every batch re-scanned the
+        whole table past an ever-growing filled prefix -> O(n^2).  The fix
+        walks the BIGSERIAL primary key in id-ranges so each batch is an
+        index-range scan visiting every row exactly once -> O(n).
+        """
+        import re
+
         sql = MIGRATION_PATH.read_text()
-        # Batched approach: must use LOOP or LIMIT inside a DO block
+
+        # Positive: still batched (committed in chunks, not one giant UPDATE)...
         assert "LOOP" in sql.upper(), (
-            "m13_018 backfill must use a LOOP (batched) to avoid single-statement lock on "
-            "large production tables (~591k rows)."
+            "m13_018 backfill must stay batched (LOOP) to bound lock duration + "
+            "WAL burst on large tables (~591k rows)."
         )
-        assert "LIMIT" in sql.upper(), (
-            "m13_018 backfill loop must use LIMIT to process rows in bounded batches."
+        # ...and the batching mechanism must be a primary-key range scan.
+        assert re.search(r"\bid\s*[<>]=?", sql), (
+            "m13_018 backfill must range-batch over the primary key "
+            "(e.g. 'id >= lo AND id < lo + step') so each batch is an index-range "
+            "scan -> O(n).  See issue #230."
+        )
+
+        # Negative regression guard (the important one): the O(n^2) signature
+        # -- selecting ctids filtered by the unindexed IS NULL predicate with a
+        # LIMIT -- must not reappear.  Strip SQL comments first so a cautionary
+        # note describing the anti-pattern does not trip the guard.
+        code = "\n".join(
+            line.split("--", 1)[0] for line in sql.splitlines()
+        ).upper()
+        has_ctid_select = "SELECT CTID" in code
+        has_isnull_filter = "EMBEDDING_MODEL IS NULL" in code
+        # LIMIT is only an anti-pattern signal when paired with the ctid+IS NULL
+        # full-scan subquery; range-batching never needs LIMIT.
+        assert not (has_ctid_select and has_isnull_filter and "LIMIT" in code), (
+            "m13_018 backfill reintroduced the O(n^2) anti-pattern "
+            "(SELECT ctid ... WHERE embedding_model IS NULL ... LIMIT). "
+            "Range-batch over the primary key instead -- see issue #230."
         )
 
 
