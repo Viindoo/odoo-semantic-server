@@ -941,9 +941,12 @@ SQL
 ```
 Expected: trả về tổng số chunk (không bị filter).
 
-**Verify `/health` vẫn báo đúng tổng (chứng minh GAP1 fix hoạt động qua osm_reader):**
+**Verify `/ready` báo đúng tổng (chứng minh GAP1 fix hoạt động qua osm_reader):**
 ```bash
-curl -s localhost:8002/health | jq '{status, embeddings_total, embeddings_by_chunk_type}'
+# NOTE: dùng /ready (readiness probe) thay vì /health (liveness probe thuần).
+# /health chỉ trả status="alive" + cache snapshot — embeddings_total là null cho đến lần /ready đầu.
+# /ready chạy SELECT COUNT(*) thật, có 60s cache.
+curl -s localhost:8002/ready | jq '{status, embeddings_total, embeddings_by_chunk_type}'
 ```
 Expected: `embeddings_total` vẫn ~591k (KHÔNG tụt về vài trăm). MCP giờ connect bằng
 `osm_reader` nhưng 2 query đếm bọc `_rls_read_tx(conn, None)` (GUC `'*'`) nên thấy full

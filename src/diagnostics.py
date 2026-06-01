@@ -137,17 +137,20 @@ def run_diagnostics() -> dict:
                 health_status = parsed.get("status", "unknown")
             except _json.JSONDecodeError:
                 health_status = "unparseable"
-            if resp.status == 200 and health_status == "ok":
+            # /health is now a pure liveness probe returning status="alive"
+            # (changed in ADR-0046 / PR #227).  Accept both "alive" (new) and
+            # "ok" (legacy servers) so diagnostics stays correct across versions.
+            if resp.status == 200 and health_status in ("ok", "alive"):
                 checks.append({
                     "name": "mcp_health",
                     "status": "ok",
-                    "detail": f"HTTP {resp.status} status={health_status}",
+                    "detail": f"HTTP {resp.status} status={health_status} (liveness ok)",
                 })
             else:
                 checks.append({
                     "name": "mcp_health",
                     "status": "error",
-                    "detail": f"HTTP {resp.status} status={health_status}",
+                    "detail": f"HTTP {resp.status} status={health_status} (expected 'alive')",
                 })
     except urllib.error.URLError as exc:
         checks.append({

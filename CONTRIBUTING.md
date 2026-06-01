@@ -116,7 +116,7 @@ tests/
 ├── test_parser_python.py     # unit: AST parser
 ├── test_mcp_server_config.py # unit: server reads host/port from config
 ├── test_embedding_instructions.py  # unit: Qwen3 asymmetric INSTRUCT prefix
-├── test_embedder.py                # unit: FakeEmbedder + Qwen3Embedder protocol
+├── test_embedder.py                # unit: FakeEmbedder + Qwen3Embedder protocol (+ decouple/timeout/backoff variants)
 ├── test_parser_js.py               # unit: era-aware JS parser
 ├── test_pipeline_config.py         # unit: Neo4j creds from config
 ├── test_indexer_main.py            # unit: --no-embed flag + embedder build
@@ -441,7 +441,7 @@ src/
 │   ├── parser_xml.py      # ir.ui.view + xpath modifications (+ arch capture)
 │   ├── parser_qweb.py     # QWeb <template> inheritance (+ content capture)
 │   ├── parser_js.py       # era-aware JS parser (Era1 Widget.extend, Era2 odoo.define, Era3 OWL/patch)
-│   ├── embedder.py        # EmbedderClient Protocol + FakeEmbedder + Qwen3Embedder (MRL 1024-dim)
+│   ├── embedder.py        # EmbedderClient Protocol + make_embedder() factory (EMBEDDER_BACKEND) + token-budget helpers; FakeEmbedder/Qwen3Embedder/OpenAICompatEmbedder (ADR-0044, ADR-0045)
 │   ├── pipeline.py        # end-to-end: scanner → registry → resolver → parsers → writers
 │   ├── __main__.py        # CLI: python -m src.indexer index-repo --profile / --all / --no-embed
 │   ├── writer_neo4j.py    # write nodes + edges vào Neo4j

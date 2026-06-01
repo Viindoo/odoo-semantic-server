@@ -203,3 +203,43 @@ def test_diagnose_initdb_dir_anchored_to_file_not_cwd(monkeypatch, tmp_path):
     assert str(resolved).startswith(str(expected_root)), (
         f"resolved={resolved} not under {expected_root}"
     )
+
+
+def test_diagnose_mcp_health_alive_status_passes(_isolated_cwd, monkeypatch):
+    """/health returning status='alive' (ADR-0046 liveness-only contract) must
+    be treated as healthy, not as an error.
+
+    Regression guard for the PR #228 review finding: the old check required
+    status=='ok' which could never match the new liveness response, causing
+    mcp_health to permanently report error even when the server was healthy.
+    """
+    from src import cli as cli_mod
+
+    (_isolated_cwd / "docker" / "initdb.d").mkdir(parents=True)
+
+    def _docker_absent(*a, **kw):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _docker_absent)
+    # Server returns new-style status="alive"
+    _stub_healthy_mcp(monkeypatch, status="alive")
+
+    rc = cli_mod._cmd_diagnose(argparse.Namespace(json=False))
+    # Only mcp_health + initdb can pass; PG + Neo4j → skipped.  No errors → rc=0.
+    assert rc == 0
+
+
+def test_diagnose_mcp_health_unknown_status_fails(_isolated_cwd, monkeypatch):
+    """An unexpected status value (e.g., 'starting') must still be reported as error."""
+    from src import cli as cli_mod
+
+    (_isolated_cwd / "docker" / "initdb.d").mkdir(parents=True)
+
+    def _docker_absent(*a, **kw):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _docker_absent)
+    _stub_healthy_mcp(monkeypatch, status="starting")
+
+    rc = cli_mod._cmd_diagnose(argparse.Namespace(json=False))
+    assert rc == 1  # mcp_health error → overall degraded

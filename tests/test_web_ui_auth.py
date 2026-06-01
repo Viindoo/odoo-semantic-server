@@ -931,7 +931,36 @@ class TestLoginTimingConstant:
 
         import httpx
 
-        N = 5  # fewer rounds for CI speed; still catches O(1) vs O(bcrypt) splits
+        # Robustness against CI scheduling noise (see PR #228 investigation):
+        #
+        #   * INTERLEAVE real/fake every round (not two separate batches). The old
+        #     "5 real then 5 fake" layout measured the real batch *first*, so the
+        #     real batch alone paid all one-time warm-up costs (lazy imports, GC of
+        #     freshly-loaded modules, executor spin-up from earlier async tests) and
+        #     ran during a different scheduling window than the fake batch on a
+        #     contended ~2-core runner. That produced a *systematic* ~57ms skew
+        #     (real always slower) with run-to-run spread <1ms — i.e. NOT random
+        #     jitter but a batch-position artifact. Interleaving makes warm-up and
+        #     scheduling pressure hit both arms symmetrically.
+        #   * MEDIAN, not mean: a single ~200ms scheduling stall in one arm skews a
+        #     5-sample mean badly; the median ignores such per-call outliers.
+        #   * A WARM-UP round is measured then discarded so first-touch costs land
+        #     on neither arm's statistics.
+        #
+        # Security intent is unchanged: both code paths run exactly one bcrypt
+        # (real user → stored hash, non-existent/OAuth-only user → dummy hash), so a
+        # genuine timing oracle (dummy hash NOT running) would show an O(1) vs
+        # O(bcrypt) gap of *hundreds* of ms — an order of magnitude above the 50ms
+        # threshold. This is robustness against measurement noise, not a relaxation.
+        N = 7  # measured rounds; first (warm-up) round is discarded
+
+        async def _login(client: httpx.AsyncClient, username: str) -> float:
+            t0 = time.perf_counter()
+            await client.post(
+                "/api/auth/login",
+                json={"username": username, "password": "wrong_password_here"},
+            )
+            return time.perf_counter() - t0
 
         app = _make_app(seed_users={"realuser": "correct_password_12"})
         try:
@@ -940,34 +969,28 @@ class TestLoginTimingConstant:
                 base_url="https://test",
                 follow_redirects=False,
             ) as client:
+                # Discarded warm-up round: absorbs one-time lazy-import / GC /
+                # executor-warm costs so they bias neither arm.
+                await _login(client, "realuser")
+                await _login(client, "nonexistentuser")
+
                 times_real: list[float] = []
                 times_fake: list[float] = []
-
                 for _ in range(N):
-                    t0 = time.perf_counter()
-                    await client.post(
-                        "/api/auth/login",
-                        json={"username": "realuser", "password": "wrong_password_here"},
-                    )
-                    times_real.append(time.perf_counter() - t0)
-
-                for _ in range(N):
-                    t0 = time.perf_counter()
-                    await client.post(
-                        "/api/auth/login",
-                        json={"username": "nonexistentuser", "password": "wrong_password_here"},
-                    )
-                    times_fake.append(time.perf_counter() - t0)
+                    # Interleaved: real then fake each round → symmetric warm-up
+                    # and scheduling exposure across the two arms.
+                    times_real.append(await _login(client, "realuser"))
+                    times_fake.append(await _login(client, "nonexistentuser"))
         finally:
             _restore_patches(app)
 
-        avg_real = statistics.mean(times_real)
-        avg_fake = statistics.mean(times_fake)
-        delta_ms = abs(avg_real - avg_fake) * 1000
+        med_real = statistics.median(times_real)
+        med_fake = statistics.median(times_fake)
+        delta_ms = abs(med_real - med_fake) * 1000
 
         assert delta_ms < 50, (
-            f"Timing delta too large: real={avg_real*1000:.1f}ms, "
-            f"fake={avg_fake*1000:.1f}ms, delta={delta_ms:.1f}ms (threshold 50ms). "
+            f"Timing delta too large: real={med_real*1000:.1f}ms (median), "
+            f"fake={med_fake*1000:.1f}ms (median), delta={delta_ms:.1f}ms (threshold 50ms). "
             "Possible timing oracle: dummy hash may not be running."
         )
 

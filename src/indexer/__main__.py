@@ -32,9 +32,12 @@ from src.indexer.writer_neo4j import Neo4jWriter
 
 
 def _build_embedder():
-    """Build Qwen3Embedder from [embedder] config section.
+    """Build the configured embedder from the [embedder] config section.
 
-    Returns None (with warning) if [embedder] url is not configured.
+    Routes through ``make_embedder()`` so the indexer honours ``EMBEDDER_BACKEND``
+    (ollama|openai|tei|fake) exactly like the MCP query path and pattern seeder —
+    otherwise indexing and querying could land in different embedding spaces
+    (ADR-0045). Returns None (with warning) if [embedder] url is not configured.
     """
     url = config.get("embedder", "url", fallback=None)
     if not url:
@@ -43,13 +46,13 @@ def _build_embedder():
             "Add [embedder] section to odoo-semantic.conf or use --no-embed to suppress."
         )
         return None
-    from src.indexer.embedder import Qwen3Embedder
+    from src.indexer.embedder import make_embedder
     model = config.get("embedder", "model", fallback=DEFAULT_EMBEDDER_MODEL)
     dim = int(config.get("embedder", "dim", fallback="1024"))
     auth_token = config.from_env_or_ini(
         "EMBEDDER_AUTH_TOKEN", "embedder", "auth_token", fallback=None,
     )
-    return Qwen3Embedder(url=url, model=model, dim=dim, auth_token=auth_token)
+    return make_embedder(url=url, model=model, dim=dim, auth_token=auth_token)
 
 
 def _build_parser() -> argparse.ArgumentParser:

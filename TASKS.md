@@ -802,6 +802,56 @@ Migration: **m13_017** (`subscriptions.buyer_type` + `withdrawal_waiver_accepted
 **P3 — Later**
 - [ ] **Support / SLA by tier**, dunning / refund handling, cross-product bundle groundwork (`product_id` generic in the entitlement record is the precondition).
 
+### M10B+ — Embedding Infrastructure Wave (wave/wi-f, fix #226 + #227 + provider decoupling)
+
+**Status:** `[x]` DONE — 2026-06-01 (wave/wi-f; pending merge). Multi-subagent wave:
+WI-A (embedder foundation), WI-B (writer token-bounds), WI-C (MCP async + concurrency),
+WI-D (health isolation), WI-E (schema migration), WI-F (this docs WI).
+Migration: **m13_018** required on deploy (after m13_017).
+
+- [x] **WI-A — Embedder provider factory + token helpers + async** (ADR-0044, ADR-0045, ADR-0046)
+  - `EmbedderClient` structural Protocol (`model`, `dim`, `num_ctx`, `chars_per_token`, `embed`, `embed_async`).
+  - `_BaseHttpEmbedder` shared batch/retry/timeout/observability; `Qwen3Embedder` + `OpenAICompatEmbedder` subclasses.
+  - `make_embedder(backend, **kwargs)` factory driven by `EMBEDDER_BACKEND` env var (default `ollama`).
+  - Token helpers: `estimate_tokens` / `split_by_token_budget` (module-level, shared with WI-B).
+  - Truncation choke-point `_truncate_to_ctx` in `_BaseHttpEmbedder` (last-resort safety-net).
+  - Bug B length-guard in `_embed_one` (misaligned backend response → immediate `RuntimeError`).
+  - `embed_async(read_timeout=...)` for short-timeout query path vs. 1200s batch path.
+  - `FakeEmbedder` updated to expose all Protocol attrs (`model`, `dim`, `num_ctx`, `chars_per_token`).
+  - New env: `EMBEDDER_BACKEND`, `EMBEDDER_NUM_CTX`, `EMBEDDER_TOKEN_BUDGET`, `EMBEDDER_CHARS_PER_TOKEN`, `EMBEDDER_MAX_CONCURRENCY`, `EMBEDDER_TIMEOUT_READ_QUERY`.
+
+- [x] **WI-B — Writer token-bounded chunking + resilient skip-log** (ADR-0044, ADR-0045)
+  - `_sliding` gains `_token_split_window`: each char window further split by `split_by_token_budget`
+    if it exceeds `EMBEDDER_TOKEN_BUDGET` (3500 tokens). Same token cap applied in
+    `make_pattern_chunks`, `make_view_chunks`, `make_js_chunks`, `make_style_chunks`.
+  - `_embed_chunks_resilient`: happy path = one batch; on failure degrade to per-chunk;
+    individual chunk errors logged + skipped (not re-raised). Prevents single bad chunk aborting module.
+  - `write_module_embeddings` stamps each row with `embedder.model` + `embedder.dim` (m13_018 columns).
+  - `assert_dim_matches(conn, embedder.dim)` called per batch — fail-fast on vector-space mismatch.
+
+- [x] **WI-C — MCP async embed hot path + concurrency semaphore + backpressure** (ADR-0046)
+  - `find_examples`, `suggest_pattern`, `find_style_override` converted to `async def`.
+  - `_embed_query` helper: cap query text → acquire semaphore → `embed_async(read_timeout="query")`.
+  - `asyncio.Semaphore(EMBEDDER_MAX_CONCURRENCY)` — lazy init inside running event loop.
+  - `EmbedOverloaded` fast-reject after 5s wait (`EMBEDDER_SLOT_ACQUIRE_TIMEOUT`).
+  - uvicorn `limit_concurrency = EMBEDDER_MAX_CONCURRENCY * 16` (MCP_LIMIT_CONCURRENCY).
+  - `_cap_query_text`: user query strings capped at `EMBEDDER_TOKEN_BUDGET` before embed.
+
+- [x] **WI-D — `/health` liveness isolation + `/ready` readiness endpoint** (ADR-0046)
+  - `/health`: no DB I/O; reads module-global `_ready_cache` for backward-compat count fields (null until first `/ready` hit); always 200 if event loop responsive.
+  - `/ready`: new HTTP endpoint; runs Neo4j + PG connectivity + `SELECT COUNT(*)` on embeddings; 60s in-memory cache (double-checked lock). Not an MCP tool; **tool count stays 24**.
+
+- [x] **WI-E — Migration m13_018** (ADR-0045)
+  - `migrations/m13_018_embedding_model_dim.sql`: `ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding_model TEXT / embedding_dim INT`; backfill pre-existing rows to `('qwen3-embedding-q5km', 1024)`; partial index `idx_embeddings_model`; `osm_reader` grant belt-and-suspenders.
+  - `src/db/embedding_guard.py`: `EmbedderDimMismatch` exception + `assert_dim_matches` helper.
+  - `src/db/migrate.py`: migration registered in sequence (after m13_017).
+
+- [x] **WI-F — Documentation** (ADR-0044 / ADR-0045 / ADR-0046 / CHANGELOG / README / TASKS)
+
+**Deploy note:** migration m13_018 required; safe to run while services stopped; idempotent.
+**WARNING:** switching to an embedder with a different dimension requires a full reindex
+(`python -m src.indexer --full --profile <name>`) before starting the server.
+
 ### M10C — Polish + Observability
 
 - [x] **M7.5-P2-NAMEGET — Parser body-level deprecation detection** — Odoo 17 uses runtime `warnings.warn(..., DeprecationWarning)` instead of `@api.deprecated` decorator for `name_get`. Extended `src/indexer/parser_odoo_core.py` to AST-walk method bodies and detect `warnings.warn(..., DeprecationWarning)` calls (tighten warn-match pattern in review-followup). After re-index, `lookup_core_api("name_get", "17.0")` returns `status='deprecated'`. *(2026-05-21, PR #159 WI-2 + review-followup)*

@@ -598,7 +598,14 @@ cur.execute("""
 """, (query_embedding,))
 ```
 
-Qwen3-Embedding-4B qua Ollama tạo vector 1024 chiều (MRL, asymmetric instruction). Offline-first — không cần OpenAI.
+Embedding backend có thể đổi qua env var `EMBEDDER_BACKEND` (ADR-0045):
+- `ollama` (default): Qwen3-Embedding qua Ollama `/api/embed` — offline-first, không cần OpenAI.
+- `openai` / `tei` / `voyage` / `vllm` / `litellm`: `OpenAICompatEmbedder` gọi `/v1/embeddings` (POST `{model, input}`).
+- `fake` / `test`: `FakeEmbedder` — dùng cho unit test, không cần Ollama.
+
+`make_embedder(backend)` factory (trong `src/indexer/embedder.py`) chọn implementation theo `EMBEDDER_BACKEND`. **Đổi provider → đổi `embedding_dim` → bắt buộc full reindex** (`EmbedderDimMismatch` guard fail-fast nếu dim không khớp với stored dim trong m13_018).
+
+Chunking layer dùng `EMBEDDER_TOKEN_BUDGET` (default 3500 tokens) qua helpers `estimate_tokens` / `split_by_token_budget` để tránh overflow context window của model (ADR-0044).
 
 ---
 
@@ -632,6 +639,9 @@ Web UI `POST /repos/{id}/clone` auto-clone SSH repos với FERNET-decrypted key.
 | Tên folder cho Odoo version | Chỉ là quy ước viindoo-clone.sh | Dùng `git symbolic-ref --short HEAD` |
 | Upgrade authlib lên 1.7.0+ | 1.7.0 thêm `AuthlibDeprecationWarning` ở import time | Pin `authlib>=1.6.5,<1.7.0` |
 | tree-sitter-css parse fail | CSS/SCSS file không compile — fallback regex bỏ qua? | M9: tree-sitter-css ≥0.21 + regex fallback (xem `parser_css.py`), silent-skip nếu không install |
+| `sync def` tool handler trong FastMCP | FastMCP call sync handler trên event loop thread — một blocking embed call đông cứng toàn bộ server | Dùng `async def` + `embed_async()` cho mọi tool gọi embedder (ADR-0046) |
+| Đổi embedding provider/dim | dim mới ≠ stored dim → cosine similarity lỗi im lặng | `EmbedderDimMismatch` guard fail-fast tại `write_module_embeddings`; phải full reindex khi đổi provider |
+| `/health` cũ đọc DB | `/health` blocking DB gây cascade: một embed hung → health probe cũng hung | `/health` = pure liveness (O(1), no DB); `/ready` = readiness với 60s cache (ADR-0046) |
 
 ---
 

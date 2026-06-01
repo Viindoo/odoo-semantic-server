@@ -182,7 +182,9 @@ sudo systemctl start odoo-semantic-webui odoo-semantic-mcp
 sudo systemctl status odoo-semantic-mcp odoo-semantic-webui
 # Verify health:
 curl http://127.0.0.1:8002/health
-# → {"neo4j": "ok", "postgres": "ok"}
+# → {"status": "alive", ...}   (liveness — no DB I/O)
+curl http://127.0.0.1:8002/ready
+# → {"status": "ok", "neo4j": "ok", "postgres": "ok", "embeddings_total": N, ...}
 ```
 
 ---

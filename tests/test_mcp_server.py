@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_server.py
+import asyncio
 import os
 
 import pytest
@@ -2990,11 +2991,11 @@ def test_model_inspect_routes_to_resolve_model(seeded_neo4j):
     _resolve_model for the same model + version (AC-D3-5)."""
     srv = _import_server_module()
     direct = srv._resolve_model("account.move", TEST_VERSION)
-    result = srv.model_inspect.fn(
+    result = asyncio.run(srv.model_inspect.fn(
         model="account.move",
         method="summary",
         odoo_version=TEST_VERSION,
-    )
+    ))
     # Wrapper returns ToolResult; extract text content
     assert result.content, "model_inspect returned empty content"
     wrapper_text = result.content[0].text
@@ -3013,11 +3014,11 @@ def test_model_inspect_routes_to_resolve_model(seeded_neo4j):
 def test_model_inspect_invalid_method(seeded_neo4j):
     """model_inspect with an unknown method returns an Error: string."""
     srv = _import_server_module()
-    result = srv.model_inspect.fn(
+    result = asyncio.run(srv.model_inspect.fn(
         model="account.move",
         method="nonexistent",
         odoo_version=TEST_VERSION,
-    )
+    ))
     text = result.content[0].text
     assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
     assert "nonexistent" in text
@@ -3025,13 +3026,17 @@ def test_model_inspect_invalid_method(seeded_neo4j):
 
 def test_entity_lookup_routes_to_resolve_model(seeded_neo4j):
     """entity_lookup(kind='model') output must match _resolve_model (AC-D3-5)."""
+    import asyncio
+
     srv = _import_server_module()
     direct = srv._resolve_model("account.move", TEST_VERSION)
-    result = srv.entity_lookup.fn(
+    # entity_lookup is async (#227 — offloads the blocking body off the event
+    # loop); drive it via asyncio.run to exercise the real tool contract.
+    result = asyncio.run(srv.entity_lookup.fn(
         kind="model",
         model="account.move",
         odoo_version=TEST_VERSION,
-    )
+    ))
     wrapper_text = result.content[0].text
     direct_header = direct.split("\n")[0]
     wrapper_header = wrapper_text.split("\n")[0]
@@ -3044,8 +3049,10 @@ def test_entity_lookup_routes_to_resolve_model(seeded_neo4j):
 
 def test_entity_lookup_invalid_kind(seeded_neo4j):
     """entity_lookup with an unknown kind returns an Error: string."""
+    import asyncio
+
     srv = _import_server_module()
-    result = srv.entity_lookup.fn(kind="bogus")
+    result = asyncio.run(srv.entity_lookup.fn(kind="bogus"))
     text = result.content[0].text
     assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
     assert "bogus" in text
@@ -3060,7 +3067,7 @@ def test_set_active_version_sentinel_rejected(seeded_neo4j):
     """set_active_version with a sentinel string returns an Error: message (AC-E3-5)."""
     srv = _import_server_module()
     for sentinel in ("auto", "default", "latest", "version", "any", ""):
-        result = srv.set_active_version.fn(odoo_version=sentinel)
+        result = asyncio.run(srv.set_active_version.fn(odoo_version=sentinel))
         text = result.content[0].text
         assert "Error" in text or "sentinel" in text.lower(), (
             f"Expected sentinel rejection for {sentinel!r}, got: {text[:120]!r}"
@@ -3081,7 +3088,7 @@ def test_set_active_version_persists_then_resolve_model_uses_it(seeded_neo4j):
 
     # --- Phase 1: set_active_version via wrapper --------------------------------
     with patch("src.mcp.session.set_active_version_db") as mock_set:
-        result = srv.set_active_version.fn(odoo_version=TEST_VERSION)
+        result = asyncio.run(srv.set_active_version.fn(odoo_version=TEST_VERSION))
         text = result.content[0].text
         assert TEST_VERSION in text, (
             f"set_active_version confirmation should contain the version. Got: {text!r}"
@@ -3138,7 +3145,7 @@ def test_set_active_profile_returns_confirmation(seeded_neo4j):
         patch("src.mcp.server._checkout_pg", checkout),
         patch("src.mcp.session.set_active_profile_db") as mock_set,
     ):
-        result = srv.set_active_profile.fn(profile_name="my-erp-prod")
+        result = asyncio.run(srv.set_active_profile.fn(profile_name="my-erp-prod"))
         text = result.content[0].text
         assert "my-erp-prod" in text, f"Expected profile name in confirmation: {text!r}"
         mock_set.assert_called_once_with(srv._get_api_key_id(), "my-erp-prod")
@@ -3151,7 +3158,7 @@ def test_set_active_profile_clear(seeded_neo4j):
     srv = _import_server_module()
 
     with patch("src.mcp.session.set_active_profile_db") as mock_set:
-        result = srv.set_active_profile.fn(profile_name=None)
+        result = asyncio.run(srv.set_active_profile.fn(profile_name=None))
         text = result.content[0].text
         assert "cleared" in text.lower(), f"Expected 'cleared' in response: {text!r}"
         mock_set.assert_called_once_with(srv._get_api_key_id(), None)
@@ -3160,7 +3167,7 @@ def test_set_active_profile_clear(seeded_neo4j):
 def test_list_available_versions_returns_tree(seeded_neo4j):
     """list_available_versions returns a tree of indexed versions (AC-E3-1)."""
     srv = _import_server_module()
-    result = srv.list_available_versions.fn()
+    result = asyncio.run(srv.list_available_versions.fn())
     text = result.content[0].text
     # seeded_neo4j uses TEST_VERSION = "99.0" — it must appear in the list
     assert TEST_VERSION in text, (

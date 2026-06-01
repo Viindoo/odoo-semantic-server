@@ -22,6 +22,7 @@ Covers WI-C4 scenarios (v0.6 notation — list_fields/resolve_field shims remove
 DB version: C4_99.0 — carve-out to avoid collision with other test modules.
 """
 
+import asyncio
 import importlib
 import os
 import re
@@ -474,11 +475,11 @@ def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
     from src.mcp.refs import _GLOBAL_MINTER
 
     # Call model_inspect superset — _get_api_key_id() returns 'default' in tests.
-    list_result = server.model_inspect.fn(
+    list_result = asyncio.run(server.model_inspect.fn(
         model=_MODEL_SMALL,
         method="fields",
         odoo_version=C4_VERSION,
-    )
+    ))
     list_text = list_result.content[0].text
 
     # Extract the first ref from the output.
@@ -570,11 +571,11 @@ def test_scenario11_superset_drilldown_e2e(c4_db, server):
 
     # Step A: call model_inspect superset with method='fields'.
     # _get_api_key_id() returns 'default' in unit-test context (no middleware).
-    inspect_result = server.model_inspect.fn(
+    inspect_result = asyncio.run(server.model_inspect.fn(
         model=_MODEL_SMALL,
         method="fields",
         odoo_version=C4_VERSION,
-    )
+    ))
     inspect_text = inspect_result.content[0].text
 
     # Step B: extract the first [ref=fN] from the output.

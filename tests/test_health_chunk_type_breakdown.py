@@ -81,15 +81,22 @@ class TestHealthChunkTypeBreakdown:
 
     @pytest.mark.asyncio
     async def test_backward_compatibility_existing_fields_present(self):
-        """Test /health still includes all original fields (backward compat)."""
+        """/health keeps its liveness + backward-compat fields.
+
+        ADR-0046 moved ``neo4j``/``postgres`` connectivity to ``/ready`` (pure
+        pool-independent liveness), so those two keys are no longer on /health.
+        """
         async with _mcp_http_client() as client:
             resp = await client.get("/health")
 
         body = resp.json()
 
-        # All original fields must be present
-        for key in ("status", "neo4j", "postgres", "version", "mcp_tools", "embeddings_total"):
+        # Liveness + backward-compat fields must be present.
+        for key in ("status", "version", "mcp_tools", "embeddings_total"):
             assert key in body, f"Missing original key: {key}"
+        # DB-connectivity keys intentionally relocated to /ready.
+        assert "neo4j" not in body
+        assert "postgres" not in body
 
 
 @pytest.mark.asyncio

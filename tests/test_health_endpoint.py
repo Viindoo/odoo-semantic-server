@@ -28,29 +28,44 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_returns_required_keys(self):
-        """Health response must contain all required keys."""
+        """/health is pure liveness: liveness keys present, DB-status keys absent.
 
+        Per ADR-0046, ``neo4j``/``postgres`` connectivity moved to ``/ready``;
+        ``/health`` must never depend on (or report) the DB pool.
+        """
         async with _mcp_http_client() as client:
             resp = await client.get("/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        for key in ("status", "version", "mcp_tools",
+                    "embeddings_total", "embeddings_by_chunk_type"):
+            assert key in body, f"Missing key: {key}"
+        assert body["status"] == "alive"
+        assert "neo4j" not in body
+        assert "postgres" not in body
+
+    @pytest.mark.asyncio
+    async def test_ready_reports_db_status_keys(self):
+        """/ready carries the DB-connectivity contract that left /health."""
+        async with _mcp_http_client() as client:
+            resp = await client.get("/ready")
         assert resp.status_code in (200, 503)
         body = resp.json()
-        for key in ("status", "neo4j", "postgres", "version", "mcp_tools"):
+        for key in ("status", "neo4j", "postgres", "version",
+                    "embeddings_total", "embeddings_by_chunk_type"):
             assert key in body, f"Missing key: {key}"
 
     @pytest.mark.asyncio
-    async def test_both_ok_returns_200(self):
-        """When both Neo4j and PostgreSQL are OK, return 200 with status='ok'."""
-
+    async def test_health_always_200_alive(self):
+        """/health returns 200 + status='alive' unconditionally (liveness)."""
         async with _mcp_http_client() as client:
             resp = await client.get("/health")
-        body = resp.json()
-        if body["neo4j"] == "ok" and body["postgres"] == "ok":
-            assert resp.status_code == 200
-            assert body["status"] == "ok"
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "alive"
 
     @pytest.mark.asyncio
-    async def test_neo4j_down_returns_degraded_or_error(self, monkeypatch):
-        """When Neo4j fails, status should not be 'ok'."""
+    async def test_neo4j_down_health_stays_alive_ready_degrades(self, monkeypatch):
+        """Neo4j down: /health still 200 alive (anti-#227); /ready not 'ok'."""
 
         from src.mcp import server as server_mod
 
@@ -64,14 +79,19 @@ class TestHealthEndpoint:
         monkeypatch.setattr(server_mod, "_get_driver", mock_broken_driver)
 
         async with _mcp_http_client() as client:
-            resp = await client.get("/health")
-        body = resp.json()
-        assert body["status"] != "ok"
-        assert body["neo4j"].startswith("error:")
+            health = await client.get("/health")
+            ready = await client.get("/ready")
+        # Liveness must be unaffected by a DB outage.
+        assert health.status_code == 200
+        assert health.json()["status"] == "alive"
+        # Readiness reflects the outage.
+        rbody = ready.json()
+        assert rbody["status"] != "ok"
+        assert rbody["neo4j"].startswith("error:")
 
     @pytest.mark.asyncio
-    async def test_postgres_down_returns_degraded(self, monkeypatch):
-        """When PostgreSQL fails, status should not be 'ok'."""
+    async def test_postgres_down_health_stays_alive_ready_degrades(self, monkeypatch):
+        """PostgreSQL down: /health still 200 alive; /ready not 'ok'."""
         from contextlib import contextmanager
 
         from src.mcp import server as server_mod
@@ -87,12 +107,19 @@ class TestHealthEndpoint:
             yield BrokenConn()
 
         monkeypatch.setattr(server_mod, "_checkout_pg", mock_broken_checkout)
+        # /ready may serve cached counts; clear the cache so this probe actually
+        # exercises the (now broken) PG path rather than a warm cache entry.
+        from src.mcp import health as health_mod
+        monkeypatch.setattr(health_mod, "_ready_cache", None)
 
         async with _mcp_http_client() as client:
-            resp = await client.get("/health")
-        body = resp.json()
-        assert body["status"] != "ok"
-        assert body["postgres"].startswith("error:")
+            health = await client.get("/health")
+            ready = await client.get("/ready")
+        assert health.status_code == 200
+        assert health.json()["status"] == "alive"
+        rbody = ready.json()
+        assert rbody["status"] != "ok"
+        assert rbody["postgres"].startswith("error:")
 
     @pytest.mark.asyncio
     async def test_mcp_tools_count_is_positive_int(self):
@@ -147,9 +174,9 @@ class TestHealthEndpoint:
         async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
-        # Should return -1 (introspection failed) and HTTP 200/503 (not 500)
+        # Should return -1 (introspection failed) and HTTP 200 (liveness never 503)
         assert body["mcp_tools"] == -1
-        assert resp.status_code in (200, 503)  # depends on Neo4j/PG status
+        assert resp.status_code == 200  # /health is pure liveness — always 200
 
 
 @pytest.mark.asyncio

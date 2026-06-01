@@ -39,6 +39,7 @@ DB isolation:
   - Postgres: profiles table queried via a mocked _checkout_pg — no real rows
     needed (the 'does_not_exist_sv' profile simply won't be found).
 """
+import asyncio
 import os
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -140,7 +141,7 @@ class TestSetActiveVersionValidation:
         import importlib
         server = importlib.import_module("src.mcp.server")
 
-        result = server.set_active_version.fn(SV_NOT_INDEXED)
+        result = asyncio.run(server.set_active_version.fn(SV_NOT_INDEXED))
         text = _extract_text(result)
 
         assert text.startswith("Error:"), (
@@ -172,7 +173,7 @@ class TestSetActiveVersionValidation:
                 v=NUMERIC_V,
             )
         try:
-            result = server.set_active_version.fn(SV_NOT_INDEXED)
+            result = asyncio.run(server.set_active_version.fn(SV_NOT_INDEXED))
             text = _extract_text(result)
         finally:
             with driver.session() as s:
@@ -200,7 +201,7 @@ class TestSetActiveVersionValidation:
         server = importlib.import_module("src.mcp.server")
 
         with patch("src.mcp.session.set_active_version_db") as mock_write:
-            result = server.set_active_version.fn(SV_NOT_INDEXED)
+            result = asyncio.run(server.set_active_version.fn(SV_NOT_INDEXED))
             text = _extract_text(result)
 
         assert text.startswith("Error:"), (
@@ -222,7 +223,7 @@ class TestSetActiveVersionValidation:
         server = importlib.import_module("src.mcp.server")
 
         with patch("src.mcp.session.set_active_version_db"):
-            result = server.set_active_version.fn(SV_VERSION)
+            result = asyncio.run(server.set_active_version.fn(SV_VERSION))
             text = _extract_text(result)
 
         assert not text.startswith("Error:"), (
@@ -258,7 +259,7 @@ class TestSetActiveProfileValidation:
 
         checkout = _make_empty_pg_checkout()
         with patch("src.mcp.server._checkout_pg", checkout):
-            result = server.set_active_profile.fn("does_not_exist_sv")
+            result = asyncio.run(server.set_active_profile.fn("does_not_exist_sv"))
             text = _extract_text(result)
 
         assert text.startswith("Error:"), (
@@ -275,7 +276,7 @@ class TestSetActiveProfileValidation:
 
         checkout = _make_empty_pg_checkout()
         with patch("src.mcp.server._checkout_pg", checkout):
-            result = server.set_active_profile.fn("does_not_exist_sv")
+            result = asyncio.run(server.set_active_profile.fn("does_not_exist_sv"))
             text = _extract_text(result)
 
         assert "list_available_profiles" in text, (
@@ -303,7 +304,7 @@ class TestSetActiveProfileClear:
 
         # Patch set_active_profile_db to avoid real PG write.
         with patch("src.mcp.session.set_active_profile_db") as mock_db:
-            result = server.set_active_profile.fn(None)
+            result = asyncio.run(server.set_active_profile.fn(None))
             text = _extract_text(result)
 
         assert not text.startswith("Error:"), (

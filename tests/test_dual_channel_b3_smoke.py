@@ -19,6 +19,7 @@ fixtures used by other test modules).
 
 Runtime: ~10s (7 Neo4j round-trips).
 """
+import asyncio
 import os
 
 import pytest
@@ -175,7 +176,9 @@ def test_model_inspect_summary_text_channel(b3_db):
     import importlib
     server = importlib.import_module("src.mcp.server")
 
-    result = server.model_inspect.fn(model="b3.order", method="summary", odoo_version=TEST_VERSION)
+    result = asyncio.run(server.model_inspect.fn(
+        model="b3.order", method="summary", odoo_version=TEST_VERSION
+    ))
     text = _assert_text_channel(result)
     assert "b3.order" in text
     assert "b3_sale" in text or "sale" in text.lower()
@@ -228,12 +231,14 @@ def test_resolve_method_structured_companion(b3_db):
 
 def test_entity_lookup_view_text_channel(b3_db):
     """entity_lookup(kind='view') returns non-empty text with view xmlid (replaces resolve_view)."""
+    import asyncio
     import importlib
     server = importlib.import_module("src.mcp.server")
 
-    result = server.entity_lookup.fn(
+    # entity_lookup is async (#227 — offloads blocking body off the event loop).
+    result = asyncio.run(server.entity_lookup.fn(
         kind="view", xmlid="b3_sale.view_order_form", odoo_version=TEST_VERSION
-    )
+    ))
     text = _assert_text_channel(result)
     assert "b3_sale.view_order_form" in text
 
@@ -242,7 +247,7 @@ def test_describe_module_dual_channel(b3_db):
     """describe_module wrapper returns both text and structured DescribeModuleOutput."""
     from src.mcp.server import describe_module
 
-    result = describe_module.fn("b3_sale", TEST_VERSION)
+    result = asyncio.run(describe_module.fn("b3_sale", TEST_VERSION))
     _assert_dual_channel(result, DescribeModuleOutput)
     sc = result.structured_content
     assert sc["ref"]["name"] == "b3_sale"

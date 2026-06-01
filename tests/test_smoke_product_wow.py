@@ -44,11 +44,12 @@ class TestSmokeHealth:
         async with _mcp_http_client() as client:
             resp = await client.get("/health")
 
-        assert resp.status_code in (200, 503), (
+        # /health is pure liveness (ADR-0046) — always 200, no DB-status keys.
+        assert resp.status_code == 200, (
             f"Unexpected status: {resp.status_code}"
         )
         body = resp.json()
-        required_keys = {"status", "neo4j", "postgres", "version", "mcp_tools"}
+        required_keys = {"status", "version", "mcp_tools"}
         missing = required_keys - set(body.keys())
         assert not missing, f"Health response missing keys: {missing}"
 
