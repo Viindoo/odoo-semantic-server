@@ -379,6 +379,35 @@ class TestAssertDimMatchesUnit:
         with pytest.raises(ValueError):
             assert_dim_matches(conn, configured_dim=0)
 
+    def test_latest_tag_normalized_symmetrically(self):
+        """An optional Ollama ':latest' tag must NOT read as a model switch,
+        regardless of which side carries it — guard normalizes both operands."""
+        from src.db.embedding_guard import assert_dim_matches
+
+        # stored bare, configured carries :latest -> no mismatch
+        conn = self._FakeConn(row=(1024, "qwen3-embedding-q5km"))
+        assert_dim_matches(
+            conn, configured_dim=1024, configured_model="qwen3-embedding-q5km:latest"
+        )
+
+        # stored carries :latest (e.g. a row written by a pre-fix run),
+        # configured bare -> still no mismatch (symmetric normalization)
+        conn = self._FakeConn(row=(1024, "qwen3-embedding-q5km:latest"))
+        assert_dim_matches(
+            conn, configured_dim=1024, configured_model="qwen3-embedding-q5km"
+        )
+
+    def test_genuine_model_switch_still_raises(self):
+        """Normalization must not mask a real model change (different latent
+        space at the same dim)."""
+        from src.db.embedding_guard import EmbedderModelMismatch, assert_dim_matches
+
+        conn = self._FakeConn(row=(1024, "qwen3-embedding-q5km"))
+        with pytest.raises(EmbedderModelMismatch):
+            assert_dim_matches(
+                conn, configured_dim=1024, configured_model="text-embedding-3-small"
+            )
+
         with pytest.raises(ValueError):
             assert_dim_matches(conn, configured_dim=-1)
 

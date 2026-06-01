@@ -34,7 +34,7 @@ Usage (startup guard)
     # At indexer / server startup, after connecting to PG:
     try:
         assert_dim_matches(pg_conn, configured_dim=embedder.dim,
-                           configured_model=embedder.model_name)
+                           configured_model=embedder.model)
     except (EmbedderDimMismatch, EmbedderModelMismatch) as exc:
         logger.error("Embedder mismatch — run a full reindex. %s", exc)
         raise SystemExit(1) from exc
@@ -47,6 +47,8 @@ Usage (startup guard)
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from src.constants import normalize_embedder_model_name
 
 if TYPE_CHECKING:
     from src.db._types import PgConn
@@ -186,6 +188,10 @@ def assert_dim_matches(
         )
 
     # Model check: only when caller supplies the model name AND DB row has one.
+    # Normalize BOTH operands symmetrically so an optional Ollama ":latest" tag
+    # on either side never reads as a model switch (Ollama: foo == foo:latest).
+    configured_model = normalize_embedder_model_name(configured_model)
+    stored_model = normalize_embedder_model_name(stored_model)
     if (
         configured_model is not None
         and stored_model is not None

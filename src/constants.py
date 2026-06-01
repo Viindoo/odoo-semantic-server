@@ -168,6 +168,22 @@ EMBEDDER_RETRY_BACKOFF_MAX: float = float(os.getenv("EMBEDDER_RETRY_BACKOFF_MAX"
 DEFAULT_EMBEDDER_MODEL: str = "qwen3-embedding-q5km"
 DEFAULT_EMBEDDER_DIM: int = 1024
 
+
+def normalize_embedder_model_name(name: str | None) -> str | None:
+    """Strip an optional Ollama ``:latest`` tag so model-name comparisons use
+    the bare name on BOTH the configured side and the DB-stored side.
+
+    Ollama treats ``foo`` and ``foo:latest`` as the same model, so the dim/model
+    guard (``src/db/embedding_guard.py``) must not treat them as a model switch.
+    Applied symmetrically: the embedder normalizes the name it stamps onto each
+    vector row, and the guard normalizes both operands before comparing — so a
+    ``:latest`` value on either side can never falsely trip ``EmbedderModelMismatch``.
+    """
+    if name is None:
+        return None
+    return name.removesuffix(":latest")
+
+
 # EMBEDDER_BACKEND: which embedder provider make_embedder() constructs.
 #   ollama -> Qwen3Embedder (Ollama /api/embed, Qwen INSTRUCT prefix on queries)
 #   openai / tei -> OpenAICompatEmbedder (/v1/embeddings, OpenAI/Voyage/TEI/vLLM/LiteLLM)
