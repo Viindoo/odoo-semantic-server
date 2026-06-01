@@ -66,3 +66,25 @@ class TestBenchmarksPage:
         h1 = page.locator("h1").first
         assert h1.is_visible()
         assert "measured" in h1.inner_text().lower() or "methodology" in h1.inner_text().lower()
+
+
+class TestExamplesPage:
+    def test_examples_page_loads(self, astro_server, page):
+        """GET /examples → page renders with the 'resolve' hero heading."""
+        response = page.goto(f"{astro_server}/examples")
+        assert response is not None
+        assert response.status == 200
+        page.wait_for_load_state("load")
+
+        h1 = page.locator("h1").first
+        assert h1.is_visible()
+        assert "resolve" in h1.inner_text().lower()
+
+    def test_examples_showcase_slot_present(self, astro_server, page):
+        """GET /examples → the ExamplesShowcase React island is mounted (testid in DOM)."""
+        page.goto(f"{astro_server}/examples")
+        page.wait_for_load_state("load")
+
+        showcase = page.get_by_test_id("examples-showcase")
+        showcase.scroll_into_view_if_needed()
+        assert showcase.count() >= 1

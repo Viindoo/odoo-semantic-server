@@ -14,6 +14,7 @@ import SiteFooter from '../components/SiteFooter.astro';
 import OpenSourcePlugins from '../components/OpenSourcePlugins.astro';
 import { TOOL_COUNT, RESOURCE_COUNT, BRAND_FULL } from '../lib/constants';
 import { TOOLS, RESOURCES, TOOL_GROUP_COLORS, TOOL_GROUP_LABELS } from '../lib/tools-data';
+import { SCENARIOS } from '../lib/examples-data';
 
 const softwareAppJsonLd = JSON.stringify({
   '@context': 'https://schema.org',
@@ -202,7 +203,7 @@ const softwareAppJsonLd = JSON.stringify({
       </div>
       <div class="mt-8 text-center">
         <a href="/examples" class="inline-flex items-center gap-2 font-semibold text-viindoo-primary hover:gap-3 transition text-sm">
-          See all 5 live examples &rarr;
+          See all {SCENARIOS.length} live examples &rarr;
         </a>
       </div>
     </div>

@@ -59,7 +59,7 @@ function ExamplesShowcaseInner() {
       if (i >= target.length) clearInterval(timer);
     }, 22);
     return () => clearInterval(timer);
-  }, [idx, current.prompt]);
+  }, [idx]);
 
   return (
     <div data-testid="examples-showcase" className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6">

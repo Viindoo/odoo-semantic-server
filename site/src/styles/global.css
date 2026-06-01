@@ -65,16 +65,6 @@
 }
 
 @layer components {
-  .btn-primary {
-    @apply inline-flex items-center gap-2 rounded-lg bg-viindoo-primary px-6 py-3 font-semibold text-viindoo-bg-0 transition hover:bg-viindoo-primary-bright hover:-translate-y-px;
-  }
-  .btn-ghost {
-    @apply inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-6 py-3 font-semibold text-viindoo-on-dark transition hover:border-viindoo-primary hover:bg-viindoo-primary/10;
-  }
-  .btn-purple {
-    @apply inline-flex items-center gap-2 rounded-lg px-6 py-3 font-semibold text-white transition hover:-translate-y-px;
-    background: linear-gradient(110deg, var(--viindoo-primary), var(--viindoo-secondary));
-  }
 
   /* ── Living Cartography surfaces ───────────────────────────────── */
 

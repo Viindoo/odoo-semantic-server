@@ -37,7 +37,7 @@ Note on prerendered detection:
   comment at site/src/middleware.ts L87-109.
 
   Known prerendered pages (as of this branch): / (landing), /pricing,
-  /bootstrap, /benchmarks. If the test for / or /pricing fails because the
+  /bootstrap, /benchmarks, /examples. If the test for / or /pricing fails because the
   node adapter does NOT add Cache-Control headers at all (i.e., the header is
   absent rather than set to no-store), the assertion still passes — absent
   means not-no-store. We assert `no-store NOT IN header` rather than

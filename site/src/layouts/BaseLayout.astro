@@ -122,6 +122,14 @@ const orgJsonLd = JSON.stringify({
           });
         }, { rootMargin: '0px 0px -10% 0px', threshold: 0.08 });
         els.forEach(function (el) { io.observe(el); });
+        // Deep-link target: reveal immediately so a /page#anchor landing never
+        // sits on hidden (opacity:0) content before the observer fires.
+        if (window.location.hash && window.location.hash.length > 1) {
+          try {
+            var t = document.querySelector(window.location.hash);
+            if (t && t.classList.contains('cv-reveal')) { t.classList.add('is-in'); io.unobserve(t); }
+          } catch (e) { /* invalid selector — ignore */ }
+        }
       })();
     </script>
   </body>
