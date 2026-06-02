@@ -4,6 +4,29 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added / Changed — Developer-first landing redesign + /examples showcase (feat/landing-living-cartography, PR #232)
+
+Tool count stays **24** (web/Astro layer only; no new MCP tools; no migration).
+
+- **New `/examples` page + `ExamplesShowcase` island.** 5 before/after scenarios
+  (`model_inspect`, `find_override_point`, `impact_analysis`, `find_deprecated_usage`,
+  `check_module_exists`) — ungrounded hallucination vs graph-verified output + token cost.
+  `examples-data.ts` is the SSOT (English-only, mirrors the MCP tool surface); FAQ JSON-LD
+  + a static, deep-linkable scenario grid for SEO/no-JS. The landing `PromptSimulator`
+  now sources the first 3 scenarios from the same SSOT (no duplicate data).
+- **Developer-first repositioning.** Section 01 "Built for everyone shipping Odoo." →
+  "The Odoo intelligence layer your AI was missing." (kicker "BUILT FOR DEVELOPERS").
+  Hero adds a "hallucination tax" callout (`account.invoice.search` vs `account.move`,
+  `customer_id` vs `partner_id`). `PersonaCards` re-tiered: Developer full-width spotlight
+  (primary), Consultant + CEO/PM secondary, BA/Sales + Marketer compact referral path.
+- **Art direction "Living Cartography" (dark-luxury).** Glass surfaces, aurora field,
+  grain texture, gradient text, scroll-reveal in `global.css`; `tailwind.config.mjs` adds
+  glow/lift shadows + motion keyframes. Honours `prefers-reduced-motion` + `<noscript>`.
+- **Nav:** "Live demo" → "Examples"; all "See examples" links now route to `/examples`.
+- **A11y / hygiene:** hero callout uses dark-surface red (WCAG AA on glass); deep-link
+  `#hash` targets reveal immediately; removed orphaned `.btn-*` CSS; added a `/examples`
+  browser smoke test.
+
 ### Fixed — m13_018 backfill O(n²) → O(n) keyset-by-PK (issue #230)
 
 - **`migrations/m13_018_embedding_model_dim.sql` backfill was O(n²) (LOW–MED, ops/tech-debt):**

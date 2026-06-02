@@ -269,6 +269,7 @@ Verify cross-vendor adapter files are accessible and persona skills are document
   - `curl -sI https://<domain>/login` → HTTP 200 HTML (Astro :4321)
   - `curl -sI https://<domain>/admin/login` → HTTP 301, `Location: /login` (auth-unify canonical redirect)
   - `curl -sI https://<domain>/mcp` → HTTP 401 (MCP :8002, auth required)
+- [ ] `curl -sI https://<domain>/examples` → HTTP 200 HTML (Astro :4321; ExamplesShowcase island)
 - [ ] Browser tests pass post-deploy: `pytest tests/browser/admin/ -m browser` (từ deploy server hoặc CI) — 68 tests GREEN **(admin hoặc CI verify)**
 <!-- not verified 2026-05-16: browser tests require playwright + interactive CI run; 92 test functions exist (suite grown beyond 68); defer to CI pipeline -->
 

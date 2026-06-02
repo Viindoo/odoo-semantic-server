@@ -36,6 +36,41 @@ export default {
         body: ['Roboto', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
+      // Living Cartography — luxury depth + accent glows.
+      boxShadow: {
+        glow: '0 0 0 1px rgba(0,187,206,0.18), 0 8px 40px -12px rgba(0,187,206,0.45)',
+        'glow-purple': '0 0 0 1px rgba(127,66,130,0.20), 0 8px 40px -12px rgba(127,66,130,0.42)',
+        glass: '0 1px 0 0 rgba(255,255,255,0.06) inset, 0 24px 60px -28px rgba(0,0,0,0.7)',
+        lift: '0 24px 70px -32px rgba(0,0,0,0.75), 0 0 0 1px rgba(0,187,206,0.22)',
+      },
+      keyframes: {
+        'cv-rise': {
+          '0%': { opacity: '0', transform: 'translateY(18px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        'cv-aurora': {
+          '0%, 100%': { transform: 'translate3d(0,0,0) scale(1)', opacity: '0.9' },
+          '50%': { transform: 'translate3d(2%,-3%,0) scale(1.08)', opacity: '1' },
+        },
+        'cv-dash': {
+          to: { 'stroke-dashoffset': '-16' },
+        },
+        'cv-pulse': {
+          '0%, 100%': { opacity: '1', transform: 'scale(1)' },
+          '50%': { opacity: '0.55', transform: 'scale(1.12)' },
+        },
+        'cv-sheen': {
+          '0%': { 'background-position': '-180% 0' },
+          '100%': { 'background-position': '180% 0' },
+        },
+      },
+      animation: {
+        'cv-rise': 'cv-rise 0.7s cubic-bezier(0.16,1,0.3,1) both',
+        'cv-aurora': 'cv-aurora 16s ease-in-out infinite',
+        'cv-dash': 'cv-dash 1.4s linear infinite',
+        'cv-pulse': 'cv-pulse 2.6s ease-in-out infinite',
+        'cv-sheen': 'cv-sheen 6s linear infinite',
+      },
     },
   },
   plugins: [],

@@ -65,14 +65,93 @@
 }
 
 @layer components {
-  .btn-primary {
-    @apply inline-flex items-center gap-2 rounded-lg bg-viindoo-primary px-6 py-3 font-semibold text-viindoo-bg-0 transition hover:bg-viindoo-primary-bright hover:-translate-y-px;
+
+  /* ── Living Cartography surfaces ───────────────────────────────── */
+
+  /* Frosted glass card — depth without heaviness, for dark surfaces. */
+  .cv-glass {
+    background: linear-gradient(160deg, rgba(23, 56, 70, 0.55), rgba(12, 30, 38, 0.6));
+    border: 1px solid rgba(230, 242, 244, 0.08);
+    backdrop-filter: blur(14px) saturate(115%);
+    -webkit-backdrop-filter: blur(14px) saturate(115%);
   }
-  .btn-ghost {
-    @apply inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-6 py-3 font-semibold text-viindoo-on-dark transition hover:border-viindoo-primary hover:bg-viindoo-primary/10;
+
+  /* Cyan→purple aurora text — the signature gradient phrase. */
+  .cv-grad-text {
+    background: linear-gradient(110deg, #00bbce 18%, #4cc6d6 46%, #a263a5 86%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
-  .btn-purple {
-    @apply inline-flex items-center gap-2 rounded-lg px-6 py-3 font-semibold text-white transition hover:-translate-y-px;
-    background: linear-gradient(110deg, var(--viindoo-primary), var(--viindoo-secondary));
+
+  /* Hairline label kicker reused across sections. */
+  .cv-kicker {
+    @apply inline-flex items-center gap-2 font-mono text-xs uppercase tracking-[0.18em];
+  }
+}
+
+@layer utilities {
+  /* Atmospheric grain — kills banding on big gradients, adds film texture.
+     Pure SVG fractal noise, no asset request. */
+  .cv-grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* Living aurora field — two drifting radial glows behind hero/CTA. */
+  .cv-aurora-field {
+    position: absolute;
+    inset: -20%;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(ellipse 38% 50% at 22% 28%, rgba(0, 187, 206, 0.20), transparent 60%),
+      radial-gradient(ellipse 42% 46% at 80% 64%, rgba(127, 66, 130, 0.18), transparent 62%);
+    filter: blur(8px);
+    animation: cv-aurora 16s ease-in-out infinite;
+  }
+
+  /* Scroll-reveal: hidden until .is-in is toggled by IntersectionObserver. */
+  .cv-reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: opacity, transform;
+  }
+  .cv-reveal.is-in {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Hairline blueprint grid overlay (masked to fade at edges). */
+  .cv-blueprint {
+    background-image:
+      linear-gradient(rgba(0, 187, 206, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 187, 206, 0.05) 1px, transparent 1px);
+    background-size: 64px 64px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 80% at 50% 40%, black 30%, transparent 80%);
+    mask-image: radial-gradient(ellipse 80% 80% at 50% 40%, black 30%, transparent 80%);
+  }
+}
+
+/* Honour reduced-motion: freeze ambient + reveal animations. */
+@media (prefers-reduced-motion: reduce) {
+  .cv-aurora-field,
+  .animate-cv-aurora,
+  .animate-cv-dash,
+  .animate-cv-pulse,
+  .animate-cv-sheen,
+  .animate-cv-rise {
+    animation: none !important;
+  }
+  .cv-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
   }
 }

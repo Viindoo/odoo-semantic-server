@@ -1,0 +1,112 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+export const prerender = true;
+
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ExamplesShowcase from '../components/ExamplesShowcase.tsx';
+import { SCENARIOS } from '../lib/examples-data';
+import { BRAND_FULL } from '../lib/constants';
+
+const faqJsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: SCENARIOS.map((s) => ({
+    '@type': 'Question',
+    name: s.prompt,
+    acceptedAnswer: {
+      '@type': 'Answer',
+      text: `${BRAND_FULL} answers via ${s.tool}() — graph-verified, ${s.with.tokens}. ${s.problem}`,
+    },
+  })),
+});
+---
+
+<BaseLayout
+  title="Live examples — Odoo Semantic MCP resolving real questions"
+  description="Real Odoo questions, answered. See the difference between an AI hallucinating field and module names versus Odoo Semantic MCP returning graph-verified answers — model inheritance, override points, blast radius, deprecation scans, edition checks."
+  theme="dark"
+  showFooter={false}
+>
+  <script type="application/ld+json" set:html={faqJsonLd} slot="head" />
+  <SiteHeader currentPath={Astro.url.pathname} />
+
+  <!-- Intro -->
+  <section class="cv-grain relative bg-viindoo-bg-1 overflow-hidden pt-[136px] pb-20">
+    <div class="cv-aurora-field" aria-hidden="true"></div>
+    <div class="cv-blueprint absolute inset-0 pointer-events-none" aria-hidden="true"></div>
+    <div class="relative z-10 mx-auto max-w-4xl px-6 text-center">
+      <div class="cv-kicker text-viindoo-primary-bright justify-center mb-5">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true"></span>
+        Live examples
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true"></span>
+      </div>
+      <h1 class="font-display font-extrabold text-viindoo-on-dark leading-[1.04] tracking-[-0.03em] text-[clamp(34px,4.6vw,58px)]">
+        Watch it <em class="cv-grad-text not-italic">resolve</em>, live.
+      </h1>
+      <p class="mt-6 text-[19px] leading-relaxed text-viindoo-on-dark-muted max-w-[60ch] mx-auto">
+        Same question, two answers. On the left, an AI guessing from training data &mdash;
+        inventing modules, mixing versions, hedging on edition. On the right,
+        <strong class="text-viindoo-on-dark font-medium">Odoo Semantic MCP</strong> returning the
+        graph-verified truth in a fraction of the tokens.
+      </p>
+    </div>
+  </section>
+
+  <!-- Interactive showcase -->
+  <section class="bg-viindoo-bg-0 py-16">
+    <div class="mx-auto max-w-7xl px-6">
+      <ExamplesShowcase client:visible />
+    </div>
+  </section>
+
+  <!-- Static, deep-linkable index of every scenario (SEO + no-JS fallback) -->
+  <section class="bg-viindoo-bg-1 py-20 border-t border-white/5">
+    <div class="mx-auto max-w-7xl px-6">
+      <div class="cv-kicker text-viindoo-secondary mb-3">
+        <span class="w-7 h-px bg-viindoo-secondary" aria-hidden="true"></span>
+        Every scenario
+      </div>
+      <h2 class="font-display text-3xl font-bold text-viindoo-on-dark tracking-tight">{SCENARIOS.length} questions, {SCENARIOS.length} verified answers.</h2>
+      <p class="text-viindoo-on-dark-muted mt-3 max-w-2xl">Each one maps to a single MCP tool call. Deep-link any of them.</p>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mt-10">
+        {SCENARIOS.map((s) => (
+          <article id={s.id} class="cv-reveal scroll-mt-24 rounded-2xl border border-white/10 bg-viindoo-bg-0 p-6 hover:border-viindoo-primary/40 transition">
+            <div class="flex items-center justify-between mb-3">
+              <span class="font-mono text-[10px] uppercase tracking-widest text-viindoo-on-dark-dim">{s.persona}</span>
+              <span class="font-mono text-[11px] font-semibold text-viindoo-primary-bright">{s.with.tokens}</span>
+            </div>
+            <h3 class="text-base font-semibold text-viindoo-on-dark leading-snug">{s.prompt}</h3>
+            <p class="mt-2 text-sm text-viindoo-on-dark-muted leading-relaxed">{s.problem}</p>
+            <code class="mt-4 inline-block font-mono text-xs text-viindoo-primary-bright bg-viindoo-primary/10 border border-viindoo-primary/20 rounded px-2 py-1">{s.tool}()</code>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA band -->
+  <section class="bg-viindoo-bg-0 px-6 py-20">
+    <div class="cv-grain mx-auto max-w-5xl relative overflow-hidden rounded-3xl border border-white/10 p-12 text-center" style="background: radial-gradient(circle at 20% 30%, rgba(0,187,206,0.18), transparent 50%), radial-gradient(circle at 80% 70%, rgba(127,66,130,0.18), transparent 50%), linear-gradient(120deg, var(--viindoo-bg-1), var(--viindoo-bg-2));">
+      <h2 class="font-display text-3xl md:text-4xl font-extrabold leading-tight mb-4 text-viindoo-on-dark">
+        Try it on your own questions.
+      </h2>
+      <p class="text-viindoo-on-dark-muted text-lg max-w-2xl mx-auto mb-8">
+        Get an API key, wire it into your AI tool, and ask the Odoo ecosystem anything in your next prompt.
+      </p>
+      <div class="flex flex-wrap justify-center gap-3">
+        <a href="/signup" class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200">
+          Create your free account
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a href="/#install" class="inline-flex items-center gap-2 border border-white/20 text-viindoo-on-dark font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-white/5 transition-all duration-200">
+          Wire up your AI tool
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <SiteFooter />
+</BaseLayout>

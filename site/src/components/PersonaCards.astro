@@ -1,32 +1,70 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// PersonaCards.astro — W4: 5-persona cards (3 large tier-1 + 2 compact tier-2)
+// PersonaCards.astro — developer-first hierarchy.
+// Tier 0: one spotlight Developer card (dark terminal, full width) — the core ICP.
+// Tier 1: Consultant + CEO/PM (secondary, high-value).
+// Tier 2: BA/Sales + Marketer (the whole team benefits).
+// All "See examples" CTAs route to the real /examples showcase.
 ---
 
-<!-- Tier 1: 3 large cards -->
-<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
+<!-- Tier 0 · Developer spotlight (the primary audience) -->
+<article
+  class="cv-reveal group relative mt-12 overflow-hidden rounded-3xl border border-viindoo-primary/25 bg-viindoo-bg-1 shadow-lift"
+  data-testid="persona-card-developer"
+>
+  <div class="cv-aurora-field opacity-60" aria-hidden="true"></div>
+  <div class="relative z-10 grid grid-cols-1 lg:grid-cols-[1.1fr_1fr]">
+    <!-- Pitch -->
+    <div class="p-8 sm:p-10">
+      <div class="flex items-center gap-3 mb-5">
+        <span class="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-viindoo-primary/15 text-viindoo-primary-bright ring-1 ring-viindoo-primary/30">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
+          </svg>
+        </span>
+        <p class="cv-kicker text-viindoo-primary-bright">Built for developers</p>
+        <span class="ml-auto hidden sm:inline-flex items-center rounded-full border border-viindoo-primary/30 bg-viindoo-primary/10 px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-widest text-viindoo-primary-bright">Primary</span>
+      </div>
+      <h3 class="font-display text-2xl sm:text-3xl font-bold text-viindoo-on-dark leading-tight tracking-tight">
+        Stop guessing field names.<br />Trace any override in one call.
+      </h3>
+      <p class="mt-4 text-viindoo-on-dark-muted leading-relaxed max-w-[46ch]">
+        Resolve any model, field, or method across versions and modules. Find the exact
+        override point. Catch deprecations before you upgrade &mdash; grounded in a real
+        inheritance graph, not a guess.
+      </p>
+      <div class="mt-7 flex flex-wrap items-center gap-x-6 gap-y-3">
+        <a href="/examples" class="group/cta inline-flex items-center gap-2 text-sm font-semibold text-viindoo-primary-bright">
+          See it resolve, live
+          <svg class="w-4 h-4 transition-transform duration-200 group-hover/cta:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a href="/bootstrap" class="inline-flex items-center gap-1.5 text-xs font-medium text-viindoo-on-dark-dim hover:text-viindoo-on-dark transition">Bootstrap &amp; SCSS by Odoo version &rarr;</a>
+      </div>
+    </div>
 
-  <!-- Developer -->
-  <article
-    class="persona-card group relative rounded-2xl border border-gray-200 bg-white p-8 transition hover:-translate-y-1 hover:shadow-xl hover:border-viindoo-primary"
-    data-testid="persona-card-developer"
-  >
-    <div class="mb-5 inline-flex h-12 w-12 items-center justify-center rounded-lg bg-viindoo-primary/10 text-viindoo-primary-text">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <polyline points="16,18 22,12 16,6"/>
-        <polyline points="8,6 2,12 8,18"/>
-      </svg>
+    <!-- Terminal proof -->
+    <div class="relative border-t lg:border-t-0 lg:border-l border-white/8 bg-viindoo-bg-0/70 p-6 sm:p-8 font-mono text-[12.5px] leading-relaxed">
+      <div class="flex items-center gap-1.5 mb-4 text-viindoo-on-dark-dim">
+        <span class="w-2.5 h-2.5 rounded-full bg-[#FF5F57]"></span>
+        <span class="w-2.5 h-2.5 rounded-full bg-[#FEBC2E]"></span>
+        <span class="w-2.5 h-2.5 rounded-full bg-[#27C93F]"></span>
+        <span class="ml-2 text-[11px]">odoo-semantic</span>
+      </div>
+      <div class="space-y-1 text-viindoo-on-dark-muted">
+        <div><span class="text-viindoo-primary-bright">&gt;_</span> find_override_point(sale.order, action_confirm)</div>
+        <div class="text-viindoo-on-dark">&rarr; 4 hooks across 3 modules · 312 tokens</div>
+        <div class="text-viindoo-success">&#10003; sale_stock · _action_confirm() &middot; super() preserved</div>
+        <div class="pt-3"><span class="text-viindoo-primary-bright">&gt;_</span> resolve_field(sale.order, partner_id, v=17.0)</div>
+        <div class="text-viindoo-on-dark">&rarr; res.partner · required · defined_in: sale</div>
+        <div class="text-viindoo-success">&#10003; verified against Neo4j index</div>
+      </div>
     </div>
-    <p class="font-mono text-xs uppercase tracking-widest text-viindoo-primary-text mb-3">For Developers</p>
-    <h3 class="font-display text-xl font-bold text-viindoo-dark mb-2 leading-tight">Stop guessing field names. Trace overrides in 1 call.</h3>
-    <p class="text-viindoo-body text-sm leading-relaxed mb-4">Resolve any model, field, or method across versions and modules. Find the right override point. Catch deprecations before upgrade.</p>
-    <div class="font-mono text-xs text-viindoo-muted bg-gray-50 rounded p-3 border-l-2 border-viindoo-primary">
-      <span class="text-viindoo-primary-text font-semibold">&gt;_</span> find_override_point(sale.order, action_confirm) → 4 hooks · 312 tk
-    </div>
-    <a href="/install/" class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-viindoo-primary-text group-hover:gap-2 transition">See examples →</a>
-    <a href="/bootstrap" class="mt-2 inline-flex items-center gap-1 text-xs font-medium text-viindoo-muted hover:text-viindoo-primary-text transition">Bootstrap &amp; SCSS by Odoo version →</a>
-    <span class="absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-300 bg-viindoo-primary rounded-t-2xl"></span>
-  </article>
+  </div>
+  <span class="absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-500 bg-gradient-to-r from-viindoo-primary to-viindoo-secondary rounded-t-3xl"></span>
+</article>
+
+<!-- Tier 1 · Secondary, high-value workflows -->
+<div class="cv-reveal grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
 
   <!-- Consultant -->
   <article
@@ -41,11 +79,11 @@
     </div>
     <p class="font-mono text-xs uppercase tracking-widest text-viindoo-success-deep mb-3">For Consultants</p>
     <h3 class="font-display text-xl font-bold text-viindoo-dark mb-2 leading-tight">Fit/gap in 30 minutes. Not 2 days.</h3>
-    <p class="text-viindoo-body text-sm leading-relaxed mb-4">Map 50 requirements against standard Odoo coverage instantly. Know what's already built, what extends what, which version delivers what.</p>
+    <p class="text-viindoo-body text-sm leading-relaxed mb-4">Map 50 requirements against standard Odoo coverage instantly. Know what&apos;s already built, what extends what, which version delivers what.</p>
     <div class="font-mono text-xs text-viindoo-muted bg-gray-50 rounded p-3 border-l-2 border-viindoo-success">
       <span class="text-viindoo-success-deep font-semibold">&gt;_</span> check_module_exists(loyalty, v=17.0) → ✓ sale_loyalty (CE) · 43 tk
     </div>
-    <a href="/install/" class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-viindoo-success-deep group-hover:gap-2 transition">See examples →</a>
+    <a href="/examples" class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-viindoo-success-deep group-hover:gap-2 transition">See examples →</a>
     <span class="absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-300 bg-viindoo-success rounded-t-2xl"></span>
   </article>
 
@@ -65,20 +103,20 @@
     <div class="font-mono text-xs text-viindoo-muted bg-gray-50 rounded p-3 border-l-2 border-viindoo-secondary">
       <span class="text-viindoo-secondary font-semibold">&gt;_</span> impact_analysis(sale.order, amount_total) → 12 mods · 38 refs · 3,218 tk
     </div>
-    <a href="/install/" class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-viindoo-secondary group-hover:gap-2 transition">See examples →</a>
+    <a href="/examples" class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-viindoo-secondary group-hover:gap-2 transition">See examples →</a>
     <span class="absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-300 bg-viindoo-secondary rounded-t-2xl"></span>
   </article>
 
 </div>
 
 <!-- Tier 2 divider -->
-<div class="mt-12 mb-6 flex items-center gap-4 text-sm font-mono text-viindoo-muted uppercase tracking-widest">
-  <span>And two more where MCP shines</span>
+<div class="cv-reveal mt-10 mb-6 flex items-center gap-4 text-sm font-mono text-viindoo-muted uppercase tracking-widest">
+  <span>And the whole team benefits</span>
   <span class="h-px flex-1 bg-gray-200"></span>
 </div>
 
 <!-- Tier 2: 2 compact cards -->
-<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+<div class="cv-reveal grid grid-cols-1 md:grid-cols-2 gap-6">
 
   <!-- BA / Sales -->
   <article
@@ -94,7 +132,7 @@
       <p class="font-mono text-xs uppercase tracking-widest text-viindoo-warning-deep mb-1">For BA / Sales</p>
       <h3 class="font-display text-lg font-bold text-viindoo-dark mb-1 leading-tight">Answer the prospect before they hang up.</h3>
       <p class="text-viindoo-body text-sm leading-snug">Confirm capability claims with evidence — real module names, real field paths.</p>
-      <a href="/install/" class="mt-2 inline-block text-xs font-semibold text-viindoo-warning-deep">See examples →</a>
+      <a href="/examples" class="mt-2 inline-block text-xs font-semibold text-viindoo-warning-deep">See examples →</a>
     </div>
   </article>
 
@@ -112,7 +150,7 @@
       <p class="font-mono text-xs uppercase tracking-widest text-viindoo-info-deep mb-1">For Marketers</p>
       <h3 class="font-display text-lg font-bold text-viindoo-dark mb-1 leading-tight">Turn version diffs into marketing copy.</h3>
       <p class="text-viindoo-body text-sm leading-snug">Diff features across versions, generate marketing-friendly summaries anchored in truth.</p>
-      <a href="/install/" class="mt-2 inline-block text-xs font-semibold text-viindoo-info-deep">See examples →</a>
+      <a href="/examples" class="mt-2 inline-block text-xs font-semibold text-viindoo-info-deep">See examples →</a>
     </div>
   </article>
 
