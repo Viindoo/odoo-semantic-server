@@ -347,6 +347,18 @@ sudo -u odoo-semantic ls /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
 > ```
 > The `.[all]` extra does not exist — use `.[dev]` (development deps) or `.[integration]`
 > (integration-test deps). See ADR-0027 §5.
+>
+> ⚠️ **MANDATORY after every source update (git pull / new release):** reinstall the package
+> into the prod venv BEFORE restarting services — otherwise `importlib.metadata` still reads
+> the old `dist-info` and `/health`, `/ready`, `/api/site-config` report a stale version:
+> ```bash
+> sudo -u odoo-semantic \
+>     uv pip install \
+>         --python /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+>         -e /home/odoo-semantic/odoo-semantic-mcp   # canonical layout; /opt for legacy (see §3.1 note)
+> # Then restart services as usual:
+> sudo systemctl restart odoo-semantic-mcp odoo-semantic-webui
+> ```
 
 ### 3.2 Đặt config file
 
@@ -599,8 +611,8 @@ sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-webui.service \
 
 # Tạo file secrets riêng cho Web UI — KHÔNG commit, mode 600:
 sudo install -o odoo-semantic -g odoo-semantic -m 600 /dev/null \
-    /etc/odoo-semantic/webui.env
-sudo tee /etc/odoo-semantic/webui.env > /dev/null <<EOF
+    /home/odoo-semantic/etc/webui.env
+sudo tee /home/odoo-semantic/etc/webui.env > /dev/null <<EOF
 FERNET_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
 WEBUI_SESSION_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 EOF
@@ -608,6 +620,14 @@ EOF
 sudo systemctl enable --now odoo-semantic-webui
 sudo systemctl status odoo-semantic-webui
 ```
+
+> **Canonical env path (ADR-0027):** `/home/odoo-semantic/etc/webui.env` (owned by the
+> `odoo-semantic` system user, under its `$HOME/etc/`). Using `/etc/odoo-semantic/webui.env`
+> is only valid if you also add `ReadWritePaths=/etc/odoo-semantic` to the unit — without
+> it, `ProtectHome` / `ProtectSystem` will silently hide the file and the unit will start
+> without the FERNET_KEY (hard-fail or missing key, depending on LoadCredential vs env-file
+> mode). The `odoo-semantic-webui.service` template ships with the `/home/odoo-semantic/etc/`
+> path pre-configured.
 
 Cài Astro unit (sau khi `pnpm build` đã chạy — xem Bước 0):
 
@@ -721,7 +741,7 @@ kiểm tra xem `EnvironmentFile=` có dấu `-` prefix chưa:
 
 ```bash
 grep EnvironmentFile /etc/systemd/system/odoo-semantic-webui.service
-# Phải thấy:  EnvironmentFile=-/etc/odoo-semantic/webui.env
+# Phải thấy:  EnvironmentFile=-/home/odoo-semantic/etc/webui.env
 # Nếu thiếu -: sửa thủ công rồi reload
 sudo sed -i 's|EnvironmentFile=\([^-]\)|EnvironmentFile=-\1|' \
     /etc/systemd/system/odoo-semantic-webui.service
@@ -770,6 +790,20 @@ sudo systemd-run --uid=odoo-semantic --gid=odoo-semantic --pipe --wait \
 > đồng thời (per-profile lock đảm bảo safe). `--full` flag bypass skip cho periodic cleanup.
 > Auto-reseed pattern catalogue cũng wire vào pipeline (sha256 sentinel — cheap khi unchanged).
 > See `docs/adr/0007-incremental-indexer.md` cho design decisions.
+
+### 3.6b TTL cleanup timer (nightly session/audit hygiene)
+
+`osm-ttl-cleanup.service` + `osm-ttl-cleanup.timer` chạy **hằng đêm** để xóa các row
+hết hạn khỏi bốn bảng: `login_attempts`, `email_verifications`, `active_sessions`,
+`admin_audit_log`. Giữ DB gọn + tránh bloat theo thời gian.
+
+```bash
+sudo cp docs/deploy/osm-ttl-cleanup.service \
+        docs/deploy/osm-ttl-cleanup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now osm-ttl-cleanup.timer
+systemctl list-timers osm-ttl-cleanup.timer --no-pager   # verify lần chạy kế
+```
 
 ### 3.7 tmux fallback (khi không có systemd)
 
@@ -1003,9 +1037,9 @@ UI và KHÔNG phải gate để mở Web UI W0-W4:
 
 | OPS item | Runbook | Trạng thái |
 |---|---|---|
-| `FORCE ROW LEVEL SECURITY` + `osm_reader` role | §5.14 | `[ ]` pending |
-| Tách read-DSN MCP sang `osm_reader` | §5.14 | `[ ]` pending (xem caveat 4.3b) |
-| FERNET_KEY vào `/etc/credstore/` (LoadCredential) | §12 Option B | `[ ]` pending |
+| `FORCE ROW LEVEL SECURITY` + `osm_reader` role | §5.14 | `[x]` done 2026-05-26 |
+| Tách read-DSN MCP sang `osm_reader` | §5.14 | `[x]` done 2026-05-26 |
+| FERNET_KEY vào `/etc/credstore/` (LoadCredential) | §12 Option B | `[x]` done 2026-05-26 |
 | Reindex v8→v19 + cleanup_absolute_path_nodes | §5.11 + §3b | `[ ]` pending |
 | MED-2 forge known_hosts cho self-hosted git | §MED-2 | `[ ]` khi cần |
 
@@ -1167,6 +1201,7 @@ sudo journalctl -u odoo-semantic-mcp -n 50 | grep -iE "neo4j|postgres|error"
 |------------|-------------|
 | MCP server | `sudo journalctl -u odoo-semantic-mcp -f` |
 | Indexer (cron) | `tail -f /var/log/odoo-semantic-reindex.log` |
+| TTL cleanup (nightly) | `sudo journalctl -u osm-ttl-cleanup -n 50` |
 | Neo4j | `docker compose logs -f neo4j` |
 | PostgreSQL | `docker compose logs -f postgres` |
 | Nginx | `/var/log/nginx/error.log` |
@@ -1201,7 +1236,7 @@ Trước khi expose public internet:
 - [ ] **HSTS verify** — sau khi TLS aktif: `curl -I https://<domain>/health | grep Strict-Transport` → header hien thi
 - [ ] **Web UI port 8003 không reachable từ external** — kiểm tra từ host ngoài: `curl --connect-timeout 5 http://<PUBLIC_IP>:8003/` → connection refused hoặc timeout
 - [ ] `rate_limit_rpm` đã cấu hình trong `odoo-semantic.conf` (xem `[auth]` section) — ngăn DoS per API key
-- [ ] **`webui.env` backed up riêng** (không cùng file với main backup SQL) — chứa FERNET_KEY, mất là không recover SSH keys
+- [ ] **`/etc/credstore/FERNET_KEY` backed up riêng** (mode 0600 root:root — canonical FERNET_KEY source via `LoadCredential`; NOT stored in `webui.env` anymore) — mất key này là không recover SSH keys và TOTP secrets đã lưu trong DB
 - [ ] **FERNET_KEY lưu trong secrets manager** (Bitwarden, 1Password, Vault), không chỉ để trên disk plain
 - [ ] **Docker daemon không expose TCP socket** — `sudo ss -tlnp | grep 2375` phải trống; daemon chỉ Unix socket `/var/run/docker.sock`
 - [ ] **X-API-Key auth active** — `curl https://<domain>/mcp` không có header → HTTP 401 (không bypass được)
@@ -1210,6 +1245,7 @@ Trước khi expose public internet:
 - [ ] Backup đã được test (restore thử ít nhất 1 lần — xem `docs/deploy/disaster-recovery.md`)
 - [ ] Logrotate đã cài cho `/var/log/odoo-semantic-reindex.log` (xem §Log Rotation)
 - [ ] Web UI session-auth enabled — first admin created via `create-webui-user`, verify unauth GET /repos → 302 /login (xem ADR-0011 + §3.5b)
+- [ ] **`osm-ttl-cleanup.timer` enabled** — nightly cleanup của `login_attempts`, `email_verifications`, `active_sessions`, `admin_audit_log` (xem §3.6b); verify: `systemctl is-enabled osm-ttl-cleanup.timer` → `enabled`
 
 ---
 
@@ -1316,8 +1352,12 @@ Server cache kết quả verify trong 5 phút để giảm DB load. Khi deactiva
 Web UI quản lý profiles, repos, API keys, SSH keys.
 
 **Port**: 8003  
-**Bind**: `127.0.0.1` only (không expose ra internet — không có auth!)  
+**Bind**: `127.0.0.1` only (không expose ra internet trực tiếp — xem ghi chú authentication bên dưới)  
 **Access qua**: SSH tunnel hoặc Nginx proxy với IP allowlist
+
+> **Authentication:** Web UI yêu cầu đăng nhập (session login) kể từ M7 W16 / ADR-0011
+> (bcrypt cost=12, 8h TTL). Port bound `127.0.0.1`-only và đi qua nginx — đây là defense-in-depth,
+> KHÔNG phải thay thế cho session auth. Tạo admin user đầu tiên qua §3.5b trước khi mở service.
 
 ### Khởi động
 
@@ -1329,7 +1369,7 @@ sudo systemctl status odoo-semantic-webui
 ```
 
 Service file ship sẵn ở `docs/deploy/odoo-semantic-webui.service` —
-có `EnvironmentFile=-/etc/odoo-semantic/webui.env` để load FERNET_KEY
+có `EnvironmentFile=-/home/odoo-semantic/etc/webui.env` để load FERNET_KEY
 (cần cho SSH key encrypt/decrypt). Setup webui.env xem §3.5.
 
 **Foreground / dev** — chạy trực tiếp (đảm bảo `FERNET_KEY` trong env):
@@ -1352,7 +1392,8 @@ location /admin/ {
 }
 ```
 
-⚠️ **KHÔNG expose Web UI trực tiếp ra internet** — không có authentication.
+⚠️ **KHÔNG expose Web UI trực tiếp ra internet** — Web UI yêu cầu session login (ADR-0011, M7 W16),
+nhưng port bound `127.0.0.1`-only + nginx IP allowlist là defense-in-depth bắt buộc.
 
 ### Indexer Job Status (M5.5 F)
 
@@ -1418,9 +1459,9 @@ Private key (SSH + TOTP secret) được encrypt bằng Fernet symmetric encrypt
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # Đặt vào webui.env (loaded bởi systemd unit):
-echo "FERNET_KEY=<output_above>" | sudo tee /etc/odoo-semantic/webui.env
-sudo chmod 600 /etc/odoo-semantic/webui.env
-sudo chown odoo-semantic:odoo-semantic /etc/odoo-semantic/webui.env
+echo "FERNET_KEY=<output_above>" | sudo tee /home/odoo-semantic/etc/webui.env
+sudo chmod 600 /home/odoo-semantic/etc/webui.env
+sudo chown odoo-semantic:odoo-semantic /home/odoo-semantic/etc/webui.env
 sudo systemctl restart odoo-semantic-webui
 ```
 

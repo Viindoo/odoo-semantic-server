@@ -24,7 +24,7 @@ size, EE module list — tất cả cần ship-velocity ops control.
 
 Ship **Admin Settings** module — 1 thanh "Settings" trong admin web UI cho
 phép super-admin + tenant_owner tinker:
-- 15 Tier-1 scalar settings (auth + embedding + indexer + mcp categories)
+- 15 Tier-1 scalar settings (auth + quota + embedding + indexer + mcp categories)
 - 4 plan tiers (giữ riêng `plans` table per ADR-0039)
 - 16 EE Module guard entries (migrate `src/data/ee_modules.py` → `ee_modules` table)
 - 115 patterns (migrate `src/data/patterns.json` → `patterns` table)
@@ -79,8 +79,9 @@ Other categories defer to Phase 2.
 - System scope full
 - Tenant scope cho `quota.*` only
 - TTL polling cache invalidation
-- 15 Tier-1 settings refactored + 6 quota Tier-1 plus plans CRUD
+- 15 Tier-1 settings refactored (incl. the 6 quota.* settings) plus plans CRUD
 - Seeded data: EE modules + patterns CRUD
+- Live SSOT for the settings catalogue: `src/settings_registry.py` (the catalogue has since grown to 18 non-billing Tier-1 / 29 total entries post-ADR-0043 + PR #223/#225; this ADR documents the state at ship time)
 
 **Phase 2 (deferred):**
 - Tenant scope cho all categories (multi-tenant policy isolation)

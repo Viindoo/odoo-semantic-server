@@ -244,8 +244,8 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 - [ ] Reset-password token KHÔNG bị burn khi mật khẩu yếu → retry cùng token với mật khẩu mạnh (≥12 ký tự, không trong blocklist) → HTTP 200 thành công **(re-verify post-deploy — TOCTOU `SELECT...FOR UPDATE` guard giữ token sống tới khi reset hợp lệ)**
 <!-- not verified: requires valid reset token end-to-end; verify_password_reset_token peek does not consume token -->
 - [ ] `WEBUI_SESSION_SECRET` đã set trong `webui.env` (không dùng auto-generated ephemeral secret):
-  `sudo grep WEBUI_SESSION_SECRET /etc/odoo-semantic/webui.env` → non-empty value **(admin SSH verify — secret vẫn applicable cho Astro auth, không phải M8 dependency)**
-<!-- not verified: canonical /etc/odoo-semantic/webui.env does not exist; WEBUI_SESSION_SECRET confirmed set in `<APP_DIR>/.env` but canonical /etc path missing — follow-up to install production env file -->
+  `sudo grep WEBUI_SESSION_SECRET /home/odoo-semantic/etc/webui.env /home/odoo-semantic/odoo-semantic-mcp/.env` → non-empty value **(admin SSH verify — secret vẫn applicable cho Astro auth, không phải M8 dependency)**
+<!-- not verified inline: WEBUI_SESSION_SECRET confirmed set in <APP_DIR>/.env, which the unit loads via its EnvironmentFile chain alongside the canonical /home/odoo-semantic/etc/webui.env (ADR-0027 layout). Either location satisfies this check. -->
 
 ---
 
@@ -328,7 +328,7 @@ Items left unchecked after 2026-05-16 read-only verification sweep. Each needs a
 
 10. **§10.5 Browser tests** — 92 browser test functions exist (suite grown past the "68 tests" milestone marker). Need `pytest tests/browser/admin/ -m browser` GREEN run in CI or against production.
 
-11. **§10 WEBUI_SESSION_SECRET production env path** — `WEBUI_SESSION_SECRET` is set in `<APP_DIR>/.env` but the checklist references `/etc/odoo-semantic/webui.env` which does not exist. Admin: confirm the running service loads the secret from `.env`, or create the canonical `/etc/odoo-semantic/webui.env` per `docs/deploy.md`.
+11. **§10 WEBUI_SESSION_SECRET production env path** — `WEBUI_SESSION_SECRET` is set in `<APP_DIR>/.env`. The canonical env-file location is `/home/odoo-semantic/etc/webui.env` (ADR-0027 system-user layout), NOT `/etc/odoo-semantic/webui.env`. The unit loads both `<APP_DIR>/.env` and the canonical `webui.env` via its EnvironmentFile chain, so a secret present in either is loaded. Admin: confirm the running service resolves the secret (it does via `.env`).
 
 12. **OWLComp pre-v14 anachronism (NEW 2026-05-17)** — Post-reindex verification on PR #119 shows 239 `__unresolved__` OWLComp nodes at v8-v13 (OWL framework only exists from v14+). The v14 guard added in `_extract_era3_components` only covers REAL OWLComp creation; JSPatch era3 detection in pre-v14 modules still triggers the PATCHES placeholder MERGE in `writer_neo4j.py:~372`. Fix: add symmetric v14 guard to the `_extract_era3_patches` (or equivalent JSPatch era3) function in `parser_js.py`, OR add belt-and-suspenders v14 check at the writer PATCHES placeholder site. Plus one Cypher cleanup to delete the 239 current anachronisms. Non-blocking — read-side `list_owl_components` MCP tool already has an era guard that skips v<14, so user-facing output is correct; impact is only raw-graph pollution.
     > Tracked at TASKS.md → M10C "OWLComp pre-v14 anachronism guard".

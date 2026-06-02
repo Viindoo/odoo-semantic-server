@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """SETTINGS_CATALOGUE — 29 admin-tunable settings.
 
-16 original Tier-1 entries (ADR-0042) + 11 billing.* entries added in M10B P1 (ADR-0039)
-+ 1 support.* entry (helpdesk URL, WI-1 pricing UX overhaul)
-+ 1 analytics.* entry (GA4 measurement ID, WI-1).
+15 original Tier-1 entries (ADR-0042) + 1 auth entry (ADR-0043: auth.mfa_freshness_seconds)
++ 11 billing.* entries added in M10B P1 (ADR-0039) + 1 support.* entry (helpdesk URL, PR #223)
++ 1 analytics.* entry (GA4 measurement ID, PR #225).
 
 Each entry registers default + validation + metadata. Bootstrap inserts rows
 into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).

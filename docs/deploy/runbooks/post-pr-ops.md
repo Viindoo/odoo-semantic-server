@@ -46,7 +46,7 @@ These three commands bring the data layer into parity with shipped code logic.
 After every PR that ships new migrations. Run BEFORE any other actions — schema changes are prerequisite for data-layer actions.
 
 **Current migrations (PR #200):**
-- `m13_006_plans_quota.sql` — `plans` table + `api_keys.plan_id` FK + `usage_counter` table (ADR-0039 control-plane DDL)
+- `m13_006_plans.sql` — `plans` table + `api_keys.plan_id` FK + `usage_counter` table (ADR-0039 control-plane DDL)
 - `m13_007_usage_counter_cascade.sql` — ON DELETE CASCADE on `usage_counter.api_key_id` FK
 
 ### Command
