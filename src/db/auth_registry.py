@@ -181,6 +181,80 @@ class AuthStore:
             )
         return key_id, tenant_id
 
+    def verify_api_key_full(
+        self, raw_key: str
+    ) -> tuple[int, int | None, int | None, bool] | None:
+        """Return (key_id, tenant_id, user_id, owner_is_admin) if active + valid.
+
+        Read-side authorization variant (defense-in-depth, ADR-0034 follow-up).
+        Superset of verify_api_key_tenant: in addition to (key_id, tenant_id) it
+        returns the owning user_id and the owner's is_admin flag, resolved via a
+        single LEFT JOIN to webui_users so the call stays one DB round-trip.
+
+        The owner metadata lets the MCP auth choke-point enforce the read-side
+        invariant: a user-owned (user_id IS NOT NULL), non-admin
+        (is_admin = false) key MUST NOT carry tenant_id IS NULL — that is the
+        "unrestricted" sentinel reserved for system/CLI keys (user_id IS NULL)
+        and admin-owned keys. See AuthMiddleware._is_null_tenant_escalation.
+
+        Lookup order, active/expiry enforcement, and the last_used_at side effect
+        are identical to verify_api_key() / verify_api_key_tenant().
+
+        Fail-closed note: when the key has an owner row, owner_is_admin reflects
+        webui_users.is_admin coerced to a strict bool (NULL → False) so an absent
+        flag is treated as non-admin, never as admin.
+
+        Args:
+            raw_key: The full API key string (starts with 'osm_').
+
+        Returns:
+            (key_id, tenant_id, user_id, owner_is_admin) if found and
+            active/unexpired; None otherwise.
+              - tenant_id is None for unscoped/global keys.
+              - user_id is None for system/CLI keys (no webui_users owner).
+              - owner_is_admin is False when user_id is None (no owner row).
+        """
+        hmac_hash = hash_key(raw_key)
+        expires_filter = "AND (k.expires_at IS NULL OR k.expires_at > NOW())"
+        base_query = (
+            "SELECT k.id, k.tenant_id, k.user_id, "
+            "COALESCE(u.is_admin, FALSE) AS owner_is_admin "
+            "FROM api_keys k "
+            "LEFT JOIN webui_users u ON u.id = k.user_id "
+            f"WHERE k.key_hash = %s AND k.active = TRUE {expires_filter}"
+        )
+
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(conn, base_query, (hmac_hash,))
+
+        if row is None:
+            # Backward-compat: try plain SHA-256 (until LEGACY_HASH_DEADLINE)
+            sha_hash = hash_key_legacy_sha256(raw_key)
+            with self._pool.checkout() as conn:
+                row = self._pool.fetch_one(conn, base_query, (sha_hash,))
+            if row is not None:
+                logger.warning(
+                    "API key id=%s matched via legacy SHA-256 hash. "
+                    "Please rotate this key before %s.",
+                    row["id"],
+                    "2026-06-15",  # LEGACY_HASH_DEADLINE
+                )
+
+        if row is None:
+            return None
+
+        key_id = row["id"]
+        tenant_id: int | None = row["tenant_id"]
+        user_id: int | None = row["user_id"]
+        owner_is_admin = bool(row["owner_is_admin"])
+        with self._pool.checkout() as conn:
+            self._pool.execute(
+                conn,
+                "UPDATE api_keys SET last_used_at = NOW() WHERE id = %s",
+                (key_id,),
+            )
+        return key_id, tenant_id, user_id, owner_is_admin
+
     def list_api_keys(self, user_id: int | None = None, admin: bool = False) -> list[dict]:
         """List API keys (without key_hash for security).
 

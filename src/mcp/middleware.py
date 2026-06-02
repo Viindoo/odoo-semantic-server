@@ -119,6 +119,18 @@ _cache_lock = threading.Lock()  # Protects read/write to _KEY_CACHE and _CACHE_T
 # Value is tenant_id (int) for tenant-bound keys, or None for global/admin keys.
 _TENANT_CACHE: dict[str, int | None] = {}
 
+# Owner-metadata cache for the read-side authorization guard (defense-in-depth,
+# ADR-0034 follow-up). Same TTL and hash key as _KEY_CACHE — populated in the
+# SAME _do_verify round-trip via verify_api_key_full, so the guard costs no extra
+# DB query per cache window. Value is (user_id | None, owner_is_admin: bool):
+#   - user_id None    → system/CLI key (no webui_users owner)  → unrestricted OK
+#   - owner_is_admin  → admin-owned key                         → unrestricted OK
+# Absence of an entry (TTL hit but no value) means the verify path that warmed
+# the cache predates this field; _cache_get_owner returns (False, ...) for that
+# case so the middleware re-verifies rather than fail-open (mirrors _TENANT_CACHE
+# split fail-closed handling).
+_OWNER_CACHE: dict[str, tuple[int | None, bool]] = {}
+
 # Plan cache: api_key_id -> (PlanInfo, monotonic_timestamp)
 # Shares _CACHE_TTL and _cache_lock with _KEY_CACHE to avoid additional lock.
 _PLAN_CACHE: dict[int, tuple[PlanInfo, float]] = {}
@@ -401,7 +413,8 @@ def _cache_invalidate(raw_key: str) -> None:
     with _cache_lock:
         _KEY_CACHE.pop(h, None)
         _CACHE_TS.pop(h, None)
-        _TENANT_CACHE.pop(h, None)  # keep the two caches in sync (see _cache_set_tenant)
+        _TENANT_CACHE.pop(h, None)  # keep the caches in sync (see _cache_set_tenant)
+        _OWNER_CACHE.pop(h, None)   # owner-meta cache shares the same lifetime
 
 
 def _cache_invalidate_by_key_id(key_id: int) -> None:
@@ -423,6 +436,7 @@ def _cache_invalidate_by_key_id(key_id: int) -> None:
             _KEY_CACHE.pop(h, None)
             _CACHE_TS.pop(h, None)
             _TENANT_CACHE.pop(h, None)
+            _OWNER_CACHE.pop(h, None)
         _PLAN_CACHE.pop(key_id, None)
 
 
@@ -455,6 +469,70 @@ def _cache_get_tenant(raw_key: str) -> tuple[bool, int | None]:
         return False, None
 
 
+def _cache_set_owner(raw_key: str, user_id: int | None, owner_is_admin: bool) -> None:
+    """Store owner metadata (user_id, owner_is_admin) for raw_key in _OWNER_CACHE.
+
+    Must be called alongside _cache_set / _cache_set_tenant so all caches stay in
+    sync. Thread-safe: guarded by _cache_lock (same lock as _KEY_CACHE).
+    """
+    h = _hash_key(raw_key)
+    with _cache_lock:
+        _OWNER_CACHE[h] = (user_id, bool(owner_is_admin))
+
+
+def _cache_get_owner(raw_key: str) -> tuple[bool, int | None, bool]:
+    """Return (hit, user_id, owner_is_admin) from _OWNER_CACHE.
+
+    hit=False means miss/expired OR the TTL entry exists but no owner metadata was
+    written for this key (e.g. a verify path that predates verify_api_key_full).
+    Treating the latter as a miss is the fail-closed choice: the middleware then
+    re-verifies via DB rather than skipping the read-side guard with unknown
+    owner state. Mirrors the _TENANT_CACHE split fail-closed handling.
+
+    Thread-safe: guarded by _cache_lock.
+    """
+    h = _hash_key(raw_key)
+    with _cache_lock:
+        ts = _CACHE_TS.get(h)
+        if ts is not None and time.monotonic() - ts < _CACHE_TTL:
+            cached = _OWNER_CACHE.get(h)
+            if cached is None:
+                # TTL valid but no owner metadata recorded → treat as miss so the
+                # caller re-verifies (fail-closed, not fail-open).
+                return False, None, False
+            user_id, owner_is_admin = cached
+            return True, user_id, owner_is_admin
+        return False, None, False
+
+
+def _is_null_tenant_escalation(
+    tenant_id: int | None, user_id: int | None, owner_is_admin: bool
+) -> bool:
+    """Read-side invariant check (defense-in-depth, ADR-0034 follow-up).
+
+    Returns True when the presented key is in the invalid "unrestricted" state it
+    must NEVER be in — and the request must therefore be rejected fail-closed:
+
+        user-owned (user_id IS NOT NULL)
+        AND owner is non-admin (owner_is_admin == False)
+        AND tenant_id IS NULL  (the unrestricted/admin sentinel)
+
+    Such a key would read across every tenant despite belonging to a non-admin
+    user — the exact exposure this branch's write-side mint/reactivate/reassign
+    fixes prevent. This is the complementary read-side guard.
+
+    Legitimately-unrestricted keys (NOT flagged):
+      - system/CLI keys           (user_id IS NULL)            → never owned
+      - admin-owned keys          (owner_is_admin == True)     → admin may roam
+      - any tenant-scoped key     (tenant_id IS NOT NULL)      → already scoped
+
+    Fail-closed posture: owner_is_admin is supplied already coerced to a strict
+    bool (NULL is_admin → False at the SQL/cache boundary), so an undeterminable
+    admin flag is treated as non-admin (deny), never as admin (allow).
+    """
+    return user_id is not None and not owner_is_admin and tenant_id is None
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """Verify X-API-Key header on every request except public paths."""
 
@@ -470,25 +548,49 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return Response("Missing X-API-Key header", status_code=401)
 
         # Check cache first to avoid DB round-trip per request.
-        # Fail-closed: BOTH caches must hit for a cache-served response.
-        # If _KEY_CACHE hits but _TENANT_CACHE misses (e.g. post-deploy window
-        # where old code wrote key_id but not tenant_id), we do NOT fall back to
-        # tenant_id=None — that would silently escalate a tenant key to admin/unscoped
-        # scope (cross-tenant read). Instead we treat it as a full miss and go to DB.
+        # Fail-closed: ALL THREE caches must hit for a cache-served response.
+        # If _KEY_CACHE hits but _TENANT_CACHE or _OWNER_CACHE misses (e.g. a
+        # post-deploy window where old code wrote key_id but not tenant_id /
+        # owner-meta), we do NOT fall back to tenant_id=None / unknown owner —
+        # that would silently escalate a tenant key to admin/unscoped scope
+        # (cross-tenant read) OR skip the read-side guard. Instead we treat it as
+        # a full miss and go to DB so all three are repopulated in one round-trip.
         hit, key_id = _cache_get(raw_key)
         tenant_hit, tenant_id = _cache_get_tenant(raw_key)
-        if not hit or not tenant_hit:
+        owner_hit, owner_user_id, owner_is_admin = _cache_get_owner(raw_key)
+        if not hit or not tenant_hit or not owner_hit:
             def _do_verify():
                 from src.db.pg import auth_store
                 store = auth_store()
-                # Prefer verify_api_key_tenant to retrieve both key_id and
-                # tenant_id in a single DB query (ADR-0034 D4.1 plumbing).
-                # Fall back to verify_api_key when:
-                #   (a) verify_api_key_tenant is not present (legacy store / test stub),
-                #   (b) it returns a non-2-tuple (e.g. MagicMock auto-attribute).
-                # This keeps existing tests and stubs green without requiring
-                # them to also mock verify_api_key_tenant.
+                # Prefer verify_api_key_full to retrieve key_id + tenant_id +
+                # user_id + owner_is_admin in a SINGLE DB query (read-side guard,
+                # ADR-0034 follow-up). It supersedes verify_api_key_tenant on the
+                # hot path; the older methods remain as graceful fallbacks for:
+                #   (a) a legacy store / test stub lacking the newer method,
+                #   (b) a non-(4|2)-tuple return (e.g. MagicMock auto-attribute),
+                #   (c) a rolling deploy against a pre-tenant schema.
+                # Fallback paths cannot determine owner metadata, so they return
+                # user_id=None / owner_is_admin=False — which the read-side guard
+                # treats as "not an escalation" (user_id None ⇒ allowed). That
+                # keeps existing tests/stubs green while the primary write-side
+                # invariant remains the first line of defence.
                 _missing = object()
+
+                # 1) verify_api_key_full → 4-tuple (key_id, tenant_id, user_id, is_admin)
+                full: object = _missing
+                try:
+                    full = store.verify_api_key_full(raw_key)
+                except AttributeError:
+                    pass  # method not present — fall through
+                except psycopg2.errors.UndefinedColumn:
+                    pass  # pre-tenant / pre-is_admin schema — fall through
+                if full is not _missing:
+                    if full is None or (isinstance(full, tuple) and len(full) == 4):
+                        return full  # 4-tuple or None — correct type
+                    # Unexpected type (MagicMock auto-attr in a stub mocking only
+                    # the older methods) — fall through to verify_api_key_tenant.
+
+                # 2) verify_api_key_tenant → 2-tuple (key_id, tenant_id)
                 result: object = _missing
                 try:
                     result = store.verify_api_key_tenant(raw_key)
@@ -501,16 +603,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     # (tenant_id=None) instead of 500-ing every authed request.
                     pass
                 if result is not _missing:
-                    # Got a response from verify_api_key_tenant.
-                    if result is None or (isinstance(result, tuple) and len(result) == 2):
-                        return result  # (key_id, tenant_id) or None — correct type
+                    if result is None:
+                        return None
+                    if isinstance(result, tuple) and len(result) == 2:
+                        # Owner metadata unknown via this path → (None, False).
+                        _kid, _tid = result
+                        return (_kid, _tid, None, False)
                     # Unexpected return type (e.g. MagicMock auto-attribute in unit
                     # tests that only mock verify_api_key).  Fall through below.
-                # verify_api_key_tenant absent or returned unexpected type:
-                # delegate to legacy verify_api_key (may raise OperationalError
-                # — that propagates up and is caught by the caller's except clause).
+
+                # 3) legacy verify_api_key → key_id | None (may raise
+                #    OperationalError — propagates to the caller's except clause).
                 key_id_only = store.verify_api_key(raw_key)
-                return None if key_id_only is None else (key_id_only, None)
+                if key_id_only is None:
+                    return None
+                return (key_id_only, None, None, False)
 
             try:
                 result = await asyncio.to_thread(_do_verify)
@@ -532,12 +639,32 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if result is None:
                 key_id = None
                 tenant_id = None
+                owner_user_id = None
+                owner_is_admin = False
             else:
-                key_id, tenant_id = result
+                key_id, tenant_id, owner_user_id, owner_is_admin = result
             _cache_set(raw_key, key_id)
             _cache_set_tenant(raw_key, tenant_id)
+            _cache_set_owner(raw_key, owner_user_id, owner_is_admin)
 
         if key_id is None:
+            return Response("Invalid or inactive API key", status_code=401)
+
+        # Read-side authorization guard (defense-in-depth, ADR-0034 follow-up).
+        # Reject fail-closed a user-owned, NON-admin key that carries tenant_id
+        # IS NULL — the "unrestricted" sentinel reserved for system/CLI keys and
+        # admin-owned keys. Such a key should never exist (the write-side
+        # mint/reactivate/reassign fixes prevent it), but if some future path
+        # leaves one, this guard ensures it cannot read across tenants. Also
+        # closes the privilege-persistence gap where a demoted admin still holds
+        # a NULL-tenant key. Uses the SAME fail-closed response as an invalid key.
+        if _is_null_tenant_escalation(tenant_id, owner_user_id, owner_is_admin):
+            _logger.warning(
+                "read-side guard: rejecting user-owned non-admin key with "
+                "tenant_id IS NULL (key_id=%s, user_id=%s) — invalid unrestricted "
+                "state, denying.",
+                key_id, owner_user_id,
+            )
             return Response("Invalid or inactive API key", status_code=401)
 
         # Plan-aware rate limiting + monthly quota (WI-B2).
