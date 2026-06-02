@@ -194,9 +194,12 @@ function EditModal({
       trialDays = td;
     }
 
-    // seat_limit — NOT NULL (default 1). Required (non-blank) for per_seat plans;
-    // otherwise blank -> 1; non-empty validate >= 1.
-    let seatLimit = 1;
+    // seat_limit — NOT NULL (default 1) and NOT nullable, so there is no
+    // "clear to no-limit" state. Per-seat plans REQUIRE a value; for any other
+    // plan a blank field means "leave the current value unchanged" — we omit it
+    // from the payload (exclude_unset on the backend preserves the DB value)
+    // instead of silently overwriting a non-1 limit (e.g. team=20) with 1.
+    let seatLimitToSend: number | undefined;
     const seatRaw = form.seat_limit.trim();
     if (form.pricing_model === 'per_seat' && seatRaw === '') {
       setFormError('Seat limit is required for per-seat plans.');
@@ -208,7 +211,7 @@ function EditModal({
         setFormError('Seat limit must be a positive integer or blank.');
         return;
       }
-      seatLimit = seatN;
+      seatLimitToSend = seatN;
     }
 
     const payload: Record<string, unknown> = {
@@ -222,9 +225,10 @@ function EditModal({
       price_cents: priceCents,
       prices: pricesValue,
       trial_days: trialDays,
-      seat_limit: seatLimit,
       reason,
     };
+    // Blank seat_limit preserves the current DB value (NOT NULL, no cleared state).
+    if (seatLimitToSend !== undefined) payload.seat_limit = seatLimitToSend;
 
     // Pricing model (flat | per_seat) — always included when present
     if (form.pricing_model === 'flat' || form.pricing_model === 'per_seat') {
@@ -332,7 +336,7 @@ function EditModal({
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Seat Limit <span className="text-xs text-gray-400">(blank = no limit)</span>
+              Seat Limit <span className="text-xs text-gray-400">(blank = keep current)</span>
             </label>
             <input
               type="number"

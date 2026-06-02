@@ -4,6 +4,20 @@
 // IMPORTANT: use className= and htmlFor= (NOT class= or for=) — this is a .tsx React island.
 import { useEffect, useState } from 'react';
 
+// The cancel-error box renders via dangerouslySetInnerHTML (it shows a clickable
+// portal link). Any server-supplied text put into it must be escaped, and any
+// server-supplied URL must be scheme-validated, to prevent HTML/JS injection.
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+  ));
+}
+function safeHttpsUrl(u: string | null | undefined, fallback: string): string {
+  // Only a clean https:// URL (no quotes/spaces/angle-brackets) is allowed in the
+  // href; a javascript:/data: or attribute-breaking value falls back.
+  return u && /^https:\/\/[^\s"'<>]+$/i.test(u) ? u : fallback;
+}
+
 interface Subscription {
   id: number;
   plan_id: number;
@@ -426,7 +440,7 @@ export default function BillingDashboard() {
         }
       } else if (res.status === 503 || res.status === 502) {
         // Polar API unavailable — surface manage_url
-        const portalUrl = data.manage_url ?? subData?.manage_url ?? 'https://polar.sh/';
+        const portalUrl = safeHttpsUrl(data.manage_url ?? subData?.manage_url, 'https://polar.sh/');
         setCancelError(
           `Online cancellation is temporarily unavailable. Please cancel from the ` +
           `<a href="${portalUrl}" target="_blank" rel="noopener" class="underline text-viindoo-primary-text">Polar customer portal</a>.`
@@ -434,8 +448,9 @@ export default function BillingDashboard() {
       } else if (res.status === 404) {
         setCancelError('No active subscription found to cancel.');
       } else {
+        // Server-supplied detail is plain text but rendered via innerHTML — escape it.
         const detail = data.detail || data.error || 'Cancellation failed. Please try again.';
-        setCancelError(detail);
+        setCancelError(escapeHtml(detail));
       }
     } catch {
       setCancelError('Network error. Please try again or use the Polar portal.');

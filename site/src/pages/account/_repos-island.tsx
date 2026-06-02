@@ -77,7 +77,8 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
   const [indexingId, setIndexingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  // Index job status per repo id: 'running' | 'pending' | 'done' | 'error'.
+  // Index job status per repo id: 'queued' | 'running' | 'done' | 'error'
+  // (matches job_registry._VALID_STATUSES; a new job starts 'queued').
   // Lets the user see when an index job actually finishes instead of the old
   // fire-and-forget behaviour (C-7). Mirrors the clone_status poll pattern.
   const [indexJobStatus, setIndexJobStatus] = useState<Record<number, string>>({});
@@ -142,7 +143,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
       consecutiveFailures = 0;
       const status = (data as { status?: string }).status ?? 'unknown';
       setIndexJobStatus(prev => ({ ...prev, [repoId]: status }));
-      if (status === 'running' || status === 'pending') {
+      if (status === 'running' || status === 'queued') {
         setTimeout(tick, 5000);
       } else if (status === 'done') {
         flash('Index completed.');
@@ -391,7 +392,7 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
                             disabled={
                               indexingId === repo.id ||
                               indexJobStatus[repo.id] === 'running' ||
-                              indexJobStatus[repo.id] === 'pending'
+                              indexJobStatus[repo.id] === 'queued'
                             }
                             data-testid={`index-repo-button-${repo.id}`}
                             className="text-xs bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 px-3 py-1.5 rounded-lg transition-colors"

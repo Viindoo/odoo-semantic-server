@@ -394,6 +394,11 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
       // duplication). The banner is re-shown post-reload from the stash.
       try {
         sessionStorage.setItem('osm-new-api-key', data.raw_key);
+        // Safety net: if the reload below never navigates (e.g. a JS error),
+        // purge the raw secret rather than leaving it readable for the whole
+        // tab session. The normal path discards this timer when the reload
+        // navigates away, and the next page pops the key on load.
+        setTimeout(() => { try { sessionStorage.removeItem('osm-new-api-key'); } catch { /* ignore */ } }, 15000);
       } catch {
         // sessionStorage unavailable (private mode / disabled) — fall back to
         // showing the banner now without reload so the key is never lost.
