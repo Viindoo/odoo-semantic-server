@@ -436,7 +436,7 @@ async def trigger_backup(
 
 
 @router.get("/backup/{job_id}/stream")
-async def backup_stream(job_id: str, request: Request):
+async def backup_stream(job_id: str, request: Request, _user_id: int = Depends(require_admin)):
     """SSE stream of backup process output. Streams until done, then sends done event."""
     log_path = Path(tempfile.gettempdir()) / f"osm-backup-{job_id}.log"
 
@@ -488,7 +488,7 @@ async def backup_stream(job_id: str, request: Request):
 
 
 @router.get("/backup/{job_id}/status")
-async def backup_status(job_id: str, request: Request):
+async def backup_status(job_id: str, request: Request, _user_id: int = Depends(require_admin)):
     """Poll backup job status (alternative to SSE for simpler clients)."""
     with _backup_jobs_lock:
         job = _backup_jobs.get(job_id)

@@ -7,11 +7,13 @@ import os
 import threading
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
+from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 from neo4j import GraphDatabase
+from pydantic import Field
 from starlette.requests import Request
 
 from src.constants import (
@@ -284,6 +286,35 @@ MUTATING_TOOL_KWARGS = {
         "destructiveHint": False,
     }
 }
+
+# WI-4 (ADR-0029 amend): ``odoo_version`` is HARD-REQUIRED on every
+# version-bearing MCP tool.  In a long session an LLM tends to drop the version
+# argument; with a sentinel default ("auto") that silently fell through to the
+# latest-indexed version (resolver Tier-3) and could return data for the WRONG
+# Odoo version without any signal.  Marking the parameter required means FastMCP
+# rejects the call with a "Missing required argument" ValidationError *before*
+# the handler runs, forcing the model to retry with an explicit version.
+#
+# Implemented as ``Annotated[str, Field(...)]`` with NO default:
+#   * FastMCP renders ``odoo_version`` into the JSON-Schema ``required`` array.
+#   * It is syntactically a non-default parameter, so it must precede any
+#     defaulted positional params (or be keyword-only, e.g. cli_help/entity_lookup).
+# The 4 session/bootstrap tools (set_active_version, list_available_versions,
+# set_active_profile, list_available_profiles) intentionally do NOT use this —
+# they are how a client discovers/sets the version in the first place.
+# MCP Resources (odoo://{version}/...) keep sentinel support: the version is
+# always present in the URI path, so the silent-omission failure mode cannot
+# occur there.
+RequiredOdooVersion = Annotated[
+    str,
+    Field(
+        description=(
+            "REQUIRED — always pass the concrete Odoo version explicitly "
+            "(e.g. '17.0'); never assume or omit it. Use list_available_versions "
+            "if unsure which versions are indexed."
+        ),
+    ),
+]
 
 _driver = None
 _embedder_instance = None
@@ -967,6 +998,8 @@ def _resolve_field(
                 "├─ Stored:   Yes",
                 "├─ Required: No",
                 "├─ Related:  —",
+                # WI-1 (#238): magic fields are ORM-managed — never writable.
+                "├─ Readonly: Yes",
                 "├─ Declared in:",
                 "│   └─ <builtin>  [ORM magic field — injected at runtime, not in source]",
             ]
@@ -1002,6 +1035,12 @@ def _resolve_field(
         lines.append(f"├─ Label:    {base_f['string']}")
     if base_f.get("help"):
         lines.append(f"├─ Help:     {base_f['help']}")
+    # WI-1 (#238): writability signal. Graceful degradation — pre-reindex
+    # graphs lack effective_readonly (None); omit the line rather than print a
+    # misleading "Readonly: No". Only render once the field has been reindexed.
+    _eff_ro = base_f.get("effective_readonly")
+    if _eff_ro is not None:
+        lines.append(f"├─ Readonly: {'Yes' if _eff_ro else 'No'}")
     lines.append("├─ Declared in:")
     last_idx = len(records) - 1
     for i, r in enumerate(records):
@@ -1470,7 +1509,7 @@ def _find_examples(
 @mcp.tool(**READONLY_TOOL_KWARGS)
 async def find_examples(
     query: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     limit: int = 5,
     context_module: str | None = None,
     chunk_types: list[str] | None = None,
@@ -1490,7 +1529,6 @@ async def find_examples(
 
     Args:
         query: Feature description (EN or VN).
-        odoo_version: e.g. "17.0". Default "auto" = latest indexed.
         limit: Number of results (default 5, max 20).
         context_module: Boost results from modules this module depends on.
         chunk_types: Filter by type: method, field, view, qweb, js_era1,
@@ -1959,7 +1997,7 @@ def _impact_analysis(
 def impact_analysis(
     entity_type: str,
     entity_name: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> str:
     """List everything affected by changing an entity. Risk-scored LOW/MEDIUM/HIGH.
@@ -1976,7 +2014,6 @@ def impact_analysis(
         entity_type: One of 'field', 'method', 'model'.
         entity_name: For field/method: '<model>.<name>' e.g.
             'sale.order.amount_total'. For model: '<model>' e.g. 'sale.order'.
-        odoo_version: e.g. '17.0'. Default 'auto'.
         profile_name: Profile filter for all 5 sub-queries
             (Field/Method/View/JSPatch/Module). Default None = all profiles.
 
@@ -2153,7 +2190,7 @@ def _api_version_diff(
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
 @offload
-def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
+def lookup_core_api(name: str, odoo_version: RequiredOdooVersion) -> str:
     """Look up an Odoo core API symbol: signature, status, replacement.
 
     Although you may have memorized Odoo API from training, this tool returns
@@ -2170,7 +2207,6 @@ def lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     Args:
         name: Symbol name (full qualified or short, e.g. 'safe_eval' or
             'odoo.tools.safe_eval.safe_eval').
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
 
     Returns:
         Tree text: Kind, Status, Signature, Replacement (if any), Added in,
@@ -2538,7 +2574,7 @@ def _lint_check(
 @mcp.tool(**READONLY_TOOL_KWARGS)
 @offload
 def find_deprecated_usage(
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     kind: str | None = None,
     profile_name: str | None = None,
 ) -> str:
@@ -2557,7 +2593,6 @@ def find_deprecated_usage(
     user wants version-level diff → use api_version_diff
 
     Args:
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
         kind: Optional filter — restrict to one CoreSymbol.kind
             (e.g. 'orm_method', 'function').
         profile_name: Optional profile filter (e.g. 'my_profile').
@@ -2581,7 +2616,7 @@ def find_deprecated_usage(
 @mcp.tool(**READONLY_TOOL_KWARGS)
 @offload
 def lint_check(
-    code: str, odoo_version: str = "auto", language: str = "python",
+    code: str, odoo_version: RequiredOdooVersion, language: str = "python",
 ) -> str:
     """Check code against indexed Odoo lint rules; language='xml' returns RelaxNG violations.
 
@@ -2595,7 +2630,6 @@ def lint_check(
     Args:
         code: Source chunk to check. Ignored for language='xml' (the tool then
             returns all indexed RelaxNG violations from the graph, v15+ only).
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
         language: 'python' | 'javascript' (fuzzy token-overlap vs indexed rules)
             | 'xml' (ground-truth RelaxNG :LintViolation nodes, v15+ only).
 
@@ -2767,7 +2801,8 @@ def _cli_help(
 def cli_help(
     command: str | None = None,
     flag: str | None = None,
-    odoo_version: str = "auto",
+    *,
+    odoo_version: RequiredOdooVersion,
 ) -> str:
     """Look up odoo-bin subcommand or flag: status, help text, replacement.
 
@@ -2785,13 +2820,12 @@ def cli_help(
             If None, lists all known commands at this version.
         flag: Optional flag (e.g. '--http-port'). With command, returns full
             flag details including replacement when deprecated.
-        odoo_version: e.g. '17.0', '18.0'. Default 'auto'.
 
     Returns:
         Tree text: flag status, type, default, help text, replacement.
 
     Example:
-        cli_help("server", "--longpolling-port", "18.0")
+        cli_help("server", "--longpolling-port", odoo_version="18.0")
         → cli_help('server', '--longpolling-port', Odoo 18.0)
           ├─ Status:      removed
           ├─ Help:        Deprecated alias to the gevent-port option
@@ -3513,6 +3547,8 @@ def _list_fields(
                    f.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
                    f.stored AS stored, f.compute AS compute,
                    f.comodel_name AS comodel_name,
+                   f.related AS related, f.required AS required,
+                   f.effective_readonly AS effective_readonly,
                    edition_rank, mod_name
             ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
             SKIP $skip
@@ -3632,14 +3668,24 @@ def _list_fields(
         raw_rows = [r for r, _ in sub_items]
         def _fmt_field_row(r: dict) -> str:
             # B1: include stored/compute/comodel_name in field row summary.
+            # WI-1 (#238): also surface related= / readonly / required so AI
+            # clients don't try to set a non-writable field in create()/write().
             parts = [f"{r['name']} : {r['ttype']}"]
             if r.get("compute"):
                 parts.append(f"compute={r['compute']}")
             elif not r.get("stored", True):
                 # stored=False without compute is unusual but surfaceable.
                 parts.append("stored=False")
+            if r.get("related"):
+                parts.append(f"related={r['related']}")
             if r.get("comodel_name"):
                 parts.append(f"-> {r['comodel_name']}")
+            # effective_readonly is None on pre-reindex nodes — only flag when
+            # explicitly True (graceful degradation, mirrors detail view).
+            if r.get("effective_readonly"):
+                parts.append("readonly")
+            if r.get("required"):
+                parts.append("required")
             return " | ".join(parts)
 
         rendered_strs = _render_capped(
@@ -4872,7 +4918,7 @@ def _format_find_override_point(
 @mcp.tool(**READONLY_TOOL_KWARGS)
 async def suggest_pattern(
     intent: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     language: str = "python",
     limit: int = 5,
 ) -> str:
@@ -4890,7 +4936,6 @@ async def suggest_pattern(
     Args:
         intent: NL description of intent, e.g. 'computed field cross-model
             partner'.
-        odoo_version: '17.0' / '18.0' / 'auto'.
         language: 'python' | 'xml' | 'js' | 'all'. Default 'python'.
         limit: Max patterns to return (default 5).
 
@@ -4938,7 +4983,7 @@ async def suggest_pattern(
 @offload
 def check_module_exists(
     name: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> str:
     """Verify if a module is indexed and flag EE-confusion for Viindoo stack.
@@ -4956,7 +5001,6 @@ def check_module_exists(
 
     Args:
         name: Module technical name (e.g. 'sale', 'helpdesk', 'viin_helpdesk').
-        odoo_version: '17.0' / '18.0' / 'auto'.
         profile_name: Optional profile filter (e.g. 'my_profile').
             When set, only Module nodes whose profile array contains this name
             are checked. Default None checks across all profiles.
@@ -4979,7 +5023,7 @@ def check_module_exists(
 @mcp.tool(**READONLY_TOOL_KWARGS)
 @offload
 def find_override_point(
-    model: str, method: str, odoo_version: str = "auto", to_version: str = "",
+    model: str, method: str, odoo_version: RequiredOdooVersion, to_version: str = "",
 ) -> str:
     """Show override chain + super-call convention + anti-patterns for a method.
 
@@ -4995,7 +5039,8 @@ def find_override_point(
     Args:
         model: Odoo model dotted name (e.g. 'sale.order').
         method: Method name (e.g. 'action_confirm', '_compute_amount').
-        odoo_version: '17.0' / '18.0' / 'auto'. From-version in diff mode.
+        odoo_version: From-version when in diff mode (see field schema for
+            the required-version contract).
         to_version: Optional. When set, activates cross-version diff mode
             (e.g. '18.0' to diff 17.0 → 18.0). Default '' = single-version.
 
@@ -5167,6 +5212,9 @@ def _resolve_field_structured(
         stored=bool(base_f.get("stored", True)),
         required=bool(base_f.get("required", False)),
         related=base_f.get("related") or None,
+        # WI-1 (#238): effective_readonly is None on pre-reindex graphs — pass
+        # through as None (unknown) rather than coercing to False.
+        readonly=base_f.get("effective_readonly"),
         comodel=base_f.get("comodel_name") or None,
         label=base_f.get("string") or None,
         help=base_f.get("help") or None,
@@ -5661,7 +5709,7 @@ def _list_methods_structured(
 @offload
 def describe_module(
     name: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> ToolResult:
     """Return a full architecture overview of an Odoo module (manifest +
@@ -5676,7 +5724,6 @@ def describe_module(
 
     Args:
         name: Module technical name (e.g. 'sale', 'viin_sale').
-        odoo_version: '17.0' / '18.0' / 'auto'.
         profile_name: Optional profile filter.
 
     Returns:
@@ -5708,7 +5755,7 @@ def describe_module(
 def model_inspect(
     model: str,
     method: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
     *,
     field: str | None = None,
@@ -5732,7 +5779,6 @@ def model_inspect(
         model: Dotted model name, e.g. 'sale.order'.
         method: One of summary | fields | methods | views | field | method.
             'field' requires field=. 'method' requires method_name=.
-        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
         field: Required when method='field'.
         method_name: Required when method='method'.
@@ -5765,7 +5811,7 @@ def model_inspect(
 def module_inspect(
     name: str,
     method: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
     start_index: int = 0,
     limit: int = 200,
@@ -5790,7 +5836,6 @@ def module_inspect(
             'fields' and 'methods' return a guidance stub (model required).
             'dependencies' returns the transitive DEPENDS_ON closure with repo
             info and topological load order (B2, ADR-0028 consolidation).
-        odoo_version: e.g. '17.0', '18.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
@@ -5820,7 +5865,7 @@ def module_inspect(
 async def entity_lookup(
     kind: str,
     *,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
     model: str | None = None,
     field: str | None = None,
@@ -5842,7 +5887,6 @@ async def entity_lookup(
 
     Args:
         kind: One of model | field | method | view | module | pattern.
-        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
         model: Required for kind in {model, field, method}.
         field: Required for kind='field'.
@@ -5856,8 +5900,9 @@ async def entity_lookup(
         Tree text identical to the underlying tool's output.
 
     Example:
-        entity_lookup("field", model="sale.order", field="amount_total")
-        → same as model_inspect(model="sale.order", method="field", field="amount_total")
+        entity_lookup("field", model="sale.order", field="amount_total", odoo_version="17.0")
+        → same as model_inspect(model="sale.order", method="field",
+            field="amount_total", odoo_version="17.0")
     """
     # #227: entity_lookup(kind='pattern') routes to _suggest_pattern, whose
     # embedder.embed() blocks. Capture the api_key_id ContextVar on the event
@@ -6477,7 +6522,7 @@ def _find_style_override(
 @offload
 def resolve_stylesheet(
     module: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
 ) -> str:
     """Enumerate CSS/SCSS stylesheets for an Odoo module with import chain.
 
@@ -6491,7 +6536,6 @@ def resolve_stylesheet(
 
     Args:
         module: Odoo module technical name (e.g. 'web', 'website_sale').
-        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
 
     Returns:
         Tree listing each stylesheet with language, stat counters
@@ -6518,7 +6562,7 @@ def resolve_stylesheet(
 @mcp.tool(**READONLY_TOOL_KWARGS)
 async def find_style_override(
     selector_or_variable: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     limit: int = 5,
 ) -> str:
     """Find CSS selectors or SCSS variables/mixins across modules + override order.
@@ -6538,7 +6582,6 @@ async def find_style_override(
     Args:
         selector_or_variable: CSS selector, SCSS variable (e.g. '$primary'),
             or mixin name to search for.
-        odoo_version: e.g. '17.0'. Default 'auto' = latest indexed.
         limit: Max results to return (default 5).
 
     Returns:
@@ -6597,7 +6640,7 @@ async def find_style_override(
 def resolve_orm_chain(
     model: str,
     dotted_path: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> str:
     """Walk a dotted ORM field path and return the terminal field type.
@@ -6617,7 +6660,6 @@ def resolve_orm_chain(
     Args:
         model: Root dotted model name, e.g. 'sale.order'.
         dotted_path: Dotted field path, e.g. 'partner_id.country_id.code'.
-        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
 
     Returns:
@@ -6632,7 +6674,7 @@ def resolve_orm_chain(
 def validate_domain(
     model: str,
     domain: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> str:
     """Validate a search domain's field-paths and operators against the graph.
@@ -6651,7 +6693,6 @@ def validate_domain(
     Args:
         model: Dotted model the domain runs on, e.g. 'sale.order'.
         domain: Domain literal, e.g. "[('partner_id.country_id', '=', 'VN')]".
-        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
 
     Returns:
@@ -6666,7 +6707,7 @@ def validate_domain(
 def validate_depends(
     model: str,
     method: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> str:
     """Validate a compute method's @api.depends paths against the Field graph.
@@ -6685,7 +6726,6 @@ def validate_depends(
     Args:
         model: Dotted model name, e.g. 'sale.order'.
         method: Compute method name, e.g. '_compute_amount_total'.
-        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
 
     Returns:
@@ -6701,7 +6741,7 @@ def validate_relation(
     model: str,
     field: str,
     target_model: str,
-    odoo_version: str = "auto",
+    odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
 ) -> str:
     """Assert a relational field points at an expected comodel.
@@ -6721,7 +6761,6 @@ def validate_relation(
         model: Dotted model name, e.g. 'sale.order'.
         field: Relational field name, e.g. 'partner_id'.
         target_model: Expected comodel, e.g. 'res.partner'.
-        odoo_version: e.g. '17.0'. 'auto' = latest indexed.
         profile_name: Optional profile filter.
 
     Returns:

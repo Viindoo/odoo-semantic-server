@@ -437,6 +437,54 @@ def resolve_tenant_scope_web(request: Request) -> set[int] | _AllTenants:
         return set()                      # fail-closed on DB error
 
 
+def resolve_read_scope(request: Request) -> tuple[bool, "set[int] | _AllTenants"]:
+    """Resolve (is_admin, scope) for read-side tenant gating in ONE pass.
+
+    Returns a ``(is_admin, scope)`` tuple where ``is_admin`` is derived from the
+    same resolution as ``scope`` (``is_admin == (scope is ALL_TENANTS)``). This
+    is the single entry point read-side IDOR handlers should use so that:
+
+      * ``is_admin`` and ``scope`` can never disagree (one resolution, not two),
+      * the underlying ``is_admin_session`` DB read happens at most once per
+        request (``resolve_tenant_scope_web`` already calls it internally), and
+      * the shared in-scope contract (#237) lives in exactly one place.
+
+    Semantics (unchanged from the prior two-call form for every authenticated /
+    unauthenticated path):
+      - Global admin           -> (True,  ALL_TENANTS)
+      - Non-admin tenant member -> (False, {tenant_id, ...})
+      - Unauthenticated / error -> (False, set())  (fail-closed, deny-all)
+      - Test bypass            -> (True,  ALL_TENANTS)  (bypass == act-as-admin,
+        so admin-derived redaction is consistent — the prior code called
+        ``is_admin_session`` separately here, which under bypass could disagree
+        with scope; deriving from scope removes that latent inconsistency).
+
+    Handlers keep their own response shape + field redaction: this helper only
+    resolves access state, it never raises or renders.
+    """
+    scope = resolve_tenant_scope_web(request)
+    return (scope is ALL_TENANTS), scope
+
+
+def read_access_allowed(
+    is_admin: bool, scope: "set[int] | _AllTenants", tenant_id: int | None
+) -> bool:
+    """True if a read-side caller may see a resource carrying ``tenant_id``.
+
+    Shared in-scope decision for the #237 IDOR contract, used by every read-side
+    handler (job-status, clone-status, core-symbol-counts) so the rule lives in
+    one place and cannot drift between sites.
+
+    ``is_admin`` short-circuits to True (admin sees everything). Otherwise the
+    decision delegates to :func:`is_in_scope` — which treats ``tenant_id is None``
+    (shared/global) as visible to all and an int tenant_id as gated on ``scope``.
+    Mirrors the long-hand ``is_admin or is_in_scope(scope, tenant_id)``.
+
+    Read-side only — never reuse for mutation (see :func:`tenant_write_allowed`).
+    """
+    return is_admin or is_in_scope(scope, tenant_id)
+
+
 def tenant_write_allowed(scope: set[int] | _AllTenants, tenant_id: int | None) -> bool:
     """True if the session user may WRITE to a resource with the given tenant_id.
 

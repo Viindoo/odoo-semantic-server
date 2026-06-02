@@ -221,3 +221,57 @@ True per-key profile authorization — where a key is only permitted to query on
 2. Query-level filtering in every resolver (`resolve_version_v2`, Neo4j Cypher `WHERE profile IN allowed`) enforced regardless of whether `profile_name` was supplied explicitly or via session state.
 
 This is out of scope for v0.6. The design decision is to keep the implementation simple until there is a concrete customer demand signal for profile-level authz (e.g., multi-tenant SaaS where different teams must be isolated from each other's indexed codebases). If that signal arrives, the authz layer can be added without changing the existing session-state schema — the `api_key_id` PK already provides the natural tenant anchor.
+
+---
+
+## Amendment (WI-4, 2026-06-02) — `odoo_version` is HARD-REQUIRED on tools (supersedes the sticky-version half)
+
+### What changed
+
+`odoo_version` is now a **required** parameter on every version-bearing MCP tool. Omitting it makes FastMCP reject the call with a `ValidationError` ("Missing required argument") **before** the handler runs, so the model is forced to retry with an explicit, concrete version. This **supersedes the version half** of the original Wave E design (sticky `odoo_version` via `set_active_version` + the `"auto"` default). The **profile half is unchanged** — `profile_name` is still implicit/sticky and convenience-only per the v0.6 amendment above.
+
+### Why (root cause)
+
+The original design let every version-bearing tool default to `odoo_version="auto"`. The 6 sentinels (`auto`, `default`, `latest`, `version`, `any`, `""`) all collapse to `None` in `normalize_version_arg`, after which `resolve_version_v2` walks: Tier-1 explicit → Tier-2 session DB → **Tier-3 `_latest_version()` silently**.
+
+In a long session an LLM reliably *drops* the version argument after a handful of calls (the same "parameter drift" noted in Context §2). With a sentinel default this drift was **silent**: the resolver fell through to the latest indexed version and returned data for the WRONG Odoo version with no signal to the model or the user. For a knowledge engine whose entire value is version-accurate answers, a silent wrong-version answer is worse than an error. Option A (hard-require) converts that silent failure into a loud, self-correcting one.
+
+### Mechanism
+
+Implemented as a shared type alias in `src/mcp/server.py`:
+
+```python
+RequiredOdooVersion = Annotated[str, Field(description="REQUIRED — always pass the concrete Odoo version explicitly (e.g. '17.0'); never assume or omit it. Use list_available_versions if unsure which versions are indexed.")]
+```
+
+`Annotated[str, Field(...)]` with **no default** is the idiomatic FastMCP/pydantic way to mark a parameter required: FastMCP renders it into the JSON-Schema `required[]` array (verified by introspecting `Tool.parameters` in `tests/test_mcp_tool_descriptions.py`). Because it is syntactically a non-default parameter, on the few tools where `odoo_version` would otherwise follow a defaulted positional param (`cli_help`), the parameter is made keyword-only via `*` to keep valid Python; `entity_lookup` was already keyword-only.
+
+### Scope — 19 tools required, others deliberately exempt
+
+**Required (19):** `find_examples`, `impact_analysis`, `lookup_core_api`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`, `describe_module`, `model_inspect`, `module_inspect`, `entity_lookup`, `resolve_stylesheet`, `find_style_override`, `resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation`.
+
+**Deliberately NOT requiring `odoo_version` (bootstrap / two-version):**
+- `list_available_versions`, `list_available_profiles` — take no version (they are how a client *discovers* versions; requiring one would be a chicken-and-egg deadlock).
+- `set_active_profile` — sets the sticky profile, no version.
+- `set_active_version` — the version *is* its payload (a plain required `str`, not the sentinel-bearing `RequiredOdooVersion` alias); this is how a client bootstraps a session version.
+- `api_version_diff` — already requires two explicit versions (`from_version`, `to_version`); `odoo_version` is not one of its parameters.
+
+Tool count is **unchanged at 24** — this is a parameter-schema change only, no tools added or removed.
+
+### Access-path difference — MCP Resources keep sentinel support
+
+MCP **Resources** (`odoo://{version}/...`, ADR-0030) are **NOT** affected and keep sentinel support (`auto`/`default`/`latest` → resolve the API key's active version). The silent-omission failure mode that motivated this change **cannot occur for resources**: the `{version}` segment is a mandatory, structural part of the URI path — a client physically cannot construct a resource URI without supplying *something* in that slot, and a deliberately-passed sentinel is an explicit, auditable choice rather than a silent default.
+
+### Resolver unchanged
+
+`resolve_version_v2` / `_resolve_version` are unchanged. Tier-3 latest-fallback-from-omission is now effectively unreachable for tools (FastMCP rejects omission first), but the resolver still backs (a) resources, (b) the underscore helper functions (`_resolve_model`, etc., which retain their `"auto"` default and are called directly by unit tests), and (c) a tool caller who *deliberately* passes a sentinel string — that still resolves via the session DB as before, preserving backward behaviour for intentional sentinel use. No provenance/disclosure fields were added (Option A alone closes the silent-wrong-version gap).
+
+### Client-repo follow-up (`odoo-mcp-client`)
+
+The client plugin's tool schemas / wrappers must flip `odoo_version` to **required** for the 19 tools listed above (and must NOT require it for the 4 bootstrap/two-version tools). No enum or auxiliary parameter changed — only the `required` flag on the existing `odoo_version` field. Clients that previously relied on omitting the version (letting the server pick latest) must now either pass an explicit version or call `set_active_version` and pass that version on each tool call.
+
+### References
+
+- `src/mcp/server.py` — `RequiredOdooVersion` alias + 19 tool signatures.
+- `tests/test_mcp_tool_descriptions.py` — `test_odoo_version_is_required` (19, FAILs on the old `"auto"` default) + `test_odoo_version_not_required_for_bootstrap_tools` (4).
+- `docs/adr/0023-tool-output-completeness.md` §2 — English-only parameter descriptions (the `RequiredOdooVersion` description is English-only).

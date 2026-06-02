@@ -159,8 +159,8 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: site
 
-      - name: Build Astro site
-        run: pnpm build
+      - name: Build Astro site (dev mode — sets ASTRO_DEV_ORIGIN so checkOrigin allows 127.0.0.1)
+        run: pnpm build:dev
         working-directory: site
 
       - name: Run admin browser tests
@@ -200,8 +200,8 @@ jobs:
         run: pnpm check
         working-directory: site
 
-      - name: Build Astro site
-        run: pnpm build
+      - name: Build Astro site (dev mode — sets ASTRO_DEV_ORIGIN so checkOrigin allows 127.0.0.1)
+        run: pnpm build:dev
         working-directory: site
 
       - name: Run public browser tests

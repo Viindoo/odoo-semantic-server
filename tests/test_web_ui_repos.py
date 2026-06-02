@@ -571,8 +571,12 @@ class TestJobIntegration:
     @pytest.mark.asyncio
     async def test_get_job_status_existing(self, migrated_pg):
         """GET /api/jobs/{id}/status with existing job → 200 + correct JSON shape."""
-        from src.db.pg import job_store
+        from src.db.pg import job_store, repo_store
 
+        # IDOR fix #237: job_status now resolves profile_name → profiles.tenant_id.
+        # A job whose profile has no DB row is admin-only (404 for non-admin). Seed
+        # the profile as shared (tenant_id NULL) so the in-scope happy path is 200.
+        repo_store().add_profile(name="p_status", odoo_version="17.0")
         job_id = job_store().create_job("p_status")
 
         app = create_app()
@@ -592,14 +596,15 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_get_job_status_missing(self, migrated_pg):
-        """GET /api/jobs/999999/status → 404."""
+        """GET /api/jobs/999999/status → 404 (unified no-oracle message, #237)."""
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.get("/api/jobs/999999/status")
 
         assert resp.status_code == 404
         data = resp.json()
-        assert data["error"] == "job not found"
+        # IDOR fix #237: missing and out-of-scope share one message (no existence oracle).
+        assert data["error"] == "not found"
 
 
 class TestStatusBadge:

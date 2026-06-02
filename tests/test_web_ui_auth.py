@@ -1069,3 +1069,60 @@ class TestDashboardCountEmbeddingsRollback:
 
         # Must return None (not raise)
         assert result is None, f"Expected None when embeddings table absent; got {result}"
+
+
+class TestResolveReadScope:
+    """#237 review: shared read-scope helper must resolve (is_admin, scope) in
+    one pass with is_admin == (scope is ALL_TENANTS), and read_access_allowed
+    must mirror `is_admin or is_in_scope(scope, tenant_id)` exactly.
+    """
+
+    def test_admin_resolves_all_tenants(self):
+        """Admin → (True, ALL_TENANTS) — is_admin derived from scope identity."""
+        import unittest.mock as mock
+
+        from src.web_ui import auth
+
+        with mock.patch.object(auth, "resolve_tenant_scope_web", return_value=auth.ALL_TENANTS):
+            is_admin, scope = auth.resolve_read_scope(object())
+        assert is_admin is True
+        assert scope is auth.ALL_TENANTS
+
+    def test_nonadmin_member_resolves_scope_set(self):
+        """Non-admin member → (False, {tenant_id})."""
+        import unittest.mock as mock
+
+        from src.web_ui import auth
+
+        with mock.patch.object(auth, "resolve_tenant_scope_web", return_value={7}):
+            is_admin, scope = auth.resolve_read_scope(object())
+        assert is_admin is False
+        assert scope == {7}
+
+    def test_unauthenticated_resolves_empty_set(self):
+        """Unauthenticated / fail-closed → (False, empty set)."""
+        import unittest.mock as mock
+
+        from src.web_ui import auth
+
+        with mock.patch.object(auth, "resolve_tenant_scope_web", return_value=set()):
+            is_admin, scope = auth.resolve_read_scope(object())
+        assert is_admin is False
+        assert scope == set()
+
+    def test_read_access_allowed_truth_table(self):
+        """read_access_allowed mirrors `is_admin or is_in_scope(scope, tenant_id)`."""
+        from src.web_ui import auth
+
+        # Admin sees everything regardless of tenant_id.
+        assert auth.read_access_allowed(True, auth.ALL_TENANTS, 5) is True
+        assert auth.read_access_allowed(True, auth.ALL_TENANTS, None) is True
+        # Non-admin: shared (None) visible to all.
+        assert auth.read_access_allowed(False, {7}, None) is True
+        # Non-admin: in-scope tenant visible.
+        assert auth.read_access_allowed(False, {7}, 7) is True
+        # Non-admin: out-of-scope tenant denied.
+        assert auth.read_access_allowed(False, {7}, 9) is False
+        # Non-admin with empty scope: only shared visible.
+        assert auth.read_access_allowed(False, set(), None) is True
+        assert auth.read_access_allowed(False, set(), 7) is False

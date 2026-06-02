@@ -3052,7 +3052,9 @@ def test_entity_lookup_invalid_kind(seeded_neo4j):
     import asyncio
 
     srv = _import_server_module()
-    result = asyncio.run(srv.entity_lookup.fn(kind="bogus"))
+    # WI-4: odoo_version is now hard-required on entity_lookup; pass it
+    # explicitly (the bogus-kind error path is what we are exercising).
+    result = asyncio.run(srv.entity_lookup.fn(kind="bogus", odoo_version=TEST_VERSION))
     text = result.content[0].text
     assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
     assert "bogus" in text

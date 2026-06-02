@@ -97,6 +97,104 @@ def test_computed_field_default_not_stored(tmp_path, sale_module):
     assert field_map["computed"].stored is False
 
 
+# --- WI-1 (#238): readonly / inverse / effective_readonly ---
+
+def test_parse_readonly_inverse_effective(tmp_path, sale_module):
+    """WI-1 (#238): stored-related, computed, inverse, and explicit-readonly
+    fields surface the right writability signal for AI clients.
+
+    Business rule: a field the ORM silently ignores on create()/write()
+    (stored-related, computed-without-setter) must be flagged effective_readonly;
+    a field WITH an inverse setter, or with explicit readonly=False, must NOT.
+    """
+    f = write_py(tmp_path, "model.py", """
+        from odoo import models, fields
+
+        class M(models.Model):
+            _name = 'm'
+            # stored-related, no compute, no inverse -> effectively read-only
+            res_model = fields.Char(related='workflow_id.model_name', store=True)
+            # computed, no inverse -> effectively read-only
+            total = fields.Float(compute='_compute_total')
+            # computed WITH inverse setter -> writable
+            alias = fields.Char(compute='_compute_alias', inverse='_set_alias')
+            # explicit readonly=False on a related field -> wins over inference
+            override = fields.Char(related='x.y', readonly=False)
+            # explicit readonly=True on a plain field -> read-only
+            locked = fields.Char(readonly=True)
+            # plain writable field -> not read-only
+            name = fields.Char()
+    """)
+    fmap = {fld.name: fld for fld in parse_file(f, sale_module)[0].fields}
+
+    # stored-related
+    assert fmap["res_model"].related == "workflow_id.model_name"
+    assert fmap["res_model"].inverse is None
+    assert fmap["res_model"].readonly is None  # not explicit
+    assert fmap["res_model"].effective_readonly is True
+
+    # computed, no inverse
+    assert fmap["total"].effective_readonly is True
+
+    # computed WITH inverse -> writable
+    assert fmap["alias"].inverse == "_set_alias"
+    assert fmap["alias"].effective_readonly is False
+
+    # explicit readonly=False overrides related-inference
+    assert fmap["override"].readonly is False
+    assert fmap["override"].effective_readonly is False
+
+    # explicit readonly=True
+    assert fmap["locked"].readonly is True
+    assert fmap["locked"].effective_readonly is True
+
+    # plain writable
+    assert fmap["name"].readonly is None
+    assert fmap["name"].effective_readonly is False
+
+
+def test_compute_effective_readonly_precedence():
+    """WI-1 (#238): unit-test the precedence helper directly (FIRST/Independent)."""
+    from src.indexer.parser_python import _compute_effective_readonly
+
+    # 1. explicit wins (even against related/compute inference)
+    assert _compute_effective_readonly(False, "x.y", None, None) is False
+    assert _compute_effective_readonly(True, None, None, None) is True
+    # 2. related, no compute, no inverse -> True
+    assert _compute_effective_readonly(None, "x.y", None, None) is True
+    # 3. compute, no inverse -> True
+    assert _compute_effective_readonly(None, None, "_c", None) is True
+    # related/compute WITH inverse -> writable
+    assert _compute_effective_readonly(None, "x.y", None, "_set") is False
+    assert _compute_effective_readonly(None, None, "_c", "_set") is False
+    # 4. plain field -> False
+    assert _compute_effective_readonly(None, None, None, None) is False
+
+
+def test_era1_fields_default_readonly_unknown(tmp_path):
+    """WI-1 (#238): era1 (v8-9) legacy fields are best-effort — readonly/inverse
+    left None, effective_readonly False (no inference attempted)."""
+    legacy_module = ModuleInfo(
+        name="sale", odoo_version="9.0", repo="odoo_9.0",
+        path=str(tmp_path), depends=["base"], version_raw="9.0.1.0.0",
+    )
+    f = write_py(tmp_path, "legacy.py", """
+        from openerp.osv import osv, fields
+
+        class my_model(osv.osv):
+            _name = 'my.model'
+            _columns = {
+                'name': fields.char('Name'),
+                'total': fields.function(lambda *a: 0, type='float', string='Total'),
+            }
+    """)
+    models = parse_file(f, legacy_module)
+    fmap = {fld.name: fld for fld in models[0].fields}
+    assert fmap["name"].readonly is None
+    assert fmap["name"].inverse is None
+    assert fmap["name"].effective_readonly is False
+
+
 def test_parse_single_inherit(tmp_path, sale_module):
     f = write_py(tmp_path, "extend.py", """
         from odoo import models, fields

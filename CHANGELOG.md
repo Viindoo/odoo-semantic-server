@@ -11,6 +11,40 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed/Added — Issues #236/#237/#238 + require explicit odoo_version (PR #241)
+
+- **#238 (correctness):** `model_inspect(method='fields')` now flags `related=` and `readonly`
+  on fields (and `required` in the list view). Stored-related fields are no longer misread as
+  writable. New `:Field` properties `readonly`/`inverse`/`effective_readonly`
+  (`src/indexer/writer_neo4j.py`, `parser_python.py`, `models.py`); detail view gains a
+  `Readonly:` line. Pre-reindex nodes degrade gracefully (markers omitted, never a misleading
+  `Readonly: No`).
+- **#237 (security, IDOR):** `GET /api/jobs/{id}/status` is now tenant-scoped (resolve
+  `profile_name → profiles.tenant_id`, `is_in_scope`, unified `404` no-oracle, `error_msg`/`pid`
+  redacted for non-admin). Same-class sweep: `clone-status`, `core-symbol-counts`, admin-gate on
+  `backup status/stream`, auth on `ssh-keys-list`. Regression guard test enforces scope review on
+  new sensitive GET routes. No migration (`profiles.tenant_id` from m13_002).
+- **#236 (dev/CI):** restore-upload 403 fixed — root cause was a `127.0.0.1` vs `localhost`
+  Origin mismatch (Astro `allowedDomains` empty). `ASTRO_DEV_ORIGIN`→`allowedDomains` at build
+  time; `checkOrigin` stays `true` (prod posture unchanged). `parseDevOrigin` extracted to a
+  shared SSOT module. ADR-0019 amended.
+- **Require explicit `odoo_version` (ADR-0029 amend):** 19 version-bearing MCP tools now make
+  `odoo_version` a **required** parameter (omission → validation error), so a long-running LLM
+  session can no longer silently fall back to the latest-indexed version. Session/bootstrap tools
+  (`set_active_version`, `set_active_profile`, `list_available_*`) and `odoo://` resources keep
+  sentinel behaviour. Mirrored in the `odoo-mcp-client` tool surface (Viindoo/odoo-mcp-client#35 —
+  **merge in sync**). Tool count stays **24**.
+
+> **⚠️ Deploy — Neo4j metadata backfill required (do NOT blindly run `--full`):**
+> #238 adds `:Field` graph properties but does **not** change pgvector embeddings. To populate
+> them on an already-indexed production DB, run a **Neo4j-only backfill that skips re-embed**:
+> `python -m src.indexer index-repo --all --full --no-embed`. `--full` is an in-place `MERGE`
+> upsert (NOT a wipe); incremental is **insufficient** (unchanged `head_sha` → skip). Running
+> `--full` *without* `--no-embed` would needlessly re-embed all of pgvector (~a full day).
+> **Operators MUST investigate production state first** (diff scope, embedding model/dim, running
+> jobs, time estimate, backup) per
+> [`docs/deploy/runbooks/graph-metadata-backfill.md`](docs/deploy/runbooks/graph-metadata-backfill.md).
+
 ### Added — Analytics app_setting + /api/site-config extension (PR #225)
 
 - **`analytics.ga_measurement_id` setting** — new Tier-1 runtime setting (category `analytics`,
