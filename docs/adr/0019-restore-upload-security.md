@@ -102,8 +102,84 @@ pre-restore state.
 
 ---
 
+## Dev/Preview Origin Mismatch — fix (#236)
+
+**Reproduce date:** 2026-06-02.  
+**Astro version:** 6.3.3 (note: earlier comments in the codebase said "5.x" — the guard
+exists identically in both versions).
+
+### Root cause
+
+`security.checkOrigin: true` (default) guards mutating requests by comparing the
+`Origin` request header against `url.origin`.  `url.origin` is derived from the HTTP
+`Host` header, but only when `security.allowedDomains` contains an entry that matches
+that host.  With an **empty** `allowedDomains` list, `validateHost()` in the node
+adapter returns `undefined` and `hostname` falls back to `"localhost"`.  Result:
+
+| What is sent/computed | Value |
+|---|---|
+| Server binds on | `127.0.0.1:4321` |
+| Browser opens page at | `http://127.0.0.1:4321` |
+| `Origin` header browser sends | `http://127.0.0.1:4321` |
+| `url.origin` Astro computes (no allowedDomains) | `http://localhost:4321` |
+| `isSameOrigin` | **false** |
+
+`multipart/form-data` (the restore-upload content-type) is "form-like" in Astro's
+heuristic — `formLikeHeader && !isSameOrigin` → **403**, even though the request is
+genuinely same-origin.  JSON requests (`application/json`) are **not** form-like and
+therefore pass unaffected.
+
+### Fix
+
+`astro.config.mjs` reads `ASTRO_DEV_ORIGIN` at **build time** (or at `astro dev`
+startup) and populates `security.allowedDomains` with the parsed hostname, port, and
+protocol so that `validateHost()` returns `"127.0.0.1:4321"` instead of falling back
+to `"localhost"`.
+
+**Timing is critical** — `astro.config.mjs` is evaluated once when the build runs (or
+when the dev server starts).  It is **not** re-evaluated when `astro preview` serves the
+already-built output.  Therefore:
+
+| Command | ASTRO_DEV_ORIGIN at build | allowedDomains in output | Result |
+|---------|--------------------------|--------------------------|--------|
+| `pnpm dev` | set by script | evaluated at dev startup | 127.0.0.1 accepted |
+| `pnpm build` | **unset** | empty | prod default |
+| `pnpm build:dev` | set by script | baked into build output | 127.0.0.1 accepted |
+| `pnpm build:dev && pnpm preview` | set at build step | present in output | 127.0.0.1 accepted |
+| `pnpm preview:dev` | set at build step (alias) | present in output | 127.0.0.1 accepted |
+| `pnpm build && pnpm preview` | **unset** at build | empty | 127.0.0.1 still **403** |
+
+To test the restore-upload flow locally via preview, use **`pnpm build:dev && pnpm preview`**
+(or the convenience alias `pnpm preview:dev`).  Running `pnpm preview` after a plain
+`pnpm build` will still 403 — this is expected and correct because prod (nginx) never
+goes through the Astro proxy for `/api/*` requests.
+
+- `checkOrigin` stays **enabled** (`true`) in all environments — no security posture weakening.
+- `allowedDomains` is only non-empty when `ASTRO_DEV_ORIGIN` was set **at build time**;
+  production builds leave it empty (nginx proxies `/api/*` directly to FastAPI before
+  Astro sees the request, so the SSR proxy handler is dead code in production anyway).
+- The URL-parsing helper (`parseDevOrigin`) lives in
+  `site/src/lib/check-origin-config.mjs` — a single source of truth shared by
+  `astro.config.mjs` and the vitest unit tests, so regressions are caught against the
+  real config logic, not a hand-copied duplicate.
+
+### Security posture summary (post-fix)
+
+Backend guards remain intact regardless of the Astro-layer fix:
+
+| Guard | Location |
+|---|---|
+| `SameSite=Lax` cookie | `app.py:175-182` |
+| Loopback-only bind | `app.py:56-63/188` |
+| Session auth middleware | `middleware.py:194-243` |
+| Admin + fresh-MFA on restore | `operations.py:507-510` |
+
+---
+
 ## Related
 
 - ADR-0008: SSH auto-clone (tempfile safety pattern reused here)
 - ADR-0011: Web UI session auth (session_at TTL, bcrypt)
+- ADR-0043: MFA step-up freshness (mfa_verified_at write fix)
 - [PEP 706](https://peps.python.org/pep-0706/) — tarfile filter='data'
+- Issue #236: restore upload 403 in dev/CI

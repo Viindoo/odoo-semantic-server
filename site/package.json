@@ -8,9 +8,11 @@
     "pnpm": ">=10"
   },
   "scripts": {
-    "dev": "astro dev",
+    "dev": "ASTRO_DEV_ORIGIN=http://127.0.0.1:4321 astro dev",
     "build": "astro build",
+    "build:dev": "ASTRO_DEV_ORIGIN=http://127.0.0.1:4321 astro build",
     "preview": "astro preview",
+    "preview:dev": "pnpm build:dev && pnpm preview",
     "check": "astro check",
     "test": "vitest run",
     "test:watch": "vitest"

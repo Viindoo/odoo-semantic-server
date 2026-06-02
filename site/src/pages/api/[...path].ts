@@ -7,17 +7,25 @@
 // (which has no /api/* page) and 404s. The Vite dev-server proxy works in `pnpm dev`
 // only and is silently dropped by `pnpm preview`; this SSR handler covers both.
 //
-// IMPORTANT — Astro `security.checkOrigin` interaction:
-// Astro 5.x enables `security.checkOrigin: true` by default. The guard rejects
-// POST/DELETE/PATCH requests whose Content-Type is missing OR is one of the
-// form-encoding values (application/x-www-form-urlencoded, multipart/form-data,
-// text/plain) with a 403 "Cross-site form submission" — even when the request
-// is same-origin. JSON requests (`Content-Type: application/json`) are exempt.
-// All client-side mutation fetches in this app MUST set
-// `headers: { 'Content-Type': 'application/json' }`, otherwise this endpoint
-// returns 403 before the handler below ever runs. Symptom we hit in browser
-// tests: delete buttons looked broken (no reload, page stale), because the
-// proxy short-circuited at the framework layer.
+// IMPORTANT — Astro 6.3.3 `security.checkOrigin` interaction (issue #236):
+// Astro 6.x enables `security.checkOrigin: true` by default. The guard compares
+// the request Origin header against url.origin (derived from the Host header).
+// When `security.allowedDomains` is empty, Astro falls back to "localhost" as the
+// hostname, so url.origin becomes "http://localhost:4321" even when the server is
+// bound to 127.0.0.1:4321. Browser fetches from http://127.0.0.1:4321 send
+// Origin: http://127.0.0.1:4321, which does NOT match "http://localhost:4321".
+// The mismatch causes 403 for any multipart/form-data or form-urlencoded request
+// (these are "form-like" in Astro's heuristic). JSON requests are unaffected.
+//
+// The restore upload (POST /api/operations/restore) uses multipart/form-data,
+// so it hit this 403 in dev/preview. Fix: ASTRO_DEV_ORIGIN must be set at BUILD TIME
+// so astro.config.mjs can bake the correct allowedDomains into the output.
+//   pnpm dev          → env set in script → config re-evaluated on restart → OK
+//   pnpm build:dev    → env set in script → baked into build → pnpm preview works
+//   pnpm preview:dev  → convenience alias for build:dev + preview
+//   pnpm build        → env unset → prod default (allowedDomains empty) → OK in prod
+// checkOrigin stays enabled in all environments.
+// See ADR-0019 §Dev/Preview Origin Mismatch and astro.config.mjs for full details.
 import type { APIRoute } from 'astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
 

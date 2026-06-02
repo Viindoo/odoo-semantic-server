@@ -467,6 +467,45 @@ def _extract_string(node: ast.expr) -> str | None:
     return None
 
 
+def _extract_tristate_bool(node: ast.expr | None) -> bool | None:
+    """Extract an explicit bool literal kwarg as tri-state (WI-1 #238).
+
+    Returns the literal value when the kwarg is ``True``/``False``, else
+    ``None`` (kwarg absent OR a non-literal expression we can't evaluate
+    statically). Tri-state matters for ``readonly``: an explicit
+    ``readonly=False`` must override the related/compute inference, so we
+    cannot collapse "absent" and "False" into one value.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return node.value
+    return None
+
+
+def _compute_effective_readonly(
+    readonly: bool | None,
+    related: str | None,
+    compute: str | None,
+    inverse: str | None,
+) -> bool:
+    """Derive whether a field is effectively read-only (WI-1 #238).
+
+    Precedence (first match wins):
+      1. explicit ``readonly`` kwarg present  -> use it verbatim;
+      2. ``related`` set, no compute, no inverse  -> True (stored-related is
+         silently overwritten by the ORM on write);
+      3. ``compute`` set, no inverse  -> True (computed-without-setter);
+      4. otherwise  -> False (plain writable field, or compute/related WITH
+         an inverse setter, which IS writable).
+    """
+    if readonly is not None:
+        return readonly
+    if related is not None and compute is None and inverse is None:
+        return True
+    if compute is not None and inverse is None:
+        return True
+    return False
+
+
 def _extract_inherit(node: ast.expr) -> list[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
@@ -614,6 +653,13 @@ def _parse_class(
                 related = _extract_string(kwargs['related']) if 'related' in kwargs else None
                 compute = _extract_string(kwargs['compute']) if 'compute' in kwargs else None
                 required = bool(getattr(kwargs.get('required'), 'value', False))
+                # WI-1 (#238) — writability signals. readonly is tri-state
+                # (explicit literal vs absent); inverse is the setter method name.
+                readonly = _extract_tristate_bool(kwargs.get('readonly'))
+                inverse = _extract_string(kwargs['inverse']) if 'inverse' in kwargs else None
+                effective_readonly = _compute_effective_readonly(
+                    readonly, related, compute, inverse
+                )
                 # store kwarg: computed and related fields default to store=False
                 if 'store' in kwargs:
                     stored = bool(getattr(kwargs['store'], 'value', True))
@@ -661,6 +707,9 @@ def _parse_class(
                     line=node.lineno,  # A3: 1-based line of the field assignment (era2)
                     string=field_string,
                     help=field_help,
+                    readonly=readonly,
+                    inverse=inverse,
+                    effective_readonly=effective_readonly,
                 ))
 
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):

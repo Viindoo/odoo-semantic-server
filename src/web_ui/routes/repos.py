@@ -22,8 +22,10 @@ from src.web_ui.auth import (
     ALL_TENANTS,
     is_admin_session,
     is_in_scope,
+    read_access_allowed,
     require_admin,
     require_authenticated,
+    resolve_read_scope,
     resolve_tenant_scope_web,
     tenant_write_allowed,
 )
@@ -620,8 +622,14 @@ async def add_repo(
 
 
 @router.get("/ssh-keys-list")
-async def ssh_keys_list(request: Request):
-    """Return JSON array of SSH key pairs (id + name) for dropdowns."""
+async def ssh_keys_list(request: Request, _user_id: int = Depends(require_authenticated)):
+    """Return JSON array of SSH key pairs (id + name) for dropdowns.
+
+    Security (IDOR sweep #237): SSH key names are admin-managed and globally shared
+    (no per-tenant rows), but revealing them to unauthenticated callers is unnecessary.
+    Require authentication — non-admin users legitimately need the list to attach keys
+    to their repos, so admin-only would be too restrictive.
+    """
     try:
         from src.db.pg import auth_store
 
@@ -945,7 +953,12 @@ async def clone_all_pending(
 
 @router.get("/repos/{repo_id}/clone-status")
 async def clone_status(request: Request, repo_id: int):
-    """Return JSON clone_status for a single repo (used by badge polling)."""
+    """Return JSON clone_status for a single repo (used by badge polling).
+
+    Security (IDOR sweep #237):
+    - repos.tenant_id scopes visibility; out-of-scope → 404 (no oracle).
+    - clone_error_msg redacted for non-admin (may contain filesystem paths / SSH errors).
+    """
     try:
         from src.db.pg import repo_store
 
@@ -953,11 +966,17 @@ async def clone_status(request: Request, repo_id: int):
     except Exception as e:
         return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
     if repo is None:
-        return JSONResponse(_json_safe({"error": "repo not found"}), status_code=404)
+        return JSONResponse(_json_safe({"error": "not found"}), status_code=404)
+
+    # Single resolution: is_admin is derived from the same scope (no double DB read).
+    is_admin, scope = resolve_read_scope(request)
+    if not read_access_allowed(is_admin, scope, repo.get("tenant_id")):
+        return JSONResponse(_json_safe({"error": "not found"}), status_code=404)
+
     return JSONResponse(_json_safe({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
-        "error_msg": repo.get("clone_error_msg"),
+        "error_msg": repo.get("clone_error_msg") if is_admin else None,
     }))
 
 
@@ -1210,10 +1229,12 @@ async def core_symbol_counts(request: Request, repo_id: int):
 
     JSON response: ``{"counts": {"17.0": 1234, "16.0": 0, ...}}``
 
-    Returns 404 when the repo is not found.
+    Returns 404 when the repo is not found or out-of-scope (no oracle).
     Returns 503 when Postgres / repo-lookup fails.
     Returns 200 with an empty ``counts`` dict when Neo4j is unavailable or
     the Neo4j query fails (graceful degradation - no 503 on graph errors).
+
+    Security (IDOR sweep #237): repos.tenant_id scopes visibility.
     """
     try:
         from src.db.pg import repo_store
@@ -1223,7 +1244,12 @@ async def core_symbol_counts(request: Request, repo_id: int):
         return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
 
     if repo is None:
-        return JSONResponse(_json_safe({"error": "repo not found"}), status_code=404)
+        return JSONResponse(_json_safe({"error": "not found"}), status_code=404)
+
+    # Single resolution: is_admin is derived from the same scope (no double DB read).
+    is_admin, scope = resolve_read_scope(request)
+    if not read_access_allowed(is_admin, scope, repo.get("tenant_id")):
+        return JSONResponse(_json_safe({"error": "not found"}), status_code=404)
 
     odoo_version: str | None = repo.get("odoo_version")
 

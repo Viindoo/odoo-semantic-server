@@ -17,6 +17,21 @@ from src.db.exceptions import (
 from src.db.pg import PgPool
 
 
+# Sentinel: distinguishes "profile row missing" from "profile exists, tenant_id IS NULL".
+# Used by RepoStore.get_profile_tenant_id as a typed missing-row indicator.
+#
+# PUBLIC: this sentinel is part of get_profile_tenant_id's return contract —
+# callers in other modules compare against it (``is PROFILE_MISSING``), so it is
+# intentionally exported without an underscore prefix.
+class _ProfileMissing:
+    """Singleton sentinel returned when no profiles row matches a name lookup."""
+    def __repr__(self) -> str:
+        return "PROFILE_MISSING"
+
+
+PROFILE_MISSING = _ProfileMissing()
+
+
 class RepoStore:
     def __init__(self, pool: PgPool) -> None:
         self._pool = pool
@@ -80,6 +95,27 @@ class RepoStore:
             return self._pool.fetch_one(
                 conn, "SELECT * FROM profiles WHERE id = %s", (profile_id,)
             )
+
+    def get_profile_tenant_id(self, profile_name: str) -> "int | None | _ProfileMissing":
+        """Return tenant_id for the profile row with the given name.
+
+        Returns:
+            int     – the tenant_id value when the profile row exists and has one.
+            None    – the profile row exists but tenant_id IS NULL (shared/global).
+            _MISSING sentinel – no row found for that name (profile doesn't exist).
+
+        Callers MUST distinguish between None (shared) and the missing sentinel.
+        Use ``is PROFILE_MISSING`` for the not-found check.
+        """
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT tenant_id FROM profiles WHERE name = %s",
+                (profile_name,),
+            )
+        if row is None:
+            return PROFILE_MISSING
+        return row["tenant_id"]
 
     # ------------------------------------------------------------------
     # Profile hierarchy helpers (M8 — Option Y)

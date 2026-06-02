@@ -215,6 +215,14 @@ class ResolveFieldOutput(BaseModel):
         default=None,
         description="Related field path if this is a related field",
     )
+    readonly: bool | None = Field(
+        default=None,
+        description=(
+            "Effective read-only status (WI-1 #238): True when the field is "
+            "stored-related/computed without an inverse setter and thus silently "
+            "ignored on create()/write(). None on pre-reindex graphs (unknown)."
+        ),
+    )
     comodel: str | None = Field(
         default=None,
         description=(

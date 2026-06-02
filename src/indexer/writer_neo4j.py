@@ -219,13 +219,17 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 SET f.ttype = $ttype, f.related = $related, f.compute = $compute,
                     f.stored = $stored, f.required = $required,
                     f.comodel_name = $comodel_name,
-                    f.string = $fstring, f.help = $fhelp
+                    f.string = $fstring, f.help = $fhelp,
+                    f.readonly = $readonly, f.inverse = $inverse,
+                    f.effective_readonly = $effective_readonly
                 MERGE (f)-[:BELONGS_TO]->(m)
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=fld.name, ttype=fld.ttype, related=fld.related,
                  compute=fld.compute, stored=fld.stored, required=fld.required,
                  comodel_name=fld.comodel_name,
                  fstring=fld.string, fhelp=fld.help,
+                 readonly=fld.readonly, inverse=fld.inverse,
+                 effective_readonly=fld.effective_readonly,
                  profiles=profiles)
 
         for mth in model.methods:
