@@ -122,13 +122,24 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
   // endpoint + 5s cadence as the clone_status poll so the UI can tell the user
   // when indexing actually completes rather than leaving it fire-and-forget.
   function pollIndexJob(repoId: number, jobId: number) {
+    // Cap consecutive lookup failures so a permanent error (job id gone, session
+    // expired mid-poll) cannot leak a 5s timer for the whole page session.
+    let consecutiveFailures = 0;
+    const MAX_FAILURES = 3;
     const tick = async () => {
       const { ok, data } = await apiFetch(`/api/jobs/${jobId}/status`);
       if (!ok) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_FAILURES) {
+          setIndexJobStatus(prev => ({ ...prev, [repoId]: 'error' }));
+          flash('Lost track of the index job status — refresh to check.', true);
+          return;
+        }
         // Transient lookup failure — keep the badge as-is and retry.
         setTimeout(tick, 5000);
         return;
       }
+      consecutiveFailures = 0;
       const status = (data as { status?: string }).status ?? 'unknown';
       setIndexJobStatus(prev => ({ ...prev, [repoId]: status }));
       if (status === 'running' || status === 'pending') {

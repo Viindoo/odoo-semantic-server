@@ -526,7 +526,10 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
       // changed it before opening the modal).
       const row = el.closest('tr');
       const planSelect = row?.querySelector('.plan-select') as HTMLSelectElement | null;
-      if (planSelect && planSelect.value !== '') {
+      // Sync unconditionally — including '' when the admin de-selects back to the
+      // placeholder — so a stale planId is never left on the element from an
+      // earlier selection (which would PATCH overrides against the wrong plan).
+      if (planSelect) {
         el.dataset.currentPlanId = planSelect.value;
       }
       // data-rate / data-quota are SSR-prefilled from list_api_keys (null -> '',

@@ -524,8 +524,14 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
           setPatterns(data.patterns);
           setTotal(data.total);
         }
+      } else {
+        // The mutation itself succeeded, but the refresh failed — tell the user
+        // the list may be stale instead of silently showing pre-mutation data.
+        flash(`Saved, but the list could not be refreshed (HTTP ${res.status}). Refresh the page to see current data.`, true);
       }
-    } catch { /* silent — matches existing load() behaviour */ }
+    } catch (e: unknown) {
+      flash(`Saved, but the list could not be refreshed: ${String(e)}. Refresh the page to see current data.`, true);
+    }
     finally {
       if (!landed) setLoading(false);
     }
