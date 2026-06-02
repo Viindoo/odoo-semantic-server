@@ -145,7 +145,16 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
 
     user_id is set from the current session (M9 §3.3):
       - Web UI session: user_id = session user's integer id.
-      - No session (CLI / backward-compat): user_id = NULL (global/admin key).
+      - No session (CLI / backward-compat): user_id = NULL.
+
+    Tenant scoping (ADR-0034, m13_019) — the route is NOT auth-gated, so an
+    unauthenticated POST is reachable and yields uid=None / non-admin:
+      - Admin session → tenant_id = NULL (UNRESTRICTED, by design).
+      - Any non-admin caller, INCLUDING uid=None → tenant scoped by email domain
+        via resolve_default_mint_tenant_id() (Viindoo for @viindoo.com, otherwise
+        the 'public' Odoo-only tenant). It is NEVER NULL for a non-admin key, so a
+        self-service or unauthenticated POST can no longer mint an unrestricted
+        (global/admin) key. A resolver failure surfaces as a 500 (fail-closed).
     """
     error = None
     new_raw_key = None
