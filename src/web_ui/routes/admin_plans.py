@@ -158,11 +158,12 @@ async def update_plan(
     # Guard: NOT NULL columns must never be set to NULL. If a client sends an
     # explicit null for one of these (e.g. cleared a required field), reject with
     # 422 rather than letting the UPDATE blow up with a DB IntegrityError or
-    # silently corrupt the row. Only min_seats and metadata are nullable.
+    # silently corrupt the row. Only min_seats is nullable.
     _NOT_NULL_COLS = (
         "currency", "seat_limit", "price_cents", "prices", "trial_days",
         "billing_interval", "pricing_model", "quota_calls_per_month",
         "rate_limit_rpm", "display_name", "is_public", "is_archived",
+        "metadata",
     )
     for _col in _NOT_NULL_COLS:
         if _col in updates and updates[_col] is None:
