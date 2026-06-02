@@ -32,7 +32,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { stepUpVerify } from '../lib/mfaStepUp';
+import { stepUpVerify, claimPendingStepUp } from '../lib/mfaStepUp';
 
 // ---------------------------------------------------------------------------
 // Error-code → human message map (mirrors TotpEnrollment patterns)
@@ -77,9 +77,8 @@ export default function StepUpMfaModal() {
 
   // Listen for the custom event from mfaStepUp.ts
   useEffect(() => {
-    function handleStepUpRequest(e: Event) {
-      const evt = e as CustomEvent<{ resolve: (ok: boolean) => void }>;
-      resolveRef.current = evt.detail.resolve;
+    function openWith(resolve: (ok: boolean) => void) {
+      resolveRef.current = resolve;
       // Reset form state on each new request
       setCode('');
       setBackupCode('');
@@ -88,8 +87,18 @@ export default function StepUpMfaModal() {
       setLoading(false);
       setOpen(true);
     }
+    function handleStepUpRequest(e: Event) {
+      const evt = e as CustomEvent<{ resolve: (ok: boolean) => void }>;
+      openWith(evt.detail.resolve);
+    }
 
     window.addEventListener('osm:mfa-step-up', handleStepUpRequest);
+    // Hydration-race guard: a step-up requested by a sibling client:load island
+    // BEFORE this listener attached fired a one-shot event into the void and
+    // parked its resolver in mfaStepUp._waiters. Claim it now so the modal still
+    // opens instead of leaving the caller's Save hung on "Saving…".
+    const pending = claimPendingStepUp();
+    if (pending) openWith(pending);
     return () => window.removeEventListener('osm:mfa-step-up', handleStepUpRequest);
   }, []);
 
