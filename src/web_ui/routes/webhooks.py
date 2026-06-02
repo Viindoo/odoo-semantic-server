@@ -9,8 +9,13 @@ Security model (per design §4.2 + §11):
   - Duplicate (vendor, event_id) → 200 {"status":"duplicate"} — Polar safely
     retries idempotent deliveries.
   - Unmapped event_type → 200 {"status":"ignored"} — unmapped events do not error
-    so Polar stops retrying; logged at WARNING with a descriptive processing_error
-    on the ledger row so a forgotten mapping is ops-visible, never silent.
+    so Polar stops retrying.  Only an unmapped subtype WITHIN the watched
+    entitlement prefixes (``subscription.``, ``order.``) sets a ledger
+    processing_error (a likely FORGOTTEN MAPPING — ops-visible, WARNING-logged,
+    never silent).  Other Polar lifecycle events Polar fires on every attempt
+    (``checkout.*``, ``customer.*``, ``benefit_grant.*``, ``product.*``) are
+    benign-ignored with processing_error NULL, so the error column stays reserved
+    for genuine errors and the forgotten-mapping signal is not buried.
   - Unknown Polar product / unconfigured product map → processing_error set in
     ledger, ERROR log, 200 {"status":"config_error"} returned (we accept the
     delivery, we just can't map it; ops must fix billing.polar_product_map).  Only
@@ -269,6 +274,10 @@ def _build_polar_adapter() -> WebhookAdapter:
         verify_fn=polar.verify_signature,
         parse_event_fn=polar.parse_event,
         event_action_fn=polar.EVENT_STATUS_MAP.get,
+        # Entitlement families in polar.EVENT_STATUS_MAP: an unmapped subtype here
+        # is a likely FORGOTTEN MAPPING → ops-visible processing_error.  Every other
+        # Polar lifecycle event (checkout.*, customer.*, …) is benign-ignored.
+        watched_event_prefixes=frozenset({"subscription.", "order."}),
         resolve_plan_fn=polar.resolve_plan_id,
         extract_email_fn=_extract_buyer_email,
         map_status_fn=polar.map_subscription_status,

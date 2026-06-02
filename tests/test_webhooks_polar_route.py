@@ -542,8 +542,52 @@ class TestUnknownEventType:
             )
             row = cur.fetchone()
         assert row is not None
-        processed_at, _ = row
+        processed_at, processing_error = row
         assert processed_at is not None, "Unknown-event row must be marked processed (ignored)"
+        # subscription.some_unknown_type is WITHIN a watched entitlement prefix
+        # (subscription.) → a likely FORGOTTEN MAPPING, so processing_error MUST
+        # be set (ops-visible), not buried as a benign ignore.
+        assert processing_error is not None and "unmapped" in processing_error, (
+            "an unmapped subtype of a watched entitlement prefix must set processing_error"
+        )
+
+    @pytest.mark.asyncio
+    async def test_checkout_event_ignored_clean(self, migrated_pg, app_with_secret):
+        """checkout.* is out-of-scope (NOT a watched entitlement prefix) → Polar
+        fires it on every checkout attempt, so it is benign-ignored: 200 'ignored',
+        ledger marked processed, processing_error NULL (the error column stays
+        reserved for genuine errors / forgotten subscription.*/order.* mappings).
+        """
+        msg_id = "msg_checkout_benign"
+        payload = _make_payload(
+            event_type="checkout.created",
+            external_ref="checkout_benign_1",
+        )
+        body = json.dumps(payload).encode()
+        ts = _now_ts()
+        headers = _webhook_headers(msg_id, ts, body)
+
+        async with _client(app_with_secret) as client:
+            resp = await client.post(
+                "/api/webhooks/polar", content=body,
+                headers={**headers, "content-type": "application/json"},
+            )
+        assert resp.status_code == 200
+        assert resp.json().get("status") == "ignored"
+
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT processed_at, processing_error FROM billing_webhook_events"
+                " WHERE vendor = 'polar' AND event_id = %s",
+                (msg_id,),
+            )
+            row = cur.fetchone()
+        assert row is not None
+        processed_at, processing_error = row
+        assert processed_at is not None, "benign-ignored checkout event must be marked processed"
+        assert processing_error is None, (
+            "an out-of-scope checkout.* event must leave processing_error NULL"
+        )
 
 
 # ---------------------------------------------------------------------------

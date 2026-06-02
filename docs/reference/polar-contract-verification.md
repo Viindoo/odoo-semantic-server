@@ -80,6 +80,20 @@ which is the correct degraded behaviour.
   (the higher-risk gap: previously the subscription stayed `active` locally during
   dunning, over-serving on payment failure).
 
+### Intentionally benign-ignored Polar events
+
+Polar fires several lifecycle events on every checkout/customer change that carry
+no entitlement decision for us. `checkout.*` (e.g. `checkout.created`,
+`checkout.updated`, `checkout.expired`), `customer.*`, `benefit_grant.*`, and
+`product.*` are NOT in `EVENT_STATUS_MAP` and are NOT in the pipeline's watched
+entitlement prefixes (`subscription.`, `order.`). They are therefore
+**benign-ignored**: acked `200 {"status":"ignored"}`, marked processed, and
+`processing_error` left **NULL** — they are not errors. Only an unmapped subtype
+*within* `subscription.`/`order.` sets a `processing_error` (a likely forgotten
+mapping, ops-visible). This keeps the ledger's error column meaningful instead of
+flooded with benign `checkout.*` noise (see ADR-0039 §B amendment +
+`ops/backfill_webhook_benign_ignored.sql`).
+
 ---
 
 ## Confirm With a Real Test Event

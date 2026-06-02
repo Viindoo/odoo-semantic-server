@@ -179,12 +179,15 @@ def _make_fake_adapter(
     *,
     resolve_plan_fn=None,
     rate_limit_rpm: int = 1000,
+    watched_event_prefixes: frozenset[str] = frozenset(),
 ) -> WebhookAdapter:
     """Build a WebhookAdapter bound entirely to in-test fakes — no Polar code.
 
     ``resolve_plan_fn`` is overridable so a test can inject a transient/permanent
     failure at dispatch time; ``rate_limit_rpm`` is overridable for the
-    per-vendor rate-limit test.
+    per-vendor rate-limit test; ``watched_event_prefixes`` is overridable so a
+    test can prove the forgotten-mapping-vs-benign-ignore distinction (default
+    empty = every unmapped event is a benign ignore).
     """
     return WebhookAdapter(
         vendor=_TEST_VENDOR,
@@ -197,6 +200,7 @@ def _make_fake_adapter(
         verify_fn=_fake_verify,
         parse_event_fn=_fake_parse_event,
         event_action_fn=_fake_event_action,
+        watched_event_prefixes=watched_event_prefixes,
         resolve_plan_fn=resolve_plan_fn or _fake_resolve_plan,
         extract_email_fn=_fake_extract_email,
         map_status_fn=_fake_map_status,
@@ -227,7 +231,11 @@ _test_router = APIRouter(prefix="/api/webhooks", tags=["webhooks-test"])
 # Module-level holder so the route can read the adapter config the fixture/test
 # installs (secret + optional dispatch-failure injection + rate-limit override).
 _CURRENT_SECRET: dict = {"secret": None}
-_ADAPTER_OVERRIDES: dict = {"resolve_plan_fn": None, "rate_limit_rpm": 1000}
+_ADAPTER_OVERRIDES: dict = {
+    "resolve_plan_fn": None,
+    "rate_limit_rpm": 1000,
+    "watched_event_prefixes": frozenset(),
+}
 
 
 @_test_router.post("/test")
@@ -236,6 +244,7 @@ async def _test_webhook(request: Request):
         _CURRENT_SECRET["secret"],
         resolve_plan_fn=_ADAPTER_OVERRIDES["resolve_plan_fn"],
         rate_limit_rpm=_ADAPTER_OVERRIDES["rate_limit_rpm"],
+        watched_event_prefixes=_ADAPTER_OVERRIDES["watched_event_prefixes"],
     )
     return await run_webhook_pipeline(adapter, request)
 
@@ -281,14 +290,16 @@ def _clean_billing_tables(migrated_pg):
                     cur.execute(sql, params)
             except Exception:
                 migrated_pg.rollback()
-    # Reset per-test adapter overrides so a dispatch-failure / rate-limit
-    # injection from one test never leaks into the next.
+    # Reset per-test adapter overrides so a dispatch-failure / rate-limit /
+    # watched-prefix injection from one test never leaks into the next.
     _ADAPTER_OVERRIDES["resolve_plan_fn"] = None
     _ADAPTER_OVERRIDES["rate_limit_rpm"] = 1000
+    _ADAPTER_OVERRIDES["watched_event_prefixes"] = frozenset()
     _wipe()
     yield
     _ADAPTER_OVERRIDES["resolve_plan_fn"] = None
     _ADAPTER_OVERRIDES["rate_limit_rpm"] = 1000
+    _ADAPTER_OVERRIDES["watched_event_prefixes"] = frozenset()
     _wipe()
 
 
@@ -416,6 +427,10 @@ class TestVendorParametricUnmapped:
     async def test_unmapped_event_is_ignored_and_marked_processed(
         self, migrated_pg, app_with_secret
     ):
+        # The default fake adapter declares NO watched prefixes → an unmapped
+        # event is a BENIGN IGNORE: marked processed but processing_error stays
+        # NULL (the error column is reserved for genuine errors / forgotten
+        # mappings, not events the vendor deliberately fires out of scope).
         msg_id = "evt_pipe_unmapped"
         body = json.dumps(_payload(event_type="thing.unknown", ref="ref_pipe_unmapped")).encode()
         ts = _now_ts()
@@ -436,12 +451,53 @@ class TestVendorParametricUnmapped:
             row = cur.fetchone()
         assert row is not None
         assert row[0] is not None, "unmapped event must be marked processed (ops-visible)"
-        assert row[1] is not None and "unmapped" in row[1]
+        assert row[1] is None, "a benign-ignore must leave processing_error NULL"
         # No subscription dispatched.
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) FROM subscriptions WHERE external_ref = %s",
                 ("ref_pipe_unmapped",),
+            )
+            assert cur.fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_unmapped_event_within_watched_prefix_flags_forgotten_mapping(
+        self, migrated_pg, app_with_secret
+    ):
+        # An unmapped subtype of a WATCHED prefix is a likely FORGOTTEN MAPPING:
+        # the pipeline still acks 200 'ignored' (no dispatch) but records a
+        # processing_error so the missing mapping is ops-visible, never buried.
+        _ADAPTER_OVERRIDES["watched_event_prefixes"] = frozenset({"thing."})
+        msg_id = "evt_pipe_forgotten"
+        body = json.dumps(
+            _payload(event_type="thing.brandnew", ref="ref_pipe_forgotten")
+        ).encode()
+        ts = _now_ts()
+
+        async with _client(app_with_secret) as client:
+            resp = await client.post(
+                "/api/webhooks/test", content=body, headers=_headers(msg_id, ts)
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("status") == "ignored"
+
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT processed_at, processing_error FROM billing_webhook_events"
+                " WHERE event_id = %s",
+                (msg_id,),
+            )
+            row = cur.fetchone()
+        assert row is not None
+        assert row[0] is not None, "forgotten-mapping event must be marked processed"
+        assert row[1] is not None and "unmapped" in row[1], (
+            "an unmapped subtype of a watched prefix must record processing_error"
+        )
+        # No subscription dispatched.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM subscriptions WHERE external_ref = %s",
+                ("ref_pipe_forgotten",),
             )
             assert cur.fetchone()[0] == 0
 
