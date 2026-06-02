@@ -1200,17 +1200,52 @@ class AuthStore:
         return row["id"]
 
     def get_viindoo_tenant_id(self) -> int:
-        """Return the id of the Viindoo tenant ('Viindoo Technology JSC').
+        """Return the id of the Viindoo tenant.
 
         New free-signup keys for @viindoo.com users are bound to this tenant so
         they can read the restricted 'standard_viindoo_*' / 'viindoo_internal_*'
         profiles (ADR-0034).
 
+        Resolution (SSOT = the data the migration actually produces, not a
+        duplicated literal tenant name):
+          1. The tenant that OWNS the viindoo profiles — i.e. the DISTINCT
+             non-NULL tenant_id of the 'standard_viindoo_*' / 'viindoo_internal_*'
+             profiles that m13_019 moved. If this resolves to exactly one
+             tenant_id, use it (ties the resolver to m13_019's effect, immune to
+             a tenant rename).
+          2. Fallback to the literal name 'Viindoo Technology JSC' — for fresh
+             installs where m13_019 has not yet moved any profile (step 1 yields
+             zero rows).
+
         Raises:
-            RuntimeError: if the tenant is absent (m13_019 not applied).
-                Fail-closed: callers must NOT fall back to tenant_id=None.
+            RuntimeError: if the tenant is absent (m13_019 not applied) — same
+                fail-closed contract as before; callers must NOT fall back to
+                tenant_id=None.
+            RuntimeError: if the viindoo profiles are owned by MORE THAN ONE
+                tenant (data inconsistency) — fail-closed rather than guess.
         """
         with self._pool.checkout() as conn:
+            # NB: '%%' (not '%') — psycopg2 treats the SQL as a format string and
+            # would otherwise read the lone '%' as a parameter placeholder.
+            owner_rows = self._pool.fetch_all(
+                conn,
+                r"""
+                SELECT DISTINCT tenant_id
+                  FROM profiles
+                 WHERE (name LIKE 'standard\_viindoo\_%%' ESCAPE '\'
+                        OR name LIKE 'viindoo\_internal\_%%' ESCAPE '\')
+                   AND tenant_id IS NOT NULL
+                """,
+            )
+            if len(owner_rows) == 1:
+                return owner_rows[0]["tenant_id"]
+            if len(owner_rows) > 1:
+                raise RuntimeError(
+                    "viindoo profiles owned by multiple tenants "
+                    f"({[r['tenant_id'] for r in owner_rows]}) — refusing to "
+                    "guess the Viindoo tenant (data inconsistency)"
+                )
+            # 2. Fresh-install fallback: resolve by the canonical name.
             row = self._pool.fetch_one(
                 conn,
                 "SELECT id FROM tenants WHERE name = %s",
@@ -1223,9 +1258,22 @@ class AuthStore:
     def resolve_default_mint_tenant_id(self, user_id: int | None) -> int:
         """Resolve the tenant a newly-minted key for ``user_id`` must be bound to.
 
-        Policy (ADR-0034): a free-signup key is scoped by the user's email domain
-          - @viindoo.com  → Viindoo tenant (sees restricted viindoo profiles)
-          - everything else → public tenant (sees only the shared 'odoo_*' base)
+        Precedence (ADR-0034 + ADR-0038):
+          1. tenant_members membership (multi-tenant SSOT): if the user is a
+             member of EXACTLY ONE tenant → use that tenant_id. This makes a
+             paid-tenant member self-minting a key land in their real tenant,
+             not in 'public' just because their email is gmail.
+          2. else by email domain: @viindoo.com → Viindoo tenant (sees the
+             restricted viindoo profiles).
+          3. else → public tenant (sees only the shared 'odoo_*' base).
+
+        Membership count handling:
+          - 0 memberships → fall through to step 2/3 (domain / public).
+          - exactly 1     → that tenant.
+          - >1 (ambiguous, no per-request tenant available here) → fall through
+            to step 2/3 deterministically. We do NOT guess among several
+            tenants; domain/public is the safe, stable default and the key can
+            be re-scoped explicitly afterwards. Documented choice.
 
         NEVER returns None. The unrestricted (tenant_id=None) sentinel is reserved
         for admins and system/CLI keys, which do NOT go through this resolver —
@@ -1243,6 +1291,13 @@ class AuthStore:
                 Propagated so the mint FAILS fail-closed rather than minting an
                 unrestricted key.
         """
+        # 1. Exactly-one tenant_members membership wins (ADR-0038 multi-tenant).
+        if user_id is not None:
+            member_tenants = self.list_tenant_ids_for_user(user_id)
+            if len(member_tenants) == 1:
+                return member_tenants[0]
+
+        # 2. Email domain.
         email = None
         if user_id is not None:
             email = self.get_user_field(user_id, "email")
@@ -1250,6 +1305,8 @@ class AuthStore:
             domain = str(email).rsplit("@", 1)[1].strip().lower()
             if domain in VIINDOO_EMAIL_DOMAINS:
                 return self.get_viindoo_tenant_id()
+
+        # 3. Public fallback (fail-closed: a concrete tenant, never None).
         return self.get_public_tenant_id()
 
     def _scope_tenant_for_reactivation(self, user_id: int | None) -> int | None:

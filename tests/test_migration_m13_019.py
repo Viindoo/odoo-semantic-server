@@ -67,13 +67,35 @@ def _insert_profile(conn, name, version="17.0", *, tenant_id=None):
         return cur.fetchone()[0]
 
 
-def _insert_key(conn, name, *, user_id, tenant_id=None, active=True):
+def _insert_key(conn, name, *, user_id, tenant_id=None, active=True, plan_id=None):
+    # plan_id=None → rely on the DB DEFAULT (the 'free' plan, set by m13_006).
     with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO api_keys (name, key_hash, key_prefix, user_id, tenant_id, active) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (name, f"hash_{name}", name[:12], user_id, tenant_id, active),
-        )
+        if plan_id is None:
+            cur.execute(
+                "INSERT INTO api_keys (name, key_hash, key_prefix, user_id, tenant_id, active) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (name, f"hash_{name}", name[:12], user_id, tenant_id, active),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO api_keys "
+                "(name, key_hash, key_prefix, user_id, tenant_id, active, plan_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (name, f"hash_{name}", name[:12], user_id, tenant_id, active, plan_id),
+            )
+        return cur.fetchone()[0]
+
+
+def _plan_id(conn, slug):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM plans WHERE slug = %s", (slug,))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _public_id(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM tenants WHERE name = %s", ("public",))
         return cur.fetchone()[0]
 
 
@@ -144,6 +166,55 @@ class TestMigrationM13019:
         assert gmail["tenant_id"] is None, "gmail key tenant stays NULL"
         assert _key_state(conn, admin_key) == {"tenant_id": None, "active": True}
         assert _key_state(conn, cli_key) == {"tenant_id": None, "active": True}
+
+    def test_null_email_nonadmin_free_key_deactivated(self, migrated_pg):
+        """F1: a non-admin key whose owner has email IS NULL must be handled.
+
+        Before the fix, both LIKE / NOT LIKE were NULL for a NULL email, so a
+        NULL-email non-admin NULL-tenant key was neither bound nor deactivated —
+        it stayed active+NULL = unrestricted. It must be treated as non-viindoo
+        and (being on the free plan) DEACTIVATED.
+        """
+        conn = migrated_pg
+        null_uid = _insert_user(conn, "nullmail", None)  # email IS NULL
+        key = _insert_key(conn, "null-key", user_id=null_uid, tenant_id=None)
+        if not conn.autocommit:
+            conn.commit()
+
+        _apply_m13_019(conn)
+
+        st = _key_state(conn, key)
+        assert st["active"] is False, "NULL-email free key must be deactivated"
+        assert st["tenant_id"] is None, "tenant stays NULL on deactivate"
+
+    def test_free_key_deactivated_nonfree_rescoped_public(self, migrated_pg):
+        """F2: split non-viindoo non-admin NULL-tenant keys by plan.
+
+        - free plan        → DEACTIVATE (active=false, tenant NULL).
+        - non-free (unlimited) → RE-SCOPE to public tenant, still active.
+        """
+        conn = migrated_pg
+        gmail_uid = _insert_user(conn, "splituser", "split@gmail.com")
+        unlimited_id = _plan_id(conn, "unlimited")
+        assert unlimited_id is not None, "unlimited plan must exist (m13_009)"
+
+        free_key = _insert_key(conn, "free-key", user_id=gmail_uid, tenant_id=None)
+        paid_key = _insert_key(
+            conn, "paid-key", user_id=gmail_uid, tenant_id=None, plan_id=unlimited_id
+        )
+        if not conn.autocommit:
+            conn.commit()
+
+        _apply_m13_019(conn)
+        pub = _public_id(conn)
+
+        free_st = _key_state(conn, free_key)
+        assert free_st["active"] is False, "free key must be deactivated"
+        assert free_st["tenant_id"] is None
+
+        paid_st = _key_state(conn, paid_key)
+        assert paid_st["active"] is True, "paid key must stay active"
+        assert paid_st["tenant_id"] == pub, "paid key must re-scope to public"
 
     def test_idempotent_rerun(self, migrated_pg):
         conn = migrated_pg

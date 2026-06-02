@@ -6044,6 +6044,12 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
                 available = [r[0] for r in rows]
             except Exception:
                 available = []
+            # INFO-LEAK guard (ADR-0034): a scoped (non-admin) key must not see
+            # profile names outside its tenant in the error hint. `allowed` is the
+            # authorized set computed above (None = admin / unrestricted → show
+            # all). Filter the listing to names this key may already see.
+            if allowed is not None:
+                available = [name for name in available if name in allowed]
             if available:
                 avail_str = ", ".join(available)
                 hint = f"Registered profiles: {avail_str}"

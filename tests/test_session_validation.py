@@ -269,6 +269,50 @@ class TestSetActiveProfileValidation:
             f"Error message must mention the bad profile name; got: {text[:200]!r}"
         )
 
+    def test_scoped_key_error_hint_hides_viindoo_profiles(self, pg_conn) -> None:
+        """F4 (INFO LEAK): for a scoped (public) key, the 'not registered' error
+        hint must NOT list viindoo profile names. `_get_allowed_profiles()`
+        returns only the names the key may see; the listing is filtered by it.
+
+        The profiles table contains both an allowed ('odoo_17') and a restricted
+        ('standard_viindoo_17') profile; only the allowed one may appear.
+
+        To reach the existence-branch listing (not the authz reject), the
+        requested name is in the key's allowed set ('odoo_17') — modelling the
+        60s allowed-cache TOCTOU where the profile passes authz but the DB
+        existence SELECT returns no row — so the 'not registered' hint is built
+        and must still be tenant-filtered.
+        """
+        import importlib
+        server = importlib.import_module("src.mcp.server")
+
+        # The DB-level profiles SELECT returns BOTH names (TOCTOU: the cache may
+        # not reflect the full set the unfiltered DB query sees).
+        @contextmanager
+        def _checkout_with_two_profiles():
+            conn = MagicMock()
+            cur = MagicMock()
+            cur.__enter__ = lambda s: s
+            cur.__exit__ = MagicMock(return_value=False)
+            cur.fetchone.return_value = None  # target profile not found in DB
+            cur.fetchall.return_value = [("odoo_17",), ("standard_viindoo_17",)]
+            conn.cursor.return_value = cur
+            yield conn
+
+        # A scoped public key may see only 'odoo_17'; request that name so authz
+        # passes and the existence-branch listing is exercised.
+        with patch("src.mcp.server._checkout_pg", _checkout_with_two_profiles), \
+             patch("src.mcp.server._get_allowed_profiles", return_value=["odoo_17"]):
+            result = asyncio.run(server.set_active_profile.fn("odoo_17"))
+            text = _extract_text(result)
+
+        assert "standard_viindoo_17" not in text, (
+            f"scoped key error hint leaked a restricted profile name; got: {text!r}"
+        )
+        assert "odoo_17" in text, (
+            f"allowed profile name should still appear in the hint; got: {text!r}"
+        )
+
     def test_sv6_error_text_mentions_list_available_profiles(self, pg_conn) -> None:
         """SV-6: The error text from SV-5 includes a hint about list_available_profiles."""
         import importlib
