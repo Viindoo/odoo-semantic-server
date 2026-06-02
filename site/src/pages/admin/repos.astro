@@ -365,6 +365,10 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       if (!formDiv) return;
       const hidden = formDiv.hasAttribute('hidden');
       if (hidden) {
+        // Reset to the SSR-baked `value=` (committed DB state) before showing,
+        // so uncommitted edits left over from a prior Cancel/reopen never
+        // resurface and falsely imply they were saved.
+        (formDiv.querySelector('.edit-profile-inner-form') as HTMLFormElement | null)?.reset();
         formDiv.removeAttribute('hidden');
       } else {
         formDiv.setAttribute('hidden', '');
@@ -372,13 +376,14 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     });
   });
 
-  // Cancel edit
+  // Cancel edit — hide AND reset so discarded input doesn't persist to reopen.
   document.querySelectorAll('.cancel-edit-profile-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const profileId = (btn as HTMLElement).dataset.profileId;
       const formDiv = document.querySelector(
         `[data-testid="edit-profile-form-${profileId}"]`
       ) as HTMLElement | null;
+      (formDiv?.querySelector('.edit-profile-inner-form') as HTMLFormElement | null)?.reset();
       formDiv?.setAttribute('hidden', '');
     });
   });

@@ -438,7 +438,10 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
     try {
       const res = await withStepUp(() => fetch(
         `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}/reset`,
-        { method: 'POST', credentials: 'include' },
+        // Content-Type required so Astro's checkOrigin guard (dev/preview/CI
+        // proxy) doesn't 403 the reset before it reaches FastAPI. Harmless in
+        // prod (nginx bypasses the proxy); the reset POST carries no body.
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' },
       ));
       if (!res.ok) {
         const d = (await res.json().catch(() => ({}))) as { detail?: string };

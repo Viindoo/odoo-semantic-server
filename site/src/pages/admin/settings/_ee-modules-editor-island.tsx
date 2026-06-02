@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // EE Modules Editor React island — admin CRUD for ee_modules guard list (WI-10)
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { withStepUp } from '../../../lib/mfaStepUp';
 
 interface EEModule {
@@ -194,6 +194,14 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
+  // Keep the SSR-rendered "N active" badge (outside this island) in sync with
+  // the live module list after add/delete/reload — otherwise it stays stale
+  // until a full page reload (BUG-2). Active = non-deprecated modules.
+  useEffect(() => {
+    const badge = document.querySelector('[data-testid="ee-active-count"]');
+    if (badge) badge.textContent = `${modules.filter((m) => !m.deprecated).length} active`;
+  }, [modules]);
+
   const reload = async (withDeprecated: boolean) => {
     setLoading(true);
     try {
@@ -221,6 +229,10 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
     if (!confirm(`Soft-delete "${mod.name}"? It will be marked deprecated and hidden from the active guard list.`)) return;
     const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${mod.id}`, {
       method: 'DELETE',
+      // Content-Type required so Astro's checkOrigin guard (dev/preview/CI proxy)
+      // doesn't 403 this before it reaches FastAPI. Harmless in prod (nginx
+      // bypasses the proxy); DELETE carries no body.
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
     }));
     if (res.ok) {
@@ -239,7 +251,7 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
     setBulkDeleting(true);
     let failCount = 0;
     for (const id of selectedIds) {
-      const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${id}`, { method: 'DELETE', credentials: 'include' }));
+      const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, credentials: 'include' }));
       if (!res.ok) failCount++;
     }
     setBulkDeleting(false);
