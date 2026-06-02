@@ -129,6 +129,12 @@ class WebhookAdapter:
             — the vendor event timestamp used for the monotonic out-of-order
             guard (#5).  Standard Webhooks carry it in the ``webhook-timestamp``
             header; a vendor may instead carry it in the payload.
+        watched_event_prefixes: ``frozenset[str]`` of event-type prefixes (e.g.
+            ``{"subscription.", "order."}``) whose UNMAPPED subtypes record a
+            ``processing_error`` (forgotten-mapping signal).  Any unmapped
+            event_type outside these prefixes is benign-ignored (processing_error
+            stays NULL).  Default empty = every unmapped event is benign
+            (backward-compatible).
     """
 
     vendor: str
@@ -151,6 +157,11 @@ class WebhookAdapter:
     extract_cancel_at_period_end_fn: Callable[[dict], bool | None] = (
         lambda data: None
     )
+    # Event-type prefixes whose UNMAPPED subtypes are treated as a "forgotten
+    # mapping" (ops-visible processing_error).  Any unmapped event_type NOT
+    # matching a watched prefix is a deliberate, benign ignore (processing_error
+    # stays NULL).  Default empty = every unmapped event is benign (backward-compat).
+    watched_event_prefixes: frozenset[str] = frozenset()
     # CL1 — vendor-agnostic commercial extractors (safe defaults supplied below).
     # extract_interval_fn pulls the RAW vendor interval token out of ``data`` so
     # the pipeline never hard-codes a vendor field name (Polar = recurring_interval).
@@ -192,7 +203,10 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
               grant/update/revoke is idempotent on ``external_ref``, so replaying
               self-heals the lost grant).
             - ``is_new`` → process normally.
-      10. Guard: 200 ``ignored`` on UNMAPPED event_type (ops-visible processing_error).
+      10. Guard: 200 ``ignored`` on UNMAPPED event_type.  An unmapped subtype of a
+          WATCHED prefix (``adapter.watched_event_prefixes``) is a likely forgotten
+          mapping → ops-visible processing_error; any other unmapped event is a
+          deliberate, benign ignore → processing_error stays NULL.
       11. Resolve plan_id ONLY for grant/update; a config / unknown-product failure
           → ERROR log + 200 ``config_error``.  Revoke NEVER resolves a plan.
       12. Dispatch grant / update / revoke via ``activation.*`` with the adapter's
@@ -326,9 +340,25 @@ async def run_webhook_pipeline(adapter: WebhookAdapter, request: Request) -> JSO
     # ------------------------------------------------------------------ step 10
     action = adapter.event_action_fn(event_type)
     if action is None:
-        ignore_msg = f"unmapped event_type={event_type!r}"
-        logger.warning("%s_webhook: %s — acking without dispatch", adapter.vendor, ignore_msg)
-        subs.mark_event_processed(event_pk, None, error=ignore_msg)
+        # Distinguish a FORGOTTEN MAPPING (an unmapped subtype of a watched
+        # entitlement family — e.g. a new ``subscription.*``/``order.*`` Polar
+        # emits) from a deliberate BENIGN IGNORE (an out-of-scope event the vendor
+        # fires on every attempt — e.g. ``checkout.*``).  Only the former records a
+        # processing_error so the ledger's error column stays reserved for genuine
+        # signals; the latter acks clean (processing_error NULL).
+        if any(event_type.startswith(p) for p in adapter.watched_event_prefixes):
+            ignore_msg = f"unmapped event_type={event_type!r}"
+            logger.warning(
+                "%s_webhook: %s — acking without dispatch (possible FORGOTTEN MAPPING)",
+                adapter.vendor, ignore_msg,
+            )
+            subs.mark_event_processed(event_pk, None, error=ignore_msg)
+        else:
+            logger.debug(
+                "%s_webhook: ignoring out-of-scope event_type=%r — acking without dispatch",
+                adapter.vendor, event_type,
+            )
+            subs.mark_event_processed(event_pk, None)
         return JSONResponse(
             _json_safe({"status": "ignored", "event_type": event_type}), status_code=200
         )

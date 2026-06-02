@@ -341,6 +341,23 @@ product today; column added when a second product arrives).
   `PATCH .../v1/subscriptions/{id}` with `{"cancel_at_period_end": true}` (FLAG: confirm against
   live Polar docs before go-live; constant in `polar_api.py`).
 
+**Amendment — benign-ignore vs forgotten-mapping (`watched_event_prefixes`, observability fix):**
+The pipeline originally wrote EVERY unmapped `event_type` into
+`billing_webhook_events.processing_error` as `"unmapped event_type=..."`. Polar emits
+`checkout.created/updated/expired` (and `customer.*`, `benefit_grant.*`, `product.*`) on every
+checkout attempt, so the ledger filled with benign "unmapped" rows that *read as errors* and buried
+the genuine "forgotten mapping" signal the design intended to surface — an unmapped
+`subscription.*`/`order.*` subtype (a real entitlement family someone forgot to add to
+`EVENT_STATUS_MAP`). The fix adds a vendor-agnostic `WebhookAdapter.watched_event_prefixes`
+frozenset (Polar = `{"subscription.", "order."}`, the entitlement families). At step 10 an unmapped
+event whose type starts with a watched prefix is a **forgotten mapping** → `processing_error` set
+(ops-visible, WARNING-logged); any other unmapped event is a **deliberate benign ignore** →
+`processing_error` stays NULL (still acked 200 `ignored`, still marked processed, never dispatched).
+`processing_error` is now reserved for genuine errors (config/permanent dispatch) plus unmapped
+subtypes within the entitlement families. Default empty prefix set = backward-compatible (every
+unmapped event benign). One-off historical cleanup: `ops/backfill_webhook_benign_ignored.sql`
+(idempotent — NULLs `processing_error` for already-recorded benign `checkout.*`-style rows).
+
 ### C — Self-service cancel (no refund, cancel-at-period-end)
 
 **`src/billing/polar_api.py`** — outbound Polar REST client (`httpx.AsyncClient`). `POLAR_API_KEY`
