@@ -144,18 +144,29 @@ async def update_plan(
     A >50% reduction in quota or RPM is logged at WARNING level — the
     UI should also prompt a confirmation dialog client-side before submitting.
     """
-    # exclude_none=True so omitted optional fields don't overwrite existing values.
-    # Exception: min_seats explicitly set to null means "clear the minimum" — handled
-    # below by checking payload.model_fields_set separately after the main update dict.
-    updates = payload.model_dump(exclude_none=True, exclude={"reason"})
-
-    # If min_seats was explicitly provided as null in the request body, include it
-    # in the update dict so the column is set to NULL (clearing the seat minimum).
-    if "min_seats" in payload.model_fields_set and payload.min_seats is None:
-        updates["min_seats"] = None
+    # exclude_unset=True keeps ONLY the fields the client actually sent (omitted
+    # fields don't overwrite existing values), AND preserves an explicit null when
+    # the client deliberately clears a nullable column. The frontend now always
+    # sends every editable field as an explicit value (blank -> DB default for
+    # NOT NULL columns; blank -> null only for the nullable min_seats), so a cleared
+    # field reaches the DB instead of being silently dropped (CLASS 1 fix, WI-1).
+    updates = payload.model_dump(exclude_unset=True, exclude={"reason"})
 
     if not updates:
         raise HTTPException(400, "No fields to update")
+
+    # Guard: NOT NULL columns must never be set to NULL. If a client sends an
+    # explicit null for one of these (e.g. cleared a required field), reject with
+    # 422 rather than letting the UPDATE blow up with a DB IntegrityError or
+    # silently corrupt the row. Only min_seats and metadata are nullable.
+    _NOT_NULL_COLS = (
+        "currency", "seat_limit", "price_cents", "prices", "trial_days",
+        "billing_interval", "pricing_model", "quota_calls_per_month",
+        "rate_limit_rpm", "display_name", "is_public", "is_archived",
+    )
+    for _col in _NOT_NULL_COLS:
+        if _col in updates and updates[_col] is None:
+            raise HTTPException(422, f"{_col} cannot be cleared")
 
     pool = _get_pool()
     with pool.checkout() as conn:

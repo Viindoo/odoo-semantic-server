@@ -365,6 +365,10 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       if (!formDiv) return;
       const hidden = formDiv.hasAttribute('hidden');
       if (hidden) {
+        // Reset to the SSR-baked `value=` (committed DB state) before showing,
+        // so uncommitted edits left over from a prior Cancel/reopen never
+        // resurface and falsely imply they were saved.
+        (formDiv.querySelector('.edit-profile-inner-form') as HTMLFormElement | null)?.reset();
         formDiv.removeAttribute('hidden');
       } else {
         formDiv.setAttribute('hidden', '');
@@ -372,13 +376,14 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     });
   });
 
-  // Cancel edit
+  // Cancel edit — hide AND reset so discarded input doesn't persist to reopen.
   document.querySelectorAll('.cancel-edit-profile-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const profileId = (btn as HTMLElement).dataset.profileId;
       const formDiv = document.querySelector(
         `[data-testid="edit-profile-form-${profileId}"]`
       ) as HTMLElement | null;
+      (formDiv?.querySelector('.edit-profile-inner-form') as HTMLFormElement | null)?.reset();
       formDiv?.setAttribute('hidden', '');
     });
   });
@@ -406,14 +411,22 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       if (res.ok) {
         showFlash('Profile updated.', 'success');
         setTimeout(() => location.reload(), 800);
-      } else if (res.status === 404) {
-        showFlash(data.detail ?? 'Profile not found.', 'error');
-      } else if (res.status === 409) {
-        showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
-      } else if (res.status === 422) {
-        showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
       } else {
-        showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+        // Save was rejected (404 not-found / 409 name conflict / 422 version
+        // mismatch per ADR-0024, or any other non-2xx). The DB was NOT mutated,
+        // so reset the inputs back to their SSR-baked `value=` attributes — the
+        // last committed DB state — instead of leaving the rejected edit on
+        // screen, which would falsely imply the rename/version change stuck.
+        form.reset();
+        if (res.status === 404) {
+          showFlash(data.detail ?? 'Profile not found.', 'error');
+        } else if (res.status === 409) {
+          showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
+        } else if (res.status === 422) {
+          showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
+        } else {
+          showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+        }
       }
     });
   });

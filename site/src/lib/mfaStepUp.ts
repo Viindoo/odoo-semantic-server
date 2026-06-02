@@ -124,6 +124,20 @@ function _drainWaiters(ok: boolean): void {
 }
 
 /**
+ * Hydration-race guard. `requestStepUp` parks a resolver in `_waiters` and fires
+ * a ONE-SHOT `osm:mfa-step-up` CustomEvent. If the StepUpMfaModal island (also
+ * `client:load`) had not yet hydrated and attached its listener when the event
+ * fired, the event is dropped and the parked resolver would hang forever (the
+ * caller's `withStepUp` never returns → the Save button stays stuck on
+ * "Saving…"). The modal calls this on mount to CLAIM any already-pending request
+ * and open itself. Returns the drain callback to use as the modal's resolve, or
+ * null if nothing is pending.
+ */
+export function claimPendingStepUp(): ((ok: boolean) => void) | null {
+  return _waiters.length > 0 ? _drainWaiters : null;
+}
+
+/**
  * Open the MFA step-up modal (or join the in-flight one) and await the
  * user's decision.
  *

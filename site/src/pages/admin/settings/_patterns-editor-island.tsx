@@ -498,9 +498,43 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
     finally { setLoading(false); }
   };
 
-  const handleReloadAfterMutation = () => {
+  const handleReloadAfterMutation = async () => {
     setPendingReseed(true);
-    load({ offset: 0 });
+    // Reload at the current offset so pagination context is preserved.
+    // Exception: if a delete emptied the current page (patterns came back empty
+    // and we're not on page 1), step back one page so the user isn't left
+    // staring at a blank table.
+    setLoading(true);
+    const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+    if (languageFilter) qs.set('language', languageFilter);
+    if (includeDeleted) qs.set('include_deleted', 'true');
+    let landed = false;
+    try {
+      const res = await fetch(`/api/admin/patterns?${qs.toString()}`);
+      if (res.ok) {
+        const data = await res.json() as { patterns: Pattern[]; total: number };
+        if (data.patterns.length === 0 && offset > 0) {
+          // Current page is now empty (likely a delete) — step back one page.
+          const prevOffset = Math.max(0, offset - PAGE_SIZE);
+          setOffset(prevOffset);
+          landed = true;
+          setLoading(false);
+          load({ offset: prevOffset });  // fire-and-forget; load() manages its own loading state
+        } else {
+          setPatterns(data.patterns);
+          setTotal(data.total);
+        }
+      } else {
+        // The mutation itself succeeded, but the refresh failed — tell the user
+        // the list may be stale instead of silently showing pre-mutation data.
+        flash(`Saved, but the list could not be refreshed (HTTP ${res.status}). Refresh the page to see current data.`, true);
+      }
+    } catch (e: unknown) {
+      flash(`Saved, but the list could not be refreshed: ${String(e)}. Refresh the page to see current data.`, true);
+    }
+    finally {
+      if (!landed) setLoading(false);
+    }
   };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);

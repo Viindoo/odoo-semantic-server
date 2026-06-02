@@ -142,26 +142,27 @@ function EditModal({
       }
     }
 
-    const payload: Record<string, unknown> = {
-      display_name: form.display_name,
-      quota_calls_per_month: newQuota,
-      rate_limit_rpm: newRpm,
-      is_public: form.is_public,
-      is_archived: form.is_archived,
-      billing_interval: form.billing_interval || undefined,
-      reason,
-    };
-    const seatRaw = form.seat_limit.trim();
-    if (seatRaw !== '') {
-      const seatN = parseInt(seatRaw, 10);
-      if (isNaN(seatN) || seatN < 1) {
-        setFormError('Seat limit must be a positive integer or blank.');
-        return;
-      }
-      payload.seat_limit = seatN;
+    // NOT NULL columns: clearing a field cannot mean "send null" — the DB would
+    // reject it (or, worse, the old payload silently kept the prior value by
+    // omitting the field). A blank optional field maps to its explicit DB default
+    // so the cleared intent actually persists; required fields block submit with a
+    // clear error. Only min_seats is nullable (blank -> explicit null). See WI-1.
+
+    // currency — REQUIRED, NOT NULL. Must be a 3-letter ISO code.
+    const currencyRaw = form.currency.trim().toUpperCase();
+    if (currencyRaw.length !== 3) {
+      setFormError('Currency is required (3-letter ISO code).');
+      return;
     }
 
-    // Pricing fields — only include when non-empty
+    // isPaid drives the "paid plans require a price" + "per-seat needs seat_limit" rules.
+    const isPaid =
+      form.billing_interval === 'monthly' ||
+      form.billing_interval === 'annual' ||
+      form.billing_interval === 'one_time';
+
+    // price_cents — NOT NULL (default 0). blank -> 0; non-empty validate >= 0.
+    let priceCents = 0;
     const priceCentsRaw = form.price_cents.trim();
     if (priceCentsRaw !== '') {
       const pc = parseInt(priceCentsRaw, 10);
@@ -169,12 +170,20 @@ function EditModal({
         setFormError('Price (cents) must be a non-negative integer.');
         return;
       }
-      payload.price_cents = pc;
+      priceCents = pc;
     }
-    const currencyRaw = form.currency.trim().toUpperCase();
-    if (currencyRaw.length === 3) {
-      payload.currency = currencyRaw;
+
+    // prices — NOT NULL (default {}). blank/{} -> {}; else the validated parsedPrices.
+    const pricesValue: Record<string, number> = parsedPrices ?? {};
+
+    // A paid plan must carry a price somewhere (price_cents OR prices map).
+    if (isPaid && priceCents === 0 && Object.keys(pricesValue).length === 0) {
+      setFormError('Paid plans require a price.');
+      return;
     }
+
+    // trial_days — NOT NULL (default 0). blank -> 0; non-empty validate 0..365.
+    let trialDays = 0;
     const trialRaw = form.trial_days.trim();
     if (trialRaw !== '') {
       const td = parseInt(trialRaw, 10);
@@ -182,18 +191,52 @@ function EditModal({
         setFormError('Trial days must be between 0 and 365.');
         return;
       }
-      payload.trial_days = td;
+      trialDays = td;
     }
-    if (parsedPrices !== undefined) {
-      payload.prices = parsedPrices;
+
+    // seat_limit — NOT NULL (default 1) and NOT nullable, so there is no
+    // "clear to no-limit" state. Per-seat plans REQUIRE a value; for any other
+    // plan a blank field means "leave the current value unchanged" — we omit it
+    // from the payload (exclude_unset on the backend preserves the DB value)
+    // instead of silently overwriting a non-1 limit (e.g. team=20) with 1.
+    let seatLimitToSend: number | undefined;
+    const seatRaw = form.seat_limit.trim();
+    if (form.pricing_model === 'per_seat' && seatRaw === '') {
+      setFormError('Seat limit is required for per-seat plans.');
+      return;
     }
+    if (seatRaw !== '') {
+      const seatN = parseInt(seatRaw, 10);
+      if (isNaN(seatN) || seatN < 1) {
+        setFormError('Seat limit must be a positive integer or blank.');
+        return;
+      }
+      seatLimitToSend = seatN;
+    }
+
+    const payload: Record<string, unknown> = {
+      display_name: form.display_name,
+      quota_calls_per_month: newQuota,
+      rate_limit_rpm: newRpm,
+      is_public: form.is_public,
+      is_archived: form.is_archived,
+      billing_interval: form.billing_interval || undefined,
+      currency: currencyRaw,
+      price_cents: priceCents,
+      prices: pricesValue,
+      trial_days: trialDays,
+      reason,
+    };
+    // Blank seat_limit preserves the current DB value (NOT NULL, no cleared state).
+    if (seatLimitToSend !== undefined) payload.seat_limit = seatLimitToSend;
 
     // Pricing model (flat | per_seat) — always included when present
     if (form.pricing_model === 'flat' || form.pricing_model === 'per_seat') {
       payload.pricing_model = form.pricing_model;
     }
 
-    // Min seats — per-plan display SSOT (m13_016); blank = null (no minimum)
+    // Min seats — per-plan display SSOT (m13_016); blank = null (no minimum).
+    // This is the ONLY nullable column: clearing it sends explicit null.
     const minSeatsRaw = form.min_seats.trim();
     if (minSeatsRaw !== '') {
       const ms = parseInt(minSeatsRaw, 10);
@@ -293,7 +336,7 @@ function EditModal({
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Seat Limit <span className="text-xs text-gray-400">(blank = no limit)</span>
+              Seat Limit <span className="text-xs text-gray-400">(blank = keep current)</span>
             </label>
             <input
               type="number"

@@ -16,6 +16,11 @@ type Key = {
   last_used_at?: string | null;
   owner_username: string | null;
   user_id: number | null;
+  // Plan + per-key overrides (exposed by list_api_keys so the UI can prefill).
+  // null = unset (use plan default); a number (incl. 0) = an explicit override.
+  plan_id: number | null;
+  rate_limit_override: number | null;
+  quota_override: number | null;
 };
 
 type Plan = {
@@ -205,9 +210,9 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
                         aria-label={`Plan for key ${key.name}`}
                         data-key-id={String(key.id)}
                       >
-                        <option value="">— select plan —</option>
+                        <option value="" selected={key.plan_id === null || key.plan_id === undefined}>— select plan —</option>
                         {plans.map((p) => (
-                          <option value={String(p.id)}>{p.display_name} ({p.slug})</option>
+                          <option value={String(p.id)} selected={String(p.id) === String(key.plan_id)}>{p.display_name} ({p.slug})</option>
                         ))}
                       </select>
                       <button
@@ -227,9 +232,9 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
                       data-overrides-trigger
                       data-key-id={String(key.id)}
                       data-key-name={key.name}
-                      data-current-plan-id=""
-                      data-rate=""
-                      data-quota=""
+                      data-current-plan-id={key.plan_id == null ? '' : String(key.plan_id)}
+                      data-rate={key.rate_limit_override == null ? '' : String(key.rate_limit_override)}
+                      data-quota={key.quota_override == null ? '' : String(key.quota_override)}
                       title="Set per-key rate/quota overrides"
                     >
                       Overrides…
@@ -341,6 +346,26 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
     setTimeout(() => banner.setAttribute('hidden', ''), 4000);
   }
 
+  // C-1 post-reload: if a raw key was stashed before a reload (key just created),
+  // pop it and reveal the copy-once banner. The Active Keys table is now fresh.
+  (function revealStashedKey() {
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem('osm-new-api-key');
+      if (raw) sessionStorage.removeItem('osm-new-api-key');
+    } catch {
+      raw = null;
+    }
+    if (!raw) return;
+    const banner = document.querySelector('[data-testid="new-key-banner"]') as HTMLElement | null;
+    const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
+    if (banner && keyVal) {
+      keyVal.textContent = raw;
+      banner.removeAttribute('hidden');
+      banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  })();
+
   // Toggle generate form
   document.querySelector('[data-testid="generate-key-button"]')?.addEventListener('click', () => {
     const container = document.querySelector('[data-testid="generate-key-form-container"]') as HTMLElement | null;
@@ -361,16 +386,35 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.raw_key) {
-      const banner = document.querySelector('[data-testid="new-key-banner"]') as HTMLElement | null;
-      const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
-      if (banner && keyVal) {
-        keyVal.textContent = data.raw_key;
-        banner.removeAttribute('hidden');
-        banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // C-1: previously the Active Keys table stayed stale until a manual F5
+      // (no reload, to avoid losing the raw key to a timeout). Fix: stash the
+      // raw key in sessionStorage and reload so the server re-renders the table
+      // fresh — the new row appears immediately with correct plan/override
+      // prefill (single source of truth = SSR markup, no client-side row
+      // duplication). The banner is re-shown post-reload from the stash.
+      try {
+        sessionStorage.setItem('osm-new-api-key', data.raw_key);
+        // Safety net: if the reload below never navigates (e.g. a JS error),
+        // purge the raw secret rather than leaving it readable for the whole
+        // tab session. The normal path discards this timer when the reload
+        // navigates away, and the next page pops the key on load.
+        setTimeout(() => { try { sessionStorage.removeItem('osm-new-api-key'); } catch { /* ignore */ } }, 15000);
+      } catch {
+        // sessionStorage unavailable (private mode / disabled) — fall back to
+        // showing the banner now without reload so the key is never lost.
       }
-      // No auto-reload: the banner stays until the user manually reloads.
-      // The Active Keys table is therefore stale until then — acceptable
-      // tradeoff so the raw key isn't lost to a 3-second timeout.
+      form.reset();
+      if (sessionStorage.getItem('osm-new-api-key') === data.raw_key) {
+        location.reload();
+      } else {
+        const banner = document.querySelector('[data-testid="new-key-banner"]') as HTMLElement | null;
+        const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
+        if (banner && keyVal) {
+          keyVal.textContent = data.raw_key;
+          banner.removeAttribute('hidden');
+          banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
     } else {
       showFlash(data.error ?? 'Failed to create key.', 'error');
     }
@@ -481,14 +525,21 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
   document.querySelectorAll('.overrides-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const el = btn as HTMLElement;
-      // Find the plan-select in the same row.
+      // Sync the dropdown's current selection into data-current-plan-id so the
+      // island PATCHes with whichever plan the admin currently has chosen
+      // (the dropdown is SSR-selected to the saved plan, but the admin may have
+      // changed it before opening the modal).
       const row = el.closest('tr');
       const planSelect = row?.querySelector('.plan-select') as HTMLSelectElement | null;
-      const selectedPlanId = planSelect?.value ?? '';
-      // Update data-current-plan-id so the island can read it.
-      el.dataset.currentPlanId = selectedPlanId;
-      // Note: data-rate and data-quota are always '' on SSR render (list_api_keys
-      // does not expose override values). The island treats '' as null (use plan default).
+      // Sync unconditionally — including '' when the admin de-selects back to the
+      // placeholder — so a stale planId is never left on the element from an
+      // earlier selection (which would PATCH overrides against the wrong plan).
+      if (planSelect) {
+        el.dataset.currentPlanId = planSelect.value;
+      }
+      // data-rate / data-quota are SSR-prefilled from list_api_keys (null -> '',
+      // explicit override incl. 0 -> the number). The island treats '' as
+      // "use plan default" and '0' as a real zero override (ADR-0041).
     });
   });
 

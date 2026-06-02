@@ -372,3 +372,44 @@ describe('requestStepUp', () => {
     expect(await second).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// claimPendingStepUp — hydration-race guard
+// ---------------------------------------------------------------------------
+
+describe('claimPendingStepUp', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('returns null when no step-up is pending', async () => {
+    const { claimPendingStepUp } = await import('../mfaStepUp');
+    expect(claimPendingStepUp()).toBeNull();
+  });
+
+  it('claims a step-up that fired before any listener attached (the hydration race) and resolves the parked caller', async () => {
+    // Reproduces the bug: a sibling client:load island calls requestStepUp before
+    // the StepUpMfaModal has hydrated/attached its listener. The one-shot event is
+    // dropped (no listener here), but the resolver is parked. Without the guard the
+    // caller's withStepUp would hang forever. claimPendingStepUp (called by the
+    // modal on mount) must recover it.
+    const { requestStepUp, claimPendingStepUp } = await import('../mfaStepUp');
+
+    const parked = requestStepUp(); // no listener registered → event dropped, resolver parked
+    const claim = claimPendingStepUp();
+    expect(claim).not.toBeNull();
+
+    claim!(true); // modal opened via claim, user verified
+    expect(await parked).toBe(true);
+  });
+
+  it('returns null again once the pending request has been drained', async () => {
+    const { requestStepUp, claimPendingStepUp } = await import('../mfaStepUp');
+
+    const parked = requestStepUp();
+    claimPendingStepUp()!(false);
+    expect(await parked).toBe(false);
+
+    expect(claimPendingStepUp()).toBeNull();
+  });
+});
