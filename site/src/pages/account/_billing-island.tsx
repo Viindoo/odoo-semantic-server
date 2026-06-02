@@ -400,7 +400,11 @@ export default function BillingDashboard() {
     setCancelError(null);
     try {
       const res = await fetch('/api/account/subscription/cancel', {
+        // Content-Type required so Astro's checkOrigin guard (dev/preview/CI
+        // proxy) doesn't 403 the cancel before it reaches FastAPI. Harmless in
+        // prod (nginx bypasses the proxy); the cancel POST carries no body.
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
       });
       const data = await res.json() as {
