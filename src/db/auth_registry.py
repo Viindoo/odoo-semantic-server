@@ -193,11 +193,16 @@ class AuthStore:
 
         Returns:
             List of dicts with keys: id, name, key_prefix, active, created_at,
-            last_used_at, user_id, expires_at, owner_username (None for system keys).
+            last_used_at, user_id, expires_at, owner_username (None for system keys),
+            plan_id, rate_limit_override, quota_override.  The last three power the
+            admin UI: the plan dropdown prefill and the per-key override modal.  Each
+            is NULL when unset; NULL means "no override" and is distinct from 0, which
+            means a zero-valued override (ADR-0041).
         """
         select = (
             "SELECT k.id, k.name, k.key_prefix, k.active, k.created_at, k.last_used_at, "
-            "k.user_id, k.expires_at, u.username AS owner_username "
+            "k.user_id, k.expires_at, u.username AS owner_username, "
+            "k.plan_id, k.rate_limit_override, k.quota_override "
             "FROM api_keys k "
             "LEFT JOIN webui_users u ON u.id = k.user_id"
         )

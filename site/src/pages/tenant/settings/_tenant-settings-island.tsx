@@ -445,14 +445,37 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
         flash(d.detail ?? 'Reset failed.', true);
       } else {
         flash(`Setting ${s.key} reset to system default.`);
+        // Fetch the fresh effective/system values so we reflect any admin changes
+        // made to the system default since page-load (C-3 fix).
+        // The GET /{key} endpoint returns `system_value` (not `system_default`);
+        // we map it to the TenantSettingDef.system_default field.
+        // On fetch failure we fall back to the page-load snapshot.
+        let freshSystemDefault: unknown = s.system_default;
+        let freshEffectiveValue: unknown = s.system_default;
+        try {
+          const freshRes = await fetch(
+            `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}`,
+            { credentials: 'include' },
+          );
+          if (freshRes.ok) {
+            const freshData = await freshRes.json() as {
+              system_value?: unknown;
+              effective_value?: unknown;
+            };
+            // system_value is the live system-level default (no tenant context)
+            if ('system_value' in freshData) freshSystemDefault = freshData.system_value;
+            if ('effective_value' in freshData) freshEffectiveValue = freshData.effective_value;
+          }
+        } catch { /* fallback to snapshot values already set above */ }
         setSettings((prev) =>
           prev.map((item) =>
             item.key === s.key
               ? {
                   ...item,
-                  effective_value: item.system_default,
+                  effective_value: freshEffectiveValue,
                   effective_source: 'system_or_default',
                   tenant_override: null,
+                  system_default: freshSystemDefault,
                 }
               : item,
           ),

@@ -398,3 +398,96 @@ class TestPatchPlanPricingFields:
         assert resp.status_code == 422, (
             f"Expected 422 for invalid billing_interval, got {resp.status_code}: {resp.text}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Clear-to-blank persistence + NOT NULL guard (CLASS 1 — WI-1)
+# ---------------------------------------------------------------------------
+
+
+class TestClearToBlankPersistence:
+    """CLASS 1 (Loại 1): clearing an optional field must persist the cleared
+    intent, and clearing a required (NOT NULL) field must be blocked — never
+    silently dropped to keep the old value."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_default_values_persist(self, migrated_pg):
+        """PATCH with explicit trial_days=0 + seat_limit=1 must write those exact
+        values to the DB — proving the cleared-field-as-default intent persists
+        rather than being dropped from the payload (the original CLASS 1 bug)."""
+        # Seed pro with non-default values first so 0/1 is a genuine change.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "UPDATE plans SET trial_days = 14, seat_limit = 9 WHERE slug = 'pro'"
+            )
+
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={
+                    "trial_days": 0,
+                    "seat_limit": 1,
+                    "reason": "clear trial + seat back to defaults",
+                },
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT trial_days, seat_limit FROM plans WHERE slug = 'pro'")
+            row = cur.fetchone()
+        assert row[0] == 0, f"trial_days not persisted: {row[0]}"
+        assert row[1] == 1, f"seat_limit not persisted: {row[1]}"
+
+        # Restore
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "UPDATE plans SET trial_days = 0, seat_limit = 1 WHERE slug = 'pro'"
+            )
+
+    @pytest.mark.asyncio
+    async def test_explicit_null_min_seats_clears(self, migrated_pg):
+        """PATCH with min_seats=null (the ONLY nullable pricing column) must set
+        the column to NULL — clearing the seat minimum succeeds."""
+        with migrated_pg.cursor() as cur:
+            cur.execute("UPDATE plans SET min_seats = 3 WHERE slug = 'team'")
+
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/team",
+                json={"min_seats": None, "reason": "remove seat minimum"},
+            )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT min_seats FROM plans WHERE slug = 'team'")
+            row = cur.fetchone()
+        assert row[0] is None, f"min_seats not cleared to NULL: {row[0]}"
+
+    @pytest.mark.asyncio
+    async def test_null_currency_rejected_and_unchanged(self, migrated_pg):
+        """PATCH with currency=null (NOT NULL column) must return 422 and must NOT
+        change the stored currency — clearing a required field is blocked, never
+        silently applied or dropped."""
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT currency FROM plans WHERE slug = 'pro'")
+            before = cur.fetchone()[0]
+
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={"currency": None, "reason": "attempt to clear currency"},
+            )
+        assert resp.status_code == 422, (
+            f"Expected 422 for cleared NOT NULL currency, got {resp.status_code}: {resp.text}"
+        )
+
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT currency FROM plans WHERE slug = 'pro'")
+            after = cur.fetchone()[0]
+        assert after == before, (
+            f"currency changed despite 422: {before!r} -> {after!r}"
+        )

@@ -406,14 +406,22 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       if (res.ok) {
         showFlash('Profile updated.', 'success');
         setTimeout(() => location.reload(), 800);
-      } else if (res.status === 404) {
-        showFlash(data.detail ?? 'Profile not found.', 'error');
-      } else if (res.status === 409) {
-        showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
-      } else if (res.status === 422) {
-        showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
       } else {
-        showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+        // Save was rejected (404 not-found / 409 name conflict / 422 version
+        // mismatch per ADR-0024, or any other non-2xx). The DB was NOT mutated,
+        // so reset the inputs back to their SSR-baked `value=` attributes — the
+        // last committed DB state — instead of leaving the rejected edit on
+        // screen, which would falsely imply the rename/version change stuck.
+        form.reset();
+        if (res.status === 404) {
+          showFlash(data.detail ?? 'Profile not found.', 'error');
+        } else if (res.status === 409) {
+          showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
+        } else if (res.status === 422) {
+          showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
+        } else {
+          showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+        }
       }
     });
   });

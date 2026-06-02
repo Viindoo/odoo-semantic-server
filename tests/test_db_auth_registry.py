@@ -76,3 +76,73 @@ class TestCreateAndVerifyApiKey:
         found = [k for k in keys if k["id"] == ssh_id]
         assert found
         assert found[0]["name"] == "test-key"
+
+
+class TestListApiKeysExposesPlanAndOverrides:
+    """WI-2 (CLASS 2): list_api_keys must expose plan_id + per-key overrides.
+
+    These columns power the admin api-keys UI: the plan dropdown prefill and the
+    per-key Overrides modal.  Before the fix the SELECT omitted them, so the form
+    rendered blank and a 0-vs-NULL parse bug blocked Save.  These tests protect
+    the *behaviour* (the returned dict carries the persisted values, with NULL
+    distinct from 0 per ADR-0041), not the SQL text.
+    """
+
+    @staticmethod
+    def _plan_id(conn, slug: str) -> int:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM plans WHERE slug = %s", (slug,))
+            row = cur.fetchone()
+        assert row is not None, f"seed plan {slug!r} missing — migrations not applied?"
+        return row[0]
+
+    @staticmethod
+    def _set_plan_and_overrides(conn, key_id, plan_id, rate, quota) -> None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE api_keys SET plan_id = %s, rate_limit_override = %s, "
+                "quota_override = %s WHERE id = %s",
+                (plan_id, rate, quota, key_id),
+            )
+        if not conn.autocommit:
+            conn.commit()
+
+    def test_list_returns_plan_id_and_override_values(self, pg_auth_conn):
+        # Reproduces the visual-verify scenario: a key on a real plan with
+        # explicit numeric overrides (rate=120, quota=50000) must surface those
+        # exact values so the form can prefill them.
+        raw, _, key_id = auth_store().create_api_key("override-key")
+        plan_id = self._plan_id(pg_auth_conn, "unlimited")
+        self._set_plan_and_overrides(pg_auth_conn, key_id, plan_id, 120, 50000)
+
+        keys = auth_store().list_api_keys()
+        found = next((k for k in keys if k["id"] == key_id), None)
+        assert found is not None
+        # The three columns must be present AND carry the persisted values.
+        assert found["plan_id"] == plan_id
+        assert found["rate_limit_override"] == 120
+        assert found["quota_override"] == 50000
+
+    def test_list_distinguishes_zero_override_from_null(self, pg_auth_conn):
+        # ADR-0041: override 0 means "zero allowed" (hard block), NOT "unset".
+        # A NULL override means "use plan default".  list_api_keys must preserve
+        # the difference so the UI does not collapse 0 into blank or vice versa.
+        plan_id = self._plan_id(pg_auth_conn, "free")
+
+        _, _, zero_id = auth_store().create_api_key("zero-override-key")
+        self._set_plan_and_overrides(pg_auth_conn, zero_id, plan_id, 0, 0)
+
+        _, _, null_id = auth_store().create_api_key("null-override-key")
+        self._set_plan_and_overrides(pg_auth_conn, null_id, plan_id, None, None)
+
+        keys = auth_store().list_api_keys()
+        zero = next((k for k in keys if k["id"] == zero_id), None)
+        null = next((k for k in keys if k["id"] == null_id), None)
+        assert zero is not None and null is not None
+
+        # Explicit zero survives as 0, not None.
+        assert zero["rate_limit_override"] == 0
+        assert zero["quota_override"] == 0
+        # Unset survives as None, not 0.
+        assert null["rate_limit_override"] is None
+        assert null["quota_override"] is None

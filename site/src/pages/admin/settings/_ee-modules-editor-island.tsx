@@ -202,9 +202,11 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
         const data = await res.json() as EEModule[];
         setModules(data);
         setSelectedIds(new Set());
+      } else {
+        flash(`Failed to refresh module list (HTTP ${res.status}). Data shown may be stale — refresh the page.`, true);
       }
-    } catch {
-      // silently fail — user sees stale data
+    } catch (e: unknown) {
+      flash(`Failed to refresh module list: ${String(e)}. Data shown may be stale — refresh the page.`, true);
     } finally {
       setLoading(false);
     }

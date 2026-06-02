@@ -77,6 +77,11 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
   const [indexingId, setIndexingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
+  // Index job status per repo id: 'running' | 'pending' | 'done' | 'error'.
+  // Lets the user see when an index job actually finishes instead of the old
+  // fire-and-forget behaviour (C-7). Mirrors the clone_status poll pattern.
+  const [indexJobStatus, setIndexJobStatus] = useState<Record<number, string>>({});
+
   // Only show profiles that belong to one of the user's tenants (non-null tenant_id in scope)
   const tenantIds = new Set(tenants.map(t => t.tenant_id));
   const writableProfiles = profiles.filter(
@@ -112,6 +117,32 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
     }
   }
 
+  // Poll /api/jobs/{id}/status until the index job reaches a terminal state
+  // (done / error / cancelled), then surface the outcome. Reuses the same
+  // endpoint + 5s cadence as the clone_status poll so the UI can tell the user
+  // when indexing actually completes rather than leaving it fire-and-forget.
+  function pollIndexJob(repoId: number, jobId: number) {
+    const tick = async () => {
+      const { ok, data } = await apiFetch(`/api/jobs/${jobId}/status`);
+      if (!ok) {
+        // Transient lookup failure — keep the badge as-is and retry.
+        setTimeout(tick, 5000);
+        return;
+      }
+      const status = (data as { status?: string }).status ?? 'unknown';
+      setIndexJobStatus(prev => ({ ...prev, [repoId]: status }));
+      if (status === 'running' || status === 'pending') {
+        setTimeout(tick, 5000);
+      } else if (status === 'done') {
+        flash('Index completed.');
+      } else if (status === 'error') {
+        const msg = (data as { error_msg?: string }).error_msg;
+        flash(msg ? `Index failed: ${msg}` : 'Index failed.', true);
+      }
+    };
+    setTimeout(tick, 5000);
+  }
+
   async function handleIndex(repoId: number) {
     setIndexingId(repoId);
     const { ok, data } = await apiFetch(`/api/repos/repos/${repoId}/index`, {
@@ -120,7 +151,15 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
     });
     setIndexingId(null);
     if (ok) {
-      flash('Index triggered successfully.');
+      const jobId = (data as { job_id?: number }).job_id;
+      if (typeof jobId === 'number') {
+        setIndexJobStatus(prev => ({ ...prev, [repoId]: 'running' }));
+        flash('Index started.');
+        pollIndexJob(repoId, jobId);
+      } else {
+        // No job id returned — still acknowledge the trigger.
+        flash('Index triggered successfully.');
+      }
     } else {
       const err = (data as { error?: string }).error ?? 'Failed to trigger index.';
       flash(err, true);
@@ -316,10 +355,33 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
                     <td className="px-4 py-3 text-right">
                       {(repo as unknown as { writable: boolean }).writable ? (
                         <div className="flex items-center justify-end gap-2">
+                          {indexJobStatus[repo.id] && (
+                            <span
+                              data-testid={`index-job-status-${repo.id}`}
+                              data-status={indexJobStatus[repo.id]}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                                indexJobStatus[repo.id] === 'done'
+                                  ? 'bg-green-100 text-green-800'
+                                  : indexJobStatus[repo.id] === 'error'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}
+                            >
+                              {indexJobStatus[repo.id] === 'done'
+                                ? 'Indexed'
+                                : indexJobStatus[repo.id] === 'error'
+                                ? 'Index failed'
+                                : 'Indexing…'}
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleIndex(repo.id)}
-                            disabled={indexingId === repo.id}
+                            disabled={
+                              indexingId === repo.id ||
+                              indexJobStatus[repo.id] === 'running' ||
+                              indexJobStatus[repo.id] === 'pending'
+                            }
                             data-testid={`index-repo-button-${repo.id}`}
                             className="text-xs bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 px-3 py-1.5 rounded-lg transition-colors"
                           >
