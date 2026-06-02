@@ -59,12 +59,20 @@ def _mint_default_api_key(user_id: int, username: str) -> str | None:
             )
             return None
 
+        # SECURITY (ADR-0034, m13_019): bind the new key to a non-NULL tenant by
+        # the user's email domain. tenant_id=None is the UNRESTRICTED sentinel —
+        # reserved for admin/CLI keys — and must NEVER be the fallback for a
+        # free-signup key. If the resolver raises (e.g. tenant missing because
+        # m13_019 is not applied), the exception propagates to the outer
+        # try/except below and the mint FAILS (returns None) instead of silently
+        # minting an unrestricted key.
+        mint_tenant_id = store.resolve_default_mint_tenant_id(user_id)
         label = f"Default key ({username})"
         raw_key, _prefix, _key_id = store.create_api_key(
             name=label,
             user_id=user_id,
             expires_at=None,
-            tenant_id=None,
+            tenant_id=mint_tenant_id,
         )
         _logger.info(
             "Auto-minted default API key for user_id=%d (username=%r)", user_id, username
@@ -160,12 +168,23 @@ async def create_api_key(body: CreateApiKeyBody, request: Request):
                     status_code=400,
                 )
 
+        # SECURITY (ADR-0034, m13_019): scope the new key's tenant.
+        #   - admin session → tenant_id=None (UNRESTRICTED, by design).
+        #   - non-admin     → resolve by email domain (Viindoo vs public). Never
+        #     None for a non-admin key, so a self-service user cannot mint an
+        #     unrestricted key. A resolver raise here surfaces as a 500 (the
+        #     mint fails fail-closed) rather than minting an unrestricted key.
+        is_admin = is_admin_session(request)
+        if is_admin:
+            mint_tenant_id = None
+        else:
+            mint_tenant_id = auth_store().resolve_default_mint_tenant_id(uid)
+
         raw_key, _, _ = auth_store().create_api_key(
-            body.name, user_id=uid, expires_at=expires_dt
+            body.name, user_id=uid, expires_at=expires_dt, tenant_id=mint_tenant_id
         )
         new_raw_key = raw_key
 
-        is_admin = is_admin_session(request)
         keys = auth_store().list_api_keys(user_id=uid, admin=is_admin)
     except Exception as e:
         error = str(e)

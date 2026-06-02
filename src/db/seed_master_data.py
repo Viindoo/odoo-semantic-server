@@ -54,6 +54,13 @@ _SEED_NAME_PATTERNS: tuple[str, ...] = ()
 def seed_profiles(conn) -> tuple[int, int]:
     """Idempotent 2-pass INSERT + FK update for the seeded profiles.
 
+    SECURITY (ADR-0034, m13_019): this function must NEVER write ``tenant_id``.
+    Tenant ownership of profiles is set exclusively by migrations and the admin
+    UI. The INSERT below deliberately omits ``tenant_id`` so seeded profiles land
+    in the shared (NULL) set. Writing ``tenant_id`` here — especially resetting a
+    viindoo profile back to NULL on a re-seed — would re-open the m13_019
+    isolation hole by returning a restricted profile to the globally-shared set.
+
     Pass 1: INSERT all rows with parent_profile_id=NULL (ON CONFLICT DO NOTHING).
     Pass 2: for each def with a non-None parent_name, look up child_id + parent_id
             by name, then UPDATE parent_profile_id idempotently (IS DISTINCT FROM).

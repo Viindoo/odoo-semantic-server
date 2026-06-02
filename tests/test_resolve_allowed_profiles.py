@@ -160,3 +160,32 @@ class TestResolveTenantScopeDB:
         assert "t_alpha_17" not in own_b and "t_alpha_17" not in shared_b
         # both still see the shared base
         assert "t_base_17" in shared_a and "t_base_17" in shared_b
+
+    def test_public_tenant_sees_odoo_base_not_viindoo(self, allowed_pg):
+        """SECURITY (ADR-0034, m13_019): a profile-less 'public' tenant resolves
+        to own=[] and a shared set that contains the 'odoo_*' base profile but
+        NOT a viindoo profile that has been moved into the Viindoo tenant.
+
+        This is the free-signup scope: see Odoo core/CE/EE, never the restricted
+        viindoo profiles.
+        """
+        from src.db.pg import repo_store
+
+        # odoo base stays in the shared (NULL) set; a viindoo profile is OWNED by
+        # the Viindoo tenant (no longer shared) — mirroring m13_019's outcome.
+        self._profile(allowed_pg, "t_odoo_17", "17.0")  # shared base, tenant NULL
+        t_vii = self._tenant(allowed_pg, "t_viindoo")
+        self._profile(
+            allowed_pg, "t_standard_viindoo_17", "17.0", tenant_id=t_vii
+        )
+        t_public = self._tenant(allowed_pg, "t_public")
+
+        own, shared = repo_store().resolve_tenant_scope(t_public)
+        assert own == [], "profile-less public tenant owns nothing"
+        assert "t_odoo_17" in shared, "public tenant must see the shared Odoo base"
+        assert (
+            "t_standard_viindoo_17" not in shared
+        ), "viindoo profile is tenant-owned, must NOT leak into public shared scope"
+        # flat union for single-value filters: Odoo base only, no viindoo.
+        flat = repo_store().resolve_allowed_profiles(t_public)
+        assert "t_odoo_17" in flat and "t_standard_viindoo_17" not in flat

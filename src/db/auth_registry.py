@@ -11,6 +11,10 @@ from src.db.pg import PgPool
 
 logger = logging.getLogger(__name__)
 
+# Email domains whose users are scoped to the Viindoo tenant at mint time
+# (ADR-0034). Matched case-insensitively against the part after '@'.
+VIINDOO_EMAIL_DOMAINS = ("viindoo.com",)
+
 
 class LastAdminProtectedError(Exception):
     """Raised when an operation would remove the last active admin."""
@@ -1072,6 +1076,78 @@ class AuthStore:
                 row_id = cur.fetchone()[0]
             conn.commit()
         return row_id
+
+    def get_public_tenant_id(self) -> int:
+        """Return the id of the 'public' tenant (Odoo-only free-signup scope).
+
+        The 'public' tenant is created by migration m13_019. New free-signup keys
+        for non-Viindoo, non-admin users are bound to it so they read only the
+        shared 'odoo_*' base profiles (ADR-0034).
+
+        Raises:
+            RuntimeError: if the 'public' tenant is absent (m13_019 not applied).
+                Fail-closed: callers must NOT fall back to tenant_id=None.
+        """
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn, "SELECT id FROM tenants WHERE name = %s", ("public",)
+            )
+        if row is None:
+            raise RuntimeError("public tenant missing — run m13_019")
+        return row["id"]
+
+    def get_viindoo_tenant_id(self) -> int:
+        """Return the id of the Viindoo tenant ('Viindoo Technology JSC').
+
+        New free-signup keys for @viindoo.com users are bound to this tenant so
+        they can read the restricted 'standard_viindoo_*' / 'viindoo_internal_*'
+        profiles (ADR-0034).
+
+        Raises:
+            RuntimeError: if the tenant is absent (m13_019 not applied).
+                Fail-closed: callers must NOT fall back to tenant_id=None.
+        """
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT id FROM tenants WHERE name = %s",
+                ("Viindoo Technology JSC",),
+            )
+        if row is None:
+            raise RuntimeError("Viindoo tenant missing — run m13_019")
+        return row["id"]
+
+    def resolve_default_mint_tenant_id(self, user_id: int | None) -> int:
+        """Resolve the tenant a newly-minted key for ``user_id`` must be bound to.
+
+        Policy (ADR-0034): a free-signup key is scoped by the user's email domain
+          - @viindoo.com  → Viindoo tenant (sees restricted viindoo profiles)
+          - everything else → public tenant (sees only the shared 'odoo_*' base)
+
+        NEVER returns None. The unrestricted (tenant_id=None) sentinel is reserved
+        for admins and system/CLI keys, which do NOT go through this resolver —
+        their mint sites pass tenant_id=None explicitly. Binding a free key to a
+        non-NULL tenant is the whole point of the m13_019 isolation fix; falling
+        back to None here would re-open the hole.
+
+        Args:
+            user_id: webui_users.id of the key owner. May be None for system/CLI
+                contexts — those are treated as public (Odoo-only), never
+                unrestricted.
+
+        Raises:
+            RuntimeError: if the required tenant is absent (m13_019 not applied).
+                Propagated so the mint FAILS fail-closed rather than minting an
+                unrestricted key.
+        """
+        email = None
+        if user_id is not None:
+            email = self.get_user_field(user_id, "email")
+        if email and "@" in str(email):
+            domain = str(email).rsplit("@", 1)[1].strip().lower()
+            if domain in VIINDOO_EMAIL_DOMAINS:
+                return self.get_viindoo_tenant_id()
+        return self.get_public_tenant_id()
 
     def update_tenant(
         self, tenant_id: int, *, name: str | None = None, active: bool | None = None
