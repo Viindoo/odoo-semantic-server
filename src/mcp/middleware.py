@@ -655,9 +655,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # IS NULL — the "unrestricted" sentinel reserved for system/CLI keys and
         # admin-owned keys. Such a key should never exist (the write-side
         # mint/reactivate/reassign fixes prevent it), but if some future path
-        # leaves one, this guard ensures it cannot read across tenants. Also
-        # closes the privilege-persistence gap where a demoted admin still holds
-        # a NULL-tenant key. Uses the SAME fail-closed response as an invalid key.
+        # leaves one, this guard ensures it cannot read across tenants. Uses the
+        # SAME fail-closed response as an invalid key.
+        #
+        # Privilege-persistence on admin demotion is closed by this guard ONLY in
+        # conjunction with set_user_admin's write-side fixes: on demote it (a)
+        # re-scopes the user's active NULL-tenant keys to a concrete tenant in the
+        # same transaction, and (b) the route invalidates this per-key owner cache.
+        # The guard alone does NOT close the gap, because owner_is_admin is cached
+        # for _CACHE_TTL (300 s); without the demote-time cache invalidation a
+        # just-demoted admin would keep serving owner_is_admin=True (so this guard
+        # would not fire) for up to the TTL window.
         if _is_null_tenant_escalation(tenant_id, owner_user_id, owner_is_admin):
             _logger.warning(
                 "read-side guard: rejecting user-owned non-admin key with "
