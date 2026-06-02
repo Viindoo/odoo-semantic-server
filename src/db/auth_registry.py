@@ -770,7 +770,7 @@ class AuthStore:
             finally:
                 conn.autocommit = True
 
-    def set_user_admin(self, user_id: int, is_admin: bool) -> None:
+    def set_user_admin(self, user_id: int, is_admin: bool) -> list[int]:
         """Set is_admin flag for a user by id.
 
         When demoting (is_admin=False), verifies that at least one other active admin
@@ -779,6 +779,31 @@ class AuthStore:
         TOCTOU safety: the target row is locked with SELECT ... FOR UPDATE before the
         admin-count check. This serialises concurrent demote calls so two callers
         cannot both pass the guard simultaneously and leave 0 admins.
+
+        SECURITY (ADR-0034, m13_019 — privilege-persistence gap): demoting an admin
+        does NOT touch their API keys, so an admin who minted an unrestricted
+        ``tenant_id IS NULL`` key keeps cross-tenant read access after losing admin
+        rights (the read-side guard `_is_null_tenant_escalation` in
+        `src/mcp/middleware.py` only fires once the key is non-admin-owned AND the
+        per-key owner cache has refreshed). To close that gap on the WRITE side, a
+        demote re-scopes every ACTIVE, ``tenant_id IS NULL`` key the user owns to a
+        concrete tenant (public / viindoo via :meth:`resolve_default_mint_tenant_id`)
+        in the SAME transaction as the is_admin flip — the key downgrades to scoped
+        access instead of relying solely on the read-side guard. Already-scoped keys,
+        inactive keys, and promote (is_admin=True) leave keys untouched.
+
+        Fail-closed ordering: the target tenant is resolved BEFORE any UPDATE runs.
+        A resolver failure (e.g. tenants missing) raises and rolls back the whole
+        transaction — the is_admin flip is never committed without the matching
+        re-scope, so the demotion fails rather than leaving keys unrestricted.
+
+        Returns:
+            The list of api_keys.id owned by ``user_id`` (active + inactive). The
+            route layer uses this to invalidate the per-key MCP middleware cache so
+            the is_admin / tenant_id change takes effect immediately instead of after
+            the 300 s cache TTL. Cache invalidation is a middleware concern and is
+            deliberately left to the caller — the store layer does not import
+            `src.mcp.middleware`.
 
         Raises:
             LastAdminProtectedError: Demoting the last active admin is blocked.
@@ -806,6 +831,29 @@ class AuthStore:
                         raise LastAdminProtectedError(
                             "Cannot demote the last active admin"
                         )
+
+                # Resolve the re-scope tenant BEFORE any UPDATE (fail-closed): if
+                # the user has active, unrestricted (tenant_id IS NULL) keys and is
+                # being demoted, they must be bound to a concrete tenant. A resolver
+                # failure here raises and aborts the whole txn — is_admin is never
+                # flipped without the matching re-scope.
+                scoped_tenant_id: int | None = None
+                if not is_admin:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT EXISTS (SELECT 1 FROM api_keys "
+                            "WHERE user_id = %s AND active = TRUE "
+                            "AND tenant_id IS NULL)",
+                            (user_id,),
+                        )
+                        has_unrestricted = bool(cur.fetchone()[0])
+                    if has_unrestricted:
+                        # Demotion target is a non-admin → always a concrete tenant.
+                        # resolve_default_mint_tenant_id reads tenants/membership on
+                        # its own connection; the demote txn does not mutate those,
+                        # so there is no read conflict.
+                        scoped_tenant_id = self.resolve_default_mint_tenant_id(user_id)
+
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE webui_users SET is_admin = %s WHERE id = %s",
@@ -814,12 +862,34 @@ class AuthStore:
                     rowcount = cur.rowcount
                 if rowcount == 0:
                     raise UserNotFoundError(f"User id={user_id} not found")
+
+                # Re-scope active, unrestricted keys in the SAME transaction.
+                if scoped_tenant_id is not None:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE api_keys SET tenant_id = %s "
+                            "WHERE user_id = %s AND active = TRUE "
+                            "AND tenant_id IS NULL",
+                            (scoped_tenant_id, user_id),
+                        )
+
+                # Enumerate ALL of the user's keys (active + inactive) for cache
+                # invalidation by the caller. Done in-txn so the list reflects the
+                # committed post-update ownership state.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM api_keys WHERE user_id = %s",
+                        (user_id,),
+                    )
+                    affected_key_ids = [r[0] for r in cur.fetchall()]
+
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 conn.autocommit = True
+        return affected_key_ids
 
     def assign_key_owner(self, key_id: int, new_user_id: int | None) -> None:
         """Reassign ownership of an API key to a different user (or clear it).

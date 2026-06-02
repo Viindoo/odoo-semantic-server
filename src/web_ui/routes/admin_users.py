@@ -428,11 +428,24 @@ async def set_user_admin_route(
     Returns the updated user dict on success.
     """
     try:
-        _auth_store().set_user_admin(user_id, body.is_admin)
+        # On demote, set_user_admin atomically re-scopes the user's active,
+        # unrestricted (tenant_id IS NULL) keys to a concrete tenant (fail-closed,
+        # same transaction as the is_admin flip — ADR-0034). It returns every key
+        # the user owns so we can invalidate the per-key MCP middleware cache below.
+        affected_key_ids = _auth_store().set_user_admin(user_id, body.is_admin)
     except LastAdminProtectedError:
         return JSONResponse(_json_safe({"error": "last_admin_protected"}), status_code=422)
     except UserNotFoundError:
         return JSONResponse(_json_safe({"error": "user_not_found"}), status_code=404)
+
+    # Invalidate the in-process MCP middleware cache for EVERY key the user owns so
+    # the is_admin / tenant_id change takes effect immediately instead of waiting
+    # for the 300 s owner-cache TTL. Mirrors cascade_set_user_plan_route. Applies to
+    # both promote and demote — the cached owner_is_admin flag flips either way.
+    from src.mcp.middleware import _cache_invalidate_by_key_id
+    for kid in affected_key_ids:
+        _cache_invalidate_by_key_id(kid)
+
     user = _auth_store().get_user_by_id(user_id)
     return JSONResponse(_json_safe({"ok": True, "user": user}))
 
