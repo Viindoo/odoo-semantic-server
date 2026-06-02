@@ -186,6 +186,7 @@ def _reset_mcp_middleware_state():
             "_KEY_CACHE",
             "_CACHE_TS",
             "_TENANT_CACHE",
+            "_OWNER_CACHE",
             "_usage_buffer",
             "_rate_buckets",
         ):

@@ -262,10 +262,12 @@ class TestCacheSplitFailClosed:
                     return False, None  # force tenant cache miss
                 return original_cache_get_tenant(k)
 
-            # Patch _do_verify (via asyncio.to_thread) to capture call + return tenant_id
+            # Patch _do_verify (via asyncio.to_thread) to capture call + return tenant_id.
+            # _do_verify now yields a 4-tuple (key_id, tenant_id, user_id, owner_is_admin);
+            # user_id=None marks this stub key as system/CLI so the read-side guard allows it.
             async def _mock_to_thread(fn, *a, **kw):
                 verify_called.append(True)
-                return (expected_key_id, expected_tenant_id)
+                return (expected_key_id, expected_tenant_id, None, False)
 
             mock_call_next = AsyncMock(return_value=MagicMock(status_code=200))
 
@@ -296,7 +298,8 @@ class TestCacheSplitFailClosed:
 
     @pytest.mark.asyncio
     async def test_both_caches_hit_does_not_trigger_verify(self):
-        """When both KEY_CACHE and TENANT_CACHE hit, no DB verify (happy path unchanged)."""
+        """When KEY_CACHE + TENANT_CACHE + OWNER_CACHE all hit, no DB verify
+        (happy path unchanged — the owner-meta cache must be warmed too)."""
         from src.mcp import middleware as middleware_mod
 
         raw_key = "test-both-hit-key-xyz987"
@@ -305,13 +308,17 @@ class TestCacheSplitFailClosed:
 
         middleware_mod._cache_set(raw_key, expected_key_id)
         middleware_mod._cache_set_tenant(raw_key, expected_tenant_id)
+        # Read-side guard: owner-meta cache must also be warm for a cache-served
+        # response. A real tenant_id here means the key is already scoped, so the
+        # guard never fires regardless of owner metadata.
+        middleware_mod._cache_set_owner(raw_key, 9, False)
 
         try:
             verify_called = []
 
             async def _mock_to_thread(fn, *a, **kw):
                 verify_called.append(True)
-                return (expected_key_id, expected_tenant_id)
+                return (expected_key_id, expected_tenant_id, 9, False)
 
             mock_request = MagicMock()
             mock_request.url.path = "/mcp"
