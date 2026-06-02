@@ -6009,7 +6009,15 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
         # or the list of profiles this API key's tenant may see. Pinning a
         # profile outside that set would let a scoped key narrow onto — and read
         # from — a profile it is not entitled to, so reject it here.
-        allowed = _get_allowed_profiles()
+        # _get_allowed_profiles() touches the DB (choke-point query), so wrap it:
+        # a DB error here must surface as a structured ToolResult error, not a
+        # raw trace. Authz semantics unchanged (None=admin→allow; else reject if
+        # profile_name not in allowed).
+        try:
+            allowed = _get_allowed_profiles()
+        except Exception as exc:
+            return ToolResult(content=[TextContent(type="text",
+                text=f"Error checking profile authorization: {exc}")])
         if allowed is not None and profile_name not in allowed:
             return ToolResult(content=[TextContent(type="text",
                 text=(

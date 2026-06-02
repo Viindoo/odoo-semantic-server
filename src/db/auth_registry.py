@@ -755,6 +755,16 @@ class AuthStore:
             new_user_id: The webui_users.id to assign, or None to clear ownership
                 (system/global key).
 
+        SECURITY (ADR-0034, m13_019): reassigning a key to a non-admin user must
+        preserve the isolation invariant — a non-admin, user-owned key may never
+        be ``active=TRUE`` with ``tenant_id IS NULL`` (the unrestricted sentinel).
+        If the key is active + unrestricted and the new owner is a non-admin user,
+        the tenant is re-scoped (public / viindoo) in the SAME UPDATE. Clearing
+        ownership (new_user_id=None → system/CLI key) leaves tenant_id untouched.
+
+        Fail-closed: a tenant-resolver failure raises (no UPDATE is performed)
+        rather than leaving the key active + unrestricted under a non-admin owner.
+
         Raises:
             UserNotFoundError: new_user_id is not None and the user does not exist.
             KeyNotFoundError: key_id does not exist in api_keys.
@@ -768,10 +778,29 @@ class AuthStore:
                 )
                 if row is None:
                     raise UserNotFoundError(f"User id={new_user_id} not found")
+
+            # Re-scope the tenant when the reassignment would otherwise leave the
+            # key active + unrestricted under a non-admin owner.
+            set_parts = ["user_id = %s"]
+            params: list = [new_user_id]
+            key_row = self._pool.fetch_one(
+                conn,
+                "SELECT active, tenant_id FROM api_keys WHERE id = %s",
+                (key_id,),
+            )
+            if key_row is None:
+                raise KeyNotFoundError(f"API key id={key_id} not found")
+            if key_row["active"] and key_row["tenant_id"] is None:
+                scoped = self._scope_tenant_for_reactivation(new_user_id)
+                if scoped is not None:
+                    set_parts.append("tenant_id = %s")
+                    params.append(scoped)
+            params.append(key_id)
+
             rowcount = self._pool.execute(
                 conn,
-                "UPDATE api_keys SET user_id = %s WHERE id = %s",
-                (new_user_id, key_id),
+                f"UPDATE api_keys SET {', '.join(set_parts)} WHERE id = %s",  # noqa: S608 — set_parts is static SQL
+                tuple(params),
             )
             if rowcount == 0:
                 raise KeyNotFoundError(f"API key id={key_id} not found")
@@ -1148,6 +1177,96 @@ class AuthStore:
             if domain in VIINDOO_EMAIL_DOMAINS:
                 return self.get_viindoo_tenant_id()
         return self.get_public_tenant_id()
+
+    def _scope_tenant_for_reactivation(self, user_id: int | None) -> int | None:
+        """Resolve the tenant a key must be (re-)bound to when it is about to
+        become ``active`` with ``tenant_id IS NULL``.
+
+        SECURITY INVARIANT (ADR-0034, m13_019): a non-admin, user-owned key must
+        NEVER be ``active=TRUE`` while ``tenant_id IS NULL`` — that NULL is the
+        unrestricted sentinel and would re-open the free-signup data-exposure
+        hole that m13_019 closed.
+
+        Returns:
+            - ``None`` when the key may legitimately keep ``tenant_id IS NULL``:
+              the key is unowned (``user_id IS NULL`` = system/CLI key) or its
+              owner is an admin. The caller leaves ``tenant_id`` untouched.
+            - a non-NULL tenant id (via ``resolve_default_mint_tenant_id``) when
+              the owner is a non-admin user; the caller MUST write it in the same
+              UPDATE so the key never surfaces unrestricted.
+
+        Fail-closed: if the resolver raises (e.g. tenants missing because m13_019
+        is unapplied), the exception propagates so the caller aborts rather than
+        completing the operation with an unrestricted key.
+        """
+        if user_id is None:
+            # System/CLI key (no owner) — stays unrestricted by design.
+            return None
+        if bool(self.get_user_field(user_id, "is_admin")):
+            # Admin-owned key — unrestricted by design.
+            return None
+        # Non-admin owner → must be scoped to a concrete tenant, never NULL.
+        return self.resolve_default_mint_tenant_id(user_id)
+
+    def reactivate_api_key(self, key_id: int) -> dict | None:
+        """Set ``api_keys.active = TRUE`` for ``key_id``, re-scoping the tenant
+        when required to preserve the m13_019 isolation invariant.
+
+        If the key's ``tenant_id IS NULL`` and its owner is a non-admin user, the
+        tenant is re-scoped (public / viindoo) in the SAME UPDATE so the key never
+        comes back unrestricted. Admin-owned and system/CLI (``user_id IS NULL``)
+        keys keep ``tenant_id IS NULL``.
+
+        Idempotent — reactivating an already-active key returns the row. Returns
+        ``None`` if the key does not exist.
+
+        Fail-closed: a resolver failure raises (no UPDATE is performed) rather
+        than reactivating an unrestricted key.
+
+        Returns dict with keys: id, name, key_prefix, active, user_id, tenant_id,
+        created_at, last_used_at, expires_at.
+        """
+        with self._pool.checkout() as conn:
+            existing = self._pool.fetch_one(
+                conn,
+                "SELECT user_id, tenant_id FROM api_keys WHERE id = %s",
+                (key_id,),
+            )
+            if existing is None:
+                return None
+
+            set_parts = ["active = TRUE"]
+            params: list = []
+            # Only re-scope when the key would otherwise come back unrestricted.
+            if existing["tenant_id"] is None:
+                # Resolver runs OUTSIDE-but-before the UPDATE; a raise here aborts
+                # the whole operation (fail-closed) — no partial reactivation.
+                scoped = self._scope_tenant_for_reactivation(existing["user_id"])
+                if scoped is not None:
+                    set_parts.append("tenant_id = %s")
+                    params.append(scoped)
+            params.append(key_id)
+
+            row = self._pool.fetch_one(
+                conn,
+                f"UPDATE api_keys SET {', '.join(set_parts)} WHERE id = %s "  # noqa: S608 — set_parts is static SQL
+                "RETURNING id, name, key_prefix, active, user_id, tenant_id, "
+                "created_at, last_used_at, expires_at",
+                tuple(params),
+            )
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "key_prefix": row["key_prefix"],
+            "active": bool(row["active"]),
+            "user_id": row["user_id"],
+            "tenant_id": row["tenant_id"],
+            "created_at": row["created_at"],
+            "last_used_at": row["last_used_at"],
+            "expires_at": row["expires_at"],
+        }
 
     def update_tenant(
         self, tenant_id: int, *, name: str | None = None, active: bool | None = None
@@ -1633,28 +1752,15 @@ def reactivate_api_key(pg_pool: "PgPool", key_id: int) -> dict | None:
     row as dict, or None if the key does not exist. Idempotent — calling
     on an already-active key still returns the row without raising.
 
-    Returns dict with keys: id, name, key_prefix, active, user_id, created_at,
-    last_used_at, expires_at.
+    SECURITY (ADR-0034, m13_019): delegates to ``AuthStore.reactivate_api_key``,
+    which re-scopes the tenant when a non-admin, user-owned key would otherwise
+    come back ``active=TRUE`` with ``tenant_id IS NULL`` (the unrestricted
+    sentinel). This thin wrapper is kept for backward compatibility with callers
+    that hold a bare pool. Fail-closed: a resolver failure propagates.
+
+    Returns dict with keys: id, name, key_prefix, active, user_id, tenant_id,
+    created_at, last_used_at, expires_at.
 
     Added by W-4 of PR feat/m10b-p0-rbac-quota-ui (M10B P0-ext).
     """
-    with pg_pool.checkout() as conn:
-        row = pg_pool.fetch_one(
-            conn,
-            "UPDATE api_keys SET active = TRUE WHERE id = %s "
-            "RETURNING id, name, key_prefix, active, user_id, "
-            "created_at, last_used_at, expires_at",
-            (key_id,),
-        )
-    if row is None:
-        return None
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "key_prefix": row["key_prefix"],
-        "active": bool(row["active"]),
-        "user_id": row["user_id"],
-        "created_at": row["created_at"],
-        "last_used_at": row["last_used_at"],
-        "expires_at": row["expires_at"],
-    }
+    return AuthStore(pg_pool).reactivate_api_key(key_id)

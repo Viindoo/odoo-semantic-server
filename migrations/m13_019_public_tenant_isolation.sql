@@ -26,7 +26,7 @@
 --          - @viindoo.com non-admin keys  → bound to the Viindoo tenant.
 --          - other non-admin keys (the already-exposed external/gmail keys)
 --            → DEACTIVATED (active=false; tenant left NULL).
---          - admin keys (user_id=1) + system/CLI keys (user_id IS NULL)
+--          - admin keys (is_admin=true) + system/CLI keys (user_id IS NULL)
 --            → untouched (stay NULL = unrestricted, by design).
 --
 -- No new tables created → no osm_reader GRANT changes needed (RLS unaffected;
@@ -90,7 +90,8 @@ BEGIN
     -- has been applied (the prod case) executes the backfill idempotently.
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-         WHERE table_name = 'api_keys' AND column_name = 'user_id'
+         WHERE table_schema = current_schema()
+           AND table_name = 'api_keys' AND column_name = 'user_id'
     ) THEN
         -- 5a. @viindoo.com non-admin keys → bind to the Viindoo tenant.
         UPDATE api_keys k
@@ -112,7 +113,7 @@ BEGIN
            AND NOT COALESCE(u.is_admin, false)
            AND lower(u.email) NOT LIKE '%@viindoo.com';
 
-        -- 5c. admin keys (user_id=1) + system/CLI keys (user_id IS NULL) are
+        -- 5c. admin keys (is_admin=true) + system/CLI keys (user_id IS NULL) are
         --     NOT touched by either UPDATE above (admin filtered out by NOT
         --     is_admin; CLI keys have no matching webui_users row to join).
         --     They stay tenant_id IS NULL = unrestricted, by design.
