@@ -491,3 +491,28 @@ class TestClearToBlankPersistence:
         assert after == before, (
             f"currency changed despite 422: {before!r} -> {after!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_null_metadata_rejected_and_unchanged(self, migrated_pg):
+        """PATCH with metadata=null (NOT NULL column) must return 422 and must NOT
+        change the stored metadata — clearing a required field is blocked, never
+        silently applied or dropped."""
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT metadata FROM plans WHERE slug = 'pro'")
+            before = cur.fetchone()[0]
+
+        async with _client() as client:
+            resp = await client.patch(
+                "/api/admin/plans/pro",
+                json={"metadata": None, "reason": "attempt to clear metadata"},
+            )
+        assert resp.status_code == 422, (
+            f"Expected 422 for cleared NOT NULL metadata, got {resp.status_code}: {resp.text}"
+        )
+
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT metadata FROM plans WHERE slug = 'pro'")
+            after = cur.fetchone()[0]
+        assert after == before, (
+            f"metadata changed despite 422: {before!r} -> {after!r}"
+        )
