@@ -306,7 +306,11 @@ def _provision_or_upgrade_locked(subscription_id: int, user_id: int) -> int:
         # the explicit plan assignment below is what makes it the paid tier.
         username = _username_for(user_id)
         label = f"sub-{subscription_id} ({username})"
-        _raw, _prefix, key_id = store.create_api_key(name=label, user_id=user_id)
+        _raw, _prefix, key_id = store.create_api_key(
+            name=label,
+            user_id=user_id,
+            tenant_id=store.resolve_default_mint_tenant_id(user_id),
+        )
         set_api_key_plan_and_overrides(
             pool, key_id, plan_id, None, None,
             update_rate_limit_override=False,

@@ -99,6 +99,109 @@ def _count_keys_for_user(conn, user_id: int) -> int:
         return cur.fetchone()[0]
 
 
+def _key_tenant_id(conn, key_id: int):
+    """Return the tenant_id column for the given api_key (may be None)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT tenant_id FROM api_keys WHERE id = %s", (key_id,))
+        return cur.fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
+# D1: freshly-minted keys (no prior key) must be tenant-scoped, never NULL
+# ---------------------------------------------------------------------------
+
+class TestProvisionMintTenantScope:
+    """D1 (fix/free-key-tenant-isolation): provision_or_upgrade must bind the
+    freshly-minted key to the resolved tenant, not leave tenant_id=NULL.
+
+    tenant_id=NULL is the admin/unrestricted sentinel — a paid subscriber's key
+    must never carry it, or the key would bypass the per-tenant profile filter
+    and see restricted profiles (standard_viindoo_* / viindoo_internal_*).
+    """
+
+    def test_non_viindoo_user_mint_gets_public_tenant(self, migrated_pg):
+        """A user with an @example.com (non-viindoo) address gets the public tenant."""
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "d1pub", "buyer@example.com")
+        assert _count_keys_for_user(migrated_pg, user_id) == 0
+
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="d1_pub_mint", plan_id=pro_id, source="polar",
+            status="active", buyer_email="buyer@example.com",
+        )
+        key_id = provisioning.provision_or_upgrade(sub_id, user_id)
+
+        tenant_id = _key_tenant_id(migrated_pg, key_id)
+        assert tenant_id is not None, (
+            "D1: freshly-minted key must NOT have tenant_id=NULL (admin sentinel)"
+        )
+        # Must equal the public tenant seeded by m13_019.
+        with migrated_pg.cursor() as cur:
+            cur.execute("SELECT id FROM tenants WHERE name = 'public'")
+            row = cur.fetchone()
+        assert row is not None, "m13_019 must seed the 'public' tenant"
+        public_tenant_id = row[0]
+        assert tenant_id == public_tenant_id, (
+            "non-viindoo buyer must be scoped to the public tenant, not viindoo or NULL"
+        )
+
+    def test_viindoo_user_mint_gets_viindoo_tenant(self, migrated_pg):
+        """A @viindoo.com user gets the Viindoo tenant, not NULL or public."""
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "d1vii", "dev@viindoo.com")
+        assert _count_keys_for_user(migrated_pg, user_id) == 0
+
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="d1_vii_mint", plan_id=pro_id, source="polar",
+            status="active", buyer_email="dev@viindoo.com",
+        )
+        key_id = provisioning.provision_or_upgrade(sub_id, user_id)
+
+        tenant_id = _key_tenant_id(migrated_pg, key_id)
+        assert tenant_id is not None, (
+            "D1: freshly-minted key must NOT have tenant_id=NULL (admin sentinel)"
+        )
+        # Must equal the Viindoo tenant seeded by m13_019.
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM tenants WHERE name = 'Viindoo Technology JSC'"
+            )
+            row = cur.fetchone()
+        assert row is not None, "m13_019 must seed the 'Viindoo Technology JSC' tenant"
+        viindoo_tenant_id = row[0]
+        assert tenant_id == viindoo_tenant_id, (
+            "@viindoo.com buyer must be scoped to the Viindoo tenant"
+        )
+
+    def test_upgrade_in_place_does_not_change_existing_key_tenant(self, migrated_pg):
+        """When a key already exists (upgrade path), its tenant_id is preserved.
+
+        Regression guard: the fix touches ONLY the mint branch — the upgrade
+        branch (store.list_api_keys active key found) must be unaffected.
+        """
+        pro_id = _plan_id(migrated_pg, "pro")
+        user_id = _make_user(migrated_pg, "d1upg", "upg@example.com")
+        # Mint the key via the signup path with the public tenant already set.
+        public_tenant_id = auth_store().get_public_tenant_id()
+        _raw, _prefix, key_id = auth_store().create_api_key(
+            name="Default key (d1upg)",
+            user_id=user_id,
+            tenant_id=public_tenant_id,
+        )
+        assert _key_tenant_id(migrated_pg, key_id) == public_tenant_id
+
+        sub_id = subscription_store().upsert_by_external_ref(
+            external_ref="d1_upg", plan_id=pro_id, source="polar",
+            status="active", buyer_email="upg@example.com",
+        )
+        returned = provisioning.provision_or_upgrade(sub_id, user_id)
+
+        assert returned == key_id, "upgrade path must reuse the existing key"
+        assert _key_tenant_id(migrated_pg, key_id) == public_tenant_id, (
+            "upgrade path must not alter the key's tenant_id"
+        )
+
+
 # ---------------------------------------------------------------------------
 # P1 + P4: provision_or_upgrade key handling
 # ---------------------------------------------------------------------------

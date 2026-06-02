@@ -6004,6 +6004,20 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
     """
     # Validate the profile exists before pinning it (None = clear, always valid).
     if profile_name is not None:
+        # SECURITY (ADR-0034): authorization gate BEFORE the existence check.
+        # _get_allowed_profiles() returns None for an admin / unrestricted key,
+        # or the list of profiles this API key's tenant may see. Pinning a
+        # profile outside that set would let a scoped key narrow onto — and read
+        # from — a profile it is not entitled to, so reject it here.
+        allowed = _get_allowed_profiles()
+        if allowed is not None and profile_name not in allowed:
+            return ToolResult(content=[TextContent(type="text",
+                text=(
+                    f"Error: profile '{profile_name}' is not available to this "
+                    "API key.\n"
+                    "└─ Use list_available_profiles() to see what you can pin."
+                )
+            )])
         try:
             with _checkout_pg() as conn:
                 with conn.cursor() as cur:
