@@ -2,7 +2,42 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
+> **Release policy note (2026-06-02):** Git tags exist only for v0.2.0, v0.3.0, v0.5.0, and
+> v0.13.0. Releases v0.11.0 and v0.11.1 were shipped without a tag; v0.13.1 was likewise
+> shipped untagged. v0.12.x was skipped entirely (no code or release at that version).
+> Historical `[Unreleased]` blocks that preceded an untagged release have been relabelled
+> as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
+> **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
+
 ## [Unreleased]
+
+### Added — Analytics app_setting + /api/site-config extension (PR #225)
+
+- **`analytics.ga_measurement_id` setting** — new Tier-1 runtime setting (category `analytics`,
+  default `""`) in `SETTINGS_CATALOGUE` (`src/settings_registry.py`). 29th catalogue entry
+  (18th non-billing Tier-1 setting). Readable without auth for the site config endpoint.
+- **`GET /api/site-config` extended to 5 fields** — now includes `ga_measurement_id` alongside
+  the existing `paid_checkout_enabled`, `helpdesk_url`, `site_version`, and `signup_enabled`.
+  The Astro `<Analytics>` island reads this field at SSR time to inject the GA snippet only
+  when a measurement ID is configured (no hardcoded GA ID in source).
+- Tool count stays **24** (web/settings layer only; no new MCP tools; no migration).
+
+### Added — HTTP readiness probe /ready (PR #229)
+
+- **`GET /ready`** — new HTTP readiness endpoint on the MCP port (`:8002`). Returns `200 OK`
+  with `{"status": "ready", "embeddings_total": N, "embeddings_by_chunk_type": {...}}` when
+  the server is ready to serve (Postgres reachable + at least one embedding row present).
+  Response is cached for 60 seconds (avoids per-request `SELECT COUNT(*)` on a large table).
+  Returns `503 Service Unavailable` when not ready (e.g. DB unreachable at startup).
+  **`/ready` is NOT an MCP tool** — it is an HTTP-only probe; tool count stays **24**.
+- **Distinction from `/health`:** `/health` is a pure liveness probe (no DB I/O, returns
+  `{"status": "alive", "version": "..."}` immediately). `/ready` is the readiness probe
+  that confirms the data plane is populated and operational. ADR-0046 §observability contract.
+- **`embeddings_total` / `embeddings_by_chunk_type`** are now served from `/ready` (not
+  `/health`). `/health` returns `null` for these fields until the first `/ready` hit (per
+  ADR-0010 amendment in ADR-0046).
+- nginx template (`docs/deploy/nginx-m8.conf`) updated to include the `location = /ready`
+  block alongside the existing `/health` location. (R6 code-review wave.)
 
 ### Added / Changed — Developer-first landing redesign + /examples showcase (feat/landing-living-cartography, PR #232)
 
@@ -376,7 +411,9 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
   `billing.polar_checkout_url_map` (default `{}`).
 - **Legal pages** (`/terms`, `/refund`, `/privacy`) — Astro static pages with DRAFT badge.
   Stance: no-refund + cancel-at-period-end. All three pages marked "DRAFT — pending legal
-  review"; `paid_checkout_enabled` must remain `False` until legal sign-off + KYB complete.
+  review"; `paid_checkout_enabled` was to remain `False` until legal sign-off + KYB complete.
+  **(Update: legal sign-off done per PR #224 (DRAFT removed 2026-06-01); the flag was subsequently
+  flipped to `true` in prod (2026-06) — Polar KYB + cancel-endpoint/webhook confirmation still pending.)**
   Footer links to all three pages.
 - **Required signup consent checkbox** — disables submit until checked (client-side guard).
   Backend records `terms_accepted_at = NOW()` in `webui_users` for both password signup
@@ -393,6 +430,10 @@ Tool count stays **24** (web-UI / test only; no MCP tool-surface change).
 > **Migration m13_014 is the single migration required for M10B P1 billing** — it covers all
 > billing schema (W1 schema additions are gộp vào m13_014; the previously separate draft files
 > m13_015/m13_016/m13_017 were merged into m13_014 and do not exist as separate files for this PR).
+> **[SUPERSEDED]** m13_015/m13_016 were subsequently re-created by PR #223 (`plans.pricing_model`
+> and `plans.min_seats`), and m13_017 was re-created by PR #224 (CRD withdrawal consent:
+> `subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`). All three files now exist in the
+> repo and are applied in prod. See PR #223 / PR #224 entries below.
 > (m13_017 file number subsequently reused by PR #224 for CRD withdrawal consent — see [Unreleased] entry above)
 > **PR #223 adds NEW migrations m13_015 (`plans.pricing_model`) and m13_016 (`plans.min_seats`)**
 > using the now-available file numbers. Deploy order: m13_014 → m13_015 → m13_016.
@@ -736,7 +777,7 @@ Run `python -m src.db.migrate && python ops/backfill_patterns.py` after deploy.
 
 ### Added
 
-- `migrations/m13_006_plans_quota.sql` — `plans` table (4 tiers: free-grandfathered/free/pro/team; `limits` JSONB with `rpm` + `monthly_quota`); `api_keys.plan_id` FK (DB-level DEFAULT `'free'` to prevent NOT NULL constraint violation on new INSERT post-migration); `usage_counter` table (`api_key_id`, `period_yyyymm`, `call_count`). ADR-0039 control-plane DDL. (PR #200)
+- `migrations/m13_006_plans.sql` — `plans` table (4 tiers: free-grandfathered/free/pro/team; `limits` JSONB with `rpm` + `monthly_quota`); `api_keys.plan_id` FK (DB-level DEFAULT `'free'` to prevent NOT NULL constraint violation on new INSERT post-migration); `usage_counter` table (`api_key_id`, `period_yyyymm`, `call_count`). ADR-0039 control-plane DDL. (PR #200)
 - `migrations/m13_007_usage_counter_cascade.sql` — ON DELETE CASCADE on `usage_counter.api_key_id` FK; prevents cross-test contamination via SERIAL id reuse. (PR #200)
 - Plan-aware MCP middleware (`src/mcp/middleware.py`) — per-plan RPM + monthly quota enforcement; `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` + `X-Quota-Limit` / `X-Quota-Remaining` response headers; 429 differentiation (`rpm_exceeded` vs `monthly_quota_exceeded` reason codes). (PR #200)
 - `GET /api/account/usage` endpoint (`src/web_ui/routes/account.py`) — returns current plan info + monthly quota counters for the authenticated user. (PR #200)
@@ -755,7 +796,11 @@ Run `python -m src.db.migrate && python ops/backfill_patterns.py` after deploy.
 
 ---
 
-## [Unreleased] — Data completeness + resource RBAC + observability + backup (feat/osm-data-completeness-rbac)
+## [Merged into v0.13.1] — Data completeness + resource RBAC + observability + backup (feat/osm-data-completeness-rbac)
+
+> **Note:** This block was recorded as `[Unreleased]` before v0.13.1 was cut. All changes
+> listed here are included in the `[0.13.1]` release above (shipped untagged — see release
+> policy note at the top of this file).
 
 7 tool output gaps (G1-G7) + timeout fix (T1) + resource RBAC hardening (R1/R2/R5) + Era1 comodel fix (C2) + Prometheus histogram (M10C) + Neo4j online backup (#13).
 **Tool count stays 24** (no new tool signatures, no new params) — no odoo-mcp-client mirror PR needed.
@@ -824,7 +869,11 @@ See `docs/deploy/reindex-v8-v19-runbook.md §Post-PR Wave (feat/osm-data-complet
 
 ---
 
-## [Unreleased] — Web-UI multi-tenant RBAC + self-service portal (W0-W4)
+## [Merged into v0.13.1] — Web-UI multi-tenant RBAC + self-service portal (W0-W4)
+
+> **Note:** This block was recorded as `[Unreleased]` before v0.13.1 was cut. All changes
+> listed here are included in the `[0.13.1]` release above (shipped untagged — see release
+> policy note at the top of this file).
 
 Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count stays **24**. Một Postgres migration mới (`m13_005_tenant_members.sql`) — admin phải chạy `python -m src.db.migrate` trước khi deploy. Không cần reindex.
 
@@ -1029,7 +1078,11 @@ Batch 5 PRs (#174/#177/#179/#180/#181). **DOCS-ONLY wave này (W5).** Tool count
 
 ---
 
-## [Unreleased] — WI-7 FERNET hardening + RLS armed-but-dormant + Path portability (ADR-0037)
+## [Merged into v0.11.0] — WI-7 FERNET hardening + RLS armed-but-dormant + Path portability (ADR-0037)
+
+> **Note:** This block was recorded as `[Unreleased]` before v0.11.0 was cut. All changes
+> listed here are included in the `[0.11.0]` release below (shipped untagged — see release
+> policy note at the top of this file).
 
 ### WI-7 — FERNET secrets hardening (M13)
 
@@ -1371,7 +1424,11 @@ Bundled under PR #160. Six parser/indexer fixes that require a full reindex v8�
 
 ---
 
-## [Unreleased] — M10C Polish Wave (PR #159)
+## [Merged into v0.9.1] — M10C Polish Wave (PR #159)
+
+> **Note:** This block was recorded as `[Unreleased]` before v0.9.1 was cut. All changes
+> listed here are included in the `[0.9.1]` release below (shipped untagged — see release
+> policy note at the top of this file).
 
 ### Added
 - **`reembed-stubs` CLI subcommand** (`python -m src.indexer reembed-stubs --profile <name>`) — enumerates modules where `field_count > 0` but `embeddings_count == 0` via `LEFT JOIN embeddings`, re-runs `make_chunks` + `write_module_embeddings`; idempotent; log line summarises count + total embed calls per ADR-0010. (WI-3)

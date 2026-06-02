@@ -173,7 +173,7 @@ ADR-0026 for full context and design decisions.
 - `0006` environment harness (M6 Wave 1)
 - `0007` incremental indexer (head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel)
 - `0008` SSH auto-clone (URL detection, key delivery via env, tempfile safety, project-local known_hosts, full clone)
-- `0009` pattern catalogue community contribution (80+ curated patterns, test-enforced minimum)
+- `0009` pattern catalogue community contribution (115 curated patterns, test-enforced minimum ≥80)
 - `0010` embedding observability (call_count thread-safe; `embeddings_total`/`embeddings_by_chunk_type` now in `/ready` per ADR-0046 amendment; `null` in `/health` until first `/ready` hit)
 - `0011` Web UI session auth (bcrypt cost=12, 8h TTL, cookie SameSite=strict)
 - `0012` persona-skill-architecture (M7.5 — TRIGGER/PREFER/SKIP routing)

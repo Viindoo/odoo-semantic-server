@@ -72,6 +72,11 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
 
 4. **Recommended systemd setup (via `EnvironmentFile=`, existing deployments).**
 
+   > **Path note (post-ADR-0027):** the `/etc/odoo-semantic/webui.env` shown below predates the
+   > system-user layout. The canonical location is now `/home/odoo-semantic/etc/webui.env` (under the
+   > service user's `$HOME`). This whole `EnvironmentFile=` approach is in any case superseded by
+   > the `LoadCredential` design in item 5 below — FERNET_KEY now lives at `/etc/credstore/FERNET_KEY`.
+
    ```ini
    # /etc/odoo-semantic/webui.env  (chmod 0600, owned by service user)
    FERNET_KEY=<base64-encoded-key>

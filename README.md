@@ -32,17 +32,23 @@ Odoo repos (~/git/*_17.0/)
 │  Astro SSR + React islands  (port 4321)      │
 │  MCP Server  (port 8002)                     │
 └─────────────────────┬────────────────────────┘
-                      │ nginx routes:
-                      │  /api/*   → 8003 (JSON only)
-                      │  /admin/* → 4321 (Astro SSR, auth-gated)
-                      │  /        → 4321 (landing + hero)
-                      │  /mcp     → 8002 (MCP protocol)
+                      │ nginx routes (actual prod):
+                      │  /api/waitlist     → 8003 (separate rate pool)
+                      │  /api/*            → 8003 (JSON only)
+                      │  /mcp              → 8002 (MCP protocol)
+                      │  /install/         → 8002 (MCP server)
+                      │  /health           → 8002 (liveness — MCP, no DB I/O)
+                      │  /ready            → 8002 (readiness probe, cached 60s — MCP)
+                      │  /metrics          → 8002 (Prometheus — MCP, IP-restricted)
+                      │  /.well-known/openid-configuration → nginx inline (no backend)
+                      │  /                 → 4321 (Astro SSR, catch-all;
+                      │                           routes /admin/* internally)
                       ▼
   Claude Code / VS Code / Codex / Gemini
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **24 tools** (4 ORM-validation tools added in v0.8 / M10.5 Phase 2; current surface unchanged at v0.11.0):
+MCP server expose **24 tools** (4 ORM-validation tools added in v0.8 / M10.5 Phase 2; tool count confirmed at 24):
 
 - **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
 - **1 module overview tool (M9 Wave 1):** `describe_module`
@@ -187,22 +193,24 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **v0.11.0 (2026-05-23)** — Parser correctness wave WG-1..WG-5 (Python v8-v19, JS OWLComp+JSPatch, writer schema). See CHANGELOG.md.
 
-**Web-UI multi-tenant RBAC + self-service portal (W0-W4, merged 2026-05-25):** Batch 5 wave hoàn thành giao diện web quản trị + tenant self-service. W0 (#174) — admin gate 19 route mutating + `SIGNUP_ENABLED` flag (default off). W1 (#177) — `tenant_members` (m13_005) + admin tenant CRUD + ADR-0038. W2 (#179) — customer self-service portal (`/account/repos`) + `tenant_write_allowed` write-side RBAC. W3 (#180) — diagnostics endpoint + admin user creation + audit-log viewer + audit coverage regression guard. W4 (#181) — `GET /api/versions` data-driven + 3 version dropdown + worker controls (`profile_workers`/`max_workers`/`--gc`). Tool count stays **24**; migration m13_005 required. See CHANGELOG.md `[Unreleased]`.
+**Web-UI multi-tenant RBAC + self-service portal (W0-W4, merged 2026-05-25):** Batch 5 wave hoàn thành giao diện web quản trị + tenant self-service. W0 (#174) — admin gate 19 route mutating + `SIGNUP_ENABLED` flag (default off). W1 (#177) — `tenant_members` (m13_005) + admin tenant CRUD + ADR-0038. W2 (#179) — customer self-service portal (`/account/repos`) + `tenant_write_allowed` write-side RBAC. W3 (#180) — diagnostics endpoint + admin user creation + audit-log viewer + audit coverage regression guard. W4 (#181) — `GET /api/versions` data-driven + 3 version dropdown + worker controls (`profile_workers`/`max_workers`/`--gc`). Tool count stays **24**; migration m13_005 required. See CHANGELOG.md `[Merged into v0.13.1]`.
 
-**Production deploy:** 2026-05-28 — PRs #200 + #204 deployed. Migrations m13_006 + m13_007 + m13_008 applied. All api_keys backfilled to free-grandfathered plan; osm_reader grants verified across new schema objects. All 3 services healthy (MCP :8002, FastAPI :8003, Astro :4321).
+**Production deploy:** 2026-06-02 — HEAD aa29422 (PR #232); all migrations through m13_018 applied. All api_keys backfilled to free-grandfathered plan; osm_reader grants verified across new schema objects. All 3 services healthy (MCP :8002, FastAPI :8003, Astro :4321).
 
 **Auth flow unification (feat/m10b-auth-unify, 2026-05-29):** `/login` now canonical (`/admin/login` 301→`/login`); OAuth Google/GitHub buttons on `/signup` (cookie `oauth_from` phân biệt origin); reset-password enforce `auth.password_min_length` (default 12) + common-pw blocklist (FE+BE) + TOCTOU `SELECT...FOR UPDATE` guard; shared `AuthLayout` + 22-item UX/a11y. OAuth paths `/admin/auth/*` giữ nguyên. Tool count stays **24**; no migration. Closes the prior customer-onboarding UI gaps (forgot-password e2e, `/pricing` nav, `/login` alias, OAuth error banner).
 
 **Free-plan consolidation + auto-onboarding (fix/auth-ux-oauth-cache-plans, 2026-05-29):** Single unified `free` public plan replaces `free-grandfathered` (migration m13_013); all new signups (password + OAuth) auto-mint an API key on the free plan. SameSite cookie fix for Google sign-in (Strict→Lax), SSR cache-control + Clear-Site-Data on logout, role-aware post-login landing. Tool count stays **24**; migration m13_013 required.
 
 **M10B P1 billing — engineering complete (feat/m10b-p1-billing, 2026-05-30):** Full billing
-completion across 6 waves (W1-W6). Single migration **m13_014** covers the entire billing schema:
-original P1 base (subscriptions + webhook ledger) **plus** all W1 schema hardening gộp vào:
-`subscriptions.cancel_at_period_end` + `plans.prices` JSONB + guarded seed (formerly m13_015 draft),
-`webui_users.terms_accepted_at` consent (formerly m13_016 draft), drop waitlist plan CHECK — now
-DB-derived (formerly m13_017 draft; **m13_017 file number subsequently reused by PR #224 for CRD withdrawal consent** — see PR #224 entry below). **Note:** file numbers m13_015 and m13_016 were subsequently
-reused by PR #223 for new migrations (`plans.pricing_model` and `plans.min_seats` respectively) —
-deploy must also run those two files after m13_014. Vendor-generic webhook pipeline (`WebhookAdapter` + `run_webhook_pipeline` in
+completion across 6 waves (W1-W6). **Fresh-install operators must apply migrations in order:
+m13_014 → m13_015 → m13_016 → m13_017 → (m13_018).** Each is a distinct `.sql` file:
+m13_014 = P1 base billing schema (subscriptions + webhook ledger + `cancel_at_period_end` +
+`plans.prices` JSONB + guarded seed + `terms_accepted_at` + waitlist CHECK drop);
+m13_015 = `plans.pricing_model` (PR #223); m13_016 = `plans.min_seats` (PR #223);
+m13_017 = CRD withdrawal consent — `subscriptions.buyer_type` + `withdrawal_waiver_accepted_at` (PR #224);
+m13_018 = embedding provider columns — `embedding_model` + `embedding_dim` (PR #228).
+(m13_015 and m13_016 file numbers were reused by PR #223 after earlier drafts were folded into m13_014;
+m13_017 file number reused by PR #224 — see PR #224 entry below.) Vendor-generic webhook pipeline (`WebhookAdapter` + `run_webhook_pipeline` in
 `src/billing/webhook_pipeline.py`); `src/billing/_db.py` (`slug_to_plan_id`). Self-service
 cancel-at-period-end: outbound Polar REST client (`src/billing/polar_api.py`, `POLAR_API_KEY`,
 fail-closed); `POST /api/account/subscription/cancel` + `GET /api/account/subscription`.
@@ -215,7 +223,8 @@ cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices f
 (multi-currency display deferred to P2).
 **Tool count stays 24** (all web/webhook/Astro only; no new MCP tools). See
 [ADR-0039 Amendment — completion](docs/adr/0039-commercialization-platform.md) and CHANGELOG.md `[Unreleased]`.
-**Pending:** `billing.paid_checkout_enabled` flip + Polar KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` constants) + webhook
+**Live in prod:** `billing.paid_checkout_enabled=true` (verified in DB + `/api/site-config`).
+**Still pending:** Polar KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` constants) + webhook
 fields (`src/billing/polar.py`) against live Polar docs; register webhook URL + product→plan map
 in Polar dashboard.
 
@@ -242,14 +251,14 @@ Token-bounded chunking + provider abstraction + MCP anti-hang. Three concerns ad
 Tool count stays **24**. Migration **m13_018** required on deploy (after m13_017).
 See [ADR-0044](docs/adr/0044-token-bounded-embedding.md), [ADR-0045](docs/adr/0045-embedding-provider-abstraction.md), [ADR-0046](docs/adr/0046-mcp-embed-concurrency-anti-hang.md).
 
-**Active work / recently merged:** PR #224 (`feat/launch-prep`) — install MCP-first (static + `InstallSnippets.astro` + `plugins-data.ts` SSOT), brand SSOT `BRAND_FULL`/`BRAND_SHORT`/`BRAND_DEF`, SEO (`@astrojs/sitemap` + JSON-LD Org/SoftwareApp/Product/FAQPage + `llms.txt` + `robots.txt` + canonical), English-only legal, legal pages rewrite + DRAFT removal (CEO sign-off 2026-06-01) + `ObfuscatedEmail.astro` + real Viindoo entity, CRD-compliant checkout consent (m13_017 + `POST /api/account/checkout-consent` + `GET /api/account/checkout-config` + consent modal + `list_all` expose consent cols + durable-medium email). Migration: m13_017 (`subscriptions.buyer_type` + `withdrawal_waiver_accepted_at`). Tool count stays **24**.
+**Active work / recently merged:** PR #232 (`feat/landing-living-cartography`) — landing redesign + /examples cartography page + docs cleanup (HEAD aa29422). Prior merged work now in prod: PR #225 (`analytics.ga_measurement_id` app_setting + GA snippet injection); PR #228 (`wave/wi-f` — token-bounded embedding ADR-0044, provider abstraction ADR-0045, MCP anti-hang ADR-0046, migration m13_018); PR #229 (readiness probe `/ready` + `/health` pure liveness split); PR #224 (`feat/launch-prep` — install MCP-first, brand SSOT, SEO, legal pages, CRD consent, migration m13_017). Tool count stays **24**.
 **Deferred:** M10B P2 (multi-IdP "Viindoo Account", buyer≠user split, ERP/VAS adapter),
 M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep),
 VN persona docs.
 
 **Next milestones (roadmap):**
-- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). Single migration **m13_014** covers all billing schema (cancel_at_period_end, prices JSONB, terms_accepted_at, waitlist CHECK drop — formerly separate drafts, now merged into m13_014). **Note:** m13_015 and m13_016 file numbers reused by PR #223 (pricing_model, min_seats); m13_017 file number reused by PR #224 (CRD withdrawal consent). **Legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01); remaining pending:** `paid_checkout_enabled` flip + KYB + Polar endpoint confirmation. **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
-- **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped (Unreleased). Ops
+- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). **Deploy order: m13_014 → m13_015 → m13_016 → m13_017 → (m13_018)** — four distinct billing migrations plus the embedding-provider migration. m13_014 = P1 base billing schema; m13_015/016 = pricing_model + min_seats (PR #223); m13_017 = CRD withdrawal consent (PR #224); m13_018 = embedding provider columns (PR #228). (m13_015/016/017 file numbers were reused after earlier drafts were folded into m13_014.) **Legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01). Live in prod: `billing.paid_checkout_enabled=true`. Still pending:** Polar KYB onboarding + Polar cancel-endpoint/webhook-field confirmation + webhook URL + product→plan map registration in Polar dashboard. **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
+- **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped and live in prod (pending v0.14.0 tag). Ops
   tune RPM/quota/batch without SSH/redeploy. See [ADR-0042](docs/adr/0042-admin-settings-module.md).
   **fix/mfa-step-up-freshness** — Bug fix: fresh-MFA gate was permanently 403 because
   `mfa_verified_at` was never written. Fixed by writing the timestamp in `totp_login` and
@@ -259,9 +268,9 @@ VN persona docs.
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 
-### Admin Settings Module (ADR-0042 — Unreleased)
+### Admin Settings Module (ADR-0042 — Deployed, pending v0.14.0 tag)
 
-OSM v0.14.0 (upcoming) ship **Admin Settings** — web UI cho phép admin +
+**Admin Settings** has shipped and is live in prod ahead of a formal v0.14.0 tag — web UI cho phép admin +
 tenant_owner tinker 18 Tier-1 settings (auth + quota + embedding + indexer + mcp + support + analytics,
 incl. `auth.mfa_freshness_seconds` per ADR-0043, `support.helpdesk_url` PR #223,
 `analytics.ga_measurement_id` PR #225) + 4 plan tier + 16 EE module

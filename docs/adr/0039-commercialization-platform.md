@@ -1,6 +1,6 @@
 # ADR-0039 — Commercialization Platform: Control Plane / Data Plane
 
-**Status:** Proposed — P0 shipped (PR #200); P1 keystone implemented on `feat/m10b-p1-billing` (pending PR/merge); P2 multi-IdP / buyer-user-split / ERP-VAS still pending.
+**Status:** Accepted — P0 (PR #200, v0.13.0); P1 complete (merged 2026-05-30); m13_015/016 (PR #223) + m13_017 (PR #224) deployed 2026-05-31; P2 pending.
 **Date:** 2026-05-28
 **Milestone:** M10B (Commercialization Wow — supersedes the Stripe-based "Billing Wow" plan)
 
@@ -266,6 +266,7 @@ All W1 schema additions are gộp vào `m13_014_billing_p1.sql` (single migratio
 billing schema — sections 1-5 are the original P1 DDL; sections 6-8 extend it). The previously
 separate m13_015/m13_016/m13_017 draft files no longer exist as separate files for this PR
 (note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31).
+**[Superseded — m13_015/016/017 were subsequently re-created as real files by PR #223/#224 and are now in the repo + applied in prod.]**
 
 **Section 6 — cancel_at_period_end + per-currency prices** (formerly m13_015):
 
@@ -474,7 +475,7 @@ No new MCP tools added.
 
 **Migration required on deploy:** `m13_014` is the single migration covering all billing schema
 (sections 1-8; idempotent, safe to re-run). The previously separate m13_015/m13_016/m13_017 draft files
-are gộp vào m13_014 and no longer exist as separate files for this PR (note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31). Set `POLAR_API_KEY` in `webui.env` / systemd
+are gộp vào m13_014 and no longer exist as separate files for this PR (note: m13_017 file number later reused by PR #224 — see Amendment 2026-05-31). **[Superseded — m13_015/016/017 were subsequently re-created as real files by PR #223/#224 and are now in the repo + applied in prod.]** Set `POLAR_API_KEY` in `webui.env` / systemd
 `Environment=` for the self-service cancel route; set `billing.polar_api_base` if using a
 non-default Polar base URL.
 
