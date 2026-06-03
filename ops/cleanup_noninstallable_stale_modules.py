@@ -87,6 +87,27 @@ def noninstallable_module_names(local_path: str, odoo_version: str) -> set[str]:
     return result
 
 
+def installable_module_names(local_path: str, odoo_version: str) -> set[str]:
+    """Return module names on disk that ARE currently installable (default True).
+
+    The complement of :func:`noninstallable_module_names`, used as the cross-repo
+    safety guard: because the ``:Module`` MERGE key is ``(name, odoo_version)``
+    only (``writer_neo4j.py`` — no ``repo``), one shared node backs a given module
+    name at a version across ALL repos/profiles. A name installable in ANY repo at
+    that version owns a legitimately-current node and must never be deleted.
+    Unparseable manifests are NOT counted as installable (they produced no node).
+    """
+    finder = get_manifest_finder(odoo_version)
+    result: set[str] = set()
+    for manifest_path in finder.find(local_path):
+        manifest = parse_manifest(manifest_path)
+        if not manifest:
+            continue
+        if manifest.get("installable", True):
+            result.add(Path(manifest_path).parent.name)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # DB access — repos joined to profiles for (local_path, odoo_version)
 # ---------------------------------------------------------------------------
@@ -144,10 +165,15 @@ def _delete_module_and_children(
 ) -> dict:
     """DETACH DELETE one Module node + its owned child nodes for *odoo_version*.
 
-    Child ownership mirrors ``Neo4jWriter.delete_modules_scoped``: child nodes
-    (Model/Field/Method/View/QWebTmpl/JSPatch/OWLComp) carry ``module`` +
-    ``odoo_version`` properties and are deleted only when scoped to this exact
-    (module, version) pair, so other repos sharing the version are untouched.
+    Match is by ``(name, odoo_version)`` — the same key the ``:Module`` MERGE
+    uses (``writer_neo4j.py`` — no ``repo`` in the key), so this deletes the ONE
+    shared node for that module name at that version. That is only safe because
+    the caller (:func:`run`) has already proven, via the cross-repo
+    ``installable_by_version`` guard, that the name is installable in NO repo at
+    this version — otherwise a node shared with a repo that still ships it
+    installable would be destroyed. Child nodes (Model/Field/Method/View/
+    QWebTmpl/JSPatch/OWLComp) carry ``module`` + ``odoo_version`` and are scoped
+    to this exact (module, version).
 
     Returns {"modules": N, "children": M}.
     """
@@ -208,6 +234,25 @@ def run(pg_conn, driver, *, apply: bool) -> dict:
         "per_repo": [],
     }
 
+    # --- Cross-repo safety guard (review on PR #247) -------------------------
+    # The :Module MERGE key is (name, odoo_version) ONLY (writer_neo4j.py) — no
+    # repo — so the same module name at the same version is ONE shared node across
+    # all repos/profiles. A name installable=True in ANY repo at version V owns a
+    # legitimately-current node and must NEVER be deleted, even if another repo
+    # ships it installable=False. Build the per-version union of installable-True
+    # names first. If a version has an unscannable repo we cannot prove a name is
+    # not installable there, so we refuse to delete anything for that version.
+    installable_by_version: dict[str, set[str]] = {}
+    unscannable_versions: set[str] = set()
+    for repo in repos:
+        lp, v = repo["local_path"], repo["odoo_version"]
+        if not lp or not Path(lp).is_dir():
+            unscannable_versions.add(v)
+            continue
+        installable_by_version.setdefault(v, set()).update(
+            installable_module_names(lp, v)
+        )
+
     for repo in repos:
         local_path = repo["local_path"]
         version = repo["odoo_version"]
@@ -230,10 +275,24 @@ def run(pg_conn, driver, *, apply: bool) -> dict:
             )
             continue
 
-        non_installable = sorted(noninstallable_module_names(local_path, version))
+        non_installable = noninstallable_module_names(local_path, version)
+        # Cross-repo guard: never delete a name installable in ANY repo at this
+        # version (shared (name, version) node); refuse entirely if the version
+        # has an unscannable repo (cannot prove the name isn't installable there).
+        if version in unscannable_versions:
+            safe = set()
+            if non_installable:
+                log.warning(
+                    "repo id=%s (v%s): %d non-installable on disk but version has "
+                    "an unscannable repo — refusing deletion (cannot prove the "
+                    "shared (name,version) node isn't installable elsewhere).",
+                    repo_id, version, len(non_installable),
+                )
+        else:
+            safe = non_installable - installable_by_version.get(version, set())
         # Only target those that actually have nodes in the graph (condition b).
         with_nodes = sorted(
-            _existing_module_nodes(driver, non_installable, version)
+            _existing_module_nodes(driver, sorted(safe), version)
         )
 
         repo_entry = {

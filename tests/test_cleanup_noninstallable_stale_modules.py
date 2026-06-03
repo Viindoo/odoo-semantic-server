@@ -2,8 +2,75 @@
 # tests/test_cleanup_noninstallable_stale_modules.py
 """Unit tests for the pure manifest-classification helper of the ops cleanup
 script (ops/cleanup_noninstallable_stale_modules.py). No DB, no Neo4j."""
-from ops.cleanup_noninstallable_stale_modules import noninstallable_module_names
+from ops.cleanup_noninstallable_stale_modules import (
+    installable_module_names,
+    noninstallable_module_names,
+    run,
+)
 from tests.conftest import make_git_repo, make_manifest
+
+
+# --- Fakes for run() guard tests (no DB) -----------------------------------
+class _FakeResult:
+    def __init__(self, d):
+        self._d = d
+
+    def single(self):
+        return self._d
+
+
+class _FakeSession:
+    def __init__(self, deleted):
+        self._deleted = deleted
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def run(self, query, **params):
+        if "collect(DISTINCT m.name)" in query:   # _existing_module_nodes
+            return _FakeResult({"names": list(params.get("names", []))})
+        if "RETURN count(c) AS cc" in query:      # child delete
+            return _FakeResult({"cc": 0})
+        if "RETURN count(m) AS mc" in query:      # module delete
+            self._deleted.append(params.get("name"))
+            return _FakeResult({"mc": 1})
+        return _FakeResult({})
+
+
+class _FakeDriver:
+    def __init__(self):
+        self.deleted = []
+
+    def session(self):
+        return _FakeSession(self.deleted)
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **k):
+        pass
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakePg:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def cursor(self):
+        return _FakeCursor(self._rows)
 
 
 def test_noninstallable_only_returns_false_modules(tmp_path):
@@ -67,3 +134,42 @@ def test_noninstallable_returns_dir_name_not_manifest_name(tmp_path):
     result = noninstallable_module_names(str(repo), "17.0")
     assert result == {"tech_dir_name"}
     assert "Human Readable Name" not in result
+
+
+def test_installable_module_names_returns_true_modules(tmp_path):
+    """Complement helper: returns module dirs whose manifest is installable (the
+    cross-repo guard set)."""
+    repo = make_git_repo(tmp_path / "repo_17.0", "17.0")
+    make_manifest(repo / "active", "Active", "17.0.1.0.0", [])
+    make_manifest(repo / "wip", "WIP", "17.0.1.0.0", [], installable=False)
+    assert installable_module_names(str(repo), "17.0") == {"active"}
+
+
+def test_run_keeps_module_installable_in_another_repo(tmp_path):
+    """Cross-repo guard (review on PR #247): a module installable=False in repo A
+    but installable=True in repo B at the SAME version must NOT be deleted — the
+    (name, odoo_version) Module node is shared across repos."""
+    repo_a = make_git_repo(tmp_path / "repoA_17.0", "17.0")
+    make_manifest(repo_a / "shared", "Shared", "17.0.1.0.0", [], installable=False)
+    make_manifest(repo_a / "onlyA_wip", "Only A", "17.0.1.0.0", [], installable=False)
+    repo_b = make_git_repo(tmp_path / "repoB_17.0", "17.0")
+    make_manifest(repo_b / "shared", "Shared", "17.0.1.0.0", [])  # installable=True
+
+    rows = [(1, str(repo_a), "17.0"), (2, str(repo_b), "17.0")]
+    drv = _FakeDriver()
+    run(_FakePg(rows), drv, apply=True)
+
+    assert "shared" not in drv.deleted   # protected by the cross-repo guard
+    assert "onlyA_wip" in drv.deleted    # genuinely non-installable everywhere
+
+
+def test_run_refuses_deletion_when_version_has_unscannable_repo(tmp_path):
+    """If any repo at a version is unscannable (missing on disk), we cannot prove a
+    shared node isn't installable there → refuse all deletions for that version."""
+    repo_a = make_git_repo(tmp_path / "repoA_17.0", "17.0")
+    make_manifest(repo_a / "wip", "WIP", "17.0.1.0.0", [], installable=False)
+    rows = [(1, str(repo_a), "17.0"), (2, str(tmp_path / "missing"), "17.0")]
+    drv = _FakeDriver()
+    run(_FakePg(rows), drv, apply=True)
+
+    assert drv.deleted == []
