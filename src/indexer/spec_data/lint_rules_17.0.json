@@ -411,6 +411,34 @@
       "message": "Module imported but unused.",
       "severity": "warning",
       "file_pattern": "**/*.py"
+    },
+    {
+      "rule_id": "owl/no-bare-arrow-handler",
+      "kind": "eslint",
+      "message": "Bare free-identifier arrow in t-on (e.g. t-on-click=\"() => onFoo()\" where onFoo is not a component method, a prop, or a slot variable) resolves to nothing at render. Use t-on-click=\"onFoo\" (auto-bound) or t-on-click=\"() => this.onFoo()\" — both of those are valid.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "owl/useservice-not-reactive",
+      "kind": "eslint",
+      "message": "A useService() result that drives the template should preserve reactivity: wrap it as useState(useService(\"...\")) when the service is not already reactive. Confirm per service and target version.",
+      "severity": "warning",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "owl/raw-contenteditable",
+      "kind": "eslint",
+      "message": "Raw contenteditable bypasses the audited editor and its sanitisation. Delegate to the web_editor Wysiwyg, lazy-loaded in onWillStart with stable props.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "owl/dialog-body-slot",
+      "kind": "eslint",
+      "message": "t-set-slot=\"body\" is invalid under <Dialog>: the body IS the default slot. Put body content in the default slot; only header and footer are named slots.",
+      "severity": "error",
+      "file_pattern": "**/*.js"
     }
   ]
 }
