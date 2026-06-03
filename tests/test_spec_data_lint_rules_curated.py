@@ -28,6 +28,13 @@ _REQUIRED_VERSIONS = [
 
 _MIN_RULES_PER_VERSION = 10
 
+# Modern-era (v10+) curation depth floor — moved here from the former
+# test_lint_rules_minimum_count.py (WI-5 curation goal). Legacy v8/v9 keep the
+# >=10 baseline already enforced by TestEachVersionHasCuratedStatusComplete
+# .test_minimum_rule_count (all 12 versions). Thresholds unchanged.
+_MODERN_ERA_VERSIONS = [v for v in _REQUIRED_VERSIONS if int(v.split(".")[0]) >= 10]
+_MIN_RULES_MODERN = 50
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,12 +76,44 @@ class TestEachVersionHasCuratedStatusComplete:
             f"expected >= {_MIN_RULES_PER_VERSION}."
         )
 
+    @pytest.mark.parametrize("version", _MODERN_ERA_VERSIONS)
+    def test_minimum_rule_count_modern(self, version: str):
+        """Modern-era versions (v10+) must have >= 50 curated rules (WI-5 depth).
+
+        Moved verbatim from the former test_lint_rules_minimum_count.py
+        (TestModernEraMinimumCount). Floor `>=` is unaffected by #242 adding rules.
+        """
+        data = _load_lint_file(version)
+        rules = data.get("rules", [])
+        assert len(rules) >= _MIN_RULES_MODERN, (
+            f"lint_rules_{version}.json has only {len(rules)} rules; "
+            f"expected >= {_MIN_RULES_MODERN} for modern-era v10+."
+        )
+
     @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
     def test_has_note_field(self, version: str):
         data = _load_lint_file(version)
         note = data.get("_note", "")
         assert len(note) > 10, (
             f"lint_rules_{version}.json has empty or missing _note field."
+        )
+
+
+class TestRuleIdUniqueness:
+    """Each rule_id must be unique within a version file.
+
+    Moved verbatim from the former test_lint_rules_minimum_count.py
+    (TestRuleIdUniqueness) — not covered by the schema-validity test.
+    """
+
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_rule_ids_unique(self, version: str):
+        data = _load_lint_file(version)
+        rules = data.get("rules", [])
+        rule_ids = [r.get("rule_id") for r in rules if isinstance(r, dict)]
+        duplicates = {rid for rid in rule_ids if rule_ids.count(rid) > 1}
+        assert not duplicates, (
+            f"lint_rules_{version}.json has duplicate rule_ids: {sorted(duplicates)}"
         )
 
 

@@ -36,44 +36,43 @@ _MIN_SYMBOLS_PER_VERSION = 10
 
 class TestLoaderReturnsCorrectObjects:
     @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
-    def test_returns_list_of_core_symbol_info(self, version: str):
+    def test_loader_contract(self, version: str):
+        """Loader contract for `_load_static_tools_symbols(version)` — all five
+        per-version assertions merged into one parametrized check (fail message
+        names the version + the contract that broke).
+
+        Preserved assertions (one redundancy-free run per version):
+          1. returns a list of >= _MIN_SYMBOLS_PER_VERSION items
+          2. every item deserializes to a CoreSymbolInfo dataclass
+          3. every item has kind == "tool_export"
+          4. every item has odoo_version == <version> (version stamp)
+          5. every qualified_name starts with "odoo.tools"
+        """
         symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
+
+        # contract 1: non-empty list
         assert isinstance(symbols, list), f"Expected list for {version}"
         assert len(symbols) >= _MIN_SYMBOLS_PER_VERSION, (
             f"tools_symbols_{version}.json has only {len(symbols)} symbols; "
             f"expected >= {_MIN_SYMBOLS_PER_VERSION}"
         )
 
-    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
-    def test_all_items_are_core_symbol_info_dataclasses(self, version: str):
-        symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
         for sym in symbols:
+            # contract 2: deserialization guard
             assert isinstance(sym, CoreSymbolInfo), (
                 f"Item in {version} is {type(sym)}, expected CoreSymbolInfo"
             )
-
-    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
-    def test_all_items_have_kind_tool_export(self, version: str):
-        symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
-        for sym in symbols:
+            # contract 3: kind stamp
             assert sym.kind == "tool_export", (
                 f"Symbol {sym.qualified_name} in {version} has kind={sym.kind!r}; "
                 f"expected 'tool_export'"
             )
-
-    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
-    def test_all_items_have_odoo_version_set(self, version: str):
-        symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
-        for sym in symbols:
+            # contract 4: version stamp
             assert sym.odoo_version == version, (
                 f"Symbol {sym.qualified_name} has odoo_version={sym.odoo_version!r}; "
                 f"expected {version!r}"
             )
-
-    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
-    def test_all_qualified_names_start_with_odoo_tools(self, version: str):
-        symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
-        for sym in symbols:
+            # contract 5: qname prefix
             assert sym.qualified_name.startswith("odoo.tools"), (
                 f"Symbol {sym.qualified_name!r} in {version} does not start with 'odoo.tools'"
             )
