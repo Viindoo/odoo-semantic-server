@@ -93,13 +93,9 @@ class TestFernetPlaceholder:
             "FERNET UI trigger is deferred to M10 — no button should be present"
         )
 
-    def test_fernet_deferred_message_visible(self, astro_server, clean_browser, page):
-        """FERNET section shows 'deferred to M10' or similar UI-deferral text."""
-        page.goto(f"{astro_server}{OPS_URL}")
-        page.wait_for_load_state("load")
-
-        # The page text should indicate M10 deferral
-        page_text = page.locator("body").inner_text()
-        assert "M10" in page_text or "deferred" in page_text.lower(), (
-            "FERNET section should communicate that UI trigger is deferred"
-        )
+    # NOTE: test_fernet_deferred_message_visible was removed (WS-E / RW-25).
+    # It asserted transient milestone copy ("M10" / "deferred") on the page,
+    # which is a snapshot of wording, not a durable contract — it would become a
+    # false failure the moment the FERNET UI ships. The genuine, durable
+    # invariant (the FERNET section must expose NO trigger button) is protected
+    # by test_fernet_no_trigger_button above. No coverage lost.

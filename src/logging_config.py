@@ -50,6 +50,11 @@ def configure_logging(level: int = logging.WARNING) -> None:
             level=level,
             format="%(asctime)s %(levelname)s %(message)s",
         )
+        # basicConfig(level=) is a no-op once root already has handlers (e.g. a
+        # prior configure_logging call, or a test runner that installed handlers).
+        # setLevel is unconditional, so --verbose reliably raises the root level in
+        # text mode too — mirroring the json branch above.
+        logging.root.setLevel(level)
         if logging.root.handlers:
             formatter = logging.root.handlers[0].formatter
         else:

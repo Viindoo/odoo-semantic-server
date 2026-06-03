@@ -132,9 +132,12 @@ class TestRegister:
         must enable it explicitly.  Tests that verify the disabled-by-default
         behaviour live in TestSignupGate (below).
         """
-        # WI-RV F-A: patch config-module constant (source-of-truth) + legacy route symbol.
-        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
-        monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", True)
+        # The route gates on signup_enabled() (config.py), which reads the DB overlay
+        # FIRST; create_app() seeds a signup.enabled=False row, so patching the
+        # SIGNUP_ENABLED constant is dead and the result is order-dependent (passes
+        # solo, fails once a prior test seeds the row). Patch the function where
+        # signup.py looks it up (`from ...config import signup_enabled`).
+        monkeypatch.setattr("src.web_ui.routes.signup.signup_enabled", lambda: True)
 
     @pytest.mark.asyncio
     async def test_register_creates_unverified_user_and_token(self, signup_pg):

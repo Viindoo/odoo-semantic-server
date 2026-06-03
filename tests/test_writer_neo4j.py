@@ -445,20 +445,69 @@ def test_view_xpaths_arrays_length_invariant(writer, neo4j_driver):
     assert rec["exprs_count"] == rec["pos_count"] == 3
 
 
-def test_write_view_indexes_created(writer, neo4j_driver):
-    """Verify indexes for View and QWebTmpl exist after setup_indexes()."""
+def _explain_operators(session, cypher: str, **params) -> set[str]:
+    """Return the set of operator types in the query plan for an EXPLAIN.
+
+    EXPLAIN does not execute the query, so params can be dummy values.
+    """
+    plan = session.run("EXPLAIN " + cypher, **params).consume().plan
+    ops: set[str] = set()
+    stack = [plan]
+    while stack:
+        node = stack.pop()
+        # Neo4j 5.x suffixes operator types with the planner tag, e.g.
+        # "NodeIndexSeek@neo4j" — normalize to the bare operator name.
+        ops.add(node["operatorType"].split("@", 1)[0])
+        stack.extend(node.get("children", []) or [])
+    return ops
+
+
+@pytest.mark.parametrize(
+    "label, lookup_cypher, lookup_params",
+    [
+        # (label, a representative point-lookup MATCH, dummy params)
+        ("View", "MATCH (n:View {xmlid: $x, odoo_version: $v}) RETURN n",
+         {"x": "m.v", "v": TEST_VERSION}),
+        ("QWebTmpl", "MATCH (n:QWebTmpl {xmlid: $x, odoo_version: $v}) RETURN n",
+         {"x": "m.t", "v": TEST_VERSION}),
+        ("CoreSymbol",
+         "MATCH (n:CoreSymbol {qualified_name: $q, odoo_version: $v}) RETURN n",
+         {"q": "odoo.models.BaseModel.unlink", "v": TEST_VERSION}),
+        ("LintRule", "MATCH (n:LintRule {rule_id: $r, odoo_version: $v}) RETURN n",
+         {"r": "E8502", "v": TEST_VERSION}),
+        ("CLICommand", "MATCH (n:CLICommand {name: $n, odoo_version: $v}) RETURN n",
+         {"n": "server", "v": TEST_VERSION}),
+        ("CLIFlag",
+         "MATCH (n:CLIFlag {flag_name: $f, command_name: $c, odoo_version: $v}) RETURN n",
+         {"f": "--addons-path", "c": "server", "v": TEST_VERSION}),
+        ("PatternExample", "MATCH (n:PatternExample {pattern_id: $p}) RETURN n",
+         {"p": "pat-1"}),
+    ],
+)
+def test_setup_indexes_makes_lookups_index_backed(
+    writer, neo4j_driver, label, lookup_cypher, lookup_params
+):
+    """After setup_indexes(), each entity's point-lookup is index-backed.
+
+    Behavioral contract (the reason the indexes exist): a keyed lookup on each
+    label resolves via a NodeIndexSeek, not a full NodeByLabelScan. This is
+    strictly stronger than the previous SHOW INDEXES metadata assertions — it
+    proves the created index is actually usable for the intended query, so a
+    regression that drops the index, or creates one on the wrong property set,
+    is caught by the query planner choosing a label scan instead of a seek.
+    """
     with neo4j_driver.session() as session:
-        indexes = session.run("SHOW INDEXES YIELD labelsOrTypes, properties").data()
-    view_index = any(
-        "View" in (r.get("labelsOrTypes") or [])
-        for r in indexes
+        # Indexes are created asynchronously; the planner only uses an index
+        # once it is ONLINE.
+        session.run("CALL db.awaitIndexes(30000)").consume()
+        ops = _explain_operators(session, lookup_cypher, **lookup_params)
+    assert "NodeIndexSeek" in ops, (
+        f"{label} lookup is not index-backed (planner chose {sorted(ops)}); "
+        f"setup_indexes() must create a usable index for this query"
     )
-    qweb_index = any(
-        "QWebTmpl" in (r.get("labelsOrTypes") or [])
-        for r in indexes
+    assert "NodeByLabelScan" not in ops, (
+        f"{label} lookup falls back to a full label scan: {sorted(ops)}"
     )
-    assert view_index, "Missing index on :View"
-    assert qweb_index, "Missing index on :QWebTmpl"
 
 
 def test_write_view_creates_targets_model_edge(writer, neo4j_driver):
@@ -987,22 +1036,8 @@ def test_write_diff_replaced_by_edge_when_target_exists(writer, neo4j_driver):
     assert rec["c"] == 1
 
 
-def test_setup_indexes_creates_core_symbol_index(writer, neo4j_driver):
-    """setup_indexes creates an index on (CoreSymbol.qualified_name, odoo_version)."""
-    writer.setup_indexes()
-    with neo4j_driver.session() as session:
-        indexes = session.run("SHOW INDEXES").data()
-    labels_props = [
-        (i.get("labelsOrTypes") or [], i.get("properties") or [])
-        for i in indexes
-    ]
-    found = any(
-        "CoreSymbol" in (lbls or [])
-        and "qualified_name" in (props or [])
-        and "odoo_version" in (props or [])
-        for lbls, props in labels_props
-    )
-    assert found, f"CoreSymbol index missing. Got: {labels_props}"
+# CoreSymbol index lookup behavior covered by
+# test_setup_indexes_makes_lookups_index_backed (parametrized).
 
 
 # --- LintRule writer tests (M4.5 WI3) ----------------------------------
@@ -1053,18 +1088,8 @@ def test_write_lint_rule_checks_edge_to_core_symbol(writer, neo4j_driver):
     assert rec["c"] == 1
 
 
-def test_setup_indexes_creates_lint_rule_index(writer, neo4j_driver):
-    """setup_indexes creates an index on (LintRule.rule_id, odoo_version)."""
-    writer.setup_indexes()
-    with neo4j_driver.session() as session:
-        indexes = session.run("SHOW INDEXES").data()
-    found = any(
-        "LintRule" in (i.get("labelsOrTypes") or [])
-        and "rule_id" in (i.get("properties") or [])
-        and "odoo_version" in (i.get("properties") or [])
-        for i in indexes
-    )
-    assert found, "LintRule(rule_id, odoo_version) index missing"
+# LintRule index lookup behavior covered by
+# test_setup_indexes_makes_lookups_index_backed (parametrized).
 
 
 # --- CLICommand + CLIFlag writer tests (M4.5 WI4) -----------------------
@@ -1133,23 +1158,8 @@ def test_write_cli_flag_replacement_creates_replaced_by_edge(writer, neo4j_drive
     assert rec["c"] == 1
 
 
-def test_setup_indexes_creates_cli_indexes(writer, neo4j_driver):
-    """setup_indexes creates CLICommand + CLIFlag indexes."""
-    writer.setup_indexes()
-    with neo4j_driver.session() as session:
-        indexes = session.run("SHOW INDEXES").data()
-    cmd_found = any(
-        "CLICommand" in (i.get("labelsOrTypes") or [])
-        and "name" in (i.get("properties") or [])
-        for i in indexes
-    )
-    flag_found = any(
-        "CLIFlag" in (i.get("labelsOrTypes") or [])
-        and "flag_name" in (i.get("properties") or [])
-        for i in indexes
-    )
-    assert cmd_found, "CLICommand index missing"
-    assert flag_found, "CLIFlag index missing"
+# CLICommand + CLIFlag index lookup behavior covered by
+# test_setup_indexes_makes_lookups_index_backed (parametrized).
 
 
 # --- USES_CORE_SYMBOL edge tests (M4.5 WI6) -----------------------------
@@ -1403,13 +1413,8 @@ def test_write_pattern_skips_uses_core_symbol_when_target_missing(
     assert rec["c"] == 0
 
 
-def test_setup_indexes_creates_pattern_example_index(writer, neo4j_driver):
-    """`setup_indexes()` creates PatternExample index (idempotent re-run)."""
-    writer.setup_indexes()
-    with neo4j_driver.session() as session:
-        labels = [r["labelsOrTypes"] for r in session.run("SHOW INDEXES").data()]
-    flat = [lbl for lbls in labels if lbls for lbl in lbls]
-    assert "PatternExample" in flat
+# PatternExample index lookup behavior covered by
+# test_setup_indexes_makes_lookups_index_backed (parametrized).
 
 
 # --- WI-3: had_explicit_name + is_definition + INHERITS order -------------------

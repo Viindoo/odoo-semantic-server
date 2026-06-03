@@ -7,10 +7,20 @@ do not fire. We simulate the timeout by having the handler raise httpx.ReadTimeo
 directly, which is exactly what httpx raises when the real server is too slow.
 This tests the _embed_one retry/raise path without a real network server.
 """
+from unittest.mock import patch
+
 import httpx
 import pytest
 
 from src.indexer.embedder import Qwen3Embedder
+
+
+@pytest.fixture
+def no_retry_sleep():
+    """No-op the retry backoff sleep — these tests assert the retry/raise OUTCOME,
+    not wall time. Opt-in (NOT autouse) so it cannot mask a timing bug elsewhere."""
+    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+        yield mock_sleep
 
 
 def test_slow_server_raises_timeout():
@@ -26,7 +36,7 @@ def test_slow_server_raises_timeout():
         client.embed(["hello"])
 
 
-def test_connect_timeout_raises_runtime_error():
+def test_connect_timeout_raises_runtime_error(no_retry_sleep):
     """A ConnectTimeout must also be retried and surface as RuntimeError."""
 
     def connect_timeout_handler(request: httpx.Request) -> httpx.Response:

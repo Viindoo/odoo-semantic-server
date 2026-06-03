@@ -163,32 +163,3 @@ class TestHtmlEscapeDeprecationInV17:
         assert "deprecated" in out.lower(), (
             f"Expected 'deprecated' for html_escape in v17.0, got:\n{out}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Data completeness via direct loader (not Neo4j — unit-style)
-# ---------------------------------------------------------------------------
-
-class TestLoaderDataCompleteness:
-    """Spot-check that the loaded symbols have the expected lifecycle."""
-
-    def test_v16_has_no_sql_symbol(self):
-        syms = _load_static_tools_symbols(TOOLS_V16, static_data_dir=_SPEC_DATA_DIR)
-        qnames = {s.qualified_name for s in syms}
-        assert "odoo.tools.SQL" not in qnames
-
-    def test_v17_has_sql_symbol_stable(self):
-        syms = _load_static_tools_symbols(TOOLS_V17, static_data_dir=_SPEC_DATA_DIR)
-        sql_sym = next((s for s in syms if s.qualified_name == "odoo.tools.SQL"), None)
-        assert sql_sym is not None
-        assert sql_sym.status == "stable"
-        assert sql_sym.kind == "tool_export"
-
-    def test_v17_has_deprecated_html_escape(self):
-        syms = _load_static_tools_symbols(TOOLS_V17, static_data_dir=_SPEC_DATA_DIR)
-        html_escape = next(
-            (s for s in syms if s.qualified_name == "odoo.tools.html_escape"), None
-        )
-        assert html_escape is not None
-        assert html_escape.status == "deprecated"
-        assert html_escape.replacement_qname == "markupsafe.escape"

@@ -48,13 +48,21 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# --strict-markers: an unregistered marker fails collection (anti-typo / anti-tier-drift).
+# Every marker used in tests/ MUST be declared below.
+addopts = "--strict-markers"
 markers = [
     "neo4j: integration tests yêu cầu Neo4j đang chạy (skip bằng -m 'not neo4j')",
+    "neo4j_backup: whole-graph backup/restore roundtrip tests — DETACH DELETE the entire graph; MUST run isolated/last and are excluded from the standard integration run (chạy riêng bằng -m neo4j_backup)",
     "postgres: integration tests yêu cầu PostgreSQL đang chạy (skip bằng -m 'not postgres')",
     "ollama: integration tests yêu cầu Ollama đang chạy (skip bằng -m 'not ollama')",
     "smoke: end-to-end smoke tests (per-PR fast tier, requires Neo4j)",
     "browser: browser-level E2E tests via Playwright (requires PostgreSQL)",
     "flaky: test có thể flake do timing/contention (CI advisory)",
+    "astro: tests driving the Astro SSR/preview server (Node.js 22+ required)",
+    "http: FastAPI httpx in-process API tests (no browser, no live server)",
+    "nightly: heavy E2E + concurrency tests, excluded from the standard run",
+    "unauthenticated: browser test opts out of the auto-login fixture (no session)",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -1,11 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for FakeEmbedder and Qwen3Embedder."""
 import math
+from unittest.mock import patch
 
 import httpx
 import pytest
 
 from src.indexer.embedder import EmbedderClient, FakeEmbedder, Qwen3Embedder
+
+
+@pytest.fixture
+def no_retry_sleep():
+    """No-op the retry backoff sleep for retry-path tests only.
+
+    The retry tests below assert on retry COUNT and final OUTCOME, not on wall
+    time — the real exponential backoff (base=2.0 → 2s + 4s) only adds dead time.
+    This fixture is opt-in (NOT autouse) so it never hides a timing bug elsewhere.
+    """
+    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+        yield mock_sleep
 
 
 def _is_normalized(vec: list[float], tol: float = 1e-5) -> bool:
@@ -122,7 +135,7 @@ def test_qwen3_embedder_no_token_sends_no_auth_header():
     assert "authorization" not in captured[0].headers
 
 
-def test_qwen3_embedder_retries_on_error():
+def test_qwen3_embedder_retries_on_error(no_retry_sleep):
     """Two HTTP errors then success: total call count == 3, result returned."""
     call_count = [0]
 
@@ -141,7 +154,7 @@ def test_qwen3_embedder_retries_on_error():
     assert call_count[0] == 3
 
 
-def test_qwen3_embedder_raises_after_exhausting_retries():
+def test_qwen3_embedder_raises_after_exhausting_retries(no_retry_sleep):
     """After retries exhausted, RuntimeError must be raised with attempt count."""
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down")

@@ -15,7 +15,6 @@ Test plan:
 """
 
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,9 +22,7 @@ import pytest
 from src.mcp.session import (
     SessionState,
     _cache,
-    _cache_get,
     _cache_invalidate,
-    _cache_set,
     get_session_state,
     normalize_version_arg,
     resolve_version_v2,
@@ -220,16 +217,41 @@ class TestSessionStateCache:
 
         assert call_count[0] == 2, "DB should be re-queried after TTL expiry"
 
-    def test_cache_invalidate_clears_entry(self) -> None:
-        """_cache_invalidate removes the entry from the module cache."""
-        now = time.monotonic()
-        _cache_set("key-inv", _make_state("key-inv"), now)
-        hit_before, _ = _cache_get("key-inv", now)
-        assert hit_before is True
+    def test_invalidate_forces_db_refetch_on_next_read(self) -> None:
+        """After _cache_invalidate, the next get_session_state re-queries the DB.
 
-        _cache_invalidate("key-inv")
-        hit_after, _ = _cache_get("key-inv", now)
-        assert hit_after is False
+        Asserts the observable effect of invalidation through the public read
+        path + DB call count (cache hit within TTL → no DB; after invalidate →
+        DB hit again), rather than poking the cache's internal hit flag. This
+        catches an invalidate that fails to clear the entry — the next read
+        would still be served from the stale cache and skip the DB.
+        """
+        tick = [0.0]
+
+        def fake_now() -> float:
+            return tick[0]
+
+        state = _make_state("key-inv")
+        call_count = [0]
+
+        def fake_fetch(api_key_id: str) -> SessionState | None:
+            call_count[0] += 1
+            return state
+
+        with patch("src.mcp.session._fetch_from_db", side_effect=fake_fetch):
+            # First read at t=0 — DB hit, primes the cache.
+            get_session_state("key-inv", now_fn=fake_now)
+            # Second read still within TTL — served from cache, no DB.
+            get_session_state("key-inv", now_fn=fake_now)
+            assert call_count[0] == 1, "second read within TTL must hit the cache"
+
+            _cache_invalidate("key-inv")
+
+            # Third read after invalidation must go back to the DB.
+            get_session_state("key-inv", now_fn=fake_now)
+            assert call_count[0] == 2, (
+                "read after invalidate must re-query the DB (cache miss)"
+            )
 
 
 # ---------------------------------------------------------------------------

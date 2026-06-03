@@ -156,9 +156,11 @@ class TestNewUserCreation:
         tests that verify the blocked-by-default behaviour live in
         test_wave0_admin_gate.TestOAuthSignupGate.
         """
-        # WI-RV F-A: patch config-module constant (source-of-truth) + legacy route symbol.
-        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
-        monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", True)
+        # The OAuth route gates on signup_enabled() (config.py), which reads the DB
+        # overlay FIRST; patching the SIGNUP_ENABLED constant is dead the moment a
+        # signup.enabled row is seeded (passes today only because this class uses a
+        # mocked DB). Patch the function where oauth.py looks it up — robust either way.
+        monkeypatch.setattr("src.web_ui.routes.oauth.signup_enabled", lambda: True)
 
     @pytest.mark.asyncio
     async def test_oauth_login_new_user_creates_account(self):

@@ -23,11 +23,25 @@ def test_rate_limit_allows_up_to_limit():
 
 
 def test_rate_limit_remaining_decrements():
+    """With limit=N, `remaining` must decrease by exactly 1 each request.
+
+    Business contract: the caller relies on `remaining` to surface accurate
+    rate-limit headroom (X-RateLimit-Remaining). After the i-th allowed request
+    (1-indexed) the reported remaining is N-i. This asserts strict monotonic
+    decrement, not just "< limit".
+    """
     _rate_buckets.clear()
-    _, r0 = _check_rate_limit(api_key_id=100, plan_info=_plan(10))
-    assert r0 == 9  # 10 - 1 - 1 = 8... wait: bucket is now 1, remaining = 10-1-1 = 8
-    # Actually: remaining = max(0, limit - len(bucket)) where bucket already has the new entry
-    # After appending: len=1, remaining = 10-1=9, returned = 9-1=8... let's just check < limit
+    limit = 10
+    for i in range(1, limit + 1):
+        allowed, remaining = _check_rate_limit(api_key_id=100, plan_info=_plan(limit))
+        assert allowed, f"request {i} within limit must be allowed"
+        assert remaining == limit - i, (
+            f"after request {i} remaining must be {limit - i}, got {remaining}"
+        )
+    # The (limit+1)-th request is over the window and must be blocked.
+    allowed, remaining = _check_rate_limit(api_key_id=100, plan_info=_plan(limit))
+    assert not allowed, "request beyond the limit must be blocked"
+    assert remaining == 0
 
 
 def test_rate_limit_different_keys_isolated():
@@ -59,10 +73,12 @@ def test_rate_limit_window_expiry():
 
 
 def test_rate_limit_returns_correct_remaining():
+    """First request under limit=10 must report exactly remaining==9.
+
+    On an empty bucket the limiter reserves the slot for the current request,
+    so the headroom advertised to the caller is limit-1.
+    """
     _rate_buckets.clear()
     allowed, remaining = _check_rate_limit(api_key_id=200, plan_info=_plan(10))
     assert allowed
-    # After 1 request in bucket: remaining = (10 - 1) - 1 = 8
-    # Implementation: remaining = max(0, limit - len(bucket)) BEFORE append,
-    # but we append first. Let's just verify remaining < limit and >= 0
-    assert 0 <= remaining < 10
+    assert remaining == 9

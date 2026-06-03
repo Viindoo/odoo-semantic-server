@@ -454,14 +454,10 @@ def test_v19_curated_files_registry_is_curated_not_maximal():
 # WI-7 — v8/v9 openerp/ namespace tests
 # ---------------------------------------------------------------------------
 
-def test_version_prefix_v8_returns_openerp():
-    """v8.0 → _version_prefix returns 'openerp/'."""
-    assert _version_prefix("8.0") == "openerp/"
-
-
-def test_version_prefix_v9_returns_openerp():
-    """v9.0 → _version_prefix returns 'openerp/'."""
-    assert _version_prefix("9.0") == "openerp/"
+@pytest.mark.parametrize("version", ["8.0", "9.0"])
+def test_version_prefix_legacy_returns_openerp(version):
+    """v8/v9 → _version_prefix returns 'openerp/' (legacy namespace branch)."""
+    assert _version_prefix(version) == "openerp/"
 
 
 def test_version_prefix_v10_returns_odoo():
@@ -1076,58 +1072,44 @@ def test_parse_odoo_core_smoke_real_v19_field_types():
 # T4 — CORE-Q: query.py version-aware path (v8-v9 openerp/osv, v10-v15 odoo/osv, v16+ odoo/tools)
 # ---------------------------------------------------------------------------
 
-def test_resolve_core_paths_query_v8_returns_openerp_osv(tmp_path):
-    """T4: v8 — odoo/tools/query.py maps to openerp/osv/query.py."""
+@pytest.mark.parametrize("version", ["8.0", "9.0"])
+def test_resolve_core_paths_query_legacy_returns_openerp_osv(tmp_path, version):
+    """T4: v8/v9 (major<=9 branch) — odoo/tools/query.py maps to openerp/osv/query.py."""
     (tmp_path / "openerp" / "osv").mkdir(parents=True)
     qpy = tmp_path / "openerp" / "osv" / "query.py"
     qpy.write_text("class Query: pass\n")
-    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "8.0")
-    assert resolved == [qpy], f"v8 query.py must resolve to openerp/osv/query.py, got {resolved}"
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", version)
+    assert resolved == [qpy], (
+        f"v{version} query.py must resolve to openerp/osv/query.py, got {resolved}"
+    )
 
 
-def test_resolve_core_paths_query_v9_returns_openerp_osv(tmp_path):
-    """T4: v9 — odoo/tools/query.py maps to openerp/osv/query.py."""
-    (tmp_path / "openerp" / "osv").mkdir(parents=True)
-    qpy = tmp_path / "openerp" / "osv" / "query.py"
-    qpy.write_text("class Query: pass\n")
-    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "9.0")
-    assert resolved == [qpy], f"v9 query.py must resolve to openerp/osv/query.py, got {resolved}"
+@pytest.mark.parametrize("version", ["11.0", "15.0"])
+def test_resolve_core_paths_query_osv_era_returns_odoo_osv(tmp_path, version):
+    """T4: v11 (lower edge) + v15 (upper edge) of the `elif major <= 15` osv-era branch —
+    odoo/tools/query.py maps to odoo/osv/query.py.
 
-
-def test_resolve_core_paths_query_v11_returns_odoo_osv(tmp_path):
-    """T4: v11 — odoo/tools/query.py maps to odoo/osv/query.py."""
+    M1: v15 is the UPPER boundary of the `<= 15` branch (v16 is the flip point to
+    odoo/tools). A refactor narrowing `<= 15` to `<= 14` would be caught ONLY by the
+    v15 case — both edges of the osv-era are kept here to guard the `<= 15` rule.
+    """
     (tmp_path / "odoo" / "osv").mkdir(parents=True)
     qpy = tmp_path / "odoo" / "osv" / "query.py"
     qpy.write_text("class Query: pass\n")
-    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "11.0")
-    assert resolved == [qpy], f"v11 query.py must resolve to odoo/osv/query.py, got {resolved}"
-
-
-def test_resolve_core_paths_query_v15_returns_odoo_osv(tmp_path):
-    """T4: v15 — odoo/tools/query.py maps to odoo/osv/query.py (boundary check)."""
-    (tmp_path / "odoo" / "osv").mkdir(parents=True)
-    qpy = tmp_path / "odoo" / "osv" / "query.py"
-    qpy.write_text("class Query: pass\n")
-    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "15.0")
-    assert resolved == [qpy], f"v15 query.py must resolve to odoo/osv/query.py, got {resolved}"
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", version)
+    assert resolved == [qpy], (
+        f"v{version} query.py must resolve to odoo/osv/query.py, got {resolved}"
+    )
 
 
 def test_resolve_core_paths_query_v16_returns_odoo_tools(tmp_path):
-    """T4: v16 — odoo/tools/query.py resolves to odoo/tools/query.py (moved in v16)."""
+    """T4: v16 — odoo/tools/query.py resolves to odoo/tools/query.py (moved in v16,
+    lower edge of the `else` branch; v17+ is interior and not separately tested)."""
     (tmp_path / "odoo" / "tools").mkdir(parents=True)
     qpy = tmp_path / "odoo" / "tools" / "query.py"
     qpy.write_text("class Query: pass\n")
     resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "16.0")
     assert resolved == [qpy], f"v16 query.py must resolve to odoo/tools/query.py, got {resolved}"
-
-
-def test_resolve_core_paths_query_v17_returns_odoo_tools(tmp_path):
-    """T4: v17 — odoo/tools/query.py resolves to odoo/tools/query.py."""
-    (tmp_path / "odoo" / "tools").mkdir(parents=True)
-    qpy = tmp_path / "odoo" / "tools" / "query.py"
-    qpy.write_text("class Query: pass\n")
-    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "17.0")
-    assert resolved == [qpy], f"v17 query.py must resolve to odoo/tools/query.py, got {resolved}"
 
 
 def test_resolve_core_paths_query_missing_returns_empty(tmp_path):
@@ -1308,54 +1290,11 @@ def test_fix1_non_field_class_not_misclassified_as_field_type(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_fix2_domain_condition_and_all_8_public_domains_emitted(tmp_path):
-    """FIX-2: parse_odoo_core v19 emits DomainCondition and all 8 public Domain subclasses.
-
-    Business rule: the v19 domain builder API exposes 8 public classes
-    (Domain + 7 concrete builders). All must appear in the graph so that
-    AI clients can discover the full domain construction API.
-
-    Before FIX-2, only Domain/DomainAnd/DomainOr were in the curated allowlist (3 entries).
-    After FIX-2, the allowlist was expanded to 8 entries after scanning real Odoo 19.
-    """
-    # Arrange: v19 layout with all 8 public domain classes + internal class to exclude
-    orm_dir = tmp_path / "odoo" / "orm"
-    orm_dir.mkdir(parents=True)
-    (orm_dir / "domains.py").write_text(
-        "import enum\n\n"
-        "class OptimizationLevel(enum.IntEnum):\n    BASIC = 0\n    FULL = 1\n\n"
-        "class Domain:\n    pass\n\n"
-        "class DomainBool(Domain):\n    pass\n\n"
-        "class DomainNot(Domain):\n    pass\n\n"
-        "class DomainNary(Domain):\n    pass\n\n"
-        "class DomainAnd(Domain):\n    pass\n\n"
-        "class DomainOr(Domain):\n    pass\n\n"
-        "class DomainCustom(Domain):\n    pass\n\n"
-        "class DomainCondition(Domain):\n    pass\n\n"   # key FIX-2 addition
-        "def _optimize_nary(a, b):\n    return a\n"
-    )
-
-    # Act
-    out = parse_odoo_core(str(tmp_path), "19.0")
-    qnames = {s.qualified_name for s in out}
-
-    # Assert: DomainCondition (the key FIX-2 addition) is present
-    assert "odoo.orm.domains.DomainCondition" in qnames, (
-        "DomainCondition must appear in v19 output after FIX-2 expanded the Domain allowlist. "
-        f"Got domain symbols: {[q for q in qnames if 'domains' in q]}"
-    )
-
-    # Assert: all 8 public domain builder classes present
-    for cls in ("Domain", "DomainBool", "DomainNot", "DomainNary",
-                "DomainAnd", "DomainOr", "DomainCustom", "DomainCondition"):
-        assert f"odoo.orm.domains.{cls}" in qnames, (
-            f"Public domain class {cls} must be in v19 output."
-        )
-
-    # Assert: OptimizationLevel (internal IntEnum) excluded by curation
-    assert "odoo.orm.domains.OptimizationLevel" not in qnames, (
-        "OptimizationLevel must remain excluded — it is internal optimization machinery."
-    )
+# NOTE: the former `test_fix2_domain_condition_and_all_8_public_domains_emitted`
+# was removed as a true duplicate of `test_v19_curated_domains_emits_only_public_symbols`
+# (above): that survivor asserts all 8 public domain classes present (incl.
+# DomainCondition) AND excludes OptimizationLevel + _optimize_nary on the same
+# v19 fixture. No assertion was dropped.
 
 
 # ---------------------------------------------------------------------------

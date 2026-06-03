@@ -49,22 +49,26 @@ class TestEachVersionHasCuratedStatusComplete:
 
     @pytest.mark.parametrize("version", CURATED_VERSIONS)
     def test_minimum_flag_count(self, version: str) -> None:
+        # Absorbs the former `test_flags_key_is_list`: the `flags` key must be a
+        # list AND carry >= MIN_FLAGS_PER_VERSION entries. Both assertions kept.
         data = _load_version(version)
-        flags = data.get("flags", [])
+        flags = data.get("flags")
+        assert isinstance(flags, list), (
+            f"cli_flags_{version}.json: 'flags' must be a list"
+        )
         assert len(flags) >= MIN_FLAGS_PER_VERSION, (
             f"cli_flags_{version}.json: only {len(flags)} flags, "
             f"expected >= {MIN_FLAGS_PER_VERSION}"
         )
 
     @pytest.mark.parametrize("version", CURATED_VERSIONS)
-    def test_flags_key_is_list(self, version: str) -> None:
-        data = _load_version(version)
-        assert isinstance(data.get("flags"), list), (
-            f"cli_flags_{version}.json: 'flags' must be a list"
-        )
+    def test_server_command_always_present(self, version: str) -> None:
+        """Every Odoo version must have a 'server' command.
 
-    @pytest.mark.parametrize("version", CURATED_VERSIONS)
-    def test_commands_key_present(self, version: str) -> None:
+        Absorbs the former `test_commands_key_present`: the `commands` key must
+        be present AND a list (pre-condition), then 'server' must appear in it.
+        All three assertions kept.
+        """
         data = _load_version(version)
         assert "commands" in data, (
             f"cli_flags_{version}.json: 'commands' key missing"
@@ -72,12 +76,7 @@ class TestEachVersionHasCuratedStatusComplete:
         assert isinstance(data["commands"], list), (
             f"cli_flags_{version}.json: 'commands' must be a list"
         )
-
-    @pytest.mark.parametrize("version", CURATED_VERSIONS)
-    def test_server_command_always_present(self, version: str) -> None:
-        """Every Odoo version must have a 'server' command."""
-        data = _load_version(version)
-        command_names = {c.get("name") for c in data.get("commands", [])}
+        command_names = {c.get("name") for c in data["commands"]}
         assert "server" in command_names, (
             f"cli_flags_{version}.json: 'server' command missing from commands list"
         )

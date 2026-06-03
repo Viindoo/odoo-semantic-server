@@ -206,9 +206,16 @@ class TestAuthMiddlewareCache:
             concurrent.futures.wait(futures)
 
         assert len(results["exceptions"]) == 0, f"Exceptions: {results['exceptions']}"
-        # After all ops, cache should be empty
-        assert len(middleware_mod._KEY_CACHE) == 0
-        assert len(middleware_mod._CACHE_TS) == 0
+        # After all ops, every key that was set then invalidated must read as a
+        # cache MISS through the lookup API. Probing observable behavior (does a
+        # lookup hit?) instead of internal dict sizes catches a real consistency
+        # bug — a stale entry that survived a concurrent invalidate would return
+        # a hit here — without coupling the test to the cache's storage shape.
+        for thread_id in range(20):
+            for i in range(10):
+                raw_key = f"thread_{thread_id}_key_{i}"
+                hit, _ = middleware_mod._cache_get(raw_key)
+                assert not hit, f"{raw_key} survived invalidation — stale cache hit"
 
 
 class TestCacheSplitFailClosed:

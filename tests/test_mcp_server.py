@@ -115,20 +115,24 @@ def test_resolve_method_not_found(mcp_tools):
 
 
 def test_resolve_model_excludes_unresolved_parents(neo4j_driver):
-    """Unresolved parent (placeholder) must be filtered from 'Inherits from' output."""
+    """Unresolved parent (placeholder) must be filtered from 'Inherits from' output.
+
+    Kept self-contained (NOT on ``ranking_seed``) on purpose: this test is
+    collected high in the file, before the destructive
+    ``test_latest_version_returns_none_when_db_empty`` (whole-Module wipe).  If
+    it triggered the module-scoped ``ranking_seed`` setup here, that later wipe
+    would corrupt the shared seed.  Its inline seed+wipe is cheap (1 module).
+    """
+    UNRESOLVED_VERSION = "98.0"
     writer = Neo4jWriter(
         uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
         user=os.getenv("NEO4J_TEST_USER", "neo4j"),
         password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
     )
     writer.setup_indexes()
-
-    # Clean up old data
-    UNRESOLVED_VERSION = "98.0"
     with neo4j_driver.session() as session:
         session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION)
-
-    # Seed: sale.order inherits ghost.mixin (not indexed) → creates unresolved edge
+    # sale.order inherits ghost.mixin (not indexed) → creates unresolved edge
     mod = ModuleInfo("sale", UNRESOLVED_VERSION, "odoo_test", "/tmp", [], "")
     model = ModelInfo(
         name="sale.order", module="sale", odoo_version=UNRESOLVED_VERSION,
@@ -136,21 +140,16 @@ def test_resolve_model_excludes_unresolved_parents(neo4j_driver):
     )
     writer.write_results([ParseResult(module=mod, models=[model])])
     writer.close()
-
-    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
-    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
-    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
-    import sys
-    sys.modules.pop("src.mcp.server", None)
-    from src.mcp.server import _resolve_model
-
-    result = _resolve_model("sale.order", UNRESOLVED_VERSION)
-
-    assert "sale.order" in result
-    assert "ghost.mixin" not in result  # unresolved parent filtered out
-
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION)
+    try:
+        resolve_model = _make_ranking_tools(neo4j_driver)
+        result = resolve_model("sale.order", UNRESOLVED_VERSION)
+        assert "sale.order" in result
+        assert "ghost.mixin" not in result  # unresolved parent filtered out
+    finally:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=UNRESOLVED_VERSION
+            )
 
 
 # --- resolve_view tests ---
@@ -385,404 +384,598 @@ def _make_ranking_tools(neo4j_driver):
     return _resolve_model
 
 
-def test_resolve_model_picks_base_when_60_extensions_tie_inbound(neo4j_driver):
+# ---------------------------------------------------------------------------
+# ADR-0013 ranking suite — seed-once module fixture (WS-C / DD1 §5a).
+#
+# The 11 ranking tests below (Cluster A model + Cluster B field/method) are
+# pure READ-after-seed: each calls a resolver against a fixed graph and never
+# mutates it post-seed.  They previously seeded + wiped their own version slot
+# in every function body (11 seed+wipe cycles).  This fixture seeds ALL 11
+# datasets ONCE at module setup and safety-wipes them ONCE at module teardown.
+# Tests just read.
+#
+# NOTE: the Cluster-D ``excludes_unresolved`` test deliberately stays
+# self-contained (NOT on this fixture).  It is collected ABOVE the destructive
+# ``test_latest_version_returns_none_when_db_empty`` (whole-Module wipe); were
+# it to set this module fixture up early, that wipe would corrupt the seed.
+#
+# Version slots are renumbered with a ``.1`` suffix where the legacy slot
+# collided with a W6 constant once promoted to module scope (per DD1 §5a
+# collision map: 86→86.1, 85→85.1, 84→84.1, 83→83.1, 88→88.1, 93→93.1).
+# A guard test (test_ranking_versions_no_collision) enforces no overlap with
+# any other module-scope version constant in this file.
+# ---------------------------------------------------------------------------
+
+_RANK_V = {
+    "sixty_ext": "93.1",       # was 93.0 (collided with PROF_VERSION/seeded_views_with_profile)
+    "orphan": "92.0",
+    "edition": "91.0",
+    "mixin_base": "86.1",      # was 86.0 (collided with W6_DESCRIBE_NO_MODELS_VERSION)
+    "sub_mixin": "85.1",       # was 85.0 (collided with W6_DESCRIBE_VERSION)
+    "transient": "84.1",       # was 84.0 (collided with W6_LIST_FIELDS_VERSION)
+    "redeclare_mixin": "83.1",  # was 83.0 (collided with W6_LIST_METHODS_VERSION)
+    "field_tie": "90.0",
+    "field_redef": "89.0",
+    "method_tie": "88.1",      # was 88.0 (collided with W6_EDITION_LABEL_VERSION)
+    "method_redef": "87.0",
+}
+
+
+@pytest.fixture(scope="module")
+def ranking_seed(neo4j_driver):
+    """Seed all 11 ADR-0013 ranking datasets once; safety-wipe all once at end.
+
+    Yields the ``_RANK_V`` version map.  Tests are read-only against this seed.
+    Module-scope honours the seed-once contract; the teardown wipe (the
+    ``finally``-equivalent here) keeps the before+after invariant at the
+    fixture boundary — we never drop the post-seed wipe (M3 BLOCKER).
+    """
+    def _wipe(session):
+        for v in _RANK_V.values():
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v
+            )
+
+    with neo4j_driver.session() as session:
+        _wipe(session)  # before: defensive clean of these slots
+
+        # --- sixty_ext: base + 60 tied extensions ---
+        v = _RANK_V["sixty_ext"]
+        session.run(
+            "MERGE (mod:Module {name: 'core', odoo_version: $v}) "
+            "SET mod.repo = 'odoo_test', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'sale.order', module: 'core', odoo_version: $v}) "
+            "MERGE (mod:Module {name: 'core', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        for i in range(60):
+            ext_mod = f"ext_{i:02d}"
+            session.run(
+                "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+                mod=ext_mod, v=v,
+            )
+            session.run(
+                "MERGE (ext:Model {name: 'sale.order', module: $mod, odoo_version: $v}) "
+                "MERGE (base:Model {name: 'sale.order', module: 'core', odoo_version: $v}) "
+                "MERGE (ext)-[:INHERITS]->(base) "
+                "MERGE (extmod:Module {name: $mod, odoo_version: $v}) "
+                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+                mod=ext_mod, v=v,
+            )
+
+        # --- orphan: base is_definition=true beats orphan extension ---
+        v = _RANK_V["orphan"]
+        session.run(
+            "MERGE (mod:Module {name: 'base_mod', odoo_version: $v}) "
+            "SET mod.repo = 'odoo_test', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'res.partner', module: 'base_mod', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'base_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mod:Module {name: 'orphan_mod', odoo_version: $v}) "
+            "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'res.partner', module: 'orphan_mod', odoo_version: $v}) "
+            "MERGE (mod:Module {name: 'orphan_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+
+        # --- edition: community < enterprise < custom ---
+        v = _RANK_V["edition"]
+        for mod_name, edition in [
+            ("custom_mod", "customer"),
+            ("enterprise_mod", "enterprise"),
+            ("community_mod", "community"),
+        ]:
+            session.run(
+                "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                "SET mod.repo = 'test_repo', mod.edition = $edition",
+                mod=mod_name, v=v, edition=edition,
+            )
+            session.run(
+                "MERGE (m:Model {name: 'mail.thread', module: $mod, odoo_version: $v}) "
+                "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                "MERGE (m)-[:DEFINED_IN]->(mod)",
+                mod=mod_name, v=v,
+            )
+
+        # --- mixin_base: abstract mixin is_definition=true is base ---
+        v = _RANK_V["mixin_base"]
+        session.run(
+            "MERGE (mod:Module {name: 'mixin_core', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'test.mixin', module: 'mixin_core', odoo_version: $v}) "
+            "SET m.is_definition = true, m.is_abstract = true "
+            "MERGE (mod:Module {name: 'mixin_core', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        for i in range(5):
+            consumer_name = f"consumer.model.{i}"
+            consumer_mod = f"consumer_mod_{i}"
+            session.run(
+                "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                "SET mod.repo = 'consumer_repo', mod.edition = 'community'",
+                mod=consumer_mod, v=v,
+            )
+            session.run(
+                "MERGE (c:Model {name: $cname, module: $mod, odoo_version: $v}) "
+                "SET c.is_definition = true "
+                "MERGE (mx:Model {name: 'test.mixin', module: 'mixin_core', odoo_version: $v}) "
+                "MERGE (c)-[:INHERITS]->(mx) "
+                "MERGE (cmod:Module {name: $mod, odoo_version: $v}) "
+                "MERGE (c)-[:DEFINED_IN]->(cmod)",
+                cname=consumer_name, mod=consumer_mod, v=v,
+            )
+
+        # --- sub_mixin: _name != _inherit treated as own base ---
+        v = _RANK_V["sub_mixin"]
+        session.run(
+            "MERGE (mod:Module {name: 'base_mixin_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'base.mixin', module: 'base_mixin_mod', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'base_mixin_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mod:Module {name: 'mixin_alpha_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (alpha:Model {name: 'mixin.alpha', module: 'mixin_alpha_mod', "
+            "odoo_version: $v}) "
+            "SET alpha.is_definition = true "
+            "MERGE (parent:Model {name: 'base.mixin', module: 'base_mixin_mod', "
+            "odoo_version: $v}) "
+            "MERGE (alpha)-[:INHERITS]->(parent) "
+            "MERGE (mod:Module {name: 'mixin_alpha_mod', odoo_version: $v}) "
+            "MERGE (alpha)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+
+        # --- transient: single-node wizard resolves ---
+        v = _RANK_V["transient"]
+        session.run(
+            "MERGE (mod:Module {name: 'wizard_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'wizard.confirm', module: 'wizard_mod', odoo_version: $v}) "
+            "SET m.is_transient = true, m.is_definition = true "
+            "MERGE (mod:Module {name: 'wizard_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+
+        # --- redeclare_mixin: base beats redeclare w/ mixin injection ---
+        v = _RANK_V["redeclare_mixin"]
+        session.run(
+            "MERGE (mod:Module {name: 'doc_base_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'doc.order', module: 'doc_base_mod', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'doc_base_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mod:Module {name: 'mail_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (mt:Model {name: 'mail.thread', module: 'mail_mod', odoo_version: $v}) "
+            "SET mt.is_definition = true "
+            "MERGE (mod:Module {name: 'mail_mod', odoo_version: $v}) "
+            "MERGE (mt)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mod:Module {name: 'doc_mixin_mod', odoo_version: $v}) "
+            "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (ext:Model {name: 'doc.order', module: 'doc_mixin_mod', odoo_version: $v}) "
+            "SET ext.is_definition = false "
+            "MERGE (base:Model {name: 'doc.order', module: 'doc_base_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:INHERITS]->(base) "
+            "MERGE (mt:Model {name: 'mail.thread', module: 'mail_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:INHERITS]->(mt) "
+            "MERGE (extmod:Module {name: 'doc_mixin_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+            v=v,
+        )
+
+        # --- field_tie: base wins when 3 extensions tie ---
+        v = _RANK_V["field_tie"]
+        session.run(
+            "MERGE (mod:Module {name: 'test_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'test.order', module: 'test_mod', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'test_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (f:Field {name: 'state', model: 'test.order', "
+            "module: 'test_mod', odoo_version: $v}) "
+            "SET f.ttype = 'selection'",
+            v=v,
+        )
+        for i in range(3):
+            ext_mod = f"ext_mod_{i}"
+            session.run(
+                "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+                mod=ext_mod, v=v,
+            )
+            session.run(
+                "MERGE (ext:Model {name: 'test.order', module: $mod, odoo_version: $v}) "
+                "MERGE (base:Model {name: 'test.order', module: 'test_mod', odoo_version: $v}) "
+                "MERGE (ext)-[:INHERITS]->(base) "
+                "MERGE (extmod:Module {name: $mod, odoo_version: $v}) "
+                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+                mod=ext_mod, v=v,
+            )
+            session.run(
+                "MERGE (f:Field {name: 'state', model: 'test.order', "
+                "module: $mod, odoo_version: $v}) "
+                "SET f.ttype = 'selection'",
+                mod=ext_mod, v=v,
+            )
+
+        # --- field_redef: base is_definition=true beats redeclare ---
+        v = _RANK_V["field_redef"]
+        session.run(
+            "MERGE (mod:Module {name: 'base_field_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'test.alpha', module: 'base_field_mod', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'base_field_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (f:Field {name: 'status', model: 'test.alpha', "
+            "module: 'base_field_mod', odoo_version: $v}) "
+            "SET f.ttype = 'char', f.required = true",
+            v=v,
+        )
+        session.run(
+            "MERGE (mod:Module {name: 'ext_field_mod', odoo_version: $v}) "
+            "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (ext:Model {name: 'test.alpha', module: 'ext_field_mod', "
+            "odoo_version: $v}) "
+            "SET ext.is_definition = false "
+            "MERGE (base:Model {name: 'test.alpha', "
+            "module: 'base_field_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:INHERITS]->(base) "
+            "MERGE (extmod:Module {name: 'ext_field_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (f:Field {name: 'status', model: 'test.alpha', "
+            "module: 'ext_field_mod', odoo_version: $v}) "
+            "SET f.ttype = 'char'",
+            v=v,
+        )
+
+        # --- method_tie: base wins when 3 extensions tie ---
+        v = _RANK_V["method_tie"]
+        session.run(
+            "MERGE (mod:Module {name: 'test_mod_m', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'test.order', module: 'test_mod_m', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'test_mod_m', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mth:Method {name: 'action_confirm', model: 'test.order', "
+            "module: 'test_mod_m', odoo_version: $v}) "
+            "SET mth.has_super_call = false",
+            v=v,
+        )
+        for i in range(3):
+            ext_mod = f"ext_mod_m_{i}"
+            session.run(
+                "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
+                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+                mod=ext_mod, v=v,
+            )
+            session.run(
+                "MERGE (ext:Model {name: 'test.order', module: $mod, "
+                "odoo_version: $v}) "
+                "MERGE (base:Model {name: 'test.order', "
+                "module: 'test_mod_m', odoo_version: $v}) "
+                "MERGE (ext)-[:INHERITS]->(base) "
+                "MERGE (extmod:Module {name: $mod, odoo_version: $v}) "
+                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+                mod=ext_mod, v=v,
+            )
+            session.run(
+                "MERGE (mth:Method {name: 'action_confirm', model: 'test.order', "
+                "module: $mod, odoo_version: $v}) "
+                "SET mth.has_super_call = true",
+                mod=ext_mod, v=v,
+            )
+
+        # --- method_redef: base is_definition=true beats redeclare ---
+        v = _RANK_V["method_redef"]
+        session.run(
+            "MERGE (mod:Module {name: 'base_method_mod', odoo_version: $v}) "
+            "SET mod.repo = 'test_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (m:Model {name: 'test.beta', module: 'base_method_mod', odoo_version: $v}) "
+            "SET m.is_definition = true "
+            "MERGE (mod:Module {name: 'base_method_mod', odoo_version: $v}) "
+            "MERGE (m)-[:DEFINED_IN]->(mod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mth:Method {name: 'do_something', model: 'test.beta', "
+            "module: 'base_method_mod', odoo_version: $v}) "
+            "SET mth.has_super_call = false",
+            v=v,
+        )
+        session.run(
+            "MERGE (mod:Module {name: 'ext_method_mod', odoo_version: $v}) "
+            "SET mod.repo = 'ext_repo', mod.edition = 'community'",
+            v=v,
+        )
+        session.run(
+            "MERGE (ext:Model {name: 'test.beta', module: 'ext_method_mod', "
+            "odoo_version: $v}) "
+            "SET ext.is_definition = false "
+            "MERGE (base:Model {name: 'test.beta', "
+            "module: 'base_method_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:INHERITS]->(base) "
+            "MERGE (extmod:Module {name: 'ext_method_mod', odoo_version: $v}) "
+            "MERGE (ext)-[:DEFINED_IN]->(extmod)",
+            v=v,
+        )
+        session.run(
+            "MERGE (mth:Method {name: 'do_something', model: 'test.beta', "
+            "module: 'ext_method_mod', odoo_version: $v}) "
+            "SET mth.has_super_call = true",
+            v=v,
+        )
+
+    yield _RANK_V
+
+    with neo4j_driver.session() as session:
+        _wipe(session)  # after: honour before+after invariant (M3)
+
+
+def test_ranking_versions_no_collision():
+    """Guard: renumbered ranking slots must not collide with any other
+    module-scope version constant in this file (DD1 §8 mitigation)."""
+    other_module_scope = {
+        TEST_VERSION,           # 99.0 (seeded_neo4j)
+        "97.0",                 # VIEW_VERSION (fixture-local in seeded_views)
+        "93.0",                 # PROF_VERSION (fixture-local in seeded_views_with_profile)
+        MULTI_EXT_VERSION, MULTI_MTH_VERSION,
+        MULTI_VIEW_VERSION, W6_GRAMMAR_VERSION,
+        W6_DESCRIBE_VERSION, W6_DESCRIBE_NO_MODELS_VERSION,
+        W6_LIST_FIELDS_VERSION, W6_LIST_METHODS_VERSION, W6_LIST_VIEWS_VERSION,
+        W6_LIST_OWL_VERSION, W6_LIST_QWEB_VERSION, W6_LIST_JS_VERSION,
+        W6_EDITION_LABEL_VERSION, W6_LIST_FIELDS_PAGER_VERSION,
+    }
+    overlap = set(_RANK_V.values()) & other_module_scope
+    assert not overlap, (
+        f"Ranking version slots collide with other module-scope versions: {overlap}"
+    )
+
+
+def test_resolve_model_picks_base_when_60_extensions_tie_inbound(ranking_seed, neo4j_driver):
     """Base module wins when 60 extension Models all have inbound=1 (tie).
 
     Tier 1 (is_ext): extensions have outgoing INHERITS to base → is_ext=1.
     Base has no outgoing INHERITS to its own name → is_ext=0 → ranks first.
+    Data seeded once by ``ranking_seed`` (slot ``sixty_ext``).
     """
-    SIXTY_EXT_VERSION = "93.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SIXTY_EXT_VERSION)
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("sale.order", ranking_seed["sixty_ext"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module node + Model node
-            session.run(
-                "MERGE (mod:Module {name: 'core', odoo_version: $v}) "
-                "SET mod.repo = 'odoo_test', mod.edition = 'community'",
-                v=SIXTY_EXT_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'sale.order', module: 'core', odoo_version: $v}) "
-                "MERGE (mod:Module {name: 'core', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=SIXTY_EXT_VERSION,
-            )
-            # 60 extension module nodes + Model nodes, each inheriting base
-            for i in range(60):
-                ext_mod = f"ext_{i:02d}"
-                session.run(
-                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
-                    "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                    mod=ext_mod, v=SIXTY_EXT_VERSION,
-                )
-                session.run(
-                    "MERGE (ext:Model {name: 'sale.order', module: $mod, odoo_version: $v}) "
-                    "MERGE (base:Model {name: 'sale.order', module: 'core', odoo_version: $v}) "
-                    "MERGE (ext)-[:INHERITS]->(base) "
-                    "MERGE (extmod:Module {name: $mod, odoo_version: $v}) "
-                    "MERGE (ext)-[:DEFINED_IN]->(extmod)",
-                    mod=ext_mod, v=SIXTY_EXT_VERSION,
-                )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("sale.order", SIXTY_EXT_VERSION)
-
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "core" in first_defined_in_line, (
-            f"Expected 'core' as Defined-in module; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SIXTY_EXT_VERSION)
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "core" in first_defined_in_line, (
+        f"Expected 'core' as Defined-in module; got:\n{result}"
+    )
 
 
-def test_resolve_model_picks_base_when_extension_orphan_no_outgoing_edge(neo4j_driver):
+def test_resolve_model_picks_base_when_extension_orphan_no_outgoing_edge(
+    ranking_seed, neo4j_driver
+):
     """Base with is_definition=true beats an orphan extension with no INHERITS edge.
 
     Simulates parser-miss: extension Model node exists but has no outgoing INHERITS.
     Tier 1: base has is_definition=true → is_ext=0 via CASE 1.
     Orphan: no outgoing INHERITS to same-name node → ELSE 0 as well, tie at is_ext.
     Tier 4 (mod_name): 'base_mod' < 'orphan_mod' alphabetically → base wins.
+    Data seeded once by ``ranking_seed`` (slot ``orphan``).
     """
-    ORPHAN_VERSION = "92.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=ORPHAN_VERSION)
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("res.partner", ranking_seed["orphan"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module + Model with is_definition=true
-            session.run(
-                "MERGE (mod:Module {name: 'base_mod', odoo_version: $v}) "
-                "SET mod.repo = 'odoo_test', mod.edition = 'community'",
-                v=ORPHAN_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'res.partner', module: 'base_mod', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'base_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=ORPHAN_VERSION,
-            )
-            # Orphan extension: Model node exists, NO outgoing INHERITS edge to same name
-            session.run(
-                "MERGE (mod:Module {name: 'orphan_mod', odoo_version: $v}) "
-                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                v=ORPHAN_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'res.partner', module: 'orphan_mod', odoo_version: $v}) "
-                "MERGE (mod:Module {name: 'orphan_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=ORPHAN_VERSION,
-            )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("res.partner", ORPHAN_VERSION)
-
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "base_mod" in first_defined_in_line, (
-            f"Expected 'base_mod' as Defined-in; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=ORPHAN_VERSION)
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "base_mod" in first_defined_in_line, (
+        f"Expected 'base_mod' as Defined-in; got:\n{result}"
+    )
 
 
-def test_resolve_model_edition_rank_orders_community_then_enterprise_then_custom(neo4j_driver):
+def test_resolve_model_edition_rank_orders_community_then_enterprise_then_custom(
+    ranking_seed, neo4j_driver
+):
     """Edition rank: community (0) < enterprise (1) < custom/unknown (4).
 
     Three Model nodes same name, same inbound=0, same is_ext=0 (no outgoing INHERITS).
     Differs only in Module.edition → edition_rank decides order.
     community module must appear as Defined-in (first), enterprise and custom in Extended-by.
+    Data seeded once by ``ranking_seed`` (slot ``edition``).
     """
-    EDITION_VERSION = "91.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=EDITION_VERSION)
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("mail.thread", ranking_seed["edition"])
 
-    try:
-        with neo4j_driver.session() as session:
-            for mod_name, edition in [
-                ("custom_mod", "customer"),
-                ("enterprise_mod", "enterprise"),
-                ("community_mod", "community"),
-            ]:
-                session.run(
-                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
-                    "SET mod.repo = 'test_repo', mod.edition = $edition",
-                    mod=mod_name, v=EDITION_VERSION, edition=edition,
-                )
-                session.run(
-                    "MERGE (m:Model {name: 'mail.thread', module: $mod, odoo_version: $v}) "
-                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
-                    "MERGE (m)-[:DEFINED_IN]->(mod)",
-                    mod=mod_name, v=EDITION_VERSION,
-                )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("mail.thread", EDITION_VERSION)
-
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "community_mod" in first_defined_in_line, (
-            f"Expected 'community_mod' (community edition) as Defined-in; got:\n{result}"
-        )
-        # enterprise_mod must appear before custom_mod in the output
-        assert result.index("enterprise_mod") < result.index("custom_mod"), (
-            f"Expected enterprise_mod before custom_mod in Extended-by; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=EDITION_VERSION)
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "community_mod" in first_defined_in_line, (
+        f"Expected 'community_mod' (community edition) as Defined-in; got:\n{result}"
+    )
+    # enterprise_mod must appear before custom_mod in the output
+    assert result.index("enterprise_mod") < result.index("custom_mod"), (
+        f"Expected enterprise_mod before custom_mod in Extended-by; got:\n{result}"
+    )
 
 
-def test_resolve_model_abstract_mixin_is_base(neo4j_driver):
+def test_resolve_model_abstract_mixin_is_base(ranking_seed, neo4j_driver):
     """Mixin model with is_definition=true is correctly identified as Defined-in.
 
     Synthetic mixin 'test.mixin' has 1 Model node (is_definition=true) and 5
     consumer models that inherit from it under different model names.
     The mixin itself has no INHERITS edge going outward to *its own* name, so
     is_ext=0 → it ranks as the definition even though it has many inbound edges.
+    Data seeded once by ``ranking_seed`` (slot ``mixin_base``).
     """
-    MIXIN_BASE_VERSION = "86.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MIXIN_BASE_VERSION)
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("test.mixin", ranking_seed["mixin_base"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Mixin module + Model node with is_definition=true
-            session.run(
-                "MERGE (mod:Module {name: 'mixin_core', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=MIXIN_BASE_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'test.mixin', module: 'mixin_core', odoo_version: $v}) "
-                "SET m.is_definition = true, m.is_abstract = true "
-                "MERGE (mod:Module {name: 'mixin_core', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=MIXIN_BASE_VERSION,
-            )
-            # 5 consumer models inherit from test.mixin but under different model names
-            for i in range(5):
-                consumer_name = f"consumer.model.{i}"
-                consumer_mod = f"consumer_mod_{i}"
-                session.run(
-                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
-                    "SET mod.repo = 'consumer_repo', mod.edition = 'community'",
-                    mod=consumer_mod, v=MIXIN_BASE_VERSION,
-                )
-                session.run(
-                    "MERGE (c:Model {name: $cname, module: $mod, odoo_version: $v}) "
-                    "SET c.is_definition = true "
-                    "MERGE (mx:Model {name: 'test.mixin', module: 'mixin_core', odoo_version: $v}) "
-                    "MERGE (c)-[:INHERITS]->(mx) "
-                    "MERGE (cmod:Module {name: $mod, odoo_version: $v}) "
-                    "MERGE (c)-[:DEFINED_IN]->(cmod)",
-                    cname=consumer_name, mod=consumer_mod, v=MIXIN_BASE_VERSION,
-                )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("test.mixin", MIXIN_BASE_VERSION)
-
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "mixin_core" in first_defined_in_line, (
-            f"Expected 'mixin_core' as Defined-in for mixin model; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=MIXIN_BASE_VERSION)
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "mixin_core" in first_defined_in_line, (
+        f"Expected 'mixin_core' as Defined-in for mixin model; got:\n{result}"
+    )
 
 
-def test_resolve_model_sub_mixin_with_different_name(neo4j_driver):
+def test_resolve_model_sub_mixin_with_different_name(ranking_seed, neo4j_driver):
     """Sub-mixin with _name != _inherit is treated as a new base definition.
 
     'mixin.alpha' has _name='mixin.alpha' and _inherit='base.mixin' (different names).
     Because the INHERITS edge goes to 'base.mixin' (a different model name), the
     is_ext heuristic treats 'mixin.alpha' as is_ext=0 → it is its own base.
     Assert Defined-in is 'mixin_alpha_mod', not 'base_mixin_mod'.
+    Data seeded once by ``ranking_seed`` (slot ``sub_mixin``).
     """
-    SUB_MIXIN_VERSION = "85.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SUB_MIXIN_VERSION)
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("mixin.alpha", ranking_seed["sub_mixin"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Parent mixin: base.mixin
-            session.run(
-                "MERGE (mod:Module {name: 'base_mixin_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=SUB_MIXIN_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'base.mixin', module: 'base_mixin_mod', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'base_mixin_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=SUB_MIXIN_VERSION,
-            )
-
-            # Sub-mixin: mixin.alpha inherits base.mixin but has a DIFFERENT _name
-            # This is the pattern: _name = 'mixin.alpha'; _inherit = 'base.mixin'
-            session.run(
-                "MERGE (mod:Module {name: 'mixin_alpha_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=SUB_MIXIN_VERSION,
-            )
-            session.run(
-                "MERGE (alpha:Model {name: 'mixin.alpha', module: 'mixin_alpha_mod', "
-                "odoo_version: $v}) "
-                "SET alpha.is_definition = true "
-                "MERGE (parent:Model {name: 'base.mixin', module: 'base_mixin_mod', "
-                "odoo_version: $v}) "
-                "MERGE (alpha)-[:INHERITS]->(parent) "
-                "MERGE (mod:Module {name: 'mixin_alpha_mod', odoo_version: $v}) "
-                "MERGE (alpha)-[:DEFINED_IN]->(mod)",
-                v=SUB_MIXIN_VERSION,
-            )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("mixin.alpha", SUB_MIXIN_VERSION)
-
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "mixin_alpha_mod" in first_defined_in_line, (
-            f"Expected 'mixin_alpha_mod' as Defined-in for sub-mixin; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=SUB_MIXIN_VERSION)
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "mixin_alpha_mod" in first_defined_in_line, (
+        f"Expected 'mixin_alpha_mod' as Defined-in for sub-mixin; got:\n{result}"
+    )
 
 
-def test_resolve_model_transient_wizard_single_node(neo4j_driver):
+def test_resolve_model_transient_wizard_single_node(ranking_seed, neo4j_driver):
     """Transient wizard with a single node resolves without error.
 
     A wizard model (is_transient=true) with exactly 1 Model node and no INHERITS
     edges. The resolver must return a valid result (no crash, no 'not found') and
     correctly identify that single node as Defined-in.
+    Data seeded once by ``ranking_seed`` (slot ``transient``).
     """
-    TRANSIENT_VERSION = "84.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TRANSIENT_VERSION)
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("wizard.confirm", ranking_seed["transient"])
 
-    try:
-        with neo4j_driver.session() as session:
-            session.run(
-                "MERGE (mod:Module {name: 'wizard_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=TRANSIENT_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'wizard.confirm', module: 'wizard_mod', odoo_version: $v}) "
-                "SET m.is_transient = true, m.is_definition = true "
-                "MERGE (mod:Module {name: 'wizard_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=TRANSIENT_VERSION,
-            )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("wizard.confirm", TRANSIENT_VERSION)
-
-        assert "not found" not in result.lower(), (
-            f"Single-node transient model should resolve; got:\n{result}"
-        )
-        assert "wizard.confirm" in result
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "wizard_mod" in first_defined_in_line, (
-            f"Expected 'wizard_mod' as Defined-in; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=TRANSIENT_VERSION)
+    assert "not found" not in result.lower(), (
+        f"Single-node transient model should resolve; got:\n{result}"
+    )
+    assert "wizard.confirm" in result
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "wizard_mod" in first_defined_in_line, (
+        f"Expected 'wizard_mod' as Defined-in; got:\n{result}"
+    )
 
 
-def test_resolve_model_redeclare_with_mixin_injection(neo4j_driver):
+def test_resolve_model_redeclare_with_mixin_injection(ranking_seed, neo4j_driver):
     """Redeclare pattern (_name=X, _inherit=[X, mail.thread]) is ranked as extension.
 
     The redeclare module has both:
       - An INHERITS edge to 'doc.order' (same name → is_ext=1 via CASE 2)
       - An INHERITS edge to 'mail.thread' (mixin injection, different name)
     The base module (is_definition=true) must win Defined-in over the redeclare module.
+    Data seeded once by ``ranking_seed`` (slot ``redeclare_mixin``).
     """
-    REDECLARE_MIXIN_VERSION = "83.0"
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=REDECLARE_MIXIN_VERSION
-        )
+    resolve_model = _make_ranking_tools(neo4j_driver)
+    result = resolve_model("doc.order", ranking_seed["redeclare_mixin"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module: original definition of doc.order
-            session.run(
-                "MERGE (mod:Module {name: 'doc_base_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=REDECLARE_MIXIN_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'doc.order', module: 'doc_base_mod', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'doc_base_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=REDECLARE_MIXIN_VERSION,
-            )
-
-            # mail.thread mixin (referenced but lives in another module)
-            session.run(
-                "MERGE (mod:Module {name: 'mail_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=REDECLARE_MIXIN_VERSION,
-            )
-            session.run(
-                "MERGE (mt:Model {name: 'mail.thread', module: 'mail_mod', odoo_version: $v}) "
-                "SET mt.is_definition = true "
-                "MERGE (mod:Module {name: 'mail_mod', odoo_version: $v}) "
-                "MERGE (mt)-[:DEFINED_IN]->(mod)",
-                v=REDECLARE_MIXIN_VERSION,
-            )
-
-            # Redeclare module: _name='doc.order', _inherit=['doc.order', 'mail.thread']
-            # Creates INHERITS to same-name base (→ is_ext=1) AND to mail.thread mixin
-            session.run(
-                "MERGE (mod:Module {name: 'doc_mixin_mod', odoo_version: $v}) "
-                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                v=REDECLARE_MIXIN_VERSION,
-            )
-            session.run(
-                "MERGE (ext:Model {name: 'doc.order', module: 'doc_mixin_mod', odoo_version: $v}) "
-                "SET ext.is_definition = false "
-                "MERGE (base:Model {name: 'doc.order', module: 'doc_base_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:INHERITS]->(base) "
-                "MERGE (mt:Model {name: 'mail.thread', module: 'mail_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:INHERITS]->(mt) "
-                "MERGE (extmod:Module {name: 'doc_mixin_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
-                v=REDECLARE_MIXIN_VERSION,
-            )
-
-        resolve_model = _make_ranking_tools(neo4j_driver)
-        result = resolve_model("doc.order", REDECLARE_MIXIN_VERSION)
-
-        assert "Defined in:" in result
-        first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
-        assert "doc_base_mod" in first_defined_in_line, (
-            f"Expected 'doc_base_mod' (base) as Defined-in; "
-            f"redeclare module must not win; got:\n{result}"
-        )
-        # The redeclare module must appear in Extended-by (not Defined-in)
-        assert "doc_mixin_mod" in result, (
-            f"Expected redeclare module 'doc_mixin_mod' somewhere in output; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run(
-                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
-                v=REDECLARE_MIXIN_VERSION,
-            )
+    assert "Defined in:" in result
+    first_defined_in_line = result.split("Defined in:")[1].split("\n")[0]
+    assert "doc_base_mod" in first_defined_in_line, (
+        f"Expected 'doc_base_mod' (base) as Defined-in; "
+        f"redeclare module must not win; got:\n{result}"
+    )
+    # The redeclare module must appear in Extended-by (not Defined-in)
+    assert "doc_mixin_mod" in result, (
+        f"Expected redeclare module 'doc_mixin_mod' somewhere in output; got:\n{result}"
+    )
 
 
 # --- _resolve_field 4-tier ranking tests ------
@@ -798,169 +991,59 @@ def _make_field_tools(neo4j_driver):
     return _resolve_field
 
 
-def test_resolve_field_picks_base_module_when_extensions_tie(neo4j_driver):
+def test_resolve_field_picks_base_module_when_extensions_tie(ranking_seed, neo4j_driver):
     """Base module wins when field exists in base + 3 extensions with same inbound.
 
     Tier 1 (is_ext): extensions have outgoing INHERITS to base model → is_ext=1.
     Base has is_definition=true or no outgoing INHERITS → is_ext=0 → ranks first.
+    Data seeded once by ``ranking_seed`` (slot ``field_tie``).
     """
-    FIELD_TIE_VERSION = "90.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=FIELD_TIE_VERSION)
+    resolve_field = _make_field_tools(neo4j_driver)
+    result = resolve_field("test.order", "state", ranking_seed["field_tie"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module + Model
-            session.run(
-                "MERGE (mod:Module {name: 'test_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=FIELD_TIE_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'test.order', module: 'test_mod', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'test_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=FIELD_TIE_VERSION,
-            )
-            # Field in base module
-            session.run(
-                "MERGE (f:Field {name: 'state', model: 'test.order', "
-                "module: 'test_mod', odoo_version: $v}) "
-                "SET f.ttype = 'selection'",
-                v=FIELD_TIE_VERSION,
-            )
+    assert "Declared in:" in result
+    # First declared module should be test_mod (base)
+    lines = result.split("\n")
+    declared_section = False
+    first_declared_module = None
+    for line in lines:
+        if "Declared in:" in line:
+            declared_section = True
+            continue
+        if declared_section and "test_mod" in line:
+            first_declared_module = "test_mod"
+            break
 
-            # 3 extension modules, each with same field
-            for i in range(3):
-                ext_mod = f"ext_mod_{i}"
-                session.run(
-                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
-                    "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                    mod=ext_mod, v=FIELD_TIE_VERSION,
-                )
-                session.run(
-                    "MERGE (ext:Model {name: 'test.order', module: $mod, odoo_version: $v}) "
-                    "MERGE (base:Model {name: 'test.order', module: 'test_mod', odoo_version: $v}) "
-                    "MERGE (ext)-[:INHERITS]->(base) "
-                    "MERGE (extmod:Module {name: $mod, odoo_version: $v}) "
-                    "MERGE (ext)-[:DEFINED_IN]->(extmod)",
-                    mod=ext_mod, v=FIELD_TIE_VERSION,
-                )
-                # Field redeclared in extension
-                session.run(
-                    "MERGE (f:Field {name: 'state', model: 'test.order', "
-                    "module: $mod, odoo_version: $v}) "
-                    "SET f.ttype = 'selection'",
-                    mod=ext_mod, v=FIELD_TIE_VERSION,
-                )
-
-        resolve_field = _make_field_tools(neo4j_driver)
-        result = resolve_field("test.order", "state", FIELD_TIE_VERSION)
-
-        assert "Declared in:" in result
-        # First declared module should be test_mod (base)
-        lines = result.split("\n")
-        declared_section = False
-        first_declared_module = None
-        for line in lines:
-            if "Declared in:" in line:
-                declared_section = True
-                continue
-            if declared_section and "test_mod" in line:
-                first_declared_module = "test_mod"
-                break
-
-        assert first_declared_module == "test_mod", (
-            f"Expected 'test_mod' as first Declared-in module; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=FIELD_TIE_VERSION)
+    assert first_declared_module == "test_mod", (
+        f"Expected 'test_mod' as first Declared-in module; got:\n{result}"
+    )
 
 
-def test_resolve_field_redeclare_extension_demoted(neo4j_driver):
+def test_resolve_field_redeclare_extension_demoted(ranking_seed, neo4j_driver):
     """Base with is_definition=true beats extension redeclare with is_definition=false.
 
     Base model has is_definition=true; extension redeclares same field with is_definition=false.
     Tier 1: base is_ext=0, extension is_ext=1 → base wins.
+    Data seeded once by ``ranking_seed`` (slot ``field_redef``).
     """
-    FIELD_REDEF_VERSION = "89.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=FIELD_REDEF_VERSION)
+    resolve_field = _make_field_tools(neo4j_driver)
+    result = resolve_field("test.alpha", "status", ranking_seed["field_redef"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module + Model with is_definition=true
-            session.run(
-                "MERGE (mod:Module {name: 'base_field_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=FIELD_REDEF_VERSION,
-            )
-            session.run(
-                "MERGE (m:Model {name: 'test.alpha', module: 'base_field_mod', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'base_field_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=FIELD_REDEF_VERSION,
-            )
-            # Field in base
-            session.run(
-                "MERGE (f:Field {name: 'status', model: 'test.alpha', "
-                "module: 'base_field_mod', odoo_version: $v}) "
-                "SET f.ttype = 'char', f.required = true",
-                v=FIELD_REDEF_VERSION,
-            )
+    assert "Declared in:" in result
+    lines = result.split("\n")
+    declared_section = False
+    first_declared_module = None
+    for line in lines:
+        if "Declared in:" in line:
+            declared_section = True
+            continue
+        if declared_section and "base_field_mod" in line:
+            first_declared_module = "base_field_mod"
+            break
 
-            # Extension module that redeclares the field
-            session.run(
-                "MERGE (mod:Module {name: 'ext_field_mod', odoo_version: $v}) "
-                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                v=FIELD_REDEF_VERSION,
-            )
-            session.run(
-                "MERGE (ext:Model {name: 'test.alpha', module: 'ext_field_mod', "
-                "odoo_version: $v}) "
-                "SET ext.is_definition = false "
-                "MERGE (base:Model {name: 'test.alpha', "
-                "module: 'base_field_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:INHERITS]->(base) "
-                "MERGE (extmod:Module {name: 'ext_field_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
-                v=FIELD_REDEF_VERSION,
-            )
-            # Field redeclared in extension
-            session.run(
-                "MERGE (f:Field {name: 'status', model: 'test.alpha', "
-                "module: 'ext_field_mod', odoo_version: $v}) "
-                "SET f.ttype = 'char'",
-                v=FIELD_REDEF_VERSION,
-            )
-
-        resolve_field = _make_field_tools(neo4j_driver)
-        result = resolve_field("test.alpha", "status", FIELD_REDEF_VERSION)
-
-        assert "Declared in:" in result
-        lines = result.split("\n")
-        declared_section = False
-        first_declared_module = None
-        for line in lines:
-            if "Declared in:" in line:
-                declared_section = True
-                continue
-            if declared_section and "base_field_mod" in line:
-                first_declared_module = "base_field_mod"
-                break
-
-        assert first_declared_module == "base_field_mod", (
-            f"Expected 'base_field_mod' as first Declared-in module; got:\n{result}"
-        )
-    finally:
-        with neo4j_driver.session() as session:
-            session.run(
-                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
-                v=FIELD_REDEF_VERSION,
-            )
+    assert first_declared_module == "base_field_mod", (
+        f"Expected 'base_field_mod' as first Declared-in module; got:\n{result}"
+    )
 
 
 # --- _resolve_method 4-tier ranking tests ------
@@ -976,160 +1059,48 @@ def _make_method_tools(neo4j_driver):
     return _resolve_method
 
 
-def test_resolve_method_picks_base_module_when_extensions_tie(neo4j_driver):
+def test_resolve_method_picks_base_module_when_extensions_tie(ranking_seed, neo4j_driver):
     """Base module wins when method exists in base + 3 extensions with same inbound.
 
     Tier 1 (is_ext): extensions have outgoing INHERITS to base model → is_ext=1.
     Base has is_definition=true or no outgoing INHERITS → is_ext=0 → ranks first.
+    Data seeded once by ``ranking_seed`` (slot ``method_tie``).
     """
-    METHOD_TIE_VERSION = "88.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=METHOD_TIE_VERSION)
+    resolve_method = _make_method_tools(neo4j_driver)
+    result = resolve_method("test.order", "action_confirm", ranking_seed["method_tie"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module + Model
-            session.run(
-                "MERGE (mod:Module {name: 'test_mod_m', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=METHOD_TIE_VERSION,
+    assert "Override chain" in result
+    # First method in override chain should be from test_mod_m (base)
+    lines = result.split("\n")
+    # Skip the header line "Override chain (N):", take the first actual entry
+    for line in lines[1:]:
+        if "test_mod_m" in line:
+            # This should be the first occurrence
+            assert "test_mod_m" in lines[2], (
+                f"Expected 'test_mod_m' as first in Override chain; got:\n{result}"
             )
-            session.run(
-                "MERGE (m:Model {name: 'test.order', module: 'test_mod_m', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'test_mod_m', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=METHOD_TIE_VERSION,
-            )
-            # Method in base module
-            session.run(
-                "MERGE (mth:Method {name: 'action_confirm', model: 'test.order', "
-                "module: 'test_mod_m', odoo_version: $v}) "
-                "SET mth.has_super_call = false",
-                v=METHOD_TIE_VERSION,
-            )
-
-            # 3 extension modules, each with same method
-            for i in range(3):
-                ext_mod = f"ext_mod_m_{i}"
-                session.run(
-                    "MERGE (mod:Module {name: $mod, odoo_version: $v}) "
-                    "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                    mod=ext_mod, v=METHOD_TIE_VERSION,
-                )
-                session.run(
-                    "MERGE (ext:Model {name: 'test.order', module: $mod, "
-                    "odoo_version: $v}) "
-                    "MERGE (base:Model {name: 'test.order', "
-                    "module: 'test_mod_m', odoo_version: $v}) "
-                    "MERGE (ext)-[:INHERITS]->(base) "
-                    "MERGE (extmod:Module {name: $mod, odoo_version: $v}) "
-                    "MERGE (ext)-[:DEFINED_IN]->(extmod)",
-                    mod=ext_mod, v=METHOD_TIE_VERSION,
-                )
-                # Method in extension
-                session.run(
-                    "MERGE (mth:Method {name: 'action_confirm', model: 'test.order', "
-                    "module: $mod, odoo_version: $v}) "
-                    "SET mth.has_super_call = true",
-                    mod=ext_mod, v=METHOD_TIE_VERSION,
-                )
-
-        resolve_method = _make_method_tools(neo4j_driver)
-        result = resolve_method("test.order", "action_confirm", METHOD_TIE_VERSION)
-
-        assert "Override chain" in result
-        # First method in override chain should be from test_mod_m (base)
-        lines = result.split("\n")
-        # Skip the header line "Override chain (N):", take the first actual entry
-        for line in lines[1:]:
-            if "test_mod_m" in line:
-                # This should be the first occurrence
-                assert "test_mod_m" in lines[2], (
-                    f"Expected 'test_mod_m' as first in Override chain; got:\n{result}"
-                )
-                break
-    finally:
-        with neo4j_driver.session() as session:
-            session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=METHOD_TIE_VERSION)
+            break
 
 
-def test_resolve_method_redeclare_extension_demoted(neo4j_driver):
+def test_resolve_method_redeclare_extension_demoted(ranking_seed, neo4j_driver):
     """Base with is_definition=true beats extension redeclare with is_definition=false.
 
     Base model has is_definition=true; extension redeclares same method with is_definition=false.
     Tier 1: base is_ext=0, extension is_ext=1 → base wins in Override chain.
+    Data seeded once by ``ranking_seed`` (slot ``method_redef``).
     """
-    METHOD_REDEF_VERSION = "87.0"
-    with neo4j_driver.session() as session:
-        session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=METHOD_REDEF_VERSION)
+    resolve_method = _make_method_tools(neo4j_driver)
+    result = resolve_method("test.beta", "do_something", ranking_seed["method_redef"])
 
-    try:
-        with neo4j_driver.session() as session:
-            # Base module + Model with is_definition=true
-            session.run(
-                "MERGE (mod:Module {name: 'base_method_mod', odoo_version: $v}) "
-                "SET mod.repo = 'test_repo', mod.edition = 'community'",
-                v=METHOD_REDEF_VERSION,
+    assert "Override chain" in result
+    # First method in override chain should be from base_method_mod
+    lines = result.split("\n")
+    for line in lines[1:]:
+        if "base_method_mod" in line:
+            assert "base_method_mod" in lines[2], (
+                f"Expected 'base_method_mod' as first in Override chain; got:\n{result}"
             )
-            session.run(
-                "MERGE (m:Model {name: 'test.beta', module: 'base_method_mod', odoo_version: $v}) "
-                "SET m.is_definition = true "
-                "MERGE (mod:Module {name: 'base_method_mod', odoo_version: $v}) "
-                "MERGE (m)-[:DEFINED_IN]->(mod)",
-                v=METHOD_REDEF_VERSION,
-            )
-            # Method in base
-            session.run(
-                "MERGE (mth:Method {name: 'do_something', model: 'test.beta', "
-                "module: 'base_method_mod', odoo_version: $v}) "
-                "SET mth.has_super_call = false",
-                v=METHOD_REDEF_VERSION,
-            )
-
-            # Extension module that redeclares the method
-            session.run(
-                "MERGE (mod:Module {name: 'ext_method_mod', odoo_version: $v}) "
-                "SET mod.repo = 'ext_repo', mod.edition = 'community'",
-                v=METHOD_REDEF_VERSION,
-            )
-            session.run(
-                "MERGE (ext:Model {name: 'test.beta', module: 'ext_method_mod', "
-                "odoo_version: $v}) "
-                "SET ext.is_definition = false "
-                "MERGE (base:Model {name: 'test.beta', "
-                "module: 'base_method_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:INHERITS]->(base) "
-                "MERGE (extmod:Module {name: 'ext_method_mod', odoo_version: $v}) "
-                "MERGE (ext)-[:DEFINED_IN]->(extmod)",
-                v=METHOD_REDEF_VERSION,
-            )
-            # Method redeclared in extension
-            session.run(
-                "MERGE (mth:Method {name: 'do_something', model: 'test.beta', "
-                "module: 'ext_method_mod', odoo_version: $v}) "
-                "SET mth.has_super_call = true",
-                v=METHOD_REDEF_VERSION,
-            )
-
-        resolve_method = _make_method_tools(neo4j_driver)
-        result = resolve_method("test.beta", "do_something", METHOD_REDEF_VERSION)
-
-        assert "Override chain" in result
-        # First method in override chain should be from base_method_mod
-        lines = result.split("\n")
-        for line in lines[1:]:
-            if "base_method_mod" in line:
-                assert "base_method_mod" in lines[2], (
-                    f"Expected 'base_method_mod' as first in Override chain; got:\n{result}"
-                )
-                break
-    finally:
-        with neo4j_driver.session() as session:
-            session.run(
-                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
-                v=METHOD_REDEF_VERSION,
-            )
+            break
 # ---------------------------------------------------------------------------
 # Regression tests for PR #26 (fix/resolve-output-polish)
 # Covers: DISTINCT dedup on parent names, tree-format ├─/└─ connectors
@@ -1722,40 +1693,11 @@ def test_describe_module_no_models_skips_footer(neo4j_driver):
         _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
 
 
-# --- WG-5 T1: _edition_label unit tests (no Neo4j required) ----------------
-
-
-def test_edition_label_opl1_is_odoo_ee():
-    """OPL-1 license → 'Odoo Enterprise (EE)'."""
-    srv = _import_server_module()
-    assert srv._edition_label("custom", "OPL-1") == "Odoo Enterprise (EE)"
-
-
-def test_edition_label_lgpl3_is_community_ce():
-    """LGPL-3 license → 'Community (CE)'."""
-    srv = _import_server_module()
-    assert srv._edition_label("community", "LGPL-3") == "Community (CE)"
-
-
-def test_edition_label_oeel1_is_viindoo_ee():
-    """OEEL-1 license → 'Viindoo Enterprise (EE)'."""
-    srv = _import_server_module()
-    assert srv._edition_label("enterprise", "OEEL-1") == "Viindoo Enterprise (EE)"
-
-
-def test_edition_label_fallback_to_enum_when_no_license():
-    """No license → fall back to edition enum mapping."""
-    srv = _import_server_module()
-    assert srv._edition_label("community", None) == "Community (CE)"
-    assert srv._edition_label("enterprise", None) == "Odoo Enterprise (EE)"
-    assert srv._edition_label("viindoo", None) == "Viindoo Enterprise (EE)"
-    assert srv._edition_label("oca", None) == "OCA / Community-compatible"
-
-
-def test_edition_label_none_edition_defaults_to_ce():
-    """None edition + None license → 'Community (CE)'."""
-    srv = _import_server_module()
-    assert srv._edition_label(None, None) == "Community (CE)"
+# --- WG-5 T1: _edition_label unit tests ------------------------------------
+# The 5 pure ``_edition_label`` mapping tests (no Neo4j) were demoted out of
+# this neo4j-marked module to tests/test_mcp_server_unit.py (WS-C / DD2): a
+# module-level pytestmark cannot be subtracted per-test, so genuinely-pure
+# tests live in an unmarked sibling module and run in the unit tier.
 
 
 W6_EDITION_LABEL_VERSION = "88.0"
@@ -2845,55 +2787,9 @@ def test_next_step_footer_absent(grammar_seed):
 
 
 # ===========================================================================
-# Language policy test — static template strings inside server.py functions
-# must not contain Vietnamese diacritics (ADR-0023 §2). Docstrings exempt.
+# Language policy test (ADR-0023 §2) — the pure AST-walk of src/mcp/server.py
+# (no Neo4j) was demoted to tests/test_mcp_server_unit.py (WS-C / DD2).
 # ===========================================================================
-
-
-def test_language_policy_static_templates():
-    """Walk server.py via ast; every string Constant inside a function body
-    (excluding the first stmt when it's a docstring) must not match
-    ``[À-ỹ]`` — that range covers Vietnamese diacritics + Latin Extended."""
-    import ast
-    import re
-    from pathlib import Path
-
-    src_path = Path(__file__).parent.parent / "src" / "mcp" / "server.py"
-    tree = ast.parse(src_path.read_text(encoding="utf-8"))
-    vi_re = re.compile(r"[À-ỹ]")
-
-    violations: list[tuple[str, int, str]] = []
-
-    def _walk_function(node, fname: str) -> None:
-        body = list(node.body)
-        # Drop a leading docstring (Expr → Constant str) — per ADR-0023 §2
-        # docstrings exempt because they hold EN+VI TRIGGER patterns.
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            body = body[1:]
-        for stmt in body:
-            for child in ast.walk(stmt):
-                if (
-                    isinstance(child, ast.Constant)
-                    and isinstance(child.value, str)
-                    and vi_re.search(child.value)
-                ):
-                    preview = child.value.replace("\n", " ")[:60]
-                    violations.append((fname, child.lineno, preview))
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            _walk_function(node, node.name)
-
-    assert not violations, (
-        "ADR-0023 §2 language policy violations (Vietnamese diacritics in "
-        "static template strings):\n"
-        + "\n".join(f"  {fn}:{lineno}: {prev!r}" for fn, lineno, prev in violations)
-    )
 
 
 # ===========================================================================
@@ -3180,17 +3076,17 @@ def test_list_available_versions_returns_tree(seeded_neo4j):
 
 
 def test_mcp_resources_registered(seeded_neo4j):
-    """Smoke test: MCP resources are registered on server.mcp instance (WI-F3)."""
+    """The 7 documented odoo:// resource URI templates are registered (WI-F3, ADR-0030).
+
+    Asserts the public, behaviour-level contract — the exact set of registered
+    resource-template URIs an MCP client can list — via FastMCP's supported
+    ``get_resource_templates()`` API.  We deliberately do NOT poke the internal
+    ``_resource_manager._templates`` attribute: the business invariant is which
+    URI templates the server exposes, not how FastMCP stores them.
+    """
     srv = _import_server_module()
-    # Check that _resource_manager has templates for the 7 resources
-    assert hasattr(srv.mcp, "_resource_manager"), "FastMCP should have _resource_manager"
-    templates = srv.mcp._resource_manager._templates
-    assert len(templates) == 7, (
-        f"Expected 7 resource templates, got {len(templates)}: "
-        f"{list(templates.keys())}"
-    )
-    # Verify each URI pattern is present
-    expected_uris = [
+    templates = asyncio.run(srv.mcp.get_resource_templates())
+    expected_uris = {
         "odoo://{version}/model/{name}",
         "odoo://{version}/field/{model}/{field}",
         "odoo://{version}/method/{model}/{method}",
@@ -3198,9 +3094,13 @@ def test_mcp_resources_registered(seeded_neo4j):
         "odoo://{version}/view/{xmlid}",
         "odoo://{version}/pattern/{pattern_id}",
         "odoo://{version}/stylesheet/{module}/{file_path*}",
-    ]
-    for uri in expected_uris:
-        assert uri in templates, f"Expected resource URI {uri!r} not registered"
+    }
+    registered_uris = set(templates.keys())
+    assert registered_uris == expected_uris, (
+        "Registered resource URI templates do not match the documented set.\n"
+        f"  missing: {expected_uris - registered_uris}\n"
+        f"  unexpected: {registered_uris - expected_uris}"
+    )
 
 
 # ===========================================================================
@@ -3463,232 +3363,183 @@ def _cleanup_b1(neo4j_driver):
         )
 
 
-def test_b1_resolve_field_renders_comodel(neo4j_driver):
+@pytest.fixture(scope="module")
+def b1_seed(neo4j_driver):
+    """Seed ALL B1 provenance/intent data once (WS-C / DD1 §1b Cluster G).
+
+    Each B1 test is a pure READ of one rendered line and asserts only its own
+    property; no test asserts the ABSENCE of another's data, so a single seed
+    is safe.  Consolidated entities (all at ``_B1_VERSION``):
+      * module ``sale`` (repo=odoo_community, path=/opt/odoo/addons/sale,
+        is_definition) → describe_module Repo/Path + ADR-0037 relativization
+      * model ``sale.order`` with fields ``partner_id``(many2one→res.partner),
+        ``amount_total``(monetary), ``name``(char) → resolve_field Comodel +
+        list_fields comodel/ttype
+      * method ``sale.order.action_confirm`` (signature/convention) → resolve_method
+      * view ``sale.b1_view_form`` (name) → resolve_view String
+      * module ``web_sale`` OWL component ``SaleKanban`` (template) → list_owl
+      * module ``sale`` JSPatch with non-empty file_path → list_js_patches
+
+    Seed once at module setup, safety-wipe once at teardown (before+after at the
+    fixture boundary — never before-only, M3).
+    """
+    from src.indexer.models import ViewInfo, ViewParseResult
+
+    _cleanup_b1(neo4j_driver)  # before: defensive clean
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    # sale module + sale.order model: repo/path for describe_module +
+    # all fields + the action_confirm method.
+    mod = ModuleInfo(
+        "sale", _B1_VERSION, "odoo_community", "/opt/odoo/addons/sale", [], "17.0",
+    )
+    model = ModelInfo(
+        name="sale.order", module="sale", odoo_version=_B1_VERSION,
+        fields=[
+            FieldInfo("partner_id", "many2one", comodel_name="res.partner"),
+            FieldInfo("amount_total", "monetary"),
+            FieldInfo("name", "char"),
+        ],
+        methods=[MethodInfo(
+            "action_confirm", has_super_call=True,
+            convention_kind="action",
+            signature="self",
+        )],
+    )
+    model.had_explicit_name = True
+    writer.write_results([ParseResult(module=mod, models=[model])])
+
+    base_mod = ModuleInfo("sale", _B1_VERSION, "odoo_community",
+                          "/opt/odoo/addons/sale", [], "17.0")
+    base_view = ViewInfo(
+        xmlid="sale.b1_view_form",
+        name="Sale Order Form",
+        model="sale.order",
+        module="sale",
+        odoo_version=_B1_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+    )
+    writer.write_view_results([ViewParseResult(module=base_mod, views=[base_view])])
+    writer.close()
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (m:Model {name:'sale.order', module:'sale', odoo_version:$v})"
+            " SET m.is_definition = true",
+            v=_B1_VERSION,
+        )
+        # JSPatch with a non-empty file_path (writer/seed helper sets '').
+        session.run(
+            "MATCH (mod:Module {name: 'sale', odoo_version: $v}) "
+            "MERGE (j:JSPatch {target: 'FormController', patch_name: 'onLoad',"
+            "                  module: 'sale', odoo_version: $v}) "
+            "SET j.era = 'patch',"
+            "    j.file_path = 'sale/static/src/js/form_controller.js' "
+            "MERGE (j)-[:DEFINED_IN]->(mod)",
+            v=_B1_VERSION,
+        )
+
+    # OWL component in a distinct module (web_sale) so the sale-module reads
+    # are not perturbed.
+    seed_owl_components(
+        neo4j_driver, module="web_sale",
+        odoo_version=_B1_VERSION,
+        components=[
+            {"name": "SaleKanban", "bound_model": "sale.order",
+             "template": "sale_management.SaleKanban"},
+        ],
+    )
+
+    yield _B1_VERSION
+
+    _cleanup_b1(neo4j_driver)  # after: honour before+after invariant (M3)
+
+
+def test_b1_resolve_field_renders_comodel(b1_seed):
     """B1: resolve_field renders 'Comodel:' line for relational fields."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
-        writer.setup_indexes()
-        mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
-        model = ModelInfo(
-            name="sale.order", module="sale", odoo_version=_B1_VERSION,
-            fields=[FieldInfo("partner_id", "many2one", comodel_name="res.partner")],
-        )
-        writer.write_results([ParseResult(module=mod, models=[model])])
-        writer.close()
-
-        srv = _import_server_module()
-        out = srv._resolve_field("sale.order", "partner_id", _B1_VERSION)
-        assert "Comodel:" in out, f"B1: expected 'Comodel:' line in resolve_field output.\n{out}"
-        assert "res.partner" in out, f"B1: expected comodel name in output.\n{out}"
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._resolve_field("sale.order", "partner_id", b1_seed)
+    assert "Comodel:" in out, f"B1: expected 'Comodel:' line in resolve_field output.\n{out}"
+    assert "res.partner" in out, f"B1: expected comodel name in output.\n{out}"
 
 
-def test_b1_resolve_method_renders_signature_and_convention(neo4j_driver):
+def test_b1_resolve_method_renders_signature_and_convention(b1_seed):
     """B1: resolve_method renders 'Signature:' and 'Convention:' from Method node."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
-        writer.setup_indexes()
-        mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
-        model = ModelInfo(
-            name="sale.order", module="sale", odoo_version=_B1_VERSION,
-            fields=[],
-            methods=[MethodInfo(
-                "action_confirm", has_super_call=True,
-                convention_kind="action",
-                signature="self",
-            )],
-        )
-        writer.write_results([ParseResult(module=mod, models=[model])])
-        writer.close()
-
-        srv = _import_server_module()
-        out = srv._resolve_method("sale.order", "action_confirm", _B1_VERSION)
-        assert "Signature:" in out, (
-            f"B1: expected 'Signature:' line in resolve_method output.\n{out}"
-        )
-        assert "Convention:" in out, (
-            f"B1: expected 'Convention:' line in resolve_method output.\n{out}"
-        )
-        assert "action" in out, f"B1: expected convention_kind='action' in output.\n{out}"
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._resolve_method("sale.order", "action_confirm", b1_seed)
+    assert "Signature:" in out, (
+        f"B1: expected 'Signature:' line in resolve_method output.\n{out}"
+    )
+    assert "Convention:" in out, (
+        f"B1: expected 'Convention:' line in resolve_method output.\n{out}"
+    )
+    assert "action" in out, f"B1: expected convention_kind='action' in output.\n{out}"
 
 
-def test_b1_resolve_view_renders_string(neo4j_driver):
+def test_b1_resolve_view_renders_string(b1_seed):
     """B1: resolve_view renders 'String:' line when View.name is non-empty."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        from src.indexer.models import ViewInfo, ViewParseResult
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
-        writer.setup_indexes()
-        base_mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
-        base_view = ViewInfo(
-            xmlid="sale.b1_view_form",
-            name="Sale Order Form",
-            model="sale.order",
-            module="sale",
-            odoo_version=_B1_VERSION,
-            view_type="form",
-            mode="primary",
-            inherit_xmlid=None,
-        )
-        writer.write_view_results([ViewParseResult(module=base_mod, views=[base_view])])
-        writer.close()
-
-        srv = _import_server_module()
-        out = srv._resolve_view("sale.b1_view_form", _B1_VERSION)
-        assert "String:" in out, (
-            f"B1: expected 'String:' line in resolve_view output.\n{out}"
-        )
-        assert "Sale Order Form" in out, (
-            f"B1: expected view name in output.\n{out}"
-        )
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._resolve_view("sale.b1_view_form", b1_seed)
+    assert "String:" in out, (
+        f"B1: expected 'String:' line in resolve_view output.\n{out}"
+    )
+    assert "Sale Order Form" in out, (
+        f"B1: expected view name in output.\n{out}"
+    )
 
 
-def test_b1_describe_module_renders_repo_and_path(neo4j_driver):
+def test_b1_describe_module_renders_repo_and_path(b1_seed):
     """B1: describe_module renders 'Repo:' and 'Path:' lines — #1 agent navigation fix."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
-        writer.setup_indexes()
-        mod = ModuleInfo(
-            "sale", _B1_VERSION, "odoo_community", "/opt/odoo/addons/sale", [], "17.0",
-        )
-        model = ModelInfo(
-            name="sale.order", module="sale", odoo_version=_B1_VERSION,
-            fields=[FieldInfo("name", "char")],
-        )
-        model.had_explicit_name = True
-        writer.write_results([ParseResult(module=mod, models=[model])])
-        with neo4j_driver.session() as session:
-            session.run(
-                "MATCH (m:Model {name:'sale.order', module:'sale', odoo_version:$v})"
-                " SET m.is_definition = true",
-                v=_B1_VERSION,
-            )
-        writer.close()
-
-        srv = _import_server_module()
-        out = srv._describe_module("sale", _B1_VERSION)
-        assert "Repo:" in out, f"B1: expected 'Repo:' line in describe_module output.\n{out}"
-        assert "odoo_community" in out, f"B1: expected repo value in output.\n{out}"
-        assert "Path:" in out, f"B1: expected 'Path:' line in describe_module output.\n{out}"
-        # ADR-0037: Path must be repo-relative — the server-absolute prefix must
-        # NOT leak to the client, but the relative tail stays for navigation.
-        assert "/opt/odoo/addons/sale" not in out, (
-            f"B1: absolute server path must not leak to client.\n{out}"
-        )
-        assert "addons/sale" in out, (
-            f"B1: expected repo-relative path tail in output.\n{out}"
-        )
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._describe_module("sale", b1_seed)
+    assert "Repo:" in out, f"B1: expected 'Repo:' line in describe_module output.\n{out}"
+    assert "odoo_community" in out, f"B1: expected repo value in output.\n{out}"
+    assert "Path:" in out, f"B1: expected 'Path:' line in describe_module output.\n{out}"
+    # ADR-0037: Path must be repo-relative — the server-absolute prefix must
+    # NOT leak to the client, but the relative tail stays for navigation.
+    assert "/opt/odoo/addons/sale" not in out, (
+        f"B1: absolute server path must not leak to client.\n{out}"
+    )
+    assert "addons/sale" in out, (
+        f"B1: expected repo-relative path tail in output.\n{out}"
+    )
 
 
-def test_b1_list_fields_renders_comodel(neo4j_driver):
+def test_b1_list_fields_renders_comodel(b1_seed):
     """B1: list_fields row formatter includes comodel for relational fields."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
-        writer.setup_indexes()
-        mod = ModuleInfo("sale", _B1_VERSION, "odoo_test", "/tmp", [], "")
-        model = ModelInfo(
-            name="sale.order", module="sale", odoo_version=_B1_VERSION,
-            fields=[
-                FieldInfo("partner_id", "many2one", comodel_name="res.partner"),
-                FieldInfo("amount_total", "monetary"),
-            ],
-        )
-        writer.write_results([ParseResult(module=mod, models=[model])])
-        writer.close()
-
-        srv = _import_server_module()
-        out = srv._list_fields("sale.order", _B1_VERSION)
-        # many2one field with comodel should include "-> res.partner" in the row
-        assert "-> res.partner" in out, (
-            f"B1: expected '-> res.partner' comodel in list_fields row.\n{out}"
-        )
-        # plain monetary field has no comodel — just ttype
-        assert "amount_total : monetary" in out
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._list_fields("sale.order", b1_seed)
+    # many2one field with comodel should include "-> res.partner" in the row
+    assert "-> res.partner" in out, (
+        f"B1: expected '-> res.partner' comodel in list_fields row.\n{out}"
+    )
+    # plain monetary field has no comodel — just ttype
+    assert "amount_total : monetary" in out
 
 
-def test_b1_list_owl_components_renders_template(neo4j_driver):
+def test_b1_list_owl_components_renders_template(b1_seed):
     """B1: list_owl_components includes template path per row when set."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        seed_owl_components(
-            neo4j_driver, module="web_sale",
-            odoo_version=_B1_VERSION,
-            components=[
-                {"name": "SaleKanban", "bound_model": "sale.order",
-                 "template": "sale_management.SaleKanban"},
-            ],
-        )
-        srv = _import_server_module()
-        out = srv._list_owl_components("web_sale", _B1_VERSION)
-        assert "template=sale_management.SaleKanban" in out, (
-            f"B1: expected 'template=...' in list_owl_components row.\n{out}"
-        )
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._list_owl_components("web_sale", b1_seed)
+    assert "template=sale_management.SaleKanban" in out, (
+        f"B1: expected 'template=...' in list_owl_components row.\n{out}"
+    )
 
 
-def test_b1_list_js_patches_renders_file_path(neo4j_driver):
+def test_b1_list_js_patches_renders_file_path(b1_seed):
     """B1: list_js_patches includes file_path when non-empty."""
-    _cleanup_b1(neo4j_driver)
-    try:
-        # Use direct Cypher to set a non-empty file_path (seed helper sets '').
-        with neo4j_driver.session() as session:
-            session.run(
-                "MERGE (mod:Module {name: 'sale', odoo_version: $v}) "
-                "SET mod.repo = 'odoo_test', mod.edition = 'community'",
-                v=_B1_VERSION,
-            )
-            session.run(
-                "MERGE (j:JSPatch {target: 'FormController', patch_name: 'onLoad',"
-                "                  module: 'sale', odoo_version: $v}) "
-                "SET j.era = 'patch',"
-                "    j.file_path = 'sale/static/src/js/form_controller.js' "
-                "WITH j "
-                "MATCH (mod:Module {name: 'sale', odoo_version: $v}) "
-                "MERGE (j)-[:DEFINED_IN]->(mod)",
-                v=_B1_VERSION,
-            )
-
-        srv = _import_server_module()
-        out = srv._list_js_patches(_B1_VERSION, module="sale")
-        assert "sale/static/src/js/form_controller.js" in out, (
-            f"B1: expected file_path in list_js_patches row.\n{out}"
-        )
-    finally:
-        _cleanup_b1(neo4j_driver)
+    srv = _import_server_module()
+    out = srv._list_js_patches(b1_seed, module="sale")
+    assert "sale/static/src/js/form_controller.js" in out, (
+        f"B1: expected file_path in list_js_patches row.\n{out}"
+    )
 
 
 # ---------------------------------------------------------------------------

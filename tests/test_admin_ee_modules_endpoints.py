@@ -3,14 +3,15 @@
 """Integration tests for /api/admin/ee-modules/* CRUD endpoints (WI-7, ADR-0042).
 
 Covers:
-1. test_list_active_modules_count_16          GET / returns 16 active entries.
+1. test_list_active_modules_matches_canonical_set GET / returns the canonical EE-module set.
 2. test_get_single_by_id                      GET /{id} returns correct row.
-3. test_create_new_module_unique_violation    POST duplicate name -> 409.
-4. test_create_new_module_success             POST new name -> 200 + id field.
-5. test_patch_module_invalidates_cache        PATCH -> invalidate_ee_modules_cache called.
-6. test_soft_delete_excludes_from_list_default DELETE -> excluded from GET / by default.
-7. test_soft_delete_included_when_query_param_true GET /?include_deprecated=true shows it.
-8. test_non_admin_403                         require_admin dependency blocks non-admin.
+3. test_get_nonexistent_returns_404           GET /{id} for unknown id -> 404.
+4. test_create_new_module_unique_violation    POST duplicate name -> 409.
+5. test_create_new_module_success             POST new name -> 200 + id field.
+6. test_patch_module_invalidates_get_ee_modules_cache PATCH -> get_ee_modules() reflects the change.
+7. test_soft_delete_excludes_from_list_default DELETE -> excluded from GET / by default.
+8. test_soft_delete_included_when_query_param_true GET /?include_deprecated=true shows it.
+9. test_non_admin_403                         require_admin dependency blocks non-admin.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 WEBUI_AUTH_DISABLED is managed by conftest autouse fixture; tests run with the
@@ -96,9 +97,19 @@ def _delete_ee_module_by_name(pg_conn, name: str) -> None:
 
 class TestListActiveModules:
     @pytest.mark.asyncio
-    async def test_list_active_modules_count_16(self, migrated_pg):
-        """GET /api/admin/ee-modules returns exactly 16 active rows after m13_011."""
+    async def test_list_active_modules_matches_canonical_set(self, migrated_pg):
+        """GET /api/admin/ee-modules returns the canonical EE-module set.
+
+        The m13_011 seed and the static fallback share one SSOT
+        (_FALLBACK_EE_MODULES). Assert the endpoint returns exactly that set of
+        module names — not a hardcoded count. This catches a seed that has the
+        right cardinality but the wrong modules (dropped/renamed/duplicated
+        row), which a `len == 16` mirror of the source constant cannot.
+        """
+        from src.data.ee_modules import _FALLBACK_EE_MODULES
         from src.web_ui.app import create_app
+
+        expected_names = {m["name"] for m in _FALLBACK_EE_MODULES}
 
         app = create_app()
         async with _async_client(app) as client:
@@ -107,8 +118,11 @@ class TestListActiveModules:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert len(data) == 16, (
-            f"Expected 16 active EE modules, got {len(data)}"
+        returned_names = {row["name"] for row in data}
+        assert returned_names == expected_names, (
+            f"active EE-module set drifted from SSOT: "
+            f"missing={expected_names - returned_names}, "
+            f"unexpected={returned_names - expected_names}"
         )
 
 
@@ -236,38 +250,59 @@ class TestCreateNewModuleSuccess:
 
 class TestPatchModuleInvalidatesCache:
     @pytest.mark.asyncio
-    async def test_patch_module_invalidates_cache(self, migrated_pg):
-        """PATCH a module triggers invalidate_ee_modules_cache()."""
+    async def test_patch_module_invalidates_get_ee_modules_cache(self, migrated_pg):
+        """After PATCH, the cached get_ee_modules() consumer sees the new value.
+
+        Business contract: get_ee_modules() caches rows 60s in-process and is the
+        path MCP's check_module_exists reads. An admin PATCH must invalidate that
+        cache so the next get_ee_modules() returns fresh DB rows, not the stale
+        snapshot — otherwise an edit is invisible to MCP for up to 60s. This
+        drives the real PATCH route and asserts the observable effect on the
+        cached consumer (not that an internal helper was called). If the route's
+        post-write invalidation regresses, get_ee_modules() serves the primed
+        stale rows and this fails.
+        """
+        from src.data.ee_modules import get_ee_modules
         from src.web_ui.app import create_app
 
         app = create_app()
+        new_description = "patched by WI-7 test"
 
-        # Find the id of "knowledge" from the list
-        async with _async_client(app) as client:
-            list_resp = await client.get("/api/admin/ee-modules")
-        entries = {e["name"]: e["id"] for e in list_resp.json()}
-        assert "knowledge" in entries, "Expected 'knowledge' in seeded EE modules"
-        knowledge_id = entries["knowledge"]
+        try:
+            async with _async_client(app) as client:
+                list_resp = await client.get("/api/admin/ee-modules")
+            entries = {e["name"]: e for e in list_resp.json()}
+            assert "knowledge" in entries, "Expected 'knowledge' in seeded EE modules"
+            knowledge_id = entries["knowledge"]["id"]
 
-        with patch(
-            "src.web_ui.routes.admin_ee_modules.invalidate_ee_modules_cache"
-        ) as mock_invalidate:
+            # Prime the in-process cache used by MCP's consumer path.
+            primed = {m["name"]: m for m in get_ee_modules(migrated_pg)}
+            assert primed["knowledge"].get("description") != new_description
+
             async with _async_client(app) as client:
                 resp = await client.patch(
                     f"/api/admin/ee-modules/{knowledge_id}",
-                    json={"description": "patched by WI-7 test", "reason": "test PATCH"},
+                    json={"description": new_description, "reason": "test PATCH"},
                 )
             assert resp.status_code == 200, (
                 f"Expected 200 on PATCH, got {resp.status_code}: {resp.text}"
             )
-            mock_invalidate.assert_called_once()
 
-        # Undo the patch to keep DB clean for other tests
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "UPDATE ee_modules SET description = NULL WHERE name = 'knowledge'"
+            # Cached read must reflect the patch — proving the route invalidated
+            # the cache rather than leaving get_ee_modules() to serve stale rows.
+            after = {m["name"]: m for m in get_ee_modules(migrated_pg)}
+            assert after["knowledge"]["description"] == new_description, (
+                "get_ee_modules() served a stale cached value — PATCH did not "
+                "invalidate the cache"
             )
-        invalidate_ee_modules_cache()
+        finally:
+            # Undo the patch to keep DB clean for other tests
+            with migrated_pg.cursor() as cur:
+                cur.execute(
+                    "UPDATE ee_modules SET description = NULL WHERE name = 'knowledge'"
+                )
+            migrated_pg.commit()
+            invalidate_ee_modules_cache()
 
 
 # ---------------------------------------------------------------------------

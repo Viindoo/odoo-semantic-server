@@ -13,18 +13,61 @@ pytestmark = pytest.mark.postgres
 
 
 def test_migrate_creates_profiles_table(clean_pg):
+    """profiles must expose its full column contract with correct type + nullability.
+
+    RW-19: previously this snapshotted the exact declaration ORDER
+    (`assert cols == [...]`), an implementation detail — a harmless column
+    reorder (e.g. a future migration re-emitting the table) would break the test
+    without any behavioral regression. The business contract is *which* columns
+    exist and *what shape* they have (type + NOT NULL + UNIQUE), not their
+    ordinal position. We assert that contract directly, order-independently.
+    """
     run_migrations(clean_pg)
     with clean_pg.cursor() as cur:
         cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'profiles' ORDER BY ordinal_position
+            SELECT column_name, data_type, is_nullable
+              FROM information_schema.columns
+             WHERE table_name = 'profiles'
         """)
-        cols = [r[0] for r in cur.fetchall()]
-    # M13: tenant_id added by m13_002_tenants_and_fks.sql (additive, nullable FK)
-    assert cols == [
+        meta = {r[0]: {"type": r[1], "nullable": r[2]} for r in cur.fetchall()}
+
+    # Contract 1: exactly these columns exist (no missing, no unexpected).
+    # tenant_id added by m13_002_tenants_and_fks.sql (additive, nullable FK);
+    # parent_profile_id by the profile-hierarchy migration (ADR-0016, nullable FK).
+    expected_columns = {
         "id", "name", "odoo_version", "description", "created_at",
         "parent_profile_id", "tenant_id",
-    ]
+    }
+    assert set(meta) == expected_columns, (
+        f"profiles column set mismatch: "
+        f"missing={sorted(expected_columns - set(meta))}, "
+        f"unexpected={sorted(set(meta) - expected_columns)}"
+    )
+
+    # Contract 2: type + nullability per column (the real schema invariants).
+    assert meta["id"]["type"] == "integer" and meta["id"]["nullable"] == "NO", meta["id"]
+    assert meta["name"]["type"] == "text" and meta["name"]["nullable"] == "NO", meta["name"]
+    assert meta["odoo_version"]["type"] == "text", meta["odoo_version"]
+    assert meta["odoo_version"]["nullable"] == "NO", meta["odoo_version"]
+    assert meta["description"]["type"] == "text", meta["description"]
+    assert meta["description"]["nullable"] == "YES", meta["description"]
+    assert meta["created_at"]["type"].startswith("timestamp"), meta["created_at"]
+    # Additive FK columns are nullable by design.
+    assert meta["parent_profile_id"]["nullable"] == "YES", meta["parent_profile_id"]
+    assert meta["tenant_id"]["nullable"] == "YES", meta["tenant_id"]
+
+    # Contract 3: name carries a UNIQUE constraint (business identity of a profile).
+    with clean_pg.cursor() as cur:
+        cur.execute("""
+            SELECT 1
+              FROM information_schema.table_constraints tc
+              JOIN information_schema.constraint_column_usage ccu
+                ON tc.constraint_name = ccu.constraint_name
+             WHERE tc.table_name = 'profiles'
+               AND tc.constraint_type = 'UNIQUE'
+               AND ccu.column_name = 'name'
+        """)
+        assert cur.fetchone() is not None, "profiles.name must carry a UNIQUE constraint"
 
 
 def test_migrate_creates_repos_table(clean_pg):
@@ -66,10 +109,9 @@ def test_migrate_creates_embeddings_table(clean_pg):
     assert "vec" in cols
 
 
-def test_migrate_embeddings_idempotent(clean_pg):
-    """Running migrate twice must not fail (embeddings table included)."""
-    run_migrations(clean_pg)
-    run_migrations(clean_pg)
+# NOTE: the former `test_migrate_embeddings_idempotent` (pure double-run no-raise)
+# was removed — fully covered by the canonical `test_migrate_is_idempotent` above,
+# which runs the full migration stack (incl. embeddings) twice.
 
 
 def test_migrate_embeddings_unique_index(clean_pg):
@@ -558,25 +600,15 @@ def test_m9_007_totp_secrets_fk_cascade(clean_pg):
     assert referenced_table == "webui_users"
 
 
-def test_m9_all_new_tables_present(clean_pg):
-    """m9: all 5 new M9 tables must exist after migrate."""
-    run_migrations(clean_pg)
-    expected_tables = {
-        "webui_users",
-        "admin_audit_log",
-        "login_attempts",
-        "active_sessions",
-        "email_verifications",
-        "totp_secrets",
-    }
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT table_name FROM information_schema.tables
-             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-        """)
-        found = {row[0] for row in cur.fetchall()}
-    missing = expected_tables - found
-    assert not missing, f"M9 tables missing after migrate: {sorted(missing)}"
+# NOTE: the former `test_m9_all_new_tables_present` (table-existence umbrella for
+# the 6 M9 tables) was removed — each table's existence is already enforced by its
+# individual column test (table missing → `expected - cols` fails):
+#   webui_users → test_m9_001_oauth_columns_present
+#   admin_audit_log → test_m9_003_admin_audit_log
+#   login_attempts → test_m9_004_login_attempts
+#   active_sessions → test_m9_005_active_sessions
+#   email_verifications → test_m9_006_email_verifications
+#   totp_secrets → test_m9_007_totp_secrets
 
 
 def test_migrate_fresh_db_creates_all_tables(clean_pg):
@@ -903,7 +935,6 @@ def test_m13_deploy_key_unique_per_tenant(clean_pg):
         assert cur.fetchone()[0] == 2, "multiple access_key rows per tenant must be allowed"
 
 
-def test_m13_migration_idempotent(clean_pg):
-    """m13_002: running migrate twice must not fail (full idempotency check)."""
-    run_migrations(clean_pg)
-    run_migrations(clean_pg)
+# NOTE: the former `test_m13_migration_idempotent` (pure double-run no-raise) was
+# removed — fully covered by the canonical `test_migrate_is_idempotent` above, which
+# runs the full migration stack (incl. all m13_* migrations) twice.

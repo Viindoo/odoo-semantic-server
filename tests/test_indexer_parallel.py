@@ -11,7 +11,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-pytestmark = [pytest.mark.postgres, pytest.mark.neo4j]
+# WS-D / DD2 demote: every test in this module mocks all Neo4j + Postgres I/O
+# (``mock_pg_conn`` is a MagicMock, ``mock_writer`` is a MagicMock,
+# ``src.indexer.pipeline._neo4j_creds`` is patched).  No live service is touched,
+# so the previous module-level ``[pytest.mark.postgres, pytest.mark.neo4j]`` was
+# pure file-level contamination — dropped so these orchestration-logic tests run
+# in the fast unit tier (``-m 'not neo4j and not postgres'``).
 
 
 # ---------------------------------------------------------------------------

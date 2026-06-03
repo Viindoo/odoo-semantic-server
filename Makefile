@@ -6,7 +6,8 @@ PYTEST  := $(VENV)/bin/pytest
 COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
-.PHONY: help install test test-unit test-integration test-browser test-all \
+.PHONY: help install test test-unit test-integration test-browser test-http test-nightly \
+        test-neo4j-backup test-all \
         neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell \
         recreate-db check-systemd-overrides
 
@@ -16,7 +17,10 @@ help:
 	@echo "  test              Chạy unit tests (không cần Docker)"
 	@echo "  test-integration  Chạy integration tests (cần Docker)"
 	@echo "  test-browser      Chạy browser E2E tests (cần Docker + PostgreSQL)"
-	@echo "  test-all          Chạy toàn bộ tests"
+	@echo "  test-http         Chạy FastAPI httpx in-process tests (-m http)"
+	@echo "  test-nightly      Chạy heavy E2E + concurrency tests (-m nightly)"
+	@echo "  test-neo4j-backup Chạy whole-graph backup/restore roundtrip riêng (-m neo4j_backup)"
+	@echo "  test-all          Chạy toàn bộ tests (gồm cả neo4j-backup, chạy LAST)"
 	@echo "  neo4j-up          Start Neo4j container"
 	@echo "  neo4j-down        Stop Neo4j container"
 	@echo "  neo4j-logs        Xem log Neo4j"
@@ -50,8 +54,11 @@ test-unit:
 # testcontainers tự spin up Neo4j nếu Docker có sẵn.
 # Nếu muốn dùng Neo4j đang chạy sẵn thay vì testcontainers:
 #   make neo4j-up && make _test-neo4j && make neo4j-down
+# Excludes neo4j_backup: those tests DETACH DELETE the whole graph and would
+# destroy seed-once data co-resident in the shared test Neo4j. Run them
+# separately/last via `make test-neo4j-backup`.
 test-integration:
-	$(PYTEST) tests/ -v -m "(neo4j or postgres) and not browser" --tb=short -rs
+	$(PYTEST) tests/ -v -m "(neo4j or postgres) and not browser and not neo4j_backup" --tb=short -rs
 
 test-browser:
 	@$(COMPOSE) up -d postgres > /dev/null 2>&1
@@ -63,7 +70,23 @@ test-browser:
 	$(VENV)/bin/playwright install chromium
 	$(PYTEST) tests/browser/ -v -m "browser and postgres" --tb=short
 
-test-all: test-unit test-integration
+# httpx in-process FastAPI tests — no browser, no live server.
+test-http:
+	$(PYTEST) tests/ -v -m "http" --tb=short -rs
+
+# Heavy E2E + concurrency tests — NOT part of the default `test` target.
+test-nightly:
+	$(PYTEST) tests/ -v -m "nightly" --tb=short -rs
+
+# Whole-graph backup/restore roundtrip — DETACH DELETE the entire graph.
+# Run ISOLATED (own pytest invocation) so the wipe cannot clobber other
+# tests' seeded data. Keeps the whole-graph wipe-first assertion intact (M5).
+test-neo4j-backup:
+	$(PYTEST) tests/ -v -m "neo4j_backup" --tb=short -rs
+
+# test-neo4j-backup runs LAST and in its own invocation so its whole-graph
+# wipe is isolated from the seed-once integration tier.
+test-all: test-unit test-integration test-neo4j-backup
 
 # --- Neo4j thủ công (khi không muốn dùng testcontainers) ---
 
