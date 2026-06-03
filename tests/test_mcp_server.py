@@ -2991,7 +2991,12 @@ def test_set_active_version_persists_then_resolve_model_uses_it(seeded_neo4j):
         assert TEST_VERSION in text, (
             f"set_active_version confirmation should contain the version. Got: {text!r}"
         )
-        mock_set.assert_called_once_with(srv._get_api_key_id(), TEST_VERSION)
+        # #251: the wrapper now threads the per-session mcp_session_id as a 3rd
+        # positional. No HTTP request is bound in this test, so it resolves to
+        # the single-session sentinel ('_nosession').
+        mock_set.assert_called_once_with(
+            srv._get_api_key_id(), TEST_VERSION, srv._get_mcp_session_id()
+        )
 
     # --- Phase 2: resolve_model with odoo_version='auto' uses session state -----
     # Simulate the DB returning the stored session (as if set_active_version had
@@ -3046,7 +3051,10 @@ def test_set_active_profile_returns_confirmation(seeded_neo4j):
         result = asyncio.run(srv.set_active_profile.fn(profile_name="my-erp-prod"))
         text = result.content[0].text
         assert "my-erp-prod" in text, f"Expected profile name in confirmation: {text!r}"
-        mock_set.assert_called_once_with(srv._get_api_key_id(), "my-erp-prod")
+        # #251: 3rd positional mcp_session_id (no HTTP request → '_nosession').
+        mock_set.assert_called_once_with(
+            srv._get_api_key_id(), "my-erp-prod", srv._get_mcp_session_id()
+        )
 
 
 def test_set_active_profile_clear(seeded_neo4j):
@@ -3059,7 +3067,10 @@ def test_set_active_profile_clear(seeded_neo4j):
         result = asyncio.run(srv.set_active_profile.fn(profile_name=None))
         text = result.content[0].text
         assert "cleared" in text.lower(), f"Expected 'cleared' in response: {text!r}"
-        mock_set.assert_called_once_with(srv._get_api_key_id(), None)
+        # #251: 3rd positional mcp_session_id (no HTTP request → '_nosession').
+        mock_set.assert_called_once_with(
+            srv._get_api_key_id(), None, srv._get_mcp_session_id()
+        )
 
 
 def test_list_available_versions_returns_tree(seeded_neo4j):

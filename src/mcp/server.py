@@ -275,9 +275,10 @@ READONLY_TOOL_KWARGS = {
     }
 }
 
-# Session-mutating tools (set_active_version, set_active_profile) — write session
-# state but are idempotent and non-destructive.  readOnlyHint=False because they
-# perform a DB write (UPSERT into api_key_session_state).
+# Session-mutating tools (set_active_version, set_active_profile) — write the
+# per-(api_key, mcp_session) in-memory pin store but are idempotent and
+# non-destructive.  readOnlyHint=False because they mutate session state
+# (the in-memory pin — no DB write since #251).
 MUTATING_TOOL_KWARGS = {
     "annotations": {
         "readOnlyHint": False,
@@ -540,6 +541,39 @@ def _http_request_has_api_key() -> bool:
         return False
 
 
+def _get_mcp_session_id() -> str:
+    """Return the MCP transport session id for the current context (#251).
+
+    Peer of :func:`_get_api_key_id`. The per-(api_key, mcp_session) pin store in
+    ``src.mcp.session`` is keyed by this id so two concurrent Claude Code
+    sessions sharing one API key keep independent version/profile pins.
+
+    Resolution order:
+      1. The ``_mcp_session_id_var`` ContextVar value (set by
+         UsageLogMiddleware at call time), when it is not the sentinel.
+      2. A DIRECT read of the ``mcp-session-id`` header from the current HTTP
+         request. Unlike the #248 api-key path, this header survives intact on
+         ``scope["headers"]`` across the BaseHTTPMiddleware↔request_ctx
+         boundary, so no warm-cache recovery dance is needed — a plain header
+         read suffices when the ContextVar did not propagate.
+
+    Returns the ``_session._NO_SESSION_SENTINEL`` for stdio / no active HTTP
+    request / header-less callers (which reproduces the pre-#251 single-pin
+    semantics). Never raises.
+    """
+    value = _mcp_session_id_var.get()
+    if value != _session._NO_SESSION_SENTINEL:
+        return value
+    # ContextVar is the sentinel — try a direct per-request header read.
+    try:
+        from fastmcp.server.dependencies import get_http_request
+        from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
+        sid = get_http_request().headers.get(MCP_SESSION_ID_HEADER)
+    except Exception:
+        return _session._NO_SESSION_SENTINEL
+    return sid if sid else _session._NO_SESSION_SENTINEL
+
+
 class TenantResolutionDenied(RuntimeError):
     """Raised when the tenant of an AUTHENTICATED HTTP key cannot be resolved.
 
@@ -744,6 +778,16 @@ _api_key_id_var: ContextVar[str] = ContextVar("_api_key_id", default="default")
 # by UsageLogMiddleware from request.state.tenant_id (ADR-0034 D4.1).
 _tenant_id_var: ContextVar[int | None] = ContextVar("_tenant_id", default=None)
 
+# ContextVar storage for the MCP transport session id (#251). Populated by
+# UsageLogMiddleware from the ``mcp-session-id`` header before each tool /
+# resource call so the per-session version/profile pin (src.mcp.session) is
+# keyed by (api_key_id, mcp_session_id) — concurrent Claude Code sessions on
+# one API key no longer clobber each other's pins. Defaults to the
+# single-session sentinel for stdio / no-request / header-less callers.
+_mcp_session_id_var: ContextVar[str] = ContextVar(
+    "_mcp_session_id", default=_session._NO_SESSION_SENTINEL
+)
+
 
 # --- WI-4 fail-closed profile filter (ADR-0034 enforcement choke point) ------
 def _get_allowed_profiles() -> list[str] | None:
@@ -765,6 +809,13 @@ def _effective_allowed(profile_name: str | None) -> list[str] | None:
     - tenant, profile in union       → ``[profile_name]``
     - tenant, profile NOT in union   → ``[]``  (deny)
     """
+    # #251: inject the per-session pinned profile when the caller omits one,
+    # BEFORE the ADR-0034 narrowing below. Narrowing-only + read-time
+    # re-validation: an out-of-scope pin (scoped tenant) returns ``[]`` so the
+    # downstream ``ANY('{}')`` matches nothing (fail-closed); admin (None) with
+    # the pin narrows to ``[pin]`` as a convenience.
+    if profile_name is None:
+        profile_name = _resolve_profile(None)
     allowed = _get_allowed_profiles()
     if allowed is None:
         return [profile_name] if profile_name else None
@@ -886,6 +937,15 @@ def _scope(profile_name: str | None = None) -> dict:
     - tenant, profile_name ∉ own∪shared       → deny-all (``own=[], shared=[]``);
       a tenant cannot borrow another tenant's profile name to escalate.
     """
+    # #251: when the caller omits an explicit profile, inject the per-session
+    # pinned default (set via set_active_profile) BEFORE the ADR-0034 tenant
+    # narrowing below. The injection is NARROWING-ONLY — the existing tenant
+    # logic re-validates the pinned profile at read time: an out-of-scope pin
+    # (not in own ∪ shared, with a scoped tenant) fail-closes to deny-all, and
+    # an admin (own=None) stays unrestricted. The pin can never widen beyond
+    # own ∪ shared, nor cross tenants.
+    if profile_name is None:
+        profile_name = _resolve_profile(None)
     own, shared = _session.resolve_tenant_scope(_get_tenant_id())
     if not profile_name:
         return {"own": own, "shared": shared}
@@ -1050,7 +1110,7 @@ def _resolve_version(version_arg: str, session) -> str:
     Resolution order (delegated to session.resolve_version_v2):
       1. Explicit *version_arg* after sentinel normalization (auto/default/
          latest/version/any/"" all treated as sentinel → None).
-      2. Per-API-key session state (api_key_session_state table, 24h TTL).
+      2. Per-(api_key, mcp_session) in-memory pin (24h TTL since last set; #251).
       3. Latest indexed version via _latest_version() Neo4j query.
 
     Raises ValueError when all three tiers fail (empty index + no session
@@ -1060,7 +1120,26 @@ def _resolve_version(version_arg: str, session) -> str:
     signature is preserved.
     """
     api_key_id = _get_api_key_id()
-    return _session.resolve_version_v2(version_arg, api_key_id, session)
+    mcp_session_id = _get_mcp_session_id()
+    return _session.resolve_version_v2(version_arg, api_key_id, session, mcp_session_id)
+
+
+def _resolve_profile(profile_arg: str | None) -> str | None:
+    """Session-aware profile resolution — proposes the pinned default (#251).
+
+    Peer of :func:`_resolve_version`. Delegates to
+    ``session.resolve_profile_v2`` with the per-session pin key so a tool that
+    omits ``profile_name`` inherits the profile pinned via ``set_active_profile``
+    for THIS MCP session. The resolution performs NO authorization — the
+    returned profile is re-validated (narrowing-only, fail-closed) by the
+    ADR-0034 choke in :func:`_scope` / :func:`_effective_allowed`.
+
+    ``resolve_profile_v2`` returns ``None`` at its Tier-3 fallback and never
+    touches the ``session`` arg, so ``None`` is passed for it.
+    """
+    return _session.resolve_profile_v2(
+        profile_arg, _get_api_key_id(), None, _get_mcp_session_id()
+    )
 
 
 def _resolve_model(
@@ -6285,7 +6364,9 @@ def set_active_version(odoo_version: str) -> ToolResult:
         return ToolResult(content=[TextContent(type="text",
             text=f"Error checking indexed versions: {exc}")])
     try:
-        persisted = _session.set_active_version_db(_get_api_key_id(), normalized)
+        persisted = _session.set_active_version_db(
+            _get_api_key_id(), normalized, _get_mcp_session_id()
+        )
     except Exception as exc:
         return ToolResult(content=[TextContent(type="text",
             text=f"Error persisting session version: {exc}")])
@@ -6311,7 +6392,7 @@ def set_active_version(odoo_version: str) -> ToolResult:
         )])
     return ToolResult(content=[TextContent(type="text",
         text=(
-            f"Active version set to '{normalized}' for this API key (TTL 24h).\n"
+            f"Active version set to '{normalized}' for this session (TTL 24h).\n"
             "Pass odoo_version='auto' on subsequent calls to reuse this version "
             "(the version-required tools no longer accept an omitted odoo_version; "
             "'auto' resolves to this pin)."
@@ -6400,7 +6481,9 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
                 )
             )])
     try:
-        persisted = _session.set_active_profile_db(_get_api_key_id(), profile_name)
+        persisted = _session.set_active_profile_db(
+            _get_api_key_id(), profile_name, _get_mcp_session_id()
+        )
     except Exception as exc:
         return ToolResult(content=[TextContent(type="text",
             text=f"Error persisting session profile: {exc}")])
@@ -6424,13 +6507,14 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
         )])
     if profile_name is None:
         msg = (
-            "Active profile cleared for this API key.\n"
-            "Subsequent tool calls will query across all profiles."
+            "Active profile cleared for this session.\n"
+            "Subsequent tool calls will query across all profiles you can access."
         )
     else:
         msg = (
-            f"Active profile set to '{profile_name}' for this API key (TTL 24h).\n"
-            "Subsequent tool calls that omit profile_name= will filter to this profile."
+            f"Active profile set to '{profile_name}' for this session (TTL 24h).\n"
+            "Subsequent query tools that omit profile_name= will narrow to this "
+            "profile for this session (still bounded by your tenant scope)."
         )
     return ToolResult(content=[TextContent(type="text", text=msg)])
 

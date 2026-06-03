@@ -11,6 +11,30 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed/Added - #251 per-session MCP pin keying + profile read path wired
+
+- **#251 (correctness, concurrency):** the sticky session pin (ADR-0029) was keyed by
+  `api_key_id` **alone**, so concurrent Claude Code sessions on one API key clobbered each
+  other - `set_active_version`/`set_active_profile` (and any resolving `odoo_version='auto'` or
+  `profile_name`-omitting call) raced last-write-wins across sessions. Fix: key the pin by the
+  composite `(api_key_id, mcp_session_id)` (the `mcp-session-id` header is read at tool-body
+  time, reliable since #248/#250), so each live MCP session gets its own pin; stdio / CLI /
+  header-less callers fall back to the `_nosession` sentinel bucket (pre-#251 single-pin-per-key
+  semantics). **Storage moves to in-memory** as the source of truth (bounded by
+  `MCP_SESSION_PIN_MAX`, default 50000, oldest-by-`set_at` evict; 24h in-memory idle TTL); the
+  `api_key_session_state` Postgres table is now **vestigial - no longer read or written, but kept
+  (not dropped)**. Pins **reset on server restart** (the `mcp-session-id` is ephemeral) - clients
+  re-run `set_active_*` or pass explicit versions.
+- **#251 (profile read path wired, narrowing-only):** the previously-dead profile read path is
+  now live - `resolve_profile_v2`'s pinned profile is injected at the top of `_scope` (Neo4j) and
+  `_effective_allowed` (pgvector) when a tool omits `profile_name`, then **re-validated at read
+  time** through the existing ADR-0034 tenant choke. Strictly narrowing-only: the pin can only
+  shrink the visible set within `own ∪ shared`, an out-of-scope pin on a scoped tenant fail-closes
+  to deny-all, and admin stays unrestricted. **No new per-key `allowed_profile_ids` authz column**
+  - the larger profile-authz design stays deferred; this only un-defers reading the
+  already-recorded convenience default through the already-existing gate. No migration; no client
+  code change required; tool count stays **24**. ADR-0029 amended.
+
 ### Fixed — #248 session version/profile pin ignored over HTTP + #237 owner-facing job errors
 
 - **#248 (correctness, prod bug):** over the stateful streamable-HTTP transport,

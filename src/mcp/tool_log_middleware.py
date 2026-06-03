@@ -36,6 +36,7 @@ from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.middleware.middleware import CallNext, ToolResult
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
 
 _logger = logging.getLogger(__name__)
 
@@ -106,12 +107,14 @@ class UsageLogMiddleware(Middleware):
         # suffered a race where one request's finally would wipe another's value).
         key_token = _set_server_api_key(api_key_id)
         tid_token = _set_server_tenant_id(tenant_id)
+        sid_token = _set_server_mcp_session_id(_read_mcp_session_id())
         start = time.monotonic()
         try:
             result = await call_next(context)
         finally:
             _reset_server_api_key(key_token)   # reset to pre-call value
             _reset_server_tenant_id(tid_token)  # reset tenant_id in tandem
+            _reset_server_mcp_session_id(sid_token)  # reset session id (#251)
         ms = int((time.monotonic() - start) * 1000)
 
         task = asyncio.create_task(
@@ -166,11 +169,13 @@ class UsageLogMiddleware(Middleware):
 
         key_token = _set_server_api_key(api_key_id)
         tid_token = _set_server_tenant_id(tenant_id)
+        sid_token = _set_server_mcp_session_id(_read_mcp_session_id())
         try:
             return await call_next(context)
         finally:
             _reset_server_api_key(key_token)   # reset to pre-call value
             _reset_server_tenant_id(tid_token)  # reset tenant_id in tandem
+            _reset_server_mcp_session_id(sid_token)  # reset session id (#251)
 
 
 def _recover_identity_from_header(req, api_key_id, tenant_id, key_prefix):
@@ -272,6 +277,50 @@ def _reset_server_tenant_id(token) -> None:
     try:
         from src.mcp import server as _server  # lazy — avoids circular import
         _server._tenant_id_var.reset(token)
+    except Exception:
+        pass  # never raise from middleware
+
+
+def _read_mcp_session_id() -> str | None:
+    """Read the ``mcp-session-id`` header from the current HTTP request (#251).
+
+    Unlike ``api_key_id`` (#248), this header survives intact on the per-call
+    scope, so a direct header read is sufficient — no warm-cache recovery is
+    needed. Returns ``None`` when there is no active HTTP request (stdio
+    transport) or the header is absent; the setter then leaves the server
+    ContextVar at its single-session sentinel default. Never raises.
+    """
+    try:
+        return get_http_request().headers.get(MCP_SESSION_ID_HEADER)
+    except Exception:
+        return None
+
+
+def _set_server_mcp_session_id(mcp_session_id: str | None):
+    """Set *mcp_session_id* in server._mcp_session_id_var and return the token (#251).
+
+    Mirrors _set_server_api_key. A ``None`` value (no HTTP request / no header)
+    is stored as the single-session sentinel so the pin store reproduces the
+    pre-#251 single-pin semantics for stdio / header-less callers. Returns a
+    token so _reset_server_mcp_session_id can atomically restore the previous
+    value in finally, preventing cross-request leakage between concurrent
+    asyncio coroutines. Never raises.
+    """
+    try:
+        from src.mcp import server as _server  # lazy — avoids circular import
+        value = mcp_session_id if mcp_session_id else _server._session._NO_SESSION_SENTINEL
+        return _server._mcp_session_id_var.set(value)
+    except Exception:
+        return None  # never raise from middleware
+
+
+def _reset_server_mcp_session_id(token) -> None:
+    """Reset server._mcp_session_id_var to its value before the set (#251)."""
+    if token is None:
+        return
+    try:
+        from src.mcp import server as _server  # lazy — avoids circular import
+        _server._mcp_session_id_var.reset(token)
     except Exception:
         pass  # never raise from middleware
 

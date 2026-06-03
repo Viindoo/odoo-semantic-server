@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -298,64 +297,40 @@ def test_unknown_model_returns_not_found_tree(mcp_with_resources) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.postgres
 def test_auto_version_uses_session_state(
-    mcp_with_resources, fresh_resources_module, pg_conn,
+    mcp_with_resources, fresh_resources_module,
 ) -> None:
-    """odoo://auto/model/<name> resolves via the per-API-key session version."""
-    from src.db.migrate import run_migrations
-    from src.mcp.session import _cache as session_cache
-    from src.mcp.session import set_active_version_db
+    """odoo://auto/model/<name> resolves via the per-session pinned version.
 
-    run_migrations(pg_conn)
-    # api_key_session_state.api_key_id FK→api_keys(id) ON DELETE CASCADE
-    # (migration 0005, ADR-0029).  Seed the parent api_keys row for the
-    # synthetic session key so set_active_version_db() can UPSERT without
-    # ForeignKeyViolation.
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO api_keys (id, name, key_hash, key_prefix) "
-            "OVERRIDING SYSTEM VALUE VALUES "
-            "(%s, 'mcp-resources-f1-test', 'hash-f1', 'osm_f1') "
-            "ON CONFLICT (id) DO NOTHING",
-            (int(F1_SESSION_KEY),),
-        )
-        cur.execute(
-            "DELETE FROM api_key_session_state WHERE api_key_id = %s",
-            (int(F1_SESSION_KEY),),
-        )
+    #251: the pin store is in-memory now, so no ``api_key_session_state`` seeding
+    is needed and the cache must NOT be cleared between the write and the read
+    (clearing it would drop the pin — the cache IS the source of truth). The
+    resource read runs outside an HTTP request, so both the write and the read
+    use the ``_nosession`` bucket (single-session semantics), which is the path
+    this test exercises.
+    """
+    from src.mcp.session import _cache, _cache_lock, set_active_version_db
 
-    session_cache.clear()
+    with _cache_lock:
+        _cache.clear()
     fresh_resources_module.get_cache().clear()
 
-    @contextmanager
-    def _checkout_pg():
-        yield pg_conn
+    # 1.  Stamp the session pin: this API key → F1_VERSION (in-memory).
+    set_active_version_db(F1_SESSION_KEY, F1_VERSION)
 
-    # 1.  Stamp the session: this API key → F1_VERSION.
-    with patch("src.mcp.server._checkout_pg", _checkout_pg):
-        set_active_version_db(F1_SESSION_KEY, F1_VERSION)
-        session_cache.clear()
-
-        # 2. Pin the ContextVar API key so resources read the right session.
-        from src.mcp import server as _srv
-        token = _srv._api_key_id_var.set(F1_SESSION_KEY)
-        try:
-            # 3.  Read with sentinel 'auto' — must resolve to F1_VERSION.
-            body = _read(
-                mcp_with_resources,
-                f"odoo://auto/model/{F1_MODEL}",
-            )
-        finally:
-            # Always reset the ContextVar.
-            _srv._api_key_id_var.reset(token)
-
-    # Cleanup row.
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM api_key_session_state WHERE api_key_id = %s",
-            (int(F1_SESSION_KEY),),
+    # 2. Pin the ContextVar API key so resources read the right session.
+    from src.mcp import server as _srv
+    token = _srv._api_key_id_var.set(F1_SESSION_KEY)
+    try:
+        # 3.  Read with sentinel 'auto' — must resolve to F1_VERSION.
+        body = _read(
+            mcp_with_resources,
+            f"odoo://auto/model/{F1_MODEL}",
         )
+    finally:
+        _srv._api_key_id_var.reset(token)
+        with _cache_lock:
+            _cache.clear()
 
     assert F1_MODEL in body
     assert F1_VERSION in body, (

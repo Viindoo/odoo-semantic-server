@@ -1,35 +1,61 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Per-API-key sticky session state for implicit MCP context (Pattern 6).
+"""Per-(API-key, MCP-session) sticky session state for implicit MCP context.
 
-Implements Wave E (M11) implicit-context design from ADR-0029:
+Implements Wave E (M11) implicit-context design from ADR-0029, amended by #251:
 - ``get_session_state`` / ``set_active_version_db`` / ``set_active_profile_db`` —
-  read and write the ``api_key_session_state`` table.
-- ``normalize_version_arg`` — collapses 6 sentinel strings to ``None``.
-- ``resolve_version_v2`` — resolution order: explicit → session DB → latest fallback.
+  read and write the **in-memory** session-pin store.
+- ``normalize_version_arg`` / ``normalize_profile_arg`` — collapse sentinel /
+  empty strings to ``None``.
+- ``resolve_version_v2`` — resolution order: explicit → session pin → latest fallback.
+- ``resolve_profile_v2`` — resolution order: explicit → session pin → None.
 
-Cache:
-- 60-second in-memory cache keyed by ``api_key_id``.
-- Thread-safe via a single ``threading.Lock``.
+Storage (#251):
+- The in-memory store is the **source of truth** for the pin (NOT a cache of
+  Postgres). One entry per ``(api_key_id, mcp_session_id)`` pair, so concurrent
+  Claude Code sessions on one API key never clobber each other's version/profile.
+- A session pin is ephemeral by nature: it **resets on server restart** (the MCP
+  transport's ``mcp-session-id`` lives in-process and dies with it). Clients
+  re-pin via ``set_active_*`` or pass an explicit version. This is intentional —
+  the vestigial ``api_key_session_state`` table is no longer read or written.
+- The store is size-bounded (``MCP_SESSION_PIN_MAX``, default 50000) with
+  oldest-by-``set_at`` eviction so thousands of sessions cannot grow it
+  unboundedly.
+- Thread-safe via a single ``threading.Lock``; all critical sections are O(1)
+  (dict get/put + at-most-one eviction, no I/O under the lock).
 - Clock-injectable (``now_fn``) for deterministic unit testing.
-- 24h sliding TTL enforced at read time: rows older than 24 hours are treated
-  as None (expired), not as stale data.
+- 24h TTL (since last ``set_active_*``) enforced at read time **in memory**:
+  entries whose ``set_at`` is older than 24 hours are treated as ``None``
+  (expired). The window is write-anchored, not access-sliding (reads do not
+  refresh ``set_at``) — matching the pre-#251 DB behaviour.
 
-See ``migrations/0005_api_key_session_state.sql`` for the DB schema.
 See ``docs/adr/0029-implicit-session-context.md`` for design rationale.
 """
 
+import os
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _SENTINELS: frozenset[str] = frozenset({"auto", "default", "latest", "version", "any", ""})
+
+# Default mcp-session-id used by stdio / single-session / context-propagation-gap
+# callers. The leading underscore guarantees no collision with a real
+# ``uuid4().hex`` mcp-session-id; this bucket reproduces the pre-#251
+# single-pin-per-key semantics byte-for-byte.
+_NO_SESSION_SENTINEL: str = "_nosession"
+
 _CACHE_TTL_SEC: float = 60.0
 _SESSION_TTL_HOURS: int = 24
+
+# Size bound for the in-memory pin store (A-SCALE-2). Oldest-by-``set_at``
+# entry is evicted when the cap is exceeded. Env-tunable for peak concurrency.
+_PIN_MAX: int = int(os.getenv("MCP_SESSION_PIN_MAX", "50000"))
 
 
 # ---------------------------------------------------------------------------
@@ -54,42 +80,69 @@ class SessionState:
 
 
 # ---------------------------------------------------------------------------
-# In-memory cache (module-level singleton)
+# In-memory pin store (module-level singleton, source of truth — #251)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _CacheEntry:
-    state: SessionState | None
-    # Monotonic clock expiry (seconds) — not wall-clock
-    expires_at: float
+    """One live session pin keyed by ``(api_key_id, mcp_session_id)``.
+
+    Attributes:
+        state: The live pin (``odoo_version`` + ``profile_name``). Never ``None``
+            for a stored entry — absence of a pin is absence of an entry.
+        set_at: Monotonic timestamp of the last write; drives both LRU eviction
+            (A-SCALE-2) and the 24h TTL (write-anchored, since last set).
+    """
+
+    state: SessionState
+    set_at: float
 
 
-_cache: dict[str, _CacheEntry] = {}
+# OrderedDict so eviction (A-SCALE-2) and recency tracking are O(1): a write
+# appends/moves its key to the end, so the oldest live pin is always at the
+# front and ``popitem(last=False)`` evicts it in O(1) — keeping every
+# ``_cache_lock`` critical section O(1) (A-SCALE-3) even at the size cap, so a
+# rare overflow on the write path never stalls the shared-lock hot-path reads.
+_cache: "OrderedDict[str, _CacheEntry]" = OrderedDict()
 _cache_lock = threading.Lock()
 
 
-def _cache_get(api_key_id: str, now: float) -> tuple[bool, SessionState | None]:
-    """Return ``(hit, state)``.  hit=True means cache is valid (may be None = expired row)."""
+def _ck(api_key_id: str, mcp_session_id: str) -> str:
+    """Composite cache key for ``(api_key_id, mcp_session_id)``.
+
+    Uses the ASCII unit-separator (``\\x1f``) so neither component can collide
+    with the other regardless of content.
+    """
+    return f"{api_key_id}\x1f{mcp_session_id}"
+
+
+def _evict_if_over_cap_locked() -> None:
+    """Evict the oldest live pin(s) while the store exceeds ``_PIN_MAX``.
+
+    Caller MUST hold ``_cache_lock``. O(1): the store is an ``OrderedDict`` kept
+    in write-recency order (each write moves its key to the end), so the oldest
+    pin is at the front and ``popitem(last=False)`` removes it in O(1). The
+    common path is a single ``len`` comparison.
+    """
+    while len(_cache) > _PIN_MAX:
+        _cache.popitem(last=False)
+
+
+def _cache_get(api_key_id: str, mcp_session_id: str) -> _CacheEntry | None:
+    """Return the live entry for the composite key, or ``None`` if absent.
+
+    TTL is NOT applied here — :func:`get_session_state` owns idle-TTL semantics
+    so the clock can be injected for deterministic tests.
+    """
     with _cache_lock:
-        entry = _cache.get(api_key_id)
-        if entry is None or entry.expires_at <= now:
-            return False, None
-        return True, entry.state
+        return _cache.get(_ck(api_key_id, mcp_session_id))
 
 
-def _cache_set(
-    api_key_id: str,
-    state: SessionState | None,
-    now: float,
-    ttl: float = _CACHE_TTL_SEC,
-) -> None:
+def _cache_invalidate(api_key_id: str, mcp_session_id: str = _NO_SESSION_SENTINEL) -> None:
+    """Drop the pin for one ``(api_key_id, mcp_session_id)`` pair."""
     with _cache_lock:
-        _cache[api_key_id] = _CacheEntry(state=state, expires_at=now + ttl)
-
-
-def _cache_invalidate(api_key_id: str) -> None:
-    with _cache_lock:
-        _cache.pop(api_key_id, None)
+        _cache.pop(_ck(api_key_id, mcp_session_id), None)
 
 
 # --- WI-3: tenant -> (own, shared) profile scope cache (60s, ADR-0034) ------
@@ -189,178 +242,218 @@ def normalize_version_arg(version: str | None) -> str | None:
     return version
 
 
+def normalize_profile_arg(profile: str | None) -> str | None:
+    """Collapse ``None`` / empty / whitespace-only profile names to ``None``.
+
+    Profiles are not version sentinels, so no sentinel-word collapsing applies —
+    this only normalizes "no profile given" forms to a single ``None``. The
+    original (un-stripped) value is preserved when non-empty, since profile names
+    are looked up verbatim.
+
+    Args:
+        profile: Profile name from an MCP tool call argument.
+
+    Returns:
+        ``None`` if *profile* is ``None`` or contains only whitespace; otherwise
+        the original string unchanged.
+
+    Examples::
+
+        >>> normalize_profile_arg("my-erp-prod")
+        'my-erp-prod'
+        >>> normalize_profile_arg("") is None
+        True
+        >>> normalize_profile_arg("   ") is None
+        True
+        >>> normalize_profile_arg(None) is None
+        True
+    """
+    if profile is None:
+        return None
+    if not profile.strip():
+        return None
+    return profile
+
+
 # ---------------------------------------------------------------------------
-# Public API — DB helpers
+# Public API — in-memory pin helpers
 # ---------------------------------------------------------------------------
 
 
 def get_session_state(
     api_key_id: str,
+    mcp_session_id: str = _NO_SESSION_SENTINEL,
     *,
     now_fn: Callable[[], float] = time.monotonic,
 ) -> SessionState | None:
-    """Return the current session state for *api_key_id*, or ``None``.
+    """Return the live pin for ``(api_key_id, mcp_session_id)``, or ``None``.
 
-    Resolution:
-    1. 60-second in-memory cache hit → return immediately.
-    2. SELECT from ``api_key_session_state`` with 24h TTL filter.
-    3. Cache result (including ``None``) for 60 seconds.
-
-    24h TTL is enforced via SQL: ``updated_at > NOW() - INTERVAL '24 hours'``.
-    A stale (>24h) or absent row both return ``None``.
+    Reads the in-memory store (source of truth — #251); performs **no DB I/O**.
+    The 24h TTL (since last ``set_active_*``) is applied in memory: an entry
+    whose ``set_at`` is older than ``_SESSION_TTL_HOURS`` is treated as expired
+    (returns ``None`` and the stale entry is evicted). Write-anchored, not
+    access-sliding — reads do not refresh ``set_at``.
 
     Args:
         api_key_id: The API key identifier (string form of the integer PK).
+        mcp_session_id: The MCP transport session id; defaults to the
+            single-session sentinel for stdio / context-propagation-gap callers.
         now_fn: Monotonic clock callable.  Override in tests for deterministic
             TTL testing.
 
     Returns:
-        :class:`SessionState` or ``None`` if no live session exists.
+        :class:`SessionState` or ``None`` if no live pin exists.
     """
-    now = now_fn()
-
-    # 1. Cache hit
-    hit, cached_state = _cache_get(api_key_id, now)
-    if hit:
-        return cached_state
-
-    # 2. DB lookup
-    state = _fetch_from_db(api_key_id)
-
-    # 3. Populate cache
-    _cache_set(api_key_id, state, now)
-    return state
-
-
-def _fetch_from_db(api_key_id: str) -> SessionState | None:
-    """Execute the DB lookup.  Returns ``None`` if row absent or >24h old."""
-    # Non-numeric api_key_id (e.g. 'default' sentinel in tests / stdio) → no session.
+    # Non-numeric api_key_id (e.g. 'default' sentinel in tests / stdio) → no
+    # authenticated key in scope → no session (#248 / #251 contract).
     try:
-        key_int = int(api_key_id)
+        int(api_key_id)
     except (ValueError, TypeError):
         return None
 
-    from src.mcp.server import _checkout_pg  # lazy import avoids circular dependency
-
-    sql = """
-        SELECT odoo_version, profile_name
-        FROM api_key_session_state
-        WHERE api_key_id = %s
-          AND updated_at > NOW() - INTERVAL '24 hours'
-    """
-    try:
-        with _checkout_pg() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (key_int,))
-                row = cur.fetchone()
-    except Exception:
-        # Pool not initialised (test context / cold start) → treat as no session.
-        return None
-
-    if row is None:
-        return None
-    odoo_version, profile_name = row
-    return SessionState(
-        api_key_id=api_key_id,
-        odoo_version=odoo_version or None,
-        profile_name=profile_name or None,
-    )
+    cutoff = _SESSION_TTL_HOURS * 3600
+    now = now_fn()
+    key = _ck(api_key_id, mcp_session_id)
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            return None
+        # 24h TTL (since last set_active_*) — re-read set_at UNDER the lock so a
+        # concurrent writer that just refreshed this entry is never clobbered:
+        # only evict when it is STILL stale at lock-acquire time (avoids the
+        # read-then-evict TOCTOU that could delete a freshly-set pin).
+        if now - entry.set_at > cutoff:
+            _cache.pop(key, None)
+            return None
+        # Return a snapshot, never the live entry.state: writers mutate that
+        # object in place under this same lock, so handing the caller the live
+        # reference would let it observe a half-updated (version/profile) view.
+        return replace(entry.state)
 
 
-def set_active_version_db(api_key_id: str, odoo_version: str) -> bool:
-    """Persist *odoo_version* as the active version for *api_key_id*.
+def set_active_version_db(
+    api_key_id: str,
+    odoo_version: str,
+    mcp_session_id: str = _NO_SESSION_SENTINEL,
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Pin *odoo_version* for ``(api_key_id, mcp_session_id)`` in memory.
 
-    Performs an UPSERT into ``api_key_session_state``, updating ``updated_at``
-    to reset the 24h sliding TTL.  Invalidates the 60-second in-memory cache
-    for *api_key_id* so the next ``get_session_state`` call reads fresh data.
+    Sets ONLY ``odoo_version`` (and refreshes ``set_at`` to reset the 24h idle
+    TTL), preserving any ``profile_name`` already pinned in the same entry — so
+    setting version then profile (or vice-versa) never clobbers the other field.
+    Performs **no DB I/O** (#251). The function name and ``bool`` return are kept
+    for backward compat (``server.py`` + tests depend on them).
 
     Args:
         api_key_id: The API key identifier (string form of the integer PK).
-            If *api_key_id* is the sentinel ``'default'`` or any other
-            non-numeric string (e.g. tests, CLI, stdio transport), the persist
-            is skipped — no DB write, no error.
+            A non-numeric value (``'default'`` sentinel, CLI, stdio, or a
+            context-propagation gap) skips the write — no error.
         odoo_version: A concrete version string such as ``"17.0"``.
+        mcp_session_id: The MCP transport session id; defaults to the
+            single-session sentinel.
+        now_fn: Monotonic clock callable (override in tests).
 
     Returns:
-        ``True`` when the row was persisted; ``False`` when skipped because
-        *api_key_id* was non-numeric.  Callers use this to avoid emitting a
-        "set" receipt for a write that never happened (#248).
+        ``True`` when stored; ``False`` when skipped because *api_key_id* was
+        non-numeric.  Callers use this to avoid emitting a "set" receipt for a
+        write that never happened (#248).
     """
-    # Belt-and-suspenders guard: the 'default' sentinel means no authenticated
-    # key is in scope (unit tests, CLI, stdio transport, or a context-propagation
-    # gap).  Skip rather than crash with ValueError: invalid literal.
+    # #248 loud-fail guard: a lost/non-numeric key id must not silently succeed.
     try:
-        key_int = int(api_key_id)
+        int(api_key_id)
     except (ValueError, TypeError):
         import logging as _logging
         _logging.getLogger(__name__).warning(
-            "set_active_version_db: non-numeric api_key_id %r — skipping persist "
+            "set_active_version_db: non-numeric api_key_id %r — skipping store "
             "(authenticated HTTP should never reach this; see #248)",
             api_key_id,
         )
         return False
 
-    sql = """
-        INSERT INTO api_key_session_state (api_key_id, odoo_version, updated_at)
-        VALUES (%s, %s, NOW())
-        ON CONFLICT (api_key_id) DO UPDATE
-            SET odoo_version = EXCLUDED.odoo_version,
-                updated_at   = NOW()
-    """
-    from src.mcp.server import _checkout_pg
-
-    with _checkout_pg() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (key_int, odoo_version))
-
-    _cache_invalidate(api_key_id)
+    now = now_fn()
+    key = _ck(api_key_id, mcp_session_id)
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            _cache[key] = _CacheEntry(
+                state=SessionState(
+                    api_key_id=api_key_id,
+                    odoo_version=odoo_version,
+                    profile_name=None,
+                ),
+                set_at=now,
+            )
+        else:
+            entry.state.odoo_version = odoo_version
+            entry.set_at = now
+            _cache.move_to_end(key)  # refresh write-recency for O(1) LRU eviction
+        _evict_if_over_cap_locked()
     return True
 
 
-def set_active_profile_db(api_key_id: str, profile_name: str | None) -> bool:
-    """Persist *profile_name* as the active profile for *api_key_id*.
+def set_active_profile_db(
+    api_key_id: str,
+    profile_name: str | None,
+    mcp_session_id: str = _NO_SESSION_SENTINEL,
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Pin *profile_name* for ``(api_key_id, mcp_session_id)`` in memory.
 
-    Performs an UPSERT into ``api_key_session_state``, updating ``updated_at``
-    to reset the 24h sliding TTL.  Invalidates the 60-second in-memory cache
-    for *api_key_id* so the next ``get_session_state`` call reads fresh data.
+    Sets ONLY ``profile_name`` (``None`` clears it) and refreshes ``set_at``,
+    preserving any ``odoo_version`` already pinned in the same entry. Mirrors
+    :func:`set_active_version_db`: no DB I/O, same ``bool`` return + #248 guard.
 
     Args:
         api_key_id: The API key identifier (string form of the integer PK).
-            If *api_key_id* is the sentinel ``'default'`` or any other
-            non-numeric string, the persist is skipped.
-        profile_name: Profile name such as ``"my-erp-prod"``, or ``None``
-            to clear the active profile.
+            A non-numeric value skips the write — no error.
+        profile_name: Profile name such as ``"my-erp-prod"``, or ``None`` to
+            clear the active profile.
+        mcp_session_id: The MCP transport session id; defaults to the
+            single-session sentinel.
+        now_fn: Monotonic clock callable (override in tests).
 
     Returns:
-        ``True`` when the row was persisted; ``False`` when skipped because
-        *api_key_id* was non-numeric (mirrors ``set_active_version_db`` — #248).
+        ``True`` when stored; ``False`` when skipped because *api_key_id* was
+        non-numeric (mirrors ``set_active_version_db`` — #248).
     """
-    # Belt-and-suspenders guard: skip persist for non-numeric api_key_id.
+    # #248 loud-fail guard.
     try:
-        key_int = int(api_key_id)
+        int(api_key_id)
     except (ValueError, TypeError):
         import logging as _logging
         _logging.getLogger(__name__).warning(
-            "set_active_profile_db: non-numeric api_key_id %r — skipping persist "
+            "set_active_profile_db: non-numeric api_key_id %r — skipping store "
             "(authenticated HTTP should never reach this; see #248)",
             api_key_id,
         )
         return False
 
-    sql = """
-        INSERT INTO api_key_session_state (api_key_id, profile_name, updated_at)
-        VALUES (%s, %s, NOW())
-        ON CONFLICT (api_key_id) DO UPDATE
-            SET profile_name = EXCLUDED.profile_name,
-                updated_at   = NOW()
-    """
-    from src.mcp.server import _checkout_pg
-
-    with _checkout_pg() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (key_int, profile_name))
-
-    _cache_invalidate(api_key_id)
+    now = now_fn()
+    key = _ck(api_key_id, mcp_session_id)
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            if profile_name is None:
+                # Clearing a profile on a session with no pin is a no-op — do
+                # not create an empty (None, None) entry that would waste a cap
+                # slot and could evict a real pin under MCP_SESSION_PIN_MAX.
+                return True
+            _cache[key] = _CacheEntry(
+                state=SessionState(
+                    api_key_id=api_key_id,
+                    odoo_version=None,
+                    profile_name=profile_name,
+                ),
+                set_at=now,
+            )
+        else:
+            entry.state.profile_name = profile_name
+            entry.set_at = now
+            _cache.move_to_end(key)  # refresh write-recency for O(1) LRU eviction
+        _evict_if_over_cap_locked()
     return True
 
 
@@ -373,12 +466,14 @@ def resolve_version_v2(
     version_arg: str | None,
     api_key_id: str,
     session,  # neo4j session — used only for fallback
+    mcp_session_id: str = _NO_SESSION_SENTINEL,
 ) -> str:
     """Resolve a version argument using the 3-tier order defined by ADR-0029.
 
     Resolution order:
     1. **Explicit** — *version_arg* after sentinel normalization.
-    2. **Session DB** — ``get_session_state(api_key_id).odoo_version``.
+    2. **Session pin** — ``get_session_state(api_key_id, mcp_session_id).odoo_version``
+       (in-memory, per-session — #251).
     3. **Latest fallback** — ``_latest_version(session)`` from the Neo4j index.
 
     Args:
@@ -387,6 +482,8 @@ def resolve_version_v2(
         api_key_id: The API key that owns the session state.
         session: An open Neo4j driver session used as the last-resort
             fallback to discover the latest indexed version.
+        mcp_session_id: The MCP transport session id, scoping the Tier-2 pin
+            to one live session; defaults to the single-session sentinel.
 
     Returns:
         A concrete Odoo version string (e.g. ``"17.0"``).
@@ -400,8 +497,8 @@ def resolve_version_v2(
     if explicit is not None:
         return explicit
 
-    # Tier 2: session DB — prefer stored version if present
-    state = get_session_state(api_key_id)
+    # Tier 2: session pin — prefer stored version if present
+    state = get_session_state(api_key_id, mcp_session_id)
     if state is not None and state.odoo_version:
         return state.odoo_version
 
@@ -416,3 +513,50 @@ def resolve_version_v2(
             "No data indexed. Run `python -m src.indexer index-repo --profile <name>` first."
         )
     return v
+
+
+def resolve_profile_v2(
+    profile_arg: str | None,
+    api_key_id: str,
+    session,  # unused — kept for signature parity with resolve_version_v2
+    mcp_session_id: str = _NO_SESSION_SENTINEL,
+) -> str | None:
+    """Resolve a profile argument to a *proposed default* (#251). No authz.
+
+    Resolution order:
+    1. **Explicit** — *profile_arg* after :func:`normalize_profile_arg`; returned
+       verbatim if non-empty.
+    2. **Session pin** — ``get_session_state(api_key_id, mcp_session_id).profile_name``
+       (in-memory, per-session) if set.
+    3. **None** — no pin → defer to the caller's existing default behaviour.
+
+    This proposes which profile to *default to* when the caller omits one; it
+    performs NO authorization. The server-side ADR-0034 choke re-validates the
+    proposed profile at read time (narrowing-only, fail-closed) — that authz
+    lives in WI-2, not here.
+
+    Args:
+        profile_arg: Raw profile argument from the MCP tool call (may be empty,
+            ``None``, or a concrete profile name).
+        api_key_id: The API key that owns the session state.
+        session: Unused; present only for signature parity with
+            :func:`resolve_version_v2`.
+        mcp_session_id: The MCP transport session id, scoping the Tier-2 pin
+            to one live session; defaults to the single-session sentinel.
+
+    Returns:
+        A profile name, or ``None`` when neither an explicit arg nor a pin
+        supplies one.
+    """
+    # Tier 1: explicit profile provided by the caller.
+    explicit = normalize_profile_arg(profile_arg)
+    if explicit is not None:
+        return explicit
+
+    # Tier 2: session pin.
+    state = get_session_state(api_key_id, mcp_session_id)
+    if state is not None and state.profile_name:
+        return state.profile_name
+
+    # Tier 3: no pin → caller's default applies.
+    return None

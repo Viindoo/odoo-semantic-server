@@ -295,8 +295,9 @@ def _resolved_version_for(version: str) -> str:
         return normalized
 
     api_key_id = _srv._get_api_key_id()
+    mcp_session_id = _srv._get_mcp_session_id()
     with _srv._get_driver().session() as neo4j_session:
-        return resolve_version_v2(version, api_key_id, neo4j_session)
+        return resolve_version_v2(version, api_key_id, neo4j_session, mcp_session_id)
 
 
 # ---------------------------------------------------------------------------
