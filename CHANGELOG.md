@@ -11,6 +11,33 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — #248 session version/profile pin ignored over HTTP + #237 owner-facing job errors
+
+- **#248 (correctness, prod bug):** over the stateful streamable-HTTP transport,
+  `set_active_version('16.0')` returned success but a later `model_inspect(..., odoo_version='auto')`
+  silently resolved to the **latest** indexed version (e.g. 19.0) — the sticky-session contract
+  (ADR-0029) was a no-op. Root cause: `AuthMiddleware`'s `request.state.api_key_id` did not survive
+  the BaseHTTPMiddleware↔session-manager↔`request_ctx` boundary, so the tool body read the
+  `'default'` sentinel and the session DB write/read no-op'd. Fix: recover the numeric PK from the
+  always-surviving `X-API-Key` header via the warm auth cache in
+  `UsageLogMiddleware.on_call_tool`/`on_read_resource` (`_recover_identity_from_header`) — one
+  source-repair that fixes the version pin, profile pin, `odoo://auto/...` resources, and the
+  usage/audit/tenant-attribution call sites that were also mis-attributed to `'default'`.
+  `set_active_version`/`set_active_profile` now emit **honest receipts**: success only when the row
+  was persisted; a loud error on a skipped write over authenticated HTTP; a gentle no-op note on
+  stdio/CLI (silent `.debug` skip → `.warning`). New tests
+  `tests/test_mcp_session_header_fallback.py` (RED-able real-hook regression) +
+  `tests/test_mcp_session_receipt_honesty.py`. No migration; tool count stays **24**. ADR-0029
+  amended.
+- **#237 follow-up (web-UI UX, non-security):** `GET /api/jobs/{id}/status` now returns a **sanitized
+  category summary** of `error_msg` to a non-admin job owner (in-scope) instead of `null`, so the
+  self-service portal can show *why* an index failed without leaking server paths / repo URLs / stack
+  traces. Fixed-category mapping (`sanitize_job_error`) never echoes raw text — unrecognised errors
+  fall to a generic default, so it is exhaustive-by-construction against current and future error
+  producers. Admin still receives the full raw `error_msg`; `pid` stays admin-only; out-of-scope
+  still 404. J2/J9 updated to the new contract + new J10 (category mapping + raw-path/URL stripped +
+  admin-sees-raw). No migration.
+
 ### Fixed/Added — Issues #236/#237/#238 + require explicit odoo_version (PR #241)
 
 - **#238 (correctness):** `model_inspect(method='fields')` now flags `related=` and `readonly`
