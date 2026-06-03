@@ -1041,6 +1041,10 @@ def _resolve_field(
     _eff_ro = base_f.get("effective_readonly")
     if _eff_ro is not None:
         lines.append(f"├─ Readonly: {'Yes' if _eff_ro else 'No'}")
+        lines.append(
+            "│   └─ note: readonly reflects the Python field definition only "
+            "(view-level/states/attrs readonly not captured)"
+        )
     lines.append("├─ Declared in:")
     last_idx = len(records) - 1
     for i, r in enumerate(records):
@@ -1154,6 +1158,8 @@ def _resolve_view(
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
             WHERE ($own IS NULL OR (size(v.profile) > 0
                    AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
+            AND coalesce(v.unresolved, false) = false
+            AND v.module <> '__unresolved__'
             OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
             RETURN v, mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
@@ -5314,6 +5320,8 @@ def _resolve_view_structured(
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
             WHERE ($own IS NULL OR (size(v.profile) > 0
                    AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
+            AND coalesce(v.unresolved, false) = false
+            AND v.module <> '__unresolved__'
             OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
             RETURN v, mod.name AS module_name
         """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
@@ -5787,7 +5795,8 @@ def model_inspect(
         method: One of summary | fields | methods | views | field | method.
             'field' requires field=. 'method' requires method_name=.
         profile_name: Optional profile filter.
-        field: Required when method='field'.
+        field: Required when method='field'. Note: any 'readonly' signal reflects
+            the Python field definition only (view-level/states/attrs readonly not captured).
         method_name: Required when method='method'.
         start_index: Pagination cursor for fields/methods/views (zero-based).
         limit: Max rows per page (default 200).

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from lxml import etree as _lxml_etree
 
+from ._xmlid import qualify_xmlid
 from .models import LintViolationInfo, ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
 from .version_registry import VersionRegistry
 
@@ -160,7 +161,7 @@ def _parse_record(
         elif fname == "inherit_id":
             ref = child.get("ref", "").strip()
             if ref:
-                inherit_xmlid = ref
+                inherit_xmlid = qualify_xmlid(ref, module.name)
                 mode = "extension"
         elif fname == "arch":
             arch = _lxml_etree.tostring(child, encoding="unicode")
@@ -203,7 +204,7 @@ def _parse_record(
         _arch_snippet = _candidate[:2000]
 
     return ViewInfo(
-        xmlid=f"{module.name}.{xml_id}",
+        xmlid=qualify_xmlid(xml_id, module.name),
         name=name,
         model=model,
         module=module.name,

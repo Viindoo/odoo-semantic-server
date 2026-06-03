@@ -103,10 +103,11 @@ class FieldInfo:
     # with an inverse setter IS writable, so it must not be flagged readonly.
     # `effective_readonly`: derived (see parser_python._compute_effective_readonly);
     # the single signal renderers use to decide whether to flag a field readonly.
-    # era1 (v8-9): best-effort — readonly/inverse left None, effective_readonly False.
+    # era1 (v8-9): best-effort — readonly/inverse left None, effective_readonly None
+    # (no determination → renderer omits the readonly line entirely).
     readonly: bool | None = None
     inverse: str | None = None
-    effective_readonly: bool = False
+    effective_readonly: bool | None = None
 
 
 @dataclass

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from lxml import etree as _lxml_etree
 
+from ._xmlid import qualify_xmlid
 from .models import ModuleInfo, QWebInfo, ViewParseResult
 
 
@@ -18,14 +19,14 @@ def _parse_template(
     if not template_id:
         return None
 
-    inherit_xmlid = elem.get("inherit_id", "").strip() or None
+    inherit_xmlid = qualify_xmlid(elem.get("inherit_id"), module.name)
 
     # A3 — best-effort source line from lxml .sourceline (always int on lxml
     # elements; defensive getattr in case of future callers with non-lxml elements).
     src_line: int | None = getattr(elem, "sourceline", None) or None
 
     return QWebInfo(
-        xmlid=f"{module.name}.{template_id}",
+        xmlid=qualify_xmlid(template_id, module.name),
         module=module.name,
         odoo_version=module.odoo_version,
         inherit_xmlid=inherit_xmlid,
