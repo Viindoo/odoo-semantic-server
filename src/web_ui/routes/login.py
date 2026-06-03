@@ -27,6 +27,7 @@ from starlette.requests import Request
 
 from src.web_ui._json import _json_safe
 from src.web_ui.auth import (
+    BCRYPT_ROUNDS,
     current_user_id,
     get_session_ttl,
     hash_password,
@@ -48,7 +49,7 @@ router = APIRouter(prefix="/api/auth")
 # the user exists or not.  Prevents username enumeration via timing oracle.
 # ---------------------------------------------------------------------------
 _DUMMY_HASH: str = bcrypt.hashpw(
-    b"dummy-for-timing-defense", bcrypt.gensalt(rounds=12)
+    b"dummy-for-timing-defense", bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
 ).decode("utf-8")
 
 # ---------------------------------------------------------------------------

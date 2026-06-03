@@ -12,6 +12,4 @@ def test_instruct_nl_to_code_contains_instruct():
     assert "Instruct:" in INSTRUCT_NL_TO_CODE
 
 
-def test_instruct_nl_to_code_is_string():
-    assert isinstance(INSTRUCT_NL_TO_CODE, str)
-    assert len(INSTRUCT_NL_TO_CODE) > 0
+

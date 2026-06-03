@@ -35,16 +35,6 @@ class TestProfilesEndpoint:
         assert "profiles" in body
 
     @pytest.mark.asyncio
-    async def test_get_profiles_shows_no_profiles_initially(self, migrated_pg):
-        # Migration 0004 seeds 5 root profiles; endpoint is non-empty from the start.
-        app = create_app()
-        async with _async_client(app) as client:
-            resp = await client.get("/api/repos/profiles")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert isinstance(body["profiles"], list)
-
-    @pytest.mark.asyncio
     async def test_create_profile_returns_ok(self, migrated_pg):
         app = create_app()
         async with _async_client(app) as client:

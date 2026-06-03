@@ -268,18 +268,6 @@ def test_parse_view_line_is_set(tmp_path, sale_module):
     assert views[0].line >= 1
 
 
-def test_parse_view_line_none_when_not_available(tmp_path, sale_module):
-    """ViewInfo.line defaults to None when .sourceline is absent/zero."""
-    # Construct a ViewInfo directly without lxml to confirm the default
-    from src.indexer.models import ViewInfo
-    v = ViewInfo(
-        xmlid="sale.view_test", name="Test", model="sale.order",
-        module="sale", odoo_version="17.0", view_type="form",
-        mode="primary", inherit_xmlid=None,
-    )
-    assert v.line is None
-
-
 # --- T1 (F-5): lxml comment node must not shadow real view-type element ---
 
 

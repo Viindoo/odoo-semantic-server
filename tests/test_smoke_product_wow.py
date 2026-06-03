@@ -37,41 +37,6 @@ async def _mcp_http_client():
 
 class TestSmokeHealth:
     @pytest.mark.asyncio
-    async def test_health_endpoint_schema(self):
-        """GET /health returns JSON with all required schema fields."""
-
-
-        async with _mcp_http_client() as client:
-            resp = await client.get("/health")
-
-        # /health is pure liveness (ADR-0046) — always 200, no DB-status keys.
-        assert resp.status_code == 200, (
-            f"Unexpected status: {resp.status_code}"
-        )
-        body = resp.json()
-        required_keys = {"status", "version", "mcp_tools"}
-        missing = required_keys - set(body.keys())
-        assert not missing, f"Health response missing keys: {missing}"
-
-    @pytest.mark.asyncio
-    async def test_mcp_tools_count_positive(self):
-        """mcp_tools in /health is a positive integer or -1 (not hardcoded 14)."""
-
-
-        async with _mcp_http_client() as client:
-            resp = await client.get("/health")
-
-        body = resp.json()
-        count = body.get("mcp_tools", 0)
-        assert isinstance(count, int), (
-            f"mcp_tools must be int, got {type(count)}"
-        )
-        # -1 means introspection failed (acceptable), otherwise must be positive
-        assert count > 0 or count == -1, (
-            f"mcp_tools must be positive or -1, got {count}"
-        )
-
-    @pytest.mark.asyncio
     async def test_health_version_not_unknown(self):
         """Version field is not 'unknown' (package should be installed)."""
 

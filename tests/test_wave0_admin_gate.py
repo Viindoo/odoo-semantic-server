@@ -14,16 +14,20 @@ Business intent:
 All tests use httpx.AsyncClient with ASGI transport — no real server.
 PostgreSQL is required (pytestmark postgres) for DB-layer route handlers.
 """
+import itertools
 import os
 
 import httpx
 import pytest
 
-from src.db.migrate import run_migrations
 from src.web_ui.app import create_app
 from src.web_ui.auth import hash_password
 
 pytestmark = pytest.mark.postgres
+
+# Monotonic counter giving each _seed_test_repo() call a unique (url, branch)
+# under the module-scoped migrated_pg (no per-test wipe). See _seed_test_repo.
+_repo_seq = itertools.count(1)
 
 # ---------------------------------------------------------------------------
 # Session secret must be set before app creation
@@ -36,10 +40,17 @@ os.environ.setdefault("WEBUI_SESSION_SECRET", "test-secret-wave0-admin-gate-32by
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def migrated_pg(clean_pg):
-    run_migrations(clean_pg)
-    return clean_pg
+@pytest.fixture(scope="module")
+def migrated_pg(migrated_pg_module):
+    """Module-scoped: migrate ONCE for this whole file (was per-test via clean_pg).
+
+    Safe because every test here asserts only on HTTP status codes
+    (403/401/200/201/not-403) — none asserts an absolute row count or empty
+    state — and the per-test ``_seed_*`` helpers are idempotent (``ON CONFLICT``)
+    or return their own freshly-inserted id. DO NOT add a test to this module
+    that asserts an absolute ``count(*)`` or expects an empty table.
+    """
+    return migrated_pg_module
 
 
 def _async_client(app, cookies=None):
@@ -116,13 +127,20 @@ def _seed_test_profile(pg_conn) -> int:
 
 
 def _seed_test_repo(pg_conn, profile_id: int) -> int:
-    """Insert a test repo under profile_id. Returns repo id."""
+    """Insert a test repo under profile_id. Returns repo id.
+
+    url/local_path carry a per-call counter suffix so repeated seeding under a
+    module-scoped (no per-test wipe) ``migrated_pg`` never collides with the
+    ``UNIQUE (url, branch)`` constraint (src/db/migrate.py). Each call returns a
+    distinct fresh repo id, preserving per-test isolation of the row under test.
+    """
+    n = next(_repo_seq)
     with pg_conn.cursor() as cur:
         cur.execute(
             "INSERT INTO repos (profile_id, url, branch, local_path, clone_status)"
-            " VALUES (%s, 'https://example.com/repo.git', '17.0', '/tmp/wave0_repo', 'manual')"
+            " VALUES (%s, %s, '17.0', %s, 'manual')"
             " RETURNING id",
-            (profile_id,),
+            (profile_id, f"https://example.com/repo{n}.git", f"/tmp/wave0_repo{n}"),
         )
         rid = cur.fetchone()[0]
     pg_conn.commit()

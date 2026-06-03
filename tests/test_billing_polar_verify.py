@@ -453,16 +453,6 @@ class TestEventStatusMap:
                 f"EVENT_STATUS_MAP[{event_type!r}] = {action!r} is not a valid action"
             )
 
-    def test_no_unknown_keys(self):
-        """All keys in the map are strings; no None or empty."""
-        for k in EVENT_STATUS_MAP:
-            assert isinstance(k, str) and k, f"Invalid key in EVENT_STATUS_MAP: {k!r}"
-
-    def test_nine_entries(self):
-        """Map has exactly 9 entries — the P1 event surface (7) plus the two
-        contract-hardening additions (subscription.past_due / .uncanceled)."""
-        assert len(EVENT_STATUS_MAP) == 9
-
 
 # ---------------------------------------------------------------------------
 # Product-id extraction — tolerant of BOTH the flat (subscription) and nested

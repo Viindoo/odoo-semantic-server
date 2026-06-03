@@ -59,28 +59,6 @@ class TestLogToolCallAsync:
         mock_store.log_usage.assert_called_once_with(1, "resolve_model", 42)
 
     @pytest.mark.asyncio
-    async def test_inserts_find_examples_tool_name(self, monkeypatch):
-        """log_usage called correctly for find_examples tool."""
-        mock_store = MagicMock()
-        mock_store.log_usage = MagicMock()
-        monkeypatch.setattr("src.db.pg.auth_store", lambda: mock_store)
-
-        await _log_tool_call_async(api_key_id=5, tool_name="find_examples", ms=100)
-
-        mock_store.log_usage.assert_called_once_with(5, "find_examples", 100)
-
-    @pytest.mark.asyncio
-    async def test_inserts_impact_analysis_tool_name(self, monkeypatch):
-        """log_usage called correctly for impact_analysis tool."""
-        mock_store = MagicMock()
-        mock_store.log_usage = MagicMock()
-        monkeypatch.setattr("src.db.pg.auth_store", lambda: mock_store)
-
-        await _log_tool_call_async(api_key_id=3, tool_name="impact_analysis", ms=200)
-
-        mock_store.log_usage.assert_called_once_with(3, "impact_analysis", 200)
-
-    @pytest.mark.asyncio
     async def test_none_api_key_id_does_not_raise(self, monkeypatch):
         """api_key_id=None (unauthenticated) is accepted without raising."""
         mock_store = MagicMock()

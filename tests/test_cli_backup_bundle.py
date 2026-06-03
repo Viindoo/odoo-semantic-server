@@ -248,7 +248,13 @@ class TestBackupAdvisoryLockPreventsConcurrent:
         mock_cursor.fetchone.return_value = (False,)
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("psycopg2.connect", return_value=mock_conn):
+        # The container-precheck guard (_is_pg_container_running) was added after
+        # this test; in a unit context it would resolve against the real local
+        # docker state and short-circuit (return 0) before the advisory-lock
+        # branch is ever reached. Force "container up" so we exercise the lock
+        # contention path this test exists to protect.
+        with patch("src.cli._is_pg_container_running", return_value=True), \
+                patch("psycopg2.connect", return_value=mock_conn):
             rc = _cmd_backup(args)
 
         assert rc != 0, "Expected non-zero when advisory lock cannot be acquired"

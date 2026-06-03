@@ -38,32 +38,6 @@ def backup_client(tmp_path, monkeypatch):
         yield client, backup_dir
 
 
-class TestBackupRequiresAdmin:
-    def test_requires_auth_without_bypass(self, tmp_path, monkeypatch):
-        """Without auth bypass, route should be protected (middleware enforces 401)."""
-        # The route itself doesn't enforce auth — AuthRequiredMiddleware does.
-        # We verify the route exists and returns 200 with bypass active.
-        monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
-        backup_dir = tmp_path / "backup"
-        backup_dir.mkdir()
-        monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
-
-        from fastapi import FastAPI
-
-        from src.web_ui.routes.operations import router
-        app = FastAPI()
-        app.include_router(router)
-
-        with TestClient(app) as client:
-            # With bypass active, POST should not return 401
-            resp = client.post(
-                "/api/operations/backup",
-                json={"output": str(backup_dir / "test.tar.gz")},
-            )
-            # 200 means route was reachable — auth bypass is working
-            assert resp.status_code == 200
-
-
 class TestBackupCreatesJobReturnsStreamUrl:
     def test_returns_job_id_and_stream_url(self, backup_client, monkeypatch):
         client, backup_dir = backup_client

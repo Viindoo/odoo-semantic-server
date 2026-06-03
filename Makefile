@@ -61,7 +61,7 @@ test-browser:
 	done
 	@echo " PostgreSQL sẵn sàng"
 	$(VENV)/bin/playwright install chromium
-	$(PYTEST) tests/test_web_ui_browser.py -v -m "browser and postgres" --tb=short
+	$(PYTEST) tests/browser/ -v -m "browser and postgres" --tb=short
 
 test-all: test-unit test-integration
 
