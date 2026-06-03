@@ -72,6 +72,23 @@ def test_grants_include_plans_table():
     )
 
 
+def test_grants_include_webui_users_table():
+    """:8002 reads `webui_users` on every authed request via verify_api_key_full's
+    `LEFT JOIN webui_users u ON u.id = k.user_id` to resolve owner_is_admin (the
+    read-side null-tenant escalation guard added in f9ccc23). osm_reader had SELECT
+    on api_keys but not webui_users, so post-cutover every authed MCP call raised
+    InsufficientPrivilege → 500. Regression-guard the grant (added by m13_020).
+    """
+    content = SQL_FILE.read_text()
+    assert "GRANT SELECT ON TABLE webui_users TO osm_reader" in content, (
+        f"{SQL_FILE.name} must grant SELECT on `webui_users` to osm_reader — the MCP "
+        ":8002 process reads it via verify_api_key_full (src/db/auth_registry.py), "
+        "which LEFT JOINs webui_users to read owner_is_admin on every authed request. "
+        "Without this grant, every authed request 500s with 'permission denied for "
+        "table webui_users' post-RLS-cutover. See f9ccc23 + migration m13_020."
+    )
+
+
 def test_grants_include_usage_counter_table():
     """:8002 SELECTs `usage_counter` per request (quota gate) and UPSERTs it
     via the buffered flush task. Missing this grant breaks the M10B P0 quota
