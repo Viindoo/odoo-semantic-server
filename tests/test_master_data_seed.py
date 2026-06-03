@@ -16,9 +16,6 @@ import pytest
 
 from src.db.migrate import run_migrations
 from src.db.seed_master_data import (
-    _PROFILE_DEFS,
-    _REPO_DEFS_BY_PROFILE,
-    _SEED_NAME_PATTERNS,
     reset_seeded_data,
     seed_all,
     seed_profiles,
@@ -67,21 +64,9 @@ def _count_repos_for_profile(conn, profile_name: str) -> int:
 # ---------------------------------------------------------------------------
 # Default empty state (no monkeypatch)
 # ---------------------------------------------------------------------------
-
-def test_profile_defs_empty_by_default():
-    """_PROFILE_DEFS must be empty in the open-core release."""
-    assert _PROFILE_DEFS == []
-
-
-def test_repo_defs_by_profile_empty_by_default():
-    """_REPO_DEFS_BY_PROFILE must be empty in the open-core release."""
-    assert _REPO_DEFS_BY_PROFILE == {}
-
-
-def test_seed_name_patterns_empty_by_default():
-    """_SEED_NAME_PATTERNS must be empty tuple so reset_seeded_data is a no-op."""
-    assert _SEED_NAME_PATTERNS == ()
-
+# NOTE: the three pure ``*_empty_by_default`` constant checks plus
+# test_profile_defs_no_cycles / test_profile_defs_version_match moved to
+# tests/test_master_data_seed_unit.py (WS-D / DD2 demote — no DB needed).
 
 def test_seed_all_returns_zero_on_empty_defs(clean_pg):
     """seed_all() with default empty defs returns all-zero counts."""
@@ -357,34 +342,10 @@ def test_seed_repos_skips_missing_profile(clean_pg, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Pure unit tests — no DB, no pytestmark override
-# These tests run without the postgres fixture.
+# Synthetic-fixture pure guards — share file-local _SYNTHETIC_PROFILES with the
+# monkeypatch DB mechanism tests, so they stay here (single-sourced constant).
+# The two _PROFILE_DEFS-only pure guards moved to test_master_data_seed_unit.py.
 # ---------------------------------------------------------------------------
-
-# Override the module-level mark for these specific tests
-@pytest.mark.filterwarnings("ignore")
-def test_profile_defs_no_cycles():
-    """_PROFILE_DEFS parent chain must be cycle-free.
-
-    With the default empty list this vacuously passes. The test is preserved
-    as a guard for when _PROFILE_DEFS is populated.
-    """
-    parent_map = {name: parent for name, _v, _d, parent in _PROFILE_DEFS}
-    max_depth = len(_PROFILE_DEFS) + 1
-
-    for name, _v, _d, _parent in _PROFILE_DEFS:
-        visited = set()
-        current = name
-        depth = 0
-        while current is not None and depth <= max_depth:
-            assert current not in visited, (
-                f"Cycle detected in _PROFILE_DEFS starting from {name!r}: "
-                f"visited {visited!r}, hit {current!r} again"
-            )
-            visited.add(current)
-            current = parent_map.get(current)
-            depth += 1
-
 
 def test_profile_defs_no_cycles_with_synthetic():
     """_PROFILE_DEFS cycle-free guard works on synthetic fixtures."""
@@ -403,28 +364,6 @@ def test_profile_defs_no_cycles_with_synthetic():
             visited.add(current)
             current = parent_map.get(current)
             depth += 1
-
-
-def test_profile_defs_version_match():
-    """Each _PROFILE_DEFS entry with a parent must share the parent's odoo_version.
-
-    Vacuously passes on the default empty list. Preserved as a CI guard for
-    when _PROFILE_DEFS is populated.
-    """
-    version_map = {name: version for name, version, _d, _parent in _PROFILE_DEFS}
-
-    for name, version, _desc, parent_name in _PROFILE_DEFS:
-        if parent_name is None:
-            continue
-        assert parent_name in version_map, (
-            f"_PROFILE_DEFS entry {name!r} references parent {parent_name!r} "
-            f"which is not in _PROFILE_DEFS"
-        )
-        parent_version = version_map[parent_name]
-        assert version == parent_version, (
-            f"Version mismatch in _PROFILE_DEFS: {name!r} has version {version!r} "
-            f"but parent {parent_name!r} has version {parent_version!r}"
-        )
 
 
 def test_profile_defs_version_match_synthetic():

@@ -10,7 +10,13 @@ import pytest
 from src.db.migrate import run_migrations
 from src.db.pg import repo_store
 
-pytestmark = [pytest.mark.postgres, pytest.mark.neo4j]
+# WS-D / DD2 demote: the five orchestration tests below mock all Neo4j + Postgres
+# I/O (``mock_pg_conn`` / ``mock_writer`` are MagicMocks, ``_neo4j_creds`` patched),
+# so the old module-level ``[pytest.mark.postgres, pytest.mark.neo4j]`` was
+# file-level contamination on them.  Marker dropped at module scope; the single
+# genuine integration test (test_two_profiles_neo4j_isolation_at_version_boundary,
+# which uses the real clean_pg + clean_neo4j fixtures and Bolt sessions) carries
+# its own per-test ``@pytest.mark.postgres`` + ``@pytest.mark.neo4j`` below.
 
 TEST_VERSION = "99.0"
 TEST_VERSION_ALT = "98.0"  # second version for isolation test
@@ -340,6 +346,8 @@ def _make_minimal_module_repo(
     return root
 
 
+@pytest.mark.postgres
+@pytest.mark.neo4j
 def test_two_profiles_neo4j_isolation_at_version_boundary(
     clean_pg,
     clean_neo4j,

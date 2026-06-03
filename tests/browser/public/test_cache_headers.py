@@ -48,7 +48,12 @@ import urllib.request
 
 import pytest
 
-pytestmark = pytest.mark.browser
+# WS-D / DD6-A1 demote: every test here uses only urllib + the astro_server
+# fixture (pnpm preview) — NO Playwright page/context/browser fixture, NO
+# chromium binary. Re-marked browser → astro so these Cache-Control/Vary header
+# assertions run in the lighter astro tier (no Playwright session, exempt from
+# the chromium-skip hook in tests/conftest.py::pytest_collection_modifyitems).
+pytestmark = pytest.mark.astro
 
 
 # ---------------------------------------------------------------------------
