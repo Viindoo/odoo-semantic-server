@@ -267,7 +267,7 @@ def _fetch_from_db(api_key_id: str) -> SessionState | None:
     )
 
 
-def set_active_version_db(api_key_id: str, odoo_version: str) -> None:
+def set_active_version_db(api_key_id: str, odoo_version: str) -> bool:
     """Persist *odoo_version* as the active version for *api_key_id*.
 
     Performs an UPSERT into ``api_key_session_state``, updating ``updated_at``
@@ -278,21 +278,27 @@ def set_active_version_db(api_key_id: str, odoo_version: str) -> None:
         api_key_id: The API key identifier (string form of the integer PK).
             If *api_key_id* is the sentinel ``'default'`` or any other
             non-numeric string (e.g. tests, CLI, stdio transport), the persist
-            is silently skipped — no DB write, no error.
+            is skipped — no DB write, no error.
         odoo_version: A concrete version string such as ``"17.0"``.
+
+    Returns:
+        ``True`` when the row was persisted; ``False`` when skipped because
+        *api_key_id* was non-numeric.  Callers use this to avoid emitting a
+        "set" receipt for a write that never happened (#248).
     """
     # Belt-and-suspenders guard: the 'default' sentinel means no authenticated
     # key is in scope (unit tests, CLI, stdio transport, or a context-propagation
-    # gap).  Silently skip rather than crash with ValueError: invalid literal.
+    # gap).  Skip rather than crash with ValueError: invalid literal.
     try:
         key_int = int(api_key_id)
     except (ValueError, TypeError):
         import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "set_active_version_db: non-numeric api_key_id %r — skipping persist",
+        _logging.getLogger(__name__).warning(
+            "set_active_version_db: non-numeric api_key_id %r — skipping persist "
+            "(authenticated HTTP should never reach this; see #248)",
             api_key_id,
         )
-        return
+        return False
 
     sql = """
         INSERT INTO api_key_session_state (api_key_id, odoo_version, updated_at)
@@ -308,9 +314,10 @@ def set_active_version_db(api_key_id: str, odoo_version: str) -> None:
             cur.execute(sql, (key_int, odoo_version))
 
     _cache_invalidate(api_key_id)
+    return True
 
 
-def set_active_profile_db(api_key_id: str, profile_name: str | None) -> None:
+def set_active_profile_db(api_key_id: str, profile_name: str | None) -> bool:
     """Persist *profile_name* as the active profile for *api_key_id*.
 
     Performs an UPSERT into ``api_key_session_state``, updating ``updated_at``
@@ -320,20 +327,25 @@ def set_active_profile_db(api_key_id: str, profile_name: str | None) -> None:
     Args:
         api_key_id: The API key identifier (string form of the integer PK).
             If *api_key_id* is the sentinel ``'default'`` or any other
-            non-numeric string, the persist is silently skipped.
+            non-numeric string, the persist is skipped.
         profile_name: Profile name such as ``"my-erp-prod"``, or ``None``
             to clear the active profile.
+
+    Returns:
+        ``True`` when the row was persisted; ``False`` when skipped because
+        *api_key_id* was non-numeric (mirrors ``set_active_version_db`` — #248).
     """
     # Belt-and-suspenders guard: skip persist for non-numeric api_key_id.
     try:
         key_int = int(api_key_id)
     except (ValueError, TypeError):
         import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "set_active_profile_db: non-numeric api_key_id %r — skipping persist",
+        _logging.getLogger(__name__).warning(
+            "set_active_profile_db: non-numeric api_key_id %r — skipping persist "
+            "(authenticated HTTP should never reach this; see #248)",
             api_key_id,
         )
-        return
+        return False
 
     sql = """
         INSERT INTO api_key_session_state (api_key_id, profile_name, updated_at)
@@ -349,6 +361,7 @@ def set_active_profile_db(api_key_id: str, profile_name: str | None) -> None:
             cur.execute(sql, (key_int, profile_name))
 
     _cache_invalidate(api_key_id)
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -81,6 +81,14 @@ class UsageLogMiddleware(Middleware):
             api_key_id = getattr(req.state, "api_key_id", None)
             tenant_id = getattr(req.state, "tenant_id", None)
             key_prefix = getattr(req.state, "key_prefix", None)
+            if api_key_id is None:
+                # #248: on stateful streamable-HTTP the AuthMiddleware scope-state
+                # mutation does not survive into the request_ctx Request the loop
+                # exposes here — recover the PK from the X-API-Key header (which
+                # does survive) via AuthMiddleware's warm cache.
+                api_key_id, tenant_id, key_prefix = _recover_identity_from_header(
+                    req, api_key_id, tenant_id, key_prefix
+                )
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
@@ -141,6 +149,12 @@ class UsageLogMiddleware(Middleware):
             req = get_http_request()
             api_key_id = getattr(req.state, "api_key_id", None)
             tenant_id = getattr(req.state, "tenant_id", None)
+            if api_key_id is None:
+                # #248: same scope-state loss as on_call_tool — recover from the
+                # X-API-Key header so odoo://auto/... resources honour the pin too.
+                api_key_id, tenant_id, _ = _recover_identity_from_header(
+                    req, api_key_id, tenant_id, None
+                )
         except Exception:
             pass  # no active HTTP request (e.g. stdio transport) — fine
 
@@ -151,6 +165,51 @@ class UsageLogMiddleware(Middleware):
         finally:
             _reset_server_api_key(key_token)   # reset to pre-call value
             _reset_server_tenant_id(tid_token)  # reset tenant_id in tandem
+
+
+def _recover_identity_from_header(req, api_key_id, tenant_id, key_prefix):
+    """Recover (api_key_id, tenant_id, key_prefix) from the ``X-API-Key`` header.
+
+    Root cause (#248): on the stateful streamable-HTTP transport the per-call
+    ``Request`` reaches these FastMCP hooks via the MCP ``request_ctx`` bridge,
+    but the ``request.state.api_key_id`` mutation ``AuthMiddleware`` wrote does
+    not survive the BaseHTTPMiddleware↔session-manager↔request_ctx boundary — so
+    the hooks read ``None`` and the session resolver falls through to the
+    ``'default'`` sentinel, silently ignoring ``set_active_version`` /
+    ``set_active_profile`` pins (``auto`` then resolves to the latest version).
+
+    The ``X-API-Key`` header DOES survive on the per-call scope (``scope["headers"]``
+    is set by the ASGI server and untouched by middleware), and ``AuthMiddleware``
+    has already populated the warm ``_KEY_CACHE`` / ``_TENANT_CACHE`` for this exact
+    key BEFORE this hook fires (dispatch runs before ``call_next``). Recover the
+    numeric PK from that cache. On a cache miss (TTL edge) leave the values
+    unchanged — the caller then gets the prior graceful ``'default'`` fallback,
+    so there is no regression versus the pre-fix behaviour.
+
+    Called only when ``api_key_id is None`` (state-loss path); a no-op otherwise.
+    Never raises — a recovery failure must not break the tool/resource response.
+    """
+    if api_key_id is not None:
+        return api_key_id, tenant_id, key_prefix
+    try:
+        raw_key = req.headers.get("X-API-Key")
+    except Exception:
+        return api_key_id, tenant_id, key_prefix
+    if not raw_key:
+        return api_key_id, tenant_id, key_prefix
+    try:
+        from src.mcp.middleware import _cache_get, _cache_get_tenant
+        hit, kid = _cache_get(raw_key)
+        if hit and kid is not None:
+            api_key_id = kid
+            t_hit, tid = _cache_get_tenant(raw_key)
+            if t_hit:
+                tenant_id = tid
+            if key_prefix is None:
+                key_prefix = raw_key[:12]
+    except Exception:
+        pass  # never raise from middleware
+    return api_key_id, tenant_id, key_prefix
 
 
 def _set_server_api_key(api_key_id: str | None):
