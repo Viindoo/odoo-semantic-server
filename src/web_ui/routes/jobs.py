@@ -38,6 +38,51 @@ def _is_pid_alive(pid: int) -> bool:
         return True  # process exists, different UID — assume alive
 
 
+# Owner-facing error categories (#237 follow-up). A job owner (tenant) legitimately
+# needs to know *why* their own index failed, but the raw error_msg is
+# ``str(e)[:1000]`` from the pipeline and can carry server file paths, repo URLs,
+# or stack traces. Each raw error maps to a FIXED, non-internal category string;
+# the raw text is NEVER echoed. Unrecognised errors fall to the generic default,
+# so the mapping is exhaustive-by-construction against current AND future error
+# producers — no raw detail can ever reach a non-admin owner.
+_JOB_ERROR_CATEGORIES = [
+    (("permission denied", "authentication failed", "auth fail", "publickey",
+      "deploy key", "could not read from remote", "host key", "ssh"),
+     "Repository access failed (authentication / deploy-key). "
+     "Verify the repo URL and deploy key."),
+    (("clone", "fetch", "git ", "reset --hard", "remote repository", "revision"),
+     "Git operation failed while cloning or updating the repository."),
+    (("timeout", "timed out"),
+     "Indexing timed out — try again or narrow the scope."),
+    (("neo4j", "postgres", "psycopg", "connection refused", "pool", "database"),
+     "The indexing backend was temporarily unavailable — please retry shortly."),
+    (("no space", "disk full", "memoryerror", "out of memory", "oom", "killed"),
+     "The server hit a resource limit during indexing. Contact support if it persists."),
+    (("syntaxerror", "parse", "ast.", "manifest", "invalid python"),
+     "A module failed to parse during indexing."),
+]
+_JOB_ERROR_DEFAULT = (
+    "Indexing failed due to an internal error. Contact support if it persists."
+)
+
+
+def sanitize_job_error(error_msg):
+    """Map a raw indexer error to a fixed owner-facing category (no internal leak).
+
+    Returns ``None`` for an empty error. For a non-empty error, returns a fixed
+    category summary chosen by substring match, NEVER the raw text — so server
+    paths, repo URLs, and stack traces in ``error_msg`` cannot leak to a
+    non-admin job owner (#237). Unrecognised errors return the generic default.
+    """
+    if not error_msg:
+        return None
+    low = str(error_msg).lower()
+    for needles, summary in _JOB_ERROR_CATEGORIES:
+        if any(n in low for n in needles):
+            return summary
+    return _JOB_ERROR_DEFAULT
+
+
 @router.get("/{job_id}/status")
 async def job_status(request: Request, job_id: int):
     """Return JSON status of a single indexer job.
@@ -89,7 +134,12 @@ async def job_status(request: Request, job_id: int):
     if pid is not None and job.get("status") == "running":
         is_alive = _is_pid_alive(pid)
 
-    # Defense-in-depth: omit error_msg for non-admin (raw exception / path leakage).
+    # Three-way error disclosure (#237 + follow-up):
+    #   - admin           → full raw error_msg (operators need the detail)
+    #   - non-admin owner → a sanitized category summary (in-scope by the time we
+    #     reach here; out-of-scope callers already returned 404 above) so the
+    #     owner learns *why* their own index failed without leaking server paths /
+    #     repo URLs / stack traces. pid stays admin-only.
     return JSONResponse(_json_safe({
         "id": job["id"],
         "profile_name": job["profile_name"],
@@ -97,7 +147,7 @@ async def job_status(request: Request, job_id: int):
         "pid": job["pid"] if is_admin else None,
         "started_at": job["started_at"],
         "finished_at": job["finished_at"],
-        "error_msg": job["error_msg"] if is_admin else None,
+        "error_msg": job["error_msg"] if is_admin else sanitize_job_error(job["error_msg"]),
         "created_at": job["created_at"],
         "is_alive": is_alive,
     }))
