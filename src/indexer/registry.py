@@ -193,14 +193,27 @@ def build_registry(
 
     for repo_path, repo_version in repo_version_pairs:
         repo_root = Path(repo_path)
-        for manifest_path in _find_manifests(repo_path, repo_version):
+        # Per-repo skip-summary counters (observability — emitted once per repo
+        # after the manifest loop). These let an operator distinguish genuine
+        # low coverage from "mostly not-installable" without enabling per-module
+        # spam. No skip behaviour changes — counting only.
+        manifest_paths = _find_manifests(repo_path, repo_version)
+        total_manifests = len(manifest_paths)
+        skipped_unparseable = 0
+        skipped_not_installable = 0
+        skipped_unknown_version = 0
+        skipped_license = 0
+        registered = 0
+        for manifest_path in manifest_paths:
             module_dir = Path(manifest_path).parent
             module_name = module_dir.name
 
             manifest = parse_manifest(manifest_path)
             if not manifest:
+                skipped_unparseable += 1
                 continue
             if not manifest.get('installable', True):
+                skipped_not_installable += 1
                 continue
 
             version_raw = manifest.get('version', '')
@@ -208,6 +221,7 @@ def build_registry(
             if odoo_version == "unknown":
                 odoo_version = repo_version  # fallback to version from scanner
             if odoo_version == "unknown":
+                skipped_unknown_version += 1
                 continue
 
             # Compute commit_sha: relative path from repo root to module directory
@@ -229,6 +243,7 @@ def build_registry(
             # --- ADR-0036: Policy chokepoint (D2) — single location, config-driven ---
             action = license_policy_action(effective_license)
             if action == "skip":
+                skipped_license += 1
                 _logger.warning(
                     "License policy: skipping module '%s' (license=%s, action=skip)."
                     " To enable, flip LICENSE_POLICY['%s'] in src/constants.py.",
@@ -299,5 +314,24 @@ def build_registry(
                 # else: keep existing
             else:
                 registry[odoo_version][module_name] = info
+            # Counts every manifest that reached registry insertion (including
+            # same-name conflicts that kept the existing entry — the manifest was
+            # still "registrable", not skipped).
+            registered += 1
+
+        # One summary line per repo — NOT one per skipped module (no spam).
+        _logger.info(
+            "registry scan %s (v%s): %d manifests → %d registered "
+            "(skipped: %d not-installable, %d license, %d unparseable, "
+            "%d unknown-version)",
+            repo_path,
+            repo_version,
+            total_manifests,
+            registered,
+            skipped_not_installable,
+            skipped_license,
+            skipped_unparseable,
+            skipped_unknown_version,
+        )
 
     return registry
