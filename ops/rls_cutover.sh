@@ -86,7 +86,7 @@ psql_owner -tAc "SELECT
   'emb_select='      ||has_table_privilege('osm_reader','embeddings','SELECT')||
   '  emb_NOwrite='   ||(NOT has_table_privilege('osm_reader','embeddings','INSERT'))||
   '  apikeys_select='||has_table_privilege('osm_reader','api_keys','SELECT')||
-  '  webui_users_select='||has_table_privilege('osm_reader','webui_users','SELECT')||
+  '  webui_users_isadmin_select='||has_column_privilege('osm_reader','webui_users','is_admin','SELECT')||
   '  session_insert='||has_table_privilege('osm_reader','api_key_session_state','INSERT')||
   '  not_super='      ||(NOT rolsuper)||'  not_bypassrls='||(NOT rolbypassrls)
   FROM pg_roles WHERE rolname='osm_reader'" || ok=0

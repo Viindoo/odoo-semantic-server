@@ -1,5 +1,6 @@
 -- migrations/m13_020_grant_webui_users_osm_reader.sql
--- Grant osm_reader SELECT on webui_users (API-key auth owner_is_admin lookup).
+-- Grant osm_reader column-level SELECT (id, is_admin) on webui_users
+-- (API-key auth owner_is_admin lookup).
 --
 -- Context (security refactor f9ccc23 / ADR-0034 RLS read split):
 --   f9ccc23 reworked verify_api_key_full() in src/db/auth_registry.py to read the
@@ -14,41 +15,47 @@
 --   (ADR-0034 A5). osm_reader was granted SELECT on api_keys but NEVER on
 --   webui_users, so on deploy this LEFT JOIN raised
 --       psycopg2.errors.InsufficientPrivilege: permission denied for table webui_users
---   → EVERY authenticated MCP call 500'd. The columns actually read are only
---   u.id (the join key) and u.is_admin.
+--   → EVERY authenticated MCP call 500'd. The columns actually read on the
+--   osm_reader path are ONLY u.id (the join key) and u.is_admin.
 --
 -- Deploy reality:
 --   m13_019 introduced the webui_users READ at the auth choke-point but its header
 --   wrongly assumed "no new tables → no osm_reader GRANT changes". The gap is a
 --   read of an EXISTING table the reader never had SELECT on. This migration closes
---   that grant gap. Prod was hot-fixed live with
+--   that grant gap. Prod was hot-fixed live with the BROAD full-table grant
 --       GRANT SELECT ON TABLE webui_users TO osm_reader;
---   so this migration is a pure idempotent no-op there (zero drift / no reconciliation).
+--   so this migration REVOKE-then-GRANTs to converge that live full-table-hotfixed
+--   prod (and any DB) DOWN to least-privilege column-level on deploy.
 --
--- Grant scope decision = FULL-TABLE `GRANT SELECT ON TABLE webui_users`:
---   (a) every existing osm_reader grant in ops/rls_create_osm_reader.sql is
---       full-table — consistency with the house convention;
---   (b) it matches the already-applied prod hotfix verbatim, so re-running this on
---       prod reconciles to a no-op (no drift to reconcile);
---   (c) the reader IS the MCP API-key auth authority — this read is on its hot path.
---   Least-privilege alternative considered + NOT chosen here: column-level
---   `GRANT SELECT (id, is_admin) ON webui_users TO osm_reader` would narrow the
---   reader away from password_hash / totp-related columns webui_users also holds.
---   We did not pick it: it diverges from the full-table convention and would NOT
---   match the prod hotfix, forcing a reconciliation step. Convention + no-reconcile
---   wins here; the reader is already a NOSUPERUSER/NOBYPASSRLS role and the auth
---   path never selects the secret columns.
+-- Grant scope decision = COLUMN-LEVEL `GRANT SELECT (id, is_admin) ON webui_users`:
+--   webui_users has NO row-level security and holds secrets (password_hash, email,
+--   oauth_id, totp-related columns). The osm_reader read path (verify_api_key_full)
+--   only ever projects id (the join key) + is_admin, so column-level SELECT keeps
+--   those secret columns unreadable by the read tier — strictly safer than the
+--   broad full-table grant and sufficient for the auth lookup. The sibling
+--   list_api_keys path that reads more webui_users columns runs on the :8003 owner
+--   connection, NOT on osm_reader, so the read tier never needs the wider columns.
+--   The REVOKE drops any pre-existing broad table-level SELECT (e.g. the prod
+--   hotfix) so we converge to least-privilege; the column GRANT then re-establishes
+--   exactly the two columns the auth path needs.
 --
 -- ops/rls_create_osm_reader.sql stays the SSOT for the role + full grant set; this
 -- grant is mirrored there. `python -m src.db.migrate` does NOT run that ops file, so
 -- this self-contained, pg_roles-guarded GRANT keeps a migrate-only deploy correct.
 --
 -- Idempotent — safe to re-run. pg_roles guard keeps it safe on a DB without the role
--- (matches the m13_011 / m13_014 / m13_018 in-migration grant idiom).
+-- (matches the m13_011 / m13_014 / m13_018 in-migration grant idiom). The REVOKE is
+-- a no-op if the broad grant is absent; the column GRANT is a no-op if already present.
 
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
-        GRANT SELECT ON TABLE webui_users TO osm_reader;
+        -- Drop any pre-existing broad table-level SELECT (prod was hot-fixed with
+        -- the full-table grant) so we converge to least-privilege column-level.
+        REVOKE SELECT ON TABLE webui_users FROM osm_reader;
+        -- osm_reader's only webui_users read (verify_api_key_full) projects just
+        -- id (join key) + is_admin. Column-level keeps password_hash/email/oauth_id
+        -- unreadable by the read tier (webui_users has NO RLS).
+        GRANT SELECT (id, is_admin) ON TABLE webui_users TO osm_reader;
     END IF;
 END $$;
