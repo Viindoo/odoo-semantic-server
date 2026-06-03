@@ -6,37 +6,46 @@ Before the fix, both tools returned a cheerful "Active … set" receipt even whe
 HTTP client that lost api_key_id propagation was told the pin succeeded while it
 had not. This guards the new contract:
 
-  - persist succeeded            → success receipt (unchanged)
-  - persist skipped + HTTP key   → LOUD error receipt (do not lie); tells the
-                                   client to pass an explicit version/profile
+  - persist succeeded            → success receipt (teaches "pass odoo_version='auto'")
+  - persist skipped + HTTP key   → LOUD error receipt (do not lie)
   - persist skipped + no HTTP key→ gentle stdio/CLI note (legit no-op)
 
 The neo4j "version indexed" check and the DB write are mocked, so this is a fast
 unit test of the receipt branch logic (no DB).
+
+NOTE: the server module is resolved LIVE from ``sys.modules`` inside each call and
+patched via ``patch.object`` on that exact object. Other tests re-import
+``src.mcp.server`` (``_import_server_module`` does ``sys.modules.pop`` + re-import),
+so a top-level ``import`` binding would point at a STALE module while a string
+``patch("src.mcp.server.…")`` targets the live one — the patch would silently miss
+and the tool would hit the real Neo4j. Resolving the live module keeps them aligned.
 """
 import asyncio
 from unittest.mock import MagicMock, patch
 
-from src.mcp import server as srv
 
-
-def _driver_with_hit():
-    """A _get_driver() stand-in whose version-exists query returns a truthy hit."""
-    return MagicMock()  # .session().__enter__().run().data() → truthy MagicMock
+def _live_server():
+    """Return the server module object currently in sys.modules (post any reload)."""
+    import importlib
+    import sys
+    return sys.modules.get("src.mcp.server") or importlib.import_module("src.mcp.server")
 
 
 def _call_set_active_version(*, persisted: bool, has_api_key: bool) -> str:
-    with patch("src.mcp.server._get_driver", return_value=_driver_with_hit()), \
+    srv = _live_server()
+    # MagicMock driver → .session().__enter__().run().data() is truthy → version "indexed".
+    with patch.object(srv, "_get_driver", return_value=MagicMock()), \
          patch("src.mcp.session.set_active_version_db", return_value=persisted), \
-         patch("src.mcp.server._http_request_has_api_key", return_value=has_api_key):
+         patch.object(srv, "_http_request_has_api_key", return_value=has_api_key):
         result = asyncio.run(srv.set_active_version.fn(odoo_version="17.0"))
     return result.content[0].text
 
 
 def _call_set_active_profile(*, persisted: bool, has_api_key: bool) -> str:
+    srv = _live_server()
     # profile_name=None skips the existence/authz checks → straight to persist.
     with patch("src.mcp.session.set_active_profile_db", return_value=persisted), \
-         patch("src.mcp.server._http_request_has_api_key", return_value=has_api_key):
+         patch.object(srv, "_http_request_has_api_key", return_value=has_api_key):
         result = asyncio.run(srv.set_active_profile.fn(profile_name=None))
     return result.content[0].text
 

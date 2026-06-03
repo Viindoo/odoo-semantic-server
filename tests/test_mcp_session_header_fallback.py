@@ -19,16 +19,17 @@ The ONLY mock is the HTTP boundary (``get_http_request``), used to faithfully
 reproduce the pinned state-loss (``request.state`` has no ``api_key_id``). It is
 NOT a tautology: deleting the recovery call turns the first test RED ('default').
 
-No DB needed — the background usage-log / audit tasks are patched to no-ops so the
-test is fast and runs on any tier.
+No DB needed — the background usage-log / audit tasks are patched to no-ops.
+
+NOTE: every module is imported LAZILY inside the helpers/fixtures (not at module
+top). Other tests in the suite re-import ``src.mcp.server`` (``_import_server_module``
+does ``sys.modules.pop`` + re-import), so a top-level binding would point at a STALE
+module while ``patch`` targets the live one — making the patch silently miss. Lazy
+imports guarantee the patched object and the object under test are the same.
 """
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from src.mcp import middleware as _mw
-from src.mcp import server as _srv
-from src.mcp.tool_log_middleware import UsageLogMiddleware
 
 RAW_KEY = "osm_test_248_rawkey"
 PK = 424248
@@ -39,6 +40,9 @@ TENANT = 77
 def _isolate_ctx_and_cache():
     """Snapshot/restore the server ContextVars and clear the auth cache for RAW_KEY
     so neither leaks across tests (token discipline + cache hygiene)."""
+    from src.mcp import middleware as _mw
+    from src.mcp import server as _srv
+
     ak = _srv._api_key_id_var.set(_srv._api_key_id_var.get())
     tid = _srv._tenant_id_var.set(_srv._tenant_id_var.get())
     _mw._cache_invalidate(RAW_KEY)
@@ -48,6 +52,13 @@ def _isolate_ctx_and_cache():
         _srv._api_key_id_var.reset(ak)
         _srv._tenant_id_var.reset(tid)
         _mw._cache_invalidate(RAW_KEY)
+
+
+def _seed_cache():
+    from src.mcp import middleware as _mw
+    _mw._cache_set(RAW_KEY, PK)
+    _mw._cache_set_tenant(RAW_KEY, TENANT)
+    _mw._cache_set_owner(RAW_KEY, None, False)
 
 
 class _State:
@@ -69,8 +80,11 @@ def _fake_request(headers: dict, *, state_api_key_id=None, state_tenant_id=None)
 async def _capture_identity_via_on_call_tool(fake_req) -> dict:
     """Run the real on_call_tool hook with a stub call_next that records what
     _get_api_key_id()/_get_tenant_id() return INSIDE the tool body."""
+    from src.mcp import server as _srv
+    from src.mcp import tool_log_middleware as tlm
+
     captured: dict = {}
-    mw = UsageLogMiddleware()
+    mw = tlm.UsageLogMiddleware()
     ctx = MagicMock()
     ctx.message.name = "model_inspect"
 
@@ -79,16 +93,19 @@ async def _capture_identity_via_on_call_tool(fake_req) -> dict:
         captured["tenant_id"] = _srv._get_tenant_id()
         return MagicMock()
 
-    with patch("src.mcp.tool_log_middleware.get_http_request", return_value=fake_req), \
-         patch("src.mcp.tool_log_middleware._log_tool_call_async"), \
-         patch("src.mcp.tool_log_middleware._audit_unscoped_tool_call_async"):
+    with patch.object(tlm, "get_http_request", return_value=fake_req), \
+         patch.object(tlm, "_log_tool_call_async"), \
+         patch.object(tlm, "_audit_unscoped_tool_call_async"):
         await mw.on_call_tool(ctx, call_next)
     return captured
 
 
 async def _capture_identity_via_on_read_resource(fake_req) -> dict:
+    from src.mcp import server as _srv
+    from src.mcp import tool_log_middleware as tlm
+
     captured: dict = {}
-    mw = UsageLogMiddleware()
+    mw = tlm.UsageLogMiddleware()
     ctx = MagicMock()
 
     async def call_next(_ctx):
@@ -96,7 +113,7 @@ async def _capture_identity_via_on_read_resource(fake_req) -> dict:
         captured["tenant_id"] = _srv._get_tenant_id()
         return []
 
-    with patch("src.mcp.tool_log_middleware.get_http_request", return_value=fake_req):
+    with patch.object(tlm, "get_http_request", return_value=fake_req):
         await mw.on_read_resource(ctx, call_next)
     return captured
 
@@ -104,14 +121,10 @@ async def _capture_identity_via_on_read_resource(fake_req) -> dict:
 @pytest.mark.asyncio
 async def test_call_tool_recovers_pk_from_header_when_state_lost():
     """#248 core: state-loss + warm cache → tool body sees the real PK, not 'default'."""
-    _mw._cache_set(RAW_KEY, PK)
-    _mw._cache_set_tenant(RAW_KEY, TENANT)
-    _mw._cache_set_owner(RAW_KEY, None, False)
-
+    _seed_cache()
     captured = await _capture_identity_via_on_call_tool(
         _fake_request({"X-API-Key": RAW_KEY})  # state has NO api_key_id (loss)
     )
-
     assert captured["api_key_id"] == PK, (
         f"tool body must see the recovered PK {PK}, got {captured['api_key_id']!r} "
         "— set_active_version would no-op and 'auto' would resolve to latest (#248)"
@@ -123,14 +136,10 @@ async def test_call_tool_recovers_pk_from_header_when_state_lost():
 @pytest.mark.asyncio
 async def test_read_resource_recovers_pk_from_header_when_state_lost():
     """odoo://auto/... resources honour the pin too (same seam, on_read_resource)."""
-    _mw._cache_set(RAW_KEY, PK)
-    _mw._cache_set_tenant(RAW_KEY, TENANT)
-    _mw._cache_set_owner(RAW_KEY, None, False)
-
+    _seed_cache()
     captured = await _capture_identity_via_on_read_resource(
         _fake_request({"X-API-Key": RAW_KEY})
     )
-
     assert captured["api_key_id"] == PK
     assert captured["tenant_id"] == TENANT
 
@@ -139,6 +148,7 @@ async def test_read_resource_recovers_pk_from_header_when_state_lost():
 async def test_state_present_wins_over_header_fallback():
     """No regression: when request.state carries api_key_id, it is used as-is and
     the header fallback is not consulted (fallback only fires on state-loss)."""
+    from src.mcp import middleware as _mw
     # Seed the cache with a DIFFERENT PK; if the fallback wrongly fired it would
     # clobber the state value, so this also guards the 'only on None' guard.
     _mw._cache_set(RAW_KEY, 999999)
@@ -148,7 +158,6 @@ async def test_state_present_wins_over_header_fallback():
     captured = await _capture_identity_via_on_call_tool(
         _fake_request({"X-API-Key": RAW_KEY}, state_api_key_id=PK, state_tenant_id=TENANT)
     )
-
     assert captured["api_key_id"] == PK
     assert captured["tenant_id"] == TENANT
 
@@ -168,6 +177,6 @@ async def test_cold_cache_degrades_gracefully_to_default():
 async def test_no_header_no_recovery_stdio_path():
     """stdio / no-auth transport: no X-API-Key header → no recovery, 'default'
     (the legitimate no-op path; must not raise)."""
-    _mw._cache_set(RAW_KEY, PK)  # warm, but no header to look it up by
+    _seed_cache()  # warm, but no header to look it up by
     captured = await _capture_identity_via_on_call_tool(_fake_request({}))
     assert captured["api_key_id"] == "default"
