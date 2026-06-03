@@ -45,6 +45,14 @@ class TestVersionReceiptHonesty:
     def test_persisted_success_receipt(self):
         text = _call_set_active_version(persisted=True, has_api_key=True)
         assert "Active version set to '17.0'" in text
+        # Post ADR-0029 amendment (odoo_version required) + #248 fix: the receipt
+        # must teach the still-valid path (pass 'auto'), NOT the obsolete "omit"
+        # contract the CEO flagged on odoo-mcp-client PR #38.
+        assert "omit odoo_version" not in text, (
+            "Receipt must not advertise omitting odoo_version — it is now a "
+            "required parameter on the 19 version-bearing tools"
+        )
+        assert "auto" in text
 
     def test_skipped_on_http_is_loud_error_not_a_lie(self):
         text = _call_set_active_version(persisted=False, has_api_key=True)

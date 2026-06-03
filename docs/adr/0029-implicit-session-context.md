@@ -327,6 +327,24 @@ stdio path; state-present → no fallback). `tests/test_mcp_session_receipt_hone
 three receipt branches. (The end-to-end state-loss is empirically confirmed on prod; a full
 uvicorn-socket stateful-handshake test is a possible hardening follow-up.)
 
+**Receipt wording aligned.** The `set_active_version` *success* receipt previously read "calls that
+omit `odoo_version=` will resolve to this version" — obsolete after this same ADR's required-version
+amendment (omission is now a validation error on the 19 tools) and non-functional under #248. It now
+reads "pass `odoo_version='auto'` to reuse this pin", which is accurate under both the required-version
+rule and the restored sticky resolution. (`set_active_profile` is unchanged: `profile_name` is NOT in
+the required set, so omission remains valid for the profile dimension.) This closes the
+surface-description point raised on `Viindoo/odoo-mcp-client#38`.
+
+**Pinned-stack non-reproduction (honest scope).** The state-loss was confirmed live on production, but
+does NOT reproduce under the currently pinned `mcp 1.27.0 / fastmcp 2.14.7 / starlette 1.0.0` stack in
+a local real-socket harness — there `request.state.api_key_id` survives into the tool body. The
+header-fallback is therefore a **defense-in-depth recovery**: it activates precisely on the prod
+topology that drops scope-state and is a no-op where state already propagates, so it is safe under any
+stack. Consequently a real-socket RED→GREEN test is not achievable on the pinned stack; the guard is
+the hook-level `tests/test_mcp_session_header_fallback.py` (which injects the state-loss precondition
+and is RED without the recovery). Revisit a socket-level isolation test only if a future
+mcp/fastmcp/starlette bump reintroduces the loss.
+
 **References.** `src/mcp/tool_log_middleware.py` (`_recover_identity_from_header`),
 `src/mcp/session.py` (`set_active_*_db` → `bool`), `src/mcp/server.py` (`_http_request_has_api_key` +
 receipt branches). No migration. Tool count stays **24**.

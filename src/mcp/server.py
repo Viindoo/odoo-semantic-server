@@ -6074,7 +6074,9 @@ def set_active_version(odoo_version: str) -> ToolResult:
     return ToolResult(content=[TextContent(type="text",
         text=(
             f"Active version set to '{normalized}' for this API key (TTL 24h).\n"
-            "Subsequent tool calls that omit odoo_version= will resolve to this version."
+            "Pass odoo_version='auto' on subsequent calls to reuse this version "
+            "(the version-required tools no longer accept an omitted odoo_version; "
+            "'auto' resolves to this pin)."
         )
     )])
 

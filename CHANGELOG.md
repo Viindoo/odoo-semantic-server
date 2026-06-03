@@ -25,10 +25,18 @@ All notable changes to Odoo Semantic MCP are documented here.
   usage/audit/tenant-attribution call sites that were also mis-attributed to `'default'`.
   `set_active_version`/`set_active_profile` now emit **honest receipts**: success only when the row
   was persisted; a loud error on a skipped write over authenticated HTTP; a gentle no-op note on
-  stdio/CLI (silent `.debug` skip → `.warning`). New tests
-  `tests/test_mcp_session_header_fallback.py` (RED-able real-hook regression) +
-  `tests/test_mcp_session_receipt_honesty.py`. No migration; tool count stays **24**. ADR-0029
-  amended.
+  stdio/CLI (silent `.debug` skip → `.warning`). The `set_active_version` success receipt also drops
+  the obsolete "calls that omit `odoo_version=` will resolve to this version" wording (omission is
+  now a validation error after the ADR-0029 required-version amendment) — it teaches "pass
+  `odoo_version='auto'` to reuse this pin" instead (closes the surface-description point raised on
+  Viindoo/odoo-mcp-client#38). New tests `tests/test_mcp_session_header_fallback.py` (RED-able
+  real-hook regression) + `tests/test_mcp_session_receipt_honesty.py`. No migration; tool count stays
+  **24**. ADR-0029 amended.
+  > **Note (pinned-stack non-repro):** the state-loss was confirmed live on production but does NOT
+  > reproduce under the currently pinned mcp 1.27.0 / fastmcp 2.14.7 / starlette 1.0.0 stack locally
+  > (`request.state.api_key_id` survives there). The header-fallback is therefore a robust
+  > defense-in-depth recovery that activates exactly on the prod topology that loses state, and is a
+  > no-op where state already propagates — so it is safe to ship regardless of stack.
 - **#237 follow-up (web-UI UX, non-security):** `GET /api/jobs/{id}/status` now returns a **sanitized
   category summary** of `error_msg` to a non-admin job owner (in-scope) instead of `null`, so the
   self-service portal can show *why* an index failed without leaking server paths / repo URLs / stack
