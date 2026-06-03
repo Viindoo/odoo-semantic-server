@@ -6,6 +6,11 @@
 -- embeddings_tenant policy. It is granted EXACTLY what the :8002 process touches
 -- at runtime — not just `embeddings`. Besides the ANN search, :8002 does:
 --   * API-key auth        → SELECT api_keys (fail-closed 401 without it) + UPDATE last_used_at
+--                           + column-level SELECT (id, is_admin) on webui_users
+--                             (owner_is_admin lookup — verify_api_key_full LEFT JOIN,
+--                             f9ccc23). Column-level least-privilege: webui_users has
+--                             NO RLS + holds password_hash/email/oauth_id; the auth
+--                             path only needs the join key + is_admin flag.
 --   * tenant scope/profile → SELECT profiles
 --   * session pinning      → SELECT/INSERT/UPDATE api_key_session_state (ADR-0029)
 --   * repo URL display     → SELECT repos
@@ -45,6 +50,7 @@ GRANT SELECT ON TABLE embeddings TO osm_reader;
 -- 4. Mandatory reads for the :8002 request path.
 GRANT SELECT ON TABLE api_keys TO osm_reader;   -- API-key auth (fail-closed 401 without it)
 GRANT UPDATE ON TABLE api_keys TO osm_reader;   -- last_used_at touch (best-effort)
+GRANT SELECT (id, is_admin) ON TABLE webui_users TO osm_reader; -- API-key auth owner_is_admin lookup (verify_api_key_full LEFT JOIN webui_users — f9ccc23); column-level (id, is_admin) least-privilege — webui_users has NO RLS + holds password_hash/email
 GRANT SELECT ON TABLE profiles TO osm_reader;   -- resolve_tenant_scope + set_active_profile
 GRANT SELECT ON TABLE repos    TO osm_reader;   -- repo URL display (best-effort)
 -- M10B P0: per-API-key plan lookup + monthly quota counter (ADR-0039 control plane).
