@@ -540,6 +540,22 @@ def _http_request_has_api_key() -> bool:
         return False
 
 
+class TenantResolutionDenied(RuntimeError):
+    """Raised when the tenant of an AUTHENTICATED HTTP key cannot be resolved.
+
+    Fail-closed sentinel for the #248 context-boundary edge (security): a
+    streamable-HTTP request that carries an ``X-API-Key`` header but whose
+    tenant is neither in the ContextVar nor recoverable from the warm cache, AND
+    whose authoritative DB lookup is unavailable / fails. In that state we must
+    NOT fall through to ``None`` (which ``_effective_allowed`` / ``_allowed_to_guc``
+    treat as the unrestricted ``'*'`` admin sentinel) — doing so would let a
+    tenant-scoped key read ACROSS tenants. Raising instead surfaces a clean deny
+    at the read entry points (which already wrap tenant resolution in
+    ``try/except`` → structured ToolResult error, or let the FastMCP layer turn
+    the raise into a JSON-RPC error). No data is served on this edge.
+    """
+
+
 def _get_tenant_id() -> int | None:
     """Return the tenant_id for the current async/sync context (ADR-0034 D4.1 plumbing).
 
@@ -556,8 +572,151 @@ def _get_tenant_id() -> int | None:
 
     ContextVar semantics: each coroutine has its own isolated copy so
     concurrent requests cannot interfere with each other's tenant scope.
+
+    #248 context-boundary fallback (SECURITY — tenant-isolation bypass)
+    ------------------------------------------------------------------
+    On the stateful streamable-HTTP transport FastMCP runs the tool body in a
+    ``contextvars.Context`` captured per-connection BEFORE the per-call
+    ``UsageLogMiddleware.on_call_tool`` runs. ``_set_server_tenant_id(tenant_id)``
+    therefore mutates a context that is NOT an ancestor of the tool-body context,
+    so a bare ``_tenant_id_var.get()`` reads ``None`` for EVERY HTTP call — even a
+    tenant-scoped key. ``None`` then flows ``_get_allowed_profiles`` →
+    ``_effective_allowed`` → ``_allowed_to_guc(None) = '*'`` → the RLS
+    ``app.allowed_profiles`` GUC becomes ``'*'`` and the policy reads ALL profiles
+    across ALL tenants. That is the exact parallel of the api_key_id bug
+    (commit ddada46), here with a tenant-isolation (ADR-0034) consequence.
+
+    So when the ContextVar is ``None`` we make a second, additive attempt to
+    recover the tenant from the CURRENT request's own ``X-API-Key`` header. The
+    overloaded ``None`` is disambiguated as follows:
+
+      - ContextVar is a real int                    → return it (primary path).
+      - ContextVar None, no HTTP request / no header → ``None`` (stdio/CLI/local
+        admin — unchanged, legitimate unrestricted access).
+      - ContextVar None, header present, warm-cache hit with int   → that int
+        (tenant-scoped key — CLOSES the bypass).
+      - ContextVar None, header present, warm-cache hit with None   → ``None``
+        (genuine admin / global key — tenant_id IS NULL in DB; correct).
+      - ContextVar None, header present, warm-cache MISS (TTL race) → FAIL-CLOSED:
+        resolve AUTHORITATIVELY via ``verify_api_key_full`` (the same DB path the
+        middleware uses on cache miss). Only a confirmed NULL tenant returns
+        ``None``; a real tenant returns its int; if even the authoritative lookup
+        is unavailable/fails we RAISE ``TenantResolutionDenied`` rather than widen
+        to unrestricted. The warm cache is populated by AuthMiddleware BEFORE this
+        hook fires, so this DB edge is rare — correctness over micro-perf.
+
+    The recovery derives the key material SOLELY from ``get_http_request()`` (the
+    request bound to the current ASGI task), so it can never bleed a tenant from
+    one concurrent request into another. ContextVar stays PRIMARY (ADR-0029);
+    the fallback only fires when it is ``None``.
     """
-    return _tenant_id_var.get()
+    value = _tenant_id_var.get()
+    if value is not None:
+        # ContextVar propagated correctly (stdio, in-process tests, or a
+        # transport where on_call_tool shares the tool-body context).
+        return value
+    # ContextVar is None — could be a genuine admin/global key OR the #248
+    # context-boundary loss. Disambiguate from the request's own header.
+    return _recover_tenant_id_from_request()
+
+
+def _recover_tenant_id_from_request() -> int | None:
+    """Recover the tenant_id for the current request when the ContextVar is None.
+
+    The #248 fallback for ``_get_tenant_id`` (security: tenant-isolation bypass).
+    Mirrors ``_recover_identity_from_header`` in tool_log_middleware.py but with
+    an authoritative fail-closed step on cache miss.
+
+    Returns ``None`` ONLY when the absence of a tenant is legitimate:
+      - no active HTTP request / no ``X-API-Key`` header (stdio/CLI/local admin), or
+      - the key is authoritatively a global/admin key (tenant_id IS NULL in DB,
+        confirmed via warm cache OR ``verify_api_key_full``).
+
+    Returns an ``int`` when the request's key is tenant-scoped — this is what
+    closes the GUC='*' bypass.
+
+    Raises ``TenantResolutionDenied`` on the dangerous edge: an AUTHENTICATED key
+    (``X-API-Key`` present) whose tenant is neither cached nor resolvable via the
+    authoritative DB lookup. Failing closed here is mandatory — returning ``None``
+    would widen a scoped key to the unrestricted ``'*'`` GUC.
+
+    SECURITY: the key material comes solely from ``get_http_request()`` — the
+    request bound to the current ASGI task — so the recovered tenant can never be
+    one belonging to a different concurrent request.
+    """
+    # 1) No HTTP request at all (stdio / CLI / in-process test) → legitimate None.
+    try:
+        from fastmcp.server.dependencies import get_http_request
+        raw_key = get_http_request().headers.get("X-API-Key")
+    except Exception:
+        return None
+    # 2) No X-API-Key header on the request → unauthenticated / local → None.
+    if not raw_key:
+        return None
+
+    # 3) Authenticated request — consult the warm tenant cache first. The
+    #    middleware's AuthMiddleware.dispatch already populated it for THIS key
+    #    before the tool hook fired, so a hit is the overwhelmingly common case.
+    try:
+        from src.mcp.middleware import _cache_get_tenant
+        hit, tenant_id = _cache_get_tenant(raw_key)
+    except Exception:
+        hit, tenant_id = False, None
+    if hit:
+        # hit + int  → tenant-scoped key (CLOSES the bypass).
+        # hit + None → genuine admin / global key (tenant_id IS NULL) → unrestricted.
+        return tenant_id
+
+    # 4) FAIL-CLOSED edge: authenticated key but cold tenant cache (TTL race).
+    #    Resolve AUTHORITATIVELY via the same DB path the middleware uses on a
+    #    cache miss. We must NOT silently widen to None-as-unrestricted here.
+    return _authoritative_tenant_id_or_deny(raw_key)
+
+
+def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
+    """Resolve tenant_id from the DB for *raw_key*; deny if unresolvable.
+
+    Reuses ``verify_api_key_full`` — the same authoritative lookup
+    ``AuthMiddleware`` uses on a cache miss — returning the (key_id, tenant_id,
+    user_id, owner_is_admin) tuple. We also warm the in-memory caches on success
+    so the next call in this TTL window takes the fast path.
+
+    Returns the tenant_id int (tenant-scoped key) or ``None`` ONLY when the DB
+    authoritatively confirms tenant_id IS NULL (genuine admin/global key).
+
+    Raises ``TenantResolutionDenied`` when the key cannot be authoritatively
+    resolved — verify returns ``None`` (key vanished / deactivated mid-window),
+    an unexpected shape, or the DB is unavailable. Failing closed is mandatory:
+    an authenticated key with an unknown tenant must never widen to the
+    unrestricted ``'*'`` GUC.
+    """
+    try:
+        from src.db.pg import auth_store
+        result = auth_store().verify_api_key_full(raw_key)
+    except Exception as exc:
+        # DB unavailable / verify raised — cannot confirm admin status, so deny.
+        raise TenantResolutionDenied(
+            "tenant could not be resolved for an authenticated key "
+            "(authoritative lookup unavailable) — denying to preserve tenant isolation"
+        ) from exc
+    if result is None or not (isinstance(result, tuple) and len(result) == 4):
+        # Key not active/valid, or an unexpected return shape — deny.
+        raise TenantResolutionDenied(
+            "tenant could not be resolved for an authenticated key "
+            "(key inactive or lookup returned no row) — denying to preserve tenant isolation"
+        )
+    key_id, tenant_id, user_id, owner_is_admin = result
+    # Warm the caches so the rest of this request / TTL window is fast and
+    # consistent with the middleware's own population.
+    try:
+        from src.mcp.middleware import _cache_set, _cache_set_owner, _cache_set_tenant
+        _cache_set(raw_key, key_id)
+        _cache_set_tenant(raw_key, tenant_id)
+        _cache_set_owner(raw_key, user_id, owner_is_admin)
+    except Exception:
+        pass  # cache warming is best-effort — never block on it
+    # tenant_id int → scoped key; None → DB-confirmed admin/global (unrestricted).
+    return tenant_id
 
 
 # ContextVar storage for API key ID — populated by UsageLogMiddleware.
