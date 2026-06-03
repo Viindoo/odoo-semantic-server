@@ -454,13 +454,74 @@ def _get_api_key_id() -> str:
     _api_key_id_var.set() before each tool call and resets it in finally.
     Falls back to 'default' when not set (unit tests, CLI invocations).
 
+    #248 context-boundary fallback
+    ------------------------------
+    On the stateful streamable-HTTP transport FastMCP runs the tool body in a
+    ``contextvars.Context`` that is captured per-connection BEFORE the per-call
+    ``UsageLogMiddleware.on_call_tool`` runs. The ``_api_key_id_var.set()`` the
+    middleware performs therefore mutates a context that is NOT an ancestor of
+    the tool-body execution context — so the tool body still reads the
+    ``'default'`` sentinel even though the middleware (reading in its OWN
+    context) logged the correct numeric PK. That asymmetry is exactly the #248
+    bug: ``set_active_version`` / ``set_active_profile`` skipped the persist and
+    returned "session context unavailable".
+
+    When the ContextVar value is still the ``'default'`` sentinel we therefore
+    make a second, additive attempt: recover the numeric PK directly from the
+    CURRENT HTTP request's own ``X-API-Key`` header via the warm auth cache
+    (the same machinery the middleware uses). This derives the id ONLY from the
+    request's own header — never from a shared/global — so it cannot bleed an
+    id from one request into another. On any miss / no HTTP request we keep
+    returning ``'default'`` (graceful, no regression); this function never
+    raises.
+
     Note on the runtime type: the annotation is ``str``, but on the #248
-    header-recovery path the middleware stores the numeric PK recovered from the
-    auth cache, so the value can be an ``int`` at runtime. Downstream consumers
-    that must coerce it (e.g. ``session.set_active_*_db`` doing ``int(...)``)
-    already accept both forms; do not rely on it always being a string.
+    header-recovery path the recovered value is the numeric PK from the auth
+    cache, so the value can be an ``int`` at runtime. Downstream consumers that
+    must coerce it (e.g. ``session.set_active_*_db`` doing ``int(...)``) already
+    accept both forms; do not rely on it always being a string.
     """
-    return _api_key_id_var.get()
+    value = _api_key_id_var.get()
+    if value != "default":
+        # ContextVar propagated correctly (stdio, in-process tests, or a
+        # transport where on_call_tool shares the tool-body context).
+        return value
+    # ContextVar is the sentinel — try the per-request header-recovery fallback.
+    recovered = _recover_api_key_id_from_request()
+    return recovered if recovered is not None else value
+
+
+def _recover_api_key_id_from_request() -> int | None:
+    """Recover the numeric api_key_id from the current request's X-API-Key header.
+
+    Used as the #248 fallback when ``_api_key_id_var`` is still ``'default'``
+    inside a tool body (FastMCP context-boundary loss on stateful
+    streamable-HTTP). Reuses the exact warm-cache lookup the FastMCP middleware
+    uses, so the id is the same numeric PK ``AuthMiddleware`` already resolved
+    for THIS request.
+
+    SECURITY: the key material comes solely from ``get_http_request()`` — the
+    request bound to the current ASGI task — so the recovered id can never be
+    one belonging to a different concurrent request / tenant. Returns ``None``
+    on any of: no active HTTP request, no ``X-API-Key`` header, or a cache miss
+    (TTL edge) — the caller then keeps the graceful ``'default'`` sentinel.
+    Never raises.
+    """
+    try:
+        from fastmcp.server.dependencies import get_http_request
+        raw_key = get_http_request().headers.get("X-API-Key")
+    except Exception:
+        return None
+    if not raw_key:
+        return None
+    try:
+        from src.mcp.middleware import _cache_get
+        hit, kid = _cache_get(raw_key)
+        if hit and kid is not None:
+            return kid
+    except Exception:
+        return None
+    return None
 
 
 def _http_request_has_api_key() -> bool:
