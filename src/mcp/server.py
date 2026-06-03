@@ -1533,10 +1533,10 @@ async def find_examples(
         context_module: Boost results from modules this module depends on.
         chunk_types: Filter by type: method, field, view, qweb, js_era1,
             js_era2, js_era3. Default: all types.
-        profile_name: Profile filter for Neo4j rerank (ADR-0016 D6).
+        profile_name: Optional profile / tenant scope filter.
 
     Returns:
-        Header + N results ranked by cosine + centrality + context boost.
+        Header + N results ranked by relevance.
         Each result: score, type, module, entity, file path, content snippet.
 
     Example:
@@ -2528,18 +2528,25 @@ def _lint_check(
 
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
-        kind_prefix = (
-            "pylint" if language == "python"
-            else "eslint"  # javascript
-        )
-        rules = session.run("""
-            MATCH (l:LintRule {odoo_version: $v})
-            WHERE l.kind STARTS WITH $kp
-            RETURN l.rule_id AS rule_id,
-                   l.severity AS severity,
-                   l.message AS message,
-                   l.kind AS kind
-        """, v=odoo_version, kp=kind_prefix).data()
+        if language == "python":
+            rules = session.run("""
+                MATCH (l:LintRule {odoo_version: $v})
+                WHERE l.kind STARTS WITH 'pylint'
+                RETURN l.rule_id AS rule_id,
+                       l.severity AS severity,
+                       l.message AS message,
+                       l.kind AS kind
+            """, v=odoo_version).data()
+        else:  # javascript: ESLint rules + Odoo JS-targeted pylint rules (file_pattern *.js)
+            rules = session.run("""
+                MATCH (l:LintRule {odoo_version: $v})
+                WHERE l.kind STARTS WITH 'eslint'
+                   OR (l.kind STARTS WITH 'pylint' AND l.file_pattern ENDS WITH '.js')
+                RETURN l.rule_id AS rule_id,
+                       l.severity AS severity,
+                       l.message AS message,
+                       l.kind AS kind
+            """, v=odoo_version).data()
         curate_rec = session.run("""
             MATCH (sm:SpecMetadata {kind: 'lint', odoo_version: $v})
             RETURN sm.curate_status AS curate_status
@@ -4940,7 +4947,7 @@ async def suggest_pattern(
         limit: Max patterns to return (default 5).
 
     Returns:
-        Tree list of patterns ranked by cosine score, each with snippet (first
+        Tree list of patterns ranked by relevance score, each with snippet (first
         5 lines), file ref, and gotchas. Empty index → instruction to seed.
 
     Example:
@@ -6524,7 +6531,7 @@ def resolve_stylesheet(
     module: str,
     odoo_version: RequiredOdooVersion,
 ) -> str:
-    """Enumerate CSS/SCSS stylesheets for an Odoo module with import chain.
+    """Enumerate CSS/SCSS stylesheets for an Odoo module and their @import dependencies.
 
     TRIGGER when: "what stylesheets does module X have", "show CSS files in
     website_sale", "list SCSS imports for web module", "module Y có file CSS/SCSS
@@ -6532,14 +6539,14 @@ def resolve_stylesheet(
     PREFER over: find_style_override when you want an overview of all stylesheets
     in a module, not a specific selector search.
     SKIP when: searching for a specific CSS selector or SCSS variable across
-    modules — use find_style_override (ANN search).
+    modules — use find_style_override.
 
     Args:
         module: Odoo module technical name (e.g. 'web', 'website_sale').
 
     Returns:
         Tree listing each stylesheet with language, stat counters
-        (selectors, vars, mixins, imports), and resolved :IMPORTS chain.
+        (selectors, vars, mixins, imports), and the resolved @import dependency chain.
 
     Example:
         resolve_stylesheet("web", "17.0")
@@ -6567,9 +6574,9 @@ async def find_style_override(
 ) -> str:
     """Find CSS selectors or SCSS variables/mixins across modules + override order.
 
-    Uses pgvector ANN on indexed css/scss/less chunks to locate declarations, then
-    traces :IMPORTS edges to show which modules re-declare the same selector
-    (override order — last writer wins in CSS cascade).
+    Searches indexed css/scss/less stylesheets to locate where the selector or
+    variable is declared, then shows which modules re-declare it (override order —
+    last writer wins in the CSS cascade).
 
     TRIGGER when: "which module overrides .o_form_view selector", "where is
     $primary variable defined", "find CSS override for .btn-primary", "module
@@ -6585,7 +6592,7 @@ async def find_style_override(
         limit: Max results to return (default 5).
 
     Returns:
-        Ranked ANN hits with chunk content, cosine score, and :IMPORTS
+        Ranked matches with the declaration snippet, a relevance score, and the
         override chain showing which modules import the matched file.
 
     Example:
