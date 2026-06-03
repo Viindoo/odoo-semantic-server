@@ -59,6 +59,9 @@ def main() -> None:
     if env_file:
         check_env_file_perms(env_file)
 
+    from src.web_ui.auth import _enforce_bcrypt_floor
+    _enforce_bcrypt_floor()
+
     if not get_fernet_key():
         if os.getenv("ENVIRONMENT", "").lower() == "production":
             log.error(

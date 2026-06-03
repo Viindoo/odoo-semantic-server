@@ -11,6 +11,13 @@ from pathlib import Path
 import pytest
 from neo4j import GraphDatabase
 
+# Test-only bcrypt work factor. Production uses cost=12 (ADR-0011); the ~45
+# password-hashing tests don't need that strength, and a cost-12 hash is ~0.4s
+# each. Lower to 4 here so auth/MFA tests run fast. setdefault preserves an
+# explicit shell/CI override (e.g. a fidelity test that wants cost=12). Must be
+# set BEFORE src.web_ui.auth is first imported (it reads this at module load).
+os.environ.setdefault("BCRYPT_ROUNDS", "4")
+
 NEO4J_URI = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_TEST_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_TEST_PASSWORD", "password")
@@ -578,19 +585,11 @@ def pg_conn():
     conn.close()
 
 
-@pytest.fixture
-def clean_pg(pg_conn):
-    """Drop test schema tables + yoyo state before and after each test (idempotent).
-
-    yoyo tracks applied migrations in _yoyo_migration.  Leaving this table
-    intact between tests causes run_migrations() to report '0 pending' while
-    the schema tables (dropped earlier) are absent — producing confusing test
-    failures.  Both the schema tables and yoyo internal tables are therefore
-    dropped together to guarantee a truly clean starting state.
-
-    Drop order respects FK constraints: dependent tables before referenced ones.
-    """
-    _all_tables = [
+# FK-safe drop order for the full test schema + yoyo internal tables.
+# Hoisted to module scope (was local to clean_pg) so module-scoped performance
+# fixtures — e.g. a per-file "migrate once" fixture — can reuse the EXACT same
+# ordered list via wipe_pg_tables() instead of duplicating it (SSOT).
+_PG_TEST_TABLES = [
         # yoyo internal (must go first — no FKs referencing schema tables)
         "_yoyo_log",
         "_yoyo_migration",
@@ -639,16 +638,58 @@ def clean_pg(pg_conn):
         "webui_users",
         # M13 — must come after all tables that FK-reference it
         "tenants",
-    ]
+]
 
-    def _wipe(conn):
-        for tbl in _all_tables:
-            with conn.cursor() as cur:
-                cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
 
-    _wipe(pg_conn)
+def wipe_pg_tables(conn):
+    """DROP all test-schema + yoyo internal tables in FK-safe order (idempotent).
+
+    Shared by the function-scoped clean_pg fixture and any module-scoped
+    "migrate once" performance fixture so both use the identical drop order.
+    """
+    for tbl in _PG_TEST_TABLES:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
+
+
+@pytest.fixture
+def clean_pg(pg_conn):
+    """Drop test schema tables + yoyo state before and after each test (idempotent).
+
+    yoyo tracks applied migrations in _yoyo_migration.  Leaving this table
+    intact between tests causes run_migrations() to report '0 pending' while
+    the schema tables (dropped earlier) are absent — producing confusing test
+    failures.  Both the schema tables and yoyo internal tables are therefore
+    dropped together to guarantee a truly clean starting state.
+
+    Drop order respects FK constraints (see _PG_TEST_TABLES).
+    """
+    wipe_pg_tables(pg_conn)
     yield pg_conn
-    _wipe(pg_conn)
+    wipe_pg_tables(pg_conn)
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_module(pg_conn):
+    """Module-scoped wipe + migrate ONCE (vs clean_pg's per-test wipe+migrate).
+
+    Performance fixture for files whose tests assert only relative/filtered
+    state (HTTP status codes, ``ORDER BY id DESC LIMIT 1``, before/after deltas)
+    and never an absolute ``count(*)`` or empty-table expectation. Sharing the
+    migrated schema across a module collapses N per-test ``run_migrations``
+    calls (~1s each) into one.
+
+    INVARIANT (enforce per ADR / red-team m2): a test using this fixture MUST
+    NOT assert an absolute row count or expect an empty table — rows accumulate
+    across the module. Per-test seeds must be idempotent (``ON CONFLICT``).
+    Use the function-scoped ``clean_pg`` if you need a pristine DB per test.
+    """
+    from src.db.migrate import run_migrations
+
+    wipe_pg_tables(pg_conn)
+    run_migrations(pg_conn)
+    yield pg_conn
+    wipe_pg_tables(pg_conn)
 
 
 PG_EMBED_VERSION = "99.0"  # dedicated test version for embeddings tests

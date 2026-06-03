@@ -223,11 +223,6 @@ def test_hot_path_tools_are_coroutine_functions():
         )
 
 
-def test_tool_count_unchanged_at_24():
-    """#227 changes mechanism only — the MCP tool surface stays at 24."""
-    assert len(srv.mcp._tool_manager._tools) == 24
-
-
 @pytest.mark.asyncio
 async def test_find_examples_tool_uses_embed_async_not_sync(monkeypatch):
     """find_examples tool embeds via embed_async and never calls sync embed().

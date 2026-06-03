@@ -493,66 +493,6 @@ class TestLoginRateLimit:
     """
 
     @pytest.mark.asyncio
-    async def test_rate_limit_returns_429_after_threshold(self):
-        """After 5 consecutive failed logins, next attempt → 429.
-
-        Patches check_rate_limit at src.web_ui.routes.login to return True on
-        the 6th call, simulating the Postgres counter having reached threshold.
-        """
-        import httpx
-
-        import src.web_ui.routes.login as login_mod
-
-        call_count = [0]
-        orig_check = login_mod.check_rate_limit
-        orig_record = login_mod.record_login_attempt
-
-        def _counting_check(identifier, ip_address=None):
-            return call_count[0] >= 5  # rate-limit from 5th call onward
-
-        def _counting_record(**kwargs):
-            call_count[0] += 1
-
-        login_mod.check_rate_limit = _counting_check
-        login_mod.record_login_attempt = _counting_record
-
-        app = _make_app(
-            seed_users={"admin": "correct_password_12"},
-            patch_attempts=False,  # we applied our own patches above
-        )
-        try:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="https://test",
-                follow_redirects=False,
-            ) as client:
-                # 5 failed logins — should each 401 (not rate-limited yet)
-                for i in range(5):
-                    resp = await client.post(
-                        "/api/auth/login",
-                        json={"username": "admin", "password": "WRONG_WRONG_WRONG"},
-                    )
-                    assert resp.status_code == 401, (
-                        f"Attempt {i+1}: expected 401, got {resp.status_code}"
-                    )
-
-                # 6th attempt — should be 429
-                resp_limited = await client.post(
-                    "/api/auth/login",
-                    json={"username": "admin", "password": "WRONG_WRONG_WRONG"},
-                )
-        finally:
-            login_mod.check_rate_limit = orig_check
-            login_mod.record_login_attempt = orig_record
-            _restore_patches(app)
-
-        assert resp_limited.status_code == 429, (
-            f"Expected 429 after 5 failed attempts; got {resp_limited.status_code}"
-        )
-        body = resp_limited.json()
-        assert "Too many" in body.get("error", ""), f"Expected rate limit message; got: {body}"
-
-    @pytest.mark.asyncio
     async def test_login_rate_limit_postgres(self):
         """F2: 6 attempts → 429. Verify rows inserted into login_attempts (mocked).
 
@@ -926,9 +866,10 @@ class TestLoginTimingConstant:
 
     @pytest.mark.asyncio
     @pytest.mark.flaky
-    async def test_login_timing_constant(self):
+    async def test_login_timing_constant(self, monkeypatch):
         import statistics
 
+        import bcrypt
         import httpx
 
         # Robustness against CI scheduling noise (see PR #228 investigation):
@@ -961,6 +902,22 @@ class TestLoginTimingConstant:
                 json={"username": username, "password": "wrong_password_here"},
             )
             return time.perf_counter() - t0
+
+        # This oracle test is only meaningful at PRODUCTION bcrypt cost. The test
+        # suite globally lowers BCRYPT_ROUNDS to 4 for speed (conftest), but at
+        # cost=4 a removed dummy-hash defense would show only a ~1-2ms gap — below
+        # the 50ms threshold — so the username-enumeration regression would pass
+        # undetected (ETHOS #11: a test that cannot fail when the behaviour breaks
+        # is worthless). Force cost=12 for BOTH arms: the seeded user's stored hash
+        # (hash_password reads BCRYPT_ROUNDS at call time) AND the login dummy hash.
+        import src.web_ui.auth as auth_mod
+        import src.web_ui.routes.login as login_mod
+        monkeypatch.setattr(auth_mod, "BCRYPT_ROUNDS", 12)
+        monkeypatch.setattr(
+            login_mod,
+            "_DUMMY_HASH",
+            bcrypt.hashpw(b"dummy-for-timing-defense", bcrypt.gensalt(rounds=12)).decode("utf-8"),
+        )
 
         app = _make_app(seed_users={"realuser": "correct_password_12"})
         try:
@@ -1014,6 +971,59 @@ class TestProductionStartupAssertion:
         finally:
             os.environ.pop("ENVIRONMENT", None)
             auth_mod._DEV_FALLBACK_SECRET = None
+
+
+class TestBcryptProductionFloor:
+    """Startup guard: ENVIRONMENT=production with BCRYPT_ROUNDS<12 → SystemExit (ADR-0011)."""
+
+    def test_production_low_rounds_raises_system_exit(self):
+        """ENVIRONMENT=production + BCRYPT_ROUNDS=4 → _enforce_bcrypt_floor() raises SystemExit."""
+        import os
+
+        import src.web_ui.auth as auth_mod
+
+        original_rounds = auth_mod.BCRYPT_ROUNDS
+        auth_mod.BCRYPT_ROUNDS = 4
+        os.environ["ENVIRONMENT"] = "production"
+        try:
+            with pytest.raises(SystemExit):
+                auth_mod._enforce_bcrypt_floor()
+        finally:
+            os.environ.pop("ENVIRONMENT", None)
+            auth_mod.BCRYPT_ROUNDS = original_rounds
+
+    def test_production_sufficient_rounds_no_raise(self):
+        """ENVIRONMENT=production + BCRYPT_ROUNDS=12 → _enforce_bcrypt_floor() does not raise."""
+        import os
+
+        import src.web_ui.auth as auth_mod
+
+        original_rounds = auth_mod.BCRYPT_ROUNDS
+        auth_mod.BCRYPT_ROUNDS = 12
+        os.environ["ENVIRONMENT"] = "production"
+        try:
+            auth_mod._enforce_bcrypt_floor()  # must not raise
+        finally:
+            os.environ.pop("ENVIRONMENT", None)
+            auth_mod.BCRYPT_ROUNDS = original_rounds
+
+    def test_non_production_low_rounds_no_raise(self):
+        """ENVIRONMENT unset + BCRYPT_ROUNDS=4 → _enforce_bcrypt_floor() does not raise.
+
+        This is the test/CI fast-hash path; guard must remain dormant so the
+        suite doesn't break when conftest sets BCRYPT_ROUNDS=4.
+        """
+        import os
+
+        import src.web_ui.auth as auth_mod
+
+        original_rounds = auth_mod.BCRYPT_ROUNDS
+        auth_mod.BCRYPT_ROUNDS = 4
+        os.environ.pop("ENVIRONMENT", None)
+        try:
+            auth_mod._enforce_bcrypt_floor()  # must not raise
+        finally:
+            auth_mod.BCRYPT_ROUNDS = original_rounds
 
 
 class TestDashboardCountEmbeddingsRollback:

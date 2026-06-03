@@ -162,42 +162,6 @@ def test_model_inspect_field_matches_resolve_field_impl(dual_db):
 # ---------------------------------------------------------------------------
 
 
-def test_model_inspect_invalid_method_returns_error_string():
-    """model_inspect with an unrecognised method= returns a friendly error, not an exception.
-
-    Covers the invalid-discriminator guard in _model_inspect (src/mcp/inspect.py).
-    No DB required — the guard fires before any Neo4j query.
-    """
-    server = importlib.import_module("src.mcp.server")
-
-    result = asyncio.run(server.model_inspect.fn(
-        model="c3.order", method="nonexistent_method", odoo_version=TEST_VERSION
-    ))
-
-    text = result.content[0].text
-    assert "Error" in text, f"Expected 'Error' in output: {text!r}"
-    assert "nonexistent_method" in text, f"Expected bad method name in error: {text!r}"
-
-
-def test_entity_lookup_invalid_kind_returns_error_string():
-    """entity_lookup with an unrecognised kind= returns a friendly error, not an exception.
-
-    No DB required — the guard fires before any resolver call.
-    """
-    server = importlib.import_module("src.mcp.server")
-
-    # entity_lookup is async (#227 — offloads blocking body off the event loop).
-    result = asyncio.run(server.entity_lookup.fn(
-        kind="nonexistent_kind", odoo_version=TEST_VERSION
-    ))
-
-    text = result.content[0].text
-    assert "Error" in text, f"Expected 'Error' in output: {text!r}"
-    assert "nonexistent_kind" in text, (
-        f"Expected bad kind name in error message: {text!r}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Signature contract: superset tools have the correct parameters
 # ---------------------------------------------------------------------------

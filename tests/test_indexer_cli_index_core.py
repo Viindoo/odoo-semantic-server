@@ -221,28 +221,6 @@ class TestIndexCoreWritesCliNodes:
             ).single()["c"]
         assert flags >= 1, f"Expected ≥1 CLIFlag node, got {flags}"
 
-    def test_of_command_edge_created(
-        self, mini_odoo_tree, mini_spec_data, core_writer, neo4j_driver,
-    ):
-        """CLIFlag has OF_COMMAND edge to CLICommand when command exists."""
-        # The mini_spec_data has flag for command 'server'
-        # index_core from source creates CLICommand nodes from odoo/cli/ dir
-        # (may not exist in mini_odoo_tree → server command from static only)
-        index_core(
-            source_root=str(mini_odoo_tree),
-            odoo_version=CORE_TEST_VERSION,
-            writer=core_writer,
-            static_data_dir=str(mini_spec_data),
-        )
-        with neo4j_driver.session() as session:
-            edge_count = session.run("""
-                MATCH (f:CLIFlag {odoo_version: $v})-[:OF_COMMAND]->(:CLICommand)
-                RETURN count(f) AS c
-            """, v=CORE_TEST_VERSION).single()["c"]
-        # OF_COMMAND created only when CLICommand exists; may be 0 if no cli/ dir
-        # Just verify we can query without error — presence depends on mini_odoo_tree
-        assert isinstance(edge_count, int)
-
 
 # ---------------------------------------------------------------------------
 # Test 4: Idempotency
@@ -298,21 +276,4 @@ class TestIndexCoreIdempotent:
 # Test 5: CLI __main__ subcommand dispatch
 # ---------------------------------------------------------------------------
 
-class TestIndexerMainSubcommand:
-    def test_index_core_subcommand_accepted_by_argparse(self, tmp_path):
-        """The argparse setup accepts `index-core` as a valid subcommand."""
-        from src.indexer.__main__ import _build_parser
-        parser = _build_parser()
-        # Should parse without error
-        args = parser.parse_args(["index-core", "--source", "/tmp/odoo", "--version", "17.0"])
-        assert args.subcommand == "index-core"
-        assert args.source == "/tmp/odoo"
-        assert args.version == "17.0"
 
-    def test_index_repo_subcommand_still_works(self, tmp_path):
-        """Legacy `--profile` behavior is preserved under `index-repo` subcommand."""
-        from src.indexer.__main__ import _build_parser
-        parser = _build_parser()
-        args = parser.parse_args(["index-repo", "--profile", "viindoo_17"])
-        assert args.subcommand == "index-repo"
-        assert args.profile == "viindoo_17"

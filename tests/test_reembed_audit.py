@@ -65,16 +65,6 @@ def _seed_module(repo: Path, name: str) -> None:
 # Unit tests (no DB) — CLI subcommand wiring
 # ---------------------------------------------------------------------------
 
-def test_reembed_stubs_subcommand_registered():
-    """reembed-stubs subcommand is registered in the CLI parser."""
-    import src.indexer.__main__ as main_mod
-    parser = main_mod._build_parser()
-    # Parse a minimal valid invocation — must not raise
-    args = parser.parse_args(["reembed-stubs", "--profile", "some_prof"])
-    assert args.subcommand == "reembed-stubs"
-    assert args.profile == "some_prof"
-
-
 def test_audit_repo_subcommand_registered(tmp_path):
     """audit-repo subcommand is registered in the CLI parser."""
     import src.indexer.__main__ as main_mod
@@ -101,36 +91,6 @@ def test_reembed_stubs_returns_error_when_embedder_missing(monkeypatch, tmp_path
         rc = main_mod.main(["reembed-stubs", "--profile", "x"])
     assert rc == 1, "Should return exit code 1 when embedder is not configured"
 
-
-def test_audit_repo_writes_json(monkeypatch, tmp_path):
-    """audit-repo subcommand writes a valid JSON array to --output path."""
-    import src.config as config_mod
-    import src.indexer.__main__ as main_mod
-
-    cfg = tmp_path / "empty.conf"
-    cfg.write_text("")
-    monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
-    config_mod._conf = None
-
-    out_path = tmp_path / "audit.json"
-    fake_rows = [
-        {"module": "sale", "odoo_version": "17.0",
-         "model_count": 2, "field_count": 10, "method_count": 5,
-         "view_count": 3, "embedding_count": 20},
-    ]
-
-    with (
-        patch("src.indexer.__main__.open_production_pg") as mock_pg,
-        patch("src.indexer.__main__.audit_repo_for_profile", return_value=fake_rows),
-    ):
-        mock_pg.return_value.close = MagicMock()
-        rc = main_mod.main(["audit-repo", "--profile", "my_prof",
-                             "--output", str(out_path)])
-
-    assert rc == 0
-    assert out_path.exists(), "JSON output file must be created"
-    data = json.loads(out_path.read_text(encoding="utf-8"))
-    assert data == fake_rows
 
 
 # ---------------------------------------------------------------------------

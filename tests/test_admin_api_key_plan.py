@@ -22,7 +22,6 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from src.db.migrate import run_migrations
 from src.web_ui.app import create_app
 
 pytestmark = pytest.mark.postgres
@@ -61,11 +60,18 @@ def _async_client(app):
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
-@pytest.fixture
-def migrated_pg(clean_pg):
-    """Run all migrations on a clean DB, yield the connection."""
-    run_migrations(clean_pg)
-    yield clean_pg
+@pytest.fixture(scope="module")
+def migrated_pg(migrated_pg_module):
+    """Module-scoped: migrate ONCE for this file (was per-test via clean_pg).
+
+    Safe because each test seeds DISTINCT usernames (admin_a/user_a … admin_j …)
+    and DISTINCT api-key names (key_hash = f"hash_{name}") — no UNIQUE collision
+    under shared accumulation — and assertions are either filtered by the row's
+    own key_id, relative, or mock-driven (never an absolute count / fixed id).
+    DO NOT add a test here that reuses a seed identifier or asserts an absolute
+    row count.
+    """
+    return migrated_pg_module
 
 
 def _seed_user(pg_conn, *, username: str = "alice", is_admin: bool = False) -> int:

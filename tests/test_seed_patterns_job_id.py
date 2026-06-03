@@ -48,37 +48,6 @@ def patterns_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Argparse unit tests (no DB required)
-# ---------------------------------------------------------------------------
-
-class TestArgparse:
-    """Verify --job-id is accepted by the argparse parser."""
-
-    def test_job_id_accepted(self):
-        """--job-id 42 parses correctly."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--job-id", type=int, default=None)
-        parser.add_argument("--force", action="store_true")
-        parser.add_argument("--no-embed", action="store_true")
-        parser.add_argument("--version", default=None)
-        parser.add_argument(
-            "--patterns-file", default=str(sp_mod._DEFAULT_PATTERNS_FILE)
-        )
-        args = parser.parse_args(["--job-id", "42", "--force"])
-        assert args.job_id == 42
-        assert args.force is True
-
-    def test_job_id_default_none(self):
-        """Default job_id is None when flag absent."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--job-id", type=int, default=None)
-        args = parser.parse_args([])
-        assert args.job_id is None
-
-
-# ---------------------------------------------------------------------------
 # Integration tests — job lifecycle (requires postgres + neo4j would be ideal,
 # but we mock Neo4j here and only exercise PG job_registry)
 # ---------------------------------------------------------------------------

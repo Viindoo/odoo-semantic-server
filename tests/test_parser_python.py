@@ -1450,25 +1450,6 @@ def test_era2_field_refs_does_not_capture_chained_attr(tmp_path, sale_module):
     assert "name" not in mth.field_refs
 
 
-def test_era2_field_refs_env_not_captured_but_ok(tmp_path, sale_module):
-    """era2: self.env is captured in field_refs (noise - MATCH on Field silently skips it)."""
-    f = write_py(tmp_path, "model.py", """
-        from odoo import models
-
-        class SaleOrder(models.Model):
-            _name = 'sale.order'
-
-            def action_confirm(self):
-                user = self.env.user
-                return True
-    """)
-    result = parse_file(f, sale_module)
-    mth = next(m for m in result[0].methods if m.name == "action_confirm")
-    # 'env' is captured (self.env), but no Field node 'env' will exist -> no edge (best-effort)
-    # We just verify it doesn't crash and field_refs is a list
-    assert isinstance(mth.field_refs, list)
-
-
 def test_era1_field_refs_empty(tmp_path):
     """era1 path: field_refs left empty (not analyzed in text-regex fallback)."""
     v8_mod = ModuleInfo(

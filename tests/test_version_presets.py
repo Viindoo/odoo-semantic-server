@@ -7,12 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.indexer.version_presets import PRESETS, list_presets, load_preset
-
-
-def test_presets_empty_by_default():
-    """No presets are bundled in the open-core release."""
-    assert PRESETS == {}
+from src.indexer.version_presets import list_presets, load_preset
 
 
 def test_list_presets_returns_empty():

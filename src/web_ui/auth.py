@@ -211,12 +211,40 @@ def validate_password(password: str) -> str | None:
     return None
 
 
+# bcrypt work factor. Production default is 12 (ADR-0011). Tests may lower this
+# via the BCRYPT_ROUNDS env var (e.g. 4) so the ~45 password-hashing tests don't
+# each pay a cost-12 hash — purely a test-speed lever, never set in production.
+# login.py's timing-defense dummy hash imports this same constant so the
+# valid-user and invalid-user paths always hash at an identical cost.
+try:
+    BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "12"))
+except ValueError:
+    BCRYPT_ROUNDS = 12
+if not 4 <= BCRYPT_ROUNDS <= 31:  # bcrypt's valid cost range; guard against misconfig
+    BCRYPT_ROUNDS = 12
+
+
+def _enforce_bcrypt_floor() -> None:
+    """Refuse to start with a sub-cost-12 bcrypt factor in production (ADR-0011).
+
+    Tests lower BCRYPT_ROUNDS to 4 for speed via conftest; that is safe because
+    ENVIRONMENT is never 'production' under test. In production a cost < 12
+    silently weakens every password hash, so fail fast rather than accept a
+    foot-gun from a copy-pasted CI/test env file.
+    """
+    if os.environ.get("ENVIRONMENT", "").lower() == "production" and BCRYPT_ROUNDS < 12:
+        raise SystemExit(
+            f"FATAL: BCRYPT_ROUNDS={BCRYPT_ROUNDS} is below the cost-12 floor required "
+            "in production (ADR-0011). Unset BCRYPT_ROUNDS or set it >= 12 in webui.env."
+        )
+
+
 def hash_password(pw: str) -> str:
-    """Hash a plaintext password with bcrypt cost=12.
+    """Hash a plaintext password with bcrypt (cost = :data:`BCRYPT_ROUNDS`, default 12).
 
     Returns a UTF-8 string suitable for storage in webui_users.password_hash.
     """
-    salt = bcrypt.gensalt(rounds=12)
+    salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
     hashed = bcrypt.hashpw(pw.encode(), salt)
     return hashed.decode()
 

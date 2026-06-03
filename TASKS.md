@@ -171,7 +171,7 @@
 - [x] Structured JSON logging (`logging.config` hoặc `structlog`) — observability production
 
 **Section C — Landing zone (debt từ M5 + doc gaps):**
-- [x] `tests/test_web_ui_browser.py` (24 tests, Playwright): browser-level E2E cho API Keys, SSH Keys, Repos, Dashboard, Navigation — landed cùng CI refactor (docker compose single source of truth)
+- [x] `tests/browser/admin/test_repos.py` (Playwright): browser-level E2E cho API Keys, SSH Keys, Repos, Dashboard, Navigation — landed cùng CI refactor (docker compose single source of truth); consolidated từ stub `test_web_ui_browser.py` cũ (gỡ trong test-lean wave 2026-06)
 - [x] `docs/deploy.md` §4.3 + §5.2: cập nhật auth section từ "M2.5 placeholder" → "M5 X-API-Key required" + thêm `/health` bypass auth note + fix verify config snippet thiếu header
 - [x] `README.md`: bỏ note stale "bỏ header X-API-Key (M5 sẽ thêm auth)" → note đúng auth mandatory
 - [x] `tests/test_mcp_server_config.py` isolation fix: monkeypatch leak `_driver = object()` sang `test_mcp_spec_tools.py` — switch sang `monkeypatch.setattr`
@@ -328,7 +328,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 - [x] T2.13: `agents/odoo-router.md` — Haiku model, classify-only
 - [x] T2.14: `agents/odoo-upgrade-planner.md` — Sonnet model, multi-step orchestration
 - [x] T2.15: `commands/connect.md` — `/odoo-semantic:connect` interactive install
-- [x] T2.16: `tests/test_skill_disambiguation.py` — 31/31 pass, 100% routing accuracy
+- [x] T2.16: skill disambiguation routing heuristic — 31/31 pass, 100% routing accuracy (test file gỡ trong test-lean wave 2026-06: no-SUT change-detector; query→persona mapping migrate sang client repo `odoo-mcp-client`)
 
 **Track 3 — Cross-vendor adapters + persona docs:**
 - [x] T3.1–T3.4: Gemini, OpenAI, Cursor adapters + 5 persona guides (moved to [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client))
@@ -450,7 +450,7 @@ Plans archived internally.
 
 ### Stream B — Test Debt + Coverage Gaps from M8
 
-- [x] Port `tests/test_clone_poll_timeout.py` to Astro: verify `MAX_TICKS=72` equivalent in `site/src/pages/admin/repos.astro` + add browser test. Currently 4 tests skipped.
+- [x] Port clone-poll timeout to Astro: verify `MAX_TICKS=72` equivalent in `site/src/pages/admin/repos.astro` + browser test. Stub `tests/test_clone_poll_timeout.py` (4 skip-forever tests, template gỡ M8 W1) đã xóa trong test-lean wave 2026-06 — coverage ở `tests/browser/admin/test_repos.py`.
 - [x] Decide on 9 legacy stub files in `tests/test_web_ui_*_browser.py` (M8 W7 breadcrumbs): delete for clarity or keep as git-discoverable history. Document decision. *(Deleted 8 MIGRATED tombstone files in M9 T0.)*
 - [x] Add `LoopbackOnlyMiddleware` explicit test: non-loopback client → 403 (`src/web_ui/app.py:42-49`). Coverage gap from Phase 8 review.
 - [x] Add `_json_safe` regression test fixture pattern for new JSONResponse routes — prevent recurrence of datetime 500 bug.

@@ -90,7 +90,7 @@ make test-all
 make test-browser
 ```
 
-`make test-browser` tự spin PostgreSQL qua docker compose, đợi healthy, rồi chạy 21 tests trong `tests/test_web_ui_browser.py`.
+`make test-browser` tự spin PostgreSQL qua docker compose, đợi healthy, rồi chạy các browser test trong `tests/browser/`.
 
 > **Note:** `make test-integration` tự skip browser tests nếu chromium chưa cài (qua `pytest_collection_modifyitems` hook trong `tests/conftest.py`) — không cascade error sang tests khác.
 
@@ -511,13 +511,18 @@ Mọi quyết định kiến trúc lớn — schema policy, storage pattern, par
 
 The Claude Code plugin has moved to the [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) repository (MIT-licensed). Skill development, plugin structure, and the release + SHA-pinning workflow are documented there.
 
-### Skill disambiguation test
+### Skill routing test
 
-`tests/test_skill_disambiguation.py` tests the inline heuristic routing logic independently of the plugin package. Run it with:
+The standalone `tests/test_skill_disambiguation.py` heuristic was removed in the
+test-lean wave 2026-06 — it validated a `classify_query` function defined inside
+the test file with no SUT in `src/`, i.e. a change-detector. The real
+skill-routing contract lives in the [Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client)
+repo (SKILL.md trigger blocks); the captured query→persona mapping was migrated
+there. On the server side, the tool-routing descriptors are guarded by:
 
 ```bash
 # Unit tests (no server needed)
-~/.venv/odoo-semantic-mcp/bin/python -m pytest tests/test_skill_disambiguation.py tests/test_mcp_tool_descriptions.py -v
+~/.venv/odoo-semantic-mcp/bin/python -m pytest tests/test_mcp_tool_descriptions.py -v
 ```
 
 ---

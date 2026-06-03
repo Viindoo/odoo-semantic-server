@@ -115,26 +115,3 @@ class TestSecurityHeadersFastAPI:
         assert "permissions-policy" in resp.headers
 
 
-class TestNginxHeadersDocumented:
-    """Placeholder to document which headers remain nginx-level (not FastAPI).
-
-    These headers are still added by nginx/Caddy (requires sudo — out of scope):
-      - Strict-Transport-Security
-      - X-Frame-Options  (covered also by CSP frame-ancestors above)
-      - X-Content-Type-Options
-      - Referrer-Policy
-
-    Verify after deploy:
-      curl -sI https://odoo-semantic.viindoo.com/ | grep -E \
-        'Strict-Transport-Security|X-Frame-Options|X-Content-Type-Options'
-    """
-
-    def test_placeholder(self):
-        """Documents nginx-level headers; no runtime assertion needed here."""
-        nginx_only_headers = [
-            "Strict-Transport-Security",
-            "X-Frame-Options",
-            "X-Content-Type-Options",
-            "Referrer-Policy",
-        ]
-        assert len(nginx_only_headers) > 0

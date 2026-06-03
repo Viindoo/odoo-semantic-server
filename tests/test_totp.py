@@ -142,23 +142,6 @@ class TestDriftWindowAccepts30sOldCode:
         # valid_window=1 accepts ±1 step (30 s drift)
         assert totp.verify(past_code, valid_window=1)
 
-    def test_drift_window_rejects_two_steps_old(self, totp_routes):
-        """valid_window=1 rejects code older than 60 s (2 steps)."""
-        import pyotp
-
-        secret = pyotp.random_base32()
-        totp = pyotp.TOTP(secret)
-        old_code = totp.at(int(time.time()) - 90)  # 3 steps ago
-        # There's a small chance old_code == current_code; skip if so
-        if old_code == totp.now():
-            pytest.skip("Accidental code collision — non-deterministic test")
-        # For a 3-step-old code, verify with window=1 should reject
-        # (unless it's the same 6-digit value by coincidence — 1/1,000,000 chance)
-        result = totp.verify(old_code, valid_window=1)
-        # This is probabilistic: most of the time it should fail
-        # We can't guarantee it without mocking time; just check the API works
-        assert isinstance(result, bool)
-
 
 class TestBackupCodesSingleUse:
     """test_backup_codes_single_use"""
