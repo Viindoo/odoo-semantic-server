@@ -973,6 +973,59 @@ class TestProductionStartupAssertion:
             auth_mod._DEV_FALLBACK_SECRET = None
 
 
+class TestBcryptProductionFloor:
+    """Startup guard: ENVIRONMENT=production with BCRYPT_ROUNDS<12 → SystemExit (ADR-0011)."""
+
+    def test_production_low_rounds_raises_system_exit(self):
+        """ENVIRONMENT=production + BCRYPT_ROUNDS=4 → _enforce_bcrypt_floor() raises SystemExit."""
+        import os
+
+        import src.web_ui.auth as auth_mod
+
+        original_rounds = auth_mod.BCRYPT_ROUNDS
+        auth_mod.BCRYPT_ROUNDS = 4
+        os.environ["ENVIRONMENT"] = "production"
+        try:
+            with pytest.raises(SystemExit):
+                auth_mod._enforce_bcrypt_floor()
+        finally:
+            os.environ.pop("ENVIRONMENT", None)
+            auth_mod.BCRYPT_ROUNDS = original_rounds
+
+    def test_production_sufficient_rounds_no_raise(self):
+        """ENVIRONMENT=production + BCRYPT_ROUNDS=12 → _enforce_bcrypt_floor() does not raise."""
+        import os
+
+        import src.web_ui.auth as auth_mod
+
+        original_rounds = auth_mod.BCRYPT_ROUNDS
+        auth_mod.BCRYPT_ROUNDS = 12
+        os.environ["ENVIRONMENT"] = "production"
+        try:
+            auth_mod._enforce_bcrypt_floor()  # must not raise
+        finally:
+            os.environ.pop("ENVIRONMENT", None)
+            auth_mod.BCRYPT_ROUNDS = original_rounds
+
+    def test_non_production_low_rounds_no_raise(self):
+        """ENVIRONMENT unset + BCRYPT_ROUNDS=4 → _enforce_bcrypt_floor() does not raise.
+
+        This is the test/CI fast-hash path; guard must remain dormant so the
+        suite doesn't break when conftest sets BCRYPT_ROUNDS=4.
+        """
+        import os
+
+        import src.web_ui.auth as auth_mod
+
+        original_rounds = auth_mod.BCRYPT_ROUNDS
+        auth_mod.BCRYPT_ROUNDS = 4
+        os.environ.pop("ENVIRONMENT", None)
+        try:
+            auth_mod._enforce_bcrypt_floor()  # must not raise
+        finally:
+            auth_mod.BCRYPT_ROUNDS = original_rounds
+
+
 class TestDashboardCountEmbeddingsRollback:
     """Finding #4 (HIGH): dashboard.py must rollback aborted tx when embeddings
     table is absent, so subsequent queries on the same connection are not poisoned.
