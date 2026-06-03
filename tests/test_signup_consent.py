@@ -70,9 +70,18 @@ def consent_pg(pg_conn):
 
 @pytest.fixture(autouse=True)
 def _enable_signup(monkeypatch):
-    """Enable public signup for all tests in this module."""
-    monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
-    monkeypatch.setattr("src.web_ui.routes.signup.SIGNUP_ENABLED", True)
+    """Enable public signup for all tests in this module.
+
+    The register route gates on ``signup_enabled()`` (src/web_ui/config.py), which
+    consults the DB overlay FIRST and only falls back to the ``SIGNUP_ENABLED``
+    constant when no row exists. ``create_app()`` → ``bootstrap_settings_safe()``
+    seeds a system-scope ``signup.enabled=False`` row, so the DB overlay wins and
+    patching the constant is dead code here. Patch the function as it is looked up
+    in the route module (``signup.py`` does ``from ...config import signup_enabled``,
+    binding the name into its own namespace), which deterministically enables
+    signup regardless of DB state — isolating these tests to the consent contract.
+    """
+    monkeypatch.setattr("src.web_ui.routes.signup.signup_enabled", lambda: True)
 
 
 # ---------------------------------------------------------------------------

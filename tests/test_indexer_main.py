@@ -108,6 +108,7 @@ def test_all_flag_passes_embedder_to_index_all(monkeypatch, tmp_path):
     assert kwargs.get("embedder") is None
 
 
+@pytest.mark.parametrize("log_format", ["text", "json"])
 @pytest.mark.parametrize(
     "argv_extra, expected_level",
     [
@@ -116,7 +117,7 @@ def test_all_flag_passes_embedder_to_index_all(monkeypatch, tmp_path):
     ],
 )
 def test_verbose_flag_controls_root_log_level(
-    monkeypatch, tmp_path, argv_extra, expected_level
+    monkeypatch, tmp_path, argv_extra, expected_level, log_format
 ):
     """--verbose configures the ROOT logger to INFO; its absence leaves WARNING.
 
@@ -126,17 +127,19 @@ def test_verbose_flag_controls_root_log_level(
     flag the root level is INFO, without it WARNING. configure_logging is NOT
     mocked here so the real effect is exercised.
 
-    LOG_FORMAT=json is forced so configure_logging takes its deterministic
-    `root.setLevel(level)` branch; the default text branch delegates to
-    logging.basicConfig, which is a no-op once the test runner has installed
-    root handlers and would therefore not reflect the requested level.
+    Parametrized over BOTH LOG_FORMAT modes: the json branch uses an explicit
+    `root.setLevel(level)`, while the text branch delegates to logging.basicConfig
+    (a no-op once the test runner has installed root handlers). The text case is
+    the regression guard for the configure_logging fix that adds an unconditional
+    `setLevel` to the text branch — without that fix this case goes RED because
+    basicConfig silently ignores the requested level.
     """
     import src.config as config_mod
 
     cfg = tmp_path / "empty.conf"
     cfg.write_text("")
     monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
-    monkeypatch.setenv("LOG_FORMAT", "json")
+    monkeypatch.setenv("LOG_FORMAT", log_format)
     config_mod._conf = None
 
     root = logging.getLogger()

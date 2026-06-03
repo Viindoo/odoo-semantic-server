@@ -3,14 +3,15 @@
 """Integration tests for /api/admin/ee-modules/* CRUD endpoints (WI-7, ADR-0042).
 
 Covers:
-1. test_list_active_modules_count_16          GET / returns 16 active entries.
+1. test_list_active_modules_matches_canonical_set GET / returns the canonical EE-module set.
 2. test_get_single_by_id                      GET /{id} returns correct row.
-3. test_create_new_module_unique_violation    POST duplicate name -> 409.
-4. test_create_new_module_success             POST new name -> 200 + id field.
-5. test_patch_module_invalidates_cache        PATCH -> invalidate_ee_modules_cache called.
-6. test_soft_delete_excludes_from_list_default DELETE -> excluded from GET / by default.
-7. test_soft_delete_included_when_query_param_true GET /?include_deprecated=true shows it.
-8. test_non_admin_403                         require_admin dependency blocks non-admin.
+3. test_get_nonexistent_returns_404           GET /{id} for unknown id -> 404.
+4. test_create_new_module_unique_violation    POST duplicate name -> 409.
+5. test_create_new_module_success             POST new name -> 200 + id field.
+6. test_patch_module_invalidates_get_ee_modules_cache PATCH -> get_ee_modules() reflects the change.
+7. test_soft_delete_excludes_from_list_default DELETE -> excluded from GET / by default.
+8. test_soft_delete_included_when_query_param_true GET /?include_deprecated=true shows it.
+9. test_non_admin_403                         require_admin dependency blocks non-admin.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 WEBUI_AUTH_DISABLED is managed by conftest autouse fixture; tests run with the
