@@ -221,6 +221,23 @@ def test_cold_cache_authoritative_confirms_admin_returns_none():
     assert got is None
 
 
+def test_cold_cache_null_tenant_escalation_denies_not_widens():
+    """FAIL-CLOSED edge — read-side escalation guard (ADR-0034): cache MISS and
+    verify authoritatively returns the INVALID escalation state — a user-owned
+    (user_id=5), NON-admin (owner_is_admin=False) key whose tenant_id IS NULL.
+    AuthMiddleware 401s this upstream, but the authoritative fallback must not
+    diverge: it RAISES TenantResolutionDenied rather than returning None (which
+    would widen a non-admin user's key to the unrestricted '*' GUC across every
+    tenant). Distinguishes from the genuine-admin case (user_id IS NULL) which
+    legitimately returns None."""
+    import pytest as _pytest
+
+    from src.mcp.server import TenantResolutionDenied
+
+    with _pytest.raises(TenantResolutionDenied):
+        _read_tenant_cold_cache(verify_return=(33, None, 5, False))
+
+
 def test_cold_cache_db_unavailable_denies_not_widens():
     """FAIL-CLOSED edge (MOST IMPORTANT): authenticated key, cache MISS, AND the
     authoritative lookup is UNAVAILABLE (verify raises) → _get_tenant_id() RAISES

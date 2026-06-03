@@ -706,6 +706,18 @@ def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
             "(key inactive or lookup returned no row) — denying to preserve tenant isolation"
         )
     key_id, tenant_id, user_id, owner_is_admin = result
+    # Read-side escalation guard (ADR-0034, mirrors AuthMiddleware): a user-owned,
+    # non-admin key with tenant_id IS NULL is the invalid "unrestricted" state a
+    # scoped key must NEVER be in. AuthMiddleware 401s it upstream, but this
+    # authoritative path must not diverge — re-applying the guard here means that
+    # even on a path that bypassed the middleware we deny instead of widening to
+    # the '*' GUC. Raise BEFORE warming caches so the bad state is never cached.
+    from src.mcp.middleware import _is_null_tenant_escalation
+    if _is_null_tenant_escalation(tenant_id, user_id, owner_is_admin):
+        raise TenantResolutionDenied(
+            "authenticated key resolved to a non-admin owner with NULL tenant "
+            "(escalation state) — denying to preserve tenant isolation"
+        )
     # Warm the caches so the rest of this request / TTL window is fast and
     # consistent with the middleware's own population.
     try:
