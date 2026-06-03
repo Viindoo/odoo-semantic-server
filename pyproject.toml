@@ -53,6 +53,7 @@ asyncio_mode = "auto"
 addopts = "--strict-markers"
 markers = [
     "neo4j: integration tests yêu cầu Neo4j đang chạy (skip bằng -m 'not neo4j')",
+    "neo4j_backup: whole-graph backup/restore roundtrip tests — DETACH DELETE the entire graph; MUST run isolated/last and are excluded from the standard integration run (chạy riêng bằng -m neo4j_backup)",
     "postgres: integration tests yêu cầu PostgreSQL đang chạy (skip bằng -m 'not postgres')",
     "ollama: integration tests yêu cầu Ollama đang chạy (skip bằng -m 'not ollama')",
     "smoke: end-to-end smoke tests (per-PR fast tier, requires Neo4j)",

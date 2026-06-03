@@ -3,7 +3,14 @@
 """Integration round-trip: _export_neo4j_online → _restore_neo4j_cypher.
 
 Requires a running Neo4j instance (testcontainers or `docker compose up -d neo4j`).
-Marked ``neo4j`` so it only runs in the integration suite.
+Marked ``neo4j`` AND ``neo4j_backup``.  The ``neo4j_backup`` marker exists
+because these tests issue a WHOLE-GRAPH ``MATCH (n) DETACH DELETE n`` — the
+restore-replaces-the-graph business contract is genuine and MUST keep its
+whole-graph assertion (it is NOT label-scoped; see ADR / WS-C M5).  Because
+that wipe would destroy any seed-once data co-resident in the shared test
+Neo4j, the standard integration run EXCLUDES this file
+(``-m "neo4j and not neo4j_backup"``) and it is run separately/last via
+``make test-neo4j-backup`` (``-m neo4j_backup``).
 
 Round-trip contract:
   1. Write a known set of nodes + relationships via the Bolt driver.
@@ -22,7 +29,7 @@ from neo4j import GraphDatabase
 
 from src.cli import _export_neo4j_online, _restore_neo4j_cypher
 
-pytestmark = pytest.mark.neo4j
+pytestmark = [pytest.mark.neo4j, pytest.mark.neo4j_backup]
 
 
 # ---------------------------------------------------------------------------
