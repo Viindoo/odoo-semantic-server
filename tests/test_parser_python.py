@@ -192,7 +192,9 @@ def test_era1_fields_default_readonly_unknown(tmp_path):
     fmap = {fld.name: fld for fld in models[0].fields}
     assert fmap["name"].readonly is None
     assert fmap["name"].inverse is None
-    assert fmap["name"].effective_readonly is False
+    # era1 makes NO writability determination → None (not a false "writable").
+    # The renderer's `is not None` guard then omits the Readonly line entirely.
+    assert fmap["name"].effective_readonly is None
 
 
 def test_parse_single_inherit(tmp_path, sale_module):
