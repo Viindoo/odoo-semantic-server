@@ -118,6 +118,75 @@ def test_build_registry_multi_repo(tmp_path):
     assert registry["17.0"]["viin_sale"].repo == "acme_addons_17.0"
 
 
+# --- Per-repo skip-summary observability (feat/registry-skip-observability) ---
+
+
+def test_build_registry_emits_skip_summary(tmp_path, caplog):
+    """build_registry emits ONE per-repo INFO summary line with correct counts.
+
+    Mix: 2 installable, 2 installable=False, 1 license-skip (OEEL-1), 1 unparseable.
+    Behaviour unchanged — only the installable modules are registered — AND the
+    summary line carries the right per-bucket counts. Distinguishing "low
+    coverage" (a real gap) from "mostly not-installable" (expected) is the goal.
+    """
+    import logging
+
+    repo = make_git_repo(tmp_path / "mixed_17.0", "17.0")
+    # Installable (registered) ×2
+    make_manifest(repo / "active_a", "Active A", "17.0.1.0.0", [])
+    make_manifest(repo / "active_b", "Active B", "17.0.1.0.0", [])
+    # installable=False ×2
+    make_manifest(repo / "wip_a", "WIP A", "17.0.1.0.0", [], installable=False)
+    make_manifest(repo / "wip_b", "WIP B", "17.0.1.0.0", [], installable=False)
+    # license skip (OEEL-1 → action=skip per LICENSE_POLICY) ×1
+    _write_full_manifest(repo / "ent_mod", license="OEEL-1")
+    # unparseable ×1 (invalid Python that fails ast.parse AND regex extract)
+    (repo / "broken_mod").mkdir(parents=True, exist_ok=True)
+    (repo / "broken_mod" / "__manifest__.py").write_text("not valid python {{{")
+
+    with caplog.at_level(logging.INFO, logger="src.indexer.registry"):
+        registry = build_registry([(str(repo), "17.0")])
+
+    # Behaviour preserved: only the 2 installable, serve-licensed modules register.
+    keys = registry.get("17.0", {})
+    assert "active_a" in keys
+    assert "active_b" in keys
+    assert "wip_a" not in keys
+    assert "wip_b" not in keys
+    assert "ent_mod" not in keys
+    assert "broken_mod" not in keys
+
+    summary_lines = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("registry scan")
+    ]
+    assert len(summary_lines) == 1, f"expected exactly ONE summary line, got {summary_lines!r}"
+    msg = summary_lines[0]
+    assert "6 manifests" in msg, msg
+    assert "2 registered" in msg, msg
+    assert "2 not-installable" in msg, msg
+    assert "1 license" in msg, msg
+    assert "1 unparseable" in msg, msg
+    assert "0 unknown-version" in msg, msg
+
+
+def test_build_registry_summary_one_line_per_repo(tmp_path, caplog):
+    """Two repos → exactly two summary lines (no per-module spam)."""
+    import logging
+
+    repo1 = make_git_repo(tmp_path / "r1_17.0", "17.0")
+    repo2 = make_git_repo(tmp_path / "r2_17.0", "17.0")
+    make_manifest(repo1 / "mod1", "Mod1", "17.0.1.0.0", [])
+    make_manifest(repo2 / "mod2", "Mod2", "17.0.1.0.0", [], installable=False)
+
+    with caplog.at_level(logging.INFO, logger="src.indexer.registry"):
+        build_registry([(str(repo1), "17.0"), (str(repo2), "17.0")])
+
+    summary_lines = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("registry scan")
+    ]
+    assert len(summary_lines) == 2, f"expected one line per repo, got {summary_lines!r}"
+
+
 # --- Phase 0 v8/v9: ManifestFinder Protocol (M4.5 WI1.1) ---
 
 
