@@ -6,7 +6,7 @@ PYTEST  := $(VENV)/bin/pytest
 COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
-.PHONY: help install test test-unit test-integration test-browser test-all \
+.PHONY: help install test test-unit test-integration test-browser test-http test-nightly test-all \
         neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell \
         recreate-db check-systemd-overrides
 
@@ -16,6 +16,8 @@ help:
 	@echo "  test              Chạy unit tests (không cần Docker)"
 	@echo "  test-integration  Chạy integration tests (cần Docker)"
 	@echo "  test-browser      Chạy browser E2E tests (cần Docker + PostgreSQL)"
+	@echo "  test-http         Chạy FastAPI httpx in-process tests (-m http)"
+	@echo "  test-nightly      Chạy heavy E2E + concurrency tests (-m nightly)"
 	@echo "  test-all          Chạy toàn bộ tests"
 	@echo "  neo4j-up          Start Neo4j container"
 	@echo "  neo4j-down        Stop Neo4j container"
@@ -62,6 +64,14 @@ test-browser:
 	@echo " PostgreSQL sẵn sàng"
 	$(VENV)/bin/playwright install chromium
 	$(PYTEST) tests/browser/ -v -m "browser and postgres" --tb=short
+
+# httpx in-process FastAPI tests — no browser, no live server.
+test-http:
+	$(PYTEST) tests/ -v -m "http" --tb=short -rs
+
+# Heavy E2E + concurrency tests — NOT part of the default `test` target.
+test-nightly:
+	$(PYTEST) tests/ -v -m "nightly" --tb=short -rs
 
 test-all: test-unit test-integration
 
