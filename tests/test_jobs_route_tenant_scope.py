@@ -12,7 +12,10 @@ Business rules protected:
   J6  Not-found id → 404.
   J7  Bulk "all" job → 404 for non-admin, 200 for admin.
   J8  Orphan job (profile row deleted / never existed) → 404 for non-admin, 200 for admin.
-  J9  Non-admin response NEVER contains error_msg or pid (redacted).
+  J9  Non-admin owner sees a SANITIZED error summary (never raw error_msg); pid stays
+      admin-only (redacted) (#237 follow-up).
+  J10 A recognisable error maps to its fixed category summary for the owner, with raw
+      server paths / repo URLs stripped, while admin still sees the raw error_msg.
 
   C1  clone-status cross-tenant deny → 404.
   C2  clone-status owner allow → 200.
@@ -217,8 +220,9 @@ async def test_j2_owner_allow(migrated_pg, monkeypatch):
     body = resp.json()
     assert body["id"] == job_id
     assert body["status"] == "done"
-    # Non-admin must NOT see error_msg or pid
-    assert body.get("error_msg") is None, "Non-admin should not see error_msg"
+    # Non-admin owner: sees a SANITIZED summary (not the raw secret); pid stays hidden.
+    assert body.get("error_msg") is not None, "Owner should see a sanitized error summary"
+    assert "owner-secret-err" not in resp.text, "Raw error_msg must not leak to the owner"
     assert body.get("pid") is None, "Non-admin should not see pid"
 
 
@@ -353,7 +357,7 @@ async def test_j8_orphan_job_non_admin_denied(migrated_pg, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_j9_no_sensitive_fields_for_nonadmin(migrated_pg, monkeypatch):
-    """J9: non-admin response body never contains error_msg or pid values."""
+    """J9: non-admin owner sees a sanitized summary, never the raw error/path/pid."""
     monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
     app = create_app()
 
@@ -371,10 +375,49 @@ async def test_j9_no_sensitive_fields_for_nonadmin(migrated_pg, monkeypatch):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body.get("error_msg") is None, "Non-admin must not see error_msg"
+    # Owner sees a sanitized summary (unrecognised error → generic default),
+    # but NEVER the raw path or raw exception text.
+    assert body.get("error_msg") is not None, "Owner should see a sanitized error summary"
     assert body.get("pid") is None, "Non-admin must not see pid"
     assert "/etc/passwd" not in resp.text, "Sensitive path must not appear in response"
     assert "INTERNAL ERROR" not in resp.text, "Raw error text must not appear in response"
+
+
+@pytest.mark.asyncio
+async def test_j10_owner_error_summary_is_categorised_and_path_stripped(migrated_pg, monkeypatch):
+    """J10: a recognisable error maps to its category summary for the owner, and the
+    raw repo URL / file path embedded in the exception is stripped (#237 follow-up)."""
+    monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
+    app = create_app()
+
+    admin_id, t1_id, t2_id = _seed_users(migrated_pg)
+    tid1 = _seed_tenant(migrated_pg, "j237_tenant_j10")
+    _seed_profile(migrated_pg, "j237_prof_t1_j10", tenant_id=tid1)
+    _seed_membership(migrated_pg, t1_id, tid1)
+    raw = ("fatal: could not read from remote repository "
+           "git@github.com:Acme/secret-private.git (permission denied) "
+           "at /srv/osm/repos/acme/.git")
+    job_id = _seed_job(migrated_pg, "j237_prof_t1_j10", error_msg=raw)
+
+    cookies_t1 = await _login(app, "j237_t1", "TestPass123!")
+    async with _async_client(app, cookies=cookies_t1) as client:
+        resp = await client.get(f"/api/jobs/{job_id}/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Categorised summary (auth / deploy-key bucket), never the raw text.
+    assert body.get("error_msg") is not None
+    assert "Repository access failed" in body["error_msg"], (
+        f"Expected the auth/deploy-key category, got: {body['error_msg']!r}"
+    )
+    assert "secret-private.git" not in resp.text, "Raw repo URL must not leak to the owner"
+    assert "/srv/osm/repos" not in resp.text, "Raw server path must not leak to the owner"
+    # Admin, by contrast, still gets the full raw error for debugging.
+    admin_cookies = await _login(app, "j237_admin", "AdminPass123!")
+    async with _async_client(app, cookies=admin_cookies) as client:
+        admin_resp = await client.get(f"/api/jobs/{job_id}/status")
+    assert admin_resp.status_code == 200
+    assert "secret-private.git" in admin_resp.text, "Admin should see the full raw error"
 
 
 # ---------------------------------------------------------------------------

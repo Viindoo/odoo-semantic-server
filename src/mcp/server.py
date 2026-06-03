@@ -453,8 +453,30 @@ def _get_api_key_id() -> str:
     In production the middleware writes the api_key_id via
     _api_key_id_var.set() before each tool call and resets it in finally.
     Falls back to 'default' when not set (unit tests, CLI invocations).
+
+    Note on the runtime type: the annotation is ``str``, but on the #248
+    header-recovery path the middleware stores the numeric PK recovered from the
+    auth cache, so the value can be an ``int`` at runtime. Downstream consumers
+    that must coerce it (e.g. ``session.set_active_*_db`` doing ``int(...)``)
+    already accept both forms; do not rely on it always being a string.
     """
     return _api_key_id_var.get()
+
+
+def _http_request_has_api_key() -> bool:
+    """True when the current call carries an ``X-API-Key`` header.
+
+    Distinguishes an authenticated HTTP request (where a skipped session persist
+    is a real error worth surfacing loudly — #248) from the benign stdio / CLI
+    no-op (gentle note). Header presence is a far more reliable HTTP-auth signal
+    than ``_get_api_key_id()`` (which can read ``'default'`` on the #248
+    propagation path). Never raises — absence of an HTTP request returns False.
+    """
+    try:
+        from fastmcp.server.dependencies import get_http_request
+        return bool(get_http_request().headers.get("X-API-Key"))
+    except Exception:
+        return False
 
 
 def _get_tenant_id() -> int | None:
@@ -6031,14 +6053,36 @@ def set_active_version(odoo_version: str) -> ToolResult:
         return ToolResult(content=[TextContent(type="text",
             text=f"Error checking indexed versions: {exc}")])
     try:
-        _session.set_active_version_db(_get_api_key_id(), normalized)
+        persisted = _session.set_active_version_db(_get_api_key_id(), normalized)
     except Exception as exc:
         return ToolResult(content=[TextContent(type="text",
             text=f"Error persisting session version: {exc}")])
+    if not persisted:
+        # The write was skipped (non-numeric api_key_id). On authenticated HTTP
+        # this means the api_key_id never reached the tool body (#248) — fail
+        # loud instead of lying with a success receipt. On stdio / CLI (no
+        # X-API-Key header) it is the expected no-op.
+        if _http_request_has_api_key():
+            return ToolResult(content=[TextContent(type="text",
+                text=(
+                    "Error: could not persist the active version for this API key "
+                    "(session context unavailable).\n"
+                    "└─ Pass an explicit odoo_version= on each call until this is resolved."
+                )
+            )])
+        return ToolResult(content=[TextContent(type="text",
+            text=(
+                f"Note: '{normalized}' was not persisted — no API key in this "
+                "transport (stdio/CLI).\n"
+                "Pass odoo_version= explicitly; session pinning needs an HTTP API key."
+            )
+        )])
     return ToolResult(content=[TextContent(type="text",
         text=(
             f"Active version set to '{normalized}' for this API key (TTL 24h).\n"
-            "Subsequent tool calls that omit odoo_version= will resolve to this version."
+            "Pass odoo_version='auto' on subsequent calls to reuse this version "
+            "(the version-required tools no longer accept an omitted odoo_version; "
+            "'auto' resolves to this pin)."
         )
     )])
 
@@ -6124,10 +6168,28 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
                 )
             )])
     try:
-        _session.set_active_profile_db(_get_api_key_id(), profile_name)
+        persisted = _session.set_active_profile_db(_get_api_key_id(), profile_name)
     except Exception as exc:
         return ToolResult(content=[TextContent(type="text",
             text=f"Error persisting session profile: {exc}")])
+    if not persisted:
+        # Skipped write (non-numeric api_key_id). Loud on authenticated HTTP
+        # (#248 propagation gap), gentle no-op on stdio / CLI.
+        if _http_request_has_api_key():
+            return ToolResult(content=[TextContent(type="text",
+                text=(
+                    "Error: could not persist the active profile for this API key "
+                    "(session context unavailable).\n"
+                    "└─ Pass an explicit profile_name= on each call until this is resolved."
+                )
+            )])
+        return ToolResult(content=[TextContent(type="text",
+            text=(
+                "Note: active profile was not persisted — no API key in this "
+                "transport (stdio/CLI).\n"
+                "Pass profile_name= explicitly; session pinning needs an HTTP API key."
+            )
+        )])
     if profile_name is None:
         msg = (
             "Active profile cleared for this API key.\n"

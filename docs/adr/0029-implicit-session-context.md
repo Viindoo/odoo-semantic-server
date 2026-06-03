@@ -275,3 +275,76 @@ The client plugin's tool schemas / wrappers must flip `odoo_version` to **requir
 - `src/mcp/server.py` — `RequiredOdooVersion` alias + 19 tool signatures.
 - `tests/test_mcp_tool_descriptions.py` — `test_odoo_version_is_required` (19, FAILs on the old `"auto"` default) + `test_odoo_version_not_required_for_bootstrap_tools` (4).
 - `docs/adr/0023-tool-output-completeness.md` §2 — English-only parameter descriptions (the `RequiredOdooVersion` description is English-only).
+
+---
+
+## Amendment (#248) — `api_key_id` propagation over stateful streamable-HTTP
+
+**Problem.** With a deliberately-passed sentinel (`odoo_version='auto'`) the resolver was *supposed*
+to use the session-pinned version (Tier 2). Over the stateful streamable-HTTP transport it instead
+fell through to Tier 3 `_latest_version()`: `set_active_version('16.0')` returned a success receipt
+but a subsequent `auto` call answered with the latest indexed version (e.g. 19.0). Reproduced live
+on production. This defeats the sticky-session contract for the one access path (deliberate
+sentinels) that this ADR kept supported.
+
+**Root cause (pinned).** Inside the offloaded tool body `_get_api_key_id()` read the `'default'`
+sentinel instead of the authenticated numeric PK. `AuthMiddleware` (a Starlette
+`BaseHTTPMiddleware`) writes `request.state.api_key_id` on its per-call request, but the MCP stateful
+session manager runs the tool body in a **long-lived `Server.run` loop task** and exposes the
+per-call request to the FastMCP hooks via the MCP `request_ctx` bridge. The `scope["state"]`
+mutation `AuthMiddleware` made does **not** survive that
+BaseHTTPMiddleware↔session-manager↔`request_ctx` boundary, so
+`UsageLogMiddleware.on_call_tool`/`on_read_resource` read `None` and wrote `'default'` into
+`_api_key_id_var`. Then `set_active_version_db`/`get_session_state` silently no-op on a non-numeric
+id → no persist, no read → Tier-3 latest. The success receipt was emitted unconditionally — a lie.
+
+> The earlier hypothesis that `on_call_tool` lacked the `on_read_resource` ContextVar fix is
+> superseded: both hooks already carried identical code (PR #197). The defect is the **source value**
+> (`request.state.api_key_id` empty), not the hook plumbing — so a fix that merely re-set a ContextVar
+> in `AuthMiddleware.dispatch` would NOT reach the loop task and was rejected.
+
+**Fix (header-fallback, robust-by-construction).** `scope["headers"]` is set by the ASGI server and
+untouched by middleware, so `X-API-Key` always survives on the per-call request, and `AuthMiddleware`
+has already populated its warm `_KEY_CACHE`/`_TENANT_CACHE` for that key before the hook fires. In
+`on_call_tool`/`on_read_resource`, when `request.state.api_key_id is None`, recover the numeric PK
+from the header via `middleware._cache_get`/`_cache_get_tenant`
+(`tool_log_middleware._recover_identity_from_header`). This single source-repair fixes every
+downstream `_get_api_key_id()` consumer at once — version pin, profile pin, `odoo://auto/...`
+resources, and the usage/audit/tenant-attribution call sites that were also mis-attributed to
+`'default'`. On a cache miss (TTL edge) the prior graceful `'default'` fallback is kept (no
+regression). `'default'` remains the legitimate value for stdio/CLI/no-auth (no `X-API-Key`).
+
+**Honest receipts.** `set_active_version_db`/`set_active_profile_db` now return `bool`
+(`True`=persisted). The tools emit a success receipt only when persisted; on a skipped write they
+fail **loud** when an `X-API-Key` header is present (authenticated HTTP — a real propagation failure)
+and emit a gentle "no-op on this transport" note otherwise (stdio/CLI). The silent `.debug` skip is
+now `.warning`.
+
+**Tests.** `tests/test_mcp_session_header_fallback.py` drives the real hook → `_api_key_id_var` →
+`_get_api_key_id()` inside `call_next`, faithfully simulating the state-loss; RED without the fix
+(`'default'`), GREEN with it, plus negative controls (cold cache → graceful `'default'`; no header →
+stdio path; state-present → no fallback). `tests/test_mcp_session_receipt_honesty.py` guards the
+three receipt branches. (The end-to-end state-loss is empirically confirmed on prod; a full
+uvicorn-socket stateful-handshake test is a possible hardening follow-up.)
+
+**Receipt wording aligned.** The `set_active_version` *success* receipt previously read "calls that
+omit `odoo_version=` will resolve to this version" — obsolete after this same ADR's required-version
+amendment (omission is now a validation error on the 19 tools) and non-functional under #248. It now
+reads "pass `odoo_version='auto'` to reuse this pin", which is accurate under both the required-version
+rule and the restored sticky resolution. (`set_active_profile` is unchanged: `profile_name` is NOT in
+the required set, so omission remains valid for the profile dimension.) This closes the
+surface-description point raised on `Viindoo/odoo-mcp-client#38`.
+
+**Pinned-stack non-reproduction (honest scope).** The state-loss was confirmed live on production, but
+does NOT reproduce under the currently pinned `mcp 1.27.0 / fastmcp 2.14.7 / starlette 1.0.0` stack in
+a local real-socket harness — there `request.state.api_key_id` survives into the tool body. The
+header-fallback is therefore a **defense-in-depth recovery**: it activates precisely on the prod
+topology that drops scope-state and is a no-op where state already propagates, so it is safe under any
+stack. Consequently a real-socket RED→GREEN test is not achievable on the pinned stack; the guard is
+the hook-level `tests/test_mcp_session_header_fallback.py` (which injects the state-loss precondition
+and is RED without the recovery). Revisit a socket-level isolation test only if a future
+mcp/fastmcp/starlette bump reintroduces the loss.
+
+**References.** `src/mcp/tool_log_middleware.py` (`_recover_identity_from_header`),
+`src/mcp/session.py` (`set_active_*_db` → `bool`), `src/mcp/server.py` (`_http_request_has_api_key` +
+receipt branches). No migration. Tool count stays **24**.
