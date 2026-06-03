@@ -18,9 +18,11 @@ Tests:
   3. _get_api_key_id() / _get_tenant_id() return real values when middleware
      sets them via the ContextVar bridge.
   4. Concurrent coroutines: middleware set + tool read — no cross-contamination.
-  5. session.py set_active_version_db gracefully skips non-numeric api_key_id.
+  5. session.py set_active_version_db gracefully skips non-numeric api_key_id
+     (in-memory store, #251) — returns False, stores nothing, 0 DB I/O.
   6. session.py set_active_profile_db gracefully skips non-numeric api_key_id.
-  7. session.py _fetch_from_db returns None for non-numeric api_key_id.
+  7. session.py get_session_state returns None for non-numeric api_key_id
+     (the in-memory read path that superseded the removed _fetch_from_db, #251).
   8. End-to-end: a REAL sync @mcp.tool reads the context through the real
      UsageLogMiddleware via an in-memory fastmcp.Client (the genuine prod path).
 """
@@ -30,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from contextvars import ContextVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -307,92 +309,90 @@ class TestMiddlewareBridge:
 # ---------------------------------------------------------------------------
 
 
+def _boom_checkout_pg(*_a, **_k):
+    """A _checkout_pg replacement that explodes if the session pin path ever
+    touches Postgres. The in-memory store (#251) is the source of truth, so the
+    non-numeric-guard path must complete with 0 DB I/O — patching this in proves
+    it (a regression to the old DB-backed path would raise here)."""
+    raise AssertionError(
+        "session pin path touched _checkout_pg — it must be pure in-memory (#251)"
+    )
+
+
 class TestSessionNonNumericGuard:
-    """session.py functions gracefully skip when api_key_id is non-numeric."""
+    """session.py functions gracefully skip when api_key_id is non-numeric.
+
+    Migrated for #251: the pin store is now in-memory (the Postgres path was
+    removed), so intent is asserted against the in-memory store + the bool return
+    rather than against ``_checkout_pg`` / the removed ``_fetch_from_db``. A
+    booby-trapped ``_checkout_pg`` proves the path performs 0 DB I/O.
+    """
+
+    def setup_method(self) -> None:
+        from src.mcp.session import _cache, _cache_lock
+        with _cache_lock:
+            _cache.clear()
 
     def test_set_active_version_db_skips_for_default_sentinel(self):
-        """set_active_version_db('default', ...) logs + returns without DB write."""
-        from src.mcp.session import set_active_version_db
+        """set_active_version_db('default', ...) returns False and stores nothing."""
+        from src.mcp.session import _cache, _cache_lock, set_active_version_db
 
-        # _checkout_pg is imported lazily from src.mcp.server inside the function.
-        # Patch it at the source location.
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.mcp.server._checkout_pg", return_value=mock_conn):
-            set_active_version_db("default", "17.0")
-            # The guard should have returned early — _checkout_pg context manager
-            # should NOT have been entered.
-            mock_conn.__enter__.assert_not_called()
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert set_active_version_db("default", "17.0") is False
+        with _cache_lock:
+            assert _cache == {}, "non-numeric key must not create an in-memory pin"
 
     def test_set_active_version_db_skips_for_arbitrary_string(self):
         """set_active_version_db('not-an-int', ...) also skips gracefully."""
-        from src.mcp.session import set_active_version_db
+        from src.mcp.session import _cache, _cache_lock, set_active_version_db
 
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.mcp.server._checkout_pg", return_value=mock_conn):
-            set_active_version_db("not-an-int", "17.0")
-            mock_conn.__enter__.assert_not_called()
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert set_active_version_db("not-an-int", "17.0") is False
+        with _cache_lock:
+            assert _cache == {}
 
     def test_set_active_version_db_proceeds_for_numeric_string(self):
-        """set_active_version_db('42', ...) attempts the DB write (enters context)."""
-        from src.mcp.session import set_active_version_db
+        """set_active_version_db('42', ...) stores the pin in memory (0 DB I/O).
 
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor = MagicMock(return_value=mock_cur)
-        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
-        mock_cur.__exit__ = MagicMock(return_value=False)
+        Pre-#251 this entered ``_checkout_pg`` (a DB write); the pin is now an
+        in-memory dict write, so the equivalent intent is: the write LANDS
+        (returns True, pin readable) while ``_checkout_pg`` is never touched.
+        """
+        from src.mcp.session import get_session_state, set_active_version_db
 
-        with patch("src.mcp.server._checkout_pg", return_value=mock_conn):
-            set_active_version_db("42", "17.0")
-            # Guard passed → _checkout_pg was entered
-            mock_conn.__enter__.assert_called_once()
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert set_active_version_db("42", "17.0") is True
+            state = get_session_state("42")
+        assert state is not None and state.odoo_version == "17.0", (
+            "numeric key must land an in-memory pin readable via get_session_state"
+        )
 
     def test_set_active_profile_db_skips_for_default_sentinel(self):
-        """set_active_profile_db('default', ...) skips gracefully."""
-        from src.mcp.session import set_active_profile_db
+        """set_active_profile_db('default', ...) returns False and stores nothing."""
+        from src.mcp.session import _cache, _cache_lock, set_active_profile_db
 
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert set_active_profile_db("default", "my-profile") is False
+        with _cache_lock:
+            assert _cache == {}
 
-        with patch("src.mcp.server._checkout_pg", return_value=mock_conn):
-            set_active_profile_db("default", "my-profile")
-            mock_conn.__enter__.assert_not_called()
+    def test_get_session_state_returns_none_for_default_sentinel(self):
+        """get_session_state('default') returns None without hitting the DB.
 
-    def test_fetch_from_db_returns_none_for_default_sentinel(self):
-        """_fetch_from_db('default') returns None without hitting the DB."""
-        from src.mcp.session import _fetch_from_db
+        Replaces the removed ``_fetch_from_db`` coverage: the in-memory read path
+        short-circuits on a non-numeric key id and never touches Postgres.
+        """
+        from src.mcp.session import get_session_state
 
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert get_session_state("default") is None
 
-        with patch("src.mcp.server._checkout_pg", return_value=mock_conn):
-            result = _fetch_from_db("default")
-            assert result is None
-            # The guard short-circuits before importing _checkout_pg
-            mock_conn.__enter__.assert_not_called()
+    def test_get_session_state_returns_none_for_arbitrary_string(self):
+        """get_session_state('not-an-int') returns None without DB hit."""
+        from src.mcp.session import get_session_state
 
-    def test_fetch_from_db_returns_none_for_arbitrary_string(self):
-        """_fetch_from_db('not-an-int') returns None without DB hit."""
-        from src.mcp.session import _fetch_from_db
-
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.mcp.server._checkout_pg", return_value=mock_conn):
-            result = _fetch_from_db("not-an-int")
-            assert result is None
-            mock_conn.__enter__.assert_not_called()
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert get_session_state("not-an-int") is None
 
 
 # ---------------------------------------------------------------------------

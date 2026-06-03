@@ -348,3 +348,120 @@ mcp/fastmcp/starlette bump reintroduces the loss.
 **References.** `src/mcp/tool_log_middleware.py` (`_recover_identity_from_header`),
 `src/mcp/session.py` (`set_active_*_db` → `bool`), `src/mcp/server.py` (`_http_request_has_api_key` +
 receipt branches). No migration. Tool count stays **24**.
+
+---
+
+## Amendment (#251) - per-session keying + profile read path
+
+### The bug
+
+The sticky pin was keyed by `api_key_id` **alone**. A single API key is the
+normal granularity for a person or a project (per the original "Granularity:
+per-API-key" decision above), but in practice one person runs **several Claude
+Code sessions concurrently on the same key** - different terminals, different
+repos, different Odoo versions. With a single pin row per key, those sessions
+clobbered each other: `set_active_version("16.0")` in session A and
+`set_active_version("17.0")` in session B raced last-write-wins, and any call
+that resolved through the pin (a deliberate `odoo_version="auto"`, or any
+`profile_name`-omitting call) in session A could silently pick up session B's
+version/profile. For a version-accurate knowledge engine that is a
+silent-wrong-answer, the same failure class the WI-4 amendment closed for
+omission - here re-opened by concurrency.
+
+### The fix - key by `(api_key_id, mcp_session_id)`
+
+The pin is now keyed by the composite `(api_key_id, mcp_session_id)`. Each live
+MCP session gets its own pin entry, so concurrent sessions on one key never
+collide. The `mcp-session-id` is read at **tool-body time** from the per-call
+request headers - #248/#250 established that body-time header reads are reliable
+over the stateful streamable-HTTP transport (the `X-API-Key` / `mcp-session-id`
+headers in `scope["headers"]` survive the
+BaseHTTPMiddleware↔session-manager↔`request_ctx` boundary that `request.state`
+does not). When no session id is available (stdio / CLI / header-less callers)
+the resolver falls back to the sentinel bucket `_nosession`, which reproduces the
+pre-#251 single-pin-per-key semantics byte-for-byte for those transports.
+
+### Storage = in-memory (NOT a DB migration)
+
+The pin store is a single in-process dict guarded by one `threading.Lock`; it is
+the **source of truth** for the pin. There is no migration, and the
+`api_key_session_state` Postgres table (created in the original decision) is now
+**vestigial - no longer read or written**, but kept (not dropped) to avoid an
+irreversible schema change for a still-young table.
+
+Rationale for moving off Postgres rather than adding an `mcp_session_id` column:
+
+- **Zero DB I/O on the hot path.** At thousands of concurrent users, each with
+  several live sessions, a per-`(key, session)` pin row that is read on every
+  resolving tool call would add Postgres round-trips to the busiest code path.
+  An in-memory dict get/put is O(1) with no I/O under the lock.
+- **A session-keyed PG row is dead-on-restart anyway.** An `mcp-session-id` is
+  ephemeral - it lives in the transport's in-process state and dies with the
+  process. A persisted row keyed by a session id that no longer exists (the id
+  404s on the next request and the client re-mints one) is unreachable garbage;
+  persisting it buys nothing.
+- **Production is single-process-async with no Redis.** There is no second
+  worker to share state with and no shared cache layer in the deployment, so the
+  cross-process-staleness tradeoff that justified the Postgres write-through in
+  the original design no longer applies.
+- **Bounded + self-cleaning.** The store is size-capped at
+  `MCP_SESSION_PIN_MAX` (env, default 50000) with oldest-by-`set_at` eviction, so
+  thousands of sessions cannot grow it unboundedly, and a 24h idle TTL (applied
+  in memory at read time) ages out abandoned sessions.
+
+### Profile read path now wired (narrowing-only, fail-closed)
+
+The profile read path - previously dead because `resolve_profile_v2`'s result was
+never consumed downstream - is now **wired**. `_resolve_profile` proposes the
+per-session pinned profile (from `set_active_profile`) when a tool omits
+`profile_name`, and that proposal is injected at the **top** of both `_scope`
+(Neo4j tenant array-filter) and `_effective_allowed` (pgvector single-value
+filter), *before* the existing ADR-0034 tenant narrowing.
+
+The injection is strictly **narrowing-only** and **re-validated at READ time**
+through the existing ADR-0034 tenant choke:
+
+- The pinned profile can only shrink the visible set *within* `own ∪ shared`; it
+  can never widen it nor cross tenants.
+- A scoped tenant whose pin is **out of scope** (not in `own ∪ shared`) gets
+  deny-all (`_scope` → `own=[], shared=[]`; `_effective_allowed` → `[]` → GUC
+  `''` matches nothing) - **fail-closed**, never fail-open.
+- An admin (tenant `own=None`) stays **unrestricted**; the pin only narrows as a
+  convenience.
+
+Crucially, **no new per-key `allowed_profile_ids` authz column was added** - the
+larger profile-authorization design the v0.6 amendment deferred stays deferred.
+This change only un-defers the narrow piece: read the *already-recorded
+convenience default* through the *already-existing* tenant gate. The pin remains
+data-segmentation convenience, not authorization; authorization is still the
+ADR-0034 tenant boundary doing the enforcing.
+
+Note the **WI-4 asymmetry** that makes this worthwhile: `odoo_version` is
+hard-required on the 19 version-bearing tools, so the version pin only ever
+serves a *deliberate* `odoo_version="auto"`; but `profile_name` was deliberately
+left **optional** (it is not in the required set), so the profile read path serves
+the *normal omit path* - the higher-impact half of the implicit-context promise.
+
+### Durability honesty
+
+Session pins are ephemeral. They **reset on server restart** (the
+`mcp-session-id` lives only in the transport's in-process state) and are
+**idle-evicted** after 24h (or sooner under `MCP_SESSION_PIN_MAX` pressure).
+After a restart or eviction, clients simply re-run `set_active_version` /
+`set_active_profile`, or pass explicit versions/profiles. This is the intended
+contract, not a regression - a pin records the caller's *intent for this live
+session*, not durable state.
+
+### References
+
+- `src/mcp/session.py` - `(api_key_id, mcp_session_id)`-keyed in-memory store,
+  `_NO_SESSION_SENTINEL` (`_nosession`) fallback, `MCP_SESSION_PIN_MAX`
+  oldest-evict, 24h in-memory idle TTL, `get_session_state` /
+  `set_active_version_db` / `set_active_profile_db` / `resolve_version_v2` /
+  `resolve_profile_v2` all taking `mcp_session_id`.
+- `src/mcp/server.py` - `_get_mcp_session_id`, `_resolve_profile` (proposes the
+  pinned default), `#251` injection at the top of `_scope` and
+  `_effective_allowed` (narrowing-only, fail-closed re-validation via the
+  ADR-0034 choke).
+- No migration. `api_key_session_state` is vestigial (kept, not dropped). Tool
+  count stays **24**.

@@ -1,298 +1,201 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""DB integration tests for src/mcp/session.py — requires live PostgreSQL.
+"""Round-trip + isolation tests for src/mcp/session.py pin store.
 
-Marker: pytest.mark.postgres
+Originally a Postgres integration suite (the pin lived in
+``api_key_session_state``). #251 moved the pin INTO an in-memory per-(api_key_id,
+mcp_session_id) store and DELETED every Postgres read/write path, so these tests
+no longer touch Postgres — the ``postgres`` marker and the migration/seed fixture
+were dropped. The behavioral intent is unchanged and still falsifiable:
 
-Covers AC-E2-6:
   1. set_active_version_db + get_session_state round-trip
   2. set_active_profile_db + get_session_state round-trip
-  3. 24h sliding TTL — row updated_at mocked to >24h → returns None
-  4. Tenant isolation — key A's state invisible to key B
+  3. same-session overwrite vs. different-session isolation (#251 clobber guard)
+  4. 24h idle TTL — entry older than 24h → returns None (in-memory clock)
+  5. per-key isolation — key A's pin invisible to key B
 
-These tests use the pg_conn session fixture from conftest.py (autocommit=True).
-The api_key_session_state table is created by running migrations via run_migrations().
-After each test the test rows are cleaned up by deleting the inserted api_key_ids.
+A booby-trapped ``_checkout_pg`` proves every assertion is served from memory
+with 0 DB I/O (a regression to the old DB-backed path would raise).
 """
 
-import pytest
+from unittest.mock import patch
 
-pytestmark = pytest.mark.postgres
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-_TEST_API_KEY_IDS = [9901, 9902, 9903]  # Fake integer IDs that won't conflict
+_TEST_API_KEY_IDS = ["9901", "9902", "9903"]  # numeric strings — pass the #248 guard
 
 
-@pytest.fixture()
-def session_db(pg_conn):
-    """Run migrations, init pool, seed api_keys parents, yield pg_conn.
+def _clear_cache() -> None:
+    from src.mcp.session import _cache, _cache_lock
+    with _cache_lock:
+        _cache.clear()
 
-    api_key_session_state.api_key_id is a FK to api_keys(id) ON DELETE CASCADE
-    (migration 0005, ADR-0029).  To exercise UPSERT against that table we need
-    the parent api_keys rows to exist with the test IDs, otherwise every INSERT
-    raises ForeignKeyViolation.
 
-    Why not insert into api_key_session_state directly with hand-rolled SQL?
-    Because the production code under test (`set_active_version_db`) does an
-    UPSERT into api_key_session_state — exercising the real path requires the
-    real FK parent.
-    """
-    import os
-
-    from src.db.migrate import run_migrations
-    from src.db.pg import get_pool, init_pool
-
-    test_dsn = os.getenv(
-        "PG_TEST_DSN",
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
+def _boom_checkout_pg(*_a, **_k):
+    """Explode if the pin path touches Postgres — proves 0 DB I/O (#251 A-SCALE-1)."""
+    raise AssertionError(
+        "session pin path touched _checkout_pg — it must be pure in-memory (#251)"
     )
 
-    # Ensure pool is initialised (may already be from conftest pg_conn fixture)
-    try:
-        get_pool()
-    except RuntimeError:
-        init_pool(test_dsn, min_conn=1, max_conn=3)
 
-    # Ensure schema exists (creates api_keys + api_key_session_state with FK).
-    run_migrations(pg_conn)
+class _FakeClock:
+    """Monotonic clock stub: call for ``now``, ``tick(dt)`` to advance."""
 
-    # Seed api_keys parent rows for the synthetic test IDs.  api_keys.id is
-    # SERIAL so we use OVERRIDING SYSTEM VALUE to plant our chosen PKs.  Use
-    # ON CONFLICT to make the seed re-entrant across the function-scoped
-    # fixture lifecycle.
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO api_keys (id, name, key_hash, key_prefix) "
-            "OVERRIDING SYSTEM VALUE VALUES "
-            "(%s, 'session-db-test-1', 'hash-9901', 'osm_t1'), "
-            "(%s, 'session-db-test-2', 'hash-9902', 'osm_t2'), "
-            "(%s, 'session-db-test-3', 'hash-9903', 'osm_t3') "
-            "ON CONFLICT (id) DO NOTHING",
-            tuple(_TEST_API_KEY_IDS),
-        )
+    def __init__(self, t0: float = 0.0) -> None:
+        self.t = t0
 
-    # Pre-clean: this fixture does NOT depend on `clean_pg`, so the
-    # api_key_session_state table is not wiped automatically between tests.
-    # Delete only OUR test rows to keep per-test state isolated.
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM api_key_session_state WHERE api_key_id = ANY(%s)",
-            (_TEST_API_KEY_IDS,),
-        )
+    def __call__(self) -> float:
+        return self.t
 
-    yield pg_conn
-
-    # Post-clean: symmetric with pre-clean.
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM api_key_session_state WHERE api_key_id = ANY(%s)",
-            (_TEST_API_KEY_IDS,),
-        )
+    def tick(self, dt: float) -> None:
+        self.t += dt
 
 
 # ---------------------------------------------------------------------------
-# Helper to inject PG pool env into session module (patch _checkout_pg)
-# ---------------------------------------------------------------------------
-
-def _make_checkout_pg(conn):
-    """Return a context manager that yields *conn* directly, bypassing the pool."""
-    from contextlib import contextmanager
-
-    @contextmanager
-    def _mock_checkout_pg():
-        yield conn
-
-    return _mock_checkout_pg
-
-
-# ---------------------------------------------------------------------------
-# Test 1: set_active_version_db + get_session_state round-trip
+# 1. set_active_version_db + get_session_state round-trip
 # ---------------------------------------------------------------------------
 
 
 class TestSetGetVersionRoundTrip:
-    """AC-E2-6 test 1 — version persists and is readable via get_session_state."""
+    """A version written via set_active_version_db is readable via get_session_state."""
 
-    def test_version_round_trip(self, session_db) -> None:
-        from unittest.mock import patch
+    def setup_method(self) -> None:
+        _clear_cache()
 
-        from src.mcp.session import _cache, get_session_state, set_active_version_db
+    def test_version_round_trip(self) -> None:
+        from src.mcp.session import get_session_state, set_active_version_db
 
-        api_key_id = str(_TEST_API_KEY_IDS[0])
-        _cache.clear()
-
-        checkout = _make_checkout_pg(session_db)
-
-        with patch("src.mcp.server._checkout_pg", checkout):
-            set_active_version_db(api_key_id, "17.0")
-            # Cache was invalidated by set_active_version_db → next call hits DB
-            _cache.clear()  # Force DB re-read
+        api_key_id = _TEST_API_KEY_IDS[0]
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert set_active_version_db(api_key_id, "17.0") is True
             state = get_session_state(api_key_id)
 
         assert state is not None
         assert state.api_key_id == api_key_id
         assert state.odoo_version == "17.0"
 
-    def test_version_upsert_updates_value(self, session_db) -> None:
-        """Second set_active_version_db overwrites the first."""
-        from unittest.mock import patch
+    def test_same_session_overwrites_value(self) -> None:
+        """Two writes under the SAME mcp_session_id → last value wins (overwrite)."""
+        from src.mcp.session import get_session_state, set_active_version_db
 
-        from src.mcp.session import _cache, get_session_state, set_active_version_db
-
-        api_key_id = str(_TEST_API_KEY_IDS[0])
-        _cache.clear()
-
-        checkout = _make_checkout_pg(session_db)
-
-        with patch("src.mcp.server._checkout_pg", checkout):
-            set_active_version_db(api_key_id, "16.0")
-            _cache.clear()
-            set_active_version_db(api_key_id, "17.0")
-            _cache.clear()
-            state = get_session_state(api_key_id)
+        api_key_id = _TEST_API_KEY_IDS[0]
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            set_active_version_db(api_key_id, "16.0", "same-sess")
+            set_active_version_db(api_key_id, "17.0", "same-sess")
+            state = get_session_state(api_key_id, "same-sess")
 
         assert state is not None
-        assert state.odoo_version == "17.0"
+        assert state.odoo_version == "17.0", "same-session second write must overwrite first"
+
+    def test_different_sessions_do_not_overwrite(self) -> None:
+        """Two writes under the SAME key but DIFFERENT mcp_session_ids must NOT
+        clobber — each keeps its own version. This is the #251 bug guard: a
+        per-key store (pre-#251) would have lost the first version here."""
+        from src.mcp.session import get_session_state, set_active_version_db
+
+        api_key_id = _TEST_API_KEY_IDS[0]
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            set_active_version_db(api_key_id, "16.0", "sess-a")
+            set_active_version_db(api_key_id, "17.0", "sess-b")
+            state_a = get_session_state(api_key_id, "sess-a")
+            state_b = get_session_state(api_key_id, "sess-b")
+
+        assert state_a is not None and state_a.odoo_version == "16.0"
+        assert state_b is not None and state_b.odoo_version == "17.0"
 
 
 # ---------------------------------------------------------------------------
-# Test 2: set_active_profile_db + get_session_state round-trip
+# 2. set_active_profile_db + get_session_state round-trip
 # ---------------------------------------------------------------------------
 
 
 class TestSetGetProfileRoundTrip:
-    """AC-E2-6 test 2 — profile_name persists and is readable."""
+    """profile_name persists in memory and is readable; None clears it."""
 
-    def test_profile_round_trip(self, session_db) -> None:
-        from unittest.mock import patch
+    def setup_method(self) -> None:
+        _clear_cache()
 
-        from src.mcp.session import _cache, get_session_state, set_active_profile_db
+    def test_profile_round_trip(self) -> None:
+        from src.mcp.session import get_session_state, set_active_profile_db
 
-        api_key_id = str(_TEST_API_KEY_IDS[1])
-        _cache.clear()
-
-        checkout = _make_checkout_pg(session_db)
-
-        with patch("src.mcp.server._checkout_pg", checkout):
-            set_active_profile_db(api_key_id, "my-erp-prod")
-            _cache.clear()
+        api_key_id = _TEST_API_KEY_IDS[1]
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            assert set_active_profile_db(api_key_id, "my-erp-prod") is True
             state = get_session_state(api_key_id)
 
         assert state is not None
         assert state.profile_name == "my-erp-prod"
 
-    def test_profile_clear_sets_none(self, session_db) -> None:
-        """set_active_profile_db(None) stores NULL → get returns profile_name=None."""
-        from unittest.mock import patch
+    def test_profile_clear_sets_none(self) -> None:
+        """set_active_profile_db(None) clears profile_name → None."""
+        from src.mcp.session import get_session_state, set_active_profile_db
 
-        from src.mcp.session import _cache, get_session_state, set_active_profile_db
-
-        api_key_id = str(_TEST_API_KEY_IDS[1])
-        _cache.clear()
-
-        checkout = _make_checkout_pg(session_db)
-
-        with patch("src.mcp.server._checkout_pg", checkout):
+        api_key_id = _TEST_API_KEY_IDS[1]
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
             set_active_profile_db(api_key_id, "to-be-cleared")
-            _cache.clear()
             set_active_profile_db(api_key_id, None)
-            _cache.clear()
             state = get_session_state(api_key_id)
 
-        # Row still exists but profile_name should be None / falsy
         assert state is None or state.profile_name is None
 
 
 # ---------------------------------------------------------------------------
-# Test 3: 24h sliding TTL
+# 3. 24h idle TTL
 # ---------------------------------------------------------------------------
 
 
 class TestSlidingTTL:
-    """AC-E2-6 test 3 — rows older than 24h are treated as expired (None)."""
+    """An entry older than the 24h idle TTL is treated as expired (None)."""
 
-    def test_stale_row_returns_none(self, session_db) -> None:
-        """Manually back-date updated_at to >24h ago; get_session_state returns None."""
-        from unittest.mock import patch
+    def setup_method(self) -> None:
+        _clear_cache()
 
-        from src.mcp.session import _cache, get_session_state
+    def test_stale_entry_returns_none(self) -> None:
+        """Entry written 25h ago (in-memory clock) → get_session_state returns None."""
+        from src.mcp.session import get_session_state, set_active_version_db
 
-        api_key_id = str(_TEST_API_KEY_IDS[2])
-        _cache.clear()
+        api_key_id = _TEST_API_KEY_IDS[2]
+        clock = _FakeClock()
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            set_active_version_db(api_key_id, "17.0", now_fn=clock)
+            clock.tick(25 * 3600)  # advance past the 24h TTL
+            state = get_session_state(api_key_id, now_fn=clock)
 
-        # Insert a row with an updated_at that is 25 hours in the past
-        with session_db.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO api_key_session_state (api_key_id, odoo_version, updated_at)
-                VALUES (%s, %s, NOW() - INTERVAL '25 hours')
-                ON CONFLICT (api_key_id) DO UPDATE
-                    SET odoo_version = EXCLUDED.odoo_version,
-                        updated_at   = EXCLUDED.updated_at
-                """,
-                (int(api_key_id), "17.0"),
-            )
+        assert state is None, "An entry older than 24h must be treated as expired (None)"
 
-        checkout = _make_checkout_pg(session_db)
+    def test_fresh_entry_within_24h_returns_state(self) -> None:
+        from src.mcp.session import get_session_state, set_active_version_db
 
-        with patch("src.mcp.server._checkout_pg", checkout):
-            state = get_session_state(api_key_id)
-
-        # Row exists but is stale — must be treated as None
-        assert state is None, (
-            "A row with updated_at > 24h must be treated as expired (None)"
-        )
-
-    def test_fresh_row_within_24h_returns_state(self, session_db) -> None:
-        """Row updated_at = NOW() must be readable."""
-        from unittest.mock import patch
-
-        from src.mcp.session import _cache, get_session_state, set_active_version_db
-
-        api_key_id = str(_TEST_API_KEY_IDS[2])
-        _cache.clear()
-
-        checkout = _make_checkout_pg(session_db)
-
-        with patch("src.mcp.server._checkout_pg", checkout):
-            set_active_version_db(api_key_id, "16.0")
-            _cache.clear()
-            state = get_session_state(api_key_id)
+        api_key_id = _TEST_API_KEY_IDS[2]
+        clock = _FakeClock()
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
+            set_active_version_db(api_key_id, "16.0", now_fn=clock)
+            clock.tick(23 * 3600)  # still within the 24h window
+            state = get_session_state(api_key_id, now_fn=clock)
 
         assert state is not None
         assert state.odoo_version == "16.0"
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Tenant isolation
+# 4. Per-key isolation
 # ---------------------------------------------------------------------------
 
 
-class TestTenantIsolation:
-    """AC-E2-6 test 4 — key A's session state is invisible to key B."""
+class TestKeyIsolation:
+    """Key A's session state is invisible to key B."""
 
-    def test_different_keys_have_independent_state(self, session_db) -> None:
-        from unittest.mock import patch
+    def setup_method(self) -> None:
+        _clear_cache()
 
-        from src.mcp.session import _cache, get_session_state, set_active_version_db
+    def test_different_keys_have_independent_state(self) -> None:
+        from src.mcp.session import get_session_state, set_active_version_db
 
-        key_a = str(_TEST_API_KEY_IDS[0])
-        key_b = str(_TEST_API_KEY_IDS[1])
-        _cache.clear()
-
-        checkout = _make_checkout_pg(session_db)
-
-        with patch("src.mcp.server._checkout_pg", checkout):
+        key_a = _TEST_API_KEY_IDS[0]
+        key_b = _TEST_API_KEY_IDS[1]
+        with patch("src.mcp.server._checkout_pg", side_effect=_boom_checkout_pg):
             set_active_version_db(key_a, "17.0")
-            # key_b has no row — should return None
-            _cache.clear()
             state_a = get_session_state(key_a)
             state_b = get_session_state(key_b)
 
         assert state_a is not None
         assert state_a.odoo_version == "17.0"
-        # key_b either has no row or has a different version
-        assert state_b is None or state_b.odoo_version != "17.0"
+        # key_b has no pin → None.
+        assert state_b is None, "Key B must have no session state of its own"
