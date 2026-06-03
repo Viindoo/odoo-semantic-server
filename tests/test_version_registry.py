@@ -58,16 +58,26 @@ class TestSortingGuarantee:
         assert reg.resolve(17) == "era2"
 
     def test_first_match_wins_no_fall_through(self):
-        # Two overlapping entries — first (lower min_major) must win.
+        # Two entries with the SAME min_major both match major=8. The contract is
+        # that iteration stops at the FIRST match (stable sort preserves insertion
+        # order for equal min_major), so the first-registered handler wins —
+        # NOT the second, and not "either one". A regression that returned the
+        # last-matching entry, or fell through to a later entry, would change
+        # this exact value, which the previous `result in (...)` assertion could
+        # never detect.
         reg = VersionRegistry([
-            (8, None, "catch-all"),
-            (8, 9,    "era1"),
+            (8, None, "first-registered"),
+            (8, None, "second-registered"),
         ])
-        # Both entries match major=8. The one with min_major=8 inserted first in
-        # the sorted list wins → "catch-all" (same min_major, stable sort order).
-        # The important invariant: NO fall-through once a match is found.
-        result = reg.resolve(8)
-        assert result in ("catch-all", "era1")  # one of the two — first in sorted order
+        assert reg.resolve(8) == "first-registered"
+
+        # Order matters: swapping registration order flips the winner, proving
+        # the result is determined by first-match, not by handler value.
+        reg_swapped = VersionRegistry([
+            (8, None, "second-registered"),
+            (8, None, "first-registered"),
+        ])
+        assert reg_swapped.resolve(8) == "second-registered"
 
     def test_no_fall_through_demonstrated(self):
         # Clear non-overlapping case: first matching entry stops the search.

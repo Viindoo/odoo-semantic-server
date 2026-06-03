@@ -101,26 +101,6 @@ def _get_plan_id(pg_conn, slug: str) -> int:
         return cur.fetchone()[0]
 
 
-def _find_route(app, path: str, method: str):
-    """Return the APIRoute matching an exact path + HTTP method."""
-    for r in app.routes:
-        if getattr(r, "path", None) == path and method in getattr(r, "methods", set()):
-            return r
-    raise AssertionError(f"route {method} {path} not found")
-
-
-def _collect_dependency_calls(dependant) -> list:
-    """Flatten every callable in a FastAPI Dependant tree (route + sub-deps)."""
-    calls = []
-    stack = [dependant]
-    while stack:
-        dep = stack.pop()
-        if dep.call is not None:
-            calls.append(dep.call)
-        stack.extend(dep.dependencies)
-    return calls
-
-
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
@@ -624,27 +604,54 @@ class TestAdminSetApiKeyPlan:
             f" got {user_id_result}"
         )
 
-    def test_set_api_key_plan_route_is_wired_to_fresh_mfa(self):
-        """ROUTE-wiring guard: PATCH /api/admin/api-keys/{id}/plan must declare
-        require_admin_with_fresh_mfa in its dependency tree.
+    @pytest.mark.asyncio
+    async def test_set_api_key_plan_route_rejects_stale_mfa_through_http(
+        self, migrated_pg
+    ):
+        """END-TO-END route guard: an admin WITHOUT fresh MFA gets 403 + step-up
+        from a real PATCH .../plan request.
 
-        The helper-level tests above prove require_admin_with_fresh_mfa rejects a
-        stale-MFA session; this proves the route actually *uses* it. Reverting
-        the route to plain require_admin would make this test fail — closing the
-        gap where a Depends downgrade would otherwise pass unnoticed.
-        (Static introspection, so it is independent of the middleware test-bypass
-        and session state that make full-stack auth-gating tests order-sensitive.)
+        Goes through the route's actual dependency chain (not the helper in
+        isolation), so it proves the route is *wired* to fresh-MFA AND that the
+        wired dependency executes and rejects. A Depends downgrade to plain
+        require_admin would let this admin (is_admin=True, no mfa_verified_at)
+        through and flip the response away from 403/step-up — which a static
+        route.dependant introspection could only assert structurally. This
+        asserts the observable HTTP behavior instead.
         """
-        from src.web_ui.auth import require_admin, require_admin_with_fresh_mfa
+        import src.web_ui.auth as auth_mod
+        from src.web_ui.auth import STEP_UP_ERROR_CODE
+
+        admin_id = _seed_user(migrated_pg, username="admin_e2e_mfa", is_admin=True)
+        user_id = _seed_user(migrated_pg, username="user_e2e_mfa")
+        key_id = _seed_api_key(migrated_pg, name="key-e2e-mfa", user_id=user_id)
 
         app = create_app()
-        route = _find_route(app, "/api/admin/api-keys/{key_id}/plan", "PATCH")
-        calls = _collect_dependency_calls(route.dependant)
-        assert require_admin_with_fresh_mfa in calls, (
-            "PATCH api-keys/{id}/plan must depend on require_admin_with_fresh_mfa"
+        orig_bypass = auth_mod.is_test_bypass_active
+        orig_cuid = auth_mod.current_user_id
+        try:
+            # Disable the blanket test bypass so the route's real MFA dependency
+            # runs; present as a logged-in admin with NO fresh-MFA timestamp.
+            auth_mod.is_test_bypass_active = lambda: False
+            auth_mod.current_user_id = lambda req: admin_id
+            async with _async_client(app) as client:
+                resp = await client.patch(
+                    f"/api/admin/api-keys/{key_id}/plan",
+                    json={"plan_id": 1},
+                )
+        finally:
+            auth_mod.is_test_bypass_active = orig_bypass
+            auth_mod.current_user_id = orig_cuid
+
+        assert resp.status_code == 403, (
+            "PATCH plan without fresh MFA must be rejected by the route, "
+            f"got {resp.status_code}: {resp.text}"
         )
-        assert require_admin not in calls, (
-            "Route must NOT use plain require_admin (fresh-MFA is required, #220)"
+        body = resp.json()
+        detail = body.get("detail", body)
+        error_code = detail.get("error") if isinstance(detail, dict) else None
+        assert error_code == STEP_UP_ERROR_CODE, (
+            f"Expected step-up error {STEP_UP_ERROR_CODE!r} from the route, got {body!r}"
         )
 
     @pytest.mark.asyncio

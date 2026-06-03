@@ -231,77 +231,45 @@ class TestConsentRecorded:
 class TestOAuthConsentRecorded:
     """OAuth new-user path records terms_accepted_at = NOW() in the INSERT SQL."""
 
-    def test_create_oauth_user_sql_includes_terms_accepted_at(self, monkeypatch):
-        """Inspect the SQL executed by _create_oauth_user to verify it includes
-        terms_accepted_at = NOW().  Uses a mock cursor to capture the exact SQL
-        without a DB connection.
+    def test_create_oauth_user_records_terms_accepted_at(self, consent_pg):
+        """OAuth new-user creation records consent: the persisted row has a
+        non-NULL terms_accepted_at.
 
-        This is a contract test: if the SQL changes and the column is dropped,
-        this test catches it immediately.
+        Asserts the observable DB outcome (consent timestamp is stored) rather
+        than scanning the INSERT SQL string for the literals "terms_accepted_at"
+        / "NOW()". A SQL-text scan passes even if the column ends up NULL (e.g.
+        the value is bound but never committed, or a later migration changes the
+        write path); reading the stored value catches the real regression —
+        consent not actually recorded.
         """
-        captured_sql: list[str] = []
-        captured_params: list[tuple] = []
-
-        class _MockCursor:
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def execute(self, sql, params=()):
-                captured_sql.append(sql)
-                captured_params.append(params)
-            def fetchone(self):
-                # Return a fake row matching the RETURNING columns
-                return (99, "user_abcd1234", "oauth@example.com", True, False, True)
-
-        class _MockConn:
-            autocommit = False
-            def cursor(self, **_): return _MockCursor()
-            def commit(self): pass
-            def rollback(self): pass
-
-        class _MockPool:
-            def checkout(self):
-                from contextlib import contextmanager
-                @contextmanager
-                def _ctx():
-                    yield _MockConn()
-                return _ctx()
-
         import src.web_ui.routes.oauth as oauth_mod
+        from src.db.pg import get_pool
 
-        def _fake_auth_store():
-            class _S:
-                _pool = _MockPool()
-            return _S()
+        email = "consent_oauth_check@example.com"
+        result = oauth_mod._create_oauth_user(
+            provider="google",
+            oauth_id="uid_consent_999",
+            email=email,
+            email_verified=True,
+            name="Test OAuth Consent",
+        )
 
-        monkeypatch.setattr("src.web_ui.routes.oauth._lookup_user_by_oauth", lambda *a: None)
-        # Patch auth_store inside the function
-        import src.db.pg as pg_mod
-        original_auth_store = pg_mod.auth_store
-        monkeypatch.setattr(pg_mod, "auth_store", _fake_auth_store)
-
+        pool = get_pool()
         try:
-            result = oauth_mod._create_oauth_user(
-                provider="google",
-                oauth_id="uid_999",
-                email="oauth@example.com",
-                email_verified=True,
-                name="Test OAuth",
+            with pool.checkout() as conn:
+                row = pool.fetch_one(
+                    conn,
+                    "SELECT terms_accepted_at FROM webui_users WHERE id = %s",
+                    (result["id"],),
+                )
+
+            assert row is not None, "OAuth user row must exist after creation"
+            assert row["terms_accepted_at"] is not None, (
+                "OAuth _create_oauth_user must record consent (terms_accepted_at "
+                "non-NULL) for a newly-created account"
             )
         finally:
-            monkeypatch.setattr(pg_mod, "auth_store", original_auth_store)
-
-        assert result["id"] == 99
-        assert result["username"] == "user_abcd1234"
-
-        # The INSERT SQL must include terms_accepted_at
-        insert_sqls = [s for s in captured_sql if "INSERT INTO webui_users" in s]
-        assert insert_sqls, "No INSERT INTO webui_users SQL was executed"
-        insert_sql = insert_sqls[0]
-        assert "terms_accepted_at" in insert_sql, (
-            "OAuth _create_oauth_user INSERT must include terms_accepted_at.\n"
-            f"Actual SQL: {insert_sql}"
-        )
-        assert "NOW()" in insert_sql, (
-            "OAuth _create_oauth_user INSERT must set terms_accepted_at = NOW().\n"
-            f"Actual SQL: {insert_sql}"
-        )
+            with pool.checkout() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM webui_users WHERE id = %s", (result["id"],))
+                conn.commit()

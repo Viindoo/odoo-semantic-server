@@ -9,8 +9,8 @@ Tests:
   - repo_map_urls + repo_map_paths → argv contains --repo-map url=path pairs
   - mismatched repo_map lengths → 400 error JSON
 """
+import os
 import subprocess
-import sys
 import unittest.mock as mock
 
 import httpx
@@ -165,6 +165,13 @@ class TestApplyPresetDryRun:
 
         mock_run.assert_called_once()
         argv = mock_run.call_args[0][0]
+        # Runs the indexer via a real Python interpreter (the executable that can
+        # import src.manager) — asserted by basename rather than identity with
+        # sys.executable, which is an implementation detail of how the path is
+        # resolved.
+        assert "python" in os.path.basename(argv[0]).lower(), (
+            f"apply-preset must run a Python interpreter, got {argv[0]!r}"
+        )
         assert "--dry-run" in argv
         assert _FIRST_PRESET_KEY in argv
         assert "-m" in argv
@@ -365,34 +372,72 @@ class TestApplyPresetRepoMap:
         mock_run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_subprocess_run_uses_sys_executable(self, migrated_pg):
-        """subprocess.run must be called with sys.executable as the first element."""
+    async def test_dry_run_succeeds_and_returns_preview(self, migrated_pg):
+        """A valid dry-run POST returns 200 with the subprocess preview output.
+
+        Observable outcome of running the indexer subprocess: the endpoint
+        surfaces the captured stdout as `preview` and echoes the preset. This
+        replaces an argv[0]==sys.executable identity check (an implementation
+        detail of how the interpreter path is resolved) — the interpreter +
+        command-shape contract is covered by
+        test_dry_run_subprocess_argv_contains_dry_run_flag.
+        """
         app = create_app()
-        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+        fake = _fake_dry_run_result()
+        with mock.patch("subprocess.run", return_value=fake):
             async with _async_client(app) as client:
-                await client.post(
+                resp = await client.post(
                     "/api/operations/apply-preset",
                     json={"name": _FIRST_PRESET_KEY, "dry_run": "on"},
                 )
 
-        argv = mock_run.call_args[0][0]
-        assert argv[0] == sys.executable
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("dry_run") is True
+        assert body.get("preset") == _FIRST_PRESET_KEY
+        # The captured subprocess stdout is surfaced to the caller as preview.
+        assert body.get("preview") == fake.stdout
 
     @pytest.mark.asyncio
-    async def test_subprocess_run_timeout_120(self, migrated_pg):
-        """subprocess.run must be called with timeout=120 (default APPLY_PRESET_TIMEOUT)."""
+    async def test_apply_preset_bounds_subprocess_with_configurable_timeout(
+        self, migrated_pg, monkeypatch
+    ):
+        """A hung subprocess must not wedge the request; the bound is configurable.
+
+        Business contract (not the literal 120s): the apply-preset call is
+        bounded by a finite timeout so a stuck child process cannot block the
+        request indefinitely, and operators can tune that bound via
+        APPLY_PRESET_TIMEOUT. We exercise the observable behavior: set the
+        override, make subprocess.run raise TimeoutExpired, and assert the
+        endpoint returns an error response whose message reports the configured
+        bound — rather than asserting an undocumented kwarg literal.
+        """
+        monkeypatch.setenv("APPLY_PRESET_TIMEOUT", "7")
         app = create_app()
-        with mock.patch("subprocess.run", return_value=_fake_dry_run_result()) as mock_run:
+
+        captured: dict = {}
+
+        def _raise_timeout(cmd, **kwargs):
+            captured.update(kwargs)
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+        with mock.patch("subprocess.run", side_effect=_raise_timeout):
             async with _async_client(app) as client:
-                await client.post(
+                resp = await client.post(
                     "/api/operations/apply-preset",
                     json={"name": _FIRST_PRESET_KEY, "dry_run": "on"},
                 )
 
-        kwargs = mock_run.call_args[1]
-        assert kwargs.get("timeout") == 120
-        assert kwargs.get("capture_output") is True
-        assert kwargs.get("text") is True
+        # Bounded: the subprocess was invoked with the configured finite timeout.
+        assert captured.get("timeout") == 7, (
+            "apply-preset must pass the configured APPLY_PRESET_TIMEOUT to the "
+            f"subprocess, got {captured.get('timeout')!r}"
+        )
+        # Observable: the hung run surfaces as an error response (not a hang),
+        # and the message reports the bound that was hit.
+        assert resp.status_code >= 400
+        assert "7 seconds" in resp.json().get("error", "")
 
     @pytest.mark.asyncio
     async def test_subprocess_failure_returns_400(self, migrated_pg):

@@ -4,7 +4,10 @@
 WI-F1: updated to use the new subcommand structure
        (`index-repo --profile`, `index-repo --all`, `index-core --source`).
 """
+import logging
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import src.indexer.__main__ as main_mod
 
@@ -105,36 +108,75 @@ def test_all_flag_passes_embedder_to_index_all(monkeypatch, tmp_path):
     assert kwargs.get("embedder") is None
 
 
-def test_verbose_flag_sets_info_logging(monkeypatch, tmp_path):
-    """--verbose flag passes logging.INFO to configure_logging (WI-2)."""
-    import logging
+@pytest.mark.parametrize(
+    "argv_extra, expected_level",
+    [
+        (["--verbose"], logging.INFO),
+        ([], logging.WARNING),
+    ],
+)
+def test_verbose_flag_controls_root_log_level(
+    monkeypatch, tmp_path, argv_extra, expected_level
+):
+    """--verbose configures the ROOT logger to INFO; its absence leaves WARNING.
 
+    Asserts the observable logging configuration (the real root level after
+    main() runs configure_logging), not that a particular level value was passed
+    to a mocked helper. Parametrized to prove verbose is the cause: with the
+    flag the root level is INFO, without it WARNING. configure_logging is NOT
+    mocked here so the real effect is exercised.
+
+    LOG_FORMAT=json is forced so configure_logging takes its deterministic
+    `root.setLevel(level)` branch; the default text branch delegates to
+    logging.basicConfig, which is a no-op once the test runner has installed
+    root handlers and would therefore not reflect the requested level.
+    """
     import src.config as config_mod
 
     cfg = tmp_path / "empty.conf"
     cfg.write_text("")
     monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
+    monkeypatch.setenv("LOG_FORMAT", "json")
     config_mod._conf = None
 
-    captured_levels = []
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = root.handlers[:]
+    try:
+        with (
+            patch("src.indexer.__main__.open_production_pg") as mock_pg,
+            patch("src.indexer.__main__.index_profile") as mock_ip,
+        ):
+            mock_pg.return_value.close = MagicMock()
+            mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
+            main_mod.main(["index-repo", "--profile", "test_prof", *argv_extra])
 
-    def fake_configure(level=logging.WARNING):
-        captured_levels.append(level)
-
-    with (
-        patch("src.indexer.__main__.open_production_pg") as mock_pg,
-        patch("src.indexer.__main__.index_profile") as mock_ip,
-        patch("src.logging_config.configure_logging", side_effect=fake_configure),
-    ):
-        mock_pg.return_value.close = MagicMock()
-        mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
-        main_mod.main(["index-repo", "--profile", "test_prof", "--verbose"])
-
-    assert captured_levels == [logging.INFO], f"Expected [INFO], got {captured_levels}"
+        assert root.level == expected_level, (
+            f"root log level should be {logging.getLevelName(expected_level)} "
+            f"for argv_extra={argv_extra}, got {logging.getLevelName(root.level)}"
+        )
+    finally:
+        root.setLevel(saved_level)
+        root.handlers = saved_handlers
 
 
-def test_verbose_flag_passes_progress_true(monkeypatch, tmp_path):
-    """--verbose flag passes progress=True to index_profile (WI-3)."""
+@pytest.mark.parametrize(
+    "argv_extra, expected_progress",
+    [
+        (["--verbose"], True),
+        ([], False),
+    ],
+)
+def test_verbose_flag_controls_progress(
+    monkeypatch, tmp_path, argv_extra, expected_progress
+):
+    """--verbose drives the progress indicator on the indexing run.
+
+    The observable contract is that the indexing run shows a progress bar only
+    in verbose mode. We verify the progress mode actually applied to the run via
+    the index_profile boundary (the seam where progress is consumed),
+    parametrized so absence of the flag proves the default is no-progress.
+    """
     import src.config as config_mod
 
     cfg = tmp_path / "empty.conf"
@@ -149,11 +191,14 @@ def test_verbose_flag_passes_progress_true(monkeypatch, tmp_path):
     ):
         mock_pg.return_value.close = MagicMock()
         mock_ip.return_value = {"modules": 0, "views": 0, "qweb": 0, "embeddings": 0}
-        main_mod.main(["index-repo", "--profile", "test_prof", "--verbose"])
+        main_mod.main(["index-repo", "--profile", "test_prof", *argv_extra])
 
     mock_ip.assert_called_once()
     _, kwargs = mock_ip.call_args
-    assert kwargs.get("progress") is True, f"Expected progress=True, got {kwargs}"
+    assert kwargs.get("progress") is expected_progress, (
+        f"progress should be {expected_progress} for argv_extra={argv_extra}, "
+        f"got {kwargs.get('progress')!r}"
+    )
 
 
 def test_index_core_subcommand_calls_index_core(monkeypatch, tmp_path):

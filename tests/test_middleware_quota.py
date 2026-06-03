@@ -340,7 +340,21 @@ class TestAdminQuotaZeroSkipsCheck:
     """
 
     def test_admin_quota_zero_skips_check(self, migrated_db):
-        """slug='unlimited' plan bypasses monthly gate — returns (True, 0, 0)."""
+        """slug='unlimited' plan bypasses monthly gate — returns (True, 0, 0).
+
+        The bypass must be a *constant-time early return that never touches the
+        DB* (the regression this guards is the silent-DoS class where the
+        early-return is dropped and every call falls through to the usage_counter
+        query / numeric gate). The iteration count is trimmed from 10000 → 100
+        because the bypass is deterministic on slug, so 100 calls prove "always
+        True" with no probabilistic flip. To compensate for the lost stress
+        signal we add a STRUCTURAL guard: the unlimited path must never call
+        `pool.checkout()`. If a future change removes the early return, the
+        fall-through DB query will trip `assert_not_called()` even though every
+        per-call `allowed` may still happen to be True on a fresh counter.
+        """
+        from unittest.mock import patch
+
         # Correct representation per ADR-0041 D5: unlimited via slug, not numeric 0.
         admin_plan = PlanInfo(
             plan_id=999,
@@ -350,12 +364,17 @@ class TestAdminQuotaZeroSkipsCheck:
         )
         pool = _FakePool(migrated_db)
 
-        # Simulate 10000 calls — all must pass
-        for i in range(10000):
-            allowed, used, quota = _check_monthly_quota(9999, admin_plan, pool)
-            assert allowed is True, f"Admin call {i} should pass; used={used}, quota={quota}"
-            assert used == 0
-            assert quota == 0
+        with patch.object(pool, "checkout", wraps=pool.checkout) as spy_checkout:
+            for i in range(100):
+                allowed, used, quota = _check_monthly_quota(9999, admin_plan, pool)
+                assert allowed is True, f"Admin call {i} should pass; used={used}, quota={quota}"
+                assert used == 0
+                assert quota == 0
+            # Mandatory compensating assertion (M4): the unlimited bypass must
+            # NOT consult the DB on any call. This is what actually distinguishes
+            # "bypasses correctly" from "fell through but happened to be under
+            # the limit" — the failure mode the trimmed loop can no longer catch.
+            spy_checkout.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -503,20 +522,38 @@ class TestUnlimitedPlanBypassesRateLimit:
     def test_unlimited_plan_bypasses_rate_limit(self):
         # M10B P0-ext: rpm=0 now means unlimited per ADR-0041 when slug='unlimited'.
         # Previous behavior: rpm=0 caused 0 >= 0 → block ALL requests (silent-DoS bug).
+        #
+        # Iteration trimmed 1000 → 50: the bypass is a deterministic early return
+        # on slug, so 50 calls prove "always True" with no probabilistic flip.
+        # To compensate for the lost high-volume signal we add a STRUCTURAL guard
+        # (M4): the unlimited path must never populate the rate bucket for the
+        # key. With rpm=0, if a regression removes the early return, the
+        # fall-through path would create a bucket and block once len>=0 — the
+        # exact silent-DoS class this test exists to catch. A bucket that stays
+        # absent proves the gate was bypassed, not merely "under the limit".
+        from src.mcp.middleware import _rate_buckets as _buckets
+
         unlimited_plan = PlanInfo(
             plan_id=1,
             slug="unlimited",
             quota_calls_per_month=0,
             rate_limit_rpm=0,
         )
-        # Fire 1000 requests quick-fire — none should be blocked
-        for i in range(1000):
+        _buckets.pop(9001, None)
+        for i in range(50):
             allowed, remaining = _check_rate_limit(9001, unlimited_plan)
             assert allowed is True, (
                 f"Call {i+1}: slug='unlimited' must bypass RPM gate; "
                 f"allowed={allowed}, remaining={remaining}"
             )
             assert remaining == 0, "Remaining should be 0 (sentinel for unlimited)"
+        # Mandatory compensating assertion (M4): the unlimited bypass must not
+        # consult or create the rate bucket. Bucket presence == fell through the
+        # gate (regression), even if every per-call `allowed` happened to be True.
+        assert 9001 not in _buckets, (
+            "unlimited bypass must not create a rate bucket — "
+            "a populated bucket means the early-return gate was lost"
+        )
 
 
 class TestUnlimitedPlanBypassesMonthlyQuota:

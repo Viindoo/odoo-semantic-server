@@ -16,7 +16,6 @@ All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 Auth bypass is used for data-correctness tests; auth-gating tests patch directly.
 """
 import os
-from unittest.mock import patch
 
 import httpx
 import pytest
@@ -280,21 +279,48 @@ class TestApiKeyReactivate:
         assert target == str(key_id)
 
     @pytest.mark.asyncio
-    async def test_reactivate_invalidates_cache(self, migrated_pg):
-        """Successful reactivation calls _cache_invalidate_by_key_id(key_id).
+    async def test_reactivate_evicts_stale_auth_cache_for_key(self, migrated_pg):
+        """Reactivation evicts the key's cached auth entries (so the next auth
+        re-verifies against the now-active DB row).
 
-        The route imports _cache_invalidate_by_key_id locally inside the handler
-        (`from src.mcp.middleware import _cache_invalidate_by_key_id`), so we
-        patch at the source location (src.mcp.middleware).
+        Asserts the observable effect: a primed in-memory auth-cache entry for
+        the key (and its plan-cache entry) is GONE after reactivation, so the
+        middleware's next lookup is a cache miss and re-reads the fresh DB state.
+        This is stronger than asserting a helper was called with key_id — it
+        verifies the cache actually no longer serves the stale (deactivated)
+        snapshot, the bug a missing/incorrect invalidation would introduce.
         """
+        import src.mcp.middleware as mw
+
         _seed_user(migrated_pg, username="admin_r8", is_admin=True)
         user_id = _seed_user(migrated_pg, username="user_r8")
         key_id = _seed_api_key(migrated_pg, name="key-r8-cache", user_id=user_id, active=False)
 
-        with patch("src.mcp.middleware._cache_invalidate_by_key_id") as mock_inv:
+        # Prime the per-request auth caches as if this key had been used recently.
+        raw_key = f"raw-secret-for-{key_id}"
+        mw._cache_set(raw_key, key_id)
+        mw._PLAN_CACHE[key_id] = (
+            mw.PlanInfo(plan_id=1, slug="free", quota_calls_per_month=200, rate_limit_rpm=30),
+            mw.time.monotonic(),
+        )
+        assert mw._cache_get(raw_key)[0] is True, "precondition: key cached"
+
+        try:
             app = create_app()
             async with _async_client(app) as client:
                 resp = await client.post(f"/api/api-keys/{key_id}/reactivate")
-
             assert resp.status_code == 200, resp.text
-            mock_inv.assert_called_once_with(key_id)
+
+            # The stale auth-cache entry must be evicted → next lookup misses
+            # and the middleware re-verifies against the reactivated DB row.
+            hit, _ = mw._cache_get(raw_key)
+            assert hit is False, (
+                "reactivation must evict the key's cached auth entry so the next "
+                "request re-verifies against the fresh DB state"
+            )
+            assert key_id not in mw._PLAN_CACHE, (
+                "reactivation must drop the stale plan-cache entry for the key"
+            )
+        finally:
+            mw._cache_invalidate(raw_key)
+            mw._PLAN_CACHE.pop(key_id, None)

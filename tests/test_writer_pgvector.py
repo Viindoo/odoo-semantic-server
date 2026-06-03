@@ -17,6 +17,7 @@ from src.indexer.models import (
     ViewParseResult,
 )
 from src.indexer.writer_pgvector import (
+    _INSERT_SQL,
     EmbeddingChunk,
     _embed_chunks_resilient,
     make_chunks,
@@ -26,6 +27,32 @@ from src.indexer.writer_pgvector import (
 
 TEST_VERSION = "99.0"
 TEST_MODULE = "test_sale"
+
+
+def _insert_columns() -> list[str]:
+    """Parse the column list from the embeddings INSERT SQL (SSOT).
+
+    The contract `as_tuple()` must satisfy is that its positional output is
+    aligned, column-by-column, with this INSERT's column list. Deriving the
+    names here ties the test to the real SQL rather than to a magic index.
+    """
+    inside = _INSERT_SQL.split("(", 1)[1].split(")", 1)[0]
+    return [c.strip() for c in inside.split(",")]
+
+
+def _as_dict(chunk: EmbeddingChunk, vec, **kw) -> dict:
+    """Map as_tuple() output onto INSERT column names → {column: value}.
+
+    Asserting against this dict tests the observable contract (the value that
+    lands in each named DB column) instead of pinning a tuple index, so a
+    field reorder that breaks column alignment is caught regardless of position.
+    """
+    cols = _insert_columns()
+    values = chunk.as_tuple(vec, **kw)
+    assert len(values) == len(cols), (
+        f"as_tuple arity ({len(values)}) must match INSERT columns ({len(cols)}): {cols}"
+    )
+    return dict(zip(cols, values))
 
 
 def _module_info() -> ModuleInfo:
@@ -264,24 +291,19 @@ def test_embedding_chunk_as_tuple_includes_profile_name():
         "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
         profile_name="tenant_acme",
     )
-    vec = [0.0] * 1024
-    t = chunk.as_tuple(vec)
-    # tuple order: chunk_type, module, odoo_version, entity_name, model_name,
-    #              file_path, chunk_idx, content, vec, profile_name,
-    #              line_start, repo, repo_id  (A3 — appended after profile_name)
-    assert t[0] == "method"
-    assert "tenant_acme" in t, "profile_name must be present in tuple"
+    row = _as_dict(chunk, [0.0] * 1024)
+    assert row["chunk_type"] == "method"
+    assert row["profile_name"] == "tenant_acme"
 
 
 def test_embedding_chunk_as_tuple_profile_name_none():
-    """as_tuple with profile_name=None passes None (global rows)."""
+    """as_tuple with profile_name=None writes NULL to the profile_name column."""
     chunk = EmbeddingChunk(
         "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
         "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
     )
-    t = chunk.as_tuple([0.0] * 1024)
-    # profile_name is at index 9 (0-based)
-    assert t[9] is None
+    row = _as_dict(chunk, [0.0] * 1024)
+    assert row["profile_name"] is None
 
 
 def test_make_pattern_chunks_profile_name_is_none():
@@ -496,13 +518,13 @@ def test_make_chunks_method_fallback_to_module_path_when_no_file_path():
 
 
 def test_embedding_chunk_as_tuple_includes_provenance():
-    """as_tuple must include line_start, repo, repo_id after profile_name.
+    """as_tuple routes each provenance value to its named INSERT column.
 
-    WI-B: tuple now ends with embedding_model + embedding_dim (2 more fields).
-    Full tuple order (16 elements):
-      chunk_type, module, odoo_version, entity_name, model_name,
-      file_path, chunk_idx, content, vec, profile_name,
-      line_start, repo, repo_id, embedding_model, embedding_dim
+    The contract is that the provenance + embedding-meta fields land in the
+    line_start / repo / repo_id / embedding_model / embedding_dim columns.
+    Asserting by column name (not tuple index) catches a field reorder that
+    would silently write repo into the line_start column — the failure mode
+    the previous t[-5..-1] index-pinning crudely approximated.
     """
     chunk = EmbeddingChunk(
         "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
@@ -512,15 +534,13 @@ def test_embedding_chunk_as_tuple_includes_provenance():
         repo="viindoo_17",
         repo_id=3,
     )
-    t = chunk.as_tuple([0.0] * 1024, embedding_model="fake", embedding_dim=1024)
-    # tuple order: chunk_type, module, odoo_version, entity_name, model_name,
-    #              file_path, chunk_idx, content, vec, profile_name,
-    #              line_start, repo, repo_id, embedding_model, embedding_dim
-    assert t[-5] == 42,          f"line_start expected at t[-5], got {t[-5]!r}"
-    assert t[-4] == "viindoo_17", f"repo expected at t[-4], got {t[-4]!r}"
-    assert t[-3] == 3,            f"repo_id expected at t[-3], got {t[-3]!r}"
-    assert t[-2] == "fake",       f"embedding_model expected at t[-2], got {t[-2]!r}"
-    assert t[-1] == 1024,         f"embedding_dim expected at t[-1], got {t[-1]!r}"
+    row = _as_dict(chunk, [0.0] * 1024, embedding_model="fake", embedding_dim=1024)
+    assert row["profile_name"] == "tenant_x"
+    assert row["line_start"] == 42
+    assert row["repo"] == "viindoo_17"
+    assert row["repo_id"] == 3
+    assert row["embedding_model"] == "fake"
+    assert row["embedding_dim"] == 1024
 
 
 def test_embedding_chunk_provenance_defaults_to_none():
