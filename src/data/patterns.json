@@ -1655,5 +1655,59 @@
     "odoo_version_min": "17.0",
     "language": "xml",
     "core_symbol_names": []
+  },
+  {
+    "pattern_id": "owl-t-on-handler-binding",
+    "intent_keywords": ["t-on", "event handler", "arrow function", "this binding", "OWL handler"],
+    "file_ref": "addons/web/static/src/core/dialog/dialog.xml:24",
+    "snippet_text": "<!-- valid: auto-bound method ref -->\n<button t-on-click=\"onSave\"/>\n<!-- valid: explicit this in an arrow -->\n<button t-on-click=\"() => this.onSave(ev)\"/>\n<!-- BUG: bare free identifier resolves to nothing at render -->\n<button t-on-click=\"() => onSave()\"/>",
+    "gotchas": ["OWL injects this=component into the template context, so () => this.foo() is valid (not a stale-this bug)", "t-on-click=\"foo\" auto-binds to the component method - also safe", "The real bug is a bare free identifier () => onFoo() where onFoo is not on the component, props, or a slot variable"],
+    "odoo_version_min": "16.0",
+    "language": "js"
+  },
+  {
+    "pattern_id": "owl-useservice-reactivity",
+    "intent_keywords": ["useService", "useState", "reactive", "ui service", "re-render"],
+    "file_ref": "addons/web/static/src/core/emoji_picker/emoji_picker.js:138",
+    "snippet_text": "// preserve reactivity when the service is not already reactive\nthis.ui = useState(useService(\"ui\"));",
+    "gotchas": ["v16 requires wrapping useState(useService(\"ui\")) or size/state changes never re-render", "v17/v18 keep useState(useService(...)) as the canonical form", "v19+ some services are already reactive() so a plain useService() re-renders - verify per service"],
+    "odoo_version_min": "16.0",
+    "language": "js"
+  },
+  {
+    "pattern_id": "owl-wysiwyg-not-contenteditable",
+    "intent_keywords": ["contenteditable", "Wysiwyg", "web_editor", "rich text", "loadBundle"],
+    "file_ref": "addons/web_editor/static/src/js/backend/html_field.js:450",
+    "snippet_text": "// lazy-load the audited editor in onWillStart, build stable props once\nsetup() {\n    onWillStart(async () => {\n        await loadBundle('web_editor.backend_assets_wysiwyg');\n    });\n}",
+    "gotchas": ["Raw contenteditable bypasses OdooEditor sanitisation (an XSS / data-corruption surface)", "Mounting the editor with fresh props each render remounts it and drops the captured instance", "Build stable props once in setup and lazy-load the bundle in onWillStart"],
+    "odoo_version_min": "17.0",
+    "language": "js"
+  },
+  {
+    "pattern_id": "owl-dialog-default-slot",
+    "intent_keywords": ["Dialog", "slot", "t-set-slot", "body slot", "OWL dialog"],
+    "file_ref": "addons/web/static/src/core/dialog/dialog.xml:1",
+    "snippet_text": "<Dialog title=\"'Title'\">\n    <!-- body goes in the default slot, no t-set-slot -->\n    <p>Body content</p>\n    <t t-set-slot=\"footer\"><button t-on-click=\"confirm\">OK</button></t>\n</Dialog>",
+    "gotchas": ["The default slot of Dialog IS the body; wrapping it in t-set-slot=\"body\" targets a slot Dialog never renders", "Only header and footer are named slots", "v18/v19 reorder the body/footer markup but the slot names are unchanged"],
+    "odoo_version_min": "16.0",
+    "language": "js"
+  },
+  {
+    "pattern_id": "scss-interpolate-sass-fn-in-calc",
+    "intent_keywords": ["calc", "map-get", "Sass function", "interpolation", "scss"],
+    "file_ref": "addons/web/static/src/views/calendar/calendar_renderer.scss:2",
+    "snippet_text": "// interpolate Sass values before they reach CSS calc()\nwidth: calc(#{map-get($spacers, 2)} * 2);",
+    "gotchas": ["The SCSS compiler does not evaluate map-get()/min() inside a calc() token stream - the property is silently dropped", "Always interpolate: calc(#{map-get(...)} * value)", "This is a compiler behaviour, not a version-specific issue"],
+    "odoo_version_min": "16.0",
+    "language": "js"
+  },
+  {
+    "pattern_id": "scss-runtime-token-not-bs-var",
+    "intent_keywords": ["--bs-", "variable-prefix", "runtime token", "theme", "css custom property"],
+    "file_ref": "addons/web/static/src/scss/primary_variables.scss:1",
+    "snippet_text": "// reference the runtime tokens Odoo actually emits\ncolor: var(--primary);\nbackground-color: var(--o-color-1);",
+    "gotchas": ["Odoo sets $variable-prefix to '' so Bootstrap --bs-* runtime custom properties are absent; var(--bs-primary) resolves to empty", "Use the un-prefixed tokens Odoo emits: --primary, --o-color-*, --gray-*", "A self-referential custom property (--x: var(--x, ...)) is a cycle that resolves to empty and flattens the theme"],
+    "odoo_version_min": "16.0",
+    "language": "js"
   }
 ]
