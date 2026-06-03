@@ -453,6 +453,12 @@ def _get_api_key_id() -> str:
     In production the middleware writes the api_key_id via
     _api_key_id_var.set() before each tool call and resets it in finally.
     Falls back to 'default' when not set (unit tests, CLI invocations).
+
+    Note on the runtime type: the annotation is ``str``, but on the #248
+    header-recovery path the middleware stores the numeric PK recovered from the
+    auth cache, so the value can be an ``int`` at runtime. Downstream consumers
+    that must coerce it (e.g. ``session.set_active_*_db`` doing ``int(...)``)
+    already accept both forms; do not rely on it always being a string.
     """
     return _api_key_id_var.get()
 

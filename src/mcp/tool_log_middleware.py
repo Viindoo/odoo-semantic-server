@@ -12,8 +12,14 @@ after the JSON-RPC body has been parsed and the call is dispatched to
 This module provides ``UsageLogMiddleware``, a ``fastmcp.Middleware`` subclass,
 that:
   - hooks ``on_call_tool`` (fired for every ``tools/call`` JSON-RPC request)
+    and ``on_read_resource``
   - reads ``context.message.name`` for the exact tool name
-  - reads ``api_key_id`` from ``request.state`` (set by the ASGI ``AuthMiddleware``)
+  - reads ``api_key_id`` from ``request.state`` (set by the ASGI ``AuthMiddleware``);
+    when that mutation is lost over the stateful streamable-HTTP transport
+    (``request.state.api_key_id is None``), recovers the numeric PK from the
+    always-surviving ``X-API-Key`` header via the warm auth cache
+    (``_recover_identity_from_header`` — #248) so session pins / tenant
+    attribution stay correct
   - calls ``auth_store().log_usage()`` fire-and-forget (best-effort, never raises)
 
 The ASGI-layer ``_log_usage_async`` in middleware.py was changed to skip the

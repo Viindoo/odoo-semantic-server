@@ -12,7 +12,10 @@ Business rules protected:
   J6  Not-found id → 404.
   J7  Bulk "all" job → 404 for non-admin, 200 for admin.
   J8  Orphan job (profile row deleted / never existed) → 404 for non-admin, 200 for admin.
-  J9  Non-admin response NEVER contains error_msg or pid (redacted).
+  J9  Non-admin owner sees a SANITIZED error summary (never raw error_msg); pid stays
+      admin-only (redacted) (#237 follow-up).
+  J10 A recognisable error maps to its fixed category summary for the owner, with raw
+      server paths / repo URLs stripped, while admin still sees the raw error_msg.
 
   C1  clone-status cross-tenant deny → 404.
   C2  clone-status owner allow → 200.
