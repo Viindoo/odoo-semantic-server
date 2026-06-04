@@ -127,10 +127,16 @@ async def list_api_keys(request: Request):
         keys = store.list_api_keys(user_id=uid, admin=is_admin)
 
         # Lazy-mint: non-admin authenticated user with zero keys → mint one now.
+        # DESIGN: we intentionally DISCARD the plaintext return value here. GET
+        # is idempotent and may be re-issued any number of times; returning a
+        # one-time secret on a GET would be a footgun (it would be re-exposed on
+        # every reload, and clients/proxies may cache or log GET responses). The
+        # signup/oauth POST flows are the only place the plaintext is surfaced.
         if uid is not None and not is_admin and len(keys) == 0:
             username = request.session.get("username", f"user{uid}")
             _mint_default_api_key(uid, username)
-            # Re-fetch so the response includes the newly-minted key.
+            # Re-fetch so the response includes the newly-minted key (metadata
+            # only — never the plaintext).
             keys = store.list_api_keys(user_id=uid, admin=is_admin)
     except Exception as e:
         error = str(e)

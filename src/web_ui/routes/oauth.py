@@ -416,11 +416,16 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
     # the call site defensively so a failure at the boundary (helper
     # unavailable, import error, or any exception that escapes the helper)
     # can never turn a successful OAuth login into a 500.
+    # new_key holds the one-time plaintext key for a brand-new OAuth user so the
+    # client can surface it to copy. Stays None for returning users (block below
+    # does not run) — we never re-reveal a key on a repeat login. By design.
+    new_key: str | None = None
     if is_new_user:
         try:
             from src.web_ui.routes.api_keys import _mint_default_api_key
-            _mint_default_api_key(user["id"], username)
+            new_key = _mint_default_api_key(user["id"], username)
         except Exception as exc:  # noqa: BLE001
+            new_key = None
             logger.warning(
                 "OAuth login: default API key mint failed for user %r (id=%s): %s"
                 " — continuing (non-fatal)",
@@ -462,6 +467,11 @@ async def oauth_login(body: OAuthLoginBody, request: Request) -> JSONResponse:
     )
     return JSONResponse(
         _json_safe(
-            {"ok": True, "username": username, "is_admin": bool(user.get("is_admin") or False)}
+            {
+                "ok": True,
+                "username": username,
+                "is_admin": bool(user.get("is_admin") or False),
+                "new_api_key": new_key,
+            }
         )
     )

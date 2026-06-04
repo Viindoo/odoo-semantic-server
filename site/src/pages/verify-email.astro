@@ -13,6 +13,10 @@ const token = Astro.url.searchParams.get('token') ?? '';
 type VerifyStatus = 'success' | 'expired' | 'no_token';
 let status: VerifyStatus = 'no_token';
 let autoRedirect = false;
+// Plaintext API key minted by the backend on first verify (auto-onboarding).
+// Forwarded to the client so it can be stashed for a one-time copy on the
+// landing page; null when the backend did not mint a key.
+let newApiKey: string | null = null;
 // SSR fallback landing shown before JS runs (pre-verify state) — conservative
 // default to customer landing since we haven't verified yet.
 // The client-side script will override this with the real is_admin from the
@@ -36,8 +40,9 @@ if (token) {
       // Use real is_admin from the API response so an admin-invite-via-email
       // flow lands on /admin/ instead of /account/api-keys.
       // Guard against parse failure — default to non-admin (safest fallback).
-      const respBody = await resp.json().catch(() => ({ is_admin: false })) as { is_admin?: boolean };
+      const respBody = await resp.json().catch(() => ({ is_admin: false })) as { is_admin?: boolean; new_api_key?: string | null };
       verifyLanding = resolveAuthLanding(respBody.is_admin === true);
+      newApiKey = typeof respBody.new_api_key === 'string' && respBody.new_api_key ? respBody.new_api_key : null;
       status = 'success';
       autoRedirect = true;
     } else {
@@ -149,8 +154,15 @@ const subtitle = subtitleMap[status];
   )}
 </AuthLayout>
 
-<script define:vars={{ autoRedirect, verifyLanding }}>
+<script define:vars={{ autoRedirect, verifyLanding, newApiKey }}>
   if (autoRedirect) {
+    // Stash the auto-minted plaintext key so the landing page can reveal it
+    // once for copy. Only when landing on the customer API-keys page (the page
+    // that knows how to reveal it) — admin landings never stash. The contract
+    // key name is shared with admin/api-keys.astro and the OAuth cookie path.
+    if (newApiKey && verifyLanding === '/account/api-keys') {
+      try { sessionStorage.setItem('osm-new-api-key', newApiKey); } catch { /* private mode */ }
+    }
     // Small delay so the user can read the success message before redirect
     setTimeout(() => {
       window.location.href = verifyLanding;

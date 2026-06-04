@@ -382,8 +382,12 @@ class TestIsAdminInOauthLogin:
                 "src.web_ui.routes.oauth._create_session", return_value="sess_new"
             ),
             mock.patch("src.web_ui.routes.oauth._insert_audit_log"),
-            # Suppress the _mint_default_api_key call (new-user branch)
-            mock.patch("src.web_ui.routes.api_keys._mint_default_api_key"),
+            # Suppress the _mint_default_api_key call (new-user branch). Return
+            # None (not a bare MagicMock) so the forwarded value stays
+            # JSON-serializable — this test only asserts is_admin, not the key.
+            mock.patch(
+                "src.web_ui.routes.api_keys._mint_default_api_key", return_value=None
+            ),
         ):
             async with _client(app) as client:
                 resp = await client.post("/api/auth/oauth-login", json=_oauth_body())
@@ -395,6 +399,135 @@ class TestIsAdminInOauthLogin:
             "is_admin must be present in oauth_login success response for new users"
         )
         assert data["is_admin"] is False
+
+
+class TestNewApiKeyForwardedOnOauthLogin:
+    """WI-A: oauth-login success response forwards the one-time plaintext key.
+
+    Business rule under test (NOT implementation):
+      - A brand-new OAuth user gets the freshly-minted plaintext key in the
+        response so the client can show it once for copy.
+      - A returning OAuth user must NOT have a key re-revealed (new_api_key None).
+    These are unit tests: the mint helper is mocked to control its return value,
+    so they run without a real DB.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_signup(self, monkeypatch):
+        monkeypatch.setattr("src.web_ui.config.SIGNUP_ENABLED", True)
+        monkeypatch.setattr("src.web_ui.routes.oauth.SIGNUP_ENABLED", True)
+        monkeypatch.setattr("src.web_ui.routes.oauth.signup_enabled", lambda: True)
+
+    @pytest.mark.asyncio
+    async def test_new_oauth_user_response_includes_plaintext_key(self):
+        """is_new_user=True → response carries the minted plaintext key."""
+        app = _make_app_no_loopback()
+        new_user_row = {
+            "id": 99,
+            "username": "newuser_key",
+            "email": "newuser_key@example.com",
+            "email_verified": True,
+            "is_admin": False,
+            "is_active": True,
+        }
+        minted = "osm_unit_test_plaintext_key_value"
+
+        with (
+            mock.patch("src.web_ui.routes.oauth._lookup_user_by_oauth", return_value=None),
+            mock.patch("src.web_ui.routes.oauth._lookup_user_by_email", return_value=None),
+            mock.patch(
+                "src.web_ui.routes.oauth._create_oauth_user", return_value=new_user_row
+            ),
+            mock.patch("src.web_ui.routes.oauth._create_session", return_value="sess_new"),
+            mock.patch("src.web_ui.routes.oauth._insert_audit_log"),
+            mock.patch(
+                "src.web_ui.routes.api_keys._mint_default_api_key", return_value=minted
+            ),
+        ):
+            async with _client(app) as client:
+                resp = await client.post("/api/auth/oauth-login", json=_oauth_body())
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["new_api_key"] == minted, (
+            "New OAuth user must receive the one-time plaintext key in the response"
+        )
+        assert data["new_api_key"].startswith("osm_")
+
+    @pytest.mark.asyncio
+    async def test_returning_oauth_user_response_has_no_key(self):
+        """Returning user (is_new_user=False) → new_api_key is None (never re-revealed)."""
+        app = _make_app_no_loopback()
+        existing_row = {
+            "id": 7,
+            "username": "returning_key",
+            "email": "user@example.com",
+            "email_verified": True,
+            "is_admin": False,
+            "is_active": True,
+        }
+
+        with (
+            # fast-path match on (provider, oauth_id) → returning user, no mint branch
+            mock.patch(
+                "src.web_ui.routes.oauth._lookup_user_by_oauth", return_value=existing_row
+            ),
+            mock.patch("src.web_ui.routes.oauth._create_session", return_value="sess_ret"),
+            mock.patch("src.web_ui.routes.oauth._insert_audit_log"),
+            # If the route ever called mint for a returning user this would leak a
+            # value; asserting None proves the branch did not run.
+            mock.patch(
+                "src.web_ui.routes.api_keys._mint_default_api_key",
+                return_value="osm_should_not_appear",
+            ),
+        ):
+            async with _client(app) as client:
+                resp = await client.post("/api/auth/oauth-login", json=_oauth_body())
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data.get("new_api_key") is None, (
+            "Returning OAuth user must NOT have a key re-revealed in the response"
+        )
+
+    @pytest.mark.asyncio
+    async def test_oauth_login_succeeds_with_none_key_when_mint_raises(self):
+        """Mint failure during new OAuth login → 200 with new_api_key=None (fail-closed)."""
+        app = _make_app_no_loopback()
+        new_user_row = {
+            "id": 123,
+            "username": "wi9a_oauth_mintfail",
+            "email": "wi9a_oauth_mintfail@example.com",
+            "email_verified": True,
+            "is_admin": False,
+            "is_active": True,
+        }
+
+        with (
+            mock.patch("src.web_ui.routes.oauth._lookup_user_by_oauth", return_value=None),
+            mock.patch("src.web_ui.routes.oauth._lookup_user_by_email", return_value=None),
+            mock.patch(
+                "src.web_ui.routes.oauth._create_oauth_user", return_value=new_user_row
+            ),
+            mock.patch("src.web_ui.routes.oauth._create_session", return_value="sess_mf"),
+            mock.patch("src.web_ui.routes.oauth._insert_audit_log"),
+            mock.patch(
+                "src.web_ui.routes.api_keys._mint_default_api_key",
+                side_effect=RuntimeError("simulated mint failure"),
+            ),
+        ):
+            async with _client(app) as client:
+                resp = await client.post("/api/auth/oauth-login", json=_oauth_body())
+
+        assert resp.status_code == 200, (
+            "oauth-login must return 200 even when mint raises, got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data.get("new_api_key") is None, (
+            "On mint failure, oauth-login new_api_key must be None (fail-closed)"
+        )
 
 
 class TestIsAdminInVerifyEmail:
@@ -548,11 +681,23 @@ class TestMintAfterVerifyEmail:
 
         assert resp.status_code == 200, resp.text
 
+        # WI-A: the one-time plaintext key must be forwarded in the response so
+        # the client can show it for copy — and it must be the PLAINTEXT, not the
+        # stored hash. We assert the osm_ prefix (plaintext shape) and that it is
+        # NOT equal to any hashed value persisted in the DB.
+        data = resp.json()
+        assert isinstance(data.get("new_api_key"), str), (
+            "verify-email must forward the minted plaintext key as a string"
+        )
+        assert data["new_api_key"].startswith("osm_"), (
+            "new_api_key must be the plaintext key (osm_ prefix), not a hash"
+        )
+
         # Verify exactly one key was minted for this user on the 'free' plan.
         with pool.checkout() as conn:
             rows = pool.fetch_all(
                 conn,
-                "SELECT id, plan_id, name FROM api_keys WHERE user_id = %s",
+                "SELECT id, plan_id, name, key_hash FROM api_keys WHERE user_id = %s",
                 (user_id,),
             )
         assert len(rows) == 1, (
@@ -562,6 +707,49 @@ class TestMintAfterVerifyEmail:
             f"Minted key must be on 'free' plan (id={free_id}),"
             f" got plan_id={rows[0]['plan_id']}"
         )
+        assert data["new_api_key"] != rows[0]["key_hash"], (
+            "Forwarded key must be the plaintext, never the stored hash"
+        )
+
+    @pytest.mark.asyncio
+    async def test_verify_email_with_existing_key_returns_none(self, signup_pg):
+        """WI-A: re-verify of a user who already has a key → new_api_key is None.
+
+        The mint helper is idempotent (returns None when a key already exists),
+        so the response must withhold any key value — there is nothing new to
+        reveal, and we never re-reveal an existing one-time secret.
+        """
+        from src.db.pg import auth_store
+        from src.web_ui.auth import hash_password
+
+        store = auth_store()
+        username = "wi9a_ve_existing"
+        email = "wi9a_ve_existing@example.com"
+        user_id = _insert_unverified_user(
+            signup_pg, username, email, hash_password("SecurePass123!")
+        )
+        # Pre-create a key so the idempotent mint returns None.
+        store.create_api_key("pre-existing", user_id=user_id)
+
+        token = secrets.token_urlsafe(32)
+        _insert_token(signup_pg, token, user_id)
+
+        app = _make_app_no_loopback()
+        async with _client(app) as client:
+            resp = await client.post("/api/auth/verify-email", json={"token": token})
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data.get("new_api_key") is None, (
+            "User who already has a key must get new_api_key=None (nothing new to reveal)"
+        )
+
+        # Cleanup
+        with signup_pg.cursor() as cur:
+            cur.execute("DELETE FROM api_keys WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM webui_users WHERE id = %s", (user_id,))
+        signup_pg.commit()
 
 
 class TestMintAfterNewOauthLogin:
@@ -609,6 +797,13 @@ class TestMintAfterNewOauthLogin:
                 )
 
         assert resp.status_code == 200, resp.text
+
+        # WI-A: brand-new OAuth user must receive the one-time plaintext key.
+        data = resp.json()
+        assert isinstance(data.get("new_api_key"), str), (
+            "New OAuth user must receive the minted plaintext key in the response"
+        )
+        assert data["new_api_key"].startswith("osm_")
 
         # Resolve the created user_id
         with pool.checkout() as conn:
@@ -692,6 +887,11 @@ class TestMintAfterNewOauthLogin:
 
         assert resp.status_code == 200, resp.text
 
+        # WI-A: returning user must NOT have a key re-revealed.
+        assert resp.json().get("new_api_key") is None, (
+            "Returning OAuth user (email-merge) must get new_api_key=None"
+        )
+
         with pool.checkout() as conn:
             keys_after = pool.fetch_all(
                 conn,
@@ -757,6 +957,11 @@ class TestMintAfterNewOauthLogin:
                 )
 
         assert resp.status_code == 200, resp.text
+
+        # WI-A: returning user must NOT have a key re-revealed.
+        assert resp.json().get("new_api_key") is None, (
+            "Returning OAuth user (fast-path) must get new_api_key=None"
+        )
 
         with pool.checkout() as conn:
             keys_after = pool.fetch_all(
@@ -985,6 +1190,11 @@ class TestMintFailureIsNonFatal:
         data = resp.json()
         assert data.get("ok") is True, "verify-email body must have ok=True"
         assert data.get("username") == username
+        # WI-A: a mint failure must fail-closed — no fabricated key value. The
+        # response is still 200 but new_api_key is None (we never invent a key).
+        assert data.get("new_api_key") is None, (
+            "On mint failure, new_api_key must be None (fail-closed, no fabricated value)"
+        )
 
 
 # ============================================================================
