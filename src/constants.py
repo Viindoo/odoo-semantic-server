@@ -69,6 +69,18 @@ VALID_CHUNK_TYPES: frozenset[str] = frozenset({
 
 FIND_EXAMPLES_ANN_LIMIT: int = 20       # hard cap on pgvector ANN query rows
 FIND_EXAMPLES_DEFAULT_LIMIT: int = 5    # user-facing default when limit unspecified
+
+# --- Issue #255 ---
+# HNSW post-filter recall mitigation for filtered semantic queries (pgvector >=0.8).
+# 'relaxed_order' lets HNSW keep scanning until LIMIT is met *after* the post-filter.
+# Env-gated kill-switch: set HNSW_ITERATIVE_SCAN='' (empty) to disable at runtime
+# without a code change (falls back to the server default 'off'). See ADR-0047.
+HNSW_ITERATIVE_SCAN: str = os.getenv("HNSW_ITERATIVE_SCAN", "relaxed_order")
+
+# Chunk types that participate in literal-first style lookup (issue #255).
+# SSOT for the ('css', 'scss', 'less') triple — replaces the hard-coded tuple in
+# server.py _find_style_override and _find_examples css/scss/less path.
+STYLE_CHUNK_TYPES: frozenset[str] = frozenset({"css", "scss", "less"})
 SNIPPET_PREVIEW_MAX_LINES: int = 5
 ERROR_MSG_MAX_CHARS: int = 100
 CODE_PREVIEW_MAX_CHARS: int = 60

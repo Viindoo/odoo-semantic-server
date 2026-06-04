@@ -24,6 +24,7 @@ from src.constants import (
     EMBEDDER_MAX_CONCURRENCY,
     EMBEDDER_TOKEN_BUDGET,
     FIND_EXAMPLES_ANN_LIMIT,
+    HNSW_ITERATIVE_SCAN,
     IMPACT_MODULES_MAX,
     IMPACT_RISK_HIGH_THRESHOLD,
     IMPACT_RISK_MED_THRESHOLD,
@@ -41,6 +42,7 @@ from src.constants import (
     REL_USES_CORE_SYMBOL,
     REL_USES_FIELD,
     SNIPPET_PREVIEW_MAX_LINES,
+    STYLE_CHUNK_TYPES,
     TIMEOUT_EMBEDDER_READ_QUERY,
     VALID_CHUNK_TYPES,
 )
@@ -72,6 +74,7 @@ from src.mcp.orm import (
 )
 from src.mcp.refs import mint_refs
 from src.mcp.resources import register_resources
+from src.mcp.style_literal import ilike_pattern, is_literal_token, literal_column
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 from src.mcp.tree_builder import render_list_block
 
@@ -887,6 +890,27 @@ def _rls_read_tx(conn, allowed: list[str] | None):
         yield
 
 
+def _set_iterative_scan(cur) -> None:
+    """SET LOCAL hnsw.iterative_scan for the current read transaction (issue #255, ADR-0047).
+
+    Improves HNSW post-filter recall for filtered semantic queries by letting
+    HNSW keep scanning until LIMIT is satisfied *after* the post-filter, instead
+    of stopping at ef_search candidates.  Only applies when HNSW_ITERATIVE_SCAN is
+    non-empty (default 'relaxed_order').
+
+    Must be called inside an open transaction (the _rls_read_tx pool-mode branch
+    provides one via SET LOCAL).  Silently ignored on pgvector <0.8 via a guarded
+    execute so older local stacks never error.  The constant is the feature-flag:
+    set HNSW_ITERATIVE_SCAN='' (empty) to disable without a code change.
+    """
+    if not HNSW_ITERATIVE_SCAN:
+        return
+    try:
+        cur.execute("SET LOCAL hnsw.iterative_scan = %s", (HNSW_ITERATIVE_SCAN,))
+    except Exception:
+        pass  # pgvector <0.8 — silently ignored; supported deploys enforce >=0.8
+
+
 def _scope_pred(alias: str) -> str:
     """Canonical fail-closed tenant choke-point predicate for Neo4j node *alias*.
 
@@ -966,6 +990,14 @@ def _scope(profile_name: str | None = None) -> dict:
 # monkey-patch them. See _find_examples + tests/test_calibration_eval.py.
 _RERANK_LOG_COEFF = 0.02
 _RERANK_CHAIN_BOOST = 0.20
+
+# Literal-first floor score for _find_examples rerank (issue #255, M1 fix).
+# Literal rows have cosine=None and must sort ABOVE all semantic (cosine-based) hits.
+# Real cosine * (1 + 0.02 * log(dependents+1)) stays below ~1.5 in practice;
+# 2.0 + epsilon spacing guarantees literal rows always rank first.
+# eps gives each literal row a distinct score to preserve SQL ORDER BY order.
+_LITERAL_RANK_FLOOR = 2.0
+_LITERAL_RANK_EPS = 1e-6
 
 
 def _get_driver():
@@ -1660,46 +1692,67 @@ def _find_examples(
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 
     driver = _driver or _get_driver()
-    try:
-        embedder = _embedder or _get_embedder()
-    except Exception as e:
-        return (
-            f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
-            "Hint: check Ollama server is running (default: http://localhost:11434) "
-            "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
-        )
 
     with driver.session() as session:
         if odoo_version in ("auto", "latest"):
             odoo_version = _resolve_version("auto", session)
 
-    if _query_vec is not None:
-        query_vec = _query_vec
-    else:
-        try:
-            # Cap the query to the token budget before INSTRUCT so a giant
-            # paste cannot blow the embedder context (#227, sync path).
-            capped = _cap_query_text(embedder, query)
-            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-            query_vec = embedder.embed([instruct + capped])[0]
-        except Exception as e:
-            return (
-                f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
-                "Hint: Ollama may be down, model not loaded, or network issue. "
-                "Verify with: curl http://localhost:11434/api/tags\n"
-                "Found 0 results\n"
-            )
-
     selected_types = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
+
+    # Issue #255 (WI-7, Decision E): literal-first for style-only queries.
+    # Only engage when ALL requested chunk_types are style types AND the query is
+    # a verbatim CSS/SCSS token.  NL queries and non-style chunk_types are untouched.
+    style_only = bool(selected_types) and set(selected_types) <= STYLE_CHUNK_TYPES
+    want_literal = style_only and is_literal_token(query)
+
+    # MAJOR-1 (issue #255 review): defer the embedder fetch until we know a literal
+    # query actually needs ANN backfill. A pure-literal style path never fetches the
+    # embedder, so a literal lookup survives an init-time embedder failure
+    # (EmbedderDimMismatch, config error) — symmetric with _find_style_override.
+    embedder = _embedder
+    query_vec: list[float] | None = None
+    if not want_literal:
+        # Standard path: embed now (sync body / pre-embedded async path).
+        if _query_vec is not None:
+            query_vec = _query_vec
+        else:
+            try:
+                if embedder is None:
+                    embedder = _get_embedder()
+            except Exception as e:
+                return (
+                    f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
+                    "Hint: check Ollama server is running (default: http://localhost:11434) "
+                    "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
+                )
+            try:
+                # Cap the query to the token budget before INSTRUCT so a giant
+                # paste cannot blow the embedder context (#227, sync path).
+                capped = _cap_query_text(embedder, query)
+                instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+                query_vec = embedder.embed([instruct + capped])[0]
+            except Exception as e:
+                return (
+                    f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
+                    "Hint: Ollama may be down, model not loaded, or network issue. "
+                    "Verify with: curl http://localhost:11434/api/tags\n"
+                    "Found 0 results\n"
+                )
+    else:
+        # Literal style token: carry pre-embedded vec (may be None from async wrapper).
+        query_vec = _query_vec
 
     # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer. The
     # Neo4j rerank only deprioritises non-allowed modules — it does NOT drop
     # their chunks — so isolation MUST be enforced here, in the SQL, before
-    # rows are fetched. allowed=None → admin/unrestricted (no clause);
-    # allowed=[] → deny-all (ANY('{}') matches nothing). profile_name IS NULL
+    # rows are fetched. allowed=None -> admin/unrestricted (no clause);
+    # allowed=[] -> deny-all (ANY('{}') matches nothing). profile_name IS NULL
     # chunks (legacy/unscoped) are excluded when scoped — fail-closed.
     allowed = _effective_allowed(profile_name)
     prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
+
+    # Extra columns needed by find_examples (beyond the base 6 in _literal_style_lookup).
+    _STYLE_EXTRA_COLS = ["model_name", "line_start", "repo", "repo_id"]
 
     # Use injected connection (test path) or check out from pool (production).
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
@@ -1709,40 +1762,90 @@ def _find_examples(
         # bypass means this is a no-op until ops enables FORCE RLS.
         with _rls_read_tx(pg, allowed):
             with pg.cursor() as cur:
-                if selected_types:
-                    placeholders = ",".join(["%s"] * len(selected_types))
-                    params = [query_vec, odoo_version, *selected_types]
-                    if allowed is not None:
-                        params.append(allowed)
-                    params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
-                    cur.execute(
-                        f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                                   chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
-                                   line_start, repo, repo_id
-                            FROM embeddings
-                            WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
-                            ORDER BY vec <=> %s::vector LIMIT %s""",
-                        params,
+                # (1) LITERAL-FIRST for style-only queries (issue #255 WI-7).
+                literal_rows: list[dict] = []
+                if want_literal:
+                    literal_rows = _literal_style_lookup(
+                        cur, query, odoo_version, allowed,
+                        min(limit, FIND_EXAMPLES_ANN_LIMIT),
+                        extra_cols=_STYLE_EXTRA_COLS,
                     )
-                else:
-                    params = [query_vec, odoo_version]
-                    if allowed is not None:
-                        params.append(allowed)
-                    params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
-                    cur.execute(
-                        f"""SELECT chunk_type, module, entity_name, model_name, file_path,
-                                  chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
-                                  line_start, repo, repo_id
-                           FROM embeddings WHERE odoo_version = %s{prof_sql}
-                           ORDER BY vec <=> %s::vector LIMIT %s""",
-                        params,
-                    )
-                raw = [
-                    dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
-                         file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]),
-                         line_start=r[8], repo=r[9], repo_id=r[10])
-                    for r in cur.fetchall()
-                ]
+                    # Fill in missing keys expected by the render loop.
+                    for r in literal_rows:
+                        r.setdefault("model_name", None)
+                        r.setdefault("line_start", None)
+                        r.setdefault("repo", None)
+                        r.setdefault("repo_id", None)
+
+                # (2) ANN: for non-literal paths, or as backfill when literal under-fills.
+                remaining = min(limit, FIND_EXAMPLES_ANN_LIMIT) - len(literal_rows)
+                ann_rows: list[dict] = []
+                if remaining > 0 and query_vec is None and want_literal:
+                    # Literal style path — attempt lazy embed for backfill. Fetch
+                    # the embedder here (not at the top) so an embedder failure
+                    # degrades to literal-only instead of erroring the whole call.
+                    try:
+                        if embedder is None:
+                            embedder = _get_embedder()
+                        capped = _cap_query_text(embedder, query)
+                        instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+                        query_vec = embedder.embed([instruct + capped])[0]
+                    except Exception:
+                        query_vec = None  # degrade to literal-only
+
+                if remaining > 0 and query_vec is not None:
+                    if selected_types:
+                        placeholders = ",".join(["%s"] * len(selected_types))
+                        _set_iterative_scan(cur)  # HNSW recall mitigation (AC5/ADR-0047)
+                        params = [query_vec, odoo_version, *selected_types]
+                        if allowed is not None:
+                            params.append(allowed)
+                        params += [query_vec, remaining if want_literal
+                                   else min(limit, FIND_EXAMPLES_ANN_LIMIT)]
+                        cur.execute(
+                            f"""SELECT chunk_type, module, entity_name, model_name, file_path,
+                                       chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
+                                       line_start, repo, repo_id
+                                FROM embeddings
+                                WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
+                                ORDER BY vec <=> %s::vector LIMIT %s""",
+                            params,
+                        )
+                    else:
+                        _set_iterative_scan(cur)  # HNSW recall mitigation (AC5/ADR-0047)
+                        params = [query_vec, odoo_version]
+                        if allowed is not None:
+                            params.append(allowed)
+                        params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
+                        cur.execute(
+                            f"""SELECT chunk_type, module, entity_name, model_name, file_path,
+                                      chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine,
+                                      line_start, repo, repo_id
+                               FROM embeddings WHERE odoo_version = %s{prof_sql}
+                               ORDER BY vec <=> %s::vector LIMIT %s""",
+                            params,
+                        )
+                    ann_rows = [
+                        dict(chunk_type=r[0], module=r[1], entity_name=r[2], model_name=r[3],
+                             file_path=r[4], chunk_idx=r[5], content=r[6], cosine=float(r[7]),
+                             line_start=r[8], repo=r[9], repo_id=r[10], match="semantic")
+                        for r in cur.fetchall()
+                    ]
+
+    # (3) MERGE + DEDUP for literal-first paths.
+    if want_literal:
+        seen = {
+            (r["chunk_type"], r["module"], r["file_path"], r["entity_name"], r["chunk_idx"])
+            for r in literal_rows
+        }
+        raw = literal_rows + [
+            r for r in ann_rows
+            if (r["chunk_type"], r["module"], r["file_path"], r["entity_name"], r["chunk_idx"])
+            not in seen
+        ]
+        raw = raw[:min(limit, FIND_EXAMPLES_ANN_LIMIT)]
+    else:
+        raw = ann_rows  # standard ANN path, no literal rows
 
     raw = [c for c in raw if c["module"] != "__unresolved__"]
 
@@ -1778,28 +1881,43 @@ def _find_examples(
             ).data()
             in_chain_set = {r["name"] for r in chain_rows}
 
+    # M1 fix: literal rows have cosine=None — guard against TypeError in score math.
+    # Assign a floor score with a small epsilon to preserve SQL ORDER BY order so
+    # literal rows always sort above semantic hits (LITERAL_RANK_FLOOR > max cosine*rerank).
+    n_lit = sum(1 for c in raw if c.get("cosine") is None)
+    lit_idx = 0
     for chunk in raw:
         dependents = dependents_map.get(chunk["module"], 0)
-        chunk["score"] = chunk["cosine"] * (1 + _RERANK_LOG_COEFF * math.log(dependents + 1))
+        if chunk.get("cosine") is None:
+            # Literal hit: floor score preserves SQL order, ranks above all semantic.
+            chunk["score"] = _LITERAL_RANK_FLOOR + (n_lit - lit_idx) * _LITERAL_RANK_EPS
+            lit_idx += 1
+        else:
+            chunk["score"] = chunk["cosine"] * (1 + _RERANK_LOG_COEFF * math.log(dependents + 1))
         if chunk["module"] in in_chain_set:
             chunk["score"] += _RERANK_CHAIN_BOOST
 
     reranked = sorted(raw, key=lambda c: c["score"], reverse=True)[:limit]
 
-    # G2: disclose ANN candidate cap so callers know the search pool size.
-    ann_used = min(limit, FIND_EXAMPLES_ANN_LIMIT)
-    if ann_used >= FIND_EXAMPLES_ANN_LIMIT:
-        # User requested limit >= ANN cap: the search pool is hard-capped.
-        ann_note = (
-            f"Note: ANN search capped at {FIND_EXAMPLES_ANN_LIMIT} candidates"
-            " — results beyond this pool are not considered"
-        )
+    # G2: disclose ANN/literal candidate counts so callers know the search pool size.
+    if want_literal:
+        n_lit_shown = sum(1 for c in reranked if c.get("cosine") is None)
+        n_sem_shown = len(reranked) - n_lit_shown
+        ann_note = f"{n_lit_shown} literal + {n_sem_shown} semantic"
     else:
-        # User requested fewer results than the ANN cap allows.
-        ann_note = (
-            f"showing {len(reranked)} of up to {ann_used} semantic candidates"
-            f" — increase `limit` (max {FIND_EXAMPLES_ANN_LIMIT}) for broader search"
-        )
+        ann_used = min(limit, FIND_EXAMPLES_ANN_LIMIT)
+        if ann_used >= FIND_EXAMPLES_ANN_LIMIT:
+            # User requested limit >= ANN cap: the search pool is hard-capped.
+            ann_note = (
+                f"Note: ANN search capped at {FIND_EXAMPLES_ANN_LIMIT} candidates"
+                " — results beyond this pool are not considered"
+            )
+        else:
+            # User requested fewer results than the ANN cap allows.
+            ann_note = (
+                f"showing {len(reranked)} of up to {ann_used} semantic candidates"
+                f" — increase `limit` (max {FIND_EXAMPLES_ANN_LIMIT}) for broader search"
+            )
     header = (
         f'find_examples: "{query}" ({odoo_version})\n'
         f"Found {len(reranked)} results  [{ann_note}]\n"
@@ -1819,7 +1937,12 @@ def _find_examples(
         if chunk["chunk_idx"] > 0:
             chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
         lines.append(sep)
-        lines.append(f"#{i} · score {chunk['score']:.2f} · {chunk_label} · {entity}")
+        # Issue #255 (B1): always emit a score-shaped token; append match: tag as suffix.
+        match_tag = chunk.get("match", "semantic")
+        lines.append(
+            f"#{i} · score {chunk['score']:.2f} · match: {match_tag}"
+            f" · {chunk_label} · {entity}"
+        )
         # B2: render [repo] file_path:line_start when provenance data is present (A3).
         # ADR-0037: emit a repo-relative path, never a server-absolute one.
         file_path = _portable_path(
@@ -1888,30 +2011,51 @@ async def find_examples(
     # #227: embed on the event loop (async, bounded, short timeout), then run
     # the blocking Neo4j/PG body in a worker thread so the loop stays free —
     # /health and other requests never freeze behind one slow embed.
+    # Issue #255 (WI-8/B2): literal style queries skip pre-embed so the tool
+    # works even when the embedder is down (the outage scenario in the issue).
     if not query.strip():
         return _find_examples(query, odoo_version, limit, context_module,
                               chunk_types, profile_name)
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
-    try:
-        embedder = _get_embedder()
-    except Exception as e:
-        return (
-            f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
-            "Hint: check Ollama server is running (default: http://localhost:11434) "
-            "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
-        )
-    try:
-        instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-        query_vec = await _embed_query(embedder, instruct, query)
-    except EmbedOverloaded as e:
-        return f"find_examples: {e}\nFound 0 results\n"
-    except Exception as e:
-        return (
-            f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
-            "Hint: Ollama may be down, model not loaded, or network issue. "
-            "Verify with: curl http://localhost:11434/api/tags\n"
-            "Found 0 results\n"
-        )
+
+    # Replicate the style_only + literal detection from the sync body so the
+    # async wrapper can decide whether to pre-embed.  We mirror the
+    # selected_types filtering logic from _find_examples.
+    _selected = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
+    _style_only = bool(_selected) and set(_selected) <= STYLE_CHUNK_TYPES
+    _want_literal = _style_only and is_literal_token(query)
+
+    query_vec: list[float] | None = None
+    embedder = None
+    if not _want_literal:
+        # Standard NL path: pre-embed now on the event loop.
+        try:
+            embedder = _get_embedder()
+        except Exception as e:
+            return (
+                f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
+                "Hint: check Ollama server is running (default: http://localhost:11434) "
+                "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
+            )
+        try:
+            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+            query_vec = await _embed_query(embedder, instruct, query)
+        except EmbedOverloaded as e:
+            return f"find_examples: {e}\nFound 0 results\n"
+        except Exception as e:
+            return (
+                f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
+                "Hint: Ollama may be down, model not loaded, or network issue. "
+                "Verify with: curl http://localhost:11434/api/tags\n"
+                "Found 0 results\n"
+            )
+    else:
+        # Literal style token: best-effort embedder fetch for ANN backfill.
+        # Failure here is non-fatal — sync body will use literal-only results.
+        try:
+            embedder = _get_embedder()
+        except Exception:
+            embedder = None
     return await asyncio.to_thread(
         _find_examples,
         query, odoo_version, limit, context_module, chunk_types, profile_name,
@@ -6754,6 +6898,95 @@ def _resolve_stylesheet(
     return "\n".join(lines)
 
 
+def _literal_style_lookup(
+    cur,
+    query: str,
+    odoo_version: str,
+    allowed: list[str] | None,
+    limit: int,
+    extra_cols: list[str] | None = None,
+) -> list[dict]:
+    """Run a literal ILIKE query against the style chunk types (issue #255, WI-3).
+
+    Performs an exact substring match on the relevant column (entity_name for
+    selectors; content for variables) rather than ANN — so results are
+    plan-independent and robust even when the embedder is unavailable.
+
+    Column routing is determined by ``literal_column(query)``:
+      - Selectors (./#/bare-ident/[/&/...) -> entity_name ILIKE
+      - Variables ($/@) -> content ILIKE
+
+    Args:
+        cur:          Open psycopg2 cursor (inside _rls_read_tx).
+        query:        The selector or variable string (confirmed literal).
+        odoo_version: Resolved Odoo version string.
+        allowed:      Tenant-filter list from _effective_allowed(), or None.
+        limit:        Row cap (typically min(user_limit, FIND_EXAMPLES_ANN_LIMIT)).
+        extra_cols:   Additional SQL columns to SELECT beyond the base set.
+                      find_examples needs model_name, line_start, repo, repo_id;
+                      find_style_override does not.
+
+    Returns:
+        List of dicts with keys: chunk_type, module, entity_name, file_path,
+        chunk_idx, content, cosine (None), match ('literal').
+        Extra columns (if requested) are included verbatim.
+
+    Note: ORDER BY length(content) ASC, module ASC, chunk_idx ASC surfaces the
+    most precise / shortest chunk first.  A pg_trgm GIN index can speed this up
+    at >50k rows; see ADR-0047 for the trigger condition.  For the current ~5k
+    css/scss/less row count, ILIKE with idx_embeddings_filter is microsecond-range.
+    """
+    col = literal_column(query)
+    # Defense-in-depth: col and extra_cols are f-string-interpolated into the SQL
+    # below. They are safe today (literal_column returns a closed 2-value set;
+    # extra_cols comes from a module constant), but validate the allowlists here so a
+    # future caller passing user input can never inject (#255 PR review hardening).
+    # Use raise (not assert) so the barrier survives `python -O` (PR #257 follow-up).
+    if col not in ("entity_name", "content"):
+        raise ValueError(f"unexpected literal column: {col!r}")
+    _ALLOWED_EXTRA_COLS = frozenset({"model_name", "line_start", "repo", "repo_id"})
+    if extra_cols:
+        _bad = [c for c in extra_cols if c not in _ALLOWED_EXTRA_COLS]
+        if _bad:
+            raise ValueError(f"disallowed extra_cols: {_bad}")
+    pat = ilike_pattern(query)
+    style_types = tuple(sorted(STYLE_CHUNK_TYPES))
+    ph = ", ".join(["%s"] * len(style_types))
+    prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
+
+    base_cols = "chunk_type, module, entity_name, file_path, chunk_idx, content"
+    extra_sql = (", " + ", ".join(extra_cols)) if extra_cols else ""
+
+    lit_params: list = [odoo_version, *style_types, pat]
+    if allowed is not None:
+        lit_params.append(allowed)
+    lit_params.append(limit)
+
+    cur.execute(
+        f"""SELECT {base_cols}{extra_sql}
+            FROM embeddings
+            WHERE odoo_version = %s AND chunk_type IN ({ph})
+              AND {col} ILIKE %s ESCAPE '\\'{prof_sql}
+            ORDER BY length(content) ASC, module ASC, chunk_idx ASC
+            LIMIT %s""",
+        lit_params,
+    )
+    rows = cur.fetchall()
+    n_base = len(base_cols.split(","))  # stays in sync if base_cols changes (m-4)
+    result = []
+    for r in rows:
+        d: dict = dict(
+            chunk_type=r[0], module=r[1], entity_name=r[2],
+            file_path=r[3], chunk_idx=r[4], content=r[5],
+            cosine=None, match="literal",
+        )
+        if extra_cols:
+            for idx, ecol in enumerate(extra_cols, n_base):
+                d[ecol] = r[idx]
+        result.append(d)
+    return result
+
+
 def _find_style_override(
     selector_or_variable: str,
     odoo_version: str = "auto",
@@ -6766,10 +6999,33 @@ def _find_style_override(
 ) -> str:
     """Impl for find_style_override tool — no FastMCP wrapper overhead.
 
-    Performs pgvector ANN on chunk_type ∈ {css, scss, less} to find stylesheets
+    Literal-first lookup (issue #255): when the query is a verbatim CSS token
+    (selector, variable, mixin name), an exact substring ILIKE query runs first
+    against the relevant column (entity_name for selectors; content for SCSS/LESS
+    variables).  ANN backfills any remaining slots.  This makes AC1/AC2 robust
+    regardless of ANN recall collapse or embedder availability.
+
+    Performs pgvector ANN on chunk_type in {css, scss, less} to find stylesheets
     declaring *selector_or_variable*, then traverses :IMPORTS to show which
-    modules re-declare the same selector (override order — last writer wins
+    modules re-declare the same selector (override order - last writer wins
     in CSS cascade, first-match wins in SCSS/LESS @import chain).
+
+    Example:
+        find_style_override(".o_list_view", "17.0")
+        -> find_style_override: ".o_list_view" (17.0)
+          Found 2 result(s)  [2 literal + 0 semantic]
+          -----------------------------------------
+          #1 · literal match · match: literal · scss · [web] selector:.o_list_view
+             File: addons/web/static/src/scss/views/list_view.scss
+             Override chain: no importers found (no :IMPORTS edges).
+             ┌──────────────────────────────────────────
+             │ .o_list_view { display: flex; }
+             └──────────────────────────────────────────
+
+        find_style_override("$o-brand-primary", "17.0")
+        -> returns the scss variable block whose content declares $o-brand-primary
+          (entity_name is the file-stem variable group, e.g. variable:variables:variables).
+          css entity_name is raw (no prefix); scss/less has 'selector:' prefix.
     """
     if not selector_or_variable.strip():
         return (
@@ -6780,36 +7036,47 @@ def _find_style_override(
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
 
     driver = _driver or _get_driver()
-    try:
-        embedder = _embedder or _get_embedder()
-    except Exception as e:
-        return (
-            f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
-            "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
-            "Found 0 results\n"
-            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
-        )
 
     with driver.session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-    if _query_vec is not None:
-        query_vec = _query_vec
-    else:
+    want_literal = is_literal_token(selector_or_variable)
+
+    # For NL (non-literal) queries: embed BEFORE PG checkout so embedder failures
+    # are surfaced early without touching the DB (preserves old degrade behavior).
+    # For literal queries: skip embed here; it is attempted lazily inside the PG
+    # context only as ANN backfill (non-fatal if embedder is down).
+    pre_query_vec: list[float] | None = _query_vec
+    embedder_for_body = _embedder
+    if not want_literal and pre_query_vec is None:
         try:
-            # Cap selector/variable text to the token budget (#227, sync path).
-            capped = _cap_query_text(embedder, selector_or_variable)
-            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-            query_vec = embedder.embed([instruct + capped])[0]
+            embedder_for_body = _embedder or _get_embedder()
         except Exception as e:
+            _hint = hints_for("find_style_override", module="", ver=odoo_version)
+            return (
+                f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+                "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
+                f"Found 0 results\n{_hint}"
+            )
+        try:
+            capped = _cap_query_text(embedder_for_body, selector_or_variable)
+            instruct = getattr(embedder_for_body, "query_instruction", INSTRUCT_NL_TO_CODE)
+            pre_query_vec = embedder_for_body.embed([instruct + capped])[0]
+        except Exception as e:
+            _hint = hints_for("find_style_override", module="", ver=odoo_version)
             return (
                 f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
-                "Found 0 results\n"
-                f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+                f"Found 0 results\n{_hint}"
             )
+    elif want_literal and embedder_for_body is None:
+        # Literal path: best-effort embedder fetch for ANN backfill.
+        try:
+            embedder_for_body = _get_embedder()
+        except Exception:
+            embedder_for_body = None
 
     # C3 (WI-4): fail-closed tenant filter at the pgvector ANN layer (see
-    # _find_examples). No explicit profile arg here → tenant boundary only.
+    # _find_examples). No explicit profile arg here -> tenant boundary only.
     allowed = _effective_allowed(None)
     prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
 
@@ -6820,37 +7087,84 @@ def _find_style_override(
         # bypass means this is a no-op until ops enables FORCE RLS.
         with _rls_read_tx(pg, allowed):
             with pg.cursor() as cur:
-                placeholders = "%s, %s, %s"
-                params = [query_vec, odoo_version, "css", "scss", "less"]
-                if allowed is not None:
-                    params.append(allowed)
-                params += [query_vec, min(limit, FIND_EXAMPLES_ANN_LIMIT)]
-                cur.execute(
-                    f"""SELECT chunk_type, module, entity_name, file_path,
-                               chunk_idx, content, 1 - (vec <=> %s::vector) AS cosine
-                        FROM embeddings
-                        WHERE odoo_version = %s AND chunk_type IN ({placeholders}){prof_sql}
-                        ORDER BY vec <=> %s::vector LIMIT %s""",
-                    params,
-                )
-                raw = [
-                    dict(chunk_type=r[0], module=r[1], entity_name=r[2],
-                         file_path=r[3], chunk_idx=r[4], content=r[5], cosine=float(r[6]))
-                    for r in cur.fetchall()
-                ]
+                # (1) LITERAL-FIRST: exact substring match, no embedder, plan-independent.
+                literal_rows: list[dict] = []
+                if want_literal:
+                    literal_rows = _literal_style_lookup(
+                        cur, selector_or_variable, odoo_version, allowed,
+                        min(limit, FIND_EXAMPLES_ANN_LIMIT),
+                    )
 
-    # G2: disclose ANN candidate cap so callers know the search pool size.
-    ann_used_style = min(limit, FIND_EXAMPLES_ANN_LIMIT)
-    if ann_used_style >= FIND_EXAMPLES_ANN_LIMIT:
-        ann_note_style = (
-            f"Note: ANN search capped at {FIND_EXAMPLES_ANN_LIMIT} candidates"
-            " — results beyond this pool are not considered"
-        )
+                # (2) SEMANTIC backfill — only if we still need rows.
+                remaining = min(limit, FIND_EXAMPLES_ANN_LIMIT) - len(literal_rows)
+                ann_rows: list[dict] = []
+                if remaining > 0:
+                    query_vec: list[float] | None = pre_query_vec
+                    if query_vec is None and want_literal and embedder_for_body is not None:
+                        # Literal with under-fill: lazy embed for ANN backfill.
+                        try:
+                            capped = _cap_query_text(embedder_for_body, selector_or_variable)
+                            instruct = getattr(
+                                embedder_for_body, "query_instruction", INSTRUCT_NL_TO_CODE
+                            )
+                            query_vec = embedder_for_body.embed([instruct + capped])[0]
+                        except Exception:
+                            # Literal rows exist — degrade to literal-only.
+                            query_vec = None
+
+                    if query_vec is not None:
+                        _set_iterative_scan(cur)  # HNSW recall mitigation (ADR-0047)
+                        style_types = tuple(sorted(STYLE_CHUNK_TYPES))
+                        ph = ", ".join(["%s"] * len(style_types))
+                        ann_params: list = [query_vec, odoo_version, *style_types]
+                        if allowed is not None:
+                            ann_params.append(allowed)
+                        ann_params += [query_vec, remaining]
+                        cur.execute(
+                            f"""SELECT chunk_type, module, entity_name, file_path,
+                                       chunk_idx, content,
+                                       1 - (vec <=> %s::vector) AS cosine
+                                FROM embeddings
+                                WHERE odoo_version = %s AND chunk_type IN ({ph}){prof_sql}
+                                ORDER BY vec <=> %s::vector LIMIT %s""",
+                            ann_params,
+                        )
+                        ann_rows = [
+                            dict(chunk_type=r[0], module=r[1], entity_name=r[2],
+                                 file_path=r[3], chunk_idx=r[4], content=r[5],
+                                 cosine=float(r[6]), match="semantic")
+                            for r in cur.fetchall()
+                        ]
+
+    # (3) MERGE + DEDUP — literal first, ANN backfill, drop ANN dups of literal hits.
+    seen = {
+        (r["chunk_type"], r["module"], r["file_path"], r["entity_name"], r["chunk_idx"])
+        for r in literal_rows
+    }
+    merged = literal_rows + [
+        r for r in ann_rows
+        if (r["chunk_type"], r["module"], r["file_path"], r["entity_name"], r["chunk_idx"])
+        not in seen
+    ]
+    raw = merged[:limit]
+
+    # G2: disclose literal vs semantic candidate counts.
+    n_lit = len(literal_rows)
+    n_sem = len(raw) - n_lit
+    if want_literal:
+        ann_note_style = f"{n_lit} literal + {n_sem} semantic"
     else:
-        ann_note_style = (
-            f"showing {len(raw)} of up to {ann_used_style} semantic candidates"
-            f" — increase `limit` (max {FIND_EXAMPLES_ANN_LIMIT}) for broader search"
-        )
+        ann_used_style = min(limit, FIND_EXAMPLES_ANN_LIMIT)
+        if ann_used_style >= FIND_EXAMPLES_ANN_LIMIT:
+            ann_note_style = (
+                f"Note: ANN search capped at {FIND_EXAMPLES_ANN_LIMIT} candidates"
+                " — results beyond this pool are not considered"
+            )
+        else:
+            ann_note_style = (
+                f"showing {len(raw)} of up to {ann_used_style} semantic candidates"
+                f" — increase `limit` (max {FIND_EXAMPLES_ANN_LIMIT}) for broader search"
+            )
     header = (
         f'find_style_override: "{selector_or_variable}" ({odoo_version})\n'
         f"Found {len(raw)} result(s)  [{ann_note_style}]\n"
@@ -6868,8 +7182,17 @@ def _find_style_override(
         chunk_label = chunk["chunk_type"]
         if chunk["chunk_idx"] > 0:
             chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
+        # B1 fix: always emit a score-shaped token; append match: tag as suffix.
+        cosine_val = chunk.get("cosine")
+        if cosine_val is not None:
+            score_token = f"score {cosine_val:.2f}"
+        else:
+            score_token = "literal match"
+        match_tag = chunk.get("match", "semantic")
         lines.append(sep)
-        lines.append(f"#{i} · score {chunk['cosine']:.2f} · {chunk_label} · {entity}")
+        lines.append(
+            f"#{i} · {score_token} · match: {match_tag} · {chunk_label} · {entity}"
+        )
         lines.append(
             f"   File: {_portable_path(chunk['file_path'], module=chunk.get('module'))}"
         )
@@ -6985,43 +7308,53 @@ async def find_style_override(
     Example:
         find_style_override(".o_list_view", "17.0")
         → find_style_override: ".o_list_view" (17.0)
-          Found 2 result(s)
-          ─────...
-          #1 · score 0.87 · css · [web] selector:.o_list_view
-             File: addons/web/static/src/css/views.css
-             Override chain (1 importer(s)):
-             ├─ addons/website/static/src/scss/views.scss [website]
+          Found 2 result(s)  [2 literal + 0 semantic]
+          -----------------------------------------
+          #1 · literal match · match: literal · scss · [web] selector:.o_list_view
+             File: addons/web/static/src/scss/views/list_view.scss
+             Override chain: no importers found (no :IMPORTS edges).
     """
-    # #227: empty input → sync impl returns the guard string; otherwise embed
+    # #227: empty input -> sync impl returns the guard string; otherwise embed
     # async (bounded, short timeout) then offload the blocking body off-loop.
+    # Issue #255 (WI-5): literal tokens skip pre-embed — the sync body handles
+    # the optional ANN backfill inside asyncio.to_thread (off the event loop).
     if not selector_or_variable.strip():
         return _find_style_override(selector_or_variable, odoo_version, limit)
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
-    try:
-        embedder = _get_embedder()
-    except Exception as e:
-        return (
-            f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
-            "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
-            "Found 0 results\n"
-            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
-        )
-    try:
-        instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-        query_vec = await _embed_query(
-            embedder, instruct, selector_or_variable
-        )
-    except EmbedOverloaded as e:
-        return (
-            f"find_style_override: {e}\nFound 0 results\n"
-            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
-        )
-    except Exception as e:
-        return (
-            f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
-            "Found 0 results\n"
-            f"{hints_for('find_style_override', module='', ver=odoo_version)}"
-        )
+    query_vec: list[float] | None = None
+    embedder = None
+    if not is_literal_token(selector_or_variable):
+        # NL query: pre-embed on the event loop (bounded, short timeout).
+        try:
+            embedder = _get_embedder()
+        except Exception as e:
+            return (
+                f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+                "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
+                "Found 0 results\n"
+                f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+            )
+        try:
+            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+            query_vec = await _embed_query(embedder, instruct, selector_or_variable)
+        except EmbedOverloaded as e:
+            return (
+                f"find_style_override: {e}\nFound 0 results\n"
+                f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+            )
+        except Exception as e:
+            return (
+                f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+                "Found 0 results\n"
+                f"{hints_for('find_style_override', module='', ver=odoo_version)}"
+            )
+    else:
+        # Literal token: best-effort embedder fetch for ANN backfill.
+        # Failure here is non-fatal — sync body will degrade to literal-only.
+        try:
+            embedder = _get_embedder()
+        except Exception:
+            embedder = None
     return await asyncio.to_thread(
         _find_style_override,
         selector_or_variable, odoo_version, limit,
