@@ -11,6 +11,27 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Added — reveal auto-minted default API key once after signup (PR #256)
+
+- **Onboarding key visibility (UX gap):** new password (verify-email) and OAuth signups
+  auto-mint a free-plan API key, but the plaintext was discarded at the mint call sites
+  (`signup.py`, `oauth.py` — the `_mint_default_api_key` return value was thrown away) so users
+  never saw it and had to manually create a second key. `POST /api/auth/verify-email` and
+  `POST /api/auth/oauth-login` now return the minted plaintext as `new_api_key` (`null` for
+  returning users, already-keyed users, or mint failure — fail-closed, never a 500). It is carried
+  to `/account/api-keys` and revealed once in the existing copy-once banner:
+  - password flow → `sessionStorage['osm-new-api-key']` (forwarded SSR→client via `define:vars`);
+  - OAuth server-side 302 → a short-lived JS-readable cookie `osm_new_key`
+    (`Path=/account/api-keys`, `Max-Age=60`, **`SameSite=Lax` — NOT Strict**: Strict is dropped on
+    the OAuth redirect hop, mirroring the session-cookie rationale in `app.py`). `buildOAuthCallbackResponse`
+    switched to `Headers.append` so the session cookie is never overwritten.
+  - New non-admin OAuth signups are routed to `/account/api-keys` (overriding a deep-link `?return=`)
+    so the one-time key is never stranded; the reveal consumes both carriers once and only displays
+    `osm_`-prefixed values.
+- **By design / unchanged:** lazy-mint `GET /api/api-keys` stays metadata-only (an idempotent GET
+  must not surface a one-time secret); plaintext is never persisted server-side. Web/Astro only —
+  **tool count stays 24; no migration.**
+
 ### Fixed/Added - #251 per-session MCP pin keying + profile read path wired
 
 - **#251 (correctness, concurrency):** the sticky session pin (ADR-0029) was keyed by

@@ -444,10 +444,15 @@ async def verify_email(body: VerifyEmailBody, request: Request):
     # the call site defensively so that a failure at the boundary (helper
     # unavailable, import error, or any exception that escapes the helper)
     # can never turn a successful verification into a 500.
+    # new_key holds the one-time plaintext key so the client can surface it for
+    # the user to copy. Initialised to None so it is always defined even if the
+    # mint is skipped (user already has a key) or the call raises.
+    new_key: str | None = None
     try:
         from src.web_ui.routes.api_keys import _mint_default_api_key
-        _mint_default_api_key(user_id, username)
+        new_key = _mint_default_api_key(user_id, username)
     except Exception as exc:  # noqa: BLE001
+        new_key = None
         logger.warning(
             "verify-email: default API key mint failed for user %r (id=%d): %s"
             " — continuing (non-fatal)",
@@ -472,7 +477,12 @@ async def verify_email(body: VerifyEmailBody, request: Request):
 
     logger.info("verify-email: user %r (id=%d) verified and logged in", username, user_id)
     return JSONResponse(
-        _json_safe({"ok": True, "username": username, "is_admin": bool(user_row["is_admin"])})
+        _json_safe({
+            "ok": True,
+            "username": username,
+            "is_admin": bool(user_row["is_admin"]),
+            "new_api_key": new_key,
+        })
     )
 
 

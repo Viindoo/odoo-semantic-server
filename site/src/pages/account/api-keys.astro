@@ -48,6 +48,9 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
         <span data-testid="copy-key-button-label">Copy</span>
       </button>
     </div>
+    <p class="text-sm text-green-800 mt-3">
+      Next: paste this key at <a href="/install/" class="font-medium underline hover:text-green-900">/install/</a> to configure your AI tool.
+    </p>
   </div>
 
   <div class="flex items-center justify-between mb-6">
@@ -189,6 +192,62 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
     banner.removeAttribute('hidden');
     setTimeout(() => banner.setAttribute('hidden', ''), 4000);
   }
+
+  // On first landing after auto-onboarding (password verify-email or OAuth),
+  // reveal the auto-minted key once for copy. Two carriers, checked as a union
+  // (sessionStorage wins for the value); BOTH are always consumed so a stale
+  // carrier can never re-reveal a secret on a later reload:
+  //   a. sessionStorage['osm-new-api-key']  — set by verify-email.astro
+  //   b. cookie 'osm_new_key' (Path=/account/api-keys) — set by the OAuth redirect
+  (function revealNewKeyOnLoad() {
+    let fromStorage: string | null = null;
+    let fromCookie: string | null = null;
+
+    // (a) sessionStorage carrier — consume immediately.
+    try {
+      const v = sessionStorage.getItem('osm-new-api-key');
+      if (v) {
+        sessionStorage.removeItem('osm-new-api-key');
+        fromStorage = v;
+      }
+    } catch {
+      /* private mode / disabled — ignore */
+    }
+
+    // (b) cookie carrier — always consume it (even if sessionStorage already
+    //     had a value) by expiring it on the same Path it was scoped to, so a
+    //     leftover cookie cannot re-reveal within its 60s lifetime.
+    try {
+      const match = document.cookie
+        .split('; ')
+        .find((c) => c.startsWith('osm_new_key='));
+      if (match) {
+        document.cookie = 'osm_new_key=; Max-Age=0; Path=/account/api-keys';
+        const val = decodeURIComponent(match.slice('osm_new_key='.length));
+        if (val) fromCookie = val;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const raw = fromStorage || fromCookie;
+    // Only reveal a value that looks like one of our keys. A forged/stale
+    // same-origin carrier should never be displayed verbatim as "your key".
+    if (!raw || !raw.startsWith('osm_')) return;
+
+    const banner = document.querySelector('[data-testid="new-key-banner"]') as HTMLElement | null;
+    const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
+    if (banner && keyVal) {
+      keyVal.textContent = raw;
+      banner.removeAttribute('hidden');
+      banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // No DOM timeout: the banner stays until the user navigates away, matching
+      // the manual-create + admin reveal UX. "Shown once" is already guaranteed
+      // by consuming the carrier (sessionStorage.removeItem / cookie Max-Age=0)
+      // above, so a reload never re-reveals — a brand-new user must not lose
+      // their only key to a 15s timer before they can copy it.
+    }
+  })();
 
   // Toggle generate form
   document.querySelector('[data-testid="generate-key-button"]')?.addEventListener('click', () => {
