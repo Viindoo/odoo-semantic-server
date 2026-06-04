@@ -11,6 +11,42 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — literal CSS selector / SCSS variable lookup returned 0 (#255, ADR-0047)
+
+- **Root cause (HNSW post-filter recall collapse):** `find_style_override(".o_list_view")`
+  and `find_examples(".o_list_view", chunk_types=["css","scss","less"])` returned **0**
+  while a natural-language query with the same filter returned 3, with a healthy embedder.
+  Both tools ran pure pgvector ANN over the HNSW index with `chunk_type` as a post-filter and
+  no cosine threshold; the `INSTRUCT_NL_TO_CODE`-wrapped literal selector became an
+  out-of-distribution vector, so 0 of the top-`ef_search` candidates survived the post-filter.
+- **Fix — literal-first lookup:** a verbatim CSS token (selector / `$`/`@` variable / mixin) now
+  runs a deterministic substring ILIKE **before** ANN, via the shared `_literal_style_lookup`
+  helper. The column is routed by token shape (selectors → `entity_name`; variables → `content`,
+  the only place the variable name lives). ANN backfills remaining slots; results merge + dedup on
+  `(chunk_type, module, file_path, entity_name, chunk_idx)` with literal ranked above semantic
+  (deterministic `LITERAL_RANK_FLOOR + (n-i)*eps` tiebreak in the `find_examples` rerank). The NL
+  ANN path is unchanged (zero regression).
+- **New pure helper `src/mcp/style_literal.py`** (`is_literal_token` / `literal_column` /
+  `ilike_pattern`): selector-shape detection (`.`/`#`/`[`/`&`/combinator/compound + bare BEM idents),
+  at-rule-keyword flood guard (`@media`/`@import`/… → not literal; LESS `@brand-primary` → literal),
+  and LIKE-metacharacter escaping with `ESCAPE '\'`.
+- **General HNSW mitigation (flag-gated):** `_set_iterative_scan` issues
+  `SET LOCAL hnsw.iterative_scan='relaxed_order'` (pgvector ≥0.8) before each ANN execute, inside the
+  existing `_rls_read_tx` transaction, gated by the new `HNSW_ITERATIVE_SCAN` constant (set `''` to
+  revert). Accepted trade-off: minor non-exact ordering of filtered-semantic results.
+- **Embedder-outage robustness:** a literal style query never fetches/embeds on the hot path, so
+  literal lookups still serve when the embedder is down — fixed symmetrically in both sync bodies
+  and both async wrappers (`find_style_override`, `find_examples`).
+- **Docstring fix:** the fabricated `find_style_override` example (`css · selector:.o_list_view`,
+  `score 0.87`, `Found 2`) is replaced with realistic output (css `entity_name` is raw, scss/less
+  has the `selector:` prefix; `$o-brand-primary` resolves via its declaration in `content`).
+- **Scope:** both `find_style_override` and `find_examples` (only when `chunk_types ⊆
+  {css,scss,less}` and the query is literal-shaped). `pg_trgm` GIN index deferred (current rowset
+  makes ILIKE sub-millisecond). **Tool count stays 24; no migration.** Tenant choke
+  `profile_name = ANY(%s)` (ADR-0034) preserved. See [ADR-0047](docs/adr/0047-literal-first-style-lookup.md).
+- **Out of scope (tracked separately):** the intermittent embedder timeout is GPU VRAM contention
+  (one RTX 3050 8GB shared by the embedding model + the coder model) — an ops fix, not a code fix.
+
 ### Added — reveal auto-minted default API key once after signup (PR #256)
 
 - **Onboarding key visibility (UX gap):** new password (verify-email) and OAuth signups
