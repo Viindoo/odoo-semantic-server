@@ -214,5 +214,5 @@ Callers: Kubernetes readiness probe, nginx upstream health, monitoring dashboard
 ### New HTTP endpoint
 
 `GET /ready` — readiness probe. Returns JSON with `status`, `neo4j`, `postgres`,
-`embeddings_total`, `embeddings_by_chunk_type`. Not an MCP tool; not counted in the 24
+`embeddings_total`, `embeddings_by_chunk_type`. Not an MCP tool; not counted in the 25
 tool surface.

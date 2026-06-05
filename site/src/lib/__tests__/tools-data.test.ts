@@ -4,7 +4,7 @@
  * count constants (`lib/constants.ts`).
  *
  * Business rule under protection: the public site advertises exactly
- * TOOL_COUNT (24) MCP tools and RESOURCE_COUNT (7) odoo:// resources. The
+ * TOOL_COUNT (25) MCP tools and RESOURCE_COUNT (7) odoo:// resources. The
  * homepage, /tools page, and /pricing all render from these arrays + counts.
  * If someone adds or removes a tool/resource entry without bumping the
  * constant (or vice versa), the advertised number desyncs from what is shown.

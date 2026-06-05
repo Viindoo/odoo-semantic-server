@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** SSOT for the 24 MCP tools and 7 MCP resources.
+/** SSOT for the 25 MCP tools and 7 MCP resources.
  *
  *  Extracted from site/src/pages/index.astro (formerly inline arrays at lines
  *  14-39 and 251-280). Both index.astro (#tools section) and the /tools page
  *  import from here — one source, zero drift.
  *
- *  Note: count constants (TOOL_COUNT=24, RESOURCE_COUNT=7) live in
+ *  Note: count constants (TOOL_COUNT=25, RESOURCE_COUNT=7) live in
  *  site/src/lib/constants.ts (SSOT, enforced by tests/test_tool_count_sync.py).
  *  This module exports the *content* (name/desc/group), not the count. */
 
@@ -48,13 +48,13 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   resolve:    'Resolve (7)',
   version:    'Version (2)',
   quality:    'Quality (2)',
-  superset:   'Supersets (3)',
+  superset:   'Supersets (4)',
   session:    'Session (4)',
   stylesheet: 'Stylesheet (2)',
   orm:        'ORM (4)',
 };
 
-/** 24 MCP tools — verbatim from index.astro lines 14-39. */
+/** 25 MCP tools — original 24 lifted from index.astro, +profile_inspect (ADR-0028 WI-4). */
 export const TOOLS: Tool[] = [
   { num: '01', name: 'find_examples',         desc: 'Pull real-world usage from indexed repos.',                                                               group: 'resolve' },
   { num: '02', name: 'impact_analysis',        desc: 'Measure blast radius of a field change.',                                                                group: 'resolve' },
@@ -80,6 +80,7 @@ export const TOOLS: Tool[] = [
   { num: '22', name: 'validate_domain',        desc: 'Static-check an Odoo domain: unknown fields, invalid operators per version.',                            group: 'orm' },
   { num: '23', name: 'validate_depends',       desc: 'Validate @api.depends paths before runtime; flags depends-on-id.',                                       group: 'orm' },
   { num: '24', name: 'validate_relation',      desc: "Confirm a relational field's comodel matches the expected model.",                                       group: 'orm' },
+  { num: '25', name: 'profile_inspect',        desc: 'Profile composition — ancestor chain, child profiles, repos, and module list for a profile.',           group: 'superset' },
 ];
 
 /** 7 MCP resources — verbatim from README.md "MCP Resources" table + src/mcp/resources.py. */

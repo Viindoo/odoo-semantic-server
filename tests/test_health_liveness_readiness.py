@@ -68,7 +68,7 @@ class TestHealthDoesNotScanOnHotPath:
             patch.object(health_mod, "_fetch_embeddings_total", _spy_fetch_total),
             patch.object(health_mod, "_fetch_embeddings_by_chunk_type", _spy_fetch_breakdown),
             patch.object(health_mod, "_ready_cache", fake_cache),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.health_handler(_make_request("/health"))
 
@@ -105,7 +105,7 @@ class TestHealthDoesNotScanOnHotPath:
 
         with (
             patch.object(health_mod, "_ready_cache", fake_cache),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.health_handler(_make_request("/health"))
 
@@ -132,7 +132,7 @@ class TestHealthDoesNotScanOnHotPath:
 
         with (
             patch.object(health_mod, "_ready_cache", fake_cache),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.health_handler(_make_request("/health"))
 
@@ -170,7 +170,7 @@ class TestHealthDoesNotScanOnHotPath:
             patch.object(health_mod, "_ready_cache", None),
             patch.object(health_mod, "_check_neo4j", _spy_neo4j),
             patch.object(health_mod, "_check_pg", _spy_pg),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.health_handler(_make_request("/health"))
 
@@ -287,7 +287,7 @@ class TestReadyEndpoint:
             patch.object(health_mod, "_ready_cache", fake_cache),
             patch.object(health_mod, "_check_neo4j", AsyncMock(return_value="ok")),
             patch.object(health_mod, "_check_pg", AsyncMock(return_value="ok")),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 
@@ -314,7 +314,7 @@ class TestReadyEndpoint:
             patch.object(health_mod, "_ready_cache", fake_cache),
             patch.object(health_mod, "_check_neo4j", AsyncMock(return_value="ok")),
             patch.object(health_mod, "_check_pg", AsyncMock(return_value="ok")),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 
@@ -325,7 +325,7 @@ class TestReadyEndpoint:
             "/ready must include mcp_tools "
             "(consumers migrating from /health must not lose this field)"
         )
-        assert data["mcp_tools"] == 24, f"Expected mcp_tools=24 but got {data['mcp_tools']}"
+        assert data["mcp_tools"] == 25, f"Expected mcp_tools=25 but got {data['mcp_tools']}"
 
     @pytest.mark.asyncio
     async def test_ready_status_ok_when_both_up(self):
@@ -342,7 +342,7 @@ class TestReadyEndpoint:
             patch.object(health_mod, "_ready_cache", fake_cache),
             patch.object(health_mod, "_check_neo4j", AsyncMock(return_value="ok")),
             patch.object(health_mod, "_check_pg", AsyncMock(return_value="ok")),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 
@@ -370,7 +370,7 @@ class TestReadyEndpoint:
             patch.object(
                 health_mod, "_check_pg", AsyncMock(return_value="error: pool down")
             ),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 
@@ -399,7 +399,7 @@ class TestReadyEndpoint:
             patch.object(
                 health_mod, "_check_pg", AsyncMock(return_value="error: down")
             ),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 
@@ -424,7 +424,7 @@ class TestReadyEndpoint:
             patch.object(health_mod, "_ready_cache", fake_cache),
             patch.object(health_mod, "_check_neo4j", AsyncMock(return_value="ok")),
             patch.object(health_mod, "_check_pg", AsyncMock(return_value="ok")),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 
@@ -448,7 +448,7 @@ class TestReadyEndpoint:
             patch.object(health_mod, "_ready_cache", fake_cache),
             patch.object(health_mod, "_check_neo4j", AsyncMock(return_value="ok")),
             patch.object(health_mod, "_check_pg", AsyncMock(return_value="ok")),
-            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=24)),
+            patch.object(health_mod, "_get_mcp_tool_count", AsyncMock(return_value=25)),
         ):
             resp = await health_mod.ready_handler(_make_request("/ready"))
 

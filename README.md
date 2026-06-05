@@ -254,7 +254,7 @@ Token-bounded chunking + provider abstraction + MCP anti-hang. Three concerns ad
 Tool count stays **24**. Migration **m13_018** required on deploy (after m13_017).
 See [ADR-0044](docs/adr/0044-token-bounded-embedding.md), [ADR-0045](docs/adr/0045-embedding-provider-abstraction.md), [ADR-0046](docs/adr/0046-mcp-embed-concurrency-anti-hang.md).
 
-**Active work / recently merged:** PR #232 (`feat/landing-living-cartography`) — landing redesign + /examples cartography page + docs cleanup (HEAD aa29422). Prior merged work now in prod: PR #225 (`analytics.ga_measurement_id` app_setting + GA snippet injection); PR #228 (`wave/wi-f` — token-bounded embedding ADR-0044, provider abstraction ADR-0045, MCP anti-hang ADR-0046, migration m13_018); PR #229 (readiness probe `/ready` + `/health` pure liveness split); PR #224 (`feat/launch-prep` — install MCP-first, brand SSOT, SEO, legal pages, CRD consent, migration m13_017). Tool count stays **24**.
+**Active work / recently merged:** PR #232 (`feat/landing-living-cartography`) — landing redesign + /examples cartography page + docs cleanup (HEAD aa29422). Prior merged work now in prod: PR #225 (`analytics.ga_measurement_id` app_setting + GA snippet injection); PR #228 (`wave/wi-f` — token-bounded embedding ADR-0044, provider abstraction ADR-0045, MCP anti-hang ADR-0046, migration m13_018); PR #229 (readiness probe `/ready` + `/health` pure liveness split); PR #224 (`feat/launch-prep` — install MCP-first, brand SSOT, SEO, legal pages, CRD consent, migration m13_017). Tool count stays **25**.
 **Deferred:** M10B P2 (multi-IdP "Viindoo Account", buyer≠user split, ERP/VAS adapter),
 M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep),
 VN persona docs.
@@ -282,7 +282,7 @@ ADR-0021. Tenant `quota.*` override Phase 1.
 
 Access: `/admin/settings` (admin) + `/tenant/settings` (tenant_admin role).
 
-**Tool count stays 24** — Admin Settings is web-UI-only, no new MCP tools.
+**Tool count stays 25** — Admin Settings is web-UI-only, no new MCP tools.
 
 → [`docs/adr/0042-admin-settings-module.md`](docs/adr/0042-admin-settings-module.md)
 

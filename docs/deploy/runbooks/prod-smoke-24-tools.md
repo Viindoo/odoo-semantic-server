@@ -1,8 +1,8 @@
-# Production Smoke Runbook — 14 MCP Tools + 7 Resources
+# Production Smoke Runbook — 15 MCP Tools + 7 Resources
 
 > **Operator-facing walkthrough for post-go-live smoke-test of 14 MCP tools (#11-24) and 7 Resources (R1-R7) that were code-complete + unit-tested but never smoke-tested end-to-end against the live production MCP endpoint. Estimated ~90-100 min/session.**
 >
-> Covers: `describe_module`, 3 superset discriminators (`model_inspect`/`module_inspect`/`entity_lookup`), 4 session tools (`set_active_version`/`set_active_profile`/`list_available_versions`/`list_available_profiles`), 2 stylesheet tools (`resolve_stylesheet`/`find_style_override`), 4 ORM-validation tools (`resolve_orm_chain`/`validate_domain`/`validate_depends`/`validate_relation`), and 7 URI resources (`odoo://...`).
+> Covers: `describe_module`, 3 superset discriminators (`model_inspect`/`module_inspect`/`entity_lookup`), 4 session tools (`set_active_version`/`set_active_profile`/`list_available_versions`/`list_available_profiles`), 2 stylesheet tools (`resolve_stylesheet`/`find_style_override`), 4 ORM-validation tools (`resolve_orm_chain`/`validate_domain`/`validate_depends`/`validate_relation`), 1 profile discriminator (`profile_inspect`), and 7 URI resources (`odoo://...`).
 >
 > **References:** ADR-0023 (Tool Output Completeness), ADR-0028 (Superset Discriminator Consolidation), ADR-0029 (Implicit Session Context), ADR-0030 (MCP Resources URI Scheme).
 
@@ -288,6 +288,22 @@ Set sticky version + profile to eliminate repetitive parameters in subsequent ca
 - [ ] Response contains `Manifest:` section
 - [ ] Response contains module description
 - [ ] Module name `sale` mentioned
+- [ ] No traceback
+
+#### Phase 3E: Tool #25 — `profile_inspect` (ADR-0028 Wave 2 WI-4)
+
+**Trigger prompts:**
+
+- **EN:** "Use odoo-semantic profile_inspect to show the composition of profile `<PROFILE>` — its ancestor chain, repos, and module count — in Odoo 17.0."
+- **VI:** "Dùng profile_inspect của odoo-semantic để xem thành phần của profile `<PROFILE>`: ancestor chain, repos và số module trên Odoo 17.0."
+
+**Expected behaviour:** Profile-level discriminator. `method='summary'` returns the ancestor chain + child profiles + repos + module_count; `method='repos'` lists repos deduped across the ancestor chain; `method='modules'` returns a paginated module list scoped to the profile.
+
+**Acceptance:**
+- [ ] `summary` lists the profile's ancestor chain (or explicitly notes none)
+- [ ] `summary` includes the repo list + `module_count`
+- [ ] `method='repos'` returns deduped repos across the ancestor chain
+- [ ] `method='modules'` returns a paginated module list scoped to the profile
 - [ ] No traceback
 
 ---
@@ -642,6 +658,7 @@ Operator fills in this table during the smoke session and attaches to session re
 | 22 | `validate_domain` | Tool | [ ] PASS / [ ] FAIL | | |
 | 23 | `validate_depends` | Tool | [ ] PASS / [ ] FAIL | | |
 | 24 | `validate_relation` | Tool | [ ] PASS / [ ] FAIL | | |
+| 25 | `profile_inspect` | Tool | [ ] PASS / [ ] FAIL | | |
 | R1 | `odoo://.../model/<name>` | Resource | [ ] PASS / [ ] FAIL | | |
 | R2 | `odoo://.../field/<m>/<f>` | Resource | [ ] PASS / [ ] FAIL | | |
 | R3 | `odoo://.../method/<m>/<n>` | Resource | [ ] PASS / [ ] FAIL | | |
@@ -671,9 +688,10 @@ Operator fills in this table during the smoke session and attaches to session re
 13. **Tool #23** — `validate_depends("sale.order", "_compute_amount_total")` — v17+ method only
     > **Note**: Odoo 17 renamed `amount_total` compute method to `_amount_all` (from v15+); `_compute_amount_total` may not exist. If tool returns "method not found", replace method name in prompt. Operator verify with `model_inspect(model='sale.order', method='methods', odoo_version='17.0')` before smoke.
 14. **Tool #24** — `validate_relation("sale.order", "partner_id", "res.partner")` — comodel assertion
-15. **Resources R1–R7** — after tools confirm data exists
-16. **Re-smoke #3** — `lookup_core_api("name_get", "17.0")` — post-reindex verification
-17. **Re-smoke #8** — `suggest_pattern("computed field")` — post-seed-patterns verification
+15. **Tool #25** — `profile_inspect(<PROFILE>, "summary")` — profile composition (ancestor chain + repos + module_count)
+16. **Resources R1–R7** — after tools confirm data exists
+17. **Re-smoke #3** — `lookup_core_api("name_get", "17.0")` — post-reindex verification
+18. **Re-smoke #8** — `suggest_pattern("computed field")` — post-seed-patterns verification
 
 ---
 
@@ -716,7 +734,7 @@ After completing the smoke session, document findings:
 
 ## Sign-off Summary
 
-**Total smoke items:** 24 tools + 7 resources = 31
+**Total smoke items:** 25 tools + 7 resources = 32
 **PASS:** <count>
 **FAIL:** <count>
 **PARTIAL:** <count>

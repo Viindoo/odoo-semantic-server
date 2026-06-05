@@ -11,6 +11,17 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — docs/site MCP tool-count drift (24 -> 25)
+
+Follow-up to PR #266 (`profile_inspect`, tool 25): several current-state references still advertised "24 tools". Corrected to 25 across live-facing surfaces; immutable history (per-PR CHANGELOG/ADR-at-time notes, completed TASKS items) left untouched.
+
+- **Real bug — `site/src/lib/tools-data.ts` was missing the 25th entry (`profile_inspect`).** `TOOL_COUNT=25` in `constants.ts` but the `TOOLS` array had only 24 rows, so the vitest drift-guard (`tools-data.test.ts`: `TOOLS.length === TOOL_COUNT`, sequential `01..TOOL_COUNT`) was red and the homepage + `/tools` grid (both data-driven from `TOOLS`) rendered only 24 cards. Added `profile_inspect` (group `superset`, num `25`); bumped `TOOL_GROUP_LABELS.superset` `(3)` -> `(4)`.
+- **Site strings:** `plugins-data.ts` install highlights ("24 tools" -> "25 tools"); stale `tools-data.ts` / `tools.astro` / `tools-data.test.ts` comments.
+- **Docs (current-state only):** `README.md` (active-work + Admin Settings summaries), `TASKS.md` pre-launch sign-off rows, `docs/deploy/pre-launch-checklist.md` (§6 header + tool-count history chain now ends at 25), `docs/deploy/runbooks/README.md`, `docs/adr/0046` `/ready` surface note. The `prod-smoke` runbook gained a `profile_inspect` (#25) smoke phase + sign-off row.
+- **Test:** `tests/test_health_liveness_readiness.py` `_get_mcp_tool_count` mock 24 -> 25 (arbitrary liveness test data realigned to the live surface; the one value-asserting test now expects 25).
+
+Tool count is **25** (unchanged surface — this only corrects stale advertising). No migration. Web/docs/test only.
+
 ### Added/Fixed — Batch #258-#265 + #254: output hygiene, profile introspection, EE-confusion, lexical fallback, security (PR #266)
 
 Nine issues fixed in one batch PR. Tool count **24 -> 25** (`profile_inspect` added). No migration.
