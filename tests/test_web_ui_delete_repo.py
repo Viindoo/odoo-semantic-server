@@ -85,12 +85,12 @@ def _seed_embeddings(pg_conn, module_name: str, version: str) -> None:
                 """
                 INSERT INTO embeddings
                     (chunk_type, module, odoo_version, entity_name, file_path,
-                     chunk_idx, content, vec)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     chunk_idx, content, vec, profile_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
                 """,
                 ("model", module_name, version, "entity", f"/fake/{module_name}.py",
-                 0, "fake content", vec),
+                 0, "fake content", vec, "test_profile"),
             )
     except Exception:
         pass  # pgvector not installed — embeddings tests degrade gracefully

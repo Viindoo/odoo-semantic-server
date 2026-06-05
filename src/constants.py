@@ -55,6 +55,16 @@ EDITION_PRIORITY_ELSE: int = 4
 VALID_EDITIONS: frozenset[str] = frozenset(EDITION_PRIORITY) | {"custom"}
 
 # ---------------------------------------------------------------------------
+# Global embedding sentinel
+# ---------------------------------------------------------------------------
+
+# Sentinel profile_name for global (cross-tenant) rows in the embeddings table.
+# MUST equal the value in migrations/m13_021_embeddings_global_sentinel.sql
+# (backfill, RLS policy branch, sentinel CHECK). Drift here silently breaks
+# suggest_pattern / global visibility.
+GLOBAL_PROFILE: str = "__global__"
+
+# ---------------------------------------------------------------------------
 # pgvector chunk types
 # ---------------------------------------------------------------------------
 

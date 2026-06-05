@@ -592,13 +592,13 @@ class TestAssertDimMatchesIntegration:
             cur.execute(
                 "INSERT INTO embeddings "
                 "(chunk_type, module, odoo_version, entity_name, file_path, content, vec,"
-                " embedding_model, embedding_dim)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)",
+                " embedding_model, embedding_dim, profile_name)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s)",
                 (
                     "method", "sale", "99.0", "action_confirm",
                     "models/sale.py", "def action_confirm(self):",
                     str([0.0] * 1024),  # vector matches DDL dim
-                    "some-other-model", 512,
+                    "some-other-model", 512, "test_profile",
                 ),
             )
 
@@ -618,13 +618,13 @@ class TestAssertDimMatchesIntegration:
             cur.execute(
                 "INSERT INTO embeddings "
                 "(chunk_type, module, odoo_version, entity_name, file_path, content, vec,"
-                " embedding_model, embedding_dim)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)",
+                " embedding_model, embedding_dim, profile_name)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s)",
                 (
                     "method", "sale", "99.0", "action_confirm2",
                     "models/sale.py", "def action_confirm(self):",
                     str([0.0] * 1024),
-                    "qwen3-embedding-q5km", 1024,
+                    "qwen3-embedding-q5km", 1024, "test_profile",
                 ),
             )
 

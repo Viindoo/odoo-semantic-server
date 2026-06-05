@@ -1254,6 +1254,33 @@ def index_all(
         if first_exc is not None:
             raise first_exc
 
+    # === Global post-all-profiles GC: childless repo_id-NULL dep-stubs (FUFU-1) ===
+    # Must run AFTER all profile indexing completes so stubs promoted to real
+    # modules in a later-running profile are not deleted before that profile
+    # runs.  In parallel mode (profile_workers > 1) this block is outside the
+    # ThreadPoolExecutor context so no dep-MERGEs are in-flight here.
+    # Gated on the same gc=True flag; runs once per unique odoo_version across
+    # all profiles (NOT per-profile — ordering hazard in parallel mode).
+    if gc:
+        _all_versions: set[str] = {
+            p["odoo_version"] for p in profiles if p.get("odoo_version")
+        }
+        if _all_versions:
+            uri, user, password = _neo4j_creds()
+            _gc_writer = Neo4jWriter(uri, user, password)
+            try:
+                for _v in sorted(_all_versions):
+                    _n = _gc_writer.gc_null_repo_dep_stubs(_v)
+                    if _n > 0:
+                        _logger.info(
+                            "index_all dep-stub GC [post-all-profiles]: "
+                            "deleted %d stubs for version %s",
+                            _n, _v,
+                        )
+            finally:
+                _gc_writer.close()
+    # === End global dep-stub GC ===
+
     return {
         "profiles_ok": profiles_ok,
         "profiles_failed": profiles_failed,

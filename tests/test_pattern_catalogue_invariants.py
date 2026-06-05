@@ -131,6 +131,9 @@ def _seeded_w3_patterns(clean_pg_embeddings, clean_neo4j):
     chunks = make_pattern_chunks(patterns)
     texts = [c.content for c in chunks]
     vecs = embedder.embed(texts)
+    from src.constants import GLOBAL_PROFILE
+    for _c in chunks:
+        _c.profile_name = GLOBAL_PROFILE
     with clean_pg_embeddings.cursor() as cur:
         execute_values(
             cur, _INSERT_SQL,
@@ -200,6 +203,8 @@ def test_suggest_pattern_skips_gracefully_when_no_results(clean_pg_embeddings, c
         _pg_conn=clean_pg_embeddings,
         _embedder=FakeEmbedder(dim=1024),
     )
-    assert "no patterns indexed" in result or "matches" in result, (
-        f"Unexpected response format: {result[:300]!r}"
-    )
+    assert (
+        "No curated patterns available" in result
+        or "no patterns indexed" in result
+        or "matches" in result
+    ), f"Unexpected response format: {result[:300]!r}"

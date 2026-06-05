@@ -363,3 +363,242 @@ class TestGcDoesNotDeleteOtherRepoModules:
         assert row_b["n"] == 1, (
             "repo_b Module{gc_blast_mod_b} must NOT be deleted — GC is scoped to repo_a only"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests 5-10: gc_null_repo_dep_stubs — durable GC for repo_id-NULL dep-stubs
+#             (FUFU-1 / ADR-0007 follow-up, PR #268)
+# ---------------------------------------------------------------------------
+
+class TestGcNullRepoDepStubs:
+    """gc_null_repo_dep_stubs collects childless repo_id-NULL :Module stubs.
+
+    These stubs are created by the dep-target MERGE in write_parse_result()
+    for ``module.depends`` entries never indexed under their own profile.
+    Their MERGE key is ``{name, odoo_version}`` only — no repo, no repo_id,
+    no DEFINED_IN children.  gc_stale_modules misses them because it keys on
+    a concrete non-NULL ``repo`` string.
+    """
+
+    def test_gc_deletes_childless_null_repo_stub(self, clean_neo4j):
+        """A bare dep-stub (no repo_id, no DEFINED_IN children) is DETACH DELETEd."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        # Seed a dep-stub exactly as the dep-MERGE creates it:
+        # {name, odoo_version} only — no repo, no repo_id, no children.
+        with driver.session() as s:
+            s.run(
+                "MERGE (m:Module {name: $name, odoo_version: $v})",
+                name="stub_dep_only", v=TEST_VERSION,
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            deleted = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+        finally:
+            writer.close()
+
+        assert deleted == 1, f"Expected 1 deleted, got {deleted}"
+        with driver.session() as s:
+            row = s.run(
+                "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN count(m) AS n",
+                n="stub_dep_only", v=TEST_VERSION,
+            ).single()
+        assert row["n"] == 0, "childless null-repo stub must be deleted"
+
+    def test_gc_does_not_delete_real_module(self, clean_neo4j):
+        """A Module node with repo_id set is NOT deleted, even if it has no children."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        # Real module: has repo_id set (as _write_parse_result would do).
+        with driver.session() as s:
+            s.run(
+                "MERGE (m:Module {name: $name, odoo_version: $v}) "
+                "SET m.repo = $repo, m.repo_id = $repo_id",
+                name="real_module", v=TEST_VERSION,
+                repo="odoo_17.0", repo_id=42,
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            deleted = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+        finally:
+            writer.close()
+
+        assert deleted == 0, f"Expected 0 deleted, got {deleted}"
+        with driver.session() as s:
+            row = s.run(
+                "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN count(m) AS n",
+                n="real_module", v=TEST_VERSION,
+            ).single()
+        assert row["n"] == 1, "real module (repo_id set) must survive GC"
+
+    def test_gc_does_not_delete_null_repo_stub_with_defined_in_child(self, clean_neo4j):
+        """A repo_id-NULL Module that has a DEFINED_IN child (partial-real) is NOT deleted."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        # A stub that was later partially promoted: it got a DEFINED_IN child
+        # but never received repo_id (edge case / partial index).
+        with driver.session() as s:
+            s.run(
+                """
+                MERGE (m:Module {name: $name, odoo_version: $v})
+                MERGE (model:Model {name: 'sale.order', module: $name, odoo_version: $v})
+                MERGE (model)-[:DEFINED_IN]->(m)
+                """,
+                name="partial_real", v=TEST_VERSION,
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            deleted = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+        finally:
+            writer.close()
+
+        assert deleted == 0, "stub with DEFINED_IN child must survive GC"
+        with driver.session() as s:
+            row = s.run(
+                "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN count(m) AS n",
+                n="partial_real", v=TEST_VERSION,
+            ).single()
+        assert row["n"] == 1, "partial-real module must survive GC"
+
+    def test_gc_does_not_touch_other_version(self, clean_neo4j):
+        """gc_null_repo_dep_stubs is scoped to odoo_version and must not touch other versions."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        # Stub for TEST_VERSION (should be deleted).
+        # Stub for a different version (must survive).
+        with driver.session() as s:
+            s.run(
+                "MERGE (m:Module {name: $name, odoo_version: $v})",
+                name="stub_to_delete", v=TEST_VERSION,
+            )
+            s.run(
+                "MERGE (m:Module {name: $name, odoo_version: $v})",
+                name="stub_other_version", v="98.0",
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            deleted = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+        finally:
+            writer.close()
+
+        assert deleted == 1, f"Expected 1 deleted (TEST_VERSION stub), got {deleted}"
+        with driver.session() as s:
+            row = s.run(
+                "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN count(m) AS n",
+                n="stub_other_version", v="98.0",
+            ).single()
+        assert row["n"] == 1, "stub from other version must not be touched"
+
+    def test_gc_idempotent(self, clean_neo4j):
+        """Running gc_null_repo_dep_stubs twice returns 0 on the second run."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        with driver.session() as s:
+            s.run(
+                "MERGE (m:Module {name: $name, odoo_version: $v})",
+                name="stub_idem", v=TEST_VERSION,
+            )
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            first = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+            second = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+        finally:
+            writer.close()
+
+        assert first == 1, f"Expected 1 on first run, got {first}"
+        assert second == 0, "second run must be a no-op (idempotent)"
+
+    def test_dep_merge_recreates_stub_after_gc(self, clean_neo4j):
+        """After GC deletes a stub, the next dep-MERGE re-creates it for a still-declared dep."""
+        from src.indexer.writer_neo4j import Neo4jWriter
+
+        driver = clean_neo4j
+
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            # Step 1: simulate dep-MERGE creating the stub — source module has
+            # repo_id set; dep target ('base') gets only {name, odoo_version}.
+            with driver.session() as s:
+                s.run(
+                    """
+                    MERGE (src:Module {name: 'sale_gc_test', odoo_version: $v})
+                    SET src.repo = 'odoo_99.0', src.repo_id = 99
+                    MERGE (dep:Module {name: 'base_gc_test', odoo_version: $v})
+                    MERGE (src)-[:DEPENDS_ON]->(dep)
+                    """,
+                    v=TEST_VERSION,
+                )
+
+            # Step 2: GC deletes the childless repo_id-NULL stub 'base_gc_test'.
+            deleted = writer.gc_null_repo_dep_stubs(TEST_VERSION)
+            assert deleted == 1, f"dep stub for 'base_gc_test' should be deleted, got {deleted}"
+
+            # Confirm it's gone.
+            with driver.session() as s:
+                row = s.run(
+                    "MATCH (m:Module {name: 'base_gc_test', odoo_version: $v}) "
+                    "RETURN count(m) AS n",
+                    v=TEST_VERSION,
+                ).single()
+            assert row["n"] == 0, "stub must be absent after GC"
+
+            # Step 3: simulate the next indexer run re-doing the dep-MERGE.
+            with driver.session() as s:
+                s.run(
+                    """
+                    MATCH (src:Module {name: 'sale_gc_test', odoo_version: $v})
+                    MERGE (dep:Module {name: 'base_gc_test', odoo_version: $v})
+                    MERGE (src)-[:DEPENDS_ON]->(dep)
+                    """,
+                    v=TEST_VERSION,
+                )
+
+            # 'base_gc_test' stub must exist again (cycle-safety).
+            with driver.session() as s:
+                row = s.run(
+                    "MATCH (m:Module {name: 'base_gc_test', odoo_version: $v}) "
+                    "RETURN count(m) AS n",
+                    v=TEST_VERSION,
+                ).single()
+            assert row["n"] == 1, "dep-MERGE must re-create stub after GC deletion"
+        finally:
+            writer.close()

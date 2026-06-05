@@ -313,7 +313,8 @@ def test_find_style_override_with_fake_embedder(clean_neo4j, pg_conn):
             content="$primary: #00BBCE;",
         ),
     ]
-    write_module_embeddings(_CSS_MOD, TEST_VERSION, chunks, embedder)
+    write_module_embeddings(_CSS_MOD, TEST_VERSION, chunks, embedder,
+                            profile_name="test_profile")
 
     import src.mcp.server as srv_mod
     original_driver = srv_mod._driver
@@ -383,7 +384,8 @@ def test_find_style_override_output_has_next_step(clean_neo4j, pg_conn):
             content="@mixin o_btn_primary { color: $primary; }",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, embedder)
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, embedder,
+                            profile_name="test_profile")
 
     import src.mcp.server as srv_mod
     original_driver = srv_mod._driver
@@ -515,7 +517,8 @@ def test_t1_ac1_literal_selector_far_cluster(clean_neo4j, pg_conn):
             content=".o_kanban_view { display: grid; }",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     import src.mcp.server as srv_mod
     original_driver = srv_mod._driver
@@ -594,7 +597,8 @@ def test_t2_ac2_scss_variable_via_content_ilike(clean_neo4j, pg_conn):
             content="$o-brand-primary: #00BBCE;\n$o-brand-secondary: #7F4282;",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     import src.mcp.server as srv_mod
     original_driver = srv_mod._driver
@@ -673,7 +677,8 @@ def test_t3_ac3_escape_underscore_decoy(clean_neo4j, pg_conn):
             content=".oXlist_view { display: none; }",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     import src.mcp.server as srv_mod
     original_driver = srv_mod._driver
@@ -767,7 +772,8 @@ def test_t4_find_examples_literal_style_parity(clean_neo4j, pg_conn):
             content="def _compute_amount(self): ...",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     # Seed a Neo4j Module node for the rerank query
     with clean_neo4j.session() as s:
@@ -874,7 +880,8 @@ def test_t5_async_wrapper_literal_survives_embed_failure_style_override(
             content=".o_list_view { display: block; }",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     class AlwaysRaisingEmbedder:
         """Embedder that always raises — simulates total embedder outage."""
@@ -961,7 +968,8 @@ def test_t6_async_wrapper_literal_survives_embed_failure_find_examples(
             content=".o_list_view { display: block; }",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     # Seed Neo4j Module node for rerank
     with clean_neo4j.session() as s:
@@ -1215,7 +1223,8 @@ async def test_async_wrapper_literal_e2e_db(clean_neo4j, pg_conn):
             content=".o_list_view { display: block; }",
         ),
     ]
-    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024))
+    write_module_embeddings(_MOD, TEST_VERSION, chunks, FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
     with clean_neo4j.session() as s:
         s.run("MERGE (:Module {name: $n, odoo_version: $v})", n=_MOD, v=TEST_VERSION)
 

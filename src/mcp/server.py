@@ -25,6 +25,7 @@ from src.constants import (
     EMBEDDER_MAX_CONCURRENCY,
     EMBEDDER_TOKEN_BUDGET,
     FIND_EXAMPLES_ANN_LIMIT,
+    GLOBAL_PROFILE,
     HNSW_ITERATIVE_SCAN,
     IMPACT_MODULES_MAX,
     IMPACT_RISK_HIGH_THRESHOLD,
@@ -1791,8 +1792,8 @@ def _find_examples(
     # Neo4j rerank only deprioritises non-allowed modules — it does NOT drop
     # their chunks — so isolation MUST be enforced here, in the SQL, before
     # rows are fetched. allowed=None -> admin/unrestricted (no clause);
-    # allowed=[] -> deny-all (ANY('{}') matches nothing). profile_name IS NULL
-    # chunks (legacy/unscoped) are excluded when scoped — fail-closed.
+    # allowed=[] -> deny-all (ANY('{}') matches nothing). global sentinel rows
+    # (profile_name='__global__') are excluded when scoped — fail-closed.
     allowed = _effective_allowed(profile_name)
     prof_sql = "" if allowed is None else " AND profile_name = ANY(%s)"
 
@@ -3531,10 +3532,11 @@ def _suggest_pattern(
             )
 
     # Use injected connection (test path) or check out from pool (production).
-    # RLS note (WI-7 / ADR-0034 D3/A2): pattern catalogue chunks are stored
-    # with module='__patterns__' and profile_name IS NULL (global shared rows).
-    # The embeddings_tenant policy passes them unconditionally via the
-    # "profile_name IS NULL" branch — no GUC wiring needed here.
+    # RLS note (WI-7 / ADR-0034 D3/A2 / FUFU-2): pattern catalogue chunks carry
+    # the explicit profile_name = '__global__' sentinel (m13_021). The SELECT
+    # filters on it directly so this read is immune to GUC state; the
+    # embeddings_tenant RLS policy passes the sentinel unconditionally via the
+    # "profile_name = '__global__'" branch — no GUC wiring needed here.
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _checkout_pg()
     with _pg_ctx as pg:
         with pg.cursor() as cur:
@@ -3545,9 +3547,10 @@ def _suggest_pattern(
                        FROM embeddings
                        WHERE chunk_type = 'pattern_example'
                          AND module = '__patterns__'
+                         AND profile_name = %s
                        ORDER BY vec <=> %s::vector
                        LIMIT %s""",
-                    [intent_vec, intent_vec, limit],
+                    [intent_vec, GLOBAL_PROFILE, intent_vec, limit],
                 )
             else:
                 cur.execute(
@@ -3556,10 +3559,11 @@ def _suggest_pattern(
                        FROM embeddings
                        WHERE chunk_type = 'pattern_example'
                          AND module = '__patterns__'
+                         AND profile_name = %s
                          AND entity_name LIKE %s
                        ORDER BY vec <=> %s::vector
                        LIMIT %s""",
-                    [intent_vec, f"{language}__%", intent_vec, limit],
+                    [intent_vec, GLOBAL_PROFILE, f"{language}__%", intent_vec, limit],
                 )
             ranked = cur.fetchall()
 

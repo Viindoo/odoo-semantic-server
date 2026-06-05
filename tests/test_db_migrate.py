@@ -118,10 +118,13 @@ def test_migrate_embeddings_unique_index(clean_pg):
     """UNIQUE NULLS NOT DISTINCT on (chunk_type, module, odoo_version, entity_name,
     file_path, chunk_idx, profile_name).
 
-    Both rows below omit profile_name (→ NULL = shared/pattern chunk). Under the
-    default UNIQUE semantics two NULLs are distinct and would NOT collide, silently
-    regressing dedup for shared chunks; the NULLS NOT DISTINCT clause (m13_001)
-    treats NULL profile_names as equal, so the duplicate must still raise.
+    Both rows supply the same profile_name to exercise the UNIQUE constraint:
+    duplicating (chunk_type, module, odoo_version, entity_name, file_path,
+    chunk_idx, profile_name) must raise UniqueViolation even though the rows
+    differ in content. Post-m13_021 the column is NOT NULL; profile_name is
+    required in the INSERT. The NULLS NOT DISTINCT clause (m13_001) is still
+    relevant for the (unlikely) case where a future migration re-introduces
+    a nullable profile — it prevents silent dedup regression.
     """
     import psycopg2.errors
     from pgvector.psycopg2 import register_vector
@@ -133,15 +136,16 @@ def test_migrate_embeddings_unique_index(clean_pg):
     with clean_pg.cursor() as cur:
         cur.execute(
             "INSERT INTO embeddings (chunk_type, module, odoo_version, entity_name, "
-            "file_path, content, vec) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            "file_path, content, vec, profile_name) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
             ("method", "sale", "99.0", "action_confirm",
-             "models/sale.py", "def action_confirm(self):", vec),
+             "models/sale.py", "def action_confirm(self):", vec, "test_profile"),
         )
         with pytest.raises(psycopg2.errors.UniqueViolation):
             cur.execute(
                 "INSERT INTO embeddings (chunk_type, module, odoo_version, entity_name, "
-                "file_path, content, vec) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                ("method", "sale", "99.0", "action_confirm", "models/sale.py", "duplicate", vec),
+                "file_path, content, vec, profile_name) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                ("method", "sale", "99.0", "action_confirm",
+                 "models/sale.py", "duplicate", vec, "test_profile"),
             )
 
 
@@ -938,3 +942,105 @@ def test_m13_deploy_key_unique_per_tenant(clean_pg):
 # NOTE: the former `test_m13_migration_idempotent` (pure double-run no-raise) was
 # removed — fully covered by the canonical `test_migrate_is_idempotent` above, which
 # runs the full migration stack (incl. all m13_* migrations) twice.
+
+
+# ---------------------------------------------------------------------------
+# m13_021 sentinel tests (FUFU-2 root fix — global sentinel + NOT NULL)
+# ---------------------------------------------------------------------------
+
+
+def test_m13_021_no_null_profile_name_after_migrate(clean_pg):
+    """m13_021: post-migration embeddings must have 0 NULL profile_name rows.
+
+    The migration backfills all NULLs to '__global__' before adding NOT NULL.
+    On a fresh schema there are no rows, so the count is trivially 0.  The
+    important assertion is that the NOT NULL column is in place (covered by
+    test_m13_021_profile_name_not_null below).
+    """
+    run_migrations(clean_pg)
+    if not _vector_extension_available(clean_pg):
+        pytest.skip("pgvector extension not installed")
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE profile_name IS NULL"
+        )
+        count = cur.fetchone()[0]
+    assert count == 0, (
+        f"post-m13_021 migration must leave 0 NULL profile_name rows, got {count}"
+    )
+
+
+def test_m13_021_profile_name_not_null(clean_pg):
+    """m13_021: embeddings.profile_name column must be NOT NULL after migrate."""
+    run_migrations(clean_pg)
+    if not _vector_extension_available(clean_pg):
+        pytest.skip("pgvector extension not installed")
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            """SELECT is_nullable
+                 FROM information_schema.columns
+                WHERE table_name = 'embeddings'
+                  AND column_name = 'profile_name'"""
+        )
+        row = cur.fetchone()
+    assert row is not None, "embeddings.profile_name column not found"
+    assert row[0] == "NO", (
+        f"embeddings.profile_name must be NOT NULL after m13_021, got is_nullable={row[0]!r}"
+    )
+
+
+def test_m13_021_sentinel_check_present(clean_pg):
+    """m13_021: ck_embeddings_global_sentinel_scope CHECK must be present and validated."""
+    run_migrations(clean_pg)
+    if not _vector_extension_available(clean_pg):
+        pytest.skip("pgvector extension not installed")
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            """SELECT conname, convalidated
+                 FROM pg_constraint
+                WHERE conname = 'ck_embeddings_global_sentinel_scope'
+                  AND conrelid = 'public.embeddings'::regclass"""
+        )
+        row = cur.fetchone()
+    assert row is not None, (
+        "ck_embeddings_global_sentinel_scope CHECK constraint missing after m13_021"
+    )
+    assert row[1] is True, (
+        "ck_embeddings_global_sentinel_scope must be VALIDATED (convalidated=true)"
+    )
+
+
+def test_m13_021_dunder_check_present(clean_pg):
+    """m13_021: profiles_name_no_dunder CHECK must be present and validated."""
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute(
+            """SELECT conname, convalidated
+                 FROM pg_constraint
+                WHERE conname = 'profiles_name_no_dunder'
+                  AND conrelid = 'public.profiles'::regclass"""
+        )
+        row = cur.fetchone()
+    assert row is not None, (
+        "profiles_name_no_dunder CHECK constraint missing after m13_021"
+    )
+    assert row[1] is True, (
+        "profiles_name_no_dunder must be VALIDATED (convalidated=true)"
+    )
+
+
+def test_m13_021_dunder_check_rejects_global_profile(clean_pg):
+    """m13_021: profiles_name_no_dunder CHECK rejects a profile named '__global__'.
+
+    The dunder-block prevents an admin from accidentally creating a profile
+    whose embeddings would become globally visible via the RLS sentinel branch.
+    """
+    import psycopg2.errors
+
+    run_migrations(clean_pg)
+    with clean_pg.cursor() as cur:
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO profiles (name, odoo_version) VALUES ('__global__', '17.0')"
+            )
+    clean_pg.rollback()
