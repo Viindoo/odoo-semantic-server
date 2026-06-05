@@ -1,15 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_writer_neo4j_stub_profile.py
-"""Tests for stub node profile ownership (ADR-0016 D7).
+"""Tests for stub (placeholder) node profile ownership.
 
-Verifies that cross-module reference placeholder nodes created by writer_neo4j
-inherit the profile array of the REFERENCING module, not NULL.
+ADR-0034 single-owner provenance SUPERSEDES the earlier ADR-0016 D7 rule for
+cross-reference placeholders. A placeholder created for an UNRESOLVED reference
+(unresolved INHERITS / DELEGATES_TO / INHERITS_VIEW / EXTENDS_TMPL / PATCHES) is
+a node the current run merely REFERENCES, not one it OWNS — so the writer must
+NOT stamp the referencing run's profile onto it. Doing so unioned a foreign
+tenant-private profile name onto a node owned elsewhere (and, for the View/QWeb
+placeholders that converge on the real node's {xmlid, version} key, polluted the
+real owner), which the ADR-0034 `all()` choke then mis-handled.
 
-Regression for: 5,988 NULL-profile stub nodes accumulating in production
-on every reindex (found 2026-05-17).
+New contract (this file): a reference placeholder is created PROFILE-LESS. The
+read-side `size(profile) > 0` F-6 guard then fail-CLOSES it to scoped tenants
+(admin, `$own IS NULL`, still sees it) until the referent is indexed under its
+OWN owning profile. The original 2026-05-17 concern these tests guarded —
+placeholder nodes ACCUMULATING on every reindex — is still covered: the MERGE
+keys are stable, so reindex does not grow the placeholder count.
 
 All tests in this file require Neo4j (CLAUDE.md module-level marker convention).
-The pure-unit test for the v9 OWL era guard lives in test_parser_js.py.
 """
 import os
 
@@ -41,11 +50,15 @@ def writer(clean_neo4j, neo4j_driver):
     w.close()
 
 
-def test_stub_node_inherits_referrer_profile(writer, neo4j_driver):
-    """INHERITS placeholder must carry the referencing module's profile array.
+def test_stub_node_is_profile_less_failclosed(writer, neo4j_driver):
+    """INHERITS placeholder must be created PROFILE-LESS (ADR-0034), not stamped
+    with the referencing module's profile.
 
-    Regression for: writer created __unresolved__ Model nodes with NULL profile,
-    making them invisible to profile-scoped MCP queries.
+    A referenced (unresolved) node is owned by whatever run eventually indexes it,
+    NOT by the run that references it. Stamping the referrer's profile here unions
+    a foreign tenant-private name onto a node owned elsewhere — the scope-choke
+    pollution this fix removes. Profile-less ⇒ the read-side `size(profile)>0`
+    guard fail-closes it to scoped tenants until the real model is indexed.
     """
     referrer_profile = "test_profile_stub"
 
@@ -72,19 +85,16 @@ def test_stub_node_inherits_referrer_profile(writer, neo4j_driver):
 
     assert rec is not None, "__unresolved__ placeholder must exist after unresolved INHERITS"
     assert rec["unresolved"] is True
-    assert rec["profile"] is not None, (
-        "placeholder.profile must NOT be NULL — ADR-0016 D7: stub inherits referrer profile"
-    )
-    assert referrer_profile in rec["profile"], (
-        f"referrer profile '{referrer_profile}' must appear in placeholder.profile"
+    assert not rec["profile"], (
+        "placeholder.profile must be PROFILE-LESS (NULL/empty) — ADR-0034 supersedes "
+        f"ADR-0016 D7: a referenced node is not owned by the referrer (got {rec['profile']!r})"
     )
 
 
-def test_reindex_idempotent_no_new_stubs(writer, neo4j_driver):
-    """Running the writer twice with same input must not grow the NULL-profile stub count.
-
-    Verifies that ON CREATE SET is idempotent — a second write to an existing
-    __unresolved__ node (ON MATCH path) does not clear profile back to NULL.
+def test_reindex_does_not_accumulate_stubs(writer, neo4j_driver):
+    """Running the writer twice with the same input must not grow the placeholder
+    count — the stable MERGE key makes reindex idempotent (the original
+    anti-accumulation guarantee), and the placeholders remain profile-less.
     """
     referrer_profile = "test_profile_idem"
 
@@ -99,43 +109,46 @@ def test_reindex_idempotent_no_new_stubs(writer, neo4j_driver):
 
     parse_results = [ParseResult(module=ext_module, models=[ext_model])]
 
+    def _count_unresolved():
+        with neo4j_driver.session() as session:
+            return session.run(
+                "MATCH (n {odoo_version: $v}) WHERE n.module = '__unresolved__'"
+                " RETURN count(n) AS c",
+                v=TEST_VERSION,
+            ).single()["c"]
+
     # First write
     writer.write_results(parse_results, profiles=[referrer_profile])
+    count_1 = _count_unresolved()
 
-    # Count NULL-profile nodes after first write
-    with neo4j_driver.session() as session:
-        count_1 = session.run(
-            "MATCH (n {odoo_version: $v}) WHERE n.module = '__unresolved__'"
-            " AND n.profile IS NULL RETURN count(n) AS c",
-            v=TEST_VERSION,
-        ).single()["c"]
-
-    # Second write — same data
+    # Second write — same data (ON MATCH path)
     writer.write_results(parse_results, profiles=[referrer_profile])
+    count_2 = _count_unresolved()
 
-    # Count NULL-profile nodes after second write — must not grow
+    assert count_1 == 1, "first write must create exactly one __unresolved__ placeholder"
+    assert count_2 == count_1, (
+        "reindex must not accumulate placeholder nodes — the stable MERGE key makes "
+        f"a second write idempotent (got {count_1} then {count_2})"
+    )
+
+    # And it is profile-less (fail-closed), per ADR-0034.
     with neo4j_driver.session() as session:
-        count_2 = session.run(
-            "MATCH (n {odoo_version: $v}) WHERE n.module = '__unresolved__'"
-            " AND n.profile IS NULL RETURN count(n) AS c",
+        prof = session.run(
+            "MATCH (n:Model {name: 'res.partner.idem.stub', module: '__unresolved__',"
+            " odoo_version: $v}) RETURN n.profile AS profile",
             v=TEST_VERSION,
-        ).single()["c"]
-
-    assert count_1 == 0, (
-        "After first write, no __unresolved__ nodes should have NULL profile"
-    )
-    assert count_2 == 0, (
-        "After second write (idempotent), still no __unresolved__ nodes should have NULL profile"
-    )
+        ).single()["profile"]
+    assert not prof, f"placeholder must stay profile-less across reindex (got {prof!r})"
 
 
-def test_stub_profile_unions_on_second_referencer(writer, neo4j_driver):
-    """Stub MERGE'd by referencer A then referencer B must hold BOTH profiles.
+def test_stub_stays_profile_less_across_referencers(writer, neo4j_driver):
+    """A placeholder MERGE'd by referencer A then referencer B must stay
+    PROFILE-LESS — neither referencing run owns it, so neither stamps a profile.
 
-    Regression for clobber bug: ON MATCH SET <node>.profile = $profiles would
-    REPLACE A's profile when B references the same `__unresolved__` MERGE key,
-    making the stub invisible to A's scoped queries. Mirror the real-node
-    union semantics from commit 4ff56a8.
+    This is the security-critical case: under the old behaviour the stub would
+    carry the union [A, B] (two different tenants' profiles), which the choke
+    could then expose. Profile-less keeps it fail-closed for both until the real
+    target is indexed under its own owner.
     """
     profile_a = "test_profile_union_a"
     profile_b = "test_profile_union_b"
@@ -178,21 +191,18 @@ def test_stub_profile_unions_on_second_referencer(writer, neo4j_driver):
         """, v=TEST_VERSION).single()
 
     assert rec is not None, "Shared __unresolved__ placeholder must exist"
-    assert profile_a in rec["profile"], (
-        f"After B writes, A's profile '{profile_a}' must still be in stub.profile "
-        f"(got {rec['profile']}) — ON MATCH SET must UNION not REPLACE"
-    )
-    assert profile_b in rec["profile"], (
-        f"After B writes, B's profile '{profile_b}' must also be in stub.profile "
-        f"(got {rec['profile']})"
+    assert not rec["profile"], (
+        "shared placeholder must stay PROFILE-LESS — neither referencer A nor B owns it; "
+        f"stamping either would risk a cross-tenant union leak (got {rec['profile']!r})"
     )
 
 
-def test_owl_patches_placeholder_inherits_profile(writer, neo4j_driver):
-    """OWLComp PATCHES placeholder must carry the referencing JSPatch's profile array.
+def test_owl_patches_placeholder_is_profile_less(writer, neo4j_driver):
+    """OWLComp PATCHES placeholder must be created PROFILE-LESS (ADR-0034).
 
-    Verifies site 6 fix: unresolved PATCHES edge creates an OWLComp placeholder
-    with profile set (not NULL).
+    The patched component is a node the JSPatch run REFERENCES, not owns — so the
+    placeholder is created without a profile and fail-closes to scoped tenants
+    until the real OWLComp is indexed under its own owner.
     """
     referrer_profile = "test_profile_patches"
 
@@ -222,9 +232,7 @@ def test_owl_patches_placeholder_inherits_profile(writer, neo4j_driver):
 
     assert rec is not None, "OWLComp placeholder must exist after unresolved PATCHES edge"
     assert rec["unresolved"] is True
-    assert rec["profile"] is not None, (
-        "OWLComp placeholder.profile must NOT be NULL — ADR-0016 D7"
-    )
-    assert referrer_profile in rec["profile"], (
-        f"referrer profile '{referrer_profile}' must appear in OWLComp placeholder.profile"
+    assert not rec["profile"], (
+        "OWLComp placeholder.profile must be PROFILE-LESS (NULL/empty) — ADR-0034 "
+        f"supersedes ADR-0016 D7 (got {rec['profile']!r})"
     )
