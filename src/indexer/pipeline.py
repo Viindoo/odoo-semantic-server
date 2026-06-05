@@ -184,6 +184,62 @@ def open_production_pg():
 # Core pipeline
 # ---------------------------------------------------------------------------
 
+def _owning_profiles(
+    repo: dict,
+    profile_name: str | None,
+    repo_root_name: str,
+) -> list[str]:
+    """Return the single-element ``profile[]`` to stamp on every node from *repo*.
+
+    ADR-0034 single-owner provenance (supersedes the ADR-0016 Option-Y "stamp the
+    full ancestor chain" behaviour for the WRITE-time provenance array):
+
+    A node's ``profile[]`` must reflect the profile that OWNS the repo the node
+    physically came from — NOT the descendant profile the indexer happens to be
+    running under. ``index_profile`` indexes only the repos *directly registered*
+    under ``profile_name`` (``get_repos_for_profile`` joins ``r.profile_id =
+    p.id``), so the owning profile of every repo in a run is exactly
+    ``profile_name``. The repo row may also carry its own ``profile_name`` column
+    (e.g. ``get_ancestor_repos``); prefer that when present so the helper is
+    correct even if a future caller mixes repos from several profiles.
+
+    Why single-owner (not the ancestor chain): inheritance is a READ-time concept
+    resolved through the ``$own``/``$shared`` scope arrays at the ADR-0034 choke,
+    NOT a write-time provenance concept. Stamping the descendant chain unions
+    tenant-private profile names onto shared-core nodes (e.g. ``base`` gaining
+    ``viindoo_internal_17``), which the ``all()`` choke then correctly DENIES to
+    callers not allowed on every one of those names — hiding shared core modules.
+    Stamping only the owning profile makes Neo4j's array predicate structurally
+    equivalent to pgvector's already-secure single-scalar ``profile_name``
+    membership (``write_module_embeddings`` already stamps the leaf), closing the
+    Neo4j↔pgvector split-brain by construction.
+
+    F-6 guard: the result is ALWAYS a non-empty single-element list. An empty
+    ``profile=[]`` would make the choke's ``all(__p IN [] ...)`` vacuously TRUE
+    (fail-OPEN). Falls back to ``repo_root_name`` only when neither the repo's own
+    ``profile_name`` nor the run ``profile_name`` is available (direct callers /
+    unit tests / CLI without a profile).
+
+    F2: a FALSY owner (all three candidates empty/``None`` — e.g.
+    ``Path('/').name == ''``) is a hard error, never an empty/``['']`` stamp. A
+    ``['']`` array is *truthy* so the downstream ``if not _profiles_arr`` guard
+    would miss it, and the ADR-0034 ``all()`` choke would then deny that node to
+    every scoped tenant (a silent fail-closed black hole). Raise so the run fails
+    loudly instead of writing un-servable nodes.
+    """
+    owner = repo.get("profile_name") or profile_name or repo_root_name
+    if not owner:
+        raise ValueError(
+            "_owning_profiles: cannot determine an owning profile for repo "
+            f"{repo.get('url', repo.get('local_path', '<unknown>'))!r} — "
+            "all of repo['profile_name'], profile_name, and repo_root_name are "
+            "empty. Every indexed node MUST carry a real owning profile name "
+            "(an empty owner becomes a fail-closed black hole at the ADR-0034 "
+            "choke). Pass a profile_name or ensure local_path has a basename."
+        )
+    return [owner]
+
+
 def _index_repo(
     repo: dict,
     writer: IndexWriterProtocol,
@@ -192,7 +248,6 @@ def _index_repo(
     progress: bool = False,
     full_reindex: bool = False,
     gc: bool = False,
-    ancestor_profiles: list[str] | None = None,
     profile_name: str | None = None,
     core_rng_root: Path | None = None,
 ) -> dict:
@@ -302,6 +357,18 @@ def _index_repo(
     }
     # Repo dir name (m.repo in Neo4j) — derived the same way registry.py does it.
     repo_root_name: str = Path(local_path).name
+
+    # F4 — single source of truth for this repo's OWNING profile. Compute ONCE
+    # here and feed BOTH the Neo4j writer (`profiles=`) AND the pgvector write
+    # (`profile_name=`) from it, so the two stores can never diverge by
+    # construction (Neo4j↔pgvector owner split-brain). Previously Neo4j stamped
+    # _owning_profiles(repo,...) while pgvector stamped the run `profile_name`
+    # directly — equal today (get_repos_for_profile returns no `profile_name`
+    # column) but would silently diverge if a future caller fed repos carrying
+    # their own `profile_name` (e.g. get_ancestor_repos). _owning_profiles raises
+    # on a falsy owner (F2), so `owning_profile` below is always a real name.
+    _profiles_arr: list[str] = _owning_profiles(repo, profile_name, repo_root_name)
+    owning_profile: str = _profiles_arr[0]
 
     # === Incremental filter (W2-4) ===
     if last_head and current_head and not full_reindex:
@@ -440,27 +507,24 @@ def _index_repo(
                 chunks.extend(make_css_chunks(css_chunks_mod, info))
                 chunks.extend(make_scss_chunks(scss_chunks_mod, info))
                 chunks.extend(make_less_chunks(less_chunks_mod, info))
+                # F4: pgvector stamps the SAME single owning profile as Neo4j
+                # (owning_profile == _profiles_arr[0]), not the run profile_name
+                # directly — single source of truth, no split-brain.
                 embed_calls = write_module_embeddings(
                     mod_name, version, chunks, embedder,
-                    profile_name=profile_name,
+                    profile_name=owning_profile,
                 )
                 total_embeddings += len(chunks)
                 total_embed_calls += embed_calls
 
-    # Option Y (ADR-0016): pass ancestor profile list so every node gets a
-    # `profile` property array.
-    # F-6 guard: NEVER pass profile=[] to writer.  An empty profile array causes
-    # Cypher's vacuous-truth all() to return TRUE for every tenant (fail-open).
-    # index_profile() always builds ancestor_profiles as a non-empty list (line
-    # 610-614 below).  Direct callers (unit tests, CLI) that pass None get the
-    # repo root name as a safe single-element fallback.
-    _profiles_arr: list[str] = ancestor_profiles if ancestor_profiles else [repo_root_name]
-    if not _profiles_arr:  # defensive: should be unreachable after the line above
-        raise RuntimeError(
-            f"_index_repo: profiles list is empty for repo {repo.get('url', local_path)!r}. "
-            "Every indexed node must carry at least one profile name — "
-            "pass ancestor_profiles=[profile_name] from index_profile()."
-        )
+    # ADR-0034 single-owner provenance (supersedes ADR-0016 Option-Y full-chain
+    # stamping for the WRITE-time provenance array): stamp every node with the
+    # OWNING profile of THIS repo — never the descendant ancestor chain. Foreign
+    # tenant-private names accumulated onto shared-core nodes (`base`, `sale`, …)
+    # would be hidden by the choke's all(). `_profiles_arr` is the SAME list
+    # computed once near the top of the function (F4 single source of truth) and
+    # used for the pgvector write above, so the two stores cannot diverge. See
+    # _owning_profiles() for the full rationale + the F-2/F-6 non-empty guard.
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
     # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist.
@@ -637,8 +701,12 @@ def index_profile(
             "owl_comps": 0,
         }
 
-    # Option Y (ADR-0016): build the full ancestor profile name list so every
-    # Neo4j node written in this run carries the correct `profile` array.
+    # Build the ancestor profile name list SOLELY for the
+    # "ancestor has no indexed repos" warning below. Per ADR-0034 single-owner
+    # provenance, nodes are NO LONGER stamped with the ancestor chain (that is a
+    # READ-time scope concern resolved at the choke) — _index_repo stamps only the
+    # owning profile (F5: the dead `ancestor_profiles` param was removed from
+    # _index_repo's signature). This list never reaches a node's `profile[]`.
     ancestor_profiles = repo_store().get_ancestor_profile_names(profile_name)
     if not ancestor_profiles:
         # get_ancestor_profile_names returns [] when profile not found — should
@@ -705,7 +773,6 @@ def index_profile(
                         counters = _index_repo(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
                             progress=progress, full_reindex=full_reindex, gc=gc,
-                            ancestor_profiles=ancestor_profiles,
                             profile_name=profile_name,
                             core_rng_root=core_rng_root,
                         )
@@ -761,7 +828,6 @@ def index_profile(
                             progress=False,
                             full_reindex=full_reindex,
                             gc=gc,
-                            ancestor_profiles=ancestor_profiles,
                             profile_name=profile_name,
                             core_rng_root=core_rng_root,
                         )

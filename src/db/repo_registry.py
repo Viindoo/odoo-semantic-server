@@ -431,15 +431,22 @@ class RepoStore:
         ``shared`` = ALL globally-shared profiles (``profiles.tenant_id IS NULL``) — the
                      Odoo CE/EE base, visible to every tenant.
 
-        Why split (and why ``own`` does NOT include the shared ancestor): the
-        indexer tags each node with its FULL ancestor chain (Option Y), so a
-        tenant-private node of ANOTHER tenant also carries the shared base profile
-        in its ``profile[]`` array. An ``own ∪ ancestors`` overlap check (``any(p IN
-        node.profile WHERE p IN allowed)``) would therefore match that node via the
-        shared base and LEAK it. The Neo4j choke-point instead grants a node iff it
-        carries one of the tenant's ``own`` profiles OR every profile on it is in
-        ``shared`` (a purely-shared base node). Splitting own/shared is what closes
-        the leak (proven by the WI-4 cross-tenant leak test).
+        Why split (and why ``own`` does NOT include the shared ancestor): per
+        ADR-0034 single-owner provenance, the indexer tags each node with the
+        SINGLE OWNING profile of the repo that produced it (no longer the full
+        ancestor chain) — so a shared-core node like ``base`` carries just
+        ``["odoo_17"]`` and inheritance is resolved here at READ time via the
+        ``shared`` array. The Neo4j choke-point grants a node iff it carries one of
+        the tenant's ``own`` profiles OR EVERY profile on it is in ``shared`` (the
+        ``all()`` predicate). That ``all()`` is load-bearing and must NOT be
+        relaxed to ``any()``: a genuine same-name cross-tenant COLLISION — two
+        INDEPENDENT tenants (not in an ancestor relationship) each defining a
+        module of the same ``(name, version)`` — converges on ONE node whose
+        ``profile[]`` is the union of BOTH owners (the MERGE key has no
+        ``tenant_id`` per ADR-0034 D2). ``all()`` then correctly fail-closes that
+        node to BOTH tenants, never serving tenant-B's content to tenant-A; an
+        ``any()`` overlap check would leak it. Splitting own/shared + ``all()`` is
+        what keeps the isolation (proven by the WI-4 cross-tenant leak test).
 
         A profile-less tenant gets ``own=[]`` and still sees purely-shared base
         nodes (global Odoo CE) but no tenant-private node.

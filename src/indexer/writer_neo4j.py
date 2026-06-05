@@ -90,15 +90,23 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
          profiles=profiles)
 
     for dep in module.depends:
+        # SCOPE-CHOKE FIX (ADR-0034): a `depends` target is a node this run merely
+        # REFERENCES, not one it OWNS. NEVER stamp this run's profile onto it —
+        # doing so unions the depending tenant's private profile name onto a
+        # shared-core node (e.g. `base` gaining `standard_viindoo_17` every time a
+        # Viindoo module declares `depends: base`), which the all() choke then
+        # correctly DENIES to callers not allowed on that name — re-hiding shared
+        # core on the next reindex. The dep target's own profile is set ONLY by the
+        # run that owns/defines it. A forward-referenced placeholder (never indexed
+        # under its own profile) is created profile-less and is correctly DENIED to
+        # scoped tenants by the F-6 `size(profile)>0` guard (admin still sees it).
+        # ON CREATE leaves profile unset (-> []/absent = fail-closed); ON MATCH
+        # touches nothing, so a dep target already indexed keeps its owning profile.
         tx.run(f"""
             MATCH (m:Module {{name: $name, odoo_version: $v}})
             MERGE (d:Module {{name: $dep, odoo_version: $v}})
-            ON CREATE SET d.profile = $profiles
-            ON MATCH  SET d.profile =
-                [x IN coalesce(d.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (m)-[:{REL_DEPENDS_ON}]->(d)
-        """, name=module.name, v=module.odoo_version, dep=dep,
-             profiles=profiles)
+        """, name=module.name, v=module.odoo_version, dep=dep)
 
     for model in result.models:
         tx.run(f"""
@@ -165,21 +173,28 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                         "unresolved INHERITS: %s → %s (version %s) — parent model not indexed",
                         model.name, parent_name, model.odoo_version,
                     )
+                    # SCOPE-CHOKE FIX (ADR-0034): the parent is a REFERENCED node
+                    # this run does not own (its definition lives in a not-yet-
+                    # indexed module). Do NOT stamp this run's profile onto the
+                    # placeholder — that would union a foreign profile onto a node
+                    # owned elsewhere. The placeholder uses the {name,
+                    # module:'__unresolved__'} key (distinct from the real Model's
+                    # real-module key, so it does NOT converge on it; gc_unresolved
+                    # reconciles once the real parent is indexed). Created
+                    # profile-less, it is correctly DENIED to scoped tenants by the
+                    # F-6 `size(profile)>0` guard until reconciled. ON MATCH leaves
+                    # profile untouched.
                     tx.run(f"""
                         MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
                         MERGE (placeholder:Model {{name: $parent_name,
                                                   module: '__unresolved__', odoo_version: $v}})
                         ON CREATE SET placeholder.unresolved = true,
-                                      placeholder.is_definition = false,
-                                      placeholder.profile = $profiles
-                        ON MATCH  SET placeholder.profile =
-                            [x IN coalesce(placeholder.profile, [])
-                             WHERE NOT x IN $profiles] + $profiles
+                                      placeholder.is_definition = false
                         MERGE (m)-[r:{REL_INHERITS} {{unresolved: true}}]->(placeholder)
                         SET r.order = $order
                     """, model_name=model.name, mod=model.module,
                          v=model.odoo_version, parent_name=parent_name,
-                         order=idx, profiles=profiles)
+                         order=idx)
 
         for delegated_model, via_field in model.inherits.items():
             rec = tx.run("""
@@ -195,21 +210,20 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     "unresolved DELEGATES_TO: %s → %s (version %s) — target model not indexed",
                     model.name, delegated_model, model.odoo_version,
                 )
+                # SCOPE-CHOKE FIX (ADR-0034): delegated target is a REFERENCED node
+                # not owned by this run — do NOT stamp this run's profile. Created
+                # profile-less -> F-6 fail-closed for scoped tenants until indexed
+                # under its own owner. ON MATCH leaves profile untouched.
                 tx.run("""
                     MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                     MERGE (placeholder:Model {name: $delegated,
                                               module: '__unresolved__', odoo_version: $v})
                     ON CREATE SET placeholder.unresolved = true,
-                                  placeholder.is_definition = false,
-                                  placeholder.profile = $profiles
-                    ON MATCH  SET placeholder.profile =
-                        [x IN coalesce(placeholder.profile, [])
-                         WHERE NOT x IN $profiles] + $profiles
+                                  placeholder.is_definition = false
                     MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]
                           ->(placeholder)
                 """, name=model.name, mod=model.module, v=model.odoo_version,
-                     delegated=delegated_model, via_field=via_field,
-                     profiles=profiles)
+                     delegated=delegated_model, via_field=via_field)
 
         for fld in model.fields:
             tx.run("""
@@ -365,20 +379,26 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 # on the SAME node (avoiding "shadow" duplicates — see gc_unresolved).
                 # ON CREATE stamps unresolved=true + module='__unresolved__';
                 # ON MATCH leaves those fields untouched so a real View node already
-                # indexed is never corrupted (only profile is merged in).
+                # indexed is never corrupted. NOTE: profile is deliberately NOT
+                # merged here (see the SCOPE-CHOKE note below) — the placeholder is
+                # created profile-less and a real View keeps its own owning profile.
+                # SCOPE-CHOKE FIX (ADR-0034): the base view is a REFERENCED node not
+                # owned by this run. The placeholder shares the real View's
+                # {xmlid, odoo_version} key, so the real View (owned by another run)
+                # converges on THIS node — stamping this run's profile here would
+                # pollute the real View's owning profile. Do NOT set profile: created
+                # profile-less -> F-6 fail-closed for scoped tenants until the real
+                # View is indexed under its OWN owner; ON MATCH leaves profile
+                # untouched so an already-indexed real View keeps its owner.
                 tx.run(f"""
                     MATCH (ext:View {{xmlid: $xmlid, odoo_version: $ver}})
                     MERGE (placeholder:View {{xmlid: $inherit_xmlid, odoo_version: $ver}})
                     ON CREATE SET placeholder.unresolved = true,
-                                  placeholder.module = '__unresolved__',
-                                  placeholder.profile = $profiles
-                    ON MATCH  SET placeholder.profile =
-                        [x IN coalesce(placeholder.profile, [])
-                         WHERE NOT x IN $profiles] + $profiles
+                                  placeholder.module = '__unresolved__'
                     MERGE (ext)-[r:{REL_INHERITS_VIEW}]->(placeholder)
                     ON CREATE SET r.unresolved = true
                 """, xmlid=view.xmlid, ver=view.odoo_version,
-                     inherit_xmlid=view.inherit_xmlid, profiles=profiles)
+                     inherit_xmlid=view.inherit_xmlid)
 
     for qweb in result.qweb:
         tx.run("""
@@ -418,19 +438,21 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 # Same key-convergence fix as View: use 2-property MERGE key
                 # {xmlid, odoo_version} to prevent shadow QWebTmpl nodes when the
                 # real template is indexed before or after the placeholder.
+                # SCOPE-CHOKE FIX (ADR-0034): base template is a REFERENCED node not
+                # owned by this run; the placeholder shares the real QWebTmpl's
+                # {xmlid, odoo_version} key (converges on the real node). Do NOT
+                # stamp this run's profile — created profile-less -> F-6 fail-closed
+                # until the real template is indexed under its OWN owner; ON MATCH
+                # leaves profile untouched.
                 tx.run("""
                     MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
                     MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
                     ON CREATE SET placeholder.unresolved = true,
-                                  placeholder.module = '__unresolved__',
-                                  placeholder.profile = $profiles
-                    ON MATCH  SET placeholder.profile =
-                        [x IN coalesce(placeholder.profile, [])
-                         WHERE NOT x IN $profiles] + $profiles
+                                  placeholder.module = '__unresolved__'
                     MERGE (ext)-[r:EXTENDS_TMPL]->(placeholder)
                     ON CREATE SET r.unresolved = true
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
-                     inherit_xmlid=qweb.inherit_xmlid, profiles=profiles)
+                     inherit_xmlid=qweb.inherit_xmlid)
 
 
 def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> None:
@@ -503,19 +525,20 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
         """, target=patch.target, pn=patch.patch_name,
              mod=patch.module, v=patch.odoo_version).single()
         if rec is None:
+            # SCOPE-CHOKE FIX (ADR-0034): the patched component is a REFERENCED node
+            # not owned by this run — do NOT stamp this run's profile. Created
+            # profile-less -> F-6 fail-closed for scoped tenants until the real
+            # OWLComp is indexed under its own owner; ON MATCH leaves profile
+            # untouched.
             tx.run("""
                 MATCH (j:JSPatch {target: $target, patch_name: $pn,
                                   module: $mod, odoo_version: $v})
                 MERGE (placeholder:OWLComp {name: $target,
                                             module: '__unresolved__', odoo_version: $v})
-                ON CREATE SET placeholder.unresolved = true,
-                              placeholder.profile = $profiles
-                ON MATCH  SET placeholder.profile =
-                    [x IN coalesce(placeholder.profile, []) WHERE NOT x IN $profiles] + $profiles
+                ON CREATE SET placeholder.unresolved = true
                 MERGE (j)-[:PATCHES {unresolved: true}]->(placeholder)
             """, target=patch.target, pn=patch.patch_name,
-                 mod=patch.module, v=patch.odoo_version,
-                 profiles=profiles)
+                 mod=patch.module, v=patch.odoo_version)
 
 
 def _chunked(items, size):

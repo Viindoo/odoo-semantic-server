@@ -81,7 +81,7 @@ class TestMaxWorkers1Sequential:
         call_order: list[int] = []
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
-                            progress=False, full_reindex=False, ancestor_profiles=None,
+                            progress=False, full_reindex=False,
                             profile_name=None, **kwargs):
             call_order.append(repo["id"])
             return _fake_counters()
@@ -116,7 +116,7 @@ class TestMaxWorkers2Concurrent:
         concurrency_detected = threading.Event()  # set when BOTH are inside simultaneously
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
-                            progress=False, full_reindex=False, ancestor_profiles=None,
+                            progress=False, full_reindex=False,
                             profile_name=None, **kwargs):
             inside_event.set()  # signal that we're inside
             # Give the other thread time to also enter
@@ -134,7 +134,7 @@ class TestMaxWorkers2Concurrent:
         overlap_detected = threading.Event()
 
         def fake_index_repo_v2(repo, writer, pg_conn=None, embedder=None, gc=False,
-                               progress=False, full_reindex=False, ancestor_profiles=None,
+                               progress=False, full_reindex=False,
                             profile_name=None, **kwargs):
             nonlocal active_count
             with lock:
@@ -218,7 +218,7 @@ class TestMaxWorkers2PartialFailure:
         update_calls: list[tuple] = []
 
         def fake_index_repo(repo, writer, pg_conn=None, embedder=None, gc=False,
-                            progress=False, full_reindex=False, ancestor_profiles=None,
+                            progress=False, full_reindex=False,
                             profile_name=None, **kwargs):
             if repo["id"] == 10:
                 raise RuntimeError("simulated failure on repo 10")
