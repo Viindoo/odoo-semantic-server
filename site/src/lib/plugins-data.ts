@@ -37,7 +37,7 @@ export const MCP_PLUGIN: PluginMeta = {
   tagline: 'One-command connect to the MCP server.',
   highlights: [
     `${CONNECT_COMMAND} prompts for URL + API key, then auto-allows every mcp__odoo-semantic__* tool`,
-    'Wires the HTTP MCP config so all 24 tools + 7 resources light up in one step',
+    'Wires the HTTP MCP config so all 25 tools + 7 resources light up in one step',
   ],
 };
 
@@ -75,7 +75,7 @@ export const INSTALL_STEPS_SLASH = {
  */
 export const INSTALL_STEPS_CLI = {
   marketplace: `claude plugin marketplace add ${PLUGIN_MARKETPLACE} --scope user`,
-  /** PRIMARY — install the MCP plugin (24 tools + 7 resources, no skills). */
+  /** PRIMARY — install the MCP plugin (25 tools + 7 resources, no skills). */
   installMcp: `claude plugin install ${MCP_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS} --scope user`,
   /** Alias kept for back-compat with existing component references. */
   installMcpOnly: `claude plugin install ${MCP_PLUGIN.slug}@${PLUGIN_MARKETPLACE_ALIAS} --scope user`,
