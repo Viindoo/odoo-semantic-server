@@ -234,9 +234,11 @@ def test_find_style_override_embedder_unavailable():
     """
     from src.mcp.server import _find_style_override
 
+    _SECRET = "internal-detail-/srv/secret/path-leak-canary"
+
     class _RaisingEmbedder:
         def embed(self, texts):  # noqa: ANN001
-            raise RuntimeError("no embedder")
+            raise RuntimeError(_SECRET)
 
     # "form view styling" is an NL phrase (has spaces) — not a literal token.
     # The embedder is called first (before any DB lookup) and raises.
@@ -246,6 +248,10 @@ def test_find_style_override_embedder_unavailable():
     )
     # Should degrade, not raise
     assert "embedding failed" in result or "Found 0 results" in result
+    # M6: exception internals must NOT leak to the agent-facing tool output —
+    # neither the raw message text nor the exception class name.
+    assert _SECRET not in result
+    assert "RuntimeError" not in result
 
 
 @pytest.mark.neo4j
@@ -1118,8 +1124,22 @@ async def test_async_wrapper_find_examples_literal_style_skips_embed(monkeypatch
     assert "embedder unavailable" not in out and "embedding query failed" not in out
 
 
-async def test_async_wrapper_find_examples_nl_style_short_circuits(monkeypatch):
-    """find_examples.fn: NL query with style chunk_types short-circuits on embed failure."""
+async def test_async_wrapper_find_examples_nl_embedder_down_uses_lexical(monkeypatch):
+    """find_examples.fn: NL query + embedder down -> lexical fallback (WI-9 / #264).
+
+    Contract updated by WI-9: an NL query with style chunk_types no longer
+    short-circuits to hard-fail when the embedder is down.  Instead the async
+    wrapper catches the embed failure and sets _use_lexical=True, then
+    delegates to _find_examples — which runs the lexical keyword path and
+    labels results 'match: lexical'.  Hard-fail ('embedder unavailable' as a
+    standalone error message) is no longer the contract.
+
+    This test was originally named test_async_wrapper_find_examples_nl_style_short_circuits
+    and asserted the old hard-fail contract from PR #255.  WI-9 (#264) replaced
+    that contract with degraded-but-useful lexical fallback; the test is rewritten
+    to assert the new intent (Iron Law of Root Cause — test must protect current
+    business contract, not stale implementation).
+    """
     import src.mcp.server as srv
 
     def _boom():
@@ -1127,11 +1147,15 @@ async def test_async_wrapper_find_examples_nl_style_short_circuits(monkeypatch):
 
     monkeypatch.setattr(srv, "_get_embedder", _boom)
 
-    reached = {"v": False}
+    captured: dict = {}
 
     def _stub(*args, **kwargs):
-        reached["v"] = True
-        return "stub"
+        captured["reached"] = True
+        captured["use_lexical"] = kwargs.get("_use_lexical", False)
+        return (
+            "find_examples: stub\nFound 0 results  "
+            "[degraded: embedder unavailable — lexical search returned nothing]\n"
+        )
 
     monkeypatch.setattr(srv, "_find_examples", _stub)
 
@@ -1139,8 +1163,15 @@ async def test_async_wrapper_find_examples_nl_style_short_circuits(monkeypatch):
         "primary button color", "17.0", chunk_types=["css", "scss", "less"]
     )
 
-    assert reached["v"] is False, "NL query must short-circuit before the body"
-    assert "embedder unavailable" in out
+    assert captured.get("reached") is True, (
+        "NL query + embedder down must reach _find_examples body (lexical fallback)"
+    )
+    assert captured.get("use_lexical") is True, (
+        "_find_examples must be called with _use_lexical=True when embedder is down"
+    )
+    # The wrapper must NOT produce a standalone hard-fail; the body handles messaging.
+    # Stub returns a degraded banner — check the overall flow is degraded-not-error.
+    assert "RuntimeError" not in out, "Hard-fail RuntimeError must not leak into output"
 
 
 @pytest.mark.neo4j

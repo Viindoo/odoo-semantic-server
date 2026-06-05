@@ -575,7 +575,8 @@ def test_api_version_diff_cross_version_contract(neo4j_driver, monkeypatch):
     Asserts:
     1. Both signatures appear in output (clearly delimited)
     2. No nested quote characters from !r formatting (e.g., '="...' or '\'"')
-    3. NULL_HINT (not stored...) does not have nested quotes if either version missing
+    3. NULL_HINT ("(signature not available for this version)") does not have
+       nested quotes if either version missing
     """
     from src.indexer.models import CoreSymbolInfo
     from src.indexer.writer_neo4j import Neo4jWriter

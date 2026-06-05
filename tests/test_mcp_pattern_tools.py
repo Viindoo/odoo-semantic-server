@@ -277,7 +277,17 @@ class TestCheckModuleExists:
         assert "Is EE confusion: No" in result
 
     def test_check_module_exists_indexed_enterprise_not_in_dict(self, clean_neo4j):
-        """Indexed Module with edition='enterprise' (OEEL-1) → EE warning (indexed source)."""
+        """Indexed genuine Odoo EE module (edition='enterprise', license OEEL-1)
+        NOT in the legacy dict → EE warning sourced from the indexed graph,
+        with the OEEL-1 license disclosed.
+
+        A genuine Odoo S.A. Enterprise add-on ships under the OEEL-1 license
+        (Odoo Enterprise Edition License); the indexer detects edition='enterprise'
+        from it. WI-8 (#263) made the warning's license disclosure data-driven
+        — it renders the module's actual indexed license rather than a hardcoded
+        'OEEL-1' string — so a realistic genuine-EE module must carry license
+        OEEL-1 to surface that disclosure.
+        """
         import os
 
         from src.indexer.models import ModuleInfo, ParseResult
@@ -294,7 +304,7 @@ class TestCheckModuleExists:
         knowledge_pro = ModuleInfo(
             name="knowledge_pro", odoo_version=TEST_VERSION, repo="odoo-ee",
             path="/odoo-ee/addons/knowledge_pro", depends=[], version_raw="",
-            edition="enterprise",
+            edition="enterprise", license="OEEL-1",
         )
         writer.write_results([ParseResult(module=knowledge_pro, models=[])])
         writer.close()

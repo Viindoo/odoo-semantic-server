@@ -429,3 +429,46 @@ async def test_query_embed_keeps_qwen_prefix_when_backend_requires_it(monkeypatc
     assert sent.startswith(INSTRUCT_NL_TO_CODE), (
         "Qwen backend lost its required instruction prefix"
     )
+
+
+# ---------------------------------------------------------------------------
+# M6 — exception-detail must not leak to the agent-facing tool output (CWE-209)
+# ---------------------------------------------------------------------------
+
+# Canary string carried inside a raised exception. If it ever appears in a
+# tool's returned text, the handler is interpolating exception internals into
+# client output again. The exception CLASS name must not leak either.
+_LEAK_CANARY = "boom-/srv/internal/secret/trace-canary-RuntimeError-detail"
+
+
+async def test_suggest_pattern_embedder_failure_does_not_leak_exception(monkeypatch):
+    """suggest_pattern degrades cleanly when _get_embedder raises — no internals.
+
+    FAILS if the handler reverts to `f"... {type(e).__name__}: {e}"`: the raised
+    message text and the exception class name must both be absent from output.
+    """
+    def _raise():
+        raise RuntimeError(_LEAK_CANARY)
+
+    monkeypatch.setattr(srv, "_get_embedder", _raise)
+
+    out = await srv.suggest_pattern.fn(intent="compute total", odoo_version="17.0")
+
+    assert "embedder unavailable" in out  # still agent-actionable
+    assert _LEAK_CANARY not in out
+    assert "RuntimeError" not in out
+
+
+async def test_find_style_override_embedder_failure_does_not_leak_exception(monkeypatch):
+    """find_style_override degrades cleanly when _get_embedder raises — no internals."""
+    def _raise():
+        raise RuntimeError(_LEAK_CANARY)
+
+    monkeypatch.setattr(srv, "_get_embedder", _raise)
+
+    # NL phrase (has spaces) → not a literal token → embedder is the first I/O.
+    out = await srv.find_style_override.fn("primary button color variable", "17.0")
+
+    assert "embedder unavailable" in out  # still agent-actionable
+    assert _LEAK_CANARY not in out
+    assert "RuntimeError" not in out

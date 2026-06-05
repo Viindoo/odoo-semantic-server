@@ -2635,3 +2635,177 @@ def test_view_node_arch_snippet_written(writer, neo4j_driver):
     assert "<form>" in (data.get("sale.view_order_form") or ""), "arch_snippet keeps form structure"
     assert data.get("sale.view_order_form_inherit") is None, "extension view arch_snippet=None"
 
+
+# --- ADR-0016 D5: Module.profile written on all MERGE paths (WI-1 / #259-A) -
+
+
+def _get_module_profile(session, module_name: str, version: str) -> list[str]:
+    """Return Module.profile list from Neo4j (empty list if node missing or null)."""
+    rec = session.run(
+        "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.profile AS p",
+        n=module_name, v=version,
+    ).single()
+    return list(rec["p"]) if rec and rec["p"] else []
+
+
+def test_module_profile_set_via_model_path(writer, neo4j_driver):
+    """ADR-0016 D5: a Module node created as a side-effect of the model-loop
+    MERGE (not via _write_parse_result for the module itself) must carry the
+    profiles array so it passes the ADR-0034 all()-choke predicate.
+
+    Scenario: write a Model in module 'core_mod' using write_results with
+    profiles=['p1'].  The Module node 'core_mod' is created by the model-loop
+    MERGE site (was bare before WI-1 fix). Assert Module.profile contains 'p1'.
+    """
+    # Build a ParseResult whose *module* node is 'core_mod' but the module
+    # itself has no depends (so the only Module node created by the sub-loops
+    # is the one in the model-loop MERGE site).
+    module = ModuleInfo(
+        name="core_mod", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+    )
+    model = ModelInfo(
+        name="res.partner", module="core_mod", odoo_version=TEST_VERSION,
+    )
+    result = ParseResult(module=module, models=[model])
+    writer.write_results([result], profiles=["p1"])
+
+    with neo4j_driver.session() as session:
+        profile = _get_module_profile(session, "core_mod", TEST_VERSION)
+
+    assert "p1" in profile, (
+        f"Module 'core_mod' written via model-loop MERGE must carry 'p1' in profile; "
+        f"got {profile!r} — ADR-0016 D5 violation (WI-1 regression)"
+    )
+
+
+def test_module_profile_set_via_view_path(writer, neo4j_driver):
+    """ADR-0016 D5: a Module node created as a side-effect of the view-loop
+    MERGE must carry the profiles array.
+
+    Scenario: write a View in module 'view_mod' via write_view_results with
+    profiles=['p1']. The Module node is created by the view-loop MERGE site.
+    Assert Module.profile contains 'p1'.
+    """
+    module = ModuleInfo(
+        name="view_mod", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+    )
+    view = ViewInfo(
+        xmlid="view_mod.form_view",
+        name="Form View", model="res.partner",
+        module="view_mod", odoo_version=TEST_VERSION,
+        view_type="form", mode="primary",
+        inherit_xmlid=None,
+    )
+    result = ViewParseResult(module=module, views=[view])
+    writer.write_view_results([result], profiles=["p1"])
+
+    with neo4j_driver.session() as session:
+        profile = _get_module_profile(session, "view_mod", TEST_VERSION)
+
+    assert "p1" in profile, (
+        f"Module 'view_mod' written via view-loop MERGE must carry 'p1' in profile; "
+        f"got {profile!r} — ADR-0016 D5 violation (WI-1 regression)"
+    )
+
+
+def test_module_profile_set_via_owlcomp_path(writer, neo4j_driver):
+    """ADR-0016 D5: a Module node created as a side-effect of the OWLComp-loop
+    MERGE must carry the profiles array.
+
+    Scenario: write an OWLComp in module 'js_mod' via write_js_graph_results
+    with profiles=['p1']. The Module node is created by the OWLComp-loop MERGE
+    site. Assert Module.profile contains 'p1'.
+    """
+    module = ModuleInfo(
+        name="js_mod", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+    )
+    comp = OWLCompInfo(
+        name="MyWidget",
+        module="js_mod", odoo_version=TEST_VERSION,
+        file_path="/js_mod/static/src/js/widget.js",
+    )
+    result = JSGraphResult(module=module, components=[comp])
+    writer.write_js_graph_results([result], profiles=["p1"])
+
+    with neo4j_driver.session() as session:
+        profile = _get_module_profile(session, "js_mod", TEST_VERSION)
+
+    assert "p1" in profile, (
+        f"Module 'js_mod' written via OWLComp-loop MERGE must carry 'p1' in profile; "
+        f"got {profile!r} — ADR-0016 D5 violation (WI-1 regression)"
+    )
+
+
+def test_module_profile_set_via_jspatch_path(writer, neo4j_driver):
+    """ADR-0016 D5: a Module node created as a side-effect of the JSPatch-loop
+    MERGE must carry the profiles array.
+
+    Scenario: write a JSPatch in module 'patch_mod' via write_js_graph_results
+    with profiles=['p1']. The Module node is created by the JSPatch-loop MERGE
+    site. Assert Module.profile contains 'p1'.
+    """
+    module = ModuleInfo(
+        name="patch_mod", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+    )
+    patch = JSPatchInfo(
+        target="SomeWidget",
+        patch_name="patch_mod_patch",
+        module="patch_mod", odoo_version=TEST_VERSION,
+        era="patch",
+        file_path="/patch_mod/static/src/js/patch.js",
+    )
+    result = JSGraphResult(module=module, patches=[patch])
+    writer.write_js_graph_results([result], profiles=["p1"])
+
+    with neo4j_driver.session() as session:
+        profile = _get_module_profile(session, "patch_mod", TEST_VERSION)
+
+    assert "p1" in profile, (
+        f"Module 'patch_mod' written via JSPatch-loop MERGE must carry 'p1' in profile; "
+        f"got {profile!r} — ADR-0016 D5 violation (WI-1 regression)"
+    )
+
+
+def test_module_profile_union_across_writes(writer, neo4j_driver):
+    """ADR-0016 D5: when the same Module is written twice — first with profiles=['p1'],
+    then with profiles=['p2'] — the final Module.profile must contain BOTH 'p1' and
+    'p2' (set-union, no loss). This proves the ON MATCH union semantics are correct
+    and that no prior profile entry is overwritten.
+
+    Scenario uses the model-loop path (the primary MERGE site) to create the Module
+    in both writes, but the union contract applies to all 5 MERGE sites.
+    """
+    module = ModuleInfo(
+        name="union_mod", odoo_version=TEST_VERSION,
+        repo="odoo_repo", path="/tmp", depends=[], version_raw="",
+    )
+
+    # First write: profile p1 only
+    model1 = ModelInfo(
+        name="union.model.one", module="union_mod", odoo_version=TEST_VERSION,
+    )
+    writer.write_results([ParseResult(module=module, models=[model1])], profiles=["p1"])
+
+    # Second write: profile p2 only
+    model2 = ModelInfo(
+        name="union.model.two", module="union_mod", odoo_version=TEST_VERSION,
+    )
+    writer.write_results([ParseResult(module=module, models=[model2])], profiles=["p2"])
+
+    with neo4j_driver.session() as session:
+        profile = _get_module_profile(session, "union_mod", TEST_VERSION)
+
+    assert "p1" in profile, (
+        f"Module 'union_mod' must retain 'p1' after second write; got {profile!r}"
+    )
+    assert "p2" in profile, (
+        f"Module 'union_mod' must gain 'p2' from second write; got {profile!r}"
+    )
+    assert len(set(profile)) == len(profile), (
+        f"Module.profile must not contain duplicates; got {profile!r}"
+    )
+

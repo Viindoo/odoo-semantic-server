@@ -509,8 +509,13 @@ def resolve_version_v2(
     from src.mcp.server import _latest_version  # noqa: PLC0415
     v = _latest_version(session)
     if v is None:
+        # ADR-0023 §2/§4.4 (#265-Obs3): agent-facing message — no operator-shell
+        # hint (agents cannot run shell commands). Point the agent at the MCP
+        # tools it CAN call to discover indexed scope.
         raise ValueError(
-            "No data indexed. Run `python -m src.indexer index-repo --profile <name>` first."
+            "No indexed Odoo data is available for this profile. "
+            "Call list_available_versions or list_available_profiles to see "
+            "what is indexed, then pass an explicit odoo_version."
         )
     return v
 

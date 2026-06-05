@@ -14,10 +14,12 @@ Verifies that after run_migrations():
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
 import psycopg2
+import psycopg2.errors
 import pytest
 
 from src.data.ee_modules import _FALLBACK_EE_MODULES
 from src.db.migrate import run_migrations
+from tests.conftest import drop_osm_reader, ensure_osm_reader_or_skip
 
 pytestmark = pytest.mark.postgres
 
@@ -56,24 +58,6 @@ def _count_ee_modules(conn) -> int:
         return cur.fetchone()[0]
 
 
-def _ensure_osm_reader(conn) -> None:
-    """Create the osm_reader role if absent so the migration's guarded GRANT
-    block actually runs and can be asserted.
-
-    Mirrors the production deploy order: ops creates the osm_reader role, then
-    `python -m src.db.migrate` runs.  The migration GRANT is wrapped in a
-    pg_roles guard, so without the role the GRANT is a no-op and there is
-    nothing to assert.  We create a passwordless NOLOGIN role here (the test
-    only needs the grant target to exist; it never connects as it).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "DO $$ BEGIN "
-            "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='osm_reader') "
-            "THEN CREATE ROLE osm_reader NOLOGIN; END IF; END $$;"
-        )
-
-
 def _has_priv(conn, table: str, priv: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -109,12 +93,17 @@ def migrated_pg(clean_pg):
 def migrated_pg_with_reader(clean_pg):
     """Like migrated_pg but creates osm_reader BEFORE migrating, so the
     migration's pg_roles-guarded GRANT block actually fires and is assertable.
+
+    If the test DB user lacks CREATE ROLE privilege the test is individually
+    skipped — not a hard error — because the failure reason is infra, not code.
     """
     _drop_m13_011_tables(clean_pg)
-    _ensure_osm_reader(clean_pg)
+    # ensure_osm_reader_or_skip commits on success; skips on InsufficientPrivilege.
+    ensure_osm_reader_or_skip(clean_pg)
     run_migrations(clean_pg)
     yield clean_pg
     _drop_m13_011_tables(clean_pg)
+    drop_osm_reader(clean_pg)
 
 
 # ---------------------------------------------------------------------------

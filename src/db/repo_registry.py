@@ -405,6 +405,25 @@ class RepoStore:
             )
         return [r["name"] for r in rows]
 
+    def get_children_profiles(self, profile_name: str) -> list[str]:
+        """Return direct child profile names of *profile_name* (one level down).
+
+        Returns ``[]`` when the profile does not exist or has no children.
+        """
+        with self._pool.checkout() as conn:
+            rows = self._pool.fetch_all(
+                conn,
+                """
+                SELECT name FROM profiles
+                WHERE parent_profile_id = (
+                    SELECT id FROM profiles WHERE name = %s
+                )
+                ORDER BY name ASC
+                """,
+                (profile_name,),
+            )
+        return [r["name"] for r in rows]
+
     def resolve_tenant_scope(self, tenant_id: int) -> tuple[list[str], list[str]]:
         """Return ``(own, shared)`` profile names for tenant *tenant_id* (WI-3, ADR-0034).
 

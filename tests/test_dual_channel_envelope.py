@@ -41,7 +41,6 @@ from pydantic import ValidationError
 from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from src.indexer.writer_neo4j import Neo4jWriter
 from src.mcp.dto import (
-    DescribeModuleOutput,
     ListFieldsOutput,
     ListMethodsOutput,
     ResolveFieldOutput,
@@ -242,18 +241,6 @@ def _require_structured_content_is_dict(result) -> None:
             id="resolve_view_companion",
         ),
         pytest.param(
-            "_describe_module_structured",
-            lambda: ("b4_sale", TEST_VERSION),
-            DescribeModuleOutput,
-            lambda out: (
-                out.ref.name == "b4_sale"
-                and out.ref.odoo_version == TEST_VERSION
-                and bool(out.edition)
-                and isinstance(out.view_total, int)
-            ),
-            id="describe_module_companion",
-        ),
-        pytest.param(
             "_list_fields_structured",
             lambda: ("b4.order", TEST_VERSION),
             ListFieldsOutput,
@@ -449,7 +436,6 @@ _ALL_OUTPUT_TYPES = [
     ResolveFieldOutput,
     ResolveMethodOutput,
     ResolveViewOutput,
-    DescribeModuleOutput,
     ListFieldsOutput,
     ListMethodsOutput,
 ]
@@ -498,120 +484,139 @@ def test_schema_integrity_next_step_hint(output_type):
 
 
 # ---------------------------------------------------------------------------
-# Section 4 — OUTPUT SCHEMA WIRING (AC-BFIX-1/AC-BFIX-2)
+# Section 4 — SERIALIZATION UNIFORMITY (WI-5 fix for #261/#265-Obs4)
 #
-# Verify that all 7 @mcp.tool() decorators advertise the correct DTO schema
-# via output_schema= — NOT the FastMCP auto-wrap shim ({result: string}).
-# Runs DB-free.
+# After WI-5, ALL tools emit raw plain-text tree with NO structured_content.
+# output_schema=None is set in READONLY_TOOL_KWARGS so FastMCP suppresses the
+# auto-wrap {"result": "<tree>"} for -> str tools, and describe_module no
+# longer declares an explicit output_schema= either.
+#
+# These tests verify:
+#   AC-BFIX-1: describe_module.output_schema is None (no schema declared).
+#   AC-BFIX-2: describe_module(found) -> structured_content is None.
+#   AC-BFIX-3: describe_module(not-found) -> clean text, no validation error.
+# Runs DB-free for schema checks; DB-bound for found/not-found.
 # ---------------------------------------------------------------------------
 
-_TOOL_DTO_PAIRS = [
-    # Only describe_module retains a full dual-channel @mcp.tool with output_schema= in v0.6.
-    ("describe_module", DescribeModuleOutput),
-]
 
+def test_describe_module_output_schema_is_none():
+    """WI-5: describe_module must NOT declare output_schema= on its decorator.
 
-@pytest.mark.parametrize(
-    "tool_name,dto",
-    _TOOL_DTO_PAIRS,
-    ids=[t for t, _ in _TOOL_DTO_PAIRS],
-)
-def test_tool_advertises_dto_outputschema(tool_name, dto):
-    """Surviving dual-channel tool must expose the correct DTO schema via output_schema.
-
-    AC-BFIX-1: output_schema= is declared on the decorator — the auto-wrap shim
-    ('x-fastmcp-wrap-result' with single 'result' field) must NOT appear.
-
-    AC-BFIX-2: The advertised schema must include 'next_step_hint' in its
-    properties, proving the full DTO schema (not a narrow subset) is wired.
-
-    Runs without DB — tool.output_schema is populated at import time.
+    After removing output_schema=DescribeModuleOutput.model_json_schema(),
+    FastMCP sets tool.output_schema = None (no schema advertised to clients).
+    This prevents the 'Output validation error' when not-found returns no
+    structured payload (the root cause of #261).
     """
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    tool = getattr(server, tool_name)
+    tool = server.describe_module
+    assert tool.output_schema is None, (
+        "describe_module must not declare output_schema= (WI-5). "
+        f"Got: {tool.output_schema!r}"
+    )
+
+
+def test_describe_module_structured_content_is_none_on_found(b4_db):
+    """WI-5: describe_module(found module) returns raw text only, no structured_content.
+
+    The dual-channel structured companion for describe_module was removed (L9);
+    the MCP wrapper now only ever emits the plain-text tree (ADR-0023 §1).
+    """
+    import importlib
+
+    server = importlib.import_module("src.mcp.server")
+    result = asyncio.run(server.describe_module.fn("b4_sale", TEST_VERSION))
+
+    assert result.content is not None and len(result.content) == 1
+    text = result.content[0].text
+    assert text, "describe_module must return non-empty text"
+    assert "b4_sale" in text, f"Module name must appear in text. Got: {text!r}"
+    assert result.structured_content is None, (
+        "describe_module must not populate structured_content (WI-5). "
+        f"Got: {result.structured_content!r}"
+    )
+
+
+def test_describe_module_not_found_returns_clean_text(b4_db):
+    """WI-5 fix (#261): describe_module(nonexistent) returns friendly text, no error.
+
+    Before WI-5, the not-found path returned structured_content=None while
+    output_schema= was declared, triggering 'Output validation error' on
+    MCP clients that validate tool output against the declared schema.
+    After WI-5, output_schema= is removed; the not-found path returns the
+    same ToolResult pattern as all siblings: plain text, structured_content=None.
+    """
+    import importlib
+
+    server = importlib.import_module("src.mcp.server")
+    result = asyncio.run(server.describe_module.fn("nonexistent_module_xyz_b4", TEST_VERSION))
+
+    assert result.content is not None and len(result.content) == 1
+    text = result.content[0].text
+    assert "nonexistent_module_xyz_b4" in text, (
+        f"Not-found text should contain the module name. Got: {text!r}"
+    )
+    assert "No module named" in text, (
+        f"Not-found text should contain 'No module named'. Got: {text!r}"
+    )
+    assert result.structured_content is None, (
+        f"Not-found path must not produce structured_content. Got: {result.structured_content!r}"
+    )
+
+
+def test_str_tool_no_fastmcp_wrap_result_shim():
+    """WI-5 (#265-Obs4): -> str tools must NOT have the FastMCP auto-wrap shim.
+
+    Before WI-5, READONLY_TOOL_KWARGS lacked output_schema=None, so FastMCP
+    auto-derived output_schema={'x-fastmcp-wrap-result':True,'properties':{'result':{...}}}
+    for all -> str tools, producing {"result":"<tree>"} in structuredContent.
+    After WI-5, output_schema=None in READONLY_TOOL_KWARGS suppresses auto-wrapping.
+
+    This test checks check_module_exists (a representative -> str tool).
+    DB-free: output_schema is populated at import time from the decorator.
+    """
+    import importlib
+
+    server = importlib.import_module("src.mcp.server")
+    tool = server.check_module_exists
+    # With output_schema=None in READONLY_TOOL_KWARGS, FastMCP should not
+    # auto-derive the wrap shim.
     schema = tool.output_schema
-
-    assert schema is not None, (
-        f"{tool_name}.output_schema is None — output_schema= not declared on @mcp.tool()"
-    )
-    assert "x-fastmcp-wrap-result" not in schema, (
-        f"{tool_name} still has FastMCP auto-wrap shim in output_schema — "
-        "output_schema= was not declared on the @mcp.tool() decorator"
-    )
-    props = schema.get("properties", {})
-    assert "next_step_hint" in props, (
-        f"{tool_name}: output_schema missing 'next_step_hint' in properties. "
-        f"Got keys: {list(props.keys())}"
-    )
-    # All fields from the DTO schema must be present (FastMCP may add $defs etc.).
-    dto_schema = dto.model_json_schema()
-    dto_props = set(dto_schema.get("properties", {}).keys())
-    schema_props = set(props.keys())
-    missing = dto_props - schema_props
-    assert not missing, (
-        f"{tool_name}: output_schema missing DTO fields: {missing}. "
-        f"DTO has {dto_props}, tool schema has {schema_props}"
+    assert schema is None, (
+        "check_module_exists.output_schema must be None after WI-5. "
+        f"Got: {schema!r}. "
+        "If 'x-fastmcp-wrap-result' appears, READONLY_TOOL_KWARGS is missing output_schema=None."
     )
 
 
 # ---------------------------------------------------------------------------
-# Section 5 — NEXT STEP HINT CHANNEL PARITY (AC-BFIX-3/AC-BFIX-4)
+# Section 5 — NEXT STEP HINT IN TEXT CHANNEL (updated from dual-channel parity)
 #
-# v0.6: only describe_module retains a full dual-channel (text + structured)
-# @mcp.tool wrapper, so this section tests only that one tool.
-#
-# For the surviving tool, call the wrapper, extract the trailing footer from
-# content[0].text, and assert it equals structured_content's next_step_hint.
-# This gates against future drift between the two channels.
+# WI-5: describe_module is now text-only (no structured_content). This section
+# verifies the text-channel Next: footer is still present on found modules.
+# (The describe_module structured companion was removed in L9.)
 # ---------------------------------------------------------------------------
 
-_HINT_PARITY_ARGS = [
-    ("describe_module", lambda: ("b4_sale", TEST_VERSION)),
-]
 
+def test_describe_module_text_footer_present(b4_db):
+    """describe_module(found) text channel ends with a Next: footer line.
 
-@pytest.mark.parametrize(
-    "tool_name,args_fn",
-    _HINT_PARITY_ARGS,
-    ids=[t for t, _ in _HINT_PARITY_ARGS],
-)
-def test_next_step_hint_matches_text_footer(b4_db, tool_name, args_fn):
-    """Structured next_step_hint must be byte-identical to the text-channel footer.
-
-    AC-BFIX-3/4: Extract the last non-empty line of content[0].text (the
-    '└─ Next: ...' footer) and compare against structured_content['next_step_hint'].
-    Any kwarg-name drift or model-qualifier loss in the structured path will
-    cause this test to fail.
-
-    v0.6: only describe_module (the one surviving dual-channel tool) is tested
-    here. The 6 removed tools had their dual-channel wrapper deleted in v0.6.
-
-    Relies on the b4_db fixture which seeds b4.order with 2 fields + 2 methods.
+    The footer is still required by ADR-0023 §4.3. WI-5 removed the dual-channel
+    wrapper so the structured channel is gone, but the text footer must remain.
     """
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    tool = getattr(server, tool_name)
-    raw = args_fn()
-    if isinstance(raw, dict):
-        result = asyncio.run(tool.fn(**raw))
-    else:
-        result = asyncio.run(tool.fn(*raw))
+    result = asyncio.run(server.describe_module.fn("b4_sale", TEST_VERSION))
 
     text = result.content[0].text
-    # The footer is the last line of the text channel.
-    # Guard: strip trailing blank lines (join/split may add one).
     lines = text.split("\n")
     non_empty_lines = [ln for ln in lines if ln.strip()]
-    assert non_empty_lines, f"{tool_name}: text channel produced no output lines"
+    assert non_empty_lines, "describe_module: text channel produced no output lines"
     text_footer = non_empty_lines[-1]
 
-    structured_hint = result.structured_content["next_step_hint"]
-
-    assert text_footer == structured_hint, (
-        f"{tool_name}: next_step_hint channel drift!\n"
-        f"  text footer:        {text_footer!r}\n"
-        f"  structured_content: {structured_hint!r}"
+    assert "Next:" in text_footer or "└─" in text_footer, (
+        f"describe_module text footer should contain 'Next:' or a tree connector. "
+        f"Got last non-empty line: {text_footer!r}"
     )

@@ -13,9 +13,11 @@ Verifies that after run_migrations():
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
 import psycopg2
+import psycopg2.errors
 import pytest
 
 from src.db.migrate import run_migrations
+from tests.conftest import drop_osm_reader, ensure_osm_reader_or_skip
 
 pytestmark = pytest.mark.postgres
 
@@ -71,20 +73,6 @@ def _seed_tenant(conn, name="test_tenant_m13009") -> int:
             (name,),
         )
         return cur.fetchone()[0]
-
-
-def _ensure_osm_reader(conn) -> None:
-    """Create the osm_reader role if absent so the migration's guarded GRANT
-    block actually runs and can be asserted.  Mirrors deploy order (ops creates
-    the role, then migrate runs).  Passwordless NOLOGIN — the test only needs
-    the grant target to exist; it never connects as it.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "DO $$ BEGIN "
-            "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='osm_reader') "
-            "THEN CREATE ROLE osm_reader NOLOGIN; END IF; END $$;"
-        )
 
 
 def _has_priv(conn, table: str, priv: str) -> bool:
@@ -159,12 +147,43 @@ def migrated_pg(clean_pg):
 def migrated_pg_with_reader(clean_pg):
     """Like migrated_pg but creates osm_reader BEFORE migrating, so the
     migration's pg_roles-guarded GRANT block actually fires and is assertable.
+
+    If the test DB user lacks CREATE ROLE privilege the test is individually
+    skipped — not a hard error — because the failure reason is infra, not code.
     """
     _drop_m13_010_tables(clean_pg)
-    _ensure_osm_reader(clean_pg)
+    # ensure_osm_reader_or_skip commits on success; skips on InsufficientPrivilege.
+    ensure_osm_reader_or_skip(clean_pg)
     run_migrations(clean_pg)
+
+    # Ensure osm_reader can SET ROLE (non-superuser CREATEROLE still needs
+    # GRANT <role> TO CURRENT_USER to succeed at SET ROLE).
+    # Required by test_osm_reader_can_insert_app_settings_end_to_end which
+    # does SET ROLE osm_reader.  Non-fatal: privilege-check tests use
+    # has_table_privilege and don't need SET ROLE.
+    try:
+        with clean_pg.cursor() as cur:
+            cur.execute("GRANT osm_reader TO CURRENT_USER")
+        clean_pg.commit()
+    except psycopg2.errors.InsufficientPrivilege:
+        clean_pg.rollback()
+        # Not fatal for privilege-check tests (SELECT/INSERT assertion tests);
+        # only fatal for the SET ROLE end-to-end test.  Yield so those still run.
+
     yield clean_pg
+
+    # Teardown: reset any SET ROLE + drop osm_reader so it doesn't leak across runs.
+    try:
+        with clean_pg.cursor() as cur:
+            cur.execute("RESET ROLE")
+        clean_pg.commit()
+    except Exception:
+        try:
+            clean_pg.rollback()
+        except Exception:
+            pass
     _drop_m13_010_tables(clean_pg)
+    drop_osm_reader(clean_pg)
 
 
 # ---------------------------------------------------------------------------

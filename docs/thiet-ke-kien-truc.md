@@ -87,7 +87,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Nginx                                                        │  │
-│  │  /mcp  → MCP Server  :8002  (FastMCP, 24 tools + 7 Resources) │  │
+│  │  /mcp  → MCP Server  :8002  (FastMCP, 25 tools + 7 Resources) │  │
 │  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)       │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────┬──────────────────────────────────────┘
@@ -619,16 +619,18 @@ odoo-semantic-mcp/
 │   ├── cloner/                     -- SSH auto-clone subprocess orchestrator (M6 W4)
 │   │   └── __main__.py             -- spawn from web_ui, decrypt key, git clone
 │   ├── mcp/
-│   │   ├── server.py               -- MCP server + 24 tools + 7 Resources; @offload async dispatch; uvicorn limit_concurrency (ADR-0046)
+│   │   ├── server.py               -- MCP server + 25 tools + 7 Resources; @offload async dispatch; uvicorn limit_concurrency (ADR-0046)
 │   │   ├── health.py               -- /health (pure liveness, no DB) + /ready (readiness, cached 60s) (ADR-0046)
 │   │   ├── hints.py                -- next-step hint mapping for drill-down tools (ADR-0023)
 │   │   ├── tree_builder.py         -- canonical tree grammar renderer with truncation (_render_capped)
-│   │   ├── dto.py                  -- shared response DTOs across supersets (ADR-0028 discriminator)
+│   │   ├── dto.py                  -- shared response DTOs across supersets (ADR-0028 discriminator; DescribeModuleOutput removed PR #266 WI-5)
 │   │   ├── refs.py                 -- opaque ref encoding for entity drill-down (ADR-0030 resource URIs)
-│   │   ├── inspect.py              -- model_inspect/module_inspect/entity_lookup supersets (M11 Wave D)
+│   │   ├── inspect.py              -- model_inspect/module_inspect/entity_lookup/profile_inspect supersets (M11 Wave D + PR #266 WI-4/WI-7)
 │   │   ├── session.py              -- set_active_version/profile + sticky 24h TTL store (M11 Wave E, ADR-0029)
 │   │   ├── resources.py            -- 7 `odoo://` URI scheme resource handlers (M11 Wave F, ADR-0030)
-│   │   └── resources_index.py      -- thread-safe URI → handler dispatch (M11 Wave F)
+│   │   ├── resources_index.py      -- thread-safe URI → handler dispatch (M11 Wave F)
+│   │   ├── style_literal.py        -- literal CSS/SCSS token detection + ILIKE lookup helper (ADR-0047, PR #257/#266)
+│   │   └── example_lexical.py      -- lexical fallback for find_examples when embedder is down (ADR-0047 amend, PR #266 WI-9)
 │   ├── web_ui/                     -- dashboard + API key mgmt + SSH UI (M5 + M6 W4)
 │   │   ├── app.py                  -- FastAPI app
 │   │   └── templates/              -- Jinja2 templates

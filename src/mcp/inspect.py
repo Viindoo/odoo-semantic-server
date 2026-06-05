@@ -12,10 +12,19 @@ See docs/adr/0028-discriminator-consolidation.md.
 # Discriminator constants
 # ---------------------------------------------------------------------------
 
-_MODEL_METHODS = frozenset({"summary", "fields", "methods", "views", "field", "method"})
+_MODEL_METHODS = frozenset({
+    "summary", "fields", "methods", "views", "field", "method", "extenders",
+})
 _MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qweb", "js",
                               "dependencies"})
 _ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern"})
+_PROFILE_METHODS = frozenset({"summary", "repos", "modules"})
+
+# H1 (#260): hard server-side cap for profile_inspect(method='modules').
+# The docstring discloses "default 50, max 50"; the cap MUST be enforced so a
+# caller-supplied limit cannot exceed it (ADR-0023 §3 — "caps never raised").
+# Mirrors the min(limit, cap) clamp every _list_* path in server.py applies.
+_PROFILE_MODULES_CAP = 50
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -61,7 +70,7 @@ def _model_inspect(
         Dotted model name, e.g. ``sale.order``.
     method:
         One of ``summary``, ``fields``, ``methods``, ``views``, ``field``,
-        ``method``.
+        ``method``, ``extenders``.
     odoo_version:
         Odoo version string, e.g. ``17.0``. ``"auto"`` resolves to the latest
         indexed version.
@@ -153,6 +162,16 @@ def _model_inspect(
                 " method_name='<method_name>'."
             )
         return srv._resolve_method(model, method_name, odoo_version, profile_name)
+
+    if method == "extenders":
+        return srv._list_extenders(
+            model=model,
+            odoo_version=odoo_version,
+            profile_name=profile_name,
+            api_key_id=api_key_id,
+            limit=limit,
+            start_index=start_index,
+        )
 
     # Unreachable — guard for exhaustiveness
     return _invalid_method_error("model_inspect", method, _MODEL_METHODS)  # pragma: no cover
@@ -407,3 +426,389 @@ def _entity_lookup(
 
     # Unreachable — guard for exhaustiveness
     return _invalid_kind_error(kind)  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
+# profile_inspect (WI-4, #260, #259 chain-exposure) — ADR-0028 discriminator
+# ---------------------------------------------------------------------------
+
+def _profile_inspect(
+    name: str | None,
+    method: str,
+    odoo_version: str = "auto",
+    repo: str | None = None,
+    *,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
+    start_index: int = 0,
+    limit: int = 50,
+) -> str:
+    """Route to a profile-scoped introspection view by discriminator.
+
+    Parameters
+    ----------
+    name:
+        Profile name to inspect (e.g. ``'viindoo_internal_17'``).
+        Required for ``method='summary'``. Optional for ``method='repos'``
+        and ``method='modules'`` (``None`` = all caller-visible profiles).
+    method:
+        ``summary`` | ``repos`` | ``modules``.
+    odoo_version:
+        Odoo version string. ``'auto'`` resolves to the session pin.
+    repo:
+        Filter modules/repos by repo URL substring. Applied only for
+        ``method='modules'`` and ``method='repos'``.
+    api_key_id:
+        Tenant key for RBAC (default: ``'anonymous'``).
+    start_index:
+        Pagination cursor for ``method='modules'`` (zero-based SKIP).
+    limit:
+        Max rows per page for ``method='modules'`` (default 50).
+
+    Returns
+    -------
+    str
+        Tree-formatted output (ADR-0023 §1). On invalid discriminator
+        returns ``'Error: ...'``.
+    """
+    if method not in _PROFILE_METHODS:
+        return _invalid_method_error("profile_inspect", method, _PROFILE_METHODS)
+
+    # Late import — avoids circular dep with server.py.
+    from src.mcp import server as srv
+
+    if method == "summary":
+        if not name:
+            return (
+                "Error: profile_inspect(method='summary') requires name='<profile_name>'."
+            )
+        return _profile_summary(name, odoo_version, srv)
+
+    if method == "repos":
+        return _profile_repos(name, odoo_version, repo, srv)
+
+    if method == "modules":
+        return _profile_modules(
+            name, odoo_version, repo,
+            start_index=start_index, limit=limit, srv=srv,
+        )
+
+    # Unreachable
+    return _invalid_method_error("profile_inspect", method, _PROFILE_METHODS)  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
+# profile_inspect helpers
+# ---------------------------------------------------------------------------
+
+def _profile_summary(name: str, odoo_version: str, srv) -> str:
+    """Render profile summary: ancestor chain, children, repos, module_count."""
+    from src.db.pg import repo_store
+
+    # RBAC: check caller can see this profile at all.
+    allowed = srv._effective_allowed(name)
+    if allowed is not None and name not in allowed:
+        return (
+            f"profile_inspect(name={name!r}, method='summary')\n"
+            f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
+            "   Use list_available_profiles() to see accessible profiles."
+        )
+
+    # Ancestors (self first, root last).
+    ancestors = repo_store().get_ancestor_profile_names(name)
+    if not ancestors:
+        return (
+            f"profile_inspect(name={name!r}, method='summary')\n"
+            f"└─ Not found: profile '{name}' does not exist."
+        )
+
+    # Children (one level down).
+    children = repo_store().get_children_profiles(name)
+
+    # Repos for the full ancestor chain (depth-ordered: own repos first).
+    repos = repo_store().get_ancestor_repos(name)
+
+    # Deduplicate repos by (url, branch) — keep the shallowest (own = first seen).
+    seen_repo_keys: set[tuple[str, str]] = set()
+    unique_repos: list[dict] = []
+    for r in repos:
+        key = (r["url"], r["branch"])
+        if key not in seen_repo_keys:
+            seen_repo_keys.add(key)
+            unique_repos.append(r)
+
+    # Module count via Neo4j (needs #259 writer fix + backfill to be non-zero).
+    try:
+        with srv._get_driver().session() as neo_session:
+            odoo_version = srv._resolve_version(odoo_version, neo_session)
+            # Use _scope(None) for the own+shared tenant boundary, FURTHER
+            # narrowed by any active session pin (ADR-0029 #251): _scope(None)
+            # injects the pinned profile via _resolve_profile(None) before the
+            # ADR-0034 narrowing, so a pinned session sees only the pinned
+            # profile here. Narrowing-only / fail-closed — the pin can never
+            # widen beyond own∪shared. We then filter by profile_name IN
+            # m.profile separately. _scope(name) would narrow own=[name] which
+            # breaks for modules stamped with the full ancestor chain (e.g.
+            # [child, parent_shared]). The caller-can-see-this-profile check is
+            # already done above via _effective_allowed(name).
+            rec = neo_session.run(
+                f"""
+                MATCH (m:Module)
+                WHERE m.odoo_version = $v
+                  AND {srv._scope_pred('m')}
+                  AND $profile_name IN m.profile
+                RETURN count(m) AS cnt
+                """,
+                v=odoo_version,
+                profile_name=name,
+                **srv._scope(None),
+            ).single()
+            module_count = rec["cnt"] if rec else 0
+    except Exception:
+        module_count = None  # graceful degradation if Neo4j unavailable
+        # L1 fix: if odoo_version was not resolved before the exception
+        # (e.g. driver down before line 536), normalize the sentinel so the
+        # header never renders 'auto' literally.
+        from src.mcp import session as _sess
+        _normalized = _sess.normalize_version_arg(odoo_version)
+        if _normalized is None:
+            odoo_version = "(unresolved)"
+
+    # Build tree output.
+    lines = [f"profile_inspect(name={name!r}, method='summary', odoo_version={odoo_version!r})"]
+
+    # Ancestor chain.
+    if len(ancestors) == 1:
+        lines.append(f"├─ Ancestor chain: {name} (root, no parent)")
+    else:
+        chain_str = " -> ".join(ancestors)
+        lines.append(f"├─ Ancestor chain: {chain_str}")
+
+    # Children.
+    if children:
+        lines.append(f"├─ Children ({len(children)}): {', '.join(children)}")
+    else:
+        lines.append("├─ Children: none")
+
+    # Repos.
+    lines.append(f"├─ Repos ({len(unique_repos)} unique across ancestor chain):")
+    for i, r in enumerate(unique_repos):
+        prefix = "│  └─" if i == len(unique_repos) - 1 else "│  ├─"
+        depth_tag = " [own]" if r["depth"] == 0 else f" [inherited from {r['profile_name']}]"
+        status = r.get("status", "unknown")
+        lines.append(f"{prefix} {r['url']} @ {r['branch']}{depth_tag}  status:{status}")
+
+    # Module count.
+    # M3 (#259/#260): the count uses `$profile_name IN m.profile`. Module nodes
+    # are stamped with the FULL ancestor chain (ADR-0016), so querying a parent
+    # profile matches every descendant-profile module that inherits it. That is
+    # the inheritance-RESOLVED semantics #259/#260 ask for (the same scope a
+    # check_module_exists answer reflects), so the count is intentionally
+    # inheritance-inclusive — the label says so to avoid the reader mistaking it
+    # for an own-profile-only tally.
+    if module_count is not None:
+        lines.append(
+            f"└─ Module count (version {odoo_version}, inheritance-inclusive):"
+            f" {module_count}"
+        )
+    else:
+        lines.append("└─ Module count: unavailable")
+
+    footer = srv.hints_for("profile_inspect", name=name, ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+def _profile_repos(
+    name: str | None,
+    odoo_version: str,
+    repo_filter: str | None,
+    srv,
+) -> str:
+    """Render distinct repos for a profile (or all visible profiles when name=None)."""
+    from src.db.pg import repo_store
+
+    # RBAC: restrict to caller-visible profiles.
+    allowed = srv._effective_allowed(name)
+
+    if name:
+        # Check access.
+        if allowed is not None and name not in allowed:
+            return (
+                f"profile_inspect(name={name!r}, method='repos')\n"
+                f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
+                "   Use list_available_profiles() to see accessible profiles."
+            )
+        repos_raw = repo_store().get_ancestor_repos(name)
+    else:
+        # All profiles visible to this caller.
+        if allowed is None:
+            # Admin: all repos.
+            from src.db.pg import get_pool
+            with get_pool().checkout() as conn:
+                repos_raw = get_pool().fetch_all(conn, """
+                    SELECT r.*, p.name AS profile_name, 0 AS depth, p.odoo_version
+                    FROM repos r JOIN profiles p ON r.profile_id = p.id
+                    ORDER BY r.url, r.branch, r.id
+                """)
+        elif not allowed:
+            repos_raw = []
+        else:
+            from src.db.pg import get_pool
+            with get_pool().checkout() as conn:
+                repos_raw = get_pool().fetch_all(conn, """
+                    SELECT r.*, p.name AS profile_name, 0 AS depth, p.odoo_version
+                    FROM repos r JOIN profiles p ON r.profile_id = p.id
+                    WHERE p.name = ANY(%s)
+                    ORDER BY r.url, r.branch, r.id
+                """, (allowed,))
+
+    # Deduplicate by (url, branch) - keep first occurrence.
+    seen: set[tuple[str, str]] = set()
+    unique_repos: list[dict] = []
+    for r in repos_raw:
+        key = (r["url"], r["branch"])
+        if key not in seen:
+            if repo_filter is None or repo_filter in r["url"]:
+                seen.add(key)
+                unique_repos.append(r)
+
+    scope_label = f"name={name!r}" if name else "all visible"
+    lines = [f"profile_inspect({scope_label}, method='repos')"]
+    if not unique_repos:
+        lines.append("└─ No repos found.")
+        return "\n".join(lines)
+
+    lines.append(f"├─ Repos ({len(unique_repos)} unique):")
+    for i, r in enumerate(unique_repos):
+        prefix = "│  └─" if i == len(unique_repos) - 1 else "│  ├─"
+        status = r.get("status", "unknown")
+        clone = r.get("clone_status", "manual")
+        profile_tag = f"  [profile: {r['profile_name']}]" if not name else ""
+        lines.append(
+            f"{prefix} {r['url']} @ {r['branch']}"
+            f"{profile_tag}  status:{status}  clone:{clone}"
+        )
+    footer = srv.hints_for("profile_inspect", name=name or "", ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+def _profile_modules(
+    name: str | None,
+    odoo_version: str,
+    repo_filter: str | None,
+    *,
+    start_index: int,
+    limit: int,
+    srv,
+) -> str:
+    """Render paginated module list for a profile, optionally filtered by repo URL."""
+    # RBAC: Neo4j choke via _scope.
+    allowed = srv._effective_allowed(name)
+    if name and allowed is not None and name not in allowed:
+        return (
+            f"profile_inspect(name={name!r}, method='modules')\n"
+            f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
+            "   Use list_available_profiles() to see accessible profiles."
+        )
+
+    # H1 (#260): enforce the disclosed cap — a large caller limit must not
+    # return more than _PROFILE_MODULES_CAP rows (ADR-0023 §3).
+    effective_limit = min(limit, _PROFILE_MODULES_CAP)
+
+    with srv._get_driver().session() as neo_session:
+        odoo_version = srv._resolve_version(odoo_version, neo_session)
+
+        # Build the WHERE clause for optional profile + repo filters.
+        profile_clause = "AND $profile_name IN m.profile" if name else ""
+        repo_clause = "AND m.repo_url CONTAINS $repo_filter" if repo_filter else ""
+
+        # Use _scope(None) for the own+shared tenant boundary, FURTHER narrowed
+        # by any active session pin (ADR-0029 #251): _scope(None) injects the
+        # pinned profile via _resolve_profile(None) before the ADR-0034
+        # narrowing, so a pinned session (name=None caller) sees only the pinned
+        # profile here. Narrowing-only / fail-closed — the pin can never widen
+        # beyond own∪shared, so this never leaks across tenants.
+        # Profile-specific filtering is applied separately via profile_clause
+        # ($profile_name IN m.profile). This avoids the all(...) predicate
+        # mismatch when modules carry the full ancestor chain in their profile[]
+        # (e.g. [child_profile, parent_shared]) — narrowing own=[name] would
+        # cause the predicate to deny modules that have a parent profile not in own.
+        # The caller-can-see-this-profile check is already done via
+        # _effective_allowed(name) above.
+        scope_params = srv._scope(None)
+
+        total_rec = neo_session.run(
+            f"""
+            MATCH (m:Module)
+            WHERE m.odoo_version = $v
+              AND {srv._scope_pred('m')}
+              {profile_clause}
+              {repo_clause}
+            RETURN count(m) AS total
+            """,
+            v=odoo_version,
+            profile_name=name,
+            repo_filter=repo_filter or "",
+            **scope_params,
+        ).single()
+        total = total_rec["total"] if total_rec else 0
+
+        if total == 0:
+            scope_label = f"name={name!r}" if name else "all visible"
+            return (
+                f"profile_inspect({scope_label}, method='modules',"
+                f" odoo_version={odoo_version!r})\n"
+                "└─ No modules found. Verify the profile name, or call "
+                "list_available_profiles to see indexed scope."
+            )
+
+        rows = neo_session.run(
+            f"""
+            MATCH (m:Module)
+            WHERE m.odoo_version = $v
+              AND {srv._scope_pred('m')}
+              {profile_clause}
+              {repo_clause}
+            RETURN m.name AS name, m.edition AS edition, m.repo AS repo,
+                   m.repo_url AS repo_url
+            ORDER BY m.name ASC
+            SKIP $skip LIMIT $lim
+            """,
+            v=odoo_version,
+            profile_name=name,
+            repo_filter=repo_filter or "",
+            skip=start_index,
+            lim=effective_limit,
+            **scope_params,
+        ).data()
+
+    scope_label = f"name={name!r}" if name else "all visible"
+    page_end = start_index + len(rows)
+    lines = [
+        f"profile_inspect({scope_label}, method='modules',"
+        f" odoo_version={odoo_version!r})",
+        f"├─ Showing rows {start_index + 1}-{page_end} of {total}:",
+    ]
+    for i, r in enumerate(rows):
+        prefix = "│  └─" if i == len(rows) - 1 else "│  ├─"
+        edition = r.get("edition") or "community"
+        repo_tag = f"  [{r['repo']}]" if r.get("repo") else ""
+        lines.append(f"{prefix} {r['name']}  ({edition}){repo_tag}")
+
+    if page_end < total:
+        next_start = start_index + effective_limit
+        more_hint = (
+            f"profile_inspect(name={name!r}, method='modules',"
+            f" odoo_version={odoo_version!r}, start_index={next_start})"
+        )
+        lines.append(f"└─ ... and {total - page_end} more (use {more_hint})")
+    else:
+        lines.append(f"└─ End of list ({total} total).")
+
+    footer = srv.hints_for("profile_inspect", name=name or "", ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)

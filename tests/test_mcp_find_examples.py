@@ -156,7 +156,10 @@ def test_find_examples_rerank_by_dependents(clean_pg_embeddings, clean_neo4j):
     )
 
 
-# --- Graceful degradation when embedder unavailable (I4) -------------------
+# --- Graceful degradation when embedder unavailable (I4, #264) --------------
+# WI-9: embedder failures now trigger lexical keyword fallback.
+# Results are labelled match: lexical with a degraded banner so agents know
+# quality is lower.  No exception (no RuntimeError) must escape.
 
 class _BrokenEmbedder:
     """Simulates Ollama unreachable / model not loaded."""
@@ -165,8 +168,13 @@ class _BrokenEmbedder:
         raise ConnectionError("Connection refused: http://localhost:11434")
 
 
-def test_find_examples_handles_embedder_call_failure(seeded):
-    """When embedder.embed() raises, return actionable error message instead of 500."""
+def test_find_examples_embedder_call_failure_lexical_fallback(seeded):
+    """When embedder.embed() raises, lexical fallback returns match: lexical rows.
+
+    Protects: acceptance #264 — degraded-but-useful, no RuntimeError.
+    The seeded chunk entity_name 'sale.order.action_confirm' matches keyword
+    'confirm' from the query 'confirm sale'.
+    """
     pg, neo4j_driver = seeded
     from src.mcp.server import _find_examples
 
@@ -174,13 +182,60 @@ def test_find_examples_handles_embedder_call_failure(seeded):
         "confirm sale", odoo_version=TEST_VERSION,
         _driver=neo4j_driver, _pg_conn=pg, _embedder=_BrokenEmbedder(),
     )
-    assert "embedding query failed" in result.lower()
-    assert "ollama" in result.lower() or "11434" in result
-    assert "Found 0 results" in result
+    # Must NOT raise — lexical fallback must produce a result
+    assert "match: lexical" in result, (
+        "Expected lexical fallback results with 'match: lexical' tag, got: " + result[:300]
+    )
+    assert "degraded" in result.lower(), (
+        "Expected degraded banner in lexical fallback output"
+    )
+    # Must be a clean structured response, not an exception traceback
+    assert "RuntimeError" not in result
+    assert "Traceback" not in result
 
 
-def test_find_examples_handles_embedder_construction_failure(seeded, monkeypatch):
-    """When _get_embedder() raises (config missing, model unavailable), surface friendly error."""
+def test_find_examples_embedder_down_zero_hit_emits_exact_banner(seeded):
+    """L7: embedder down AND lexical match finds nothing → exact zero-hit banner.
+
+    The prior empty-corpus assertion (`"match: lexical" in r or "degraded" in r`)
+    passed even if the zero-hit path was broken, because the OR short-circuited on
+    a stray 'degraded' token elsewhere. This pins the SPECIFIC contract: when the
+    embedder is unavailable and the lexical keyword search returns no rows, the
+    output must be exactly "Found 0 results" + the
+    "lexical search returned nothing" degraded banner — and crucially NOT the
+    "lexical keyword match" banner (which only renders when rows were found).
+
+    Fail-able: break the `if not lex_rows:` zero-hit branch (e.g. fall through to
+    the found-rows banner) and this asserts the wrong banner.
+    """
+    pg, neo4j_driver = seeded
+    from src.mcp.server import _find_examples
+
+    # Tokens that cannot match the seeded 'sale.order.action_confirm' entity.
+    result = _find_examples(
+        "zxqwvb nonexistentkeyword gibberishtoken", odoo_version=TEST_VERSION,
+        _driver=neo4j_driver, _pg_conn=pg, _embedder=_BrokenEmbedder(),
+    )
+    assert "Found 0 results" in result, (
+        "Zero-hit lexical fallback must report 'Found 0 results'. Got:\n" + result[:300]
+    )
+    assert "lexical search returned nothing" in result, (
+        "Zero-hit lexical fallback must emit the specific degraded-empty banner. "
+        "Got:\n" + result[:300]
+    )
+    # The found-rows banner must NOT appear when there were no rows.
+    assert "lexical keyword match" not in result, (
+        "Zero-hit path must not render the found-rows 'lexical keyword match' banner. "
+        "Got:\n" + result[:300]
+    )
+    assert "RuntimeError" not in result and "Traceback" not in result
+
+
+def test_find_examples_embedder_construction_failure_lexical_fallback(seeded, monkeypatch):
+    """When _get_embedder() raises, lexical fallback returns results.
+
+    Protects: acceptance #264 — degraded-but-useful, no RuntimeError.
+    """
     pg, neo4j_driver = seeded
     from src.mcp import server as srv
 
@@ -194,8 +249,88 @@ def test_find_examples_handles_embedder_construction_failure(seeded, monkeypatch
         "confirm sale", odoo_version=TEST_VERSION,
         _driver=neo4j_driver, _pg_conn=pg, _embedder=None,
     )
-    assert "embedder unavailable" in result.lower()
-    assert "Found 0 results" in result
+    # Lexical fallback must kick in and return results or a clean "no results" message
+    assert "match: lexical" in result or "degraded" in result.lower(), (
+        "Expected lexical fallback or degraded banner, got: " + result[:300]
+    )
+    assert "RuntimeError" not in result
+
+
+def test_find_examples_lexical_rls_scope(clean_pg_embeddings):
+    """Lexical fallback respects tenant isolation — allowed=[] returns nothing.
+
+    Protects: ADR-0034 tenant choke preserved in degraded path (WI-9, #264).
+    Even with embedder down, a deny-all profile filter (allowed=[]) must cause
+    lexical_example_lookup to return zero rows.  This test MUST FAIL if the
+    profile_name = ANY(%s) guard is removed from example_lexical.py.
+
+    Strategy: call lexical_example_lookup() directly (the same helper _find_examples
+    invokes on the lexical path) with:
+      - allowed=None  -> unrestricted; seeded row is visible (positive control)
+      - allowed=[]    -> deny-all ANY('{}'); same row must be invisible (RLS guard)
+    No auth stack or _effective_allowed detour needed — the choke lives entirely
+    in the SQL WHERE clause parameterised by the allowed list.
+    """
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.writer_pgvector import EmbeddingChunk, write_module_embeddings
+    from src.mcp.example_lexical import lexical_example_lookup
+    from src.mcp.server import _rls_read_tx
+
+    pg = clean_pg_embeddings
+
+    # Seed one chunk whose entity_name will match the keyword 'action_confirm'.
+    chunk = EmbeddingChunk(
+        "method", "sale", TEST_VERSION, "sale.order.action_confirm",
+        "sale.order", "sale/models/sale.py", 0,
+        "def action_confirm(self): pass",
+    )
+    write_module_embeddings("sale", TEST_VERSION, [chunk], FakeEmbedder(dim=1024))
+
+    # Positive control: allowed=None (admin/unrestricted) must find the seeded row.
+    with _rls_read_tx(pg, None):
+        with pg.cursor() as cur:
+            rows_unrestricted = lexical_example_lookup(
+                cur, "action_confirm", TEST_VERSION, allowed=None, limit=10,
+                selected_types=[],
+            )
+    assert rows_unrestricted, (
+        "Unrestricted lookup (allowed=None) must return the seeded row — positive control failed"
+    )
+    assert any(r["entity_name"] == "sale.order.action_confirm" for r in rows_unrestricted)
+
+    # RLS guard: allowed=[] (deny-all) must return ZERO rows despite matching keyword.
+    # ANY('{}') in SQL matches nothing — this is the ADR-0034 tenant choke.
+    with _rls_read_tx(pg, []):
+        with pg.cursor() as cur:
+            rows_deny_all = lexical_example_lookup(
+                cur, "action_confirm", TEST_VERSION, allowed=[], limit=10,
+                selected_types=[],
+            )
+    assert rows_deny_all == [], (
+        "Deny-all allowed=[] must return 0 rows — tenant isolation broken in lexical path. "
+        f"Got {len(rows_deny_all)} row(s): {[r['entity_name'] for r in rows_deny_all]}"
+    )
+
+
+def test_find_examples_lexical_use_lexical_flag(seeded):
+    """_use_lexical=True bypasses embed and returns lexical results directly.
+
+    Protects: the internal _use_lexical flag works correctly (used by async wrapper).
+    """
+    pg, neo4j_driver = seeded
+    from src.mcp.server import _find_examples
+
+    # Explicit _use_lexical=True with profile_name=None and no embedder
+    result = _find_examples(
+        "confirm sale", odoo_version=TEST_VERSION,
+        _driver=neo4j_driver, _pg_conn=pg, _use_lexical=True,
+    )
+    # entity_name 'sale.order.action_confirm' matches keyword 'confirm'
+    assert "match: lexical" in result, (
+        "Expected match: lexical tag in direct _use_lexical=True call"
+    )
+    assert "degraded" in result.lower()
+    assert "RuntimeError" not in result
 
 
 # --- profile_name filter tests for find_examples ----------------------------

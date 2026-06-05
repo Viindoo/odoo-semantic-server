@@ -805,6 +805,51 @@ sudo systemctl enable --now osm-ttl-cleanup.timer
 systemctl list-timers osm-ttl-cleanup.timer --no-pager   # verify lần chạy kế
 ```
 
+### 3.6c Module.profile backfill — bắt buộc đúng thứ tự (#259)
+
+Bản vá #259 (ADR-0016 D5) sửa lỗi `:Module` nodes bị bỏ trống `profile=[]` nên vô hình
+với mọi profile-scoped MCP query. Khi deploy bản vá này lên một instance đã có data,
+**phải chạy đúng 3 bước theo thứ tự** — sai thứ tự làm tenant thấy data trống (fail-closed,
+KHÔNG sai data, nhưng thiếu module cho đến khi reindex):
+
+1. **Deploy writer fix trước.** Bản binary/code mới (5 MERGE site đều `SET mod.profile`) phải
+   live trước, để mọi write SAU đó đã đúng. Trong cửa sổ giữa bước 1 và bước 2, các `:Module`
+   chưa stamp bị từ chối với tenant scoped (rỗng, không lộ chéo).
+2. **Chạy backfill cypher** (sửa snapshot hiện có, không re-parse, không downtime):
+   ```bash
+   cat ops/backfill_module_profile.cypher | cypher-shell -u neo4j -p "$NEO4J_PASSWORD"
+   ```
+   File `ops/backfill_module_profile.cypher` gồm 3 statement `;`-terminated: STEP 1 backfill
+   (mutating, union `profile` từ các child qua `DEFINED_IN`), STEP 2 VERIFY (đếm residual
+   `profile=[]` còn lại), STEP 3 drill-down (chẩn đoán). Idempotent — chạy lại là no-op.
+   **VERIFY (STEP 2) phải gần 0**; phần dư còn lại CHỈ nên là data-only/i18n module (0 child
+   `DEFINED_IN`) — những module này backfill KHÔNG sửa được, cần bước 3.
+3. **Chạy `--full` reindex off-peak, từng version** (v17 trước, rồi v18/v19). Đây là remedy
+   chính thức theo ADR-0016: stamp `profile` cho cả data-only module mà backfill bỏ sót, và
+   dọn stale node:
+   ```bash
+   ... -m src.indexer index-repo --all --full --gc   # xem 3.6 cho systemd-run wrapper đầy đủ
+   ```
+
+> Tóm tắt thứ tự bắt buộc: **writer deploy → backfill (`ops/backfill_module_profile.cypher`)
+> → off-peak `--full` reindex**. Nếu STEP 3 drill-down trả về bất kỳ row nào (residual module
+> CÓ children), đó là D5 violation mới — điều tra trước khi coi backfill hoàn tất.
+
+> **⚠️ `--full` reindex bão hòa shared embedder — chạy ở cửa sổ traffic THẤP NHẤT.**
+> Đường indexer embed (sinh chunk → embed → ghi pgvector) **KHÔNG** đi qua query-side
+> anti-freeze semaphore (`EMBEDDER_MAX_CONCURRENCY` chỉ gate hot-path MCP query, không gate
+> indexer — xem ADR-0046). Một `--full` reindex đẩy embedder rất mạnh; nếu chạy song song với
+> live MCP traffic, embedder có thể saturate → live query gặp `EmbedOverloaded` và (theo thiết
+> kế) trả "0 results, retry shortly". **Lưu ý:** `find_examples` chỉ rơi xuống lexical fallback
+> (#264) khi embedder **hard-down**, KHÔNG khi chỉ overload — nên trong cửa sổ reindex, semantic
+> search degrade (0 result) chứ không tự lexical. Khuyến nghị khi reindex:
+> - Chọn cửa sổ off-peak thật sự (đêm/cuối tuần), không trùng giờ làm việc của tenant.
+> - **Monitor embedder queue depth / `EmbedOverloaded` rate** trong suốt lần chạy (xem
+>   `/ready` field `embedder` + Prometheus `/metrics`).
+> - Cân nhắc giảm concurrency indexer trong lúc chạy (ít `--profile-workers`/`--max-workers`,
+>   xem §3.6) để chừa headroom embedder cho live query.
+> - Reindex từng version một (v17 rồi v18/v19) thay vì tất cả cùng lúc — giảm peak embedder load.
+
 ### 3.7 tmux fallback (khi không có systemd)
 
 ```bash

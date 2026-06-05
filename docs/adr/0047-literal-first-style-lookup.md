@@ -129,3 +129,21 @@ These are heuristic edges, not correctness bugs; revisit only if telemetry shows
 mis-routing. The async wrapper / sync body literal gate (`style_only + is_literal_token`)
 is intentionally duplicated across the two tools rather than abstracted — kept inline for
 readability; a `_should_literal()` helper is a possible future dedup if a third caller appears.
+
+---
+
+## Amendment 2026-06-05 (PR #266 WI-9 — lexical fallback for `find_examples` when embedder is down, #264)
+
+**Scope:** Extends Decision 7 (embedder-outage robustness) to cover the general `find_examples` corpus (not only style chunks), via a new standalone helper.
+
+### What changed
+
+Issue #264: when the Ollama embedder is unreachable, `find_examples(query="computed field pattern")` raised a `RuntimeError` and returned no output, rather than a degraded-but-useful result.
+
+PR #266 WI-9 introduces `src/mcp/example_lexical.py` — a pure Python lexical search helper (no embedder dependency, no pipeline cross-import) used as a fallback for `find_examples` when embedding fails:
+
+1. **Lexical token extraction (`_tokenize`):** splits the query on non-word chars (`[^\w.]+`), drops stop-words and length-1 tokens, returns up to `LEXICAL_MAX_TOKENS=8` tokens. The tokenizer regex is linear (single negated class; no catastrophic backtracking — verified by `test_pathological_input_completes_fast`).
+2. **Entity-name-first ILIKE search:** runs `entity_name ILIKE %token%` against the embeddings table for each token, union-deduped by `(chunk_type, module, file_path, entity_name, chunk_idx)`, filtered by `odoo_version` and the ADR-0034 tenant choke (`profile_name = ANY(%s)`). Matches are labeled `match: lexical` (ADR-0023 grammar).
+3. **Graceful zero-result disclosure:** when the lexical search also returns 0 rows, the tool emits a structured banner: `"Found 0 results (lexical search returned nothing for tokens: ...)"`, distinguishing "search worked but no match" from "tool errored". `EmbedOverloaded` (controlled "server busy" string) continues to pass through as-is.
+4. **Scope:** `find_examples` only, for ALL chunk types (not limited to `css/scss/less`). `find_style_override` already has its own literal-first path (D7 above); the two paths are independent.
+5. **`/ready` not gated on embedder:** ADR-0046 decision confirmed: `/ready` probes Postgres reachability + embedding row count only. A failed embed call does not affect `/ready`. The lexical fallback means `find_examples` remains partially functional even when `/ready` would say "ready" but the embedder is actually down.

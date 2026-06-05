@@ -58,6 +58,73 @@ def _priority2_guard_blocks_run() -> bool:
     return _default_uri and _default_pw and not _is_ci
 
 
+# Loopback hosts that are always safe to target with destructive test fixtures.
+# Anything else (a routable host) is treated as potentially-production.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", ""})
+
+
+def _host_from_target(target: str) -> str:
+    """Best-effort host extraction from a bolt URI or libpq DSN.
+
+    Handles ``bolt://host:7687``, ``neo4j+s://host``, ``postgresql://user:pw@host:5432/db``
+    (URL form) and the ``host=... port=...`` keyword DSN form. Returns the lowercased
+    host, or ``""`` when it cannot be determined (treated as loopback → safe-by-omission;
+    we only HARD-block on a *positively-identified* remote host).
+    """
+    from urllib.parse import urlsplit
+
+    target = (target or "").strip()
+    if not target:
+        return ""
+    # Keyword libpq DSN: "host=db.prod port=5432 dbname=..."
+    if "=" in target and "://" not in target:
+        for tok in target.split():
+            if tok.lower().startswith("host="):
+                return tok.split("=", 1)[1].strip().lower()
+        return ""
+    try:
+        return (urlsplit(target).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _assert_test_db_target_is_safe(env_var: str, default: str) -> None:
+    """Fail-closed guard: refuse to run destructive DB fixtures against a REMOTE
+    (non-loopback) store unless the operator explicitly opts in.
+
+    Destructive test fixtures (``clean_neo4j`` runs ``DETACH DELETE``; the PG
+    fixtures TRUNCATE/DELETE rows). If someone exports ``NEO4J_TEST_URI`` /
+    ``PG_TEST_DSN`` pointing at a real/production store WITH valid (non-default)
+    credentials, the ADR-0040 default-creds guard does NOT fire (creds aren't
+    default) and the tests would happily wipe production data.
+
+    This guard hard-skips when ALL of:
+      - the resolved host is positively a NON-loopback host, AND
+      - not running in CI (``CI`` env var unset/false), AND
+      - the operator has NOT set ``OSM_ALLOW_REMOTE_TEST_DB=1``.
+
+    CI-safe by construction: GitHub Actions sets ``CI=true`` AND points both
+    targets at ``127.0.0.1`` (loopback) — either condition alone exempts CI.
+    Local default (``localhost``) is loopback → never blocked. Only an explicit
+    remote target on a dev box is refused. See ADR-0040.
+    """
+    if os.getenv("CI", "").lower() in {"true", "1", "yes"}:
+        return
+    if os.getenv("OSM_ALLOW_REMOTE_TEST_DB", "").lower() in {"true", "1", "yes"}:
+        return
+    target = os.getenv(env_var, default)
+    host = _host_from_target(target)
+    if host and host not in _LOOPBACK_HOSTS:
+        pytest.skip(
+            f"DESTRUCTIVE test DB guard: {env_var} resolves to a non-loopback host "
+            f"({host!r}). The Neo4j/Postgres test fixtures DETACH DELETE / TRUNCATE "
+            f"rows and must never run against a remote (production) store. "
+            f"If this host really is a disposable test instance, set "
+            f"OSM_ALLOW_REMOTE_TEST_DB=1 to override. See "
+            f"docs/adr/0040-conftest-priority2-fallback-guard.md."
+        )
+
+
 @pytest.fixture(autouse=True)
 def _ensure_current_event_loop():
     """Py3.12 guard: restore a usable current event loop before each test.
@@ -237,6 +304,8 @@ def neo4j_driver():
                   Priority 2: connect directly to NEO4J_TEST_URI.
                   Fallback:  skip with specific reason.
     """
+    # Refuse a positively-remote NEO4J_TEST_URI on a dev box (destructive fixtures).
+    _assert_test_db_target_is_safe("NEO4J_TEST_URI", "bolt://localhost:7687")
     # CI path — GitHub Actions sets CI=true; service container is already running.
     # Skip testcontainers import entirely to avoid import-time DeprecationWarning
     # from @wait_container_is_ready decorator (upstream issue in testcontainers 4.x).
@@ -561,6 +630,11 @@ PG_TEST_DSN = os.getenv(
 def pg_conn():
     """Session-scoped PostgreSQL connection. Skips if not reachable."""
     import psycopg2
+    # Refuse a positively-remote PG_TEST_DSN on a dev box (destructive fixtures).
+    _assert_test_db_target_is_safe(
+        "PG_TEST_DSN",
+        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
+    )
     try:
         conn = psycopg2.connect(PG_TEST_DSN)
     except Exception as e:
@@ -639,6 +713,67 @@ _PG_TEST_TABLES = [
         # M13 — must come after all tables that FK-reference it
         "tenants",
 ]
+
+
+# ---------------------------------------------------------------------------
+# osm_reader role helpers — shared by migration tests that assert GRANT coverage
+# (issue #254, WI-10).  Canonical pattern from test_billing_rls.py extracted
+# here to avoid duplication across test_migration_m13_010/011/012.
+# ---------------------------------------------------------------------------
+
+def ensure_osm_reader_or_skip(conn) -> None:
+    """Create the osm_reader NOLOGIN role if absent, or pytest.skip on no CREATEROLE.
+
+    Mirrors the production deploy order: ops/rls_create_osm_reader.sql runs before
+    src.db.migrate so the GRANT inside the migration fires and is assertable.
+
+    Callers must commit() on success before run_migrations() (so the role is
+    visible inside the migration's own transaction).
+
+    Raises:
+        Calls pytest.skip() when the DB user lacks CREATE ROLE privilege —
+        not a hard failure because the cause is infra, not code (ADR-0040
+        precedent: guard skips under infra conditions, not cryptic errors).
+    """
+    import psycopg2.errors  # noqa: PLC0415 (local import keeps conftest light)
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DO $$ BEGIN "
+                "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') "
+                "THEN CREATE ROLE osm_reader NOLOGIN; END IF; "
+                "END $$;"
+            )
+        conn.commit()
+    except psycopg2.errors.InsufficientPrivilege:
+        conn.rollback()
+        pytest.skip(
+            "DB user lacks CREATE ROLE privilege — "
+            "run tests as a superuser to enable osm_reader grant coverage."
+        )
+
+
+def drop_osm_reader(conn) -> None:
+    """Best-effort teardown: revoke owned objects then drop the osm_reader role.
+
+    Non-fatal — silently swallows errors so teardown never fails a test that
+    already passed.  Mirrors _drop_osm_reader in test_billing_rls.py.
+    """
+    for stmt in (
+        "DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname='osm_reader') "
+        "THEN DROP OWNED BY osm_reader; END IF; END $$;",
+        "DROP ROLE IF EXISTS osm_reader",
+    ):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(stmt)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
 
 def wipe_pg_tables(conn):

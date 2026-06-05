@@ -103,6 +103,9 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
     for model in result.models:
         tx.run(f"""
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (m:Model {{name: $name, module: $module_name, odoo_version: $v}})
             ON CREATE SET m.is_transient = $is_transient,
                           m.is_abstract = $is_abstract,
@@ -327,8 +330,12 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
         tx.run(f"""
             MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             MERGE (mod:Module {{name: $module, odoo_version: $ver}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (v)-[:{REL_DEFINED_IN}]->(mod)
-        """, xmlid=view.xmlid, ver=view.odoo_version, module=view.module)
+        """, xmlid=view.xmlid, ver=view.odoo_version, module=view.module,
+             profiles=profiles)
 
         # Create TARGETS_MODEL edge to all Model nodes with matching name in same version
         if view.model:
@@ -386,8 +393,12 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
         tx.run(f"""
             MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
             MERGE (mod:Module {{name: $module, odoo_version: $ver}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (t)-[:{REL_DEFINED_IN}]->(mod)
-        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module)
+        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
+             profiles=profiles)
 
         if qweb.inherit_xmlid:
             rec = tx.run("""
@@ -427,6 +438,9 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
     for comp in result.components:
         tx.run(f"""
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (c:OWLComp {{name: $name, module: $module_name, odoo_version: $v}})
             ON CREATE SET c.profile = $profiles
             ON MATCH  SET c.profile =
@@ -462,6 +476,9 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
     for patch in result.patches:
         tx.run(f"""
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
             MERGE (j:JSPatch {{target: $target, patch_name: $patch_name,
                               module: $module_name, odoo_version: $v}})
             ON CREATE SET j.profile = $profiles

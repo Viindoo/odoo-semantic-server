@@ -14,7 +14,6 @@ import pytest
 
 from src.mcp.dto import (
     CoreSymbolRef,
-    DescribeModuleOutput,
     FieldRef,
     ListFieldsOutput,
     ListMethodsOutput,
@@ -254,34 +253,6 @@ class TestResolveViewOutput:
         assert instance.mode == "extension"
         assert instance.inherits_from == "sale.view_order_form"
         assert instance.xpath_count == 3
-
-
-class TestDescribeModuleOutput:
-    """AC-B2-4 test 5/7."""
-
-    def test_instantiate_and_schema(self):
-        instance = DescribeModuleOutput(
-            ref=ModuleRef(name="sale", odoo_version="17.0"),
-            edition="community",
-            version_raw="17.0.1.0.0",
-            depends=["base", "mail", "account"],
-            defines_models=["sale.order", "sale.order.line"],
-            extends_models=["res.partner"],
-            view_total=15,
-            js_patch_count=2,
-            next_step_hint=(
-                "└─ Next: list_fields(model='sale.order', module='sale',"
-                " odoo_version='17.0') for declared fields"
-            ),
-        )
-        assert instance.edition == "community"
-        assert instance.version_raw == "17.0.1.0.0"
-        assert len(instance.defines_models) == 2
-        assert instance.view_total == 15
-
-        schema = _assert_json_schema_valid(DescribeModuleOutput)
-        assert "edition" in schema["properties"]
-        assert "defines_models" in schema["properties"]
 
 
 class TestListFieldsOutput:
