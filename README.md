@@ -48,12 +48,13 @@ Odoo repos (~/git/*_17.0/)
   (user chỉ cần thêm URL vào config — không cài gì)
 ```
 
-MCP server expose **24 tools** (4 ORM-validation tools added in v0.8 / M10.5 Phase 2; tool count confirmed at 24):
+MCP server expose **25 tools** (4 ORM-validation tools added in v0.8 / M10.5 Phase 2; +1 `profile_inspect` in Wave 2 WI-4 #260):
 
 - **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
 - **1 module overview tool (M9 Wave 1):** `describe_module`
-- **3 superset discriminator tools (M11 Wave D — ADR-0028):** `model_inspect`, `module_inspect`, `entity_lookup` — route to the right flat tool by kind/entity-type, with structured `discriminator` in `structuredContent`
+- **3 superset discriminator tools (M11 Wave D — ADR-0028):** `model_inspect`, `module_inspect`, `entity_lookup` — route to the right flat tool by kind/entity-type; uniform raw-text output (WI-5 #261/#265: `output_schema=None` on all tools, no `structuredContent` wrap)
 - **4 session tools (M11 Wave E - ADR-0029):** `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` - sticky context per live MCP session (keyed by `mcp-session-id`; single api-key/`_nosession` fallback for stdio/header-less callers), in-memory with a 24h idle TTL, resets on server restart; eliminates `odoo_version` repetition
+- **1 profile introspection tool (Wave 2 WI-4 — ADR-0028, #260, #259):** `profile_inspect` — profile-level discriminator: summary (ancestor chain + children + repos + module_count), repos (deduped across ancestor chain), modules (paginated module list scoped to profile). Closes the introspection gap: "which repos/modules make up profile X?" now answerable in <=2 calls.
 - **2 stylesheet tools (M10A — ADR-0025):** `resolve_stylesheet`, `find_style_override` — CSS/SCSS chain + variable tracing across the indexed stylesheet graph
 - **4 ORM-validation tools (M10.5 Phase 2 — v0.8):** `resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation` — static ORM checks (dotted-path resolution, domain field + version-aware operator validity, `@api.depends` paths, relation comodel) against the indexed graph before an AI client suggests a domain/depends/relation
 
@@ -162,7 +163,7 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 | [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
 | [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
-| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 24 tools, trigger conditions, persona mapping |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 25 tools, trigger conditions, persona mapping |
 
 ---
 

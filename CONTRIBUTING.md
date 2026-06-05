@@ -75,6 +75,8 @@ Khi chạy lần đầu, testcontainers sẽ pull image được cấu hình tro
 
 **Chạy integration tests trên máy đã có Neo4j (production server hoặc dev Neo4j cá nhân):** Priority 2 fallback trong conftest kết nối tới `bolt://localhost:7687` với password mặc định `"password"` khi testcontainers không spin up được. Để tránh vô tình auth vào Neo4j production (gây rate-limit), fallback này tự động skip nếu URI và password đều là default và không chạy trong CI. Override bằng cách set `NEO4J_TEST_PASSWORD=<your-password>` hoặc `NEO4J_TEST_URI=<your-uri>` sang giá trị không phải default — một trong hai là đủ để disarm guard. Xem [ADR-0040](docs/adr/0040-conftest-priority2-fallback-guard.md).
 
+> **⚠️ DESTRUCTIVE — `NEO4J_TEST_URI` / `PG_TEST_DSN` xoá dữ liệu:** Các integration fixture chạy `DETACH DELETE` (Neo4j) và `TRUNCATE`/`DELETE` (Postgres) trên store mà 2 biến này trỏ tới. **TUYỆT ĐỐI không** trỏ chúng vào store production — test sẽ wipe data thật. Guard mới (ADR-0040) hard-skip khi `NEO4J_TEST_URI`/`PG_TEST_DSN` resolve về một host **non-loopback** (không phải `localhost`/`127.0.0.1`/`::1`) ngoài CI. Nếu host đó thực sự là một test instance dùng-một-lần, set `OSM_ALLOW_REMOTE_TEST_DB=1` để override. CI không bị ảnh hưởng (chạy `CI=true` + target `127.0.0.1`).
+
 ### Toàn bộ test suite
 
 ```bash

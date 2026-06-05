@@ -1,18 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Smoke tests for superset tool text channels + surviving dual-channel tools (M12 v0.6).
+"""Smoke tests for superset tool text channels (M12 v0.6, updated WI-5).
 
 After v0.6 removed the 10 flat shims (resolve_model, resolve_field, resolve_method,
 resolve_view, list_fields, list_methods, list_views, list_owl_components,
-list_qweb_templates, list_js_patches), the dual-channel contract for the 5 surviving
-dual-channel tools (describe_module + list_fields/methods/resolve_view/model structured
-companions) is verified by:
-  (a) describe_module — still registered as @mcp.tool with structured output.
-  (b) The 6 structured-companion functions (_resolve_model_structured, _resolve_field_structured,
-      _resolve_method_structured, _resolve_view_structured, _list_fields_structured,
-      _list_methods_structured) are called directly to confirm the DTO round-trips still work.
+list_qweb_templates, list_js_patches), all MCP tools emit raw-text tree only.
+
+WI-5 fix (#261/#265-Obs4): describe_module no longer declares output_schema= on its
+@mcp.tool decorator. All tools (including describe_module) now emit uniform raw text
+with structured_content=None (ADR-0023 §1). The 6 structured-companion functions
+(_resolve_*_structured, _list_*_structured) still exist for Resource/internal use
+and are tested via their DTO round-trips.
+
+Verified:
+  (a) describe_module — text-only channel (no structured_content), including not-found.
+  (b) The 6 structured-companion functions are called directly to confirm DTO round-trips.
 
 For the new superset tools (model_inspect, module_inspect, entity_lookup), only the
-text channel is verified (they are text-only per design — no structured_content).
+text channel is verified (text-only per design).
 
 DB version: TEST_VERSION = "95.0" (distinct from 99.0/98.0/97.0/96.0
 fixtures used by other test modules).
@@ -27,7 +31,6 @@ import pytest
 from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from src.indexer.writer_neo4j import Neo4jWriter
 from src.mcp.dto import (
-    DescribeModuleOutput,
     ListFieldsOutput,
     ListMethodsOutput,
     ResolveFieldOutput,
@@ -243,18 +246,48 @@ def test_entity_lookup_view_text_channel(b3_db):
     assert "b3_sale.view_order_form" in text
 
 
-def test_describe_module_dual_channel(b3_db):
-    """describe_module wrapper returns both text and structured DescribeModuleOutput."""
+def test_describe_module_text_only_channel(b3_db):
+    """describe_module wrapper returns raw text only (no structured_content).
+
+    WI-5 fix (#261/#265-Obs4): describe_module no longer carries output_schema=;
+    all tools emit a uniform raw-text tree (ADR-0023 §1). structured_content
+    must be None so the MCP client never sees a schema-declared but absent payload.
+    (The describe_module structured companion was removed in L9.)
+    """
     from src.mcp.server import describe_module
 
     result = asyncio.run(describe_module.fn("b3_sale", TEST_VERSION))
-    _assert_dual_channel(result, DescribeModuleOutput)
-    sc = result.structured_content
-    assert sc["ref"]["name"] == "b3_sale"
-    assert sc["ref"]["odoo_version"] == TEST_VERSION
-    assert "edition" in sc
-    assert isinstance(sc["view_total"], int)
-    assert "next_step_hint" in sc
+    text = _assert_text_channel(result)
+    # Confirm the module name appears in the text channel.
+    assert "b3_sale" in text
+    # WI-5: no structured channel for describe_module any more.
+    assert result.structured_content is None, (
+        f"describe_module must not emit structured_content (WI-5). "
+        f"Got: {result.structured_content!r}"
+    )
+
+
+def test_describe_module_not_found_returns_clean_text(b3_db):
+    """describe_module(nonexistent) returns friendly text, no Output validation error.
+
+    WI-5 fix (#261): previously, describe_module had output_schema= declared, so
+    the not-found path (structured_content=None) triggered a client-side
+    'Output validation error'. After dropping output_schema=, the tool returns
+    the same ToolResult pattern as its siblings: plain text, structured_content=None.
+    """
+    from src.mcp.server import describe_module
+
+    result = asyncio.run(describe_module.fn("nonexistent_module_xyz_b3", TEST_VERSION))
+    text = _assert_text_channel(result)
+    assert "nonexistent_module_xyz_b3" in text, (
+        f"Not-found text should contain the module name. Got: {text!r}"
+    )
+    assert "No module named" in text, (
+        f"Not-found text should start with 'No module named'. Got: {text!r}"
+    )
+    assert result.structured_content is None, (
+        f"Not-found path must not produce structured_content. Got: {result.structured_content!r}"
+    )
 
 
 def test_list_fields_structured_companion(b3_db):

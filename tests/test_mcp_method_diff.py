@@ -194,7 +194,7 @@ class TestMethodVersionDiff:
         assert "Method version diff" not in result
 
     def test_diff_signature_null_graceful(self, clean_neo4j):
-        """Null signature (pre-reindex data) outputs hint, does not crash."""
+        """Null signature (pre-reindex data) renders a graceful placeholder, does not crash."""
         driver = clean_neo4j
         _clean_version(driver, ALT_VERSION)
 
@@ -212,9 +212,18 @@ class TestMethodVersionDiff:
             _driver=driver,
         )
 
-        # Must not crash and must contain the hint text
+        # Must not crash and must render a graceful, agent-facing placeholder
+        # for the missing signature. #265 (WI-11) removed the operator-shell
+        # hint ("run index-repo …") from this branch; the contract is now that
+        # the null signature is surfaced gracefully without leaking an operator
+        # command. The placeholder text is "(signature not available for this
+        # version)".
         assert isinstance(result, str)
-        assert "not stored" in result or "run" in result.lower()
+        assert "Signature:" in result
+        assert "not available" in result.lower()
+        # Regression guard: the old operator-shell hint must NOT come back.
+        assert "index-repo" not in result
+        assert "python -m" not in result
 
         _clean_version(driver, ALT_VERSION)
 

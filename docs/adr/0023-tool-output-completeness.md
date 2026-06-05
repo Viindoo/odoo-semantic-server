@@ -292,6 +292,12 @@ The CI test (`test_next_step_no_loop`) asserts the suggested tool name in `Next:
 
 These tools always end with `└─ Next: ...`. The Wave 1 retrofit/implementation adds the footer:
 
+> Note: this table enumerates the **flat** drill-down tools. The discriminator
+> supersets (`model_inspect` / `module_inspect` / `entity_lookup` / `profile_inspect`)
+> route to these flat tools and likewise emit a `Next:` footer; they are not listed
+> as separate rows. `profile_inspect` (PR #266) and `model_inspect(method='extenders')`
+> follow the same footer contract — see Amendment 2026-06-05.
+
 | Tool | Recommended Next-step hint |
 |---|---|
 | `resolve_model` | `list_fields(model=X, odoo_version=V) for full field list \| list_methods(model=X, odoo_version=V) for behavior` |
@@ -548,3 +554,44 @@ The plain-text continuation hint appended to the `Next:` line is the canonical f
 ### Backward compatibility
 
 `start_index=0` is the default; callers that do not pass the parameter receive the same first-page output as before the amendment. The new `[ref=fN]` row tokens are additive — clients that do not parse them see harmless bracketed suffixes.
+
+---
+
+## Amendment 2026-06-05 (PR #266 — raw-text serialization, error hygiene, pagination contract)
+
+**Scope:** Three normative additions. Does not change §1–§4 core grammar or §5 list-tool shape.
+
+### §A No per-tool `output_schema` / dual-channel output
+
+**Decision (normative):** MCP tools in this server produce **raw plain-text tree output only**. No `@mcp.tool(output_schema=...)` is used on any tool.
+
+`describe_module` was the last tool wired to the M10.5 Wave-B dual-channel pattern (`output_schema=DescribeModuleOutput.model_json_schema()` + a `_describe_module_structured` companion). The dual channel was removed in PR #266 WI-5 (#261, #265-Obs4) because FastMCP calls `output_schema` validation **before** the not-found path returns, so a not-found response caused `Output validation error` instead of a clean error message. The `DescribeModuleOutput` DTO and `_describe_module_structured` helper are deleted (`src/mcp/dto.py`, `src/mcp/server.py`).
+
+All tools now set `"output_schema": None` in `READONLY_TOOL_KWARGS` (or the equivalent per-tool kwarg override). The structured-content dict (`{"result": "<tree>"}`) that FastMCP previously wrapped around raw strings is suppressed by this constant — clients always receive a single plain-text tree string, which is the contract established in §1.
+
+This decision is **permanent**: adding `output_schema` back to any tool requires re-evaluating the not-found path and the FastMCP validation order (see `fastmcp/tools/tool.py:385-386`).
+
+### §B Error messages — generic to agent, detail logged server-side (CWE-209)
+
+**Decision (normative):** Tool handler exception handlers MUST NOT interpolate `{type(e).__name__}: {e}` or raw `{exc}` into agent-facing output strings. Doing so leaks internal stack trace fragments and server paths to the LLM context (CWE-209 Information Exposure Through an Error Message).
+
+**Pattern:**
+
+```python
+# WRONG — leaks internals
+return f"Error querying {model}: {type(e).__name__}: {e}"
+
+# CORRECT — generic + server-side detail
+logger.warning("Error querying %s: %s", model, e, exc_info=True)
+return f"Error querying {model}: internal server error (check server logs)."
+```
+
+`src/mcp/server.py` and `src/mcp/resources.py` now import `logging` and use `logger = logging.getLogger(__name__)` for all exception sites in agent-facing `-> str` tool handlers. **Exception:** `EmbedOverloaded` carries a controlled "server busy" message string (no internals) and is allowed to pass `{e}` through. Operator/infra paths (`/health`, `/ready`, `middleware.py` 503) are out of scope (server-side logs, not agent output).
+
+This rule applies to all future tools added to `src/mcp/server.py` and `src/mcp/resources.py`.
+
+### §C Pagination continuation — start_index NEVER raises the per-page cap
+
+**Clarification (normative):** When the `Next:` continuation hint suggests `start_index=Y` for the next page, the hint MUST use the same `limit` (or cap) as the current page. Callers MUST NOT interpret a multi-page response as a signal to increase `limit` beyond the documented per-tool cap. Caps exist for context-window budget reasons and are enforced server-side (`effective_limit = min(limit, cap)`) regardless of the `limit` value passed by the caller.
+
+The `profile_inspect(method='modules')` cap is `_PROFILE_MODULES_CAP = 50`. The `model_inspect(method='extenders')` cap is 20 (same as `methods`/`views`). These are hard server-side limits, not soft suggestions.

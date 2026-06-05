@@ -92,3 +92,20 @@ Only OEEL-1 implicates Viindoo's own Partnership obligation. For all other licen
 - ADR-0034 — OEEL + Partnership Agreement analysis; multi-tenant read-side isolation.
 - Terms of Service (to be drafted) — submitter representation-and-warranty (D5).
 - License survey 2026-05-22 (4721 LGPL-3, 3756 OPL-1 all Viindoo/TVTMA, 76 AGPL-3, 13 OEEL-1, 2 GPL-3).
+
+---
+
+## Amendment 2026-06-05 (PR #266 — OPL-1 / OEEL-1 framing correction, #263)
+
+**Scope:** Corrects the license-label semantics used in EE-confusion detection code and documentation. No policy change; the D2 table and D4/D5 decisions are unchanged.
+
+### What changed
+
+PR #166 (the regression that introduced #263) mislabeled third-party OPL-1 modules (authored by Viindoo/TVTMA) as Odoo Enterprise Edition modules. The root cause was a code comment that described OEEL-1 and OPL-1 interchangeably. PR #266 WI-8 corrects the code comments and gating logic in `src/mcp/server.py:_edition_label` and `_is_ee_by_edition`:
+
+- **OEEL-1** = Odoo Enterprise Edition License. Copyright is always Odoo S.A. These modules carry `edition='enterprise'` after indexing. OSM's EE-confusion warning targets this class.
+- **OPL-1** = Odoo Proprietary License. This is Odoo S.A.'s license for **third-party** / proprietary Odoo apps. Viindoo's `tvtmaaddons` catalogue is published under OPL-1. OPL-1 is **not** Odoo Enterprise — modules under OPL-1 carry `edition='viindoo'` (or `'custom'`) after indexing, not `edition='enterprise'`.
+
+The `_edition_label` helper now respects `_FIRST_PARTY_EDITIONS = {"viindoo"}`: when `edition='viindoo'`, the label is derived from the edition enum directly **before** the license lookup, so a Viindoo OPL-1 module is labeled "Viindoo" (not "Odoo Enterprise"). The EE-confusion gate (`_is_ee_by_edition`) has always checked `edition == 'enterprise'` (correct); the regression was only in comment wording and `_edition_label` license-first ordering.
+
+**Correction to ADR-0036 D2 rationale phrasing:** the existing text "OPL-1 ×3756 — 100% authored by Viindoo/TVTMA" is a survey observation (correct). The phrase "OPL-1 is intentionally OPL-1=Viindoo proprietary" found in earlier phase notes was imprecise — OPL-1 is Odoo S.A.'s license mechanism for third-party apps, not a Viindoo-specific license. The policy decision (D5: OPL-1 = submitter responsibility, serve by default) is unchanged and correct.

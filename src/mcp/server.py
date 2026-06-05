@@ -2,6 +2,7 @@
 # src/mcp/server.py
 import asyncio
 import functools
+import logging
 import math
 import os
 import threading
@@ -48,7 +49,6 @@ from src.constants import (
 )
 from src.mcp import session as _session
 from src.mcp.dto import (
-    DescribeModuleOutput,
     FieldRef,
     ListFieldsOutput,
     ListMethodsOutput,
@@ -61,11 +61,12 @@ from src.mcp.dto import (
     ResolveViewOutput,
     ViewRef,
 )
+from src.mcp.example_lexical import lexical_example_lookup
 from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for external consumers)
     format_next_step,
     hints_for,
 )
-from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect
+from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect, _profile_inspect
 from src.mcp.orm import (
     _resolve_orm_chain,
     _validate_depends,
@@ -77,6 +78,8 @@ from src.mcp.resources import register_resources
 from src.mcp.style_literal import ilike_pattern, is_literal_token, literal_column
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
 from src.mcp.tree_builder import render_list_block
+
+logger = logging.getLogger(__name__)
 
 # Sentinel api_key_id for direct _impl calls (tests, CLI) — refs are scoped
 # to this namespace and do not collide with production tenant refs.
@@ -93,9 +96,15 @@ def _edition_rank_cypher(node_alias: str = "mod") -> str:
 
 
 # Render-only edition label — WG-5 T1.
-# Maps (edition enum, optional raw license) → human-readable label for MCP output.
-# Priority: license → more specific (OEEL-1 maps to "enterprise" at index time;
-# OPL-1 falls to "custom" at index time but is treated as EE at render time via this map).
+# Maps raw license string → human-readable label for MCP output.
+# License facts (Odoo S.A., https://www.odoo.com/documentation/19.0/legal/licenses.html):
+#   OEEL-1 = Odoo Enterprise Edition License — Odoo S.A.'s OWN Enterprise add-ons.
+#   OPL-1  = Odoo Proprietary License — Odoo S.A.'s license for THIRD-PARTY / proprietary
+#            Odoo apps; Viindoo's tvtmaaddons are published under OPL-1. OPL-1 is NOT
+#            Odoo Enterprise.
+# OPL-1 is intentionally NOT mapped here so it falls through to the indexed `edition`
+# enum (e.g. "viindoo" → "Viindoo Enterprise (EE)"); mapping it to "Odoo Enterprise (EE)"
+# mislabeled third-party OPL-1 addons authored by Viindoo (#263, regression from PR #165).
 _LICENSE_TO_EDITION_LABEL: dict[str, str] = {
     "lgpl-3":   "Community (CE)",
     "lgpl-3.0": "Community (CE)",
@@ -103,8 +112,7 @@ _LICENSE_TO_EDITION_LABEL: dict[str, str] = {
     "agpl-3.0": "Community (CE)",
     "gpl-3":    "Community (CE)",
     "gpl-3.0":  "Community (CE)",
-    "opl-1":    "Odoo Enterprise (EE)",
-    "oeel-1":   "Viindoo Enterprise (EE)",
+    "oeel-1":   "Odoo Enterprise (EE)",
 }
 _EDITION_ENUM_TO_LABEL: dict[str, str] = {
     "community":  "Community (CE)",
@@ -115,17 +123,36 @@ _EDITION_ENUM_TO_LABEL: dict[str, str] = {
 }
 
 
+# Edition enums that are DEFINITIVE first-party signals: when the indexer has
+# stamped one of these, it identifies the author/edition more authoritatively
+# than any license string, so it must NOT be overridden by a license mapping
+# (#263 / N3). OPL-1 is Odoo S.A.'s third-party proprietary license, under which
+# Viindoo publishes its addons (it is NOT Odoo Enterprise, and OEEL-1 is Odoo
+# S.A.'s own Enterprise license — not a Viindoo license). A first-party Viindoo
+# module (`edition='viindoo'`) must read "Viindoo Enterprise (EE)" — never
+# "Odoo Enterprise (EE)" — even on the defensive edge where its license string
+# would otherwise map elsewhere.
+_FIRST_PARTY_EDITIONS: frozenset[str] = frozenset({"viindoo"})
+
+
 def _edition_label(edition: str | None, license: str | None = None) -> str:
     """Return a human-readable edition label for MCP output.
 
-    Derives from ``license`` (SPDX string) first — more specific than the
-    indexed ``edition`` enum when both are available.  Falls back to
-    ``edition`` enum mapping, then returns the raw value (or 'community').
+    Resolution order:
+      1. A DEFINITIVE first-party ``edition`` enum (``_FIRST_PARTY_EDITIONS``)
+         wins outright — license can never override a known first-party author
+         (#263 / N3: even if a module's license string would otherwise map to
+         Odoo Enterprise, a ``viindoo`` edition still reads "Viindoo Enterprise").
+      2. Otherwise ``license`` (SPDX string) — more specific than a generic
+         ``edition`` enum (e.g. disambiguates raw ``'enterprise'`` via OEEL-1).
+      3. Otherwise the ``edition`` enum mapping, then the raw value, then CE.
 
     Used by check_module_exists, describe_module, and model_inspect summary
     to show 'Community (CE)' / 'Odoo Enterprise (EE)' / 'Viindoo Enterprise (EE)'
     instead of raw 'community'/'enterprise'/'viindoo'.
     """
+    if edition and edition in _FIRST_PARTY_EDITIONS:
+        return _EDITION_ENUM_TO_LABEL.get(edition, edition)
     if license:
         label = _LICENSE_TO_EDITION_LABEL.get(license.lower().strip())
         if label:
@@ -265,11 +292,17 @@ register_resources(mcp)
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
-# All 20 OSM tools are read-only queries against a statically-indexed graph.
+# All read-only OSM tools query a statically-indexed graph.
 # Annotations advertise this to MCP clients (Claude Code, Cursor, VS Code,
 # ChatGPT) so they can auto-approve and skip confirmation gates.
 # (cross-server pattern: read-only annotations for auto-approval)
 READONLY_TOOL_KWARGS = {
+    # Suppress FastMCP auto-wrap: without this, -> str tools get wrapped as
+    # {"result": "<tree>"} in structuredContent, giving two output shapes for
+    # one grammar (ADR-0023 §1 + WI-5 fix for #261/#265-Obs4).
+    # -> ToolResult tools are unaffected: FastMCP returns ToolResult as-is
+    # before reaching the output_schema branch (fastmcp/tools/tool.py:385-386).
+    "output_schema": None,
     "annotations": {
         "readOnlyHint": True,
         "idempotentHint": True,
@@ -313,9 +346,9 @@ RequiredOdooVersion = Annotated[
     str,
     Field(
         description=(
-            "REQUIRED — always pass the concrete Odoo version explicitly "
-            "(e.g. '17.0'); never assume or omit it. Use list_available_versions "
-            "if unsure which versions are indexed."
+            "REQUIRED — pass the concrete Odoo version (e.g. '17.0'), "
+            "or 'auto' to reuse the session pin set by set_active_version. "
+            "Use list_available_versions if unsure which versions are indexed."
         ),
     ),
 ]
@@ -1225,6 +1258,7 @@ def _resolve_model(
                  mod.name AS mod_name
             RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo,
                    mod.edition AS edition, mod.license AS license,
+                   coalesce(m.is_definition, false) AS is_definition,
                    COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
                    COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
@@ -1242,8 +1276,19 @@ def _resolve_model(
                 )
             return f"Model '{model_name}' not found in Odoo {odoo_version}."
 
+        # M2 (#262): the "Extended by" list MUST use the SAME predicate as
+        # _list_extenders — `NOT is_definition` — so the summary "... and N more"
+        # count and the paginated extenders total are always equal. The previous
+        # `layers[1:]` assumed exactly one definition row on top, which:
+        #   - under-counts by 1 when the definition node is out of scope (a pure
+        #     _inherit model whose top row is itself an extender), and
+        #   - over-counts when >1 module carries is_definition=true.
+        # `base` (the "Defined in" line) stays as the top-ranked row (ADR-0013);
+        # in the rare no-definition-row case it is also a NOT-is_definition row,
+        # so it appears in both sections — identical to what _list_extenders
+        # would return, which is the parity contract M2 requires.
         base = layers[0]
-        extensions = layers[1:]
+        extensions = [row for row in layers if not row["is_definition"]]
         fields_count = base["fields_count"]
         methods_count = base["methods_count"]
 
@@ -1277,8 +1322,8 @@ def _resolve_model(
     if extensions:
         lines.append("├─ Extended by:")
         more_hint = (
-            f"model_inspect(model='{model_name}', method='fields', odoo_version='{odoo_version}')"
-            " for full overview"
+            f"model_inspect(model='{model_name}', method='extenders',"
+            f" odoo_version='{odoo_version}') for full paginated list"
         )
         rendered = _render_capped(
             extensions,
@@ -1677,6 +1722,7 @@ def _find_examples(
     _pg_conn=None,
     _embedder=None,
     _query_vec=None,
+    _use_lexical: bool = False,
 ) -> str:
     # _query_vec: when the async tool wrapper has already embedded the query off
     # the event loop (#227), it passes the vector here so this blocking body can
@@ -1715,29 +1761,28 @@ def _find_examples(
         # Standard path: embed now (sync body / pre-embedded async path).
         if _query_vec is not None:
             query_vec = _query_vec
+        elif _use_lexical:
+            # Caller already tried and failed to embed (async wrapper embed-failure
+            # path, or explicit lexical-only mode for testing).  Skip embed entirely
+            # and fall through to the lexical fallback below.
+            pass
         else:
             try:
                 if embedder is None:
                     embedder = _get_embedder()
-            except Exception as e:
-                return (
-                    f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
-                    "Hint: check Ollama server is running (default: http://localhost:11434) "
-                    "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
-                )
-            try:
-                # Cap the query to the token budget before INSTRUCT so a giant
-                # paste cannot blow the embedder context (#227, sync path).
-                capped = _cap_query_text(embedder, query)
-                instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-                query_vec = embedder.embed([instruct + capped])[0]
-            except Exception as e:
-                return (
-                    f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
-                    "Hint: Ollama may be down, model not loaded, or network issue. "
-                    "Verify with: curl http://localhost:11434/api/tags\n"
-                    "Found 0 results\n"
-                )
+            except Exception:
+                # Embedder init failed — fall back to lexical keyword search.
+                _use_lexical = True
+            if not _use_lexical:
+                try:
+                    # Cap the query to the token budget before INSTRUCT so a giant
+                    # paste cannot blow the embedder context (#227, sync path).
+                    capped = _cap_query_text(embedder, query)
+                    instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+                    query_vec = embedder.embed([instruct + capped])[0]
+                except Exception:
+                    # Embed failed — fall back to lexical keyword search.
+                    _use_lexical = True
     else:
         # Literal style token: carry pre-embedded vec (may be None from async wrapper).
         query_vec = _query_vec
@@ -1762,6 +1807,71 @@ def _find_examples(
         # bypass means this is a no-op until ops enables FORCE RLS.
         with _rls_read_tx(pg, allowed):
             with pg.cursor() as cur:
+                # (0) LEXICAL FALLBACK (issue #264, WI-9): when the embedder is
+                # unavailable (embedder init or embed call failed), run a
+                # keyword ILIKE search against entity_name.  Results are labelled
+                # match: lexical to signal degraded quality.  Tenant choke
+                # (ADR-0034) is preserved: allowed is passed through unchanged.
+                if _use_lexical:
+                    lex_rows = lexical_example_lookup(
+                        cur, query, odoo_version, allowed,
+                        min(limit, FIND_EXAMPLES_ANN_LIMIT),
+                        selected_types,
+                        extra_cols=_STYLE_EXTRA_COLS,
+                    )
+                    for r in lex_rows:
+                        r.setdefault("model_name", None)
+                        r.setdefault("line_start", None)
+                        r.setdefault("repo", None)
+                        r.setdefault("repo_id", None)
+                    # Return with a degraded banner so agents know quality is lower.
+                    if not lex_rows:
+                        return (
+                            f'find_examples: "{query}" ({odoo_version})\n'
+                            "Found 0 results  "
+                            "[degraded: embedder unavailable — lexical search returned nothing]\n"
+                        )
+                    header = (
+                        f'find_examples: "{query}" ({odoo_version})\n'
+                        f"Found {len(lex_rows)} results  "
+                        "[degraded: embedder unavailable — lexical keyword match]\n"
+                    )
+                    sep = "─" * 41
+                    lines = [header]
+                    for i, chunk in enumerate(lex_rows, 1):
+                        entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
+                        if chunk["model_name"] and chunk["chunk_type"] == "view":
+                            entity += f" (model: {chunk['model_name']})"
+                        chunk_label = chunk["chunk_type"]
+                        if chunk["chunk_idx"] > 0:
+                            chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
+                        lines.append(sep)
+                        lines.append(
+                            f"#{i} · score - · match: lexical"
+                            f" · {chunk_label} · {entity}"
+                        )
+                        file_path = _portable_path(
+                            chunk["file_path"] or "",
+                            repo=chunk.get("repo"), module=chunk.get("module"),
+                        )
+                        repo_label = _repo_url_for_id(chunk.get("repo_id")) or chunk.get("repo")
+                        repo_pfx = f"[{repo_label}] " if repo_label else ""
+                        line_sfx = (
+                            f":{chunk['line_start']}"
+                            if chunk.get("line_start") is not None else ""
+                        )
+                        lines.append(f"   File: {repo_pfx}{file_path}{line_sfx}")
+                        lines.append("   ┌" + "─" * 42)
+                        for line in chunk["content"].splitlines():
+                            lines.append(f"   │ {line}")
+                        lines.append("   └" + "─" * 42)
+                        lines.append("")
+                    lines.append(format_next_step([
+                        f"suggest_pattern(intent='{query}', odoo_version='{odoo_version}')"
+                        " for curated patterns",
+                    ]))
+                    return "\n".join(lines)
+
                 # (1) LITERAL-FIRST for style-only queries (issue #255 WI-7).
                 literal_rows: list[dict] = []
                 if want_literal:
@@ -1979,7 +2089,8 @@ async def find_examples(
 ) -> str:
     """Semantic search for real code examples from the indexed Odoo codebase.
 
-    Requires Ollama running with model `qwen3-embedding-q5km`.
+    Degrades to lexical keyword match if the embedder is unavailable
+    (results labelled `match: lexical` in that case).
 
     TRIGGER when: "show me examples of wizard usage", "how is mail.thread used
     in codebase", "give me code example for X pattern", "ví dụ code dùng X
@@ -2027,28 +2138,27 @@ async def find_examples(
 
     query_vec: list[float] | None = None
     embedder = None
+    _async_use_lexical = False
     if not _want_literal:
         # Standard NL path: pre-embed now on the event loop.
         try:
             embedder = _get_embedder()
-        except Exception as e:
-            return (
-                f"find_examples: embedder unavailable — {type(e).__name__}: {e}\n"
-                "Hint: check Ollama server is running (default: http://localhost:11434) "
-                "and EMBEDDER_MODEL is loaded.\nFound 0 results\n"
-            )
-        try:
-            instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-            query_vec = await _embed_query(embedder, instruct, query)
-        except EmbedOverloaded as e:
-            return f"find_examples: {e}\nFound 0 results\n"
-        except Exception as e:
-            return (
-                f"find_examples: embedding query failed — {type(e).__name__}: {e}\n"
-                "Hint: Ollama may be down, model not loaded, or network issue. "
-                "Verify with: curl http://localhost:11434/api/tags\n"
-                "Found 0 results\n"
-            )
+        except Exception:
+            # Embedder unavailable — fall back to lexical keyword search.
+            _async_use_lexical = True
+        if not _async_use_lexical:
+            try:
+                instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
+                query_vec = await _embed_query(embedder, instruct, query)
+            except EmbedOverloaded as e:
+                # Overloaded is a transient server condition, not an outage —
+                # return the clean message rather than a degraded lexical result
+                # (retrying momentarily is better than lower-quality output).
+                return f"find_examples: {e}\nFound 0 results\n"
+            except Exception:
+                # Embed failed (timeout, model not loaded, etc.) — fall back to
+                # lexical keyword search so the agent still gets useful results.
+                _async_use_lexical = True
     else:
         # Literal style token: best-effort embedder fetch for ANN backfill.
         # Failure here is non-fatal — sync body will use literal-only results.
@@ -2059,7 +2169,7 @@ async def find_examples(
     return await asyncio.to_thread(
         _find_examples,
         query, odoo_version, limit, context_module, chunk_types, profile_name,
-        _embedder=embedder, _query_vec=query_vec,
+        _embedder=embedder, _query_vec=query_vec, _use_lexical=_async_use_lexical,
     )
 
 
@@ -3085,9 +3195,9 @@ def find_deprecated_usage(
     Args:
         kind: Optional filter — restrict to one CoreSymbol.kind
             (e.g. 'orm_method', 'function').
-        profile_name: Optional profile filter (e.g. 'my_profile').
-            When set, only Method nodes whose profile array contains this name
-            are scanned. Default None scans across all profiles.
+        profile_name: Optional inheritance-resolved profile filter. When set,
+            narrows the scan to nodes visible in this profile (including
+            parent profiles via the ancestor chain). Default None scans all.
 
     Returns:
         Tree text grouped by module → model.method → deprecated symbol →
@@ -3395,9 +3505,10 @@ def _suggest_pattern(
     driver = _driver or _get_driver()
     try:
         embedder = _embedder or _get_embedder()
-    except Exception as e:
+    except Exception:
+        logger.warning("suggest_pattern: embedder unavailable", exc_info=True)
         return (
-            f"suggest_pattern: embedder unavailable — {type(e).__name__}: {e}\n"
+            "suggest_pattern: embedder unavailable.\n"
             "Hint: check Ollama is running (default: http://localhost:11434)."
         )
 
@@ -3412,9 +3523,11 @@ def _suggest_pattern(
             capped = _cap_query_text(embedder, intent)
             instruct = getattr(embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
             intent_vec = embedder.embed([instruct + capped])[0]
-        except Exception as e:
+        except Exception:
+            logger.warning("suggest_pattern: embedding query failed", exc_info=True)
             return (
-                f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
+                "suggest_pattern: embedding query failed — try again shortly, "
+                "or verify the embedder service is reachable."
             )
 
     # Use injected connection (test path) or check out from pool (production).
@@ -3457,8 +3570,8 @@ def _suggest_pattern(
         ])
         return (
             f"suggest_pattern({intent!r}, {v!r}, language={language})\n"
-            "├─ no patterns indexed. Run: "
-            "python -m src.indexer.seed_patterns\n"
+            "├─ No curated patterns available for this query. "
+            "The pattern catalogue may not be populated for this version/profile.\n"
             + next_line
         )
 
@@ -3583,17 +3696,20 @@ def _check_module_exists(
     confusion = _ee_confusion_live()
 
     # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
-    # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition (it falls to 'custom');
-    # it is handled separately via the raw license value at render time (_is_ee_by_license).
+    # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition (it falls to 'custom'),
+    # so it never trips the EE-confusion gate below — the indexed `edition` enum is the
+    # sole signal (ADR-0036; #263 regression fix removed the prior license-based check).
     is_ee_confusion = False
     ee_source = ""  # track source for output messaging
     viindoo_equivalent = None
 
-    # OPL-1 at render time: not indexed as "enterprise" (falls to "custom" in
-    # _detect_module_edition) but the raw license value identifies Odoo EE clearly.
-    _is_ee_by_license = (license_val or "").upper() in ("OPL-1", "OEEL-1")
-    if indexed and (edition == "enterprise" or _is_ee_by_license):
-        # Indexed data: edition="enterprise" (OEEL-1 path) or raw license is OPL-1/OEEL-1
+    # Gate EE-confusion on the indexed `edition` enum only (ADR-0036). OEEL-1
+    # (Odoo S.A.'s OWN Enterprise license) is detected as edition="enterprise" at
+    # index time, so the enum check covers it. OPL-1 is the Odoo Proprietary License
+    # for third-party/proprietary apps (edition="viindoo"/"custom") and must NOT be
+    # flagged as Odoo Enterprise — doing so mislabeled Viindoo OPL-1 addons such as
+    # to_base / viin_hr (#263, regression from PR #165).
+    if indexed and edition == "enterprise":
         is_ee_confusion = True
         ee_source = "indexed"
         viindoo_equivalent = vvq_db or confusion.get(name)
@@ -3636,7 +3752,7 @@ def _format_check_module_exists(
         # Differentiate source for debugging
         source_hint = ""
         if ee_source == "indexed":
-            source_hint = " (license=OEEL-1)"
+            source_hint = f" (license={license_val})" if license_val else ""
         elif ee_source == "dict":
             source_hint = " (legacy hardcoded dict)"
         # ADR-0023 §2: English-only tool output.
@@ -3646,10 +3762,11 @@ def _format_check_module_exists(
             "this violates the GPL/Enterprise license boundary."
         )
     elif not indexed:
-        # ADR-0023 §4: NO branch is terminal (no useful drill-down).
+        # ADR-0023 §4.4: terminal branch — module genuinely not found, no
+        # operator-shell hint (agents cannot execute shell commands).
         lines.append(
-            "└─ Hint: module not indexed in this profile. "
-            "If it should be, run: python -m src.indexer index-repo --profile <name>"
+            "└─ Not indexed in this profile. "
+            "Verify the module name, or call list_available_profiles to see indexed scope."
         )
         return "\n".join(lines)
     # Wave 5: YES branch emits Next: footer (ADR-0023 §4).
@@ -4150,9 +4267,12 @@ def _list_fields(
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
         sub_items = groups[key]
+        # Continuation hint uses start_index (ADR-0023 §5.5 Amendment 2026-05-19).
+        # Do NOT suggest raising limit= — the cap is intentional (ADR-0023 §3).
+        # The global start_index footer below handles cross-module pagination.
         more_hint = (
-            f"model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}')"
-            f" with limit={max(limit * 2, total)} for full list"
+            f"model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}',"
+            f" start_index={start_index + cap})"
         )
         # Build rendered strings with inline refs.
         raw_rows = [r for r, _ in sub_items]
@@ -4208,6 +4328,14 @@ def _list_fields(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
+        )
+    elif total > 0 and start_index >= total:
+        # start_index past the end (cursor over-run): rows is empty, so the
+        # "rows {start+1}-{end}" branch would render an inverted range
+        # (e.g. "26-25 of 25"). Disclose the over-run cleanly instead.
+        lines.append(
+            f"├─ No rows at start_index={start_index} (total={total});"
+            f" last row is at index {total - 1}."
         )
     elif start_index > 0:
         # Final page of a paginated sequence — disclose position.
@@ -4337,8 +4465,8 @@ def _list_methods(
         sub_indent = "│   "
         sub_items = groups[key]
         more_hint = (
-            f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
-            f" with limit={max(limit * 2, total)} for full list"
+            f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}',"
+            f" start_index={start_index + cap})"
         )
 
         raw_rows = [r for r, _ in sub_items]
@@ -4376,6 +4504,14 @@ def _list_methods(
             f" Call model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}',"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
         )
+    elif total > 0 and start_index >= total:
+        # start_index past the end (cursor over-run): rows is empty, so the
+        # "rows {start+1}-{end}" branch would render an inverted range
+        # (e.g. "26-25 of 25"). Disclose the over-run cleanly instead.
+        lines.append(
+            f"├─ No rows at start_index={start_index} (total={total});"
+            f" last row is at index {total - 1}."
+        )
     elif start_index > 0:
         lines.append(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total} (last page)."
@@ -4393,6 +4529,117 @@ def _list_methods(
             f"find_override_point(model='{model}', method='{first_method}'"
             f", odoo_version='{odoo_version}') for hook spot",
         )
+    if footer := format_next_step(next_hints):
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+def _list_extenders(
+    model: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+    limit: int = 200,
+    start_index: int = 0,
+    api_key_id: str = _ANONYMOUS_API_KEY_ID,
+) -> str:
+    """Layer-5 — list all modules that extend (but do not define) a model.
+
+    Uses the same ranking heuristic as _resolve_model summary but filters to
+    extension modules only (NOT coalesce(m.is_definition, false)).
+    `start_index` is a zero-based pagination cursor (Cypher SKIP).
+    `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
+    """
+    cap = LIST_PREVIEW_MAX_ITEMS
+    effective_limit = min(limit, cap)
+
+    with _get_driver().session() as session:
+        odoo_version = _resolve_version(odoo_version, session)
+
+        rows = session.run(
+            f"""
+            MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
+            WHERE NOT coalesce(m.is_definition, false)
+              AND ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
+            WITH m, mod,
+                 COUNT {{
+                     (:Field {{model: $name, module: m.module, odoo_version: $v}})
+                 }} AS field_count,
+                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                 {_edition_rank_cypher("mod")},
+                 mod.name AS mod_name
+            RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
+            ORDER BY field_count DESC, dependents DESC, edition_rank ASC, mod_name ASC
+            SKIP $skip
+            LIMIT $limit
+            """,
+            name=model, v=odoo_version, **_scope(profile_name),
+            skip=start_index, limit=effective_limit,
+        ).data()
+
+        total_rec = session.run(
+            """
+            MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(:Module)
+            WHERE NOT coalesce(m.is_definition, false)
+              AND ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
+            RETURN count(m) AS c
+            """,
+            name=model, v=odoo_version, **_scope(profile_name),
+        ).single()
+        total = total_rec["c"] if total_rec else 0
+
+    header = f"Extenders of {model} (Odoo {odoo_version})"
+    if total == 0:
+        next_line = format_next_step([
+            f"model_inspect(model='{model}', method='summary', odoo_version='{odoo_version}')"
+            " for model overview",
+        ])
+        return f"{header}\n├─ (none — model not extended or not indexed)\n{next_line}"
+
+    # Mint opaque refs for each extender module.
+    ext_items = [{"module_name": r["module_name"], "model": model} for r in rows]
+    ref_ids = mint_refs(ext_items, api_key_id, kind="module")
+
+    lines = [header]
+    shown = len(rows)
+    end_index = start_index + shown
+
+    for (r, ref_id) in zip(rows, ref_ids):
+        repo = r.get("repo") or "?"
+        mod_name = r.get("module_name") or "?"
+        lines.append(f"├─ [ref={ref_id}] [{repo}] {mod_name}")
+
+    if total > end_index:
+        next_count = min(cap, total - end_index)
+        lines.append(
+            f"├─ Showing rows {start_index + 1}-{end_index} of {total}."
+            f" Call model_inspect(model='{model}', method='extenders',"
+            f" odoo_version='{odoo_version}',"
+            f" start_index={end_index}) for next {next_count}."
+        )
+    elif start_index >= total:
+        # start_index past the end (cursor over-run): rows is empty, so the
+        # "rows {start+1}-{end}" branch would render an inverted range
+        # (e.g. "26-25 of 25"). Disclose the over-run cleanly instead.
+        lines.append(
+            f"├─ No rows at start_index={start_index} (total={total});"
+            f" last row is at index {total - 1}."
+        )
+    elif start_index > 0:
+        lines.append(
+            f"├─ Showing rows {start_index + 1}-{end_index} of {total} (last page)."
+        )
+    else:
+        # Single full page (total <= cap, start_index == 0): still disclose the
+        # complete count so the agent knows nothing was truncated (L3).
+        lines.append(f"├─ Showing all {total} of {total}.")
+
+    next_hints: list[str] = []
+    next_hints.append(
+        f"model_inspect(model='{model}', method='summary', odoo_version='{odoo_version}')"
+        " for model overview",
+    )
     if footer := format_next_step(next_hints):
         lines.append(footer)
     return "\n".join(lines)
@@ -4557,7 +4804,7 @@ def _list_views_core(
         sub_indent = "│   "
         sub_items = groups[key]
         more_hint = (
-            f"{pager_tool}, limit={max(limit * 2, total)}) for full list"
+            f"{pager_tool}, start_index={start_index + cap})"
         )
         raw_rows = [r for r, _ in sub_items]
         rendered = _render_capped(
@@ -4591,6 +4838,14 @@ def _list_views_core(
             f"├─ Showing rows {start_index + 1}–{end_index} of {total}."
             f" Call {pager_tool},"
             f" start_index={end_index}) for next {min(cap, total - end_index)}."
+        )
+    elif total > 0 and start_index >= total:
+        # start_index past the end (cursor over-run): rows is empty, so the
+        # "rows {start+1}-{end}" branch would render an inverted range
+        # (e.g. "26-25 of 25"). Disclose the over-run cleanly instead.
+        lines.append(
+            f"├─ No rows at start_index={start_index} (total={total});"
+            f" last row is at index {total - 1}."
         )
     elif start_index > 0:
         lines.append(
@@ -4763,8 +5018,7 @@ def _list_owl_components(
     lines = [header]
     more_hint = (
         f"module_inspect(name='{module}', method='owl'"
-        f", odoo_version='{odoo_version}') with limit={max(limit * 2, total)}"
-        " for full list"
+        f", odoo_version='{odoo_version}', start_index={start_index + cap})"
     )
     raw_rows = rows
     rendered = _render_capped(
@@ -4892,8 +5146,7 @@ def _list_qweb_templates(
     lines = [header]
     more_hint = (
         f"module_inspect(name='{module}', method='qweb'"
-        f", odoo_version='{odoo_version}') with limit={max(limit * 2, total)}"
-        " for full list"
+        f", odoo_version='{odoo_version}', start_index={start_index + cap})"
     )
     rendered = _render_capped(
         rows,
@@ -5067,8 +5320,8 @@ def _list_js_patches(
         sub_indent = "│   "
         sub_items = groups[key]
         more_hint = (
-            f"module_inspect(name='{mod_name}', method='js', odoo_version='{odoo_version}')"
-            f" with limit={max(limit * 2, total)} for full list"
+            f"module_inspect(name='{mod_name}', method='js', odoo_version='{odoo_version}',"
+            f" start_index={start_index + cap})"
         )
         raw_rows = [r for r, _ in sub_items]
 
@@ -5274,7 +5527,7 @@ def _diff_method_across_versions(
         lines.append(f"├─ Convention:        unchanged ({from_ck})")
 
     # Signature diff
-    _NULL_HINT = "(not stored, run 'index-repo --full' to populate)"
+    _NULL_HINT = "(signature not available for this version)"
     from_sig = from_data["signature"] if from_data else None
     to_sig = to_data["signature"] if to_data else None
     from_sig_str = from_sig if from_sig is not None else _NULL_HINT
@@ -5448,9 +5701,10 @@ async def suggest_pattern(
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
     try:
         embedder = _get_embedder()
-    except Exception as e:
+    except Exception:
+        logger.warning("suggest_pattern: embedder unavailable", exc_info=True)
         return (
-            f"suggest_pattern: embedder unavailable — {type(e).__name__}: {e}\n"
+            "suggest_pattern: embedder unavailable.\n"
             "Hint: check Ollama is running (default: http://localhost:11434)."
         )
     try:
@@ -5458,9 +5712,11 @@ async def suggest_pattern(
         intent_vec = await _embed_query(embedder, instruct, intent)
     except EmbedOverloaded as e:
         return f"suggest_pattern: {e}"
-    except Exception as e:
+    except Exception:
+        logger.warning("suggest_pattern: embedding query failed", exc_info=True)
         return (
-            f"suggest_pattern: embedding query failed — {type(e).__name__}: {e}"
+            "suggest_pattern: embedding query failed — try again shortly, "
+            "or verify the embedder service is reachable."
         )
     return await asyncio.to_thread(
         _suggest_pattern,
@@ -5491,9 +5747,9 @@ def check_module_exists(
 
     Args:
         name: Module technical name (e.g. 'sale', 'helpdesk', 'viin_helpdesk').
-        profile_name: Optional profile filter (e.g. 'my_profile').
-            When set, only Module nodes whose profile array contains this name
-            are checked. Default None checks across all profiles.
+        profile_name: Optional inheritance-resolved profile filter. When set,
+            narrows the check to modules visible in this profile (including
+            parent profiles via the ancestor chain). Default None checks all.
 
     Returns:
         Tree text: Indexed yes/no, edition, EE-confusion flag, Viindoo
@@ -5871,135 +6127,6 @@ def _resolve_view_structured(
     )
 
 
-def _describe_module_structured(
-    name: str,
-    odoo_version: str = "auto",
-    profile_name: str | None = None,
-) -> DescribeModuleOutput | None:
-    """Structured companion for _describe_module. Returns None when not found."""
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        mod_rec = session.run(
-            """
-            MATCH (m:Module {name: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN m.edition AS edition, m.version_raw AS version_raw,
-                   m.repo AS repo, m.path AS path,
-                   m.repo_url AS repo_url,
-                   m.auto_install AS auto_install,
-                   m.application AS application,
-                   m.category AS category,
-                   m.summary AS summary,
-                   m.external_python AS external_python,
-                   m.external_bin AS external_bin
-            """,
-            n=name, v=odoo_version, **_scope(profile_name),
-        ).single()
-
-        if not mod_rec:
-            return None
-
-        # depends-list is intentionally NOT tenant-scoped (no _scope_pred("d")) —
-        # see the matching note in _describe_module: the scoped `mod_rec` query above
-        # (a separate query that early-returns if unentitled) gates access, and d.name
-        # is just a name from this module's own manifest, not foreign node content.
-        # _module_dep_closure filters because it returns dep.repo/repo_url; this
-        # name-only list has nothing foreign to protect (ADR-0034 A3 / T7).
-        depends = session.run(
-            f"""
-            MATCH (m:Module {{name: $n, odoo_version: $v}})
-                  -[:{REL_DEPENDS_ON}]->(d:Module)
-            RETURN d.name AS name ORDER BY d.name ASC
-            """,
-            n=name, v=odoo_version,
-        ).data()
-
-        defines = session.run(
-            """
-            MATCH (model:Model {module: $n, odoo_version: $v})
-            WHERE coalesce(model.is_definition, false) = true
-              AND model.module <> '__unresolved__'
-              AND ($own IS NULL OR (size(model.profile) > 0
-                   AND all(__p IN model.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN model.name AS name ORDER BY model.name ASC
-            """,
-            n=name, v=odoo_version, **_scope(profile_name),
-        ).data()
-
-        extends = session.run(
-            """
-            MATCH (model:Model {module: $n, odoo_version: $v})
-            WHERE coalesce(model.is_definition, false) = false
-              AND model.module <> '__unresolved__'
-              AND ($own IS NULL OR (size(model.profile) > 0
-                   AND all(__p IN model.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN model.name AS name ORDER BY model.name ASC
-            """,
-            n=name, v=odoo_version, **_scope(profile_name),
-        ).data()
-
-        view_total_rec = session.run(
-            """
-            MATCH (view:View {module: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(view.profile) > 0
-                   AND all(__p IN view.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN count(view) AS c
-            """,
-            n=name, v=odoo_version, **_scope(profile_name),
-        ).single()
-
-        js_count_rec = session.run(
-            """
-            MATCH (j:JSPatch {module: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(j.profile) > 0
-                   AND all(__p IN j.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN count(j) AS c
-            """,
-            n=name, v=odoo_version, **_scope(profile_name),
-        ).single()
-
-    return DescribeModuleOutput(
-        ref=ModuleRef(name=name, odoo_version=odoo_version, profile=None),
-        repo=mod_rec.get("repo") or None,
-        path=mod_rec.get("path") or None,
-        repo_url=mod_rec.get("repo_url") or None,
-        auto_install=bool(mod_rec.get("auto_install")) if mod_rec.get("auto_install") else False,
-        application=bool(mod_rec.get("application")) if mod_rec.get("application") else False,
-        category=mod_rec.get("category") or None,
-        summary=mod_rec.get("summary") or None,
-        external_python=list(mod_rec.get("external_python") or []),
-        external_bin=list(mod_rec.get("external_bin") or []),
-        edition=mod_rec.get("edition") or "community",
-        version_raw=mod_rec.get("version_raw") or None,
-        depends=[d["name"] for d in depends],
-        defines_models=[d["name"] for d in defines],
-        extends_models=[e["name"] for e in extends],
-        view_total=view_total_rec["c"] if view_total_rec else 0,
-        js_patch_count=js_count_rec["c"] if js_count_rec else 0,
-        next_step_hint=format_next_step(
-            [
-                f"model_inspect(model='{defines[0]['name']}', method='fields'"
-                f", odoo_version='{odoo_version}') for declared fields",
-                f"model_inspect(model='{defines[0]['name']}', method='views'"
-                f", odoo_version='{odoo_version}') for module views",
-            ]
-            if defines
-            else (
-                [
-                    f"model_inspect(model='{extends[0]['name']}', method='fields'"
-                    f", odoo_version='{odoo_version}') for declared fields",
-                    f"model_inspect(model='{extends[0]['name']}', method='views'"
-                    f", odoo_version='{odoo_version}') for module views",
-                ]
-                if extends
-                else []
-            )
-        ),
-    )
-
-
 def _list_fields_structured(
     model: str,
     odoo_version: str = "auto",
@@ -6197,7 +6324,7 @@ def _list_methods_structured(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(output_schema=DescribeModuleOutput.model_json_schema(), **READONLY_TOOL_KWARGS)
+@mcp.tool(**READONLY_TOOL_KWARGS)
 @offload
 def describe_module(
     name: str,
@@ -6234,11 +6361,17 @@ def describe_module(
 
     See also: odoo://{version}/module/{name}
     """
+    # WI-5 (#261/#265-Obs4): uniform raw-text output. describe_module was the last
+    # tool wiring the M10.5 Wave-B dual channel (output_schema + structured_content);
+    # that lone structured channel is the #261 not-found throw and the #265-Obs4
+    # serialization inconsistency. Emit text only, like every sibling tool
+    # (ADR-0023 §1: the plain-text tree IS the contract). The unwired
+    # _describe_module_structured companion + DescribeModuleOutput DTO have been
+    # removed (L9) now that no consumer references them.
     text = _describe_module(name, odoo_version, profile_name)
-    structured = _describe_module_structured(name, odoo_version, profile_name)
     return ToolResult(
         content=[TextContent(type="text", text=text)],
-        structured_content=structured.model_dump() if structured is not None else None,
+        structured_content=None,
     )
 
 
@@ -6269,17 +6402,19 @@ def model_inspect(
 
     Args:
         model: Dotted model name, e.g. 'sale.order'.
-        method: One of summary | fields | methods | views | field | method.
-            'field' requires field=. 'method' requires method_name=.
-        profile_name: Optional profile filter.
-        field: Required when method='field'. Note: any 'readonly' signal reflects
-            the Python field definition only (view-level/states/attrs readonly not captured).
-        method_name: Required when method='method'.
-        start_index: Pagination cursor for fields/methods/views (zero-based).
-        limit: Max rows per page (default 200).
-        from_module: Restrict to rows declared in this module (summary/fields/field).
-        kind: Filter fields by ttype, e.g. 'many2one' — method='fields' only.
-        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
+        method: summary | fields | methods | views | field | method | extenders.
+            'field' needs field=. 'method' needs method_name=.
+            'extenders' paginates the full extending-module list (use after
+            summary shows "and N more" in Extended by).
+        profile_name: Profile filter (inheritance-resolved). Default: all.
+        field: Required for method='field'. readonly reflects Python def only.
+        method_name: Required for method='method'.
+        start_index: Pagination cursor for fields/methods/views/extenders.
+        limit: Rows per page (cap: 50 fields, 20 methods/views/extenders,
+            10 JS patches). Page via start_index, not limit.
+        from_module: Filter to rows in this module (summary/fields/field).
+        kind: Filter fields by ttype, e.g. 'many2one' — fields only.
+        view_type: Filter views, e.g. 'form'/'tree'/'list' — views only.
             'list' is the v18+ alias for 'tree'.
     """
     text = _model_inspect(
@@ -6329,7 +6464,8 @@ def module_inspect(
             'fields' and 'methods' return a guidance stub (model required).
             'dependencies' returns the transitive DEPENDS_ON closure with repo
             info and topological load order (B2, ADR-0028 consolidation).
-        profile_name: Optional profile filter.
+        profile_name: Optional profile filter (inheritance-resolved via
+            ancestor chain). Default None = all profiles.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
         view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
@@ -6455,9 +6591,11 @@ def set_active_version(odoo_version: str) -> ToolResult:
     odoo_version= explicitly to each call instead to avoid confusion.
 
     Args:
-        odoo_version: Concrete version string, e.g. '17.0', '16.0', '18.0'.
+        odoo_version: Concrete version string to pin, e.g. '17.0', '16.0'.
             Sentinel values ('auto', 'default', 'latest', 'any', '') are
-            rejected — pass a real version number.
+            rejected here — you cannot pin a sentinel as the active version.
+            After a successful pin, subsequent tool calls accept 'auto' as
+            odoo_version to reuse this pin (ADR-0029).
 
     Returns:
         Confirmation receipt with the pinned version and TTL duration.
@@ -6496,7 +6634,7 @@ def set_active_version(odoo_version: str) -> ToolResult:
                 avail_str = ", ".join(available)
                 hint = f"Indexed versions: {avail_str}"
             else:
-                hint = "No versions indexed yet — run the indexer first."
+                hint = "No Odoo versions are indexed in this knowledge base yet."
             return ToolResult(content=[TextContent(type="text",
                 text=(
                     f"Error: version '{normalized}' is not indexed in this knowledge base.\n"
@@ -6504,16 +6642,18 @@ def set_active_version(odoo_version: str) -> ToolResult:
                     "└─ Use list_available_versions() to see what is available."
                 )
             )])
-    except Exception as exc:
+    except Exception:
+        logger.warning("set_active_version: indexed-version check failed", exc_info=True)
         return ToolResult(content=[TextContent(type="text",
-            text=f"Error checking indexed versions: {exc}")])
+            text="Error checking indexed versions — try again shortly.")])
     try:
         persisted = _session.set_active_version_db(
             _get_api_key_id(), normalized, _get_mcp_session_id()
         )
-    except Exception as exc:
+    except Exception:
+        logger.warning("set_active_version: persist failed", exc_info=True)
         return ToolResult(content=[TextContent(type="text",
-            text=f"Error persisting session version: {exc}")])
+            text="Error persisting the active version — try again shortly.")])
     if not persisted:
         # The write was skipped (non-numeric api_key_id). On authenticated HTTP
         # this means the api_key_id never reached the tool body (#248) — fail
@@ -6577,9 +6717,10 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
         # profile_name not in allowed).
         try:
             allowed = _get_allowed_profiles()
-        except Exception as exc:
+        except Exception:
+            logger.warning("set_active_profile: authorization check failed", exc_info=True)
             return ToolResult(content=[TextContent(type="text",
-                text=f"Error checking profile authorization: {exc}")])
+                text="Error checking profile authorization — try again shortly.")])
         if allowed is not None and profile_name not in allowed:
             return ToolResult(content=[TextContent(type="text",
                 text=(
@@ -6593,9 +6734,10 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1 FROM profiles WHERE name=%s", (profile_name,))
                     found = cur.fetchone()
-        except Exception as exc:
+        except Exception:
+            logger.warning("set_active_profile: profile existence check failed", exc_info=True)
             return ToolResult(content=[TextContent(type="text",
-                text=f"Error checking profiles: {exc}")])
+                text="Error checking profiles — try again shortly.")])
         if not found:
             # Profile not registered — list available ones for the error message.
             try:
@@ -6628,9 +6770,10 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
         persisted = _session.set_active_profile_db(
             _get_api_key_id(), profile_name, _get_mcp_session_id()
         )
-    except Exception as exc:
+    except Exception:
+        logger.warning("set_active_profile: persist failed", exc_info=True)
         return ToolResult(content=[TextContent(type="text",
-            text=f"Error persisting session profile: {exc}")])
+            text="Error persisting the active profile — try again shortly.")])
     if not persisted:
         # Skipped write (non-numeric api_key_id). Loud on authenticated HTTP
         # (#248 propagation gap), gentle no-op on stdio / CLI.
@@ -6697,8 +6840,8 @@ def list_available_versions() -> ToolResult:
     if not rows:
         return ToolResult(content=[TextContent(type="text",
             text=(
-                "No Odoo versions indexed yet.\n"
-                "Run `python -m src.indexer index-repo --profile <name>` to index a repo."
+                "No Odoo versions indexed in this profile yet. "
+                "Call list_available_profiles to see which profiles are configured."
             )
         )])
 
@@ -6743,9 +6886,10 @@ def list_available_profiles() -> ToolResult:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
-    except Exception as exc:
+    except Exception:
+        logger.warning("list_available_profiles: query failed", exc_info=True)
         return ToolResult(content=[TextContent(type="text",
-            text=f"Error querying profiles: {exc}")])
+            text="Error querying profiles — try again shortly.")])
 
     if not rows:
         return ToolResult(content=[TextContent(type="text",
@@ -6761,6 +6905,61 @@ def list_available_profiles() -> ToolResult:
         ver_str = f"  ({odoo_version})" if odoo_version else ""
         lines.append(f"{prefix} {name}{ver_str}")
     return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
+
+
+# ---------------------------------------------------------------------------
+# WI-4 (#260, #259 chain) — profile_inspect discriminator tool (24 -> 25)
+# ADR-0028: one discriminator superset, naming matches model_inspect/module_inspect.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(**READONLY_TOOL_KWARGS)
+@offload
+def profile_inspect(
+    method: str,
+    odoo_version: RequiredOdooVersion,
+    name: str | None = None,
+    repo: str | None = None,
+    start_index: int = 0,
+    limit: int = 50,
+) -> ToolResult:
+    """Method-discriminator for profile-level introspection. See ADR-0028.
+
+    TRIGGER when: "which repos make up profile X", "list modules in Viindoo 17",
+    "show profile hierarchy", "describe profile X", "danh sách module của
+    profile", "profile X có bao nhiêu module", "repos nào trong profile này".
+    PREFER over: chaining list_available_profiles + describe_module when the
+    question is about a profile's composition (repos, modules, parent chain).
+    SKIP when: you only need YES/NO on a module — use check_module_exists.
+    SKIP when: you need a single model's fields/methods — use model_inspect.
+
+    Args:
+        method: 'summary' | 'repos' | 'modules'.
+            summary - ancestor chain, children, repos, module count (needs name=).
+            repos   - distinct repos in the ancestor chain, deduped by (url, branch).
+            modules - paginated modules scoped to the profile; repo= URL-substring
+              filter; start_index/limit pagination (default 50/page, max 50).
+        name: Profile name (e.g. 'viindoo_internal_17'). Required for 'summary';
+            optional for 'repos'/'modules' (None = all caller-visible profiles).
+        repo: Filter by repo URL substring ('repos'/'modules' only).
+        start_index: Zero-based pagination cursor for 'modules'.
+        limit: Rows per page for 'modules' (default 50, max 50).
+
+    Example:
+        profile_inspect(method='summary', name='viindoo_internal_17',
+                        odoo_version='17.0')
+        -> tree: Ancestor chain, Children, Repos (deduped), Module count.
+    """
+    text = _profile_inspect(
+        name=name,
+        method=method,
+        odoo_version=odoo_version,
+        repo=repo,
+        api_key_id=_get_api_key_id(),
+        start_index=start_index,
+        limit=limit,
+    )
+    return ToolResult(content=[TextContent(type="text", text=text)])
 
 
 # ---------------------------------------------------------------------------
@@ -7051,10 +7250,11 @@ def _find_style_override(
     if not want_literal and pre_query_vec is None:
         try:
             embedder_for_body = _embedder or _get_embedder()
-        except Exception as e:
+        except Exception:
+            logger.warning("find_style_override: embedder unavailable", exc_info=True)
             _hint = hints_for("find_style_override", module="", ver=odoo_version)
             return (
-                f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+                "find_style_override: embedder unavailable.\n"
                 "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
                 f"Found 0 results\n{_hint}"
             )
@@ -7062,10 +7262,11 @@ def _find_style_override(
             capped = _cap_query_text(embedder_for_body, selector_or_variable)
             instruct = getattr(embedder_for_body, "query_instruction", INSTRUCT_NL_TO_CODE)
             pre_query_vec = embedder_for_body.embed([instruct + capped])[0]
-        except Exception as e:
+        except Exception:
+            logger.warning("find_style_override: embedding failed", exc_info=True)
             _hint = hints_for("find_style_override", module="", ver=odoo_version)
             return (
-                f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+                "find_style_override: embedding failed — try again shortly.\n"
                 f"Found 0 results\n{_hint}"
             )
     elif want_literal and embedder_for_body is None:
@@ -7327,9 +7528,10 @@ async def find_style_override(
         # NL query: pre-embed on the event loop (bounded, short timeout).
         try:
             embedder = _get_embedder()
-        except Exception as e:
+        except Exception:
+            logger.warning("find_style_override: embedder unavailable", exc_info=True)
             return (
-                f"find_style_override: embedder unavailable — {type(e).__name__}: {e}\n"
+                "find_style_override: embedder unavailable.\n"
                 "Hint: check Ollama server is running and EMBEDDER_MODEL is loaded.\n"
                 "Found 0 results\n"
                 f"{hints_for('find_style_override', module='', ver=odoo_version)}"
@@ -7342,9 +7544,10 @@ async def find_style_override(
                 f"find_style_override: {e}\nFound 0 results\n"
                 f"{hints_for('find_style_override', module='', ver=odoo_version)}"
             )
-        except Exception as e:
+        except Exception:
+            logger.warning("find_style_override: embedding failed", exc_info=True)
             return (
-                f"find_style_override: embedding failed — {type(e).__name__}: {e}\n"
+                "find_style_override: embedding failed — try again shortly.\n"
                 "Found 0 results\n"
                 f"{hints_for('find_style_override', module='', ver=odoo_version)}"
             )
@@ -7517,7 +7720,7 @@ async def health_check(request: Request):
 # Readiness endpoint (WI-D) — cached DB-count readiness probe. Distinct from
 # /health liveness: /ready reports whether the index is populated and both DBs
 # are reachable, reading from the shared TTL cache so it never scans on the hot
-# path. Registered as an HTTP custom route (NOT an MCP tool — tool count stays 24).
+# path. Registered as an HTTP custom route (NOT an MCP tool — tool count is 25 after WI-4).
 @mcp.custom_route("/ready", methods=["GET"])
 async def ready_check(request: Request):
     from src.mcp.health import ready_handler

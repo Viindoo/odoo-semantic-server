@@ -1703,21 +1703,28 @@ def test_describe_module_no_models_skips_footer(neo4j_driver):
 W6_EDITION_LABEL_VERSION = "88.0"
 
 
-def test_describe_module_edition_label_opl1(neo4j_driver):
-    """describe_module: OPL-1 license → Edition shows 'Odoo Enterprise (EE)'."""
+def test_describe_module_edition_label_opl1_firstparty(neo4j_driver):
+    """describe_module: OPL-1 is the Odoo Proprietary License for third-party /
+    proprietary apps (ADR-0036) — NOT Odoo Enterprise (that is OEEL-1). A Viindoo
+    OPL-1 module (edition='viindoo') must render as 'Viindoo Enterprise (EE)', NOT
+    'Odoo Enterprise (EE)'. Regression guard for #263 (PR #165 mislabeled
+    tvtmaaddons as Odoo Enterprise)."""
     _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
     try:
         with neo4j_driver.session() as session:
             session.run(
                 "MERGE (m:Module {name: $n, odoo_version: $v}) "
-                "SET m.repo = 'odoo_ent', m.edition = 'custom', m.license = 'OPL-1', "
+                "SET m.repo = 'tvtmaaddons', m.edition = 'viindoo', m.license = 'OPL-1', "
                 "    m.profile = ['default']",
-                n="sale_enterprise_test", v=W6_EDITION_LABEL_VERSION,
+                n="viin_firstparty_test", v=W6_EDITION_LABEL_VERSION,
             )
         srv = _import_server_module()
-        out = srv._describe_module("sale_enterprise_test", W6_EDITION_LABEL_VERSION)
-        assert "Odoo Enterprise (EE)" in out, (
-            f"Expected 'Odoo Enterprise (EE)' in Edition line, got:\n{out}"
+        out = srv._describe_module("viin_firstparty_test", W6_EDITION_LABEL_VERSION)
+        assert "Viindoo Enterprise (EE)" in out, (
+            f"Expected 'Viindoo Enterprise (EE)' in Edition line, got:\n{out}"
+        )
+        assert "Odoo Enterprise (EE)" not in out, (
+            f"OPL-1 first-party module must NOT be labeled Odoo Enterprise, got:\n{out}"
         )
     finally:
         _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
@@ -1738,6 +1745,41 @@ def test_describe_module_edition_label_lgpl3(neo4j_driver):
         out = srv._describe_module("sale_ce_test", W6_EDITION_LABEL_VERSION)
         assert "Community (CE)" in out, (
             f"Expected 'Community (CE)' in Edition line, got:\n{out}"
+        )
+    finally:
+        _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+
+
+def test_check_module_exists_firstparty_viindoo_not_ee_confusion(neo4j_driver):
+    """check_module_exists: a Viindoo OPL-1 addon (edition='viindoo',
+    license='OPL-1', repo tvtmaaddons) must report 'Is EE confusion: No' and emit
+    NO Odoo-Enterprise GPL-violation warning. OPL-1 is the Odoo Proprietary License
+    for third-party/proprietary apps (ADR-0036), NOT Odoo Enterprise (OEEL-1).
+    Regression guard for #263 — PR #165 mislabeled to_base/viin_hr as Odoo
+    Enterprise via the OPL-1-in-EE-set bug. The `all()` tenant choke and the dict
+    guard list are untouched."""
+    _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MERGE (m:Module {name: $n, odoo_version: $v}) "
+                "SET m.repo = 'tvtmaaddons', m.edition = 'viindoo', "
+                "    m.license = 'OPL-1', m.profile = ['default']",
+                n="to_base", v=W6_EDITION_LABEL_VERSION,
+            )
+        srv = _import_server_module()
+        out = srv._check_module_exists("to_base", W6_EDITION_LABEL_VERSION)
+        assert "Is EE confusion: No" in out, (
+            f"First-party Viindoo OPL-1 module must NOT be EE confusion, got:\n{out}"
+        )
+        assert "Viindoo Enterprise (EE)" in out, (
+            f"Expected Viindoo edition label, got:\n{out}"
+        )
+        assert "GPL" not in out and "Odoo Enterprise" not in out, (
+            f"No false Odoo-Enterprise/GPL warning expected, got:\n{out}"
+        )
+        assert "not in Viindoo stack" not in out, (
+            f"No self-contradictory 'not in Viindoo stack' line expected, got:\n{out}"
         )
     finally:
         _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)

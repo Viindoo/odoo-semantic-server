@@ -111,3 +111,51 @@ duplicate logic that is better tested via `test_conftest_priority2_guard.py`.
 (done in W1A-4), not a substitute. A higher attempt limit reduces blast radius
 but does not prevent the conftest from making unnecessary auth calls to a live
 production Neo4j.
+
+---
+
+## Amendment (2026-06-05) — remote-target destructive-DB guard (PR #266 follow-up)
+
+### Gap
+
+The original `_priority2_guard_blocks_run` guard only fires when the target uses
+**default credentials** (`NEO4J_TEST_PASSWORD == "password"` and the default URI).
+A contributor who exports `NEO4J_TEST_URI` / `PG_TEST_DSN` pointing at a **real
+store with valid (non-default) credentials** disarms that guard — and the
+integration fixtures (`clean_neo4j` runs `DETACH DELETE`; the Postgres fixtures
+`TRUNCATE`/`DELETE`) would then wipe a production database. The default-creds
+guard cannot catch this because the whole point of a prod DSN is that it carries
+non-default creds.
+
+### Decision
+
+Add a second, orthogonal guard `_assert_test_db_target_is_safe(env_var, default)`
+in `tests/conftest.py`, wired at the top of the `neo4j_driver` and `pg_conn`
+fixtures. It hard-`pytest.skip`s when ALL of:
+
+1. the resolved host (parsed from the bolt URI or libpq DSN, both URL and
+   keyword `host=` forms) is **positively a non-loopback host**
+   (not `localhost` / `127.0.0.1` / `0.0.0.0` / `::1` / empty), AND
+2. `CI` is unset/false, AND
+3. `OSM_ALLOW_REMOTE_TEST_DB` is unset/false.
+
+A remote host on a dev box is the only configuration refused. Unparseable /
+empty host → treated as loopback (we only block on a *positively identified*
+remote host) so the guard never produces false-positive skips on odd-but-local
+targets.
+
+### Why this is CI-safe
+
+GitHub Actions sets `CI=true` **and** points both targets at `127.0.0.1`
+(loopback) — either condition alone exempts CI, so the guard is doubly inert
+there. The local default (`localhost`) is loopback, so the normal
+`make test-integration` flow is never blocked. The escape hatch
+`OSM_ALLOW_REMOTE_TEST_DB=1` covers the legitimate "remote but disposable test
+instance" case without a code change.
+
+### Why skip (not fail), consistent with the original decision
+
+Same rationale as the Priority-2 guard above: a hard fail would turn a
+misconfiguration into a red suite on machines that legitimately have no local
+DB. A skip surfaces the reason (the message names the offending env var, the
+resolved host, and the override) without breaking the no-DB-present story.

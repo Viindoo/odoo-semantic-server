@@ -120,6 +120,14 @@ NEXT_STEP_HINTS: dict[str, list[str]] = {
         "model_inspect(model='{name}', method='fields', odoo_version='{ver}')"
         " to list relational fields",
     ],
+    # WI-4 (#260) profile introspection tool (ADR-0028).
+    # {name} = profile name; {ver} = odoo_version.
+    "profile_inspect": [
+        "check_module_exists(name='<module>', odoo_version='{ver}',"
+        " profile_name='{name}') to verify a specific module exists",
+        "model_inspect(model='<model>', method='summary', odoo_version='{ver}')"
+        " to inspect a specific model in this profile",
+    ],
 }
 
 # Per ADR-0023 §4.4 — these three tools terminate the chain (output IS the artifact).

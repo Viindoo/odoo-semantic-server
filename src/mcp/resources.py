@@ -37,6 +37,7 @@ internal design notes (cross-server pattern: stable URI resources) for prior art
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -45,6 +46,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.constants import STYLESHEET_RESOURCE_MAX_BYTES
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -512,11 +515,14 @@ def _render_stylesheet(
     try:
         with open(on_disk_path, encoding="utf-8") as fh:
             raw = fh.read()
-    except OSError as e:
+    except OSError:
+        logger.warning(
+            "stylesheet resource unreadable on disk: %s/%s (%s)",
+            module, file_path, v, exc_info=True,
+        )
         text = (
             f"stylesheet({module!r}/{file_path!r}, {v!r})\n"
-            f"├─ indexed but file unreadable on this server: "
-            f"{type(e).__name__}: {e}\n"
+            f"├─ indexed but file unreadable on this server.\n"
             f"└─ Recovery: re-index the repo to refresh on-disk references."
         )
         return text, MIME_MARKDOWN

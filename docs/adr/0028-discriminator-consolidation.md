@@ -143,6 +143,8 @@ Shipping the superset tools and simultaneously removing the flat tools in the sa
 | v0.6 | 10 deprecated shims removed (~1 major release later) |
 | v0.7.0 | `model_inspect` / `module_inspect` gained `from_module` forwarding (first filter-parity fix) |
 | v0.7.1 | Full filter parity achieved: `model_inspect` forwards `kind` (fields) + `view_type` (views); `module_inspect` forwards `view_type` (views), `bound_model` (owl), `era` + `target` (js). The supersets now expose every filter the removed flat tools had — no capability gap vs the deprecated `list_*` tools. |
+| Wave 2 WI-4 | **`profile_inspect` added (tool count 24 -> 25)** — profile-level discriminator superset (#260, #259 chain half). `method='summary'` surfaces ancestor chain + children + repos + module_count; `method='repos'` lists distinct repos deduped by (url, branch) across the ancestor chain; `method='modules'` returns a paginated module list scoped to the profile with optional `repo=` filter (cap 50, `start_index` pagination). RBAC via `_scope`/`_effective_allowed` (ADR-0034 choke preserved); `_effective_allowed` pre-check denies non-visible profiles before any DB I/O. `get_children_profiles()` helper added to `src/db/repo_registry.py` beside `get_ancestor_profile_names()`. Router in `src/mcp/inspect.py` (`_profile_inspect`, `_PROFILE_METHODS`). Closes the "#260: answerable in <=2 calls" acceptance and the unsurfaced-chain half of #259. |
+| PR #266 WI-7 | **`model_inspect` gained `method='extenders'`** (#262-B) — paginates the full "Extended by" module list that `method='summary'` shows truncated. `limit` cap 20; `start_index` cursor; total disclosed on every page. Summary row count and paginated total use the same `NOT is_definition` predicate (no off-by-one). |
 
 ---
 

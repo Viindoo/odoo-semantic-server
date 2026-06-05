@@ -46,6 +46,7 @@ def _make_srv_mock() -> MagicMock:
     srv._resolve_view.return_value = _STUB_RETURN
     srv._list_fields.return_value = _STUB_RETURN
     srv._list_methods.return_value = _STUB_RETURN
+    srv._list_extenders.return_value = _STUB_RETURN
     srv._list_views.return_value = _STUB_RETURN
     srv._list_owl_components.return_value = _STUB_RETURN
     srv._list_qweb_templates.return_value = _STUB_RETURN
@@ -197,6 +198,7 @@ _MODEL_HAPPY_CASES = [
     ("views", {}, "_list_views"),
     ("field", {"field": "amount_total"}, "_resolve_field"),
     ("method", {"method_name": "action_confirm"}, "_resolve_method"),
+    ("extenders", {}, "_list_extenders"),
 ]
 
 
