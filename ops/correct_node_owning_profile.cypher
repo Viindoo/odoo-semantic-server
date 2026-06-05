@@ -44,12 +44,18 @@
 // same-name cross-tenant collision exists (e.g. a single tenant hierarchy where
 // all sharing is via inheritance). Use Phase 0 below to check first.
 //
-// ► AUTHORITATIVE, COLLISION-SAFE CORRECTION: a `--full --no-embed` reindex under
-//   the WI-1 writer fix. It regenerates `profile[]` from DEFINERS only (union-
-//   correct for collisions — a colliding node keeps BOTH owners and stays
-//   fail-closed). pgvector was never polluted by this bug (it always stamped the
-//   leaf `profile_name`), so `--no-embed` is sufficient and avoids embedder load.
-//   Prefer the reindex whenever Phase 0 flags any cross-tenant collision risk.
+// ► NOTE ON REINDEX — IT DOES NOT SHRINK profile[]: a `--full --no-embed` reindex
+//   does NOT regenerate `profile[]` from scratch. The writer's ON MATCH SET uses
+//   a UNION-ONLY pattern (`[x IN coalesce(n.profile,[]) WHERE NOT x IN $profiles]
+//   + $profiles`) — it adds names but never removes them, so a reindex can only
+//   GROW a polluted array, never shrink it. This in-place Cypher script is the
+//   ONLY way to correct an already-polluted profile[]. For a GENUINE cross-tenant
+//   collision (Phase 0 flags ≥2 distinct non-null tenants), do NOT collapse in
+//   place — instead delete the colliding nodes (web-UI repo delete →
+//   delete_modules_scoped) and re-index so the writer re-derives the correct
+//   UNION via ON CREATE. Reindex is still required AFTER this script to keep
+//   FUTURE writes correct under the WI-1 writer, but it does not perform the
+//   correction itself.
 //
 // SOURCE OF TRUTH
 // ---------------
@@ -70,8 +76,10 @@
 //     no node create/delete.
 //   - Idempotent + re-runnable: the `WHERE coalesce(…profile,[]) <> [row.profile_name]`
 //     guard makes a second run a no-op (0 nodes changed).
-//   - Reversible: a `--full` reindex under the WI-1 writer regenerates `profile[]`
-//     from scratch, so this is not a one-way door.
+//   - Re-runnable (not auto-reversible): the `WHERE coalesce(…profile,[]) <>
+//     [row.profile_name]` guard makes a second run a no-op. A `--full` reindex
+//     does NOT undo this script — the writer union-ADDS profiles, it does not
+//     overwrite them. This script is the definitive correction, not reindex.
 //   - Only rewrites nodes whose `repo_id` is in $map. A node with no `repo_id`
 //     (legacy / placeholder) is left untouched by Phase 1 and only inherits via
 //     Phase 2 if it has a DEFINED_IN/BELONGS_TO Module parent that WAS corrected.
@@ -86,8 +94,11 @@
 // ---------------------------
 //   0. Export $map (query above), then run PHASE 0 (read-only ADVISORY). If it
 //      flags ANY Module whose profile[] spans ≥2 distinct non-null tenants, do
-//      NOT run Phase 1 in place — run the `--full --no-embed` reindex instead
-//      (collision-safe). Depender-pollution within ONE tenant hierarchy is safe
+//      NOT run Phase 1 in place — instead delete the colliding nodes (web-UI repo
+//      delete uses delete_modules_scoped) and re-index so the writer re-derives
+//      the correct UNION via ON CREATE. A plain `--full` reindex will NOT fix a
+//      polluted array (union-only writer). Depender-pollution within ONE tenant
+//      hierarchy is safe
 //      to collapse and may appear here as benign (verify the tenants are an
 //      ancestor/descendant pair before proceeding).
 //   1. Deploy the WI-1 writer fix (so future index runs stamp the owning profile).

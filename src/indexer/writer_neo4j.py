@@ -39,11 +39,34 @@ from .models import (
 _logger = logging.getLogger(__name__)
 
 
+def _profile_union_set(alias: str) -> str:
+    """Cypher fragment for ON MATCH SET union-add of profile names (write-side).
+
+    Returns the canonical dedup-add expression used by every defining node's
+    ``ON MATCH SET <alias>.profile = ...`` clause:
+
+        [x IN coalesce(<alias>.profile, []) WHERE NOT x IN $profiles] + $profiles
+
+    Union-only by construction (ADR-0034): never resets, never removes an
+    existing owner — it appends $profiles after stripping any names already
+    present, so a node co-owned by a genuine collision keeps BOTH owners and
+    stays fail-closed at the ADR-0034 read-side choke. Mirrors the read-side
+    ``_scope_pred`` builder in src/mcp/server.py — SEE ALSO that function: the
+    write-side union shape here and the read-side predicate there are coupled
+    (a change to one's profile/empty-node semantics must be reflected in both).
+
+    The ``$profiles`` token is a literal Cypher parameter in the returned string;
+    it is bound by the caller's ``tx.run(..., profiles=...)`` kwargs and is NOT
+    an f-string variable here.
+    """
+    return f"[x IN coalesce({alias}.profile, []) WHERE NOT x IN $profiles] + $profiles"
+
+
 def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
     module = result.module
 
-    tx.run("""
-        MERGE (m:Module {name: $name, odoo_version: $v})
+    tx.run(f"""
+        MERGE (m:Module {{name: $name, odoo_version: $v}})
         ON CREATE SET m.profile = $profiles,
                       m.auto_install = $auto_install,
                       m.application = $application,
@@ -54,7 +77,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.repo_url = $repo_url,
                       m.repo_id = $repo_id
         ON MATCH  SET m.profile =
-                          [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles,
+                          {_profile_union_set("m")},
                       m.auto_install = $auto_install,
                       m.application = $application,
                       m.category = $category,
@@ -113,7 +136,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
-                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("mod")}
             MERGE (m:Model {{name: $name, module: $module_name, odoo_version: $v}})
             ON CREATE SET m.is_transient = $is_transient,
                           m.is_abstract = $is_abstract,
@@ -128,7 +151,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                               coalesce(m.is_definition, false)
                               OR ($had_explicit_name AND NOT $name IN $inherit_list),
                           m.profile =
-                              [x IN coalesce(m.profile, []) WHERE NOT x IN $profiles] + $profiles
+                              {_profile_union_set("m")}
             MERGE (m)-[:{REL_DEFINED_IN}]->(mod)
         """, name=model.name, v=model.odoo_version,
              module_name=model.module,
@@ -226,13 +249,13 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                      delegated=delegated_model, via_field=via_field)
 
         for fld in model.fields:
-            tx.run("""
-                MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
-                MERGE (f:Field {name: $name, model: $model_name,
-                               module: $mod, odoo_version: $v})
+            tx.run(f"""
+                MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
+                MERGE (f:Field {{name: $name, model: $model_name,
+                               module: $mod, odoo_version: $v}})
                 ON CREATE SET f.profile = $profiles
                 ON MATCH  SET f.profile =
-                    [x IN coalesce(f.profile, []) WHERE NOT x IN $profiles] + $profiles
+                    {_profile_union_set("f")}
                 SET f.ttype = $ttype, f.related = $related, f.compute = $compute,
                     f.stored = $stored, f.required = $required,
                     f.comodel_name = $comodel_name,
@@ -250,13 +273,13 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                  profiles=profiles)
 
         for mth in model.methods:
-            tx.run("""
-                MATCH (m:Model {name: $model_name, module: $mod, odoo_version: $v})
-                MERGE (mth:Method {name: $name, model: $model_name,
-                                   module: $mod, odoo_version: $v})
+            tx.run(f"""
+                MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
+                MERGE (mth:Method {{name: $name, model: $model_name,
+                                   module: $mod, odoo_version: $v}})
                 ON CREATE SET mth.profile = $profiles
                 ON MATCH  SET mth.profile =
-                    [x IN coalesce(mth.profile, []) WHERE NOT x IN $profiles] + $profiles
+                    {_profile_union_set("mth")}
                 SET mth.has_super_call = $has_super_call,
                     mth.decorators = $decorators,
                     mth.convention_kind = $ck,
@@ -322,11 +345,11 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
 
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
     for view in result.views:
-        tx.run("""
-            MERGE (v:View {xmlid: $xmlid, odoo_version: $ver})
+        tx.run(f"""
+            MERGE (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             ON CREATE SET v.profile = $profiles
             ON MATCH  SET v.profile =
-                [x IN coalesce(v.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("v")}
             SET v.name = $name, v.model = $model, v.module = $module,
                 v.type = $view_type, v.mode = $mode,
                 v.xpaths_exprs = $xpaths_exprs,
@@ -346,7 +369,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             MERGE (mod:Module {{name: $module, odoo_version: $ver}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
-                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("mod")}
             MERGE (v)-[:{REL_DEFINED_IN}]->(mod)
         """, xmlid=view.xmlid, ver=view.odoo_version, module=view.module,
              profiles=profiles)
@@ -401,11 +424,11 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                      inherit_xmlid=view.inherit_xmlid)
 
     for qweb in result.qweb:
-        tx.run("""
-            MERGE (t:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+        tx.run(f"""
+            MERGE (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
             ON CREATE SET t.profile = $profiles
             ON MATCH  SET t.profile =
-                [x IN coalesce(t.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("t")}
             SET t.module = $module,
                 t.unresolved = false
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module, profiles=profiles)
@@ -415,7 +438,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             MERGE (mod:Module {{name: $module, odoo_version: $ver}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
-                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("mod")}
             MERGE (t)-[:{REL_DEFINED_IN}]->(mod)
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
              profiles=profiles)
@@ -462,11 +485,11 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
-                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("mod")}
             MERGE (c:OWLComp {{name: $name, module: $module_name, odoo_version: $v}})
             ON CREATE SET c.profile = $profiles
             ON MATCH  SET c.profile =
-                [x IN coalesce(c.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("c")}
             SET c.template = $template, c.extends = $extends,
                 c.bound_model = $bound_model, c.file_path = $file_path
             MERGE (c)-[:{REL_DEFINED_IN}]->(mod)
@@ -500,12 +523,12 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
-                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("mod")}
             MERGE (j:JSPatch {{target: $target, patch_name: $patch_name,
                               module: $module_name, odoo_version: $v}})
             ON CREATE SET j.profile = $profiles
             ON MATCH  SET j.profile =
-                [x IN coalesce(j.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("j")}
             SET j.era = $era, j.file_path = $file_path
             MERGE (j)-[:{REL_DEFINED_IN}]->(mod)
         """, module_name=patch.module, v=patch.odoo_version,
@@ -731,13 +754,12 @@ def _write_stylesheets_batch(
                           ss.mixin_count = $mix,
                           ss.repo_id = coalesce($repo_id, ss.repo_id),
                           ss.profile =
-                              [x IN coalesce(ss.profile, []) WHERE NOT x IN $profiles]
-                              + $profiles
+                              {_profile_union_set("ss")}
             WITH ss
             MERGE (mod:Module {{name: $mod, odoo_version: $v}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
-                [x IN coalesce(mod.profile, []) WHERE NOT x IN $profiles] + $profiles
+                {_profile_union_set("mod")}
             MERGE (ss)-[:{REL_DEFINED_IN}]->(mod)
         """, fp=fp_rel, mod=s.module, v=s.odoo_version,
              lang=s.language, sel=s.selector_count, var=s.variable_count,
@@ -790,11 +812,11 @@ def _write_lint_violations_batch(
         # Upsert the LintViolation node.
         # Composite key (file_path, line, rule, odoo_version) collapses multiple
         # same-line/same-rule messages into one node (last-write-wins, by design).
-        tx.run("""
-            MERGE (lv:LintViolation {
+        tx.run(f"""
+            MERGE (lv:LintViolation {{
                 file_path: $fp, line: $line,
                 rule: $rule, odoo_version: $ver
-            })
+            }})
             ON CREATE SET lv.message = $msg,
                           lv.severity = $sev,
                           lv.view_xmlid = $xmlid,
@@ -805,8 +827,7 @@ def _write_lint_violations_batch(
                           lv.view_xmlid = $xmlid,
                           lv.view_type = $vtype,
                           lv.profile =
-                              [x IN coalesce(lv.profile, []) WHERE NOT x IN $profiles]
-                              + $profiles
+                              {_profile_union_set("lv")}
         """, fp=fp_rel, line=v.line, rule=v.rule, ver=v.odoo_version,
              msg=v.message, sev=v.severity, xmlid=v.view_xmlid,
              vtype=v.view_type, profiles=profiles)
@@ -1404,6 +1425,62 @@ class Neo4jWriter:
                 odoo_version,
             )
         return {"nodes": nodes_healed, "edges": edges_healed}
+
+    def gc_null_repo_dep_stubs(self, odoo_version: str) -> int:
+        """DETACH DELETE childless dep-stub Module nodes for odoo_version.
+
+        These are :Module nodes created by the dep-target MERGE
+        (write_parse_result) for ``module.depends`` entries that were never
+        indexed under their own profile.  Their MERGE key is
+        ``{name, odoo_version}`` only — no ``repo``, no ``repo_id``, no
+        ``DEFINED_IN`` children.  Because ``gc_stale_modules`` keys on a
+        concrete non-NULL ``repo`` string it never matches these stubs.
+
+        Safety:
+        - Only deletes where ``m.repo_id IS NULL`` (absent) AND no
+          ``DEFINED_IN`` child exists.
+        - A node with ``repo_id`` set was written by a real indexer run —
+          never deleted here.
+        - DETACH DELETE removes incident DEPENDS_ON edges along with the node.
+        - The dep-MERGE re-creates the stub + edge on the very next indexer
+          run for any dep still declared, so deletion is safe — the stub
+          resurrects automatically.
+        - Scoped by ``odoo_version`` so cross-version data is never touched.
+        - Idempotent: a second run returns 0.
+
+        Must run AFTER all profiles for ``odoo_version`` have completed
+        indexing in this pass (so a stub promoted to a real module in a
+        later-running profile is not deleted before that profile runs).
+        Place in ``index_all()`` AFTER the parallel/sequential profile loop,
+        NOT per-profile and NOT per-repo.
+
+        Returns count of deleted nodes.
+        """
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (m:Module {odoo_version: $version})
+                WHERE m.repo_id IS NULL
+                  AND NOT EXISTS { (m)<-[:DEFINED_IN]-() }
+                DETACH DELETE m
+                RETURN count(m) AS deleted
+                """,
+                version=odoo_version,
+            ).single()
+        deleted = row["deleted"] if row is not None else 0
+        if deleted > 0:
+            _logger.info(
+                "Dep-stub GC: deleted %d childless repo_id=NULL Module nodes "
+                "for version %s",
+                deleted, odoo_version,
+            )
+        else:
+            _logger.debug(
+                "Dep-stub GC: no childless NULL-repo Module stubs found "
+                "for version %s",
+                odoo_version,
+            )
+        return deleted
 
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,

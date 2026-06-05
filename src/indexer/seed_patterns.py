@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src import config
-from src.constants import DEFAULT_EMBEDDER_MODEL
+from src.constants import DEFAULT_EMBEDDER_MODEL, GLOBAL_PROFILE
 from src.indexer.models import PatternExample
 from src.indexer.writer_neo4j import Neo4jWriter
 from src.indexer.writer_pgvector import (
@@ -35,6 +35,10 @@ from src.indexer.writer_pgvector import (
 )
 
 _logger = logging.getLogger("seed_patterns")
+
+# Re-export GLOBAL_PROFILE for callers that import it from here.
+# The canonical definition lives in src.constants — do not duplicate it here.
+# GLOBAL_PROFILE imported above from src.constants.
 
 # Default patterns file lives next to the package (src/data/patterns.json).
 _DEFAULT_PATTERNS_FILE = (
@@ -519,13 +523,15 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
-                # Patterns are global (shared across all tenants) → profile_name IS NULL.
-                # Use IS NOT DISTINCT FROM to match NULL safely.
+                # Patterns are global (cross-tenant) → profile_name = GLOBAL_PROFILE.
+                # Stamp the sentinel on every chunk before building the insert rows.
+                for _c in live_chunks:
+                    _c.profile_name = GLOBAL_PROFILE
                 cur.execute(
                     "DELETE FROM embeddings "
                     "WHERE chunk_type = 'pattern_example' AND module = '__patterns__' "
-                    "AND profile_name IS NOT DISTINCT FROM %s",
-                    (None,),
+                    "AND profile_name = %s",
+                    (GLOBAL_PROFILE,),
                 )
                 rows = [
                     c.as_tuple(vecs[i], emb_model, emb_dim)
@@ -634,12 +640,16 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
-                # Patterns are global (shared across all tenants) → profile_name IS NULL.
+                # Patterns are global (cross-tenant) → profile_name = GLOBAL_PROFILE
+                # (explicit '__global__' sentinel, m13_021).
+                # Stamp the sentinel on every chunk before building the insert rows.
+                for _c in live_chunks:
+                    _c.profile_name = GLOBAL_PROFILE
                 cur.execute(
                     "DELETE FROM embeddings "
                     "WHERE chunk_type = 'pattern_example' AND module = '__patterns__' "
-                    "AND profile_name IS NOT DISTINCT FROM %s",
-                    (None,),
+                    "AND profile_name = %s",
+                    (GLOBAL_PROFILE,),
                 )
                 rows = [
                     c.as_tuple(vecs[i], emb_model, emb_dim)

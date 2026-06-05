@@ -62,6 +62,9 @@ def seeded_patterns(clean_pg_embeddings, clean_neo4j):
     chunks = make_pattern_chunks(patterns)
     texts = [c.content for c in chunks]
     vecs = embedder.embed(texts)
+    from src.constants import GLOBAL_PROFILE
+    for _c in chunks:
+        _c.profile_name = GLOBAL_PROFILE
     from psycopg2.extras import execute_values
     with clean_pg_embeddings.cursor() as cur:
         execute_values(

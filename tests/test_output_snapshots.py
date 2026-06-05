@@ -195,7 +195,8 @@ class TestFindExamplesOutputSchema:
                 "[snap_mod] ...continued...",
             ),
         ]
-        write_module_embeddings("snap_mod", _SNAP_VERSION, chunks, embedder)
+        write_module_embeddings("snap_mod", _SNAP_VERSION, chunks, embedder,
+                                profile_name="snap_profile")
 
         self._pg = pg_conn_fixture
         self._neo4j = neo4j_driver
@@ -914,6 +915,9 @@ def test_suggest_pattern_output_contract(pattern_snapshot_db, clean_pg_embedding
     embedder = FakeEmbedder(dim=1024)
     chunks = make_pattern_chunks([pe])
     vecs = embedder.embed([c.content for c in chunks])
+    from src.constants import GLOBAL_PROFILE
+    for _c in chunks:
+        _c.profile_name = GLOBAL_PROFILE
     with clean_pg_embeddings.cursor() as cur:
         execute_values(
             cur, _INSERT_SQL,

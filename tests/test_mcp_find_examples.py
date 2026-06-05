@@ -34,8 +34,10 @@ def seeded(clean_pg_embeddings, clean_neo4j):
         "res.partner", "base/models/partner.py", 0,
         "[base] res.partner: name (char)\nname = fields.Char(...)",
     )]
-    write_module_embeddings("sale", TEST_VERSION, sale_chunks, embedder)
-    write_module_embeddings("base", TEST_VERSION, base_chunks, embedder)
+    write_module_embeddings("sale", TEST_VERSION, sale_chunks, embedder,
+                            profile_name="test_profile")
+    write_module_embeddings("base", TEST_VERSION, base_chunks, embedder,
+                            profile_name="test_profile")
 
     return clean_pg_embeddings, clean_neo4j
 
@@ -139,8 +141,10 @@ def test_find_examples_rerank_by_dependents(clean_pg_embeddings, clean_neo4j):
         "isolated_mod/models/m.py", 0, shared_content,
     )
     embedder = FakeEmbedder(dim=1024)
-    write_module_embeddings("popular_mod", TEST_VERSION, [popular_chunk], embedder)
-    write_module_embeddings("isolated_mod", TEST_VERSION, [isolated_chunk], embedder)
+    write_module_embeddings("popular_mod", TEST_VERSION, [popular_chunk], embedder,
+                            profile_name="test_profile")
+    write_module_embeddings("isolated_mod", TEST_VERSION, [isolated_chunk], embedder,
+                            profile_name="test_profile")
 
     result = _find_examples(
         "example action", odoo_version=TEST_VERSION, limit=5,
@@ -284,7 +288,8 @@ def test_find_examples_lexical_rls_scope(clean_pg_embeddings):
         "sale.order", "sale/models/sale.py", 0,
         "def action_confirm(self): pass",
     )
-    write_module_embeddings("sale", TEST_VERSION, [chunk], FakeEmbedder(dim=1024))
+    write_module_embeddings("sale", TEST_VERSION, [chunk], FakeEmbedder(dim=1024),
+                            profile_name="test_profile")
 
     # Positive control: allowed=None (admin/unrestricted) must find the seeded row.
     with _rls_read_tx(pg, None):

@@ -3,16 +3,24 @@
 """RLS (Row-Level Security) tests for the embeddings table (ADR-0034 WI-7).
 
 Migration m13_004_embeddings_rls.sql installs the policy in "armed-but-dormant"
-mode (ENABLE without FORCE). These tests cover:
+mode (ENABLE without FORCE). Migration m13_021_embeddings_global_sentinel.sql
+(FUFU-2) replaces the NULL-as-global overloading with an explicit '__global__'
+sentinel and makes the column NOT NULL.
+
+These tests cover:
 
   * Armed-but-dormant: policy installed but owner connection bypasses it (tests 1-2).
   * FORCED mode (non-owner osm_reader role): isolation semantics (tests 3-6, 8).
   * Owner writes succeed under ENABLE-only (test 7).
-  * D3 shared catalogue still passes through IS NULL branch (test 8).
+  * D3 pattern catalogue always visible through '__global__' sentinel branch (test 8).
+  * Sentinel visible to all tenants under scoped GUC (test 10).
+  * Non-pattern '__global__' row rejected by sentinel CHECK (test 11).
+  * NOT NULL rejects a NULL insert (test 12).
+  * Cross-tenant isolation intact under sentinel design (tests 3, 4 — unchanged).
 
 Test categories:
-  - Tests 1, 2, 7 need pgvector only (no osm_reader/FORCE privilege needed).
-  - Tests 3, 4, 5, 6, 8 need superuser privilege to CREATE ROLE + SET ROLE.
+  - Tests 1, 2, 7, 11, 12 need pgvector only (no osm_reader/FORCE privilege needed).
+  - Tests 3, 4, 5, 6, 8, 9, 10 need superuser privilege to CREATE ROLE + SET ROLE.
     If the test DB user lacks these privileges the test is individually SKIPPED
     with a clear reason — the rest of the file continues to execute.
 
@@ -23,7 +31,7 @@ import pytest
 
 from tests.conftest import PG_EMBED_VERSION as V
 
-# All 8 tests here are postgres integration tests.
+# All tests here are postgres integration tests.
 # The pure unit test for _allowed_to_guc lives in tests/test_rls_guc_unit.py
 # (no DB dependency, always runs without postgres marker).
 pytestmark = pytest.mark.postgres
@@ -38,10 +46,12 @@ _PFX = "rls_"  # prefix for all rows/roles created here
 def _seed_embeddings(pg):
     """Insert the four canonical chunks needed by these tests.
 
-    - acme: profile_name = 'rls_acme'
-    - globex: profile_name = 'rls_globex'
-    - shared: profile_name IS NULL  (legacy/global)
-    - pattern: module = '__patterns__', profile_name IS NULL  (D3 catalogue)
+    - acme:    profile_name = 'rls_acme'
+    - globex:  profile_name = 'rls_globex'
+    - shared:  profile_name = 'rls_acme'   (owned row, post-sentinel migration
+                                            legacy "shared" concept retired;
+                                            see m13_021 backfill)
+    - pattern: module = '__patterns__', profile_name = '__global__'  (D3 catalogue)
 
     Uses direct SQL (not write_module_embeddings) so we control the vector
     dimension without spinning up an embedder or touching the pool.  The
@@ -58,31 +68,21 @@ def _seed_embeddings(pg):
         ("method", "rls_globex_mod", V, "rls_globex_mod.method", None,
          "/rls_globex.py", 0, "globex private body", zero_vec, "rls_globex"),
         ("method", "rls_shared_mod", V, "rls_shared_mod.method", None,
-         "/rls_shared.py", 0, "shared body", zero_vec, None),
+         "/rls_shared.py", 0, "shared body", zero_vec, "rls_acme"),
         ("pattern_example", "__patterns__", V, "rls_pattern_1", None,
-         "/patterns.py", 0, "pattern catalogue body", zero_vec, None),
+         "/patterns.py", 0, "pattern catalogue body", zero_vec, "__global__"),
     ]
 
     with pg.cursor() as cur:
         for (ct, mod, ver, en, mn, fp, ci, co, vec, pn) in rows:
-            if pn is None:
-                cur.execute(
-                    """INSERT INTO embeddings
-                       (chunk_type, module, odoo_version, entity_name, model_name,
-                        file_path, chunk_idx, content, vec, profile_name)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, NULL)
-                       ON CONFLICT DO NOTHING""",
-                    (ct, mod, ver, en, mn, fp, ci, co, vec),
-                )
-            else:
-                cur.execute(
-                    """INSERT INTO embeddings
-                       (chunk_type, module, odoo_version, entity_name, model_name,
-                        file_path, chunk_idx, content, vec, profile_name)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
-                       ON CONFLICT DO NOTHING""",
-                    (ct, mod, ver, en, mn, fp, ci, co, vec, pn),
-                )
+            cur.execute(
+                """INSERT INTO embeddings
+                   (chunk_type, module, odoo_version, entity_name, model_name,
+                    file_path, chunk_idx, content, vec, profile_name)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
+                   ON CONFLICT DO NOTHING""",
+                (ct, mod, ver, en, mn, fp, ci, co, vec, pn),
+            )
     pg.commit()
 
 
@@ -101,7 +101,7 @@ def _cleanup_seed(pg):
 
 # ---------------------------------------------------------------------------
 # Fixture: forced_rls
-# Manages FORCE RLS + non-owner role for tests 3-6, 8.
+# Manages FORCE RLS + non-owner role for tests 3-6, 8-10.
 # Setup: CREATE ROLE osm_reader NOLOGIN; GRANT SELECT; ALTER TABLE FORCE RLS.
 # Teardown (try/finally): RESET ROLE; NO FORCE; DROP ROLE.
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ def test_rls_enabled_not_forced_owner_read_unaffected(clean_pg_embeddings):
         )
         total = cur.fetchone()[0]
 
-    # We seeded 4 rows (acme + globex + shared + pattern); owner sees all.
+    # We seeded 4 rows (acme + globex + shared/acme + pattern); owner sees all.
     assert total == 4, (
         f"Owner under ENABLE (no FORCE) should see all 4 seeded rows, got {total}. "
         "Armed-but-dormant must not change owner read behaviour."
@@ -315,15 +315,15 @@ def test_policy_object_present_after_migration(clean_pg_embeddings):
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — FORCED RLS: non-owner with GUC='rls_acme' sees own + shared
-# Business rule: tenant isolation — acme sees acme rows + NULL profile rows.
+# Test 3 — FORCED RLS: non-owner with GUC='rls_acme' sees own rows + sentinel
+# Business rule: tenant isolation — acme sees acme rows + '__global__' pattern rows.
 # ---------------------------------------------------------------------------
 
-def test_forced_rls_nonowner_sees_own_plus_shared(forced_rls):
-    """Tenant acme under FORCE + osm_reader sees its own rows and shared rows.
+def test_forced_rls_nonowner_sees_own_plus_sentinel(forced_rls):
+    """Tenant acme under FORCE + osm_reader sees its own rows and '__global__' rows.
 
-    Verifies the policy USING clause: profile_name='rls_acme' OR profile_name IS NULL
-    both pass; profile_name='rls_globex' is denied.
+    Verifies the policy USING clause: profile_name='rls_acme' OR
+    profile_name='__global__' both pass; profile_name='rls_globex' is denied.
     """
     info = forced_rls
     if not info["has_privilege"]:
@@ -351,8 +351,8 @@ def test_forced_rls_nonowner_sees_own_plus_shared(forced_rls):
     assert "rls_globex_mod" not in modules, (
         f"CROSS-TENANT LEAK: acme must NOT see globex chunks. Got modules: {modules}"
     )
-    assert "rls_shared_mod" in modules, (
-        f"acme tenant must see NULL-profile shared chunks. Got modules: {modules}"
+    assert "__patterns__" in modules, (
+        f"acme tenant must see '__global__' sentinel pattern chunks. Got modules: {modules}"
     )
 
 
@@ -430,15 +430,16 @@ def test_forced_rls_admin_sentinel_sees_all(forced_rls):
 
 
 # ---------------------------------------------------------------------------
-# Test 6 — FORCED RLS: empty GUC ('') sees only NULL-profile (shared) rows
+# Test 6 — FORCED RLS: empty GUC ('') sees only '__global__' sentinel rows
 # Business rule: deny-all tenant (no profiles) sees only global catalogue.
 # ---------------------------------------------------------------------------
 
-def test_forced_rls_empty_guc_sees_only_shared(forced_rls):
-    """Empty GUC ('') under FORCE + osm_reader: only NULL-profile rows visible.
+def test_forced_rls_empty_guc_sees_only_sentinel(forced_rls):
+    """Empty GUC ('') under FORCE + osm_reader: only '__global__' rows visible.
 
     string_to_array('', ',') = {''}; profile_name = ANY({''}) is FALSE for
-    any real profile_name.  Only rows with profile_name IS NULL pass.
+    any real profile_name.  Only rows with profile_name = '__global__' pass
+    (the sentinel branch in the post-m13_021 policy).
     """
     info = forced_rls
     if not info["has_privilege"]:
@@ -462,9 +463,9 @@ def test_forced_rls_empty_guc_sees_only_shared(forced_rls):
     modules = [r[0] for r in rows]
     profiles = [r[1] for r in rows]
 
-    # Only NULL-profile rows should be visible.
-    assert all(p is None for p in profiles), (
-        f"Empty GUC must only return NULL-profile rows. Got profiles: {profiles}"
+    # Only '__global__' sentinel rows should be visible.
+    assert all(p == "__global__" for p in profiles), (
+        f"Empty GUC must only return '__global__' sentinel rows. Got profiles: {profiles}"
     )
     assert "rls_acme_mod" not in modules, (
         f"Empty GUC must not return acme rows. Got modules: {modules}"
@@ -472,9 +473,9 @@ def test_forced_rls_empty_guc_sees_only_shared(forced_rls):
     assert "rls_globex_mod" not in modules, (
         f"Empty GUC must not return globex rows. Got modules: {modules}"
     )
-    # shared and pattern rows (both NULL profile) should be present.
-    assert "rls_shared_mod" in modules, (
-        f"Shared (NULL-profile) rows must be visible under empty GUC. Got: {modules}"
+    # pattern row (profile_name='__global__') should be present.
+    assert "__patterns__" in modules, (
+        f"'__global__' sentinel pattern rows must be visible under empty GUC. Got: {modules}"
     )
 
 
@@ -525,17 +526,18 @@ def test_owner_write_succeeds_under_enabled_rls(clean_pg_embeddings):
 
 
 # ---------------------------------------------------------------------------
-# Test 8 — D3 pattern catalogue always visible through IS NULL branch
-# Business rule: ADR-0034 D3 — shared pattern chunks (profile_name IS NULL)
-# are always visible to any non-zero GUC (they pass the IS NULL branch).
+# Test 8 — D3 pattern catalogue always visible through '__global__' branch
+# Business rule: ADR-0034 D3 — global pattern chunks (profile_name='__global__')
+# are always visible to any non-zero GUC (they pass the sentinel branch).
+# Supersedes the old IS NULL branch test.
 # ---------------------------------------------------------------------------
 
 def test_pattern_catalogue_not_blocked_by_rls(forced_rls):
-    """Pattern catalogue chunks (profile_name IS NULL) visible to any tenant.
+    """Pattern catalogue chunks (profile_name='__global__') visible to any tenant.
 
     Under FORCE + osm_reader + GUC='rls_acme', the '__patterns__' module chunk
-    (profile_name=NULL, module='__patterns__') must still be returned.
-    The IS NULL branch in the policy USING clause handles this.
+    (profile_name='__global__', module='__patterns__') must still be returned.
+    The '__global__' branch in the post-m13_021 policy USING clause handles this.
     """
     info = forced_rls
     if not info["has_privilege"]:
@@ -558,32 +560,33 @@ def test_pattern_catalogue_not_blocked_by_rls(forced_rls):
     pg.commit()
 
     assert len(rows) >= 1, (
-        f"D3 pattern catalogue chunks (module='__patterns__', profile_name IS NULL) "
+        f"D3 pattern catalogue chunks (module='__patterns__', profile_name='__global__') "
         f"must be visible to any tenant under FORCE RLS. Got {len(rows)} rows. "
-        "The IS NULL branch in the policy USING clause must pass these rows."
+        "The '__global__' branch in the policy USING clause must pass these rows."
     )
-    assert all(r[1] is None for r in rows), (
-        f"Pattern catalogue rows must have profile_name=NULL. Got: {rows}"
+    assert all(r[1] == "__global__" for r in rows), (
+        f"Pattern catalogue rows must have profile_name='__global__'. Got: {rows}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 9 — FORCED RLS: GUC never set (unset, not '') sees only NULL-profile rows
-# Business rule: the fail-closed default that motivates the /health GAP1 fix.
+# Test 9 — FORCED RLS: GUC never set (unset, not '') sees only '__global__' rows
+# Business rule: the fail-closed default — unset GUC must not leak tenant rows.
 # Distinct from test 6 (GUC set to empty string '') — here the GUC is never
 # set at all, so current_setting('app.allowed_profiles', true) returns NULL.
+# Under FORCE RLS + sentinel design: only '__global__' rows pass.
 # ---------------------------------------------------------------------------
 
-def test_forced_rls_no_guc_set_undercounts_fail_closed(forced_rls):
-    """Unset GUC under FORCE + osm_reader → only the 2 NULL-profile rows.
+def test_forced_rls_no_guc_set_sees_only_sentinel(forced_rls):
+    """Unset GUC under FORCE + osm_reader → only the 1 '__global__' pattern row.
 
-    This is the exact scenario behind the /health GAP1 fix: a read path that
-    forgets to set app.allowed_profiles (no _rls_read_tx wrapper) does NOT leak
-    — it under-reports, seeing only the shared + pattern (NULL-profile) rows,
-    never the 2 tenant rows. Proves (a) the role default is fail-closed, so
-    (b) src/mcp/health.py MUST wrap its COUNT(*) in _rls_read_tx(conn, None)
-    (GUC '*') to report the true total. The wrapped-count path is covered by
-    test_forced_rls_admin_sentinel_sees_all (GUC '*' → all 4).
+    Under the sentinel design, an unset GUC means:
+      - '*' branch: FALSE (GUC is NULL, not '*')
+      - '__global__' branch: TRUE for the 1 pattern row
+      - ANY(NULL) branch: NULL → FALSE
+    Result: exactly the 1 '__global__' pattern row is visible (fail-closed,
+    no tenant data leaks). This proves (a) the sentinel branch fires correctly
+    and (b) tenant rows are NOT revealed to an unwrapped read path.
     """
     info = forced_rls
     if not info["has_privilege"]:
@@ -609,19 +612,120 @@ def test_forced_rls_no_guc_set_undercounts_fail_closed(forced_rls):
     pg.commit()
 
     modules = [r[0] for r in rows]
-    assert count == 2, (
-        f"Unset GUC under FORCE must see only the 2 NULL-profile rows "
-        f"(shared + pattern), got {count}. This is the fail-closed default — "
-        "an unwrapped COUNT(*) under-reports rather than leaks."
+    assert count == 1, (
+        f"Unset GUC under FORCE must see only the 1 '__global__' sentinel row "
+        f"(pattern catalogue), got {count}. This is the fail-closed default — "
+        "an unwrapped read under-reports rather than leaks."
     )
-    assert all(r[1] is None for r in rows), (
-        f"Unset GUC must return only NULL-profile rows. Got: {rows}"
+    assert all(r[1] == "__global__" for r in rows), (
+        f"Unset GUC must return only '__global__' sentinel rows. Got: {rows}"
     )
     assert "rls_acme_mod" not in modules and "rls_globex_mod" not in modules, (
         f"Unset GUC must not reveal any tenant rows. Got modules: {modules}"
     )
-    assert "rls_shared_mod" in modules, (
-        f"Shared (NULL-profile) rows must remain visible. Got modules: {modules}"
+    assert "__patterns__" in modules, (
+        f"'__global__' sentinel rows must remain visible. Got modules: {modules}"
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 10 — FORCED RLS: '__global__' sentinel visible under scoped GUC
+# Business rule: ADR-0034 D3 — global rows visible even when tenant GUC is set.
+# ---------------------------------------------------------------------------
+
+def test_forced_rls_sentinel_visible_to_scoped_tenant(forced_rls):
+    """'__global__' sentinel rows are visible to any tenant with a valid GUC.
+
+    Under FORCE + osm_reader + GUC='rls_acme', the pattern row with
+    profile_name='__global__' must pass through the sentinel branch of the
+    policy even though 'rls_acme' != '__global__'.
+    Belt-and-suspenders of test 8 with an explicit count assertion.
+    """
+    info = forced_rls
+    if not info["has_privilege"]:
+        pytest.skip(info["skip_reason"])
+
+    pg = info["pg"]
+
+    with pg.cursor() as cur:
+        cur.execute("SET ROLE osm_reader")
+        cur.execute("BEGIN")
+        cur.execute("SET LOCAL app.allowed_profiles = 'rls_acme'")
+        cur.execute(
+            "SELECT COUNT(*) FROM embeddings "
+            "WHERE odoo_version = %s AND profile_name = '__global__'",
+            (V,),
+        )
+        count = cur.fetchone()[0]
+        cur.execute("ROLLBACK")
+        cur.execute("RESET ROLE")
+    pg.commit()
+
+    assert count >= 1, (
+        f"'__global__' sentinel rows must be visible to a scoped tenant (GUC='rls_acme'). "
+        f"Got {count} rows. The sentinel branch in the RLS policy is not firing."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — non-pattern '__global__' row rejected by sentinel CHECK
+# Business rule: only chunk_type='pattern_example'+module='__patterns__' may use
+# the '__global__' sentinel (ck_embeddings_global_sentinel_scope, m13_021).
+# ---------------------------------------------------------------------------
+
+def test_non_pattern_global_sentinel_rejected(clean_pg_embeddings):
+    """Non-pattern '__global__' insert raises CheckViolation.
+
+    The ck_embeddings_global_sentinel_scope CHECK allows profile_name='__global__'
+    ONLY when chunk_type='pattern_example' AND module='__patterns__'.  Any other
+    combination must raise — preventing a future write from making arbitrary
+    module code globally visible to all tenants.
+    """
+    import psycopg2.errors
+
+    pg = clean_pg_embeddings
+    zero_vec = "[" + ",".join(["0.0"] * 1024) + "]"
+
+    with pg.cursor() as cur:
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                """INSERT INTO embeddings
+                   (chunk_type, module, odoo_version, entity_name,
+                    file_path, chunk_idx, content, vec, profile_name)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector, %s)""",
+                ("method", "sale", V, "sale.action_confirm",
+                 "/sale/models/sale.py", 0, "def action_confirm(self):",
+                 zero_vec, "__global__"),
+            )
+    pg.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — NOT NULL rejects a NULL profile_name insert (m13_021 sentinel)
+# Business rule: post-m13_021 the column is NOT NULL; NULL writes must fail.
+# ---------------------------------------------------------------------------
+
+def test_not_null_rejects_null_profile_name(clean_pg_embeddings):
+    """NULL profile_name insert raises NotNullViolation after m13_021.
+
+    The column is NOT NULL after the sentinel migration. Any attempt to insert
+    a NULL profile_name — even for a pattern catalogue row that used to be
+    allowed — must raise, confirming the sentinel backfill + NOT NULL are both
+    in effect and the old NULL-as-global overloading is fully retired.
+    """
+    import psycopg2.errors
+
+    pg = clean_pg_embeddings
+    zero_vec = "[" + ",".join(["0.0"] * 1024) + "]"
+
+    with pg.cursor() as cur:
+        with pytest.raises(psycopg2.errors.NotNullViolation):
+            cur.execute(
+                """INSERT INTO embeddings
+                   (chunk_type, module, odoo_version, entity_name,
+                    file_path, chunk_idx, content, vec, profile_name)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector, NULL)""",
+                ("pattern_example", "__patterns__", V, "null_test",
+                 "/patterns.py", 99, "null profile test body", zero_vec),
+            )
+    pg.rollback()

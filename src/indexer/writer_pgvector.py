@@ -48,7 +48,8 @@ class EmbeddingChunk:
     file_path: str
     chunk_idx: int
     content: str
-    profile_name: str | None = None  # NULL = shared/global (pattern chunks, pre-tenant rows)
+    # global rows use '__global__' sentinel (m13_021); NULL no longer valid post-migration
+    profile_name: str | None = None
     # A3 — provenance columns (reindex-forcing; NULL for css/scss/less/pattern chunks)
     line_start: int | None = None   # 1-based source line of the entity (method def / field assign)
     repo: str | None = None         # repo basename (ModuleInfo.repo)
@@ -475,8 +476,10 @@ def write_module_embeddings(
 
     profile_name scopes the delete to a single tenant's chunks so re-indexing
     profile A does not erase profile B's chunks for the same module/version.
-    NULL (default) is the shared/global scope used for pattern chunks and for
-    legacy callers that pre-date multi-tenant support.
+    NULL no longer valid post-m13_021 (NOT NULL column) — passing None raises
+    ValueError immediately (fail-fast guard), turning a cryptic NotNullViolation
+    into a clear error. Global rows (pattern catalogue) use the '__global__'
+    sentinel via src.constants.GLOBAL_PROFILE.
 
     Obtains a pgvector-capable connection from the shared pool (get_pool().checkout_vec()).
     Returns the number of embed() calls made to the embedder during this
@@ -489,6 +492,12 @@ def write_module_embeddings(
     """
     if not chunks:
         return 0
+    if profile_name is None:
+        raise ValueError(
+            "write_module_embeddings: profile_name is required (embeddings.profile_name "
+            "is NOT NULL post-m13_021). Pass the owning profile, or seed_patterns uses "
+            "GLOBAL_PROFILE ('__global__') for catalogue rows."
+        )
     # Stamp every chunk with the profile_name supplied at write time.
     # This is cleaner than threading profile_name through every make_*_chunks
     # helper: the helpers remain profile-agnostic; the write call is the single

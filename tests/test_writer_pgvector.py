@@ -220,7 +220,8 @@ def test_write_and_count_embeddings(clean_pg_embeddings):
         EmbeddingChunk("field", TEST_MODULE, TEST_VERSION, "sale.order.amount_total",
                        "sale.order", "/tmp/sale.py", 0, "amount_total = fields.Monetary()"),
     ]
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, chunks, embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, chunks, embedder,
+                            profile_name="test_profile")
 
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
@@ -235,11 +236,13 @@ def test_write_is_delete_before_insert(clean_pg_embeddings):
     embedder = FakeEmbedder(dim=1024)
     old_chunk = EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.old",
                                "sale.order", "/tmp/sale.py", 0, "def old(self): pass")
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, [old_chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [old_chunk], embedder,
+                            profile_name="test_profile")
 
     new_chunk = EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.new",
                                "sale.order", "/tmp/sale.py", 0, "def new(self): pass")
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, [new_chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [new_chunk], embedder,
+                            profile_name="test_profile")
 
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
@@ -258,7 +261,8 @@ def test_ann_query_returns_nearest_result(clean_pg_embeddings):
         "method", TEST_MODULE, TEST_VERSION, "sale.order.action_confirm",
         "sale.order", "/tmp/sale.py", 0, "def action_confirm(self): ...",
     )
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder,
+                            profile_name="test_profile")
 
     query_vec = embedder.embed(["confirm sale order"])[0]
     with clean_pg_embeddings.cursor() as cur:
@@ -337,23 +341,20 @@ def test_write_stamps_profile_name_on_rows(clean_pg_embeddings):
 
 
 @pytest.mark.postgres
-def test_write_profile_none_stamps_null(clean_pg_embeddings):
-    """write_module_embeddings with no profile_name stores NULL."""
+def test_write_profile_none_raises_value_error(clean_pg_embeddings):
+    """write_module_embeddings with profile_name=None raises ValueError (FIX 3).
+
+    Post-m13_021, embeddings.profile_name is NOT NULL. Passing None no longer
+    silently stores NULL (which would cause a cryptic NotNullViolation); instead
+    write_module_embeddings raises ValueError immediately with a clear message.
+    """
     embedder = FakeEmbedder(dim=1024)
     chunk = EmbeddingChunk(
         "method", TEST_MODULE, TEST_VERSION, "sale.order.confirm",
         "sale.order", "/tmp/sale.py", 0, "def confirm(self): pass",
     )
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
-
-    with clean_pg_embeddings.cursor() as cur:
-        cur.execute(
-            "SELECT profile_name FROM embeddings WHERE module = %s AND odoo_version = %s",
-            (TEST_MODULE, TEST_VERSION),
-        )
-        row = cur.fetchone()
-    assert row is not None
-    assert row[0] is None
+    with pytest.raises(ValueError, match="profile_name is required"):
+        write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
 
 
 @pytest.mark.postgres
@@ -608,7 +609,8 @@ def test_write_provenance_columns_populated(clean_pg_embeddings):
         repo="viindoo_17",
         repo_id=9,
     )
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder,
+                            profile_name="test_profile")
 
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
@@ -734,7 +736,8 @@ def test_write_embedding_model_dim_stored_on_rows(clean_pg_embeddings):
         "method", TEST_MODULE, TEST_VERSION, "sale.order.test_method",
         "sale.order", "/tmp/sale.py", 0, "def test_method(self): pass",
     )
-    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder)
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], embedder,
+                            profile_name="test_profile")
 
     with clean_pg_embeddings.cursor() as cur:
         cur.execute(
