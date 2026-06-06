@@ -285,7 +285,54 @@ def _repo_url_for_id(repo_id: int | None) -> str | None:
     return url
 
 
-mcp = FastMCP("odoo-semantic")
+# Server-level instructions surfaced to MCP clients (Claude Code, Cursor, VS
+# Code, Codex, Gemini) at initialize. Gives this server a UNIQUE positive
+# identity + a clear precedence so an AI agent never routes an Odoo-source
+# question to the wrong place. Two failure modes this prevents, both silent
+# (every alternative returns a plausible-but-wrong answer, so there is no error
+# to self-correct on):
+#   1. Confusing this STATIC index with a LIVE-instance Odoo MCP.
+#   2. Skipping this index and reading the (huge) Odoo codebase directly, which
+#      burns context and degrades answers - OSM exists precisely to avoid that.
+# Everything is described by CAPABILITY, never by a specific product name, so it
+# stays correct as the tool ecosystem changes. Per-tool reinforcement is NOT
+# duplicated into each docstring (FastMCP enforces a ~1500-char description
+# budget - see tests/test_mcp_tool_descriptions.py); the look-live tool list
+# below is the single carrier.
+INSTRUCTIONS = """\
+Odoo Semantic ("odoo-semantic") is the INDEXED Odoo source-code knowledge
+graph: a pre-built graph + vector index of Odoo source spanning every indexed
+Odoo version (legacy through latest) and many repos/editions, with inheritance,
+override, and cross-module impact ALREADY RESOLVED. It gives AUTHORITATIVE
+STRUCTURAL facts about how Odoo source IS DEFINED - module composition,
+inheritance chains, field/method definitions by spec, view XPath, version
+diffs, deprecations, lint rules, override points, ORM-path validity, patterns.
+Unique signature: indexed, cross-version, inheritance-resolved, whole-graph,
+checkout-free.
+
+This is your PRIMARY, context-efficient source for Odoo source/structure
+questions. The Odoo codebase is huge; reading it directly burns context and
+degrades answers - prefer THIS server first. Order of precedence:
+  1. odoo-semantic available -> use it.
+  2. available but it lacks the specific detail -> THEN read the source
+     (Read/Grep the addons checkout) to fill that gap.
+  3. unavailable -> read the source.
+Reading source code is the FALLBACK, never the first move when this server can
+answer.
+
+This is a STATIC index - it has NO runtime/live data and never connects to a
+running instance. For LIVE DATA (actual record values, search/read/write real
+records, executing a method, this instance's installed modules) use a live Odoo
+MCP server (one exposing read_record / search_records / execute_method), NOT
+this server.
+
+Tools whose names look live but are STATIC here (return indexed source, never
+runtime data): model_inspect, module_inspect, entity_lookup, describe_module,
+check_module_exists, validate_domain, validate_depends, validate_relation,
+resolve_orm_chain. If you need live records, this is the wrong server.
+"""
+
+mcp = FastMCP("odoo-semantic", instructions=INSTRUCTIONS)
 # Register 7 MCP resources (odoo:// URIs) — Pattern 8, Wave F.
 register_resources(mcp)
 # Register FastMCP-layer usage logging middleware so that on_call_tool has
