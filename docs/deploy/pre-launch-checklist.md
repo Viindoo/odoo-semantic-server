@@ -120,6 +120,7 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 | 22 | `validate_domain` | `validate_domain("sale.order", "[('partner_id.country_id', '=', 'VN')]", "17.0")` | Per-term field-path + operator validation; version-aware operator set | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
 | 23 | `validate_depends` | `validate_depends("sale.order", "_compute_amount_total", "17.0")` | Validates each `@api.depends` path; flags depends-on-`id`; era1 note for v8/v9 | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
 | 24 | `validate_relation` | `validate_relation("sale.order", "partner_id", "res.partner", "17.0")` | Asserts field is relational with comodel matching `res.partner`; reports actual comodel on mismatch | `[ ]` (M10.5 Phase 2 — v0.8.0; pending prod deploy) |
+| 25 | `profile_inspect` | `profile_inspect(name="<PROFILE>", method="summary", odoo_version="17.0")` | Profile-level discriminator: summary (ancestor chain + children + repos + module_count) \| repos \| modules | `[ ]` (ADR-0028 Wave 2 WI-4 #260; pending prod deploy) |
 
 **Sign-off summary (current as of PR #159, 2026-05-21):** 9/10 M1-M5 core tools PASS + tool #3 pending re-verify after full reindex (WI-2 name_get fix) + 1 PARTIAL (#8 suggest_pattern operational gap, #4 api_version_diff v16 gap). Tools #11-14 (superset discriminator, M11 Wave D), #15-18 (session tools, M11 Wave E), #19-20 (stylesheet, M10A v0.7), #21-24 (ORM validation, M10.5 Phase 2 v0.8) all pending prod deploy + smoke. **For admin:** use `model_inspect`/`module_inspect`/`entity_lookup` (tools 12-14) to verify entity enumeration — the 10 flat tools (`resolve_model`, `list_fields`, etc.) were removed in v0.6 per ADR-0028.
 
@@ -296,7 +297,7 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 
 **Go-live status 2026-05-17 (PR #119 deploy):** 9 of 11 sections `[x]` + 2 partial (§5 backup non-prod restore optional, §9 indexer cron optional). **Deploy ready** for go-live (admin-invite signup model) per signoff table above.
 
-**24-tool sign-off (v0.8, as of PR #159 2026-05-21):** 9/10 M1-M5 core tools PASS (tool #3 `lookup_core_api` pending re-verify after full reindex for name_get status fix). Tools #11-24 pending prod deploy + smoke: #11 `describe_module` (M9 W-OSM Wave 1), #12-14 superset discriminator (M11 Wave D), #15-18 session tools (M11 Wave E), #19-20 stylesheet tools (M10A v0.7), #21-24 ORM-validation tools (M10.5 Phase 2 v0.8). All code-complete + unit-tested.
+**25-tool sign-off (v0.9, as of PR #159 2026-05-21):** 9/10 M1-M5 core tools PASS (tool #3 `lookup_core_api` pending re-verify after full reindex for name_get status fix). Tools #11-25 pending prod deploy + smoke: #11 `describe_module` (M9 W-OSM Wave 1), #12-14 superset discriminator (M11 Wave D), #15-18 session tools (M11 Wave E), #19-20 stylesheet tools (M10A v0.7), #21-24 ORM-validation tools (M10.5 Phase 2 v0.8), #25 `profile_inspect` (ADR-0028 Wave 2 WI-4 #260). All code-complete + unit-tested.
 
 ---
 

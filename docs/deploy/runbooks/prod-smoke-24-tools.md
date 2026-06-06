@@ -1,6 +1,8 @@
 # Production Smoke Runbook — 15 MCP Tools + 7 Resources
 
-> **Operator-facing walkthrough for post-go-live smoke-test of 14 MCP tools (#11-24) and 7 Resources (R1-R7) that were code-complete + unit-tested but never smoke-tested end-to-end against the live production MCP endpoint. Estimated ~90-100 min/session.**
+> **Note:** The `24` in this file's name is legacy — the total MCP tool count is now **25** (25th = `profile_inspect`, ADR-0028 Wave 2 WI-4 #260). The filename is retained intentionally to preserve existing links; this runbook covers tools #11-25.
+
+> **Operator-facing walkthrough for post-go-live smoke-test of 15 MCP tools (#11-25) and 7 Resources (R1-R7) that were code-complete + unit-tested but never smoke-tested end-to-end against the live production MCP endpoint. Estimated ~90-100 min/session.**
 >
 > Covers: `describe_module`, 3 superset discriminators (`model_inspect`/`module_inspect`/`entity_lookup`), 4 session tools (`set_active_version`/`set_active_profile`/`list_available_versions`/`list_available_profiles`), 2 stylesheet tools (`resolve_stylesheet`/`find_style_override`), 4 ORM-validation tools (`resolve_orm_chain`/`validate_domain`/`validate_depends`/`validate_relation`), 1 profile discriminator (`profile_inspect`), and 7 URI resources (`odoo://...`).
 >
@@ -24,7 +26,7 @@ Each smoke entry = natural-language prompt → AI client → MCP tool → result
 
 - **MCP client configured:** Claude Code with MCP plugin, Codex CLI, Gemini CLI, or direct MCP JSON-RPC via `curl`
 - **API key:** Valid smoke-test plan tier for `<PROD_BASE_URL>`
-- **Post-reindex 2026-05-25:** 591,108 embeddings indexed across Odoo v8.0 → v19.0
+- **Post-reindex 2026-05-25:** ~591k embeddings indexed across Odoo v8.0 → v19.0
 - **WI-A7 OPS actions complete:** Post-reindex enrichment + era1 (v8/v9) re-embed finished
 - **Stopwatch (optional):** Note start/end time per tool if debugging slow responses
 
@@ -716,7 +718,7 @@ Operator fills in this table during the smoke session and attaches to session re
 - **ADR-0029:** Implicit Session Context — per-API-key sticky version/profile, 24h TTL
 - **ADR-0030:** MCP Resources URI Scheme — `odoo://` URI grammar, LRU cache, version sentinel
 - **Pre-Launch Checklist:** `docs/deploy/pre-launch-checklist.md` — master sign-off table, overrides this runbook for baseline tool #1-10 status
-- **README.md §Trạng Thái Hiện Tại:** Current prod status, post-reindex (2026-05-25) — 591,108 embeddings, full v8→v19 coverage
+- **README.md §Trạng Thái Hiện Tại:** Current prod status, post-reindex (2026-05-25) — ~591k embeddings, full v8→v19 coverage
 
 ---
 

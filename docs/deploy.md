@@ -160,7 +160,7 @@ embed thêm Ollama — defer được, xem `docs/deploy/embedder-setup.md`.
 | Docker Engine | 24+ | DB tier |
 | Python | 3.12 | App tier |
 | uv | 0.4+ | Package manager |
-| **Node.js** | **20 LTS+** | **Astro SSR service (M8)** — Node 24 khuyến nghị từ tháng 6/2026 |
+| **Node.js** | **22 LTS+** | **Astro SSR service (M8)** — Node 24 khuyến nghị từ tháng 6/2026 |
 | **pnpm** | bất kỳ | **Astro build tool** — `npm i -g pnpm` hoặc `corepack enable pnpm` |
 | Nginx **hoặc** Caddy | bất kỳ | Proxy tier |
 | DNS record | — | Trỏ domain về IP server |
@@ -576,7 +576,7 @@ Nếu bạn muốn cài thủ công:
 |------|---------|------|-----|
 | `docs/deploy/odoo-semantic-mcp.service` | MCP server (port 8002) | `127.0.0.1` qua proxy tier | INI config |
 | `docs/deploy/odoo-semantic-webui.service` | FastAPI JSON API (port 8003) | `127.0.0.1` | INI config + `webui.env` (FERNET_KEY) |
-| `docs/deploy/odoo-semantic-astro.service` | Astro SSR frontend (port 4321) | `127.0.0.1` | Node.js 20+; `site/dist/server/entry.mjs` pre-built |
+| `docs/deploy/odoo-semantic-astro.service` | Astro SSR frontend (port 4321) | `127.0.0.1` | Node.js 22+; `site/dist/server/entry.mjs` pre-built |
 
 #### Bước 0 — Build Astro frontend
 
@@ -1112,7 +1112,7 @@ Xem danh sách đầy đủ tại TASKS.md → "UI Completion — OPS-SKIP (7)".
 
 ```bash
 curl http://127.0.0.1:8002/health
-# → {"status": "alive", "mcp_tools": 24, ...}
+# → {"status": "alive", "mcp_tools": 25, ...}
 # NOTE: embeddings_total/embeddings_by_chunk_type = null cho đến lần /ready đầu tiên
 ```
 
@@ -1269,7 +1269,7 @@ docker compose restart postgres
 
 ## 7. Security Checklist
 
-→ **Pre-launch sign-off + 21 MCP tool verification matrix:** [`docs/deploy/pre-launch-checklist.md`](deploy/pre-launch-checklist.md).
+→ **Pre-launch sign-off + 25 MCP tool verification matrix:** [`docs/deploy/pre-launch-checklist.md`](deploy/pre-launch-checklist.md).
 
 Trước khi expose public internet:
 
@@ -1833,7 +1833,7 @@ for full architecture + Phase 2 roadmap.
 
 ---
 
-## M10B Billing Migrations (m13_014 → m13_017)
+## M10B Billing Migrations (m13_014 → m13_021)
 
 Apply in order after `python -m src.db.migrate` (which handles older migrations up through m13_013):
 
@@ -1844,6 +1844,9 @@ Apply in order after `python -m src.db.migrate` (which handles older migrations 
 | `migrations/m13_016_plan_min_seats.sql` | `plans.min_seats INTEGER` — display SSOT for per-seat minimum; seeds team.min_seats=3 | After merging PR #223 |
 | `migrations/m13_017_withdrawal_consent.sql` | `subscriptions.buyer_type TEXT` + `subscriptions.withdrawal_waiver_accepted_at TIMESTAMPTZ` — CRD checkout consent; run after m13_016 | After merging PR #224 (feat/launch-prep) |
 | `migrations/m13_018_embedding_model_dim.sql` | `embeddings.embedding_model TEXT` + `embeddings.embedding_dim INT` — provider provenance columns; backfill pre-existing rows to `('qwen3-embedding-q5km', 1024)`; partial index `idx_embeddings_model`; osm_reader grant | After merging PR #228 (wave/wi-f embedding infra) |
+| `migrations/m13_019_public_tenant_isolation.sql` | Public/Viindoo tenant split: re-scope `viindoo_*` profiles to the Viindoo tenant + remediate active NULL-tenant API keys (deactivate/re-scope) so a free key cannot read internal profiles | After merging the public-tenant-isolation wave |
+| `migrations/m13_020_grant_webui_users_osm_reader.sql` | Column-level `GRANT SELECT(id, is_admin) ON webui_users TO osm_reader` — converges the earlier full-table hotfix to least-privilege | After merging the osm_reader grant fix |
+| `migrations/m13_021_embeddings_global_sentinel.sql` | `embeddings.profile_name` set `NOT NULL` with `'__global__'` sentinel replacing NULL-as-global; RLS policy swapped to match the sentinel | After merging the global-sentinel wave |
 
 **Re-run osm_reader grants** after each migration batch:
 ```bash

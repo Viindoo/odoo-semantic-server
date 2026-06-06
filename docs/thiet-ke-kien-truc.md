@@ -86,9 +86,13 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │    PG_DSN=postgresql://user:pass@[db-server]:5432/odoo_semantic     │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  Nginx                                                        │  │
-│  │  /mcp  → MCP Server  :8002  (FastMCP, 25 tools + 7 Resources) │  │
-│  │  /ui   → Web UI      :8003  (dashboard + API key mgmt)       │  │
+│  │  Nginx (3 services)                                           │  │
+│  │  /api/*                       → FastAPI :8003 (JSON API)      │  │
+│  │  /mcp /install/ /health       → MCP     :8002                 │  │
+│  │  /ready /metrics              → MCP     :8002                 │  │
+│  │      (FastMCP, 25 tools + 7 Resources; /metrics IP-restricted)│  │
+│  │  /                            → Astro   :4321 (SSR catch-all, │  │
+│  │                                  routes /admin/* internally)  │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────┬──────────────────────────────────────┘
                               │  bolt://:7687   postgresql://:5432
@@ -420,7 +424,7 @@ flowchart TD
 
 ### 6. MCP Tools Interface
 
-Tất cả tools đều nhận `odoo_version` (mặc định: version cao nhất đã index).
+`odoo_version` là **BẮT BUỘC** trên các drill-down tools (20 trong 25 tools) theo ADR-0029 WI-4 — không còn default. Bỏ trống bị từ chối ngay ở tầng schema của FastMCP. 4 bootstrap tools (`list_available_versions`, `list_available_profiles`, `set_active_version`, `set_active_profile`) và `api_version_diff` không yêu cầu. Để khỏi lặp lại version, dùng sticky session context qua `set_active_version`.
 
 #### `resolve_model(model_name, odoo_version?)`
 
@@ -571,9 +575,9 @@ ADR list cho architectural decisions: **[`docs/adr/`](adr/)**.
 
 ### Milestone narrative — M10 / M10.5 / M11 / M13 (post-M9 Coverage Fill)
 
-- **M10 "Billing Wow" + Coverage-fill follow-ups** — Stripe subscription + plan tiers. Also absorbs WI-A7 follow-ups: MCP Stylesheet surface (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` histogram (extends ADR-0010 §D7), M10 Quick Wins from `osm_vs_odoo-ls.md` (magic fields auto-injection, `from_module` param, `noqa` lint suppression, `audit-repo` CLI), nonce-based CSP (PR #118 follow-up), pgvector re-embed cleanup pass, Reseed Patterns Web UI wiring.
+- **M10 "Billing Wow" + Coverage-fill follow-ups** — Polar.sh (Merchant-of-Record; Stripe rejected per ADR-0039) subscription + plan tiers. Also absorbs WI-A7 follow-ups: MCP Stylesheet surface (`resolve_stylesheet`, `find_style_override`), Prometheus `embedder_batch_duration_seconds` histogram (extends ADR-0010 §D7), M10 Quick Wins from `osm_vs_odoo-ls.md` (magic fields auto-injection, `from_module` param, `noqa` lint suppression, `audit-repo` CLI), nonce-based CSP (PR #118 follow-up), pgvector re-embed cleanup pass, Reseed Patterns Web UI wiring.
 - **M10.5 "ORM Intelligence Wow"** — 4 new MCP tools (`validate_domain`, `resolve_orm_chain`, `validate_depends`, `validate_relation`) for static ORM-graph validation. All tools follow ADR-0023 tree-grammar contract; routing matrix extended; integration tests against `viindoo_17` fixture.
-- **M11 "Architectural Wow" + Curation Depth** — parser hooks `(min_version, max_version, fn)` registry refactor (new ADR-0026 required; supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue 35 → 100+ via ADR-0009 community track, static lint rules curation 10-30 → 50+/version.
+- **M11 "Architectural Wow" + Curation Depth** — parser hooks `(min_version, max_version, fn)` registry refactor (ADR-0032; supersedes parts of ADR-0005), RelaxNG XML schema validation port from Odoo LS, pattern catalogue 35 → 100+ via ADR-0009 community track, static lint rules curation 10-30 → 50+/version.
 - **M13 "Multi-Tenant Wow"** — pooled multi-tenancy: `profile` becomes a hard tenant boundary (new `tenants` table + `tenant_id` FKs on `api_keys`/`profiles`/`ssh_key_pairs`), enforced by a single fail-closed choke-point filter over the ADR-0016 `profile[]` chain + Postgres RLS on `embeddings`; shared Odoo CE/EE + spec data stay single-instance (NO `tenant_id` in Neo4j MERGE keys); private-repo access via per-tenant deploy keys. New [ADR-0034](adr/0034-multi-tenant-pooled-isolation.md); realizes M12 Stream B WI-B3 path (b). DB-schema + architecture work ships first.
 
 ---
