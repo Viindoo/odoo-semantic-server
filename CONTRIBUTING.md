@@ -529,6 +529,51 @@ there. On the server side, the tool-routing descriptors are guarded by:
 
 ---
 
+## Văn Bản Hướng Đến AI Agent (instructions / docstring / disambiguation)
+
+Mọi prose mà AI client đọc để **định tuyến** - server `instructions=` (FastMCP
+init trong `src/mcp/server.py`), docstring tool (`TRIGGER`/`PREFER`/`SKIP`) - phải
+giúp agent không *âm thầm* gọi nhầm chỗ (mọi nguồn đều trả lời nghe hợp lý nên
+không có lỗi để tự sửa). Hai hiểu lầm phải chặn + 4 quy tắc tác giả prose:
+
+**Hiểu lầm 1 - nhầm index TĨNH với Odoo MCP LIVE.** odoo-semantic KHÔNG có data
+runtime. Cần giá trị record thật / search / write / execute method -> đó là một
+Odoo MCP *live*, KHÔNG phải server này.
+
+**Hiểu lầm 2 - bỏ qua OSM mà đi đọc code.** OSM sinh ra để **tránh** đọc codebase
+Odoo (rất lớn -> tốn context, tụt chất lượng). OSM là nguồn **PRIMARY**. Thang ưu
+tiên đúng (đừng viết ngược): (1) OSM khả dụng -> dùng OSM; (2) khả dụng nhưng thiếu
+chi tiết cụ thể -> *mới* đọc code (Read/Grep) lấp chỗ thiếu; (3) OSM không khả dụng
+-> đọc code. Đọc code là **FALLBACK**, không phải nước đi đầu khi OSM trả lời được.
+
+1. **Version-agnostic - KHÔNG hardcode dải/số version.** Đừng viết `v8-v19` hay một
+   con số version vào prose định tính: khi Odoo ra version mới, chuỗi cứng lỗi thời
+   mà **không test nào bắt được**. Dùng "every indexed Odoo version", "cross-version",
+   "legacy through latest". Cần liệt kê version cụ thể -> đọc runtime từ
+   `list_available_versions` / `list_available_profiles`, KHÔNG nhúng vào static string.
+2. **Capability-described, KHÔNG product-named.** Mô tả tool khác theo **năng lực**
+   ("a live Odoo MCP server exposing `read_record`/`search_records`/`execute_method`"),
+   KHÔNG theo tên sản phẩm bên thứ 3 - để không lỗi thời khi tên/sản phẩm đổi.
+3. **KHÔNG lộ thông tin máy/triển khai.** Đừng nhúng host/db/path/user/API-key của một
+   instance vào prose **served ra client** (repo private nhưng output tool +
+   `instructions` đi ra public qua dịch vụ). Mô tả theo capability; để `_portable_path`
+   xử lý path.
+4. **Tôn trọng budget ~1500 char mỗi tool description.** FastMCP cắt description dài;
+   `tests/test_mcp_tool_descriptions.py` enforce cap 1500. Các superset tool
+   (`model_inspect`/`module_inspect`/`entity_lookup`) đã sát trần - **đừng thêm dòng
+   guidance vào docstring của chúng**. Guidance định tuyến cross-tool (như static-vs-live,
+   OSM-first) đặt ở **server `INSTRUCTIONS`** (carrier duy nhất, liệt kê các tool
+   "look-live"), KHÔNG nhân bản vào từng docstring. Trước khi thêm chữ vào docstring,
+   chạy test cap đó.
+
+SSOT định danh: `INSTRUCTIONS` trong `src/mcp/server.py` (signature độc nhất: indexed,
+cross-version, inheritance-resolved, whole-graph, checkout-free); guard:
+`tests/test_server_instructions.py`. Bản mirror phía client (`server-surface.json` +
+generated docs/snippets) ở
+[Viindoo/odoo-mcp-client](https://github.com/Viindoo/odoo-mcp-client) tuân cùng quy tắc.
+
+---
+
 ## Local E2E (test MCP local trước khi production)
 
 Muốn test MCP local với Claude Code (không cần đợi production deploy)? 5 phút setup.
