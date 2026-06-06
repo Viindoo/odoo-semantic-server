@@ -156,7 +156,7 @@ Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 
 |------|----------|
 | [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md) | **End-user client setup** — Claude Code, Codex, Gemini, VS Code, Antigravity (snippets + pitfalls đầy đủ) |
 | [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
-| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 20 MCP tool sign-off table + 7 MCP resource sign-off trước khi mở public |
+| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 25 MCP tool sign-off table + 7 MCP resource sign-off trước khi mở public |
 | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | **DR runbook** — backup frequency, restore order, step-by-step commands, RTO estimate |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | **Bắt đầu ở đây nếu bạn là developer** — setup, chạy tests, Local E2E, workflow |
 | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
@@ -196,7 +196,7 @@ Different roles get the most value from different tools. Quick-start guides:
 
 **Web-UI multi-tenant RBAC + self-service portal (W0-W4, merged 2026-05-25):** Batch 5 wave hoàn thành giao diện web quản trị + tenant self-service. W0 (#174) — admin gate 19 route mutating + `SIGNUP_ENABLED` flag (default off). W1 (#177) — `tenant_members` (m13_005) + admin tenant CRUD + ADR-0038. W2 (#179) — customer self-service portal (`/account/repos`) + `tenant_write_allowed` write-side RBAC. W3 (#180) — diagnostics endpoint + admin user creation + audit-log viewer + audit coverage regression guard. W4 (#181) — `GET /api/versions` data-driven + 3 version dropdown + worker controls (`profile_workers`/`max_workers`/`--gc`). Tool count stays **24**; migration m13_005 required. See CHANGELOG.md `[Merged into v0.13.1]`.
 
-**Production deploy:** 2026-06-02 — HEAD aa29422 (PR #232); all migrations through m13_018 applied. All api_keys backfilled to free-grandfathered plan; osm_reader grants verified across new schema objects. All 3 services healthy (MCP :8002, FastAPI :8003, Astro :4321).
+**Production deploy:** 2026-06-06 — HEAD 127ce83 (PR #269); all migrations through m13_021 applied. All api_keys backfilled to free-grandfathered plan; osm_reader grants verified across new schema objects. All 3 services healthy (MCP :8002, FastAPI :8003, Astro :4321).
 
 **Auth flow unification (feat/m10b-auth-unify, 2026-05-29):** `/login` now canonical (`/admin/login` 301→`/login`); OAuth Google/GitHub buttons on `/signup` (cookie `oauth_from` phân biệt origin); reset-password enforce `auth.password_min_length` (default 12) + common-pw blocklist (FE+BE) + TOCTOU `SELECT...FOR UPDATE` guard; shared `AuthLayout` + 22-item UX/a11y. OAuth paths `/admin/auth/*` giữ nguyên. Tool count stays **24**; no migration. Closes the prior customer-onboarding UI gaps (forgot-password e2e, `/pricing` nav, `/login` alias, OAuth error banner).
 
@@ -224,7 +224,7 @@ Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge removed — CEO sign-
 recording. `/account/billing` dashboard page + `BillingDashboard` React island (status/renewal/
 cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices from `plans.prices`
 (multi-currency display deferred to P2).
-**Tool count stays 24** (all web/webhook/Astro only; no new MCP tools). See
+**Tool count stays 25** (all web/webhook/Astro only; no new MCP tools). See
 [ADR-0039 Amendment — completion](docs/adr/0039-commercialization-platform.md) and CHANGELOG.md `[Unreleased]`.
 **Live in prod:** `billing.paid_checkout_enabled=true` (verified in DB + `/api/site-config`).
 **Still pending:** Polar KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` constants) + webhook
@@ -251,7 +251,7 @@ Token-bounded chunking + provider abstraction + MCP anti-hang. Three concerns ad
    fast-reject in 5s, uvicorn `limit_concurrency` backpressure. `/health` is now a pure liveness
    probe (no DB I/O); `/ready` is a new HTTP readiness endpoint (cached 60s, NOT an MCP tool).
 
-Tool count stays **24**. Migration **m13_018** required on deploy (after m13_017).
+Tool count stays **25**. Migration **m13_018** was required for this wave (after m13_017); current prod migration level is m13_021.
 See [ADR-0044](docs/adr/0044-token-bounded-embedding.md), [ADR-0045](docs/adr/0045-embedding-provider-abstraction.md), [ADR-0046](docs/adr/0046-mcp-embed-concurrency-anti-hang.md).
 
 **Active work / recently merged:** PR #232 (`feat/landing-living-cartography`) — landing redesign + /examples cartography page + docs cleanup (HEAD aa29422). Prior merged work now in prod: PR #225 (`analytics.ga_measurement_id` app_setting + GA snippet injection); PR #228 (`wave/wi-f` — token-bounded embedding ADR-0044, provider abstraction ADR-0045, MCP anti-hang ADR-0046, migration m13_018); PR #229 (readiness probe `/ready` + `/health` pure liveness split); PR #224 (`feat/launch-prep` — install MCP-first, brand SSOT, SEO, legal pages, CRD consent, migration m13_017). Tool count stays **25**.

@@ -45,7 +45,7 @@ These three commands bring the data layer into parity with shipped code logic.
 
 After every PR that ships new migrations. Run BEFORE any other actions — schema changes are prerequisite for data-layer actions.
 
-**Current migrations (PR #200):**
+**Migration snapshot (illustrative — verify current level before running):** the example below is a historical snapshot from PR #200; always apply through the latest `m13_*` migration shipped by the PR you are deploying. As of the most recent prod deploy the high-water mark is `m13_021`. Verify the applied level with `SELECT id FROM _yoyo_migration ORDER BY id DESC LIMIT 1;`.
 - `m13_006_plans.sql` — `plans` table + `api_keys.plan_id` FK + `usage_counter` table (ADR-0039 control-plane DDL)
 - `m13_007_usage_counter_cascade.sql` — ON DELETE CASCADE on `usage_counter.api_key_id` FK
 
