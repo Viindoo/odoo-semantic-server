@@ -41,8 +41,16 @@ def writer(clean_neo4j, neo4j_driver):
 
 
 def _make_result(module_name: str, model_name: str,
-                 inherit: list[str] | None = None) -> ParseResult:
-    """Build a minimal ParseResult for testing INHERITS edges."""
+                 inherit: list[str] | None = None,
+                 had_explicit_name: bool = False) -> ParseResult:
+    """Build a minimal ParseResult for testing INHERITS edges.
+
+    *had_explicit_name* must be True for the module that owns the canonical
+    definition (i.e. declares ``_name = '...'`` without self-inheriting).  The
+    writer sets ``is_definition = had_explicit_name AND name NOT IN inherit_list``,
+    and after the ADR topology change (#273) same-name INHERITS edges target
+    definition nodes only -- see edge now targets definition node.
+    """
     module = ModuleInfo(
         name=module_name, odoo_version=TEST_VERSION,
         repo=f"{module_name}_repo", path="/tmp",
@@ -53,6 +61,7 @@ def _make_result(module_name: str, model_name: str,
         fields=[FieldInfo(name="id", ttype="integer")],
         methods=[],
         inherit=inherit or [],
+        had_explicit_name=had_explicit_name,
     )
     return ParseResult(module=module, models=[model])
 
@@ -68,8 +77,9 @@ def test_multi_module_inherits_both_edges_have_order(writer, neo4j_driver):
     first edge correctly but silently skip the second one (no edge, no order).
     The MERGE-based fix creates both edges idempotently and always sets order.
     """
-    # Module A is the canonical definition of account.move
-    result_def = _make_result("account", "account.move")
+    # Module A is the canonical definition of account.move; had_explicit_name=True
+    # so is_definition=True -- edge now targets definition node only (ADR topology #273).
+    result_def = _make_result("account", "account.move", had_explicit_name=True)
     writer.write_results([result_def])
 
     # Module B extends account.move (self-inherit pattern)
@@ -149,7 +159,10 @@ def test_on_match_backfills_null_order(writer, neo4j_driver):
     Simulates the production scenario: stale edge created without order,
     then re-indexed via the fixed writer.
     """
-    # Pre-seed a stale INHERITS edge with NULL order (mimics pre-ADR-0013 data)
+    # Pre-seed a stale INHERITS edge with NULL order (mimics pre-ADR-0013 data).
+    # tgt must have is_definition=true so the writer's updated MATCH tip (which now
+    # filters AND coalesce(tip.is_definition, false) = true) can find it and trigger
+    # the ON MATCH coalesce backfill -- edge now targets definition node (ADR #273).
     with neo4j_driver.session() as session:
         session.run(
             """
@@ -157,6 +170,8 @@ def test_on_match_backfills_null_order(writer, neo4j_driver):
                                odoo_version: $v})
             MERGE (tgt:Model {name: 'res.partner', module: 'base',
                                odoo_version: $v})
+            ON CREATE SET tgt.is_definition = true
+            ON MATCH  SET tgt.is_definition = true
             MERGE (src)-[r:INHERITS]->(tgt)
             """,
             v=TEST_VERSION,

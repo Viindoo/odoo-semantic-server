@@ -171,10 +171,15 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 # existing stale edges.  Use per-pair MERGE instead:
                 # ON CREATE sets order for new edges; ON MATCH backfills NULL
                 # order from stale edges without overwriting valid existing values.
+                # ADR topology change (#273): extender targets definition node(s)
+                # only (K×D edges instead of K² mesh). Nodes without is_definition=true
+                # are other extenders — connecting to them adds no reachability and
+                # caused the K² path explosion that hung the ORM tools on prod.
                 tx.run(f"""
                     MATCH (ext:Model {{name: $name, module: $mod, odoo_version: $v}})
                     MATCH (tip:Model {{name: $name, odoo_version: $v}})
                     WHERE tip.module <> $mod
+                      AND coalesce(tip.is_definition, false) = true
                     MERGE (ext)-[r:{REL_INHERITS}]->(tip)
                     ON CREATE SET r.order = $order
                     ON MATCH  SET r.order = coalesce(r.order, $order)
@@ -866,6 +871,17 @@ class Neo4jWriter:
                 # on deep-inheritance models (sale.order has 50+ extending modules).
                 "CREATE INDEX IF NOT EXISTS FOR (n:Method)"
                 " ON (n.model, n.odoo_version)",
+                # T2: per-hop anchor lookup for ORM read rewrite (#273).
+                # Each hop in the per-hop name-dedup CALL subquery MATCHes
+                # Model(name, odoo_version) — without this index that is a full label
+                # scan repeated for every ancestor set expansion.
+                "CREATE INDEX IF NOT EXISTS FOR (n:Model)"
+                " ON (n.name, n.odoo_version)",
+                # T3: _field_names_on_model helper lookup (#273).
+                # Covers the "did you mean" field-suggestion path that queries
+                # Field(model, odoo_version) — currently a label scan on every miss.
+                "CREATE INDEX IF NOT EXISTS FOR (n:Field)"
+                " ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:JSPatch)"
@@ -1165,10 +1181,18 @@ class Neo4jWriter:
         Module parent is being deleted in this call, to avoid orphan cleanup of
         nodes that belong to other repos in the same version.
 
+        Implementation note: steps 2 and 3 use CALL {} IN TRANSACTIONS (batched
+        implicit-transaction form) to avoid exceeding db.transaction.timeout on large
+        repos (odoo core 17.0 can have millions of child nodes). CALL IN TRANSACTIONS
+        must run in an auto-commit (implicit) session — this method already uses
+        self.driver.session() directly, so NO managed execute_write wrapper is used.
+        The per-repo Postgres advisory lock held by the caller (web_ui/routes/repos.py)
+        guarantees no concurrent writes to the same repo+version pair during deletion.
+
         Returns: {"modules": N, "children": M} counts.
         """
         with self.driver.session() as session:
-            # Step 1: collect module names being deleted
+            # Step 1: collect module names being deleted (lightweight point-lookup)
             module_names_row = session.run(
                 """
                 MATCH (m:Module {repo: $repo, odoo_version: $version})
@@ -1183,33 +1207,32 @@ class Neo4jWriter:
 
             module_names = module_names_row["names"]
 
-            # Step 2: delete child nodes scoped to those module names
-            # Use separate MATCH per label (Neo4j 5.x label OR in WHERE is valid
-            # but collecting across labels requires UNION approach for count accuracy;
-            # here we use a single MATCH with label filter via WHERE + IN for module names).
+            # Step 2: delete child nodes in batches of 10 000 to stay well under
+            # db.transaction.timeout (600s). CALL {} IN TRANSACTIONS requires an
+            # implicit (auto-commit) transaction — session.run() here, NOT execute_write.
             children_row = session.run(
                 """
                 MATCH (child)
                 WHERE child.module IN $names AND child.odoo_version = $version
                   AND (child:Model OR child:Field OR child:Method OR child:View
                        OR child:QWebTmpl OR child:JSPatch OR child:OWLComp)
-                WITH collect(child) AS children
-                UNWIND children AS c
-                DETACH DELETE c
-                RETURN count(c) AS cc
+                CALL { WITH child
+                    DETACH DELETE child
+                } IN TRANSACTIONS OF 10000 ROWS
+                RETURN count(child) AS cc
                 """,
                 names=module_names,
                 version=odoo_version,
             ).single()
             children_deleted = children_row["cc"] if children_row is not None else 0
 
-            # Step 3: delete the Module nodes themselves
+            # Step 3: delete the Module nodes themselves (batched, same rationale)
             modules_row = session.run(
                 """
                 MATCH (m:Module {repo: $repo, odoo_version: $version})
-                WITH collect(m) AS mods
-                UNWIND mods AS m
-                DETACH DELETE m
+                CALL { WITH m
+                    DETACH DELETE m
+                } IN TRANSACTIONS OF 10000 ROWS
                 RETURN count(m) AS mc
                 """,
                 repo=repo_basename,
