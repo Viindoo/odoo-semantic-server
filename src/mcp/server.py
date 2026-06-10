@@ -69,6 +69,7 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
 )
 from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect, _profile_inspect
 from src.mcp.orm import (
+    OrmQueryTimeout,
     _resolve_orm_chain,
     _validate_depends,
     _validate_domain,
@@ -637,7 +638,7 @@ def offload_bounded(fn):
             ) from e
         try:
             return await asyncio.to_thread(functools.partial(fn, *a, **k))
-        except _OrmQueryTimeout() as exc:
+        except OrmQueryTimeout as exc:
             # WI-1 raises OrmQueryTimeout when the Neo4j query timeout fires.
             # Convert to the tool's normal str result + record the timeout
             # metric. We never leak the Cypher / user code here.
@@ -661,38 +662,31 @@ def offload_bounded(fn):
     return wrapper
 
 
-def _OrmQueryTimeout() -> type[BaseException]:
-    """Resolve WI-1's ``OrmQueryTimeout`` lazily for the ``except`` clause.
-
-    WI-1 defines ``OrmQueryTimeout`` in ``src/mcp/orm.py``. This WI may be
-    cherry-picked before WI-1 lands, so we resolve the class at call time and
-    fall back to a sentinel that can never match (so the ``except`` is inert
-    until WI-1 is integrated). Full wiring is verified at integration.
-    """
-    try:
-        from src.mcp.orm import OrmQueryTimeout
-
-        return OrmQueryTimeout
-    except ImportError:
-        class _NeverRaised(Exception):
-            pass
-
-        return _NeverRaised
-
-
 def _orm_call_context(args: tuple, kwargs: dict) -> str:
     """Build a WARNING-safe context string from an ORM tool's call args.
 
     Logs only structural identifiers (model / version / profile) — never the
-    domain / dotted_path / code text the user submitted. The 4 ORM tools all
-    take ``model`` first positionally and ``odoo_version`` as the 3rd positional
-    / keyword arg; we read defensively so a signature drift cannot raise here.
+    domain / dotted_path / code text the user submitted. All 4 ORM tools take
+    ``model`` first positionally, but the positional INDEX of ``odoo_version``
+    differs: it is positional[2] for resolve_orm_chain / validate_domain /
+    validate_depends, but positional[3] for validate_relation
+    (model, field, target_model, odoo_version). FastMCP dispatches by keyword,
+    so ``kwargs['odoo_version']`` is the reliable source; the positional
+    fallbacks below are best-effort only and read defensively so a signature
+    drift cannot raise here. We do NOT guess validate_relation's positional[3]
+    to avoid mislabelling target_model as the version.
     """
     model = kwargs.get("model")
     if model is None and len(args) >= 1:
         model = args[0]
+    # odoo_version: prefer kwargs (FastMCP always passes it by keyword). The
+    # positional[2] fallback is correct for 3 of the 4 tools; for
+    # validate_relation positional[2] is target_model, so we only trust the
+    # positional fallback when the value looks like a version (has a dot) —
+    # otherwise leave it None rather than log target_model under the version
+    # label.
     version = kwargs.get("odoo_version")
-    if version is None and len(args) >= 3:
+    if version is None and len(args) >= 3 and isinstance(args[2], str) and "." in args[2]:
         version = args[2]
     profile = kwargs.get("profile_name")
     return f"model={model!r} odoo_version={version!r} profile={profile!r}"
@@ -3202,6 +3196,16 @@ _LINT_STOPWORDS = frozenset({
 # that failed to compile so we only warn once per distinct pattern.
 _LINT_PATTERN_CACHE: dict[str, "object | None"] = {}
 
+# Per-line length cap for regex matching (M5 / ReDoS defence). Curated
+# code_patterns are written to avoid nested/sequential lazy quantifiers, but a
+# single pathologically long line (e.g. hundreds of KB of minified text on one
+# line) can still drive any regex engine into a heavy linear scan and tie up the
+# offload worker thread. Real Odoo source lines are well under this bound; lines
+# longer than it are skipped for pattern matching (the rule simply does not fire
+# on that line). The cap is per-line so noqa handling and all other lines are
+# unaffected. 4000 chars comfortably clears even E501-violating long lines.
+_LINT_MAX_LINE_LEN = 4000
+
 
 def _compile_lint_pattern(pattern: str):
     """Compile a rule's ``code_pattern`` regex, caching the result.
@@ -3318,10 +3322,13 @@ def _match_lint_rule_lines(code: str, rule: dict) -> list[int]:
     if pattern:
         compiled = _compile_lint_pattern(pattern)
         if compiled is not None:
+            # Skip pathologically long lines (M5 / ReDoS defence): a single
+            # multi-hundred-KB line could otherwise dominate the offload-thread
+            # CPU. Real source lines never approach _LINT_MAX_LINE_LEN.
             return [
                 lineno
                 for lineno, line in enumerate(code.splitlines(), start=1)
-                if compiled.search(line)
+                if len(line) <= _LINT_MAX_LINE_LEN and compiled.search(line)
             ]
         # compiled is None → bad pattern, fall through to fuzzy below.
 

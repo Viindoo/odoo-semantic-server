@@ -371,9 +371,9 @@ RETURN m.module AS module_name, mod.repo AS repo,
 ORDER BY m.is_definition DESC, m.field_count DESC
 ```
 
-// Lưu ý: COUNT { ()-[:INHERITS]->(m) } là query ranking CŨ (trước ADR-0013).
-// Ranking hiện tại dùng is_definition + field_count + DEPENDS_ON.
-// Topology INHERITS: extender→definition (K×D edges, ADR-0048 D1).
+Lưu ý: `COUNT { ()-[:INHERITS]->(m) }` là query ranking CŨ (trước ADR-0013).
+Ranking hiện tại dùng `is_definition` + `field_count` + `DEPENDS_ON`.
+Topology INHERITS: extender → definition (K×D edges, ADR-0048 D1).
 
 Lấy INHERITS chain của một extender (cross-name mixins, depth-first per-hop):
 

@@ -46,6 +46,13 @@ from src.mcp.hints import hints_for
 #     (db.transaction.timeout, which Wave-0 sets to 600s on prod).
 # We match the common prefix so BOTH surface as OrmQueryTimeout; any other
 # ClientError (syntax, constraint, ...) still propagates unchanged.
+#
+# DRIVER-BUMP NOTE (L12): this reads exc.code (legacy Neo4j status string).
+# neo4j-python driver 6.x moves to GQLSTATUS and may change how the code is
+# exposed (e.g. exc.gql_status / a different attribute). When bumping the driver,
+# re-verify _is_tx_timeout still matches both timeout variants, and update the
+# matcher + the timeout-path test in tests/test_orm_dense_inheritance.py
+# (which currently constructs the error by setting exc.code, itself deprecated).
 _TX_TIMEOUT_CODE_PREFIX = "Neo.ClientError.Transaction.TransactionTimedOut"
 
 
@@ -139,10 +146,9 @@ def _lookup_field(
     try:
         rows = session.run(
             _bounded(
-                """
-                MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
-                WHERE ($own IS NULL OR (size(f.profile) > 0
-                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                f"""
+                MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
+                WHERE {_scope_pred("f")}
                 RETURN f.ttype AS ttype, f.comodel_name AS comodel
                 ORDER BY f.module ASC
                 LIMIT 1
@@ -217,8 +223,7 @@ def _lookup_field(
                 WITH t.name AS pn, min(t.depth) AS depth
                 WHERE pn <> $mn
                 MATCH (f:Field {name: $fn, model: pn, odoo_version: $v})
-                WHERE ($own IS NULL OR (size(f.profile) > 0
-                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                WHERE """ + _scope_pred("f") + """
                 RETURN f.ttype AS ttype, f.comodel_name AS comodel
                 ORDER BY depth ASC, pn ASC, f.module ASC
                 LIMIT 1
@@ -298,10 +303,9 @@ def _field_names_on_model(
     try:
         rows = session.run(
             _bounded(
-                """
-                MATCH (f:Field {model: $mn, odoo_version: $v})
-                WHERE ($own IS NULL OR (size(f.profile) > 0
-                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                f"""
+                MATCH (f:Field {{model: $mn, odoo_version: $v}})
+                WHERE {_scope_pred("f")}
                 RETURN DISTINCT f.name AS name
                 """
             ),

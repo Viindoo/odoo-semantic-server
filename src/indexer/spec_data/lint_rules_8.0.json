@@ -122,7 +122,7 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Use `cr.execute('SELECT ... WHERE id = %s', (record_id,))` — never use string formatting with cr.execute.",
-      "code_pattern": "\\.execute\\s*\\(.*?[\"\\'].*?[\"\\'].*?%(?!\\s*\\()|\\bexecute\\s*\\(.*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
+      "code_pattern": "\\.execute\\s*\\([^)]*?[\"\\']\\s*%\\s(?!\\()|\\bexecute\\s*\\([^)]*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
     },
     {
       "rule_id": "W8141",

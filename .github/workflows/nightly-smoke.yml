@@ -116,90 +116,130 @@ jobs:
           "
 
       - name: "ORM read smoke — per-hop name-dedup regression guard (ADR-0048)"
-        # Regression guard for #273: _resolve_orm_chain must complete under wall-clock bound
-        # on a dense synthetic graph seeded directly into the CI Neo4j instance.
-        # We cannot run index-repo (hours) in nightly smoke, so we seed a K=15 synthetic
-        # sale.order-like graph using Neo4jWriter (the same writer path as production).
-        # This guards against anyone reverting the VLP *1..N per-hop dedup fix.
+        # Regression guard for #273: the inherited-field fallback (orm.py
+        # _lookup_field step-3) must complete under a wall-clock bound on a dense
+        # graph that reproduces the EXACT condition that made the old VLP query hang.
         #
-        # NOTE: index-core does NOT produce Model/Field nodes (only CoreSymbol/LintRule/
-        # CLICommand/CLIFlag). The synthetic seeding here is the correct approach for a
-        # per-hop-dedup regression guard without a full index-repo run.
+        # Two design requirements (H2 — the previous version could not fail):
+        #   (1) The resolved field lives on a SEPARATE mixin model with NO direct
+        #       Field row under 'smoke.order'. So step-1 (direct) and step-2 (magic)
+        #       both miss and the resolution is forced through step-3 (inherited).
+        #       Topology: smoke.order(def) -INHERITS-> smoke.mixin(def) which carries
+        #       the amount_total Field. A reverted step-3 => BROKEN/missing => FAIL.
+        #   (2) The same-name extenders are wired as the FULL K*(K-1) mesh (each
+        #       extender -> every OTHER same-name node), simulating production data
+        #       that has NOT yet been cleaned by the mesh-cleanup script. On this
+        #       mesh the old VLP `*1..N` + ORDER-BY-before-LIMIT enumerates
+        #       ~K*(K-1)*... paths and blows the wall-clock bound; the per-hop
+        #       name-dedup collapses it to <=N distinct names and stays fast.
+        #
+        # index-core does NOT produce Model/Field nodes (only CoreSymbol/LintRule/
+        # CLICommand/CLIFlag), so this synthetic dense graph is the correct vehicle.
         run: |
-          timeout 60 python -c "
-          import time, os, sys
+          timeout 120 python -c "
+          import time, os
           from neo4j import GraphDatabase
 
           NEO4J_URI = 'bolt://localhost:7687'
           NEO4J_AUTH = ('neo4j', 'password')
           TEST_VERSION = '99.8'  # dedicated version avoids collision with index-core data
-          K = 15  # 15 extenders -> K*(K-1)=210 same-name mesh IF writer bug present
+          K = 60  # 60 same-name nodes -> K*(K-1)=3540 mesh edges if un-cleaned
 
           driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
 
-          # --- Seed a minimal dense inheritance graph via direct Cypher ---
-          # definition node for 'smoke.order'
           with driver.session() as s:
+              # Clean any prior run of this version (idempotent CI).
+              s.run('MATCH (n {odoo_version:\$v}) DETACH DELETE n', v=TEST_VERSION)
+              # smoke.order definition + K-1 same-name extenders.
               s.run(
                   'MERGE (m:Model {name:\"smoke.order\", module:\"smoke_base\", '
                   '       odoo_version:\$v, is_definition:true, field_count:5, '
                   '       had_explicit_name:true, profile:[\"__global__\"]})',
                   v=TEST_VERSION
               )
-              # extender nodes + a field on the definition
-              for i in range(K):
-                  mod = f'smoke_ext_{i}'
+              for i in range(K - 1):
                   s.run(
                       'MERGE (m:Model {name:\"smoke.order\", module:\$mod, '
                       '       odoo_version:\$v, is_definition:false, field_count:0, '
                       '       had_explicit_name:true, profile:[\"__global__\"]})',
-                      mod=mod, v=TEST_VERSION
+                      mod=f'smoke_ext_{i}', v=TEST_VERSION
                   )
-              # INHERITS edges extender->definition only (K edges, NOT K*(K-1) mesh)
+              # FULL K*(K-1) same-name mesh (un-cleaned prod shape): every
+              # same-name node INHERITS every OTHER same-name node.
               s.run(
-                  'MATCH (ext:Model {name:\"smoke.order\", odoo_version:\$v}) '
-                  'WHERE NOT coalesce(ext.is_definition, false) '
-                  'MATCH (def:Model {name:\"smoke.order\", odoo_version:\$v, is_definition:true}) '
-                  'MERGE (ext)-[:INHERITS {order:0}]->(def)',
+                  'MATCH (a:Model {name:\"smoke.order\", odoo_version:\$v}), '
+                  '      (b:Model {name:\"smoke.order\", odoo_version:\$v}) '
+                  'WHERE a.module <> b.module '
+                  'MERGE (a)-[:INHERITS {order:0}]->(b)',
                   v=TEST_VERSION
               )
-              # add a field on definition to resolve against
+              mesh = s.run(
+                  'MATCH (a:Model {name:\"smoke.order\", odoo_version:\$v}) '
+                  '-[r:INHERITS]->(b:Model {name:\"smoke.order\", odoo_version:\$v}) '
+                  'RETURN count(r) AS c', v=TEST_VERSION
+              ).single()['c']
+              # Separate mixin model that actually OWNS the field; the definition
+              # INHERITS it. amount_total has NO direct Field under smoke.order, so
+              # only step-3 (inherited) can resolve it.
               s.run(
-                  'MERGE (f:Field {name:\"amount_total\", model:\"smoke.order\", '
+                  'MERGE (mx:Model {name:\"smoke.mixin\", module:\"smoke_base\", '
+                  '       odoo_version:\$v, is_definition:true, field_count:1, '
+                  '       had_explicit_name:true, profile:[\"__global__\"]})',
+                  v=TEST_VERSION
+              )
+              s.run(
+                  'MATCH (def:Model {name:\"smoke.order\", odoo_version:\$v, is_definition:true}), '
+                  '      (mx:Model {name:\"smoke.mixin\", odoo_version:\$v}) '
+                  'MERGE (def)-[:INHERITS {order:0}]->(mx)',
+                  v=TEST_VERSION
+              )
+              s.run(
+                  'MERGE (f:Field {name:\"amount_total\", model:\"smoke.mixin\", '
                   '       module:\"smoke_base\", odoo_version:\$v, ttype:\"monetary\", '
                   '       profile:[\"__global__\"]})',
                   v=TEST_VERSION
               )
-          driver.close()
-          print(f'Seeded: 1 definition + {K} extenders + K same-name INHERITS edges + 1 field')
+              # Assert there is NO direct Field under smoke.order (so step-1 cannot answer).
+              direct = s.run(
+                  'MATCH (f:Field {name:\"amount_total\", model:\"smoke.order\", '
+                  '       odoo_version:\$v}) RETURN count(f) AS c', v=TEST_VERSION
+              ).single()['c']
+              assert direct == 0, 'amount_total must NOT be a direct field on smoke.order'
+          print(f'Seeded: K={K} same-name nodes, {mesh} mesh edges, field on smoke.mixin only')
 
-          # --- Call _resolve_orm_chain with wall-clock bound ---
           os.environ.setdefault('NEO4J_URI', NEO4J_URI)
           os.environ.setdefault('NEO4J_USER', 'neo4j')
           os.environ.setdefault('NEO4J_PASSWORD', 'password')
           os.environ.setdefault('PG_DSN', 'postgresql://odoo_semantic:password@localhost:5432/odoo_semantic')
 
-          from src.mcp.orm import _resolve_orm_chain
+          from src.mcp.orm import _resolve_orm_chain, _lookup_field
+          from src.mcp import server as srv
 
+          # (A) Direct step-3 assertion: source must be 'inherited' (NOT 'direct').
+          with srv._get_driver().session() as s:
+              info = _lookup_field('smoke.order', 'amount_total', TEST_VERSION, s)
+          assert info is not None, 'step-3 inherited fallback returned None — regression'
+          assert info['source'] == 'inherited', (
+              f\"expected source=='inherited' (field lives on mixin), got {info!r} — \"
+              'regression: step-3 per-hop fallback broken or field became direct.'
+          )
+          print(f'_lookup_field source = {info[\"source\"]} (correct: resolved via step-3)')
+
+          # (B) End-to-end rendered chain under a wall-clock bound on the mesh.
           t0 = time.monotonic()
           result = _resolve_orm_chain('smoke.order', 'amount_total', TEST_VERSION)
           elapsed = time.monotonic() - t0
-
           print(f'_resolve_orm_chain result (elapsed {elapsed:.2f}s):')
           print(result)
 
           assert elapsed < 10, (
-              f'_resolve_orm_chain took {elapsed:.1f}s > 10s bound — '
-              'possible regression to VLP all-K or ORDER BY before LIMIT. '
+              f'_resolve_orm_chain took {elapsed:.1f}s > 10s bound on the K*(K-1) mesh — '
+              'regression to VLP all-K or ORDER BY before LIMIT. '
               'Check orm.py _lookup_field step-3 per-hop name-dedup.'
           )
-          assert 'smoke.order.amount_total' in result, (
-              f'Field not found in result: {result!r}'
-          )
-          assert 'BROKEN' not in result, (
-              f'Unexpected BROKEN in result: {result!r}'
-          )
-          print(f'ORM read smoke PASS (elapsed {elapsed:.2f}s < 10s bound)')
+          assert 'smoke.order.amount_total' in result, f'Field not found in result: {result!r}'
+          assert 'BROKEN' not in result, f'Unexpected BROKEN in result: {result!r}'
+          print(f'ORM read smoke PASS (source=inherited, elapsed {elapsed:.2f}s < 10s bound)')
           "
         env:
           NEO4J_URI: bolt://localhost:7687
@@ -220,10 +260,12 @@ jobs:
                   'RETURN lr.code_pattern AS cp LIMIT 1'
               ).single()
           driver.close()
-          if row is None:
-              print('W8140 LintRule not found in 17.0 — code_pattern smoke SKIP '
-                    '(index-core may not have seeded this rule; check lint_rules_17.0.json)')
-              exit(0)
+          assert row is not None, (
+              'W8140 LintRule MISSING in 17.0 after index-core — regression: '
+              'lint_rules_17.0.json guarantees this rule is seeded. A missing rule '
+              'would silently drop SQL-injection detection, so this is a hard FAIL '
+              '(not a SKIP).'
+          )
           cp = row['cp']
           assert cp is not None and len(cp) > 0, (
               f'W8140 code_pattern is null/empty: {cp!r} — '

@@ -48,9 +48,15 @@ migration. Behavior changes flagged below.
 - **3-tier disclosure (ADR-0048 D9):** Tier-1 `rules==[] or curate_status is None` → hard warning
   "NOT a clean bill of health" (silent false-green eliminated). Tier-2 pending+rules → soft banner.
   Tier-3 complete → normal.
-- **Cleanup script:** `ops/cleanup_same_name_inherits_mesh.cypher` — 2-step batched (backfill MERGE
-  + delete ~1.1M same-name non-definition edges). Full reindex does NOT auto-clean (writer is
-  additive MERGE). Requires backup bundle (ADR-0018) before running.
+- **Cleanup script:** `ops/cleanup_same_name_inherits_mesh.cypher` — 2-step batched via an OUTER
+  driving `MATCH` + `CALL { WITH <row> ... } IN TRANSACTIONS OF 10000 ROWS` (backfill MERGE + delete
+  ~1.1M same-name non-definition edges). Full reindex does NOT auto-clean (writer is additive MERGE).
+  Requires backup bundle (ADR-0018) before running. Note: the OUTER tx of `CALL IN TRANSACTIONS` is
+  subject to `db.transaction.timeout` (verified Neo4j 5.26.25); for a full ~1.1M-edge run raise or
+  disable the timeout first (script header Option A).
+- **Batched repo delete (#273):** `delete_modules_scoped` now uses `CALL {} IN TRANSACTIONS OF
+  10000 ROWS` for child + Module deletion (was a single transaction). Same outer-tx timeout caveat
+  documented in its docstring.
 - **Metrics:** `orm_query_timeout_total{tool}` + `orm_overloaded_total{tool}` counters added to
   `/metrics` Prometheus endpoint.
 
@@ -60,7 +66,8 @@ migration. Behavior changes flagged below.
   across all paths. Differs only when same field name exists at different inheritance depths with
   different types.
 - Per-hop unresolved filter: paths through `__unresolved__` intermediate nodes are no longer
-  traversed (pre-deploy verification: 0 such paths in production data).
+  traversed (to be verified during Wave 0 ops, expected 0 such paths in production data — not yet
+  counted at the time of this PR).
 - Lint: banner wording "V0 fuzzy" → "Hybrid matcher (V0.5)"; violation lines include
   `[pattern]`/`[fuzzy]` label. Empty-index now shows warning instead of empty tree.
 

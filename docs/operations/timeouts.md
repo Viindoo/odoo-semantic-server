@@ -55,15 +55,19 @@ CALL dbms.setConfigValue('db.transaction.timeout', '600s')
 
 **Why 600s, not 60s:** The 30s per-query driver timeout (above) handles ORM tool runaway.
 The global `db.transaction.timeout` must accommodate legitimate long-running indexer transactions:
-- `delete_modules_scoped` deletes all child nodes of a repo in a single transaction (no CALL IN
-  TRANSACTIONS) — can exceed 60s for large repos.
-- `gc_stale_modules` DETACH DELETEs module nodes; can spike after large renames.
+- `delete_modules_scoped` is now batched with `CALL {} IN TRANSACTIONS OF 10000 ROWS` (this PR), so
+  each INNER batch stays well under 600s. BUT the OUTER coordinating transaction of
+  `CALL IN TRANSACTIONS` is itself subject to `db.transaction.timeout` (verified on Neo4j 5.26.25 —
+  see ADR-0048 D10 / M6): a very large repo delete whose TOTAL elapsed exceeds the timeout still has
+  its outer tx terminated part-way (recoverable + idempotent, but surfaces an error in the Web UI).
+- `gc_stale_modules` DETACH DELETEs module nodes in one transaction; can spike after large renames.
 - `_write_parse_result` is one transaction per ParseResult with hundreds of sequential `tx.run`
   calls; 60s is not safe under concurrent load.
 
 600s kills zombie ORM transactions (which ran 19-24h before this fix) while leaving indexer
-headroom. Once `delete_modules_scoped` is batched (planned follow-up), the global timeout can
-be reduced.
+headroom. For an exceptionally large repo delete or the one-off mesh-cleanup script, temporarily
+raise/disable the timeout (`CALL dbms.setConfigValue('db.transaction.timeout','0')`, re-enable
+after) rather than relying on the 600s ceiling.
 
 ### Web UI operations
 

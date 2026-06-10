@@ -24,7 +24,8 @@ Root cause was three-layered:
 same `(name, odoo_version)` without requiring the target to be the definition node. With K copies of
 `sale.order` at v17.0 (one per extending module), this produced K×(K-1) directed edges — a complete
 directed graph on K vertices — instead of the intended K×D edges (extender → definition). Measured
-prod values: ~256k same-name INHERITS edges per version, dominated by sale.order (K≈87 at v17.0).
+prod values: ~256k same-name INHERITS edges per version, dominated by sale.order (K≈97 at v17.0;
+product.template is K≈87). Per issue #273.
 
 **Layer 2 — All-K anchor + VLP before LIMIT = full path enumeration.**
 `orm.py` `_lookup_field` step-3 (field fallback on inherited models) used
@@ -87,13 +88,18 @@ CALL subquery that deduplicates ancestor names per hop, collecting only the mini
 of each parent name, then joins Field on the deduplicated set.
 
 **Depth-first semantics are now the official contract:** the nearest ancestor (minimum hop count)
-wins; within the same depth, alphabetical module name is the tiebreak. The previous ORDER BY
+wins; within the same depth the tiebreak is parent model name ASC, then the field's owning module
+ASC (`ORDER BY depth ASC, pn ASC, f.module ASC`). The previous ORDER BY
 `parent.name ASC` across all paths was an implementation accident, not a designed contract — it
 required full path enumeration to sort, and on models where no field existed (the `validate_*` use
 case) it had to exhaust all 86M paths before concluding "not found".
 
 `validate_relation` subtype-check retains depth 5 (`*1..5`) but with the same per-hop name-dedup
-shape.
+shape. Note (L9): the subtype check is name-level — the scope predicate on the target is satisfied
+by ANY same-name copy of the comodel that passes the tenant choke, not necessarily the specific
+node reached along the matched path. With the fan-out to all-K same-name copies this is observably
+equivalent; it only differs in the vanishingly rare case where same-name duplicates carry divergent
+profile arrays.
 
 ### D3 — Per-hop unresolved filter (deliberate tightening)
 
@@ -104,8 +110,9 @@ only the terminal node as before. This is an intentional tightening:
   have no outgoing INHERITS edges by design — paths "through" them are unreachable in practice.
 - `gc_unresolved_placeholders` removes them periodically, making any reachability through them
   non-deterministic across runs. The tighter filter makes behavior deterministic.
-- Pre-deploy verification on production data confirmed: 0 valid paths traverse an `unresolved`
-  intermediate node.
+- This must be verified during Wave 0 ops on production data (expected 0): count valid paths that
+  traverse an `unresolved` intermediate node before the read rewrite is relied upon. (Wave 0 runbook
+  is pending operator confirmation at the time of this PR — the count has NOT yet been taken.)
 
 ### D4 — Post-pass reconciliation replaces write-order dependency
 
@@ -209,16 +216,35 @@ is a hint" stance is maintained until V1 ships.
 ### D10 — Cleanup mesh: targeted script only (ops/cleanup_same_name_inherits_mesh.cypher)
 
 Full reindex does NOT remove the existing K² mesh: writer uses additive MERGE — no code path deletes
-INHERITS edges between live nodes. The targeted script performs two batched steps:
+INHERITS edges between live nodes. The targeted script performs two batched steps. The correct batch
+shape is an OUTER driving `MATCH` followed by `CALL { WITH <row> ... } IN TRANSACTIONS OF n ROWS`
+(`IN TRANSACTIONS` splits the INPUT rows of the outer query — a `MATCH` placed INSIDE the `CALL`
+with no outer driving clause would run everything in a SINGLE transaction, defeating batching; the
+same shape is used by `delete_modules_scoped` in `writer_neo4j.py`):
 
-1. **Backfill** (CALL {} IN TRANSACTIONS): for each extender that currently has a same-name edge to
-   a non-definition node, create the correct extender→definition edge (MERGE, idempotent), copying
-   `r.order` from the best existing same-name out-edge.
-2. **Delete mesh** (CALL {} IN TRANSACTIONS, batch 10k): remove all same-name INHERITS edges whose
-   target is not a definition node.
+1. **Backfill** (outer `MATCH` of (extender, definition, order) rows → `CALL { WITH ... MERGE ... }
+   IN TRANSACTIONS OF 10000 ROWS`): for each extender missing the edge, create the correct
+   extender→definition edge (MERGE, idempotent), copying `r.order` from the best existing same-name
+   out-edge.
+2. **Delete mesh** (outer `MATCH (a)-[r:INHERITS]->(b)` of mesh rows → `CALL { WITH r DELETE r }
+   IN TRANSACTIONS OF 10000 ROWS`): remove all same-name INHERITS edges whose target is not a
+   definition node.
 
-Both steps are batched to respect `db.transaction.timeout=600s`. The script header documents the
-interaction with `db.transaction.timeout` and mandates a backup bundle (ADR-0018) before execution.
+Both steps batch the INNER transactions to respect `db.transaction.timeout=600s`. The script header
+documents the interaction with `db.transaction.timeout` and mandates a backup bundle (ADR-0018)
+before execution.
+
+**Outer-tx timeout (M6, verified Neo4j 5.26.25, 2026-06-10):** batching bounds each INNER
+transaction, but the OUTER coordinating transaction of `CALL IN TRANSACTIONS` IS itself subject to
+`db.transaction.timeout`. Empirically, with `db.transaction.timeout = 3s` a batched run whose total
+elapsed reached ~4s was terminated mid-run
+(`Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`); already-committed inner
+batches persisted, the in-flight batch rolled back. Therefore a full ~1.1M-edge cleanup whose total
+wall-clock exceeds the configured timeout will have its outer tx killed part-way. The script is
+idempotent (a re-run resumes), but to complete in one pass the operator MUST raise or disable the
+timeout first (`CALL dbms.setConfigValue('db.transaction.timeout','0')`, re-enable after) — Option A
+in the script header. The same caveat applies to `delete_modules_scoped` for very large repo
+deletes (now documented in its docstring).
 
 ---
 
