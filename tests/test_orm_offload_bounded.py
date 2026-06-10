@@ -48,6 +48,31 @@ def _restore(keys):
     importlib.reload(srv)
 
 
+def _run(coro):
+    """Run a coroutine in a dedicated thread with its own fresh event loop.
+
+    Under the full unit suite (pytest-asyncio mode=auto) an earlier test can
+    leave a RUNNING loop on the main thread, making a bare ``asyncio.run()``
+    raise "cannot be called from a running event loop". A fresh thread has no
+    loop, so ``asyncio.run`` there is always safe and fully isolated.
+    """
+    box: dict = {}
+
+    def runner():
+        try:
+            box["value"] = asyncio.run(coro)
+        except BaseException as exc:  # propagate to the test thread
+            box["error"] = exc
+
+    t = threading.Thread(target=runner)
+    t.start()
+    t.join(timeout=60)
+    assert not t.is_alive(), "coroutine did not finish within 60s"
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 # ---------------------------------------------------------------------------
 # (1) Concurrency cap holds — never more than ORM_QUERY_MAX_CONCURRENCY run.
 # ---------------------------------------------------------------------------
@@ -76,7 +101,7 @@ def test_cap_concurrency_holds():
             tasks = [asyncio.create_task(slow("m", "99.0")) for _ in range(4)]
             return await asyncio.gather(*tasks, return_exceptions=True)
 
-        results = asyncio.run(drive())
+        results = _run(drive())
         assert peak <= 2, f"cap breached: peak={peak}"
         # 2 served, 2 fast-rejected (acquire timeout 0.2s < the 0.4s hold).
         served = [r for r in results if r == "done"]
@@ -111,7 +136,7 @@ def test_fast_reject_returns_busy_string():
             await holder
             return rejected
 
-        rejected = asyncio.run(drive())
+        rejected = _run(drive())
         assert isinstance(rejected, str), type(rejected)
         assert "busy" in rejected and "retry" in rejected, rejected
         assert not isinstance(rejected, srv.OrmOverloaded)
@@ -190,7 +215,7 @@ def test_slot_held_until_thread_exits_not_on_cancel():
                 await asyncio.sleep(0.02)
             assert free_permits(2) == 2, "slot not reclaimed after thread exit"
 
-        asyncio.run(drive())
+        _run(drive())
     finally:
         finish.set()
         _restore(["ORM_QUERY_MAX_CONCURRENCY", "ORM_SLOT_ACQUIRE_TIMEOUT"])
@@ -240,7 +265,7 @@ def test_timeout_metric_recorded_even_when_coroutine_cancelled():
             # OrmQueryTimeout raise + the in-thread metric increment.
             proceed.set()
 
-        asyncio.run(drive())
+        _run(drive())
 
         # Poll: the thread runs detached after cancellation; wait for the metric.
         import time
