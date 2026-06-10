@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_lint_matcher_unit.py
-"""Pure unit tests for _match_lint_rule + V0/V0.5 banner + noqa + pattern-first (WI-8).
+"""Pure unit tests for _match_lint_rule_lines + V0/V0.5 banner + noqa + pattern-first (WI-8).
 
 No Neo4j required - exercises only the token matching logic, pattern-first path,
 match-kind labelling, noqa suppression, and the V0.5 banner constant.
@@ -21,9 +21,19 @@ from src.mcp.server import (
     _build_noqa_suppress,
     _compile_lint_pattern,
     _lint_match_kind,
-    _match_lint_rule,
     _match_lint_rule_lines,
 )
+
+
+def _fires(code: str, rule: dict) -> bool:
+    """Whether *rule* fires on *code* (matches on at least one line).
+
+    Replaces the removed deprecated ``_match_lint_rule`` boolean wrapper: the
+    SSOT matcher ``_match_lint_rule_lines`` returns the matching line numbers, so
+    a non-empty result means the rule fired. Keeps the historical token-overlap
+    tests asserting the same fire/no-fire contract.
+    """
+    return bool(_match_lint_rule_lines(code, rule))
 
 # Load real spec data from the 17.0 JSON so regression tests use the actual
 # production patterns rather than hardcoded strings. This ensures tests break
@@ -47,7 +57,7 @@ def test_lint_match_requires_two_token_overlap_single_token_no_fire():
     rule = _rule("Do not use concatenation here")
     # Code has 'concatenation' but only 1 significant token overlap
     code = "x = 'foo' + 'bar'  # some concatenation"
-    result = _match_lint_rule(code, rule)
+    result = _fires(code, rule)
     assert result is False, "Single token overlap must not fire (V0 tighten)"
 
 
@@ -56,7 +66,7 @@ def test_lint_match_fires_on_two_token_overlap():
     rule = _rule("Bad usage of percent format string literal")
     # Code clearly has 'percent' and 'format' — 2 tokens
     code = "msg = 'Hello %s' % name  # percent format"
-    result = _match_lint_rule(code, rule)
+    result = _fires(code, rule)
     assert result is True, "Two matching tokens must trigger a match"
 
 
@@ -64,7 +74,7 @@ def test_lint_match_ignores_stopwords_only_token():
     """Rule message with only stopword tokens → no match even if code has them."""
     rule = _rule("Must use this with that")  # all stopwords
     code = "must use this with that"
-    result = _match_lint_rule(code, rule)
+    result = _fires(code, rule)
     assert result is False, "Stopwords-only rule must not fire"
 
 
@@ -72,7 +82,7 @@ def test_lint_match_case_insensitive():
     """Token matching is case-insensitive — uppercase in rule, lowercase in code."""
     rule = _rule("Deprecated: Name_Get returns tuples, display_name preferred")
     code = "result = self.name_get()  # display_name preferred"
-    result = _match_lint_rule(code, rule)
+    result = _fires(code, rule)
     # 'name_get', 'display_name', 'returns', 'tuples', 'preferred' — multiple significant tokens
     assert result is True
 
@@ -81,7 +91,7 @@ def test_lint_match_empty_message_no_fire():
     """Rule with empty message → must not fire."""
     rule = _rule("")
     code = "x = 1"
-    result = _match_lint_rule(code, rule)
+    result = _fires(code, rule)
     assert result is False
 
 
@@ -262,6 +272,11 @@ def test_noqa_on_different_line_does_not_suppress_other_line():
 _SQL_INJECTION_CODE = (
     'self.env.cr.execute("SELECT id FROM res_partner WHERE name = \'%s\'" % self.name)'
 )
+# Tuple-interpolation form (review PR #275 HIGH #2 / r3 #2): the old `(?!\()`
+# lookahead after `%` blocked this equally dangerous shape, false-greening it.
+_SQL_INJECTION_TUPLE_CODE = (
+    'cr.execute("SELECT id FROM res_partner WHERE id = %s" % (self.id,))'
+)
 # Safe parameterized variant - must never fire W8140 (no false positive).
 _SQL_SAFE_CODE = "cr.execute(\"SELECT id FROM res_partner WHERE id = %s\", (self.id,))"
 # UserError string formatting snippet - was false-green under V0 fuzzy matcher.
@@ -302,6 +317,85 @@ def test_pattern_w8140_silent_on_safe_parameterized():
         f"W8140 must NOT fire on safe parameterized query; got lines={lines}.\n"
         f"code_pattern: {rule['code_pattern']!r}\n"
         f"code: {_SQL_SAFE_CODE!r}"
+    )
+
+
+def test_pattern_w8140_fires_on_tuple_interpolation():
+    """W8140 must fire on the tuple-`%` interpolation form (PR #275 HIGH #2).
+
+    `cr.execute("... %s" % (self.id,))` is an equally dangerous SQL-injection
+    shape. The pre-fix pattern carried a `(?!\\()` lookahead right after `%`
+    which blocked this form because the char after `% ` is `(`. Removing the
+    lookahead makes the must-fire set cover single-value AND tuple forms.
+    """
+    rule = _RULES_BY_ID.get("W8140")
+    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+
+    lines = _match_lint_rule_lines(_SQL_INJECTION_TUPLE_CODE, rule)
+    assert len(lines) >= 1, (
+        f"W8140 must fire on tuple-interpolation SQL injection; got no violations.\n"
+        f"code_pattern: {rule['code_pattern']!r}\n"
+        f"code: {_SQL_INJECTION_TUPLE_CODE!r}"
+    )
+
+
+def test_pattern_e8501_fires_on_tuple_interpolation():
+    """E8501 must also fire on the tuple-`%` form (sibling rule of W8140, v17+).
+
+    E8501 duplicates the W8140 branch-0 pattern; the same lookahead removal
+    applies. Guards against the two rules drifting apart on this fix.
+    """
+    rule = _RULES_BY_ID.get("E8501")
+    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
+
+    lines = _match_lint_rule_lines(_SQL_INJECTION_TUPLE_CODE, rule)
+    assert len(lines) >= 1, (
+        f"E8501 must fire on tuple-interpolation SQL injection; got no violations.\n"
+        f"code_pattern: {rule['code_pattern']!r}\n"
+        f"code: {_SQL_INJECTION_TUPLE_CODE!r}"
+    )
+
+
+def test_pattern_w8178_fires_on_single_line_unsanitized_html():
+    """W8178 must still fire on a single-line `fields.Html(...)` lacking sanitize.
+
+    Recall guard for the multi-line FP fix (PR #275 MED #3): tightening the
+    pattern to require `)` on the same line must not lose the single-line case.
+    """
+    rule = _RULES_BY_ID.get("W8178")
+    assert rule is not None, "W8178 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8178 must have a non-null code_pattern"
+
+    code = 'body = fields.Html(string="Body")'
+    lines = _match_lint_rule_lines(code, rule)
+    assert len(lines) >= 1, (
+        f"W8178 must fire on single-line unsanitized fields.Html; got none.\n"
+        f"code_pattern: {rule['code_pattern']!r}\ncode: {code!r}"
+    )
+
+
+def test_pattern_w8178_silent_on_multiline_open_line():
+    """W8178 must NOT fire on the opening line of a multi-line `fields.Html(`.
+
+    Regression for PR #275 MED #3: the per-line matcher previously flagged every
+    multi-line Html field's opening line because the `sanitize=` keyword (and the
+    closing `)`) live on a later line, so the negative lookahead vacuously
+    succeeded. The fix requires a `)` on the same line for the pattern to apply,
+    so a bare opening line no longer fires - including when `sanitize=True`
+    appears on a subsequent line.
+    """
+    rule = _RULES_BY_ID.get("W8178")
+    assert rule is not None, "W8178 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8178 must have a non-null code_pattern"
+
+    # The matcher is per-line; the opening line is what previously false-fired.
+    multiline = "body = fields.Html(\n    sanitize=True,\n)"
+    lines = _match_lint_rule_lines(multiline, rule)
+    assert lines == [], (
+        f"W8178 must NOT fire on a multi-line fields.Html opening line; got "
+        f"lines={lines}.\ncode_pattern: {rule['code_pattern']!r}\ncode: {multiline!r}"
     )
 
 
